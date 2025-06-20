@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
+use surreal_sync::{SourceOpts, SurrealOpts, migrate_from_mongodb, migrate_from_neo4j};
 
 #[derive(Parser)]
 #[command(name = "surreal-sync")]
@@ -43,53 +44,12 @@ enum SourceDatabase {
     Neo4j,
 }
 
-#[derive(Parser)]
-struct SourceOpts {
-    /// Source database connection string/URI
-    #[arg(long, env = "SOURCE_URI")]
-    source_uri: String,
-    
-    /// Source database name
-    #[arg(long, env = "SOURCE_DATABASE")]
-    source_database: Option<String>,
-    
-    /// Source database username
-    #[arg(long, env = "SOURCE_USERNAME")]
-    source_username: Option<String>,
-    
-    /// Source database password
-    #[arg(long, env = "SOURCE_PASSWORD")]
-    source_password: Option<String>,
-}
-
-#[derive(Parser)]
-struct SurrealOpts {
-    /// SurrealDB endpoint URL
-    #[arg(long, default_value = "http://localhost:8000", env = "SURREAL_ENDPOINT")]
-    surreal_endpoint: String,
-    
-    /// SurrealDB username
-    #[arg(long, default_value = "root", env = "SURREAL_USERNAME")]
-    surreal_username: String,
-    
-    /// SurrealDB password
-    #[arg(long, default_value = "root", env = "SURREAL_PASSWORD")]
-    surreal_password: String,
-    
-    /// Batch size for data migration
-    #[arg(long, default_value = "1000")]
-    batch_size: usize,
-    
-    /// Dry run mode - don't actually write data
-    #[arg(long)]
-    dry_run: bool,
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env().add_directive("surreal_sync=info".parse()?))
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     let cli = Cli::parse();
@@ -125,24 +85,3 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn migrate_from_mongodb(
-    _from_opts: SourceOpts,
-    _to_namespace: String,
-    _to_database: String,
-    _to_opts: SurrealOpts,
-) -> anyhow::Result<()> {
-    tracing::info!("MongoDB migration not yet implemented");
-    // TODO: Implement MongoDB migration
-    Ok(())
-}
-
-async fn migrate_from_neo4j(
-    _from_opts: SourceOpts,
-    _to_namespace: String,
-    _to_database: String,
-    _to_opts: SurrealOpts,
-) -> anyhow::Result<()> {
-    tracing::info!("Neo4j migration not yet implemented");
-    // TODO: Implement Neo4j migration
-    Ok(())
-}
