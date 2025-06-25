@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use surreal_sync::{SourceOpts, SurrealOpts, migrate_from_mongodb, migrate_from_neo4j};
+use surreal_sync::{migrate_from_mongodb, migrate_from_neo4j, SourceOpts, SurrealOpts};
 
 #[derive(Parser)]
 #[command(name = "surreal-sync")]
@@ -17,19 +17,19 @@ enum Commands {
         /// Source database type
         #[arg(value_enum)]
         from: SourceDatabase,
-        
+
         /// Source database connection options
         #[command(flatten)]
         from_opts: SourceOpts,
-        
+
         /// Target SurrealDB namespace
         #[arg(long)]
         to_namespace: String,
-        
+
         /// Target SurrealDB database
         #[arg(long)]
         to_database: String,
-        
+
         /// Target SurrealDB options
         #[command(flatten)]
         to_opts: SurrealOpts,
@@ -43,7 +43,6 @@ enum SourceDatabase {
     /// Neo4j graph database
     Neo4j,
 }
-
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -64,11 +63,11 @@ async fn main() -> anyhow::Result<()> {
         } => {
             tracing::info!("Starting migration from {:?} to SurrealDB", from);
             tracing::info!("Target: {}/{}", to_namespace, to_database);
-            
+
             if to_opts.dry_run {
                 tracing::info!("Running in dry-run mode - no data will be written");
             }
-            
+
             match from {
                 SourceDatabase::MongoDB => {
                     migrate_from_mongodb(from_opts, to_namespace, to_database, to_opts).await?;
@@ -77,11 +76,10 @@ async fn main() -> anyhow::Result<()> {
                     migrate_from_neo4j(from_opts, to_namespace, to_database, to_opts).await?;
                 }
             }
-            
+
             tracing::info!("Migration completed successfully");
         }
     }
 
     Ok(())
 }
-
