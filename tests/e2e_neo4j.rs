@@ -1,0 +1,773 @@
+use neo4rs::{ConfigBuilder, Graph, Query};
+use serde_json::Value;
+use std::collections::HashMap;
+use surrealdb::{engine::any::connect, Surreal};
+
+/// End-to-end test for Neo4j to SurrealDB migration
+#[tokio::test]
+async fn test_neo4j_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging for the test
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug,test=debug")
+        .try_init()
+        .ok(); // Ignore if already initialized
+
+    println!("🧪 Starting Neo4j to SurrealDB migration end-to-end test");
+
+    // Setup test database connections
+    let neo4j_uri = "bolt://neo4j:7687";
+    let neo4j_username = "neo4j";
+    let neo4j_password = "password";
+    let neo4j_database = "neo4j";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let surreal_namespace = "test_ns";
+    let surreal_database = "test_db";
+
+    // Connect to Neo4j
+    println!("📊 Connecting to Neo4j...");
+    let config = ConfigBuilder::default()
+        .uri(neo4j_uri)
+        .user(neo4j_username)
+        .password(neo4j_password)
+        .db(neo4j_database)
+        .build()?;
+
+    let graph = Graph::connect(config)?;
+
+    // Connect to SurrealDB
+    println!("🗄️  Connecting to SurrealDB...");
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(surreal_namespace)
+        .use_db(surreal_database)
+        .await?;
+
+    // Clean up any existing test data
+    println!("🧹 Cleaning up existing test data...");
+    cleanup_test_data(&graph, &surreal, surreal_namespace, surreal_database).await?;
+
+    // Populate Neo4j with comprehensive test data
+    println!("📝 Populating Neo4j with test data...");
+    let expected_data = populate_test_data(&graph).await?;
+
+    // Run the migration using the library functions directly
+    println!("🔄 Running migration...");
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: neo4j_uri.to_string(),
+        source_database: Some(neo4j_database.to_string()),
+        source_username: Some(neo4j_username.to_string()),
+        source_password: Some(neo4j_password.to_string()),
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 10, // Small batch size for testing
+        dry_run: false,
+    };
+
+    // Execute the migration
+    surreal_sync::migrate_from_neo4j(
+        from_opts,
+        surreal_namespace.to_string(),
+        surreal_database.to_string(),
+        to_opts,
+    )
+    .await?;
+
+    // Validate the migration results
+    println!("✅ Validating migration results...");
+    validate_migration_results(&surreal, &expected_data).await?;
+
+    // Clean up test data after successful test
+    cleanup_test_data(&graph, &surreal, surreal_namespace, surreal_database).await?;
+
+    println!("🎉 End-to-end test completed successfully!");
+    Ok(())
+}
+
+/// Test migration with various Neo4j data types
+#[tokio::test]
+async fn test_neo4j_data_types_migration() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug,test=debug")
+        .try_init()
+        .ok();
+
+    println!("🧪 Testing Neo4j data types migration");
+
+    let neo4j_uri = "bolt://neo4j:7687";
+    let neo4j_username = "neo4j";
+    let neo4j_password = "password";
+    let neo4j_database = "neo4j";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let surreal_namespace = "test_types_ns";
+    let surreal_database = "test_types_db";
+
+    // Connect to databases
+    let config = ConfigBuilder::default()
+        .uri(neo4j_uri)
+        .user(neo4j_username)
+        .password(neo4j_password)
+        .db(neo4j_database)
+        .build()?;
+
+    let graph = Graph::connect(config)?;
+
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(surreal_namespace)
+        .use_db(surreal_database)
+        .await?;
+
+    // Clean up
+    cleanup_data_types_test(&graph, &surreal).await?;
+
+    // Create nodes with various data types
+    populate_data_types_test(&graph).await?;
+
+    // Run migration
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: neo4j_uri.to_string(),
+        source_database: Some(neo4j_database.to_string()),
+        source_username: Some(neo4j_username.to_string()),
+        source_password: Some(neo4j_password.to_string()),
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 5,
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_neo4j(
+        from_opts,
+        surreal_namespace.to_string(),
+        surreal_database.to_string(),
+        to_opts,
+    )
+    .await?;
+
+    // Validate data types
+    validate_data_types_migration(&surreal).await?;
+
+    // Clean up
+    cleanup_data_types_test(&graph, &surreal).await?;
+
+    println!("🎉 Data types migration test completed successfully!");
+    Ok(())
+}
+
+/// Test large dataset migration performance
+#[tokio::test]
+async fn test_neo4j_large_dataset_migration() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=info")
+        .try_init()
+        .ok();
+
+    println!("🧪 Testing Neo4j large dataset migration");
+
+    let neo4j_uri = "bolt://neo4j:7687";
+    let neo4j_username = "neo4j";
+    let neo4j_password = "password";
+    let neo4j_database = "neo4j";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let surreal_namespace = "test_large_ns";
+    let surreal_database = "test_large_db";
+
+    // Connect to databases
+    let config = ConfigBuilder::default()
+        .uri(neo4j_uri)
+        .user(neo4j_username)
+        .password(neo4j_password)
+        .db(neo4j_database)
+        .build()?;
+
+    let graph = Graph::connect(config)?;
+
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(surreal_namespace)
+        .use_db(surreal_database)
+        .await?;
+
+    // Clean up
+    cleanup_large_dataset_test(&graph, &surreal).await?;
+
+    // Create large dataset
+    let node_count = populate_large_dataset(&graph).await?;
+    println!("📊 Created {} nodes and relationships", node_count);
+
+    // Run migration with timing
+    let start_time = std::time::Instant::now();
+
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: neo4j_uri.to_string(),
+        source_database: Some(neo4j_database.to_string()),
+        source_username: Some(neo4j_username.to_string()),
+        source_password: Some(neo4j_password.to_string()),
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 100, // Larger batch size for performance
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_neo4j(
+        from_opts,
+        surreal_namespace.to_string(),
+        surreal_database.to_string(),
+        to_opts,
+    )
+    .await?;
+
+    let elapsed = start_time.elapsed();
+    println!("⏱️  Migration completed in: {:?}", elapsed);
+
+    // Validate counts
+    validate_large_dataset_migration(&surreal, node_count).await?;
+
+    // Clean up
+    cleanup_large_dataset_test(&graph, &surreal).await?;
+
+    println!("🎉 Large dataset migration test completed successfully!");
+    Ok(())
+}
+
+/// Clean up test data from both databases
+async fn cleanup_test_data(
+    graph: &Graph,
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+    _namespace: &str,
+    _database: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Clean Neo4j test data
+    let cleanup_query =
+        Query::new("MATCH (n) WHERE n.test_marker = 'e2e_test' DETACH DELETE n".to_string());
+    let _ = graph.execute(cleanup_query).await?;
+
+    // Clean SurrealDB test data
+    let tables = [
+        "person",
+        "product",
+        "company",
+        "category",
+        "knows",
+        "works_at",
+        "bought",
+        "belongs_to",
+    ];
+    for table in tables {
+        let query = format!("DELETE FROM {}", table);
+        let _: Vec<Value> = surreal.query(query).await?.take(0).unwrap_or_default();
+    }
+
+    Ok(())
+}
+
+/// Populate Neo4j with comprehensive test data
+async fn populate_test_data(
+    graph: &Graph,
+) -> Result<HashMap<String, usize>, Box<dyn std::error::Error>> {
+    let mut expected_counts = HashMap::new();
+
+    // Create Person nodes
+    let create_persons = Query::new(
+        r#"
+        CREATE (alice:Person {
+            name: 'Alice Johnson',
+            email: 'alice@example.com',
+            age: 28,
+            skills: ['Rust', 'Neo4j', 'SurrealDB'],
+            active: true,
+            salary: 85000.50,
+            test_marker: 'e2e_test'
+        }),
+        (bob:Person {
+            name: 'Bob Smith',
+            email: 'bob@example.com',
+            age: 35,
+            skills: ['Management', 'Strategy'],
+            active: false,
+            salary: 95000.75,
+            test_marker: 'e2e_test'
+        }),
+        (carol:Person {
+            name: 'Carol Davis',
+            email: 'carol@example.com',
+            age: 42,
+            skills: ['Python', 'Data Science'],
+            active: true,
+            salary: 110000.00,
+            test_marker: 'e2e_test'
+        })
+        RETURN count(*) as created
+    "#
+        .to_string(),
+    );
+
+    let mut result = graph.execute(create_persons).await?;
+    if let Some(row) = result.next().await? {
+        let count: i64 = row.get("created")?;
+        expected_counts.insert("person".to_string(), count as usize);
+    }
+
+    // Create Company nodes
+    let create_companies = Query::new(
+        r#"
+        CREATE (acme:Company {
+            name: 'ACME Corp',
+            industry: 'Technology',
+            founded: 2010,
+            revenue: 50000000.00,
+            public: true,
+            test_marker: 'e2e_test'
+        }),
+        (globex:Company {
+            name: 'Globex Corporation',
+            industry: 'Manufacturing',
+            founded: 1995,
+            revenue: 75000000.00,
+            public: false,
+            test_marker: 'e2e_test'
+        })
+        RETURN count(*) as created
+    "#
+        .to_string(),
+    );
+
+    let mut result = graph.execute(create_companies).await?;
+    if let Some(row) = result.next().await? {
+        let count: i64 = row.get("created")?;
+        expected_counts.insert("company".to_string(), count as usize);
+    }
+
+    // Create Product nodes
+    let create_products = Query::new(
+        r#"
+        CREATE (laptop:Product {
+            name: 'Laptop Pro',
+            price: 1299.99,
+            category: 'Electronics',
+            in_stock: true,
+            rating: 4.5,
+            reviews: 150,
+            test_marker: 'e2e_test'
+        }),
+        (headphones:Product {
+            name: 'Wireless Headphones',
+            price: 199.99,
+            category: 'Audio',
+            in_stock: false,
+            rating: 4.2,
+            reviews: 89,
+            test_marker: 'e2e_test'
+        })
+        RETURN count(*) as created
+    "#
+        .to_string(),
+    );
+
+    let mut result = graph.execute(create_products).await?;
+    if let Some(row) = result.next().await? {
+        let count: i64 = row.get("created")?;
+        expected_counts.insert("product".to_string(), count as usize);
+    }
+
+    // Create Category nodes
+    let create_categories = Query::new(
+        r#"
+        CREATE (electronics:Category {
+            name: 'Electronics',
+            description: 'Electronic devices and gadgets',
+            active: true,
+            test_marker: 'e2e_test'
+        }),
+        (audio:Category {
+            name: 'Audio',
+            description: 'Audio equipment and accessories',
+            active: true,
+            test_marker: 'e2e_test'
+        })
+        RETURN count(*) as created
+    "#
+        .to_string(),
+    );
+
+    let mut result = graph.execute(create_categories).await?;
+    if let Some(row) = result.next().await? {
+        let count: i64 = row.get("created")?;
+        expected_counts.insert("category".to_string(), count as usize);
+    }
+
+    // Create relationships
+    let create_relationships = Query::new(r#"
+        MATCH (alice:Person {name: 'Alice Johnson'}),
+              (bob:Person {name: 'Bob Smith'}),
+              (carol:Person {name: 'Carol Davis'}),
+              (acme:Company {name: 'ACME Corp'}),
+              (globex:Company {name: 'Globex Corporation'}),
+              (laptop:Product {name: 'Laptop Pro'}),
+              (headphones:Product {name: 'Wireless Headphones'}),
+              (electronics:Category {name: 'Electronics'}),
+              (audio:Category {name: 'Audio'})
+        
+        CREATE (alice)-[:KNOWS {since: 2020, strength: 0.8, test_marker: 'e2e_test'}]->(bob),
+               (bob)-[:KNOWS {since: 2019, strength: 0.6, test_marker: 'e2e_test'}]->(carol),
+               (alice)-[:WORKS_AT {position: 'Senior Engineer', start_date: '2022-01-15', test_marker: 'e2e_test'}]->(acme),
+               (bob)-[:WORKS_AT {position: 'Product Manager', start_date: '2021-03-01', test_marker: 'e2e_test'}]->(acme),
+               (carol)-[:WORKS_AT {position: 'Data Scientist', start_date: '2020-06-10', test_marker: 'e2e_test'}]->(globex),
+               (alice)-[:BOUGHT {quantity: 1, purchase_date: '2023-05-15', amount: 1299.99, test_marker: 'e2e_test'}]->(laptop),
+               (bob)-[:BOUGHT {quantity: 2, purchase_date: '2023-04-20', amount: 399.98, test_marker: 'e2e_test'}]->(headphones),
+               (laptop)-[:BELONGS_TO {primary: true, test_marker: 'e2e_test'}]->(electronics),
+               (headphones)-[:BELONGS_TO {primary: true, test_marker: 'e2e_test'}]->(audio)
+        
+        RETURN count(*) as relationships_created
+    "#.to_string());
+
+    let mut result = graph.execute(create_relationships).await?;
+    if let Some(_row) = result.next().await? {
+        let knows_count = 2; // alice->bob, bob->carol
+        let works_at_count = 3; // alice->acme, bob->acme, carol->globex
+        let bought_count = 2; // alice->laptop, bob->headphones
+        let belongs_to_count = 2; // laptop->electronics, headphones->audio
+
+        expected_counts.insert("knows".to_string(), knows_count);
+        expected_counts.insert("works_at".to_string(), works_at_count);
+        expected_counts.insert("bought".to_string(), bought_count);
+        expected_counts.insert("belongs_to".to_string(), belongs_to_count);
+    }
+
+    println!("📊 Inserted test data into Neo4j:");
+    for (label, count) in &expected_counts {
+        println!("  - {} {}", count, label);
+    }
+
+    Ok(expected_counts)
+}
+
+/// Validate that the migration worked correctly
+async fn validate_migration_results(
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+    expected_counts: &HashMap<String, usize>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (table_name, expected_count) in expected_counts {
+        println!("🔍 Validating table: {}", table_name);
+
+        // Query all records from the table
+        let query = format!("SELECT * FROM {}", table_name);
+        let mut result = surreal.query(query).await?;
+        let actual_records: Vec<Value> = result.take(0)?;
+
+        // Check record count
+        assert_eq!(
+            actual_records.len(),
+            *expected_count,
+            "Record count mismatch for table '{}': expected {}, got {}",
+            table_name,
+            expected_count,
+            actual_records.len()
+        );
+
+        // Validate record structure
+        for record in &actual_records {
+            validate_record_structure(record, table_name)?;
+        }
+
+        println!(
+            "✅ Table '{}' validation passed ({} records)",
+            table_name,
+            actual_records.len()
+        );
+    }
+
+    Ok(())
+}
+
+/// Validate individual record structure
+fn validate_record_structure(
+    record: &Value,
+    table_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let obj = record
+        .as_object()
+        .ok_or_else(|| format!("Record is not an object: {:?}", record))?;
+
+    // Check that record has an id field
+    assert!(obj.contains_key("id"), "Record missing 'id' field");
+
+    // Check that record has neo4j_id field (our addition)
+    assert!(
+        obj.contains_key("neo4j_id"),
+        "Record missing 'neo4j_id' field"
+    );
+
+    // Validate ID format for nodes
+    if !table_name.contains("_") {
+        // Node tables don't have underscores
+        assert!(
+            obj.contains_key("labels"),
+            "Node record missing 'labels' field"
+        );
+    } else {
+        // Relationship tables
+        assert!(
+            obj.contains_key("relationship_type"),
+            "Relationship record missing 'relationship_type' field"
+        );
+        assert!(
+            obj.contains_key("from_node"),
+            "Relationship record missing 'from_node' field"
+        );
+        assert!(
+            obj.contains_key("to_node"),
+            "Relationship record missing 'to_node' field"
+        );
+    }
+
+    // Check test_marker is preserved
+    assert!(
+        obj.contains_key("test_marker"),
+        "Record missing 'test_marker' field"
+    );
+
+    Ok(())
+}
+
+/// Clean up data types test data
+async fn cleanup_data_types_test(
+    graph: &Graph,
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Clean Neo4j
+    let cleanup_query =
+        Query::new("MATCH (n) WHERE n.test_marker = 'data_types_test' DETACH DELETE n".to_string());
+    let _ = graph.execute(cleanup_query).await?;
+
+    // Clean SurrealDB
+    let tables = ["datatypes"];
+    for table in tables {
+        let query = format!("DELETE FROM {}", table);
+        let _: Vec<Value> = surreal.query(query).await?.take(0).unwrap_or_default();
+    }
+
+    Ok(())
+}
+
+/// Populate Neo4j with various data types for testing
+async fn populate_data_types_test(graph: &Graph) -> Result<(), Box<dyn std::error::Error>> {
+    let create_data_types = Query::new(
+        r#"
+        CREATE (dt:DataTypes {
+            string_prop: 'test string',
+            int_prop: 42,
+            float_prop: 3.14159,
+            bool_prop: true,
+            array_prop: [1, 2, 3, 'four', true],
+            map_prop: {
+                nested_string: 'nested value',
+                nested_number: 123,
+                nested_bool: false
+            },
+            null_prop: null,
+            test_marker: 'data_types_test'
+        })
+        RETURN count(*) as created
+    "#
+        .to_string(),
+    );
+
+    let _ = graph.execute(create_data_types).await?;
+    println!("📊 Created data types test node");
+
+    Ok(())
+}
+
+/// Validate data types migration
+async fn validate_data_types_migration(
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let query = "SELECT * FROM datatypes";
+    let mut result = surreal.query(query).await?;
+    let records: Vec<Value> = result.take(0)?;
+
+    assert_eq!(records.len(), 1, "Expected exactly 1 data types record");
+
+    let record = &records[0];
+    let obj = record.as_object().unwrap();
+
+    // Validate field presence and types
+    assert!(obj.contains_key("string_prop"), "Missing string_prop");
+    assert!(obj.contains_key("int_prop"), "Missing int_prop");
+    assert!(obj.contains_key("float_prop"), "Missing float_prop");
+    assert!(obj.contains_key("bool_prop"), "Missing bool_prop");
+    assert!(obj.contains_key("array_prop"), "Missing array_prop");
+    assert!(obj.contains_key("map_prop"), "Missing map_prop");
+    assert!(obj.contains_key("null_prop"), "Missing null_prop");
+
+    println!("✅ Data types validation passed");
+    Ok(())
+}
+
+/// Clean up large dataset test
+async fn cleanup_large_dataset_test(
+    graph: &Graph,
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Clean Neo4j
+    let cleanup_query = Query::new(
+        "MATCH (n) WHERE n.test_marker = 'large_dataset_test' DETACH DELETE n".to_string(),
+    );
+    let _ = graph.execute(cleanup_query).await?;
+
+    // Clean SurrealDB
+    let tables = ["user", "post", "follows", "likes"];
+    for table in tables {
+        let query = format!("DELETE FROM {}", table);
+        let _: Vec<Value> = surreal.query(query).await?.take(0).unwrap_or_default();
+    }
+
+    Ok(())
+}
+
+/// Create a large dataset for performance testing
+async fn populate_large_dataset(graph: &Graph) -> Result<usize, Box<dyn std::error::Error>> {
+    let user_count = 100;
+    let post_count = 200;
+
+    // Create users in batches
+    for i in 0..user_count {
+        let create_user = Query::new(format!(
+            r#"
+            CREATE (u:User {{
+                name: 'User {}',
+                email: 'user{}@example.com',
+                age: {},
+                active: {},
+                test_marker: 'large_dataset_test'
+            }})
+        "#,
+            i,
+            i,
+            20 + (i % 50),
+            i % 2 == 0
+        ));
+
+        let _ = graph.execute(create_user).await?;
+    }
+
+    // Create posts
+    for i in 0..post_count {
+        let _user_id = i % user_count;
+        let create_post = Query::new(format!(
+            r#"
+            CREATE (p:Post {{
+                title: 'Post {}',
+                content: 'This is the content of post number {}',
+                created_at: datetime(),
+                likes: {},
+                test_marker: 'large_dataset_test'
+            }})
+        "#,
+            i,
+            i,
+            i % 100
+        ));
+
+        let _ = graph.execute(create_post).await?;
+    }
+
+    // Create relationships
+    let create_follows = Query::new(
+        r#"
+        MATCH (u1:User), (u2:User)
+        WHERE u1.test_marker = 'large_dataset_test' 
+          AND u2.test_marker = 'large_dataset_test'
+          AND id(u1) < id(u2)
+          AND rand() < 0.1
+        CREATE (u1)-[:FOLLOWS {{
+            since: datetime(),
+            test_marker: 'large_dataset_test'
+        }}]->(u2)
+    "#
+        .to_string(),
+    );
+
+    let _ = graph.execute(create_follows).await?;
+
+    let create_likes = Query::new(
+        r#"
+        MATCH (u:User), (p:Post)
+        WHERE u.test_marker = 'large_dataset_test' 
+          AND p.test_marker = 'large_dataset_test'
+          AND rand() < 0.2
+        CREATE (u)-[:LIKES {{
+            timestamp: datetime(),
+            test_marker: 'large_dataset_test'
+        }}]->(p)
+    "#
+        .to_string(),
+    );
+
+    let _ = graph.execute(create_likes).await?;
+
+    let total_nodes = user_count + post_count;
+    println!("📊 Created {} users and {} posts", user_count, post_count);
+
+    Ok(total_nodes)
+}
+
+/// Validate large dataset migration
+async fn validate_large_dataset_migration(
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+    expected_node_count: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Check user count
+    let user_query = "SELECT * FROM user";
+    let mut result = surreal.query(user_query).await?;
+    let users: Vec<Value> = result.take(0)?;
+
+    // Check post count
+    let post_query = "SELECT * FROM post";
+    let mut result = surreal.query(post_query).await?;
+    let posts: Vec<Value> = result.take(0)?;
+
+    let total_migrated = users.len() + posts.len();
+
+    assert_eq!(
+        total_migrated, expected_node_count,
+        "Expected {} total nodes, got {}",
+        expected_node_count, total_migrated
+    );
+
+    println!(
+        "✅ Large dataset validation passed: {} nodes migrated",
+        total_migrated
+    );
+    Ok(())
+}
