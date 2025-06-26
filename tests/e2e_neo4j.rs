@@ -7,6 +7,10 @@ use surrealdb::{engine::any::connect, Surreal};
 // Generate unique test identifiers for parallel execution
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+// We use this to generate unique test identifiers for parallel execution.
+// The identifier is not used as the neo4j database but as the test marker,
+// because creating Neo4j databases require extra permissions that
+// might not be available to the user running the tests.
 fn generate_test_id() -> u64 {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -53,6 +57,14 @@ async fn test_neo4j_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let graph = Graph::connect(config)?;
+
+    // Global cleanup of any leftover test data from previous runs
+    let global_cleanup =
+        Query::new("MATCH (n) WHERE n.test_marker IS NOT NULL DETACH DELETE n".to_string());
+    let mut result = graph.execute(global_cleanup).await?;
+    while result.next().await?.is_some() {
+        // Process all results to ensure query completes
+    }
 
     // Connect to SurrealDB
     println!("🗄️  Connecting to SurrealDB...");
