@@ -886,11 +886,11 @@ enum BindableValue {
     Null,
 }
 
-/// Convert MongoDB-specific JSON structures to bindable Rust types
+/// Convert MongoDB Extended JSON (v2) values to our own bindables
 fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableValue> {
     match value {
         Value::Object(obj) => {
-            // Handle MongoDB DateTime objects
+            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Date
             if let Some(date_str) = obj.get("$date").and_then(|v| v.as_str()) {
                 // Return actual DateTime<Utc> for binding
                 let utc_datetime = chrono::DateTime::parse_from_rfc3339(date_str)
@@ -899,27 +899,54 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
                 return Ok(BindableValue::DateTime(utc_datetime));
             }
 
-            // Handle MongoDB ObjectId objects
+            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-ObjectId
             if let Some(oid_str) = obj.get("$oid").and_then(|v| v.as_str()) {
                 // Return string for binding
                 return Ok(BindableValue::String(oid_str.to_string()));
             }
 
-            // Handle MongoDB NumberLong objects
+            // TODO $timestamp as SurrealDB datetime
+            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Timestamp
+
+            // TODO array
+            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Array
+
+            // TODO $binary as SurrealDB bytes
+            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Binary
+
+            // TODO $numberDouble as SurrealDB float (64-bit)
+            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Double
+
+            // TODO $numberInt as SurrealDB int (64-bit)
+            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Int32
+
+            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Int64
             if let Some(number_long) = obj.get("$numberLong").and_then(|v| v.as_str()) {
                 if let Ok(num) = number_long.parse::<i64>() {
                     return Ok(BindableValue::Int(num));
                 }
             }
 
-            // Handle MongoDB NumberDecimal objects
+            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Decimal128
             if let Some(number_decimal) = obj.get("$numberDecimal").and_then(|v| v.as_str()) {
                 if let Ok(num) = number_decimal.parse::<f64>() {
                     return Ok(BindableValue::Float(num));
                 }
             }
 
-            // Recursively process nested objects - return as JSON for binding
+            // TODO Data Reference ($ref) should be converted to SurrealDB Thing
+            // https://docs.mongoing.com/mongo-introduction/bson-types/extended-json-v2#db-reference
+
+            // TODO How's the `JavaScript` type in MongoDB is expressed in MongoDB Extended JSON?
+            // https://www.mongodb.com/docs/manual/reference/bson-types/
+
+            // MongoDB Document as SurrealDB Object
+            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Document
+            //
+            // This would also cover the following types:
+            // - $regularExpression: https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Timestamp
+            // - $maxKey: https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-MaxKey
+            // - $minKey: https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-MinKey
             let mut json_obj = serde_json::Map::new();
             for (key, val) in obj {
                 let bindable_val = convert_mongodb_types_to_bindable(val)?;
