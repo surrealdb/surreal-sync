@@ -7,7 +7,7 @@ use clap::Parser;
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
 use neo4rs::{ConfigBuilder, Graph, Query};
 use serde_json::Value;
-use std::time::Duration;
+use std::{collections::HashMap, time::Duration};
 use surrealdb::{engine::any::connect, Surreal};
 
 #[derive(Parser)]
@@ -342,8 +342,25 @@ async fn migrate_batch(
                 BindableValue::Float(f) => q.bind((field_name.clone(), *f)),
                 BindableValue::String(s) => q.bind((field_name.clone(), s.clone())),
                 BindableValue::DateTime(dt) => q.bind((field_name.clone(), *dt)),
-                BindableValue::Array(arr) => q.bind((field_name.clone(), arr.clone())),
-                BindableValue::Object(obj) => q.bind((field_name.clone(), obj.clone())),
+                BindableValue::Array(bindables) => {
+                    let mut arr = Vec::new();
+                    for item in bindables {
+                        let v = bindable_to_surrealdb_value(&item);
+                        arr.push(v);
+                    }
+                    let surreal_arr = surrealdb::sql::Array::from(arr);
+                    q.bind((field_name.clone(), surreal_arr))
+                }
+                BindableValue::Object(obj) => {
+                    let mut map = std::collections::BTreeMap::new();
+                    for (key, value) in obj {
+                        let v = bindable_to_surrealdb_value(&value);
+                        map.insert(key.clone(), v);
+                    }
+                    let surreal_obj = surrealdb::sql::Object::from(map);
+                    q.bind((field_name.clone(), surreal_obj))
+                }
+                BindableValue::Duration(d) => q.bind((field_name.clone(), d.clone())),
                 BindableValue::Null => q.bind((field_name.clone(), Option::<String>::None)),
             };
         }
@@ -375,6 +392,41 @@ async fn migrate_batch(
         batch.len()
     );
     Ok(())
+}
+
+fn bindable_to_surrealdb_value(bindable: &BindableValue) -> surrealdb::sql::Value {
+    let sql_value = match bindable {
+        BindableValue::Bool(b) => surrealdb::sql::Value::Bool(*b),
+        BindableValue::Int(i) => surrealdb::sql::Value::Number(surrealdb::sql::Number::from(*i)),
+        BindableValue::Float(f) => surrealdb::sql::Value::Number(surrealdb::sql::Number::from(*f)),
+        BindableValue::String(s) => {
+            surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(s.clone()))
+        }
+        BindableValue::DateTime(dt) => {
+            surrealdb::sql::Value::Datetime(surrealdb::sql::Datetime::from(*dt))
+        }
+        BindableValue::Array(bindables) => {
+            let mut arr = Vec::new();
+            for item in bindables {
+                let v = bindable_to_surrealdb_value(&item);
+                arr.push(v);
+            }
+            surrealdb::sql::Value::Array(surrealdb::sql::Array::from(arr))
+        }
+        BindableValue::Object(obj) => {
+            let mut map = std::collections::BTreeMap::new();
+            for (key, value) in obj {
+                let v = bindable_to_surrealdb_value(&value);
+                map.insert(key.clone(), v);
+            }
+            surrealdb::sql::Value::Object(surrealdb::sql::Object::from(map))
+        }
+        BindableValue::Duration(d) => {
+            surrealdb::sql::Value::Duration(surrealdb::sql::Duration::from(*d))
+        }
+        BindableValue::Null => surrealdb::sql::Value::Null,
+    };
+    sql_value
 }
 
 pub async fn migrate_from_neo4j(
@@ -695,11 +747,11 @@ fn convert_neo4j_node_to_bindable(
 
     // Add labels as an array
     let labels: Vec<String> = node.labels().into_iter().map(|s| s.to_string()).collect();
-    let labels_json: Vec<serde_json::Value> = labels
+    let labels_bindables: Vec<BindableValue> = labels
         .into_iter()
-        .map(|s| serde_json::Value::String(s))
+        .map(|s| BindableValue::String(s))
         .collect();
-    bindable_obj.insert("labels".to_string(), BindableValue::Array(labels_json));
+    bindable_obj.insert("labels".to_string(), BindableValue::Array(labels_bindables));
 
     // Convert all properties
     for key in node.keys() {
@@ -764,92 +816,160 @@ fn convert_neo4j_relationship_to_bindable(
 /// Convert Neo4j BoltType to BindableValue
 fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType) -> anyhow::Result<BindableValue> {
     match value {
-        neo4rs::BoltType::Boolean(b) => Ok(BindableValue::Bool(b.value)),
-        neo4rs::BoltType::Integer(i) => Ok(BindableValue::Int(i.value)),
-        neo4rs::BoltType::Float(f) => Ok(BindableValue::Float(f.value)),
         neo4rs::BoltType::String(s) => Ok(BindableValue::String(s.value)),
-        neo4rs::BoltType::List(list) => {
-            let mut json_arr = Vec::new();
-            for item in list.value {
-                let bindable_val = convert_neo4j_type_to_bindable(item)?;
-                json_arr.push(bindable_to_json(&bindable_val)?);
-            }
-            Ok(BindableValue::Array(json_arr))
-        }
+        neo4rs::BoltType::Boolean(b) => Ok(BindableValue::Bool(b.value)),
         neo4rs::BoltType::Map(map) => {
-            let mut json_obj = serde_json::Map::new();
+            let mut bindables = HashMap::new();
             for (key, val) in map.value {
                 let bindable_val = convert_neo4j_type_to_bindable(val)?;
-                json_obj.insert(key.to_string(), bindable_to_json(&bindable_val)?);
+                bindables.insert(key.to_string(), bindable_val);
             }
-            Ok(BindableValue::Object(json_obj))
-        }
-        neo4rs::BoltType::Date(date) => {
-            // Convert Neo4j Date to string representation
-            Ok(BindableValue::String(format!("{:?}", date)))
-        }
-        neo4rs::BoltType::Time(time) => {
-            // Convert Neo4j Time to string representation
-            Ok(BindableValue::String(format!("{:?}", time)))
-        }
-        neo4rs::BoltType::DateTime(datetime) => {
-            // Convert Neo4j DateTime to string representation for now
-            Ok(BindableValue::String(format!("{:?}", datetime)))
-        }
-        neo4rs::BoltType::Duration(duration) => {
-            // Convert Neo4j Duration to string representation
-            Ok(BindableValue::String(format!("{:?}", duration)))
-        }
-        neo4rs::BoltType::Point2D(point) => {
-            // Convert Neo4j Point2D to object
-            let mut json_obj = serde_json::Map::new();
-            json_obj.insert(
-                "type".to_string(),
-                serde_json::Value::String("Point2D".to_string()),
-            );
-            json_obj.insert(
-                "srid".to_string(),
-                serde_json::Value::Number(serde_json::Number::from(point.sr_id.value)),
-            );
-            json_obj.insert(
-                "x".to_string(),
-                serde_json::Value::Number(serde_json::Number::from_f64(point.x.value).unwrap()),
-            );
-            json_obj.insert(
-                "y".to_string(),
-                serde_json::Value::Number(serde_json::Number::from_f64(point.y.value).unwrap()),
-            );
-            Ok(BindableValue::Object(json_obj))
-        }
-        neo4rs::BoltType::Point3D(point) => {
-            // Convert Neo4j Point3D to object
-            let mut json_obj = serde_json::Map::new();
-            json_obj.insert(
-                "type".to_string(),
-                serde_json::Value::String("Point3D".to_string()),
-            );
-            json_obj.insert(
-                "srid".to_string(),
-                serde_json::Value::Number(serde_json::Number::from(point.sr_id.value)),
-            );
-            json_obj.insert(
-                "x".to_string(),
-                serde_json::Value::Number(serde_json::Number::from_f64(point.x.value).unwrap()),
-            );
-            json_obj.insert(
-                "y".to_string(),
-                serde_json::Value::Number(serde_json::Number::from_f64(point.y.value).unwrap()),
-            );
-            json_obj.insert(
-                "z".to_string(),
-                serde_json::Value::Number(serde_json::Number::from_f64(point.z.value).unwrap()),
-            );
-            Ok(BindableValue::Object(json_obj))
+            Ok(BindableValue::Object(bindables))
         }
         neo4rs::BoltType::Null(_) => Ok(BindableValue::Null),
-        _ => {
-            // For any other types, convert to string as fallback
-            Ok(BindableValue::String(format!("{:?}", value)))
+        neo4rs::BoltType::Integer(i) => Ok(BindableValue::Int(i.value)),
+        neo4rs::BoltType::Float(f) => Ok(BindableValue::Float(f.value)),
+        neo4rs::BoltType::List(list) => {
+            let mut bindables = Vec::new();
+            for item in list.value {
+                let bindable_val = convert_neo4j_type_to_bindable(item)?;
+                bindables.push(bindable_val);
+            }
+            Ok(BindableValue::Array(bindables))
+        }
+        neo4rs::BoltType::Node(node) => {
+            // TODO: Add proper support for this by respecting id, labels, and properties in the node object
+            Ok(BindableValue::String(format!("{:?}", node)))
+        }
+        neo4rs::BoltType::Relation(relation) => {
+            // TODO: Add proper support for this by respecting id, start_node_id, end_node_id, typ, and properties in the relation object
+            Ok(BindableValue::String(format!("{:?}", relation)))
+        }
+        neo4rs::BoltType::UnboundedRelation(unbounded_relation) => {
+            // TODO: Add proper support for this by rsepecting id, typ, and properties in the relation object
+            Ok(BindableValue::String(format!("{:?}", unbounded_relation)))
+        }
+        neo4rs::BoltType::Point2D(point) => {
+            // TODO: We need to turn into into https://geojson.org/
+            // sr_id is the srid, which is not directly representable in SurrealDB
+            let mut bindables = HashMap::new();
+            bindables.insert(
+                "type".to_string(),
+                BindableValue::String("Point2D".to_string()),
+            );
+            bindables.insert("srid".to_string(), BindableValue::Int(point.sr_id.value));
+            bindables.insert("x".to_string(), BindableValue::Float(point.x.value));
+            bindables.insert("y".to_string(), BindableValue::Float(point.y.value));
+            Ok(BindableValue::Object(bindables))
+        }
+        neo4rs::BoltType::Point3D(point) => {
+            // TODO: We need to turn into into https://geojson.org/
+            // sr_id is the srid, which is not directly representable in SurrealDB
+            let mut bindables = HashMap::new();
+            bindables.insert(
+                "type".to_string(),
+                BindableValue::String("Point3D".to_string()),
+            );
+            bindables.insert("srid".to_string(), BindableValue::Int(point.sr_id.value));
+            bindables.insert("x".to_string(), BindableValue::Float(point.x.value));
+            bindables.insert("y".to_string(), BindableValue::Float(point.y.value));
+            bindables.insert("z".to_string(), BindableValue::Float(point.z.value));
+            Ok(BindableValue::Object(bindables))
+        }
+        neo4rs::BoltType::Bytes(bytes) => {
+            // TODO: Add proper support for this by using SurrealDB bytes type
+            Ok(BindableValue::String(format!("{:?}", bytes)))
+        }
+        neo4rs::BoltType::Path(path) => {
+            // TODO: Add proper support for this that respects nodes, rels, and indices lists in the path object
+            Ok(BindableValue::String(format!("{:?}", path)))
+        }
+        neo4rs::BoltType::Date(date) => {
+            let naive_d: chrono::NaiveDate = date.try_into()?;
+            // Make this configurable?
+            let now = chrono::Local::now();
+            let tz = now.offset();
+            // Assumes the naivedate is in the specified tz, and produce a UTC datetime
+            let naive_dt = chrono::NaiveDateTime::new(
+                naive_d,
+                chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
+            );
+            let dt_with_tz: DateTime<chrono::FixedOffset> =
+                chrono::DateTime::from_naive_utc_and_offset(naive_dt, tz.to_owned());
+            let utc_dt = dt_with_tz.into();
+            Ok(BindableValue::DateTime(utc_dt))
+        }
+        neo4rs::BoltType::Time(time) => {
+            let t: (chrono::NaiveTime, chrono::FixedOffset) = time.into();
+            let mut obj = HashMap::new();
+            // Maybe we should have options to make it internally tagged (as its externally tagged for now by a parallel `type` field)
+            // and make the type field value configurable for parsing convenience?
+            obj.insert(
+                "type".to_string(),
+                BindableValue::String("$Neo4jTime".to_string()),
+            );
+            obj.insert(
+                "offset_seconds".to_string(),
+                BindableValue::Int(t.1.local_minus_utc() as i64),
+            );
+            use chrono::Timelike;
+            obj.insert("hour".to_string(), BindableValue::Int(t.0.hour() as i64));
+            obj.insert(
+                "minute".to_string(),
+                BindableValue::Int(t.0.minute() as i64),
+            );
+            obj.insert(
+                "second".to_string(),
+                BindableValue::Int(t.0.second() as i64),
+            );
+            obj.insert(
+                "nanosecond".to_string(),
+                BindableValue::Int(t.0.nanosecond() as i64),
+            );
+            Ok(BindableValue::Object(obj))
+        }
+        neo4rs::BoltType::LocalTime(local_time) => {
+            let cnt: chrono::NaiveTime = local_time.into();
+            let mut obj = HashMap::new();
+            // Maybe we should have options to make it internally tagged (as its externally tagged for now by a parallel `type` field)
+            // and make the type field value configurable for parsing convenience?
+            obj.insert(
+                "type".to_string(),
+                BindableValue::String("$Neo4jLocalTime".to_string()),
+            );
+            use chrono::Timelike;
+            obj.insert("hour".to_string(), BindableValue::Int(cnt.hour() as i64));
+            obj.insert(
+                "minute".to_string(),
+                BindableValue::Int(cnt.minute() as i64),
+            );
+            obj.insert(
+                "second".to_string(),
+                BindableValue::Int(cnt.second() as i64),
+            );
+            obj.insert(
+                "nanosecond".to_string(),
+                BindableValue::Int(cnt.nanosecond() as i64),
+            );
+            Ok(BindableValue::Object(obj))
+        }
+        neo4rs::BoltType::DateTime(datetime) => {
+            let dt: chrono::DateTime<chrono::FixedOffset> = datetime.try_into()?;
+            let utc_dt = dt.into();
+            Ok(BindableValue::DateTime(utc_dt))
+        }
+        neo4rs::BoltType::LocalDateTime(local_datetime) => {
+            let dt: chrono::NaiveDateTime = local_datetime.try_into()?;
+            let utc_dt = dt.and_utc();
+            Ok(BindableValue::DateTime(utc_dt))
+        }
+        neo4rs::BoltType::DateTimeZoneId(datetime_zone_id) => {
+            // Convert Neo4j DateTimeZoneId to string representation
+            Ok(BindableValue::String(format!("{:?}", datetime_zone_id)))
+        }
+        neo4rs::BoltType::Duration(duration) => {
+            let std_duration: std::time::Duration = duration.into();
+            Ok(BindableValue::Duration(std_duration))
         }
     }
 }
@@ -881,8 +1001,9 @@ enum BindableValue {
     Float(f64),
     String(String),
     DateTime(DateTime<Utc>),
-    Array(Vec<serde_json::Value>), // For arrays, we'll use JSON since SurrealDB accepts Vec<T> where T: Into<Value>
-    Object(serde_json::Map<String, serde_json::Value>), // For objects, use JSON
+    Array(Vec<BindableValue>), // For arrays, we'll use JSON since SurrealDB accepts Vec<T> where T: Into<Value>
+    Object(HashMap<String, BindableValue>), // For objects, use JSON
+    Duration(std::time::Duration),
     Null,
 }
 
@@ -947,21 +1068,21 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
             // - $regularExpression: https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Timestamp
             // - $maxKey: https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-MaxKey
             // - $minKey: https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-MinKey
-            let mut json_obj = serde_json::Map::new();
+            let mut bindables = HashMap::new();
             for (key, val) in obj {
                 let bindable_val = convert_mongodb_types_to_bindable(val)?;
-                json_obj.insert(key, bindable_to_json(&bindable_val)?);
+                bindables.insert(key, bindable_val);
             }
-            Ok(BindableValue::Object(json_obj))
+            Ok(BindableValue::Object(bindables))
         }
         Value::Array(arr) => {
             // Recursively process array elements - return as JSON array for binding
-            let mut json_arr = Vec::new();
+            let mut bindables = Vec::new();
             for item in arr {
                 let bindable_val = convert_mongodb_types_to_bindable(item)?;
-                json_arr.push(bindable_to_json(&bindable_val)?);
+                bindables.push(bindable_val);
             }
-            Ok(BindableValue::Array(json_arr))
+            Ok(BindableValue::Array(bindables))
         }
         // Convert JSON values to bindable types
         Value::Bool(b) => Ok(BindableValue::Bool(b)),
@@ -977,21 +1098,5 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
         }
         Value::String(s) => Ok(BindableValue::String(s)),
         Value::Null => Ok(BindableValue::Null),
-    }
-}
-
-/// Convert BindableValue to JSON for nested objects/arrays
-fn bindable_to_json(value: &BindableValue) -> anyhow::Result<serde_json::Value> {
-    match value {
-        BindableValue::Bool(b) => Ok(serde_json::Value::Bool(*b)),
-        BindableValue::Int(i) => Ok(serde_json::Value::Number(serde_json::Number::from(*i))),
-        BindableValue::Float(f) => Ok(serde_json::Value::Number(
-            serde_json::Number::from_f64(*f).unwrap_or_else(|| serde_json::Number::from(0)),
-        )),
-        BindableValue::String(s) => Ok(serde_json::Value::String(s.clone())),
-        BindableValue::DateTime(dt) => Ok(serde_json::Value::String(dt.to_rfc3339())),
-        BindableValue::Array(arr) => Ok(serde_json::Value::Array(arr.clone())),
-        BindableValue::Object(obj) => Ok(serde_json::Value::Object(obj.clone())),
-        BindableValue::Null => Ok(serde_json::Value::Null),
     }
 }
