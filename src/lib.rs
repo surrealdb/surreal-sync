@@ -1050,6 +1050,7 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
 
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Decimal128
             if let Some(number_decimal) = obj.get("$numberDecimal").and_then(|v| v.as_str()) {
+                // TODO Should we use SurrealDB `decimal` type?
                 if let Ok(num) = number_decimal.parse::<f64>() {
                     return Ok(BindableValue::Float(num));
                 }
@@ -1087,6 +1088,7 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
         // Convert JSON values to bindable types
         Value::Bool(b) => Ok(BindableValue::Bool(b)),
         Value::Number(n) => {
+            // TODO Can we just use SurrealDB `decimal` type?
             if let Some(i) = n.as_i64() {
                 Ok(BindableValue::Int(i))
             } else if let Some(f) = n.as_f64() {
