@@ -19,7 +19,7 @@ surreal-sync converts MongoDB documents to SurrealDB records by processing BSON 
 | **Array** | Array | `[1, 2, 3]` | ✅ **Fully Supported** | `array` | Recursively processed, nested types converted |
 | **Object/Document** | Document | `{"key": "value"}` | ✅ **Fully Supported** | `object` | Recursively processed as nested object |
 | **Null** | Null | `null` | ✅ **Fully Supported** | Null | Direct conversion |
-| **Binary Data** | BinData | `{"$binary": {...}}` | 🔶 **Partially Supported** | `object` | Preserved as generic object with all structural data |
+| **Binary Data** | Binary | `{"$binary": {"base64": "...", "subType": "..."}}` | ✅ **Fully Supported** | `bytes` | Canonical format converted to SurrealDB bytes type |
 | **Regular Expression** | Regex | `{"$regex": "pattern"}` | 🔶 **Partially Supported** | `object` | Preserved as generic object with pattern and flags |
 | **JavaScript Code** | Code | `{"$code": "function(){}"}` | 🔶 **Partially Supported** | `object` | Preserved as generic object, loses executable nature |
 | **Timestamp** | Timestamp | `{"$timestamp": {...}}` | 🔶 **Partially Supported** | `object` | Preserved as generic object with timestamp data |
@@ -42,7 +42,6 @@ surreal-sync converts MongoDB documents to SurrealDB records by processing BSON 
 - **Decimal128**: Converted to f64, which may lose precision for very large numbers or those requiring arbitrary precision arithmetic
 - **ObjectId**: Loses ObjectId type semantics and becomes a string, but the unique identifier value is preserved
 - **Regular Expression**: Loses executable nature and becomes a generic object. Use [string::matches](https://surrealdb.com/docs/surrealql/datamodel/regex) function with the pattern extracted from the object for pattern matching
-- **Binary Data**: Preserved as generic object but loses efficient binary storage and operations
 - **JavaScript Code**: Preserved as generic object but loses executable nature
 - **Special Keys (MinKey/MaxKey)**: Lose their special ordering behavior in queries and comparisons
 - **Timestamp/Symbol/DBRef**: Lose their specialized MongoDB semantics but preserve structural data

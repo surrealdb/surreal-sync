@@ -26,7 +26,7 @@ surreal-sync converts Neo4j nodes and relationships to SurrealDB records by proc
 | **Node** | Node | 🔶 **Partially Supported** | `string` | Converted to debug string representation |
 | **Relation** | Relation | 🔶 **Partially Supported** | `string` | Converted to debug string representation |
 | **UnboundedRelation** | UnboundedRelation | 🔶 **Partially Supported** | `string` | Converted to debug string representation |
-| **Bytes** | Bytes | 🔶 **Partially Supported** | `string` | Converted to debug string representation |
+| **Bytes** | Bytes | ✅ **Fully Supported** | `bytes` | Converted to SurrealDB bytes type |
 | **Path** | Path | 🔶 **Partially Supported** | `string` | Converted to debug string representation |
 | **DateTimeZoneId** | DateTimeZoneId | 🔶 **Partially Supported** | `string` | Converted to debug string representation |
 
@@ -43,7 +43,6 @@ surreal-sync converts Neo4j nodes and relationships to SurrealDB records by proc
 - **Time/LocalTime**: Converted to objects with time components rather than native time types, losing time-specific operations
 - **Spatial Types (Point2D/Point3D)**: Converted to objects with coordinate data but lose spatial indexing and geospatial query capabilities
 - **Graph Types (Node/Relation/UnboundedRelation/Path)**: Converted to string representations, preserving structure but losing graph traversal capabilities
-- **Bytes**: Converted to string representation, losing efficient binary operations
 - **DateTimeZoneId**: Converted to string representation, losing timezone-specific operations
 
 ## Testing and Validation

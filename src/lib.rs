@@ -130,6 +130,9 @@ pub async fn migrate_batch(
                     q.bind((field_name.clone(), surreal_obj))
                 }
                 BindableValue::Duration(d) => q.bind((field_name.clone(), d.clone())),
+                BindableValue::Bytes(b) => {
+                    q.bind((field_name.clone(), surrealdb::sql::Bytes::from(b.clone())))
+                }
                 BindableValue::Null => q.bind((field_name.clone(), Option::<String>::None)),
             };
         }
@@ -193,6 +196,9 @@ fn bindable_to_surrealdb_value(bindable: &BindableValue) -> surrealdb::sql::Valu
         BindableValue::Duration(d) => {
             surrealdb::sql::Value::Duration(surrealdb::sql::Duration::from(*d))
         }
+        BindableValue::Bytes(b) => {
+            surrealdb::sql::Value::Bytes(surrealdb::sql::Bytes::from(b.clone()))
+        }
         BindableValue::Null => surrealdb::sql::Value::Null,
     };
     sql_value
@@ -218,5 +224,6 @@ pub enum BindableValue {
     Array(Vec<BindableValue>), // For arrays, we'll use JSON since SurrealDB accepts Vec<T> where T: Into<Value>
     Object(HashMap<String, BindableValue>), // For objects, use JSON
     Duration(std::time::Duration),
+    Bytes(Vec<u8>),
     Null,
 }

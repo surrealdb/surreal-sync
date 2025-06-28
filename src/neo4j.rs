@@ -453,8 +453,8 @@ fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType) -> anyhow::Result<Bin
             Ok(BindableValue::Object(bindables))
         }
         neo4rs::BoltType::Bytes(bytes) => {
-            // TODO: Add proper support for this by using SurrealDB bytes type
-            Ok(BindableValue::String(format!("{:?}", bytes)))
+            // Convert Neo4j bytes to SurrealDB bytes type
+            Ok(BindableValue::Bytes(bytes.value.to_vec()))
         }
         neo4rs::BoltType::Path(path) => {
             // TODO: Add proper support for this that respects nodes, rels, and indices lists in the path object

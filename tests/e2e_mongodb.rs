@@ -1,8 +1,8 @@
+use base64::{self, Engine};
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
 use serde_json::Value;
 use std::collections::HashMap;
 use surrealdb::{engine::any::connect, Surreal};
-use tokio;
 
 /// End-to-end test for MongoDB to SurrealDB migration
 #[tokio::test]
@@ -108,7 +108,7 @@ async fn cleanup_test_data(
     let tables = ["users", "products", "orders", "categories"];
     for table in tables {
         let query = format!("DELETE FROM {}", table);
-        let _: Vec<Value> = surreal.query(query).await?.take(0).unwrap_or_default();
+        let _: Vec<surrealdb::sql::Thing> = surreal.query(query).await?.take("id").unwrap_or_default();
     }
 
     Ok(())
@@ -380,4 +380,169 @@ fn values_equal(expected: &Value, actual: &Value) -> bool {
         // Direct value comparison
         (e, a) => e == a,
     }
+}
+
+/// Test for MongoDB $binary data type migration
+#[tokio::test]
+async fn test_mongodb_binary_migration() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging for the test
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug,test=debug")
+        .try_init()
+        .ok(); // Ignore if already initialized
+
+    println!("🧪 Starting MongoDB $binary migration test");
+
+    // Setup test database connections
+    let mongo_uri = "mongodb://root:root@mongodb:27017";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let test_db_name = "test_binary_migration_db";
+    let surreal_namespace = "binary_test_ns";
+    let surreal_database = "binary_test_db";
+
+    // Connect to MongoDB
+    println!("📊 Connecting to MongoDB...");
+    let mut mongo_options = ClientOptions::parse(mongo_uri).await?;
+    mongo_options.connect_timeout = Some(std::time::Duration::from_secs(10));
+    mongo_options.server_selection_timeout = Some(std::time::Duration::from_secs(10));
+    let mongo_client = MongoClient::with_options(mongo_options)?;
+    let mongo_db = mongo_client.database(test_db_name);
+
+    // Connect to SurrealDB
+    println!("🗄️  Connecting to SurrealDB...");
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(surreal_namespace)
+        .use_db(surreal_database)
+        .await?;
+
+    // Clean up any existing test data
+    println!("🧹 Cleaning up existing test data...");
+    let collection = mongo_db.collection::<mongodb::bson::Document>("binary_test");
+    collection.drop().await.ok(); // Ignore errors if collection doesn't exist
+
+    let cleanup_surreal = "DELETE FROM binary_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    // Create test data with binary in MongoDB
+    println!("📝 Creating MongoDB test data with binary...");
+    let test_bytes = b"Hello, MongoDB binary data!";
+    let base64_data = base64::engine::general_purpose::STANDARD.encode(test_bytes);
+
+    // Insert documents with canonical $binary format
+    let documents = vec![
+        // Canonical format: {"$binary": {"base64": "...", "subType": "00"}}
+        doc! {
+            "name": "binary_test_1",
+            "description": "Test with canonical $binary format",
+            "data": {
+                "$binary": {
+                    "base64": &base64_data,
+                    "subType": "00"
+                }
+            }
+        },
+        // Another canonical format example with different subType
+        doc! {
+            "name": "binary_test_2",
+            "description": "Test with canonical $binary format (subType 01)",
+            "data": {
+                "$binary": {
+                    "base64": &base64_data,
+                    "subType": "01"
+                }
+            }
+        },
+    ];
+
+    collection.insert_many(&documents).await?;
+    println!("✅ Created test data in MongoDB");
+
+    // Run the migration using the library functions directly
+    println!("🔄 Running migration...");
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: mongo_uri.to_string(),
+        source_database: Some(test_db_name.to_string()),
+        source_username: None,
+        source_password: None,
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 10,
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_mongodb(
+        from_opts,
+        surreal_namespace.to_string(),
+        surreal_database.to_string(),
+        to_opts,
+    )
+    .await?;
+
+    println!("✅ Migration completed successfully");
+
+    // Verify migration results
+    println!("🔍 Verifying migration results...");
+
+    // Check that the test data was migrated
+    let query = "SELECT name, description FROM binary_test ORDER BY name";
+    let mut result = surreal.query(query).await?;
+    let migrated_names: Vec<String> = result.take("name")?;
+    let migrated_descriptions: Vec<String> = result.take("description")?;
+
+    assert_eq!(
+        migrated_names.len(),
+        2,
+        "Should have migrated 2 test records"
+    );
+
+    // Verify records are in alphabetical order: binary_test_1, binary_test_2
+    assert_eq!(migrated_names[0], "binary_test_1");
+    assert_eq!(migrated_descriptions[0], "Test with canonical $binary format");
+    
+    assert_eq!(migrated_names[1], "binary_test_2");
+    assert_eq!(migrated_descriptions[1], "Test with canonical $binary format (subType 01)");
+
+    // Verify that the bytes fields exist by checking they are not null using separate queries
+    let binary_test_1_query =
+        "SELECT count() FROM binary_test WHERE name = 'binary_test_1' AND data IS NOT NULL";
+    let mut binary_test_1_result = surreal.query(binary_test_1_query).await?;
+    let binary_test_1_count: Vec<i64> = binary_test_1_result.take("count")?;
+    assert_eq!(
+        binary_test_1_count[0], 1,
+        "Binary test 1 record should have non-null data field"
+    );
+
+    let binary_test_2_query =
+        "SELECT count() FROM binary_test WHERE name = 'binary_test_2' AND data IS NOT NULL";
+    let mut binary_test_2_result = surreal.query(binary_test_2_query).await?;
+    let binary_test_2_count: Vec<i64> = binary_test_2_result.take("count")?;
+    assert_eq!(
+        binary_test_2_count[0], 1,
+        "Binary test 2 record should have non-null data field"
+    );
+
+    println!("✅ MongoDB binary migration test passed");
+
+    // Cleanup
+    println!("🧹 Cleaning up test data...");
+    collection.drop().await.ok();
+
+    let cleanup_surreal = "DELETE FROM binary_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    println!("🎉 MongoDB binary migration test completed successfully!");
+    Ok(())
 }

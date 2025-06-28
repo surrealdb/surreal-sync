@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use base64::{self, Engine};
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
 use serde_json::Value;
 use std::{collections::HashMap, time::Duration};
@@ -290,8 +290,23 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
             // TODO array
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Array
 
-            // TODO $binary as SurrealDB bytes
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Binary
+            if let Some(binary_value) = obj.get("$binary") {
+                if let Some(binary_obj) = binary_value.as_object() {
+                    // Canonical format: {"$binary": {"base64": "...", "subType": "..."}}
+                    if let Some(base64_str) = binary_obj.get("base64").and_then(|v| v.as_str()) {
+                        match base64::engine::general_purpose::STANDARD.decode(base64_str) {
+                            Ok(bytes) => return Ok(BindableValue::Bytes(bytes)),
+                            Err(e) => {
+                                tracing::warn!("Failed to decode base64 binary data: {}", e);
+                                return Ok(BindableValue::String(base64_str.to_string()));
+                            }
+                        }
+                    }
+                } else {
+                    return Err(anyhow::anyhow!("Invalid binary object format"));
+                }
+            }
 
             // TODO $numberDouble as SurrealDB float (64-bit)
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Double
