@@ -602,7 +602,8 @@ async fn cleanup_data_types_test(
     let tables = ["datatypes"];
     for table in tables {
         let query = format!("DELETE FROM {}", table);
-        let _: Vec<surrealdb::sql::Thing> = surreal.query(query).await?.take("id").unwrap_or_default();
+        let _: Vec<surrealdb::sql::Thing> =
+            surreal.query(query).await?.take("id").unwrap_or_default();
     }
 
     Ok(())
@@ -682,7 +683,8 @@ async fn cleanup_large_dataset_test(
     let tables = ["user", "post", "follows", "likes"];
     for table in tables {
         let query = format!("DELETE FROM {}", table);
-        let _: Vec<surrealdb::sql::Thing> = surreal.query(query).await?.take("id").unwrap_or_default();
+        let _: Vec<surrealdb::sql::Thing> =
+            surreal.query(query).await?.take("id").unwrap_or_default();
     }
 
     Ok(())

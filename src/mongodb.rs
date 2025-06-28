@@ -308,11 +308,19 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
                 }
             }
 
-            // TODO $numberDouble as SurrealDB float (64-bit)
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Double
+            if let Some(number_double) = obj.get("$numberDouble").and_then(|v| v.as_str()) {
+                if let Ok(num) = number_double.parse::<f64>() {
+                    return Ok(BindableValue::Float(num));
+                }
+            }
 
-            // TODO $numberInt as SurrealDB int (64-bit)
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Int32
+            if let Some(number_int) = obj.get("$numberInt").and_then(|v| v.as_str()) {
+                if let Ok(num) = number_int.parse::<i64>() {
+                    return Ok(BindableValue::Int(num));
+                }
+            }
 
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Int64
             if let Some(number_long) = obj.get("$numberLong").and_then(|v| v.as_str()) {

@@ -108,7 +108,8 @@ async fn cleanup_test_data(
     let tables = ["users", "products", "orders", "categories"];
     for table in tables {
         let query = format!("DELETE FROM {}", table);
-        let _: Vec<surrealdb::sql::Thing> = surreal.query(query).await?.take("id").unwrap_or_default();
+        let _: Vec<surrealdb::sql::Thing> =
+            surreal.query(query).await?.take("id").unwrap_or_default();
     }
 
     Ok(())
@@ -509,10 +510,16 @@ async fn test_mongodb_binary_migration() -> Result<(), Box<dyn std::error::Error
 
     // Verify records are in alphabetical order: binary_test_1, binary_test_2
     assert_eq!(migrated_names[0], "binary_test_1");
-    assert_eq!(migrated_descriptions[0], "Test with canonical $binary format");
-    
+    assert_eq!(
+        migrated_descriptions[0],
+        "Test with canonical $binary format"
+    );
+
     assert_eq!(migrated_names[1], "binary_test_2");
-    assert_eq!(migrated_descriptions[1], "Test with canonical $binary format (subType 01)");
+    assert_eq!(
+        migrated_descriptions[1],
+        "Test with canonical $binary format (subType 01)"
+    );
 
     // Verify that the bytes fields exist by checking they are not null using separate queries
     let binary_test_1_query =
@@ -544,5 +551,335 @@ async fn test_mongodb_binary_migration() -> Result<(), Box<dyn std::error::Error
     let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
 
     println!("🎉 MongoDB binary migration test completed successfully!");
+    Ok(())
+}
+
+/// Test for MongoDB $numberDouble data type migration
+#[tokio::test]
+async fn test_mongodb_number_double_migration() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging for the test
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug,test=debug")
+        .try_init()
+        .ok(); // Ignore if already initialized
+
+    println!("🧪 Starting MongoDB $numberDouble migration test");
+
+    // Setup test database connections
+    let mongo_uri = "mongodb://root:root@mongodb:27017";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let test_db_name = "test_number_double_migration_db";
+    let surreal_namespace = "number_double_test_ns";
+    let surreal_database = "number_double_test_db";
+
+    // Connect to MongoDB
+    println!("📊 Connecting to MongoDB...");
+    let mut mongo_options = ClientOptions::parse(mongo_uri).await?;
+    mongo_options.connect_timeout = Some(std::time::Duration::from_secs(10));
+    mongo_options.server_selection_timeout = Some(std::time::Duration::from_secs(10));
+    let mongo_client = MongoClient::with_options(mongo_options)?;
+    let mongo_db = mongo_client.database(test_db_name);
+
+    // Connect to SurrealDB
+    println!("🗄️  Connecting to SurrealDB...");
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(surreal_namespace)
+        .use_db(surreal_database)
+        .await?;
+
+    // Clean up any existing test data
+    println!("🧹 Cleaning up existing test data...");
+    let collection = mongo_db.collection::<mongodb::bson::Document>("number_double_test");
+    collection.drop().await.ok(); // Ignore errors if collection doesn't exist
+
+    let cleanup_surreal = "DELETE FROM number_double_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    // Create test data with $numberDouble in MongoDB
+    println!("📝 Creating MongoDB test data with $numberDouble...");
+
+    // Insert documents with various $numberDouble formats
+    let documents = vec![
+        // Standard double values
+        doc! {
+            "name": "double_test_1",
+            "description": "Test with standard double value",
+            "value": {
+                "$numberDouble": "3.14159"
+            }
+        },
+        // Large double value
+        doc! {
+            "name": "double_test_2",
+            "description": "Test with large double value",
+            "value": {
+                "$numberDouble": "1.7976931348623157e+308"
+            }
+        },
+        // Small double value
+        doc! {
+            "name": "double_test_3",
+            "description": "Test with small double value",
+            "value": {
+                "$numberDouble": "2.2250738585072014e-308"
+            }
+        },
+        // Negative double value
+        doc! {
+            "name": "double_test_4",
+            "description": "Test with negative double value",
+            "value": {
+                "$numberDouble": "-123.456789"
+            }
+        },
+    ];
+
+    collection.insert_many(&documents).await?;
+    println!("✅ Created test data in MongoDB");
+
+    // Run the migration using the library functions directly
+    println!("🔄 Running migration...");
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: mongo_uri.to_string(),
+        source_database: Some(test_db_name.to_string()),
+        source_username: None,
+        source_password: None,
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 10,
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_mongodb(
+        from_opts,
+        surreal_namespace.to_string(),
+        surreal_database.to_string(),
+        to_opts,
+    )
+    .await?;
+
+    println!("✅ Migration completed successfully");
+
+    // Verify migration results
+    println!("🔍 Verifying migration results...");
+
+    // Check that the test data was migrated
+    let query = "SELECT name, description, value FROM number_double_test ORDER BY name";
+    let mut result = surreal.query(query).await?;
+    let migrated_names: Vec<String> = result.take("name")?;
+    let migrated_descriptions: Vec<String> = result.take("description")?;
+    let migrated_values: Vec<f64> = result.take("value")?;
+
+    assert_eq!(
+        migrated_names.len(),
+        4,
+        "Should have migrated 4 test records"
+    );
+
+    // Verify records are in alphabetical order and have correct values
+    assert_eq!(migrated_names[0], "double_test_1");
+    assert_eq!(migrated_descriptions[0], "Test with standard double value");
+    assert!((migrated_values[0] - 3.14159).abs() < f64::EPSILON);
+
+    assert_eq!(migrated_names[1], "double_test_2");
+    assert_eq!(migrated_descriptions[1], "Test with large double value");
+    assert!((migrated_values[1] - 1.7976931348623157e+308).abs() < 1e+300);
+
+    assert_eq!(migrated_names[2], "double_test_3");
+    assert_eq!(migrated_descriptions[2], "Test with small double value");
+    assert!((migrated_values[2] - 2.2250738585072014e-308).abs() < 1e-300);
+
+    assert_eq!(migrated_names[3], "double_test_4");
+    assert_eq!(migrated_descriptions[3], "Test with negative double value");
+    assert!((migrated_values[3] - (-123.456789)).abs() < f64::EPSILON);
+
+    println!("✅ MongoDB $numberDouble migration test passed");
+
+    // Cleanup
+    println!("🧹 Cleaning up test data...");
+    collection.drop().await.ok();
+
+    let cleanup_surreal = "DELETE FROM number_double_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    println!("🎉 MongoDB $numberDouble migration test completed successfully!");
+    Ok(())
+}
+
+/// Test for MongoDB $numberInt data type migration
+#[tokio::test]
+async fn test_mongodb_number_int_migration() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging for the test
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug,test=debug")
+        .try_init()
+        .ok(); // Ignore if already initialized
+
+    println!("🧪 Starting MongoDB $numberInt migration test");
+
+    // Setup test database connections
+    let mongo_uri = "mongodb://root:root@mongodb:27017";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let test_db_name = "test_number_int_migration_db";
+    let surreal_namespace = "number_int_test_ns";
+    let surreal_database = "number_int_test_db";
+
+    // Connect to MongoDB
+    println!("📊 Connecting to MongoDB...");
+    let mut mongo_options = ClientOptions::parse(mongo_uri).await?;
+    mongo_options.connect_timeout = Some(std::time::Duration::from_secs(10));
+    mongo_options.server_selection_timeout = Some(std::time::Duration::from_secs(10));
+    let mongo_client = MongoClient::with_options(mongo_options)?;
+    let mongo_db = mongo_client.database(test_db_name);
+
+    // Connect to SurrealDB
+    println!("🗄️  Connecting to SurrealDB...");
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(surreal_namespace)
+        .use_db(surreal_database)
+        .await?;
+
+    // Clean up any existing test data
+    println!("🧹 Cleaning up existing test data...");
+    let collection = mongo_db.collection::<mongodb::bson::Document>("number_int_test");
+    collection.drop().await.ok(); // Ignore errors if collection doesn't exist
+
+    let cleanup_surreal = "DELETE FROM number_int_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    // Create test data with $numberInt in MongoDB
+    println!("📝 Creating MongoDB test data with $numberInt...");
+
+    // Insert documents with various $numberInt formats
+    let documents = vec![
+        // Standard int values
+        doc! {
+            "name": "int_test_1",
+            "description": "Test with standard int value",
+            "value": {
+                "$numberInt": "42"
+            }
+        },
+        // Large int value (within 32-bit range)
+        doc! {
+            "name": "int_test_2",
+            "description": "Test with large int value",
+            "value": {
+                "$numberInt": "2147483647"
+            }
+        },
+        // Small negative int value
+        doc! {
+            "name": "int_test_3",
+            "description": "Test with negative int value",
+            "value": {
+                "$numberInt": "-2147483648"
+            }
+        },
+        // Zero value
+        doc! {
+            "name": "int_test_4",
+            "description": "Test with zero int value",
+            "value": {
+                "$numberInt": "0"
+            }
+        },
+    ];
+
+    collection.insert_many(&documents).await?;
+    println!("✅ Created test data in MongoDB");
+
+    // Run the migration using the library functions directly
+    println!("🔄 Running migration...");
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: mongo_uri.to_string(),
+        source_database: Some(test_db_name.to_string()),
+        source_username: None,
+        source_password: None,
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 10,
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_mongodb(
+        from_opts,
+        surreal_namespace.to_string(),
+        surreal_database.to_string(),
+        to_opts,
+    )
+    .await?;
+
+    println!("✅ Migration completed successfully");
+
+    // Verify migration results
+    println!("🔍 Verifying migration results...");
+
+    // Check that the test data was migrated
+    let query = "SELECT name, description, value FROM number_int_test ORDER BY name";
+    let mut result = surreal.query(query).await?;
+    let migrated_names: Vec<String> = result.take("name")?;
+    let migrated_descriptions: Vec<String> = result.take("description")?;
+    let migrated_values: Vec<i64> = result.take("value")?;
+
+    assert_eq!(
+        migrated_names.len(),
+        4,
+        "Should have migrated 4 test records"
+    );
+
+    // Verify records are in alphabetical order and have correct values
+    assert_eq!(migrated_names[0], "int_test_1");
+    assert_eq!(migrated_descriptions[0], "Test with standard int value");
+    assert_eq!(migrated_values[0], 42);
+
+    assert_eq!(migrated_names[1], "int_test_2");
+    assert_eq!(migrated_descriptions[1], "Test with large int value");
+    assert_eq!(migrated_values[1], 2147483647);
+
+    assert_eq!(migrated_names[2], "int_test_3");
+    assert_eq!(migrated_descriptions[2], "Test with negative int value");
+    assert_eq!(migrated_values[2], -2147483648);
+
+    assert_eq!(migrated_names[3], "int_test_4");
+    assert_eq!(migrated_descriptions[3], "Test with zero int value");
+    assert_eq!(migrated_values[3], 0);
+
+    println!("✅ MongoDB $numberInt migration test passed");
+
+    // Cleanup
+    println!("🧹 Cleaning up test data...");
+    collection.drop().await.ok();
+
+    let cleanup_surreal = "DELETE FROM number_int_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    println!("🎉 MongoDB $numberInt migration test completed successfully!");
     Ok(())
 }
