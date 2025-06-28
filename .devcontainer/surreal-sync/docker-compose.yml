@@ -1,0 +1,65 @@
+version: '3.8'
+
+services:
+  surreal-sync-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ../..:/workspace:cached
+    command: sleep infinity
+    networks:
+      - surreal-sync-network
+    depends_on:
+      - surrealdb
+      - mongodb
+      - neo4j
+
+  surrealdb:
+    image: surrealdb/surrealdb:latest
+    # We intentionally avoid forwarding ports to avoid conflicts with other services running on the host.
+    # ports:
+    #   - "8000:8000"
+    command: start --log trace --user root --pass root memory
+    networks:
+      - surreal-sync-network
+
+  mongodb:
+    image: mongo:7
+    # We intentionally avoid forwarding ports to avoid conflicts with other services running on the host.
+    # ports:
+    #   - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=root
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongo-init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - surreal-sync-network
+
+  neo4j:
+    image: neo4j:5
+    # We intentionally avoid forwarding ports to avoid conflicts with other services running on the host.
+    # ports:
+    #   - "7474:7474"
+    #   - "7687:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_dbms_default__database=neo4j
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - surreal-sync-network
+
+networks:
+  surreal-sync-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+  neo4j_data:
+  neo4j_logs:

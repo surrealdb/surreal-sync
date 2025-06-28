@@ -1,0 +1,41 @@
+{
+    "name": "SurrealSync Development",
+    "dockerComposeFile": "docker-compose.yml",
+    "settings": {
+        // Note that you msut "Rebuild Container" to apply this setting.
+        // https://github.com/microsoft/vscode/issues/108346#issuecomment-723137894
+        "remote.autoForwardPorts": false,
+    },
+    "service": "surreal-sync-dev",
+    "workspaceFolder": "/workspace",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "rust-lang.rust-analyzer",
+                "vadimcn.vscode-lldb",
+                 "serayuzgur.crates",
+                "tamasfe.even-better-toml",
+                "ms-azuretools.vscode-docker",
+                "mongodb.mongodb-vscode",
+                "neo4j.neo4j"
+            ],
+            "settings": {
+                "rust-analyzer.checkOnSave": true,
+                // Must be check.command instead of checkOnSave.command to avoid the following warning:
+                //   invalid config value: /checkOnSave: invalid type: map, expected a boolean;
+                // See https://users.rust-lang.org/t/rust-analyzer-checkonsave-command-works-but-shows-invalid-config-warning/128652/7
+                "rust-analyzer.check.command": "clippy",
+                // This fixes `Error: ENOENT: no such file or directory, stat '/home/vscode/.cursor-server/extensions/vadimcn.vscode-lldb-1.11.5-universal/lldb'` on debugging via Cursor.
+                "lldb.library": "/home/vscode/.cursor-server/extensions/vadimcn.vscode-lldb-1.11.5/lldb"
+            }
+        }
+    },
+    // We intentionally avoid forwarding ports to avoid conflicts with other services running on the host.
+    // "forwardPorts": [8000, 27017, 7474, 7687],
+    "postCreateCommand": "cargo install cargo-edit && cargo install cargo-make",
+    "remoteUser": "vscode",
+    "features": {
+        "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+        "ghcr.io/devcontainers/features/git:1": {}
+    }
+}
