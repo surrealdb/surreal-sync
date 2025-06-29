@@ -134,6 +134,7 @@ pub async fn migrate_batch(
                     q.bind((field_name.clone(), surrealdb::sql::Bytes::from(b.clone())))
                 }
                 BindableValue::Decimal(d) => q.bind((field_name.clone(), *d)),
+                BindableValue::Thing(t) => q.bind((field_name.clone(), t.clone())),
                 BindableValue::Null => q.bind((field_name.clone(), Option::<String>::None)),
             };
         }
@@ -201,6 +202,7 @@ fn bindable_to_surrealdb_value(bindable: &BindableValue) -> surrealdb::sql::Valu
             surrealdb::sql::Value::Bytes(surrealdb::sql::Bytes::from(b.clone()))
         }
         BindableValue::Decimal(d) => surrealdb::sql::Value::Number(*d),
+        BindableValue::Thing(t) => surrealdb::sql::Value::Thing(t.clone()),
         BindableValue::Null => surrealdb::sql::Value::Null,
     }
 }
@@ -227,5 +229,6 @@ pub enum BindableValue {
     Duration(std::time::Duration),
     Bytes(Vec<u8>),
     Decimal(surrealdb::sql::Number),
+    Thing(surrealdb::sql::Thing),
     Null,
 }

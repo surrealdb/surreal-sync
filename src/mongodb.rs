@@ -387,8 +387,41 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
                 }
             }
 
-            // TODO Data Reference ($ref) should be converted to SurrealDB Thing
             // https://docs.mongoing.com/mongo-introduction/bson-types/extended-json-v2#db-reference
+            if let Some(ref_collection) = obj.get("$ref").and_then(|v| v.as_str()) {
+                // "The $ref field holds the name of the collection where the referenced document resides.""
+                // https://www.mongodb.com/docs/manual/reference/database-references/
+
+                // "The $id field contains the value of the _id field in the referenced document."
+                // https://www.mongodb.com/docs/manual/reference/database-references/
+                if let Some(ref_id) = obj.get("$id") {
+                    // MongoDB DBRef format: {"$ref": "collection_name", "$id": "document_id"}
+                    // Convert to SurrealDB Thing: collection_name:document_id
+                    let id_string = match ref_id {
+                        // Could be string if it's as documented in https://docs.mongoing.com/mongo-introduction/bson-types/extended-json-v2#db-reference
+                        serde_json::Value::String(s) => s.clone(),
+
+                        // TODO Is this possible?
+                        // serde_json::Value::Number(n) => n.to_string(),
+
+                        // $id contains ObjectID according to https://www.mongodb.com/docs/manual/reference/database-references/,
+                        serde_json::Value::Object(id_obj) => {
+                            // Handle ObjectId: {"$oid": "..."}
+                            if let Some(oid) = id_obj.get("$oid").and_then(|v| v.as_str()) {
+                                oid.to_string()
+                            } else {
+                                // For other extended JSON types, use the object as string
+                                ref_id.to_string()
+                            }
+                        }
+                        _ => ref_id.to_string(),
+                    };
+
+                    let thing =
+                        surrealdb::sql::Thing::from((ref_collection.to_string(), id_string));
+                    return Ok(BindableValue::Thing(thing));
+                }
+            }
 
             // TODO How's the `JavaScript` type in MongoDB is expressed in MongoDB Extended JSON?
             // https://www.mongodb.com/docs/manual/reference/bson-types/

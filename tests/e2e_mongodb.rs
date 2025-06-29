@@ -2103,3 +2103,217 @@ async fn test_mongodb_timestamp_migration() -> Result<(), Box<dyn std::error::Er
     println!("🎉 MongoDB $timestamp migration test completed successfully!");
     Ok(())
 }
+
+/// Test for MongoDB Data Reference ($ref) data type migration
+#[tokio::test]
+async fn test_mongodb_dbref_migration() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging for the test
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug,test=debug")
+        .try_init()
+        .ok(); // Ignore if already initialized
+
+    println!("🧪 Starting MongoDB DBRef migration test");
+
+    // Setup test database connections
+    let mongo_uri = "mongodb://root:root@mongodb:27017";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let test_db_name = "test_dbref_migration_db";
+    let surreal_namespace = "dbref_test_ns";
+    let surreal_database = "dbref_test_db";
+
+    // Connect to MongoDB
+    println!("📊 Connecting to MongoDB...");
+    let mut mongo_options = ClientOptions::parse(mongo_uri).await?;
+    mongo_options.connect_timeout = Some(std::time::Duration::from_secs(10));
+    mongo_options.server_selection_timeout = Some(std::time::Duration::from_secs(10));
+    let mongo_client = MongoClient::with_options(mongo_options)?;
+    let mongo_db = mongo_client.database(test_db_name);
+
+    // Connect to SurrealDB
+    println!("🗄️  Connecting to SurrealDB...");
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(surreal_namespace)
+        .use_db(surreal_database)
+        .await?;
+
+    // Clean up any existing test data
+    println!("🧹 Cleaning up existing test data...");
+    let collection = mongo_db.collection::<mongodb::bson::Document>("dbref_test");
+    collection.drop().await.ok(); // Ignore errors if collection doesn't exist
+
+    let cleanup_surreal = "DELETE FROM dbref_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    // Create test data with DBRef in MongoDB
+    println!("📝 Creating MongoDB test data with DBRef...");
+
+    // Insert documents with various DBRef formats
+    let documents = vec![
+        // DBRef with string ID
+        doc! {
+            "name": "dbref_test_1",
+            "description": "Test with DBRef string ID",
+            "author_ref": {
+                "$ref": "authors",
+                "$id": "author123"
+            }
+        },
+        // DBRef with ObjectId
+        doc! {
+            "name": "dbref_test_2",
+            "description": "Test with DBRef ObjectId",
+            "category_ref": {
+                "$ref": "categories",
+                "$id": {
+                    "$oid": "507f1f77bcf86cd799439011"
+                }
+            }
+        },
+        // DBRef with numeric ID
+        doc! {
+            "name": "dbref_test_3",
+            "description": "Test with DBRef numeric ID",
+            "product_ref": {
+                "$ref": "products",
+                "$id": 12345
+            }
+        },
+        // Multiple DBRefs in one document
+        doc! {
+            "name": "dbref_test_4",
+            "description": "Test with multiple DBRefs",
+            "user_ref": {
+                "$ref": "users",
+                "$id": "user456"
+            },
+            "organization_ref": {
+                "$ref": "organizations",
+                "$id": {
+                    "$oid": "507f1f77bcf86cd799439012"
+                }
+            }
+        },
+    ];
+
+    collection.insert_many(&documents).await?;
+    println!("✅ Created test data in MongoDB");
+
+    // Run the migration using the library functions directly
+    println!("🔄 Running migration...");
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: mongo_uri.to_string(),
+        source_database: Some(test_db_name.to_string()),
+        source_username: None,
+        source_password: None,
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 10,
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_mongodb(
+        from_opts,
+        surreal_namespace.to_string(),
+        surreal_database.to_string(),
+        to_opts,
+    )
+    .await?;
+
+    println!("✅ Migration completed successfully");
+
+    // Verify migration results
+    println!("🔍 Verifying migration results...");
+
+    // Check that the test data was migrated
+    let query = "SELECT name, description FROM dbref_test ORDER BY name";
+    let mut result = surreal.query(query).await?;
+    let migrated_names: Vec<String> = result.take((0, "name"))?;
+    let migrated_descriptions: Vec<String> = result.take((0, "description"))?;
+
+    assert_eq!(
+        migrated_names.len(),
+        4,
+        "Should have migrated 4 test records"
+    );
+
+    // Verify records are in alphabetical order
+    assert_eq!(migrated_names[0], "dbref_test_1");
+    assert_eq!(migrated_descriptions[0], "Test with DBRef string ID");
+
+    assert_eq!(migrated_names[1], "dbref_test_2");
+    assert_eq!(migrated_descriptions[1], "Test with DBRef ObjectId");
+
+    assert_eq!(migrated_names[2], "dbref_test_3");
+    assert_eq!(migrated_descriptions[2], "Test with DBRef numeric ID");
+
+    assert_eq!(migrated_names[3], "dbref_test_4");
+    assert_eq!(migrated_descriptions[3], "Test with multiple DBRefs");
+
+    // Verify that DBRef fields are properly converted to SurrealDB Thing
+    // Test string ID DBRef
+    let author_ref_query = "SELECT author_ref FROM dbref_test WHERE name = 'dbref_test_1'";
+    let mut author_ref_result = surreal.query(author_ref_query).await?;
+    let author_refs: Vec<surrealdb::sql::Thing> = author_ref_result.take((0, "author_ref"))?;
+    assert_eq!(author_refs.len(), 1, "Should have one author_ref");
+    assert_eq!(author_refs[0].tb, "authors");
+    assert_eq!(author_refs[0].id.to_string(), "author123");
+
+    // Test ObjectId DBRef
+    let category_ref_query = "SELECT category_ref FROM dbref_test WHERE name = 'dbref_test_2'";
+    let mut category_ref_result = surreal.query(category_ref_query).await?;
+    let category_refs: Vec<surrealdb::sql::Thing> =
+        category_ref_result.take((0, "category_ref"))?;
+    assert_eq!(category_refs.len(), 1, "Should have one category_ref");
+    assert_eq!(category_refs[0].tb, "categories");
+    assert_eq!(category_refs[0].id.to_string(), "507f1f77bcf86cd799439011");
+
+    // Test numeric ID DBRef
+    let product_ref_query = "SELECT product_ref FROM dbref_test WHERE name = 'dbref_test_3'";
+    let mut product_ref_result = surreal.query(product_ref_query).await?;
+    let product_refs: Vec<surrealdb::sql::Thing> = product_ref_result.take((0, "product_ref"))?;
+    assert_eq!(product_refs.len(), 1, "Should have one product_ref");
+    assert_eq!(product_refs[0].tb, "products");
+    assert_eq!(product_refs[0].id.to_string(), "⟨12345⟩");
+
+    // Test multiple DBRefs in one document
+    let multiple_refs_query =
+        "SELECT user_ref, organization_ref FROM dbref_test WHERE name = 'dbref_test_4'";
+    let mut multiple_refs_result = surreal.query(multiple_refs_query).await?;
+    let user_refs: Vec<surrealdb::sql::Thing> = multiple_refs_result.take((0, "user_ref"))?;
+    let org_refs: Vec<surrealdb::sql::Thing> =
+        multiple_refs_result.take((0, "organization_ref"))?;
+
+    assert_eq!(user_refs.len(), 1, "Should have one user_ref");
+    assert_eq!(user_refs[0].tb, "users");
+    assert_eq!(user_refs[0].id.to_string(), "user456");
+
+    assert_eq!(org_refs.len(), 1, "Should have one organization_ref");
+    assert_eq!(org_refs[0].tb, "organizations");
+    assert_eq!(org_refs[0].id.to_string(), "507f1f77bcf86cd799439012");
+
+    println!("✅ MongoDB DBRef migration test passed");
+
+    // Cleanup
+    println!("🧹 Cleaning up test data...");
+    collection.drop().await.ok();
+
+    let cleanup_surreal = "DELETE FROM dbref_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    println!("🎉 MongoDB DBRef migration test completed successfully!");
+    Ok(())
+}
