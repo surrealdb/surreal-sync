@@ -287,9 +287,6 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
             // TODO $timestamp as SurrealDB datetime
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Timestamp
 
-            // TODO array
-            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Array
-
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Binary
             if let Some(binary_value) = obj.get("$binary") {
                 if let Some(binary_obj) = binary_value.as_object() {
@@ -357,6 +354,8 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
             }
             Ok(BindableValue::Object(bindables))
         }
+        // Canonical and Relaxed Array
+        // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Array
         Value::Array(arr) => {
             // Recursively process array elements - return as JSON array for binding
             let mut bindables = Vec::new();
@@ -369,14 +368,17 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
         // Convert JSON values to bindable types
         Value::Bool(b) => Ok(BindableValue::Bool(b)),
         Value::Number(n) => {
-            // TODO Can we just use SurrealDB `decimal` type?
+            // According to https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#type-representations,
+            // Number values can be any of the following types:
+            // - 32-bit integer
+            // - 64-bit integer
+            // - double-precision floating-point number
             if let Some(i) = n.as_i64() {
                 Ok(BindableValue::Int(i))
             } else if let Some(f) = n.as_f64() {
                 Ok(BindableValue::Float(f))
             } else {
-                // Fallback to string representation for unusual number types
-                Ok(BindableValue::String(n.to_string()))
+                Err(anyhow::anyhow!("Unsupported number type"))
             }
         }
         Value::String(s) => Ok(BindableValue::String(s)),
