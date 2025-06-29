@@ -1413,3 +1413,265 @@ async fn test_mongodb_array_migration() -> Result<(), Box<dyn std::error::Error>
     println!("🎉 MongoDB Array migration test completed successfully!");
     Ok(())
 }
+
+/// Test for MongoDB $date relaxed and canonical format migration
+#[tokio::test]
+async fn test_mongodb_date_canonical_migration() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging for the test
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug,test=debug")
+        .try_init()
+        .ok(); // Ignore if already initialized
+
+    println!("🧪 Starting MongoDB $date relaxed and canonical format migration test");
+
+    // Setup test database connections
+    let mongo_uri = "mongodb://root:root@mongodb:27017";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let test_db_name = "test_date_canonical_migration_db";
+    let surreal_namespace = "date_canonical_test_ns";
+    let surreal_database = "date_canonical_test_db";
+
+    // Connect to MongoDB
+    println!("📊 Connecting to MongoDB...");
+    let mut mongo_options = ClientOptions::parse(mongo_uri).await?;
+    mongo_options.connect_timeout = Some(std::time::Duration::from_secs(10));
+    mongo_options.server_selection_timeout = Some(std::time::Duration::from_secs(10));
+    let mongo_client = MongoClient::with_options(mongo_options)?;
+    let mongo_db = mongo_client.database(test_db_name);
+
+    // Connect to SurrealDB
+    println!("🗄️  Connecting to SurrealDB...");
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(surreal_namespace)
+        .use_db(surreal_database)
+        .await?;
+
+    // Clean up any existing test data
+    println!("🧹 Cleaning up existing test data...");
+    let collection = mongo_db.collection::<mongodb::bson::Document>("date_canonical_test");
+    collection.drop().await.ok(); // Ignore errors if collection doesn't exist
+
+    let cleanup_surreal = "DELETE FROM date_canonical_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    // Create test data with relaxed and canonical $date formats in MongoDB
+    println!("📝 Creating MongoDB test data with relaxed and canonical $date formats...");
+
+    // Insert documents with various $date formats
+    let documents = vec![
+        // Relaxed format: ISO 8601 string
+        doc! {
+            "name": "date_test_1",
+            "description": "Test with relaxed $date (ISO 8601 string)",
+            "timestamp": {
+                "$date": "2024-01-15T09:30:45.123Z"
+            }
+        },
+        // Relaxed format: Different ISO 8601 string
+        doc! {
+            "name": "date_test_2",
+            "description": "Test with relaxed $date (different ISO format)",
+            "timestamp": {
+                "$date": "2024-06-28T14:22:33.456Z"
+            }
+        },
+        // Relaxed format: End of year
+        doc! {
+            "name": "date_test_3",
+            "description": "Test with relaxed $date (end of year)",
+            "timestamp": {
+                "$date": "2024-12-31T23:59:59.999Z"
+            }
+        },
+        // Relaxed format: Early date
+        doc! {
+            "name": "date_test_4",
+            "description": "Test with relaxed $date (early date)",
+            "timestamp": {
+                "$date": "1970-01-01T00:00:00.000Z"
+            }
+        },
+        // $numberLong representation of $date (canonical format)
+        doc! {
+            "name": "date_test_5",
+            "description": "Test with canonical $date ($numberLong representation)",
+            "timestamp": {
+                "$date": {
+                    "$numberLong": "1640995200000"
+                }
+            }
+        },
+        // Another $numberLong representation
+        doc! {
+            "name": "date_test_6",
+            "description": "Test with canonical $date ($numberLong format)",
+            "timestamp": {
+                "$date": {
+                    "$numberLong": "1719580953456"
+                }
+            }
+        },
+    ];
+
+    collection.insert_many(&documents).await?;
+    println!("✅ Created test data in MongoDB");
+
+    // Run the migration using the library functions directly
+    println!("🔄 Running migration...");
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: mongo_uri.to_string(),
+        source_database: Some(test_db_name.to_string()),
+        source_username: None,
+        source_password: None,
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 10,
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_mongodb(
+        from_opts,
+        surreal_namespace.to_string(),
+        surreal_database.to_string(),
+        to_opts,
+    )
+    .await?;
+
+    println!("✅ Migration completed successfully");
+
+    // Verify migration results
+    println!("🔍 Verifying migration results...");
+
+    // Check that the test data was migrated
+    let query = "SELECT name, description FROM date_canonical_test ORDER BY name";
+    let mut result = surreal.query(query).await?;
+    let migrated_names: Vec<String> = result.take((0, "name"))?;
+    let migrated_descriptions: Vec<String> = result.take((0, "description"))?;
+
+    assert_eq!(
+        migrated_names.len(),
+        6,
+        "Should have migrated 6 test records"
+    );
+
+    // Verify records are in alphabetical order
+    assert_eq!(migrated_names[0], "date_test_1");
+    assert_eq!(
+        migrated_descriptions[0],
+        "Test with relaxed $date (ISO 8601 string)"
+    );
+
+    assert_eq!(migrated_names[1], "date_test_2");
+    assert_eq!(
+        migrated_descriptions[1],
+        "Test with relaxed $date (different ISO format)"
+    );
+
+    assert_eq!(migrated_names[2], "date_test_3");
+    assert_eq!(
+        migrated_descriptions[2],
+        "Test with relaxed $date (end of year)"
+    );
+
+    assert_eq!(migrated_names[3], "date_test_4");
+    assert_eq!(
+        migrated_descriptions[3],
+        "Test with relaxed $date (early date)"
+    );
+
+    assert_eq!(migrated_names[4], "date_test_5");
+    assert_eq!(
+        migrated_descriptions[4],
+        "Test with canonical $date ($numberLong representation)"
+    );
+
+    assert_eq!(migrated_names[5], "date_test_6");
+    assert_eq!(
+        migrated_descriptions[5],
+        "Test with canonical $date ($numberLong format)"
+    );
+
+    // Verify that all datetime fields are properly converted and queryable
+    let datetime_query =
+        "SELECT name, timestamp FROM date_canonical_test WHERE timestamp IS NOT NULL ORDER BY name";
+    let mut datetime_result = surreal.query(datetime_query).await?;
+    let datetime_names: Vec<String> = datetime_result.take((0, "name"))?;
+    let datetime_timestamps: Vec<chrono::DateTime<chrono::Utc>> =
+        datetime_result.take((0, "timestamp"))?;
+
+    assert_eq!(
+        datetime_names.len(),
+        6,
+        "All records should have valid datetime fields"
+    );
+
+    // Verify specific datetime values for some records
+    // date_test_1: "2024-01-15T09:30:45.123Z"
+    let expected_dt1 = chrono::DateTime::parse_from_rfc3339("2024-01-15T09:30:45.123Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(datetime_timestamps[0], expected_dt1);
+
+    // date_test_4: "1970-01-01T00:00:00.000Z" (epoch)
+    let expected_dt4 = chrono::DateTime::parse_from_rfc3339("1970-01-01T00:00:00.000Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(datetime_timestamps[3], expected_dt4);
+
+    // Verify $numberLong timestamp conversion for date_test_5
+    // 1640995200000 milliseconds = 2022-01-01T00:00:00.000Z
+    let expected_dt5 = chrono::DateTime::from_timestamp_millis(1640995200000)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(datetime_timestamps[4], expected_dt5);
+
+    // Verify $numberLong timestamp conversion for date_test_6
+    // 1719580953456 milliseconds = 2024-06-28T14:22:33.456Z
+    let expected_dt6 = chrono::DateTime::from_timestamp_millis(1719580953456)
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    assert_eq!(datetime_timestamps[5], expected_dt6);
+
+    // Test datetime queries work properly
+    let recent_query =
+        "SELECT count() FROM date_canonical_test WHERE timestamp > '2020-01-01T00:00:00Z'";
+    let mut recent_result = surreal.query(recent_query).await?;
+    let recent_count: Vec<i64> = recent_result.take("count")?;
+    assert_eq!(
+        recent_count[0], 5,
+        "Should find 5 records after 2020 (excluding epoch date)"
+    );
+
+    let year_2024_query = "SELECT count() FROM date_canonical_test WHERE timestamp >= '2024-01-01T00:00:00Z' AND timestamp < '2025-01-01T00:00:00Z'";
+    let mut year_2024_result = surreal.query(year_2024_query).await?;
+    let year_2024_count: Vec<i64> = year_2024_result.take("count")?;
+    assert_eq!(year_2024_count[0], 4, "Should find 4 records in year 2024");
+
+    println!("✅ MongoDB $date relaxed and canonical format migration test passed");
+
+    // Cleanup
+    println!("🧹 Cleaning up test data...");
+    collection.drop().await.ok();
+
+    let cleanup_surreal = "DELETE FROM date_canonical_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    println!(
+        "🎉 MongoDB $date relaxed and canonical format migration test completed successfully!"
+    );
+    Ok(())
+}

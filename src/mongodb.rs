@@ -271,11 +271,31 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
         Value::Object(obj) => {
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Date
             if let Some(date_str) = obj.get("$date").and_then(|v| v.as_str()) {
-                // Return actual DateTime<Utc> for binding
+                // Relaxed Format of Date is a string representation of a date and time in ISO-8601
                 let utc_datetime = chrono::DateTime::parse_from_rfc3339(date_str)
                     .map_err(|e| anyhow::anyhow!("Failed to parse MongoDB datetime: {}", e))?
                     .to_utc();
                 return Ok(BindableValue::DateTime(utc_datetime));
+            } else if let Some(serde_json::Value::Object(obj)) = obj.get("$date") {
+                // Canonical Format of Date is a JSON object with the following fields:
+                // - $numberLong: The number of milliseconds since the Unix epoch (can be negative in case it's before 1970 or after 9999)
+                if let Some(number_long) = obj.get("$numberLong").and_then(|v| v.as_str()) {
+                    if let Ok(num) = number_long.parse::<i64>() {
+                        if num < 0 {
+                            // TODO Handle negative timestamps
+                            // See "For dates before year 1970 or after year 9999:" in https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Date
+                            return Err(anyhow::anyhow!("Negative timestamps are not supported"));
+                        }
+                        let datetime = chrono::DateTime::from_timestamp(num, 0);
+                        match datetime {
+                            Some(datetime) => return Ok(BindableValue::DateTime(datetime)),
+                            None => {
+                                tracing::warn!("Failed to parse MongoDB datetime: {}", num);
+                                return Err(anyhow::anyhow!("Failed to parse MongoDB datetime"));
+                            }
+                        }
+                    }
+                }
             }
 
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-ObjectId
