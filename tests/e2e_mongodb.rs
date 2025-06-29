@@ -1838,18 +1838,23 @@ async fn test_mongodb_date_canonical_migration() -> Result<(), Box<dyn std::erro
 
     // Test datetime queries work properly
     let recent_query =
-        "SELECT count() FROM date_canonical_test WHERE timestamp > '2020-01-01T00:00:00Z'";
+        "SELECT name FROM date_canonical_test WHERE timestamp > '2020-01-01T00:00:00Z'";
     let mut recent_result = surreal.query(recent_query).await?;
-    let recent_count: Vec<i64> = recent_result.take("count")?;
+    let recent_names: Vec<String> = recent_result.take((0, "name"))?;
     assert_eq!(
-        recent_count[0], 5,
+        recent_names.len(),
+        5,
         "Should find 5 records after 2020 (excluding epoch date)"
     );
 
-    let year_2024_query = "SELECT count() FROM date_canonical_test WHERE timestamp >= '2024-01-01T00:00:00Z' AND timestamp < '2025-01-01T00:00:00Z'";
+    let year_2024_query = "SELECT name FROM date_canonical_test WHERE timestamp >= '2024-01-01T00:00:00Z' AND timestamp < '2025-01-01T00:00:00Z'";
     let mut year_2024_result = surreal.query(year_2024_query).await?;
-    let year_2024_count: Vec<i64> = year_2024_result.take("count")?;
-    assert_eq!(year_2024_count[0], 4, "Should find 4 records in year 2024");
+    let year_2024_names: Vec<String> = year_2024_result.take((0, "name"))?;
+    assert_eq!(
+        year_2024_names.len(),
+        4,
+        "Should find 4 records in year 2024"
+    );
 
     println!("✅ MongoDB $date relaxed and canonical format migration test passed");
 

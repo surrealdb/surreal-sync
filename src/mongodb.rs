@@ -286,7 +286,7 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
                             // See "For dates before year 1970 or after year 9999:" in https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Date
                             return Err(anyhow::anyhow!("Negative timestamps are not supported"));
                         }
-                        let datetime = chrono::DateTime::from_timestamp(num, 0);
+                        let datetime = chrono::DateTime::from_timestamp_millis(num);
                         match datetime {
                             Some(datetime) => return Ok(BindableValue::DateTime(datetime)),
                             None => {
