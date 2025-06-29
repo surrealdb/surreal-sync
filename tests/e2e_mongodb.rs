@@ -1,8 +1,17 @@
 use base64::{self, Engine};
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use surrealdb::{engine::any::connect, Surreal};
+
+#[derive(Debug, Deserialize, Serialize)]
+struct User {
+    id: String,
+    name: String,
+    score: f64,
+    tags: Vec<String>,
+}
 
 /// End-to-end test for MongoDB to SurrealDB migration
 #[tokio::test]
@@ -314,75 +323,6 @@ async fn validate_migration_results(
     Ok(())
 }
 
-/// Check if two records match (ignoring ID fields)
-fn records_match(expected: &Value, actual: &Value) -> bool {
-    let expected_obj = expected.as_object().unwrap();
-    let actual_obj = actual.as_object().unwrap();
-
-    // Check that key fields match (excluding _id and id)
-    for (key, expected_value) in expected_obj {
-        if key == "_id" {
-            continue; // Skip MongoDB _id
-        }
-
-        match actual_obj.get(key) {
-            Some(actual_value) => {
-                if !values_equal(expected_value, actual_value) {
-                    println!(
-                        "🔍 Field '{}' mismatch: expected {:?}, got {:?}",
-                        key, expected_value, actual_value
-                    );
-                    return false;
-                }
-            }
-            None => {
-                println!("🔍 Field '{}' missing in actual record", key);
-                return false;
-            }
-        }
-    }
-
-    true
-}
-
-/// Deep comparison of JSON values, handling MongoDB-specific types
-fn values_equal(expected: &Value, actual: &Value) -> bool {
-    match (expected, actual) {
-        (Value::Object(e), Value::Object(a)) => {
-            // Handle nested objects
-            for (key, expected_value) in e {
-                match a.get(key) {
-                    Some(actual_value) => {
-                        if !values_equal(expected_value, actual_value) {
-                            return false;
-                        }
-                    }
-                    None => return false,
-                }
-            }
-            true
-        }
-        (Value::Array(e), Value::Array(a)) => {
-            // Handle arrays
-            if e.len() != a.len() {
-                return false;
-            }
-            e.iter()
-                .zip(a.iter())
-                .all(|(e_item, a_item)| values_equal(e_item, a_item))
-        }
-        // Handle MongoDB DateTime objects (converted to ISO strings)
-        (expected_val, actual_val)
-            if expected_val.is_object() && expected_val.get("$date").is_some() =>
-        {
-            // MongoDB DateTime should be converted to a timestamp or date string
-            actual_val.is_string() || actual_val.is_number()
-        }
-        // Direct value comparison
-        (e, a) => e == a,
-    }
-}
-
 /// Test for MongoDB $binary data type migration
 #[tokio::test]
 async fn test_mongodb_binary_migration() -> Result<(), Box<dyn std::error::Error>> {
@@ -499,8 +439,8 @@ async fn test_mongodb_binary_migration() -> Result<(), Box<dyn std::error::Error
     // Check that the test data was migrated
     let query = "SELECT name, description FROM binary_test ORDER BY name";
     let mut result = surreal.query(query).await?;
-    let migrated_names: Vec<String> = result.take("name")?;
-    let migrated_descriptions: Vec<String> = result.take("description")?;
+    let migrated_names: Vec<String> = result.take((0, "name"))?;
+    let migrated_descriptions: Vec<String> = result.take((0, "description"))?;
 
     assert_eq!(
         migrated_names.len(),
@@ -678,9 +618,9 @@ async fn test_mongodb_number_double_migration() -> Result<(), Box<dyn std::error
     // Check that the test data was migrated
     let query = "SELECT name, description, value FROM number_double_test ORDER BY name";
     let mut result = surreal.query(query).await?;
-    let migrated_names: Vec<String> = result.take("name")?;
-    let migrated_descriptions: Vec<String> = result.take("description")?;
-    let migrated_values: Vec<f64> = result.take("value")?;
+    let migrated_names: Vec<String> = result.take((0, "name"))?;
+    let migrated_descriptions: Vec<String> = result.take((0, "description"))?;
+    let migrated_values: Vec<f64> = result.take((0, "value"))?;
 
     assert_eq!(
         migrated_names.len(),
@@ -843,9 +783,9 @@ async fn test_mongodb_number_int_migration() -> Result<(), Box<dyn std::error::E
     // Check that the test data was migrated
     let query = "SELECT name, description, value FROM number_int_test ORDER BY name";
     let mut result = surreal.query(query).await?;
-    let migrated_names: Vec<String> = result.take("name")?;
-    let migrated_descriptions: Vec<String> = result.take("description")?;
-    let migrated_values: Vec<i64> = result.take("value")?;
+    let migrated_names: Vec<String> = result.take((0, "name"))?;
+    let migrated_descriptions: Vec<String> = result.take((0, "description"))?;
+    let migrated_values: Vec<i64> = result.take((0, "value"))?;
 
     assert_eq!(
         migrated_names.len(),
@@ -881,5 +821,595 @@ async fn test_mongodb_number_int_migration() -> Result<(), Box<dyn std::error::E
     let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
 
     println!("🎉 MongoDB $numberInt migration test completed successfully!");
+    Ok(())
+}
+
+/// Test for MongoDB Document (nested objects) data type migration
+#[tokio::test]
+async fn test_mongodb_document_migration() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging for the test
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug,test=debug")
+        .try_init()
+        .ok(); // Ignore if already initialized
+
+    println!("🧪 Starting MongoDB Document migration test");
+
+    // Setup test database connections
+    let mongo_uri = "mongodb://root:root@mongodb:27017";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let test_db_name = "test_document_migration_db";
+    let surreal_namespace = "document_test_ns";
+    let surreal_database = "document_test_db";
+
+    // Connect to MongoDB
+    println!("📊 Connecting to MongoDB...");
+    let mut mongo_options = ClientOptions::parse(mongo_uri).await?;
+    mongo_options.connect_timeout = Some(std::time::Duration::from_secs(10));
+    mongo_options.server_selection_timeout = Some(std::time::Duration::from_secs(10));
+    let mongo_client = MongoClient::with_options(mongo_options)?;
+    let mongo_db = mongo_client.database(test_db_name);
+
+    // Connect to SurrealDB
+    println!("🗄️  Connecting to SurrealDB...");
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(surreal_namespace)
+        .use_db(surreal_database)
+        .await?;
+
+    // Clean up any existing test data
+    println!("🧹 Cleaning up existing test data...");
+    let collection = mongo_db.collection::<mongodb::bson::Document>("document_test");
+    collection.drop().await.ok(); // Ignore errors if collection doesn't exist
+
+    let cleanup_surreal = "DELETE FROM document_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    // Create test data with nested documents containing Extended JSON v2 in MongoDB
+    println!("📝 Creating MongoDB test data with nested documents...");
+
+    // Insert documents with complex nested structures containing Extended JSON v2 types
+    let documents = vec![
+        // Document with nested Extended JSON v2 types
+        doc! {
+            "name": "document_test_1",
+            "description": "Test with nested Extended JSON v2 types",
+            "metadata": {
+                "created": {
+                    "$date": "2024-01-01T10:30:00.000Z"
+                },
+                "version": {
+                    "$numberLong": "123456789"
+                },
+                "precision": {
+                    "$numberDouble": "99.999"
+                },
+                "flags": {
+                    "$numberInt": "42"
+                },
+                "data": {
+                    "$binary": {
+                        "base64": "SGVsbG8gV29ybGQ=",
+                        "subType": "00"
+                    }
+                }
+            },
+            "config": {
+                "enabled": true,
+                "timeout": 30,
+                "retries": 3,
+                "nested": {
+                    "level2": {
+                        "value": "deep nested string",
+                        "timestamp": {
+                            "$date": "2024-06-28T12:00:00.000Z"
+                        }
+                    }
+                }
+            }
+        },
+        // Document with mixed nested types
+        doc! {
+            "name": "document_test_2",
+            "description": "Test with mixed nested document types",
+            "user": {
+                "id": {
+                    "$oid": "507f1f77bcf86cd799439011"
+                },
+                "profile": {
+                    "name": "John Doe",
+                    "age": {
+                        "$numberInt": "35"
+                    },
+                    "score": {
+                        "$numberDouble": "98.5"
+                    },
+                    "active": true,
+                    "tags": ["developer", "mongodb", "rust"]
+                },
+                "settings": {
+                    "theme": "dark",
+                    "notifications": {
+                        "email": true,
+                        "push": false,
+                        "frequency": {
+                            "$numberInt": "24"
+                        }
+                    }
+                }
+            }
+        },
+    ];
+
+    collection.insert_many(&documents).await?;
+    println!("✅ Created test data in MongoDB");
+
+    // Run the migration using the library functions directly
+    println!("🔄 Running migration...");
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: mongo_uri.to_string(),
+        source_database: Some(test_db_name.to_string()),
+        source_username: None,
+        source_password: None,
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 10,
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_mongodb(
+        from_opts,
+        surreal_namespace.to_string(),
+        surreal_database.to_string(),
+        to_opts,
+    )
+    .await?;
+
+    println!("✅ Migration completed successfully");
+
+    // Verify migration results
+    println!("🔍 Verifying migration results...");
+
+    // Check that the test data was migrated
+    let query = "SELECT name, description FROM document_test ORDER BY name";
+    let mut result = surreal.query(query).await?;
+    let migrated_names: Vec<String> = result.take((0, "name"))?;
+    let migrated_descriptions: Vec<String> = result.take((0, "description"))?;
+
+    assert_eq!(
+        migrated_names.len(),
+        2,
+        "Should have migrated 2 test records"
+    );
+
+    // Verify records are in alphabetical order
+    assert_eq!(migrated_names[0], "document_test_1");
+    assert_eq!(
+        migrated_descriptions[0],
+        "Test with nested Extended JSON v2 types"
+    );
+
+    assert_eq!(migrated_names[1], "document_test_2");
+    assert_eq!(
+        migrated_descriptions[1],
+        "Test with mixed nested document types"
+    );
+
+    // Verify nested document structure for document_test_1 using separate queries
+    let version_query =
+        "SELECT metadata.version as version FROM document_test WHERE name = 'document_test_1'";
+    let mut version_result = surreal.query(version_query).await?;
+    let versions: Vec<i64> = version_result.take((0, "version"))?;
+    assert_eq!(versions.len(), 1, "Should have one record");
+    assert_eq!(versions[0], 123456789);
+
+    let precision_query =
+        "SELECT metadata.precision as precision FROM document_test WHERE name = 'document_test_1'";
+    let mut precision_result = surreal.query(precision_query).await?;
+    let precisions: Vec<f64> = precision_result.take((0, "precision"))?;
+    assert_eq!(precisions.len(), 1, "Should have one record");
+    assert!((precisions[0] - 99.999).abs() < f64::EPSILON);
+
+    let enabled_query =
+        "SELECT config.enabled as enabled FROM document_test WHERE name = 'document_test_1'";
+    let mut enabled_result = surreal.query(enabled_query).await?;
+    let enabled_values: Vec<bool> = enabled_result.take((0, "enabled"))?;
+    assert_eq!(enabled_values.len(), 1, "Should have one record");
+    assert_eq!(enabled_values[0], true);
+
+    let nested_query = "SELECT config.nested.level2.value as nested_value FROM document_test WHERE name = 'document_test_1'";
+    let mut nested_result = surreal.query(nested_query).await?;
+    let nested_values: Vec<String> = nested_result.take((0, "nested_value"))?;
+    assert_eq!(nested_values.len(), 1, "Should have one record");
+    assert_eq!(nested_values[0], "deep nested string");
+
+    // Verify nested document structure for document_test_2 using separate queries
+    let name_query =
+        "SELECT user.profile.name as name FROM document_test WHERE name = 'document_test_2'";
+    let mut name_result = surreal.query(name_query).await?;
+    let names: Vec<String> = name_result.take((0, "name"))?;
+    assert_eq!(names.len(), 1, "Should have one record");
+    assert_eq!(names[0], "John Doe");
+
+    let age_query =
+        "SELECT user.profile.age as age FROM document_test WHERE name = 'document_test_2'";
+    let mut age_result = surreal.query(age_query).await?;
+    let ages: Vec<i64> = age_result.take((0, "age"))?;
+    assert_eq!(ages.len(), 1, "Should have one record");
+    assert_eq!(ages[0], 35);
+
+    let score_query =
+        "SELECT user.profile.score as score FROM document_test WHERE name = 'document_test_2'";
+    let mut score_result = surreal.query(score_query).await?;
+    let scores: Vec<f64> = score_result.take((0, "score"))?;
+    assert_eq!(scores.len(), 1, "Should have one record");
+    assert!((scores[0] - 98.5).abs() < f64::EPSILON);
+
+    let theme_query =
+        "SELECT user.settings.theme as theme FROM document_test WHERE name = 'document_test_2'";
+    let mut theme_result = surreal.query(theme_query).await?;
+    let themes: Vec<String> = theme_result.take((0, "theme"))?;
+    assert_eq!(themes.len(), 1, "Should have one record");
+    assert_eq!(themes[0], "dark");
+
+    println!("✅ MongoDB Document migration test passed");
+
+    // Cleanup
+    println!("🧹 Cleaning up test data...");
+    collection.drop().await.ok();
+
+    let cleanup_surreal = "DELETE FROM document_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    println!("🎉 MongoDB Document migration test completed successfully!");
+    Ok(())
+}
+
+/// Test for MongoDB Array data type migration
+#[tokio::test]
+async fn test_mongodb_array_migration() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging for the test
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug,test=debug")
+        .try_init()
+        .ok(); // Ignore if already initialized
+
+    println!("🧪 Starting MongoDB Array migration test");
+
+    // Setup test database connections
+    let mongo_uri = "mongodb://root:root@mongodb:27017";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let test_db_name = "test_array_migration_db";
+    let surreal_namespace = "array_test_ns";
+    let surreal_database = "array_test_db";
+
+    // Connect to MongoDB
+    println!("📊 Connecting to MongoDB...");
+    let mut mongo_options = ClientOptions::parse(mongo_uri).await?;
+    mongo_options.connect_timeout = Some(std::time::Duration::from_secs(10));
+    mongo_options.server_selection_timeout = Some(std::time::Duration::from_secs(10));
+    let mongo_client = MongoClient::with_options(mongo_options)?;
+    let mongo_db = mongo_client.database(test_db_name);
+
+    // Connect to SurrealDB
+    println!("🗄️  Connecting to SurrealDB...");
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(surreal_namespace)
+        .use_db(surreal_database)
+        .await?;
+
+    // Clean up any existing test data
+    println!("🧹 Cleaning up existing test data...");
+    let collection = mongo_db.collection::<mongodb::bson::Document>("array_test");
+    collection.drop().await.ok(); // Ignore errors if collection doesn't exist
+
+    let cleanup_surreal = "DELETE FROM array_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    // Create test data with arrays containing Extended JSON v2 in MongoDB
+    println!("📝 Creating MongoDB test data with arrays...");
+
+    // Insert documents with arrays containing Extended JSON v2 types
+    let documents = vec![
+        // Document with arrays of Extended JSON v2 types
+        doc! {
+            "name": "array_test_1",
+            "description": "Test with arrays of Extended JSON v2 types",
+            "timestamps": [
+                {
+                    "$date": "2024-01-01T10:00:00.000Z"
+                },
+                {
+                    "$date": "2024-06-15T14:30:00.000Z"
+                },
+                {
+                    "$date": "2024-12-31T23:59:59.999Z"
+                }
+            ],
+            "numbers": [
+                {
+                    "$numberLong": "123456789"
+                },
+                {
+                    "$numberDouble": "3.14159"
+                },
+                {
+                    "$numberInt": "42"
+                }
+            ],
+            "mixed_array": [
+                "simple string",
+                {
+                    "$numberInt": "100"
+                },
+                true,
+                {
+                    "$date": "2024-06-28T12:00:00.000Z"
+                },
+                {
+                    "$binary": {
+                        "base64": "VGVzdCBkYXRh",
+                        "subType": "00"
+                    }
+                }
+            ]
+        },
+        // Document with nested arrays
+        doc! {
+            "name": "array_test_2",
+            "description": "Test with nested arrays and complex structures",
+            "matrix": [
+                [
+                    {
+                        "$numberInt": "1"
+                    },
+                    {
+                        "$numberInt": "2"
+                    },
+                    {
+                        "$numberInt": "3"
+                    }
+                ],
+                [
+                    {
+                        "$numberDouble": "4.0"
+                    },
+                    {
+                        "$numberDouble": "5.0"
+                    },
+                    {
+                        "$numberDouble": "6.0"
+                    }
+                ]
+            ],
+            "users": [
+                {
+                    "id": {
+                        "$oid": "507f1f77bcf86cd799439011"
+                    },
+                    "name": "Alice",
+                    "score": {
+                        "$numberDouble": "95.5"
+                    },
+                    "tags": ["admin", "power-user"]
+                },
+                {
+                    "id": {
+                        "$oid": "507f1f77bcf86cd799439012"
+                    },
+                    "name": "Bob",
+                    "score": {
+                        "$numberDouble": "87.2"
+                    },
+                    "tags": ["user", "active"]
+                }
+            ],
+            "metadata_array": [
+                {
+                    "created": {
+                        "$date": "2024-01-01T00:00:00.000Z"
+                    },
+                    "version": {
+                        "$numberLong": "1"
+                    }
+                },
+                {
+                    "created": {
+                        "$date": "2024-06-01T00:00:00.000Z"
+                    },
+                    "version": {
+                        "$numberLong": "2"
+                    }
+                }
+            ]
+        },
+    ];
+
+    collection.insert_many(&documents).await?;
+    println!("✅ Created test data in MongoDB");
+
+    // Run the migration using the library functions directly
+    println!("🔄 Running migration...");
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: mongo_uri.to_string(),
+        source_database: Some(test_db_name.to_string()),
+        source_username: None,
+        source_password: None,
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 10,
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_mongodb(
+        from_opts,
+        surreal_namespace.to_string(),
+        surreal_database.to_string(),
+        to_opts,
+    )
+    .await?;
+
+    println!("✅ Migration completed successfully");
+
+    // Verify migration results
+    println!("🔍 Verifying migration results...");
+
+    // Check that the test data was migrated
+    let query = "SELECT name, description FROM array_test ORDER BY name";
+    let mut result = surreal.query(query).await?;
+    let migrated_names: Vec<String> = result.take((0, "name"))?;
+    let migrated_descriptions: Vec<String> = result.take((0, "description"))?;
+
+    assert_eq!(
+        migrated_names.len(),
+        2,
+        "Should have migrated 2 test records"
+    );
+
+    // Verify records are in alphabetical order
+    assert_eq!(migrated_names[0], "array_test_1");
+    assert_eq!(
+        migrated_descriptions[0],
+        "Test with arrays of Extended JSON v2 types"
+    );
+
+    assert_eq!(migrated_names[1], "array_test_2");
+    assert_eq!(
+        migrated_descriptions[1],
+        "Test with nested arrays and complex structures"
+    );
+
+    // Verify array content for array_test_1 - numbers array
+    // Note: Mixed types in arrays require separate verification due to type safety
+    let numbers_query =
+        "SELECT array::len(numbers) as length FROM array_test WHERE name = 'array_test_1'";
+    let mut numbers_result = surreal.query(numbers_query).await?;
+    let lengths: Vec<i64> = numbers_result.take((0, "length"))?;
+
+    assert_eq!(lengths.len(), 1, "Should have one record");
+    assert_eq!(lengths[0], 3, "Numbers array should have 3 elements");
+
+    // Verify first element (integer)
+    let first_num_query =
+        "SELECT numbers[0] as first_num FROM array_test WHERE name = 'array_test_1'";
+    let mut first_result = surreal.query(first_num_query).await?;
+    let first_nums: Vec<i64> = first_result.take((0, "first_num"))?;
+    assert_eq!(first_nums[0], 123456789);
+
+    // Verify third element (integer)
+    let third_num_query =
+        "SELECT numbers[2] as third_num FROM array_test WHERE name = 'array_test_1'";
+    let mut third_result = surreal.query(third_num_query).await?;
+    let third_nums: Vec<i64> = third_result.take((0, "third_num"))?;
+    assert_eq!(third_nums[0], 42);
+
+    // Verify mixed_array exists and has expected length - skip detailed verification due to binary data
+    // Note: Binary data in arrays cannot be serialized to primitive types, so we'll verify length only
+    let mixed_length_query =
+        "SELECT array::len(mixed_array) as length FROM array_test WHERE name = 'array_test_1'";
+    let mut mixed_length_result = surreal.query(mixed_length_query).await?;
+    let mixed_lengths: Vec<i64> = mixed_length_result.take((0, "length"))?;
+
+    assert_eq!(mixed_lengths.len(), 1, "Should have one record");
+    assert_eq!(mixed_lengths[0], 5, "Mixed array should have 5 elements");
+
+    // Verify first element (string)
+    let first_mixed_query =
+        "SELECT mixed_array[0] as first_elem FROM array_test WHERE name = 'array_test_1'";
+    let mut first_mixed_result = surreal.query(first_mixed_query).await?;
+    let first_elems: Vec<String> = first_mixed_result.take((0, "first_elem"))?;
+    assert_eq!(first_elems[0], "simple string");
+
+    // Verify second element (integer)
+    let second_mixed_query =
+        "SELECT mixed_array[1] as second_elem FROM array_test WHERE name = 'array_test_1'";
+    let mut second_mixed_result = surreal.query(second_mixed_query).await?;
+    let second_elems: Vec<i64> = second_mixed_result.take((0, "second_elem"))?;
+    assert_eq!(second_elems[0], 100);
+
+    println!("✅ Mixed array partially verified (binary data elements skipped)");
+
+    // Verify nested arrays for array_test_2 - matrix structure
+    let matrix_length_query =
+        "SELECT array::len(matrix) as rows FROM array_test WHERE name = 'array_test_2'";
+    let mut matrix_length_result = surreal.query(matrix_length_query).await?;
+    let row_counts: Vec<i64> = matrix_length_result.take((0, "rows"))?;
+    assert_eq!(row_counts[0], 2, "Matrix should have 2 rows");
+
+    // Verify first row (integers)
+    let row1_query = "SELECT matrix[0] as row1 FROM array_test WHERE name = 'array_test_2'";
+    let mut row1_result = surreal.query(row1_query).await?;
+    let row1_data: Vec<Vec<i64>> = row1_result.take((0, "row1"))?;
+    assert_eq!(row1_data[0].len(), 3, "First row should have 3 elements");
+    assert_eq!(row1_data[0][0], 1);
+    assert_eq!(row1_data[0][1], 2);
+    assert_eq!(row1_data[0][2], 3);
+
+    // Verify second row (floats)
+    let row2_query = "SELECT matrix[1] as row2 FROM array_test WHERE name = 'array_test_2'";
+    let mut row2_result = surreal.query(row2_query).await?;
+    let row2_data: Vec<Vec<f64>> = row2_result.take((0, "row2"))?;
+    assert_eq!(row2_data[0].len(), 3, "Second row should have 3 elements");
+    assert!((row2_data[0][0] - 4.0).abs() < f64::EPSILON);
+    assert!((row2_data[0][1] - 5.0).abs() < f64::EPSILON);
+    assert!((row2_data[0][2] - 6.0).abs() < f64::EPSILON);
+
+    // Verify users array with nested objects
+    let users_query = "SELECT users FROM array_test WHERE name = 'array_test_2'";
+    let mut users_result = surreal.query(users_query).await?;
+    let users_data: Vec<Vec<User>> = users_result.take((0, "users"))?;
+
+    assert_eq!(users_data.len(), 1, "Should have one record");
+    let users = &users_data[0];
+    assert_eq!(users.len(), 2);
+
+    // Check first user
+    assert_eq!(users[0].name, "Alice");
+    assert!((users[0].score - 95.5).abs() < f64::EPSILON);
+    assert_eq!(users[0].id, "507f1f77bcf86cd799439011");
+    assert_eq!(users[0].tags, vec!["admin", "power-user"]);
+
+    // Check second user
+    assert_eq!(users[1].name, "Bob");
+    assert!((users[1].score - 87.2).abs() < f64::EPSILON);
+    assert_eq!(users[1].id, "507f1f77bcf86cd799439012");
+    assert_eq!(users[1].tags, vec!["user", "active"]);
+
+    println!("✅ MongoDB Array migration test passed");
+
+    // Cleanup
+    println!("🧹 Cleaning up test data...");
+    collection.drop().await.ok();
+
+    let cleanup_surreal = "DELETE FROM array_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    println!("🎉 MongoDB Array migration test completed successfully!");
     Ok(())
 }
