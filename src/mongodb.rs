@@ -304,8 +304,31 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
                 return Ok(BindableValue::String(oid_str.to_string()));
             }
 
-            // TODO $timestamp as SurrealDB datetime
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Timestamp
+            if let Some(timestamp_obj) = obj.get("$timestamp") {
+                if let Some(ts) = timestamp_obj.as_object() {
+                    // Canonical format: {"$timestamp": {"t": <pos-integer>, "i": <pos-integer>}}
+                    if let (Some(t_val), Some(i_val)) = (ts.get("t"), ts.get("i")) {
+                        if let (Some(t), Some(i)) = (t_val.as_u64(), i_val.as_u64()) {
+                            // Convert timestamp to DateTime using seconds since epoch
+                            // The 't' field represents seconds since Unix epoch
+                            // The 'i' field is an increment and doesn't affect the datetime conversion
+                            if let Some(datetime) = chrono::DateTime::from_timestamp(t as i64, 0) {
+                                return Ok(BindableValue::DateTime(datetime));
+                            } else {
+                                tracing::warn!(
+                                    "Failed to convert MongoDB timestamp to datetime: t={}, i={}",
+                                    t,
+                                    i
+                                );
+                                return Err(anyhow::anyhow!(
+                                    "Failed to convert MongoDB timestamp to datetime"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
 
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Binary
             if let Some(binary_value) = obj.get("$binary") {

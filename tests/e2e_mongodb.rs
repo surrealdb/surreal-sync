@@ -1871,3 +1871,235 @@ async fn test_mongodb_date_canonical_migration() -> Result<(), Box<dyn std::erro
     );
     Ok(())
 }
+
+/// Test for MongoDB $timestamp data type migration
+#[tokio::test]
+async fn test_mongodb_timestamp_migration() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging for the test
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug,test=debug")
+        .try_init()
+        .ok(); // Ignore if already initialized
+
+    println!("🧪 Starting MongoDB $timestamp migration test");
+
+    // Setup test database connections
+    let mongo_uri = "mongodb://root:root@mongodb:27017";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let test_db_name = "test_timestamp_migration_db";
+    let surreal_namespace = "timestamp_test_ns";
+    let surreal_database = "timestamp_test_db";
+
+    // Connect to MongoDB
+    println!("📊 Connecting to MongoDB...");
+    let mut mongo_options = ClientOptions::parse(mongo_uri).await?;
+    mongo_options.connect_timeout = Some(std::time::Duration::from_secs(10));
+    mongo_options.server_selection_timeout = Some(std::time::Duration::from_secs(10));
+    let mongo_client = MongoClient::with_options(mongo_options)?;
+    let mongo_db = mongo_client.database(test_db_name);
+
+    // Connect to SurrealDB
+    println!("🗄️  Connecting to SurrealDB...");
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(surreal_namespace)
+        .use_db(surreal_database)
+        .await?;
+
+    // Clean up any existing test data
+    println!("🧹 Cleaning up existing test data...");
+    let collection = mongo_db.collection::<mongodb::bson::Document>("timestamp_test");
+    collection.drop().await.ok(); // Ignore errors if collection doesn't exist
+
+    let cleanup_surreal = "DELETE FROM timestamp_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    // Create test data with $timestamp in MongoDB
+    println!("📝 Creating MongoDB test data with $timestamp...");
+
+    // Insert documents with various $timestamp formats
+    let documents = vec![
+        // Standard timestamp
+        doc! {
+            "name": "timestamp_test_1",
+            "description": "Test with standard timestamp",
+            "operation_time": {
+                "$timestamp": {
+                    "t": 1640995200, // 2022-01-01T00:00:00Z in seconds
+                    "i": 1
+                }
+            }
+        },
+        // Different timestamp with higher increment
+        doc! {
+            "name": "timestamp_test_2",
+            "description": "Test with timestamp and higher increment",
+            "operation_time": {
+                "$timestamp": {
+                    "t": 1719580953, // 2024-06-28T14:22:33Z in seconds
+                    "i": 42
+                }
+            }
+        },
+        // Recent timestamp
+        doc! {
+            "name": "timestamp_test_3",
+            "description": "Test with recent timestamp",
+            "operation_time": {
+                "$timestamp": {
+                    "t": 1672531200, // 2023-01-01T00:00:00Z in seconds
+                    "i": 100
+                }
+            }
+        },
+        // Early timestamp (near epoch)
+        doc! {
+            "name": "timestamp_test_4",
+            "description": "Test with early timestamp",
+            "operation_time": {
+                "$timestamp": {
+                    "t": 86400, // 1970-01-02T00:00:00Z in seconds (1 day after epoch)
+                    "i": 5
+                }
+            }
+        },
+    ];
+
+    collection.insert_many(&documents).await?;
+    println!("✅ Created test data in MongoDB");
+
+    // Run the migration using the library functions directly
+    println!("🔄 Running migration...");
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: mongo_uri.to_string(),
+        source_database: Some(test_db_name.to_string()),
+        source_username: None,
+        source_password: None,
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 10,
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_mongodb(
+        from_opts,
+        surreal_namespace.to_string(),
+        surreal_database.to_string(),
+        to_opts,
+    )
+    .await?;
+
+    println!("✅ Migration completed successfully");
+
+    // Verify migration results
+    println!("🔍 Verifying migration results...");
+
+    // Check that the test data was migrated
+    let query = "SELECT name, description FROM timestamp_test ORDER BY name";
+    let mut result = surreal.query(query).await?;
+    let migrated_names: Vec<String> = result.take((0, "name"))?;
+    let migrated_descriptions: Vec<String> = result.take((0, "description"))?;
+
+    assert_eq!(
+        migrated_names.len(),
+        4,
+        "Should have migrated 4 test records"
+    );
+
+    // Verify records are in alphabetical order
+    assert_eq!(migrated_names[0], "timestamp_test_1");
+    assert_eq!(migrated_descriptions[0], "Test with standard timestamp");
+
+    assert_eq!(migrated_names[1], "timestamp_test_2");
+    assert_eq!(
+        migrated_descriptions[1],
+        "Test with timestamp and higher increment"
+    );
+
+    assert_eq!(migrated_names[2], "timestamp_test_3");
+    assert_eq!(migrated_descriptions[2], "Test with recent timestamp");
+
+    assert_eq!(migrated_names[3], "timestamp_test_4");
+    assert_eq!(migrated_descriptions[3], "Test with early timestamp");
+
+    // Verify that all operation_time fields are properly converted to DateTime
+    let datetime_query =
+        "SELECT name, operation_time FROM timestamp_test WHERE operation_time IS NOT NULL ORDER BY name";
+    let mut datetime_result = surreal.query(datetime_query).await?;
+    let datetime_names: Vec<String> = datetime_result.take((0, "name"))?;
+    let operation_times: Vec<chrono::DateTime<chrono::Utc>> =
+        datetime_result.take((0, "operation_time"))?;
+
+    assert_eq!(
+        datetime_names.len(),
+        4,
+        "All records should have valid DateTime fields"
+    );
+
+    // Verify specific timestamp conversions
+    // timestamp_test_1: t=1640995200 (2022-01-01T00:00:00Z)
+    let expected_dt1 = chrono::DateTime::from_timestamp(1640995200, 0).unwrap();
+    assert_eq!(operation_times[0], expected_dt1);
+
+    // timestamp_test_2: t=1719580953 (2024-06-28T14:22:33Z)
+    let expected_dt2 = chrono::DateTime::from_timestamp(1719580953, 0).unwrap();
+    assert_eq!(operation_times[1], expected_dt2);
+
+    // timestamp_test_3: t=1672531200 (2023-01-01T00:00:00Z)
+    let expected_dt3 = chrono::DateTime::from_timestamp(1672531200, 0).unwrap();
+    assert_eq!(operation_times[2], expected_dt3);
+
+    // timestamp_test_4: t=86400 (1970-01-02T00:00:00Z)
+    let expected_dt4 = chrono::DateTime::from_timestamp(86400, 0).unwrap();
+    assert_eq!(operation_times[3], expected_dt4);
+
+    // Test datetime queries work properly with migrated timestamps
+    let recent_query =
+        "SELECT name FROM timestamp_test WHERE operation_time > '2020-01-01T00:00:00Z'";
+    let mut recent_result = surreal.query(recent_query).await?;
+    let recent_names: Vec<String> = recent_result.take((0, "name"))?;
+
+    assert_eq!(
+        recent_names.len(),
+        3,
+        "Should find 3 records after 2020 (excluding 1970 timestamp)"
+    );
+
+    // Test another date range to verify $timestamp is working correctly
+    let year_2024_query = "SELECT name FROM timestamp_test WHERE operation_time >= '2024-01-01T00:00:00Z' AND operation_time < '2025-01-01T00:00:00Z'";
+    let mut year_2024_result = surreal.query(year_2024_query).await?;
+    let year_2024_names: Vec<String> = year_2024_result.take((0, "name"))?;
+    assert_eq!(
+        year_2024_names.len(),
+        1,
+        "Should find 1 record in year 2024"
+    );
+    assert_eq!(
+        year_2024_names[0], "timestamp_test_2",
+        "Should be timestamp_test_2 in 2024"
+    );
+
+    println!("✅ MongoDB $timestamp migration test passed");
+
+    // Cleanup
+    println!("🧹 Cleaning up test data...");
+    collection.drop().await.ok();
+
+    let cleanup_surreal = "DELETE FROM timestamp_test";
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    println!("🎉 MongoDB $timestamp migration test completed successfully!");
+    Ok(())
+}
