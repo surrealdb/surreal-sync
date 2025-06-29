@@ -9,20 +9,20 @@ surreal-sync converts MongoDB documents to SurrealDB records by processing BSON 
 | MongoDB Data Type | BSON Type | JSON Extended Format v2 | Support Status | SurrealDB Mapping | Notes |
 |-------------------|-----------|---------------------|----------------|-------------------|-------|
 | **String** | String | `"text"` | ✅ **Fully Supported** | `string` | Direct conversion |
-| **Number (Int32)** | Int32 | `42` | ✅ **Fully Supported** | `int` | Converted to 64-bit integer |
+| **Number (Int32)** | Int32 | `42` (Relaxed) or `{"$numberInt": "42"}` (Canonical) | ✅ **Fully Supported** | `int` | Converted to 64-bit integer |
 | **Number (Int64)** | Int64 | `{"$numberLong": "123"}` | ✅ **Fully Supported** | `int` | Explicitly handled with parsing |
-| **Number (Double)** | Double | `3.14` | ✅ **Fully Supported** | `float` (f64) | Direct conversion |
-| **Number (Decimal128)** | Decimal128 | `{"$numberDecimal": "123.45"}` | 🔶 **Partially Supported** | `float` (f64) | Converted to f64, loses arbitrary precision |
+| **Number (Double)** | Double | `3.14` (Relaxed) or `{"$numberDouble": "3.14"}` (Canonical) | ✅ **Fully Supported** | `float` (f64) | Supports both Relaxed and Canonical formats |
+| **Number (Decimal128)** | Decimal128 | `{"$numberDecimal": "123.45"}` | ✅ **Fully Supported** | `number` (surrealdb::sql::Number) | Converted to SurrealDB Number type |
 | **Boolean** | Boolean | `true`/`false` | ✅ **Fully Supported** | `bool` | Direct conversion |
-| **Date** | DateTime | `{"$date": "2024-01-01T00:00:00Z"}` | ✅ **Fully Supported** | `datetime` | Converted to `datetime` |
-| **ObjectId** | ObjectId | `{"$oid": "507f1f77bcf86cd799439011"}` | 🔶 **Partially Supported** | `thing` | Converted to SurrealDB Thing like `type::thing(table, '507f1f77bcf86cd799439011')` |
+| **Date** | DateTime | `{"$date": "2024-01-01T00:00:00Z"}` (Relaxed) or `{"$date": {"$numberLong": "1672531200000"}}` (Canonical) | ✅ **Fully Supported** | `datetime` | Supports both Relaxed and Canonical formats |
+| **ObjectId** | ObjectId | `{"$oid": "507f1f77bcf86cd799439011"}` | ✅ **Fully Supported** | `string` | Converted to string, used for SurrealDB record IDs |
 | **Array** | Array | `[1, 2, 3]` | ✅ **Fully Supported** | `array` | Recursively processed, nested types converted |
 | **Object/Document** | Document | `{"key": "value"}` | ✅ **Fully Supported** | `object` | Recursively processed as nested object |
 | **Null** | Null | `null` | ✅ **Fully Supported** | Null | Direct conversion |
-| **Binary Data** | Binary | `{"$binary": {"base64": "...", "subType": "..."}}` | ✅ **Fully Supported** | `bytes` | Canonical format converted to SurrealDB bytes type |
+| **Binary Data** | Binary | `{"$binary": {"base64": "...", "subType": "..."}}` | ✅ **Fully Supported** | `bytes` | Base64 decoded to bytes, invalid base64 falls back to string |
 | **Regular Expression** | Regex | `{"$regex": "pattern"}` | 🔶 **Partially Supported** | `object` | Preserved as generic object with pattern and flags |
 | **JavaScript Code** | Code | `{"$code": "function(){}"}` | 🔶 **Partially Supported** | `object` | Preserved as generic object, loses executable nature |
-| **Timestamp** | Timestamp | `{"$timestamp": {...}}` | 🔶 **Partially Supported** | `object` | Preserved as generic object with timestamp data |
+| **Timestamp** | Timestamp | `{"$timestamp": {...}}` | ❌ **Not Implemented** | `object` | TODO: Implementation planned, currently preserved as generic object |
 | **MinKey** | MinKey | `{"$minKey": 1}` | 🔶 **Partially Supported** | `object` | Preserved as generic object, loses special ordering behavior |
 | **MaxKey** | MaxKey | `{"$maxKey": 1}` | 🔶 **Partially Supported** | `object` | Preserved as generic object, loses special ordering behavior |
 | **DBRef** | DBRef | `{"$ref": "collection", "$id": "..."}` | 🔶 **Partially Supported** | `object` | Preserved as generic object with reference data |
@@ -37,14 +37,18 @@ surreal-sync converts MongoDB documents to SurrealDB records by processing BSON 
 
 ## Limitations and Considerations
 
-### Partially Supported Types
+### Not Yet Implemented Types
 
-- **Decimal128**: Converted to f64, which may lose precision for very large numbers or those requiring arbitrary precision arithmetic
-- **ObjectId**: Loses ObjectId type semantics and becomes a string, but the unique identifier value is preserved
+- **Timestamp**: TODO implementation planned (see src/mongodb.rs:307-308)
 - **Regular Expression**: Loses executable nature and becomes a generic object. Use [string::matches](https://surrealdb.com/docs/surrealql/datamodel/regex) function with the pattern extracted from the object for pattern matching
 - **JavaScript Code**: Preserved as generic object but loses executable nature
 - **Special Keys (MinKey/MaxKey)**: Lose their special ordering behavior in queries and comparisons
-- **Timestamp/Symbol/DBRef**: Lose their specialized MongoDB semantics but preserve structural data
+- **Symbol/DBRef**: Lose their specialized MongoDB semantics but preserve structural data
+
+### Special Limitations
+
+- **Negative Timestamps**: Dates before 1970 or after 9999 are not supported and will cause conversion errors
+- **Invalid Binary Data**: Base64 decoding failures fall back to string representation with warning logs
 
 ## Testing and Validation
 

@@ -133,6 +133,7 @@ pub async fn migrate_batch(
                 BindableValue::Bytes(b) => {
                     q.bind((field_name.clone(), surrealdb::sql::Bytes::from(b.clone())))
                 }
+                BindableValue::Decimal(d) => q.bind((field_name.clone(), *d)),
                 BindableValue::Null => q.bind((field_name.clone(), Option::<String>::None)),
             };
         }
@@ -167,7 +168,7 @@ pub async fn migrate_batch(
 }
 
 fn bindable_to_surrealdb_value(bindable: &BindableValue) -> surrealdb::sql::Value {
-    let sql_value = match bindable {
+    match bindable {
         BindableValue::Bool(b) => surrealdb::sql::Value::Bool(*b),
         BindableValue::Int(i) => surrealdb::sql::Value::Number(surrealdb::sql::Number::from(*i)),
         BindableValue::Float(f) => surrealdb::sql::Value::Number(surrealdb::sql::Number::from(*f)),
@@ -180,7 +181,7 @@ fn bindable_to_surrealdb_value(bindable: &BindableValue) -> surrealdb::sql::Valu
         BindableValue::Array(bindables) => {
             let mut arr = Vec::new();
             for item in bindables {
-                let v = bindable_to_surrealdb_value(&item);
+                let v = bindable_to_surrealdb_value(item);
                 arr.push(v);
             }
             surrealdb::sql::Value::Array(surrealdb::sql::Array::from(arr))
@@ -188,7 +189,7 @@ fn bindable_to_surrealdb_value(bindable: &BindableValue) -> surrealdb::sql::Valu
         BindableValue::Object(obj) => {
             let mut map = std::collections::BTreeMap::new();
             for (key, value) in obj {
-                let v = bindable_to_surrealdb_value(&value);
+                let v = bindable_to_surrealdb_value(value);
                 map.insert(key.clone(), v);
             }
             surrealdb::sql::Value::Object(surrealdb::sql::Object::from(map))
@@ -199,9 +200,9 @@ fn bindable_to_surrealdb_value(bindable: &BindableValue) -> surrealdb::sql::Valu
         BindableValue::Bytes(b) => {
             surrealdb::sql::Value::Bytes(surrealdb::sql::Bytes::from(b.clone()))
         }
+        BindableValue::Decimal(d) => surrealdb::sql::Value::Number(*d),
         BindableValue::Null => surrealdb::sql::Value::Null,
-    };
-    sql_value
+    }
 }
 
 pub async fn migrate_from_neo4j(
@@ -225,5 +226,6 @@ pub enum BindableValue {
     Object(HashMap<String, BindableValue>), // For objects, use JSON
     Duration(std::time::Duration),
     Bytes(Vec<u8>),
+    Decimal(surrealdb::sql::Number),
     Null,
 }

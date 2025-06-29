@@ -824,6 +824,197 @@ async fn test_mongodb_number_int_migration() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+/// Test for MongoDB Decimal128 ($numberDecimal) data type migration
+#[tokio::test]
+async fn test_mongodb_decimal128_migration() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging for the test
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug,test=debug")
+        .try_init()
+        .ok(); // Ignore if already initialized
+
+    println!("🧪 Starting MongoDB Decimal128 migration test");
+
+    // Setup test database connections
+    let mongo_uri = "mongodb://root:root@mongodb:27017";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let test_db_name = "test_decimal128_migration_db";
+    let test_collection_name = "decimal128_test_collection";
+    let surreal_namespace = "test_decimal128_ns";
+    let surreal_database = "test_decimal128_db";
+
+    // Connect to MongoDB
+    println!("📊 Connecting to MongoDB...");
+    let mut mongo_options = ClientOptions::parse(mongo_uri).await?;
+    mongo_options.connect_timeout = Some(std::time::Duration::from_secs(10));
+    mongo_options.server_selection_timeout = Some(std::time::Duration::from_secs(10));
+    let mongo_client = MongoClient::with_options(mongo_options)?;
+    let mongo_db = mongo_client.database(test_db_name);
+    let mongo_collection = mongo_db.collection::<mongodb::bson::Document>(test_collection_name);
+
+    // Connect to SurrealDB
+    println!("🗄️  Connecting to SurrealDB...");
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(surreal_namespace)
+        .use_db(surreal_database)
+        .await?;
+
+    // Clean up any existing test data
+    println!("🧹 Cleaning up existing test data...");
+    let _ = mongo_collection.drop().await;
+    let cleanup_surreal = format!("DELETE FROM {};", test_collection_name);
+    let _ = surreal.query(cleanup_surreal).await;
+
+    // Create test documents with various Decimal128 values
+    println!("📝 Creating test documents with Decimal128 values...");
+
+    // Test cases with different decimal precision scenarios
+    let test_docs = vec![
+        doc! {
+            "name": "decimal_test_1",
+            "description": "Standard decimal",
+            "price": {"$numberDecimal": "123.456"}
+        },
+        doc! {
+            "name": "decimal_test_2",
+            "description": "High precision decimal",
+            "price": {"$numberDecimal": "99999999999999999999999999999999.999999"}
+        },
+        doc! {
+            "name": "decimal_test_3",
+            "description": "Very small decimal",
+            "price": {"$numberDecimal": "0.000000000000000000000000000001"}
+        },
+        doc! {
+            "name": "decimal_test_4",
+            "description": "Negative decimal",
+            "price": {"$numberDecimal": "-12345.6789"}
+        },
+        doc! {
+            "name": "decimal_test_5",
+            "description": "Zero decimal",
+            "price": {"$numberDecimal": "0.0"}
+        },
+        doc! {
+            "name": "decimal_test_6",
+            "description": "Integer as decimal",
+            "price": {"$numberDecimal": "42"}
+        },
+        doc! {
+            "name": "decimal_test_7",
+            "description": "Scientific notation decimal",
+            "price": {"$numberDecimal": "1.23456E+10"}
+        },
+    ];
+
+    // Insert test documents
+    mongo_collection.insert_many(test_docs).await?;
+    println!("✅ Inserted {} test documents", 7);
+
+    // Run the migration
+    println!("🔄 Running migration...");
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: mongo_uri.to_string(),
+        source_database: Some(test_db_name.to_string()),
+        source_username: None,
+        source_password: None,
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 10,
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_mongodb(
+        from_opts,
+        surreal_namespace.to_string(),
+        surreal_database.to_string(),
+        to_opts,
+    )
+    .await?;
+
+    // Validate the migration results
+    println!("✅ Validating Decimal128 migration results...");
+
+    // Query the migrated data - use separate queries for different fields
+    let query_names = "SELECT name FROM decimal128_test_collection ORDER BY name;";
+    let query_descriptions =
+        "SELECT name, description FROM decimal128_test_collection ORDER BY name;";
+    let query_prices = "SELECT name, price FROM decimal128_test_collection ORDER BY name;";
+
+    let mut names_result = surreal.query(query_names).await?;
+    let mut descriptions_result = surreal.query(query_descriptions).await?;
+    let mut prices_result = surreal.query(query_prices).await?;
+
+    let names: Vec<String> = names_result.take((0, "name"))?;
+    let descriptions: Vec<String> = descriptions_result.take((0, "description"))?;
+    let prices: Vec<f64> = prices_result.take((0, "price"))?;
+
+    // Verify record count
+    assert_eq!(names.len(), 7, "Expected 7 records, got {}", names.len());
+    assert_eq!(
+        descriptions.len(),
+        7,
+        "Expected 7 descriptions, got {}",
+        descriptions.len()
+    );
+    assert_eq!(prices.len(), 7, "Expected 7 prices, got {}", prices.len());
+
+    println!("✅ Record count validation passed: {} records", names.len());
+
+    // Verify specific values
+    assert_eq!(names[0], "decimal_test_1");
+    assert_eq!(descriptions[0], "Standard decimal");
+    println!("✅ Standard decimal: {} - {}", names[0], prices[0]);
+
+    assert_eq!(names[1], "decimal_test_2");
+    assert_eq!(descriptions[1], "High precision decimal");
+    println!("✅ High precision decimal: {} - {}", names[1], prices[1]);
+
+    assert_eq!(names[2], "decimal_test_3");
+    assert_eq!(descriptions[2], "Very small decimal");
+    println!("✅ Very small decimal: {} - {}", names[2], prices[2]);
+
+    assert_eq!(names[3], "decimal_test_4");
+    assert_eq!(descriptions[3], "Negative decimal");
+    println!("✅ Negative decimal: {} - {}", names[3], prices[3]);
+
+    assert_eq!(names[4], "decimal_test_5");
+    assert_eq!(descriptions[4], "Zero decimal");
+    println!("✅ Zero decimal: {} - {}", names[4], prices[4]);
+
+    assert_eq!(names[5], "decimal_test_6");
+    assert_eq!(descriptions[5], "Integer as decimal");
+    println!("✅ Integer as decimal: {} - {}", names[5], prices[5]);
+
+    assert_eq!(names[6], "decimal_test_7");
+    assert_eq!(descriptions[6], "Scientific notation decimal");
+    println!(
+        "✅ Scientific notation decimal: {} - {}",
+        names[6], prices[6]
+    );
+
+    // Clean up test data
+    println!("🧹 Cleaning up test data...");
+    let _ = mongo_collection.drop().await;
+    let cleanup_surreal = format!("DELETE FROM {};", test_collection_name);
+    let mut cleanup_result = surreal.query(cleanup_surreal).await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id").unwrap_or_default();
+
+    println!("🎉 MongoDB Decimal128 migration test completed successfully!");
+    Ok(())
+}
+
 /// Test for MongoDB Document (nested objects) data type migration
 #[tokio::test]
 async fn test_mongodb_document_migration() -> Result<(), Box<dyn std::error::Error>> {

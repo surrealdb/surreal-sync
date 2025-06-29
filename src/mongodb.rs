@@ -348,9 +348,19 @@ fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableVal
 
             // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Decimal128
             if let Some(number_decimal) = obj.get("$numberDecimal").and_then(|v| v.as_str()) {
-                // TODO Should we use SurrealDB `decimal` type?
-                if let Ok(num) = number_decimal.parse::<f64>() {
-                    return Ok(BindableValue::Float(num));
+                match surrealdb::sql::Number::try_from(number_decimal) {
+                    Ok(decimal_num) => return Ok(BindableValue::Decimal(decimal_num)),
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to parse MongoDB Decimal128 '{}': {:?}",
+                            number_decimal,
+                            e
+                        );
+                        // We intentionally NOT fallback to string representation for Decimal128
+                        // because it's not a valid SurrealDB number type nor its hard to tell
+                        // it's correct or not.
+                        return Err(anyhow::anyhow!("Failed to parse MongoDB Decimal128"));
+                    }
                 }
             }
 
