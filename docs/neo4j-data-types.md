@@ -1,8 +1,8 @@
 # Neo4j Data Types Support in surreal-sync
 
-This document provides a comprehensive overview of Neo4j data type support in surreal-sync, detailing which types are supported during migration from Neo4j to SurrealDB.
+This document provides an overview of Neo4j data type support in surreal-sync, detailing which types are supported during migration from Neo4j to SurrealDB.
 
-surreal-sync converts Neo4j nodes and relationships to SurrealDB records by processing Neo4j's Bolt protocol data types. The conversion handles all the Neo4j data types while maintaining data integrity where possible.
+surreal-sync converts Neo4j nodes and relationships to SurrealDB records by processing Neo4j's Bolt protocol data types. The conversion handles Neo4j data types while maintaining data integrity where possible.
 
 ## Data Type Support Table
 
@@ -15,35 +15,50 @@ surreal-sync converts Neo4j nodes and relationships to SurrealDB records by proc
 | **List** | List | ✅ **Fully Supported** | `array` | Recursively processed, nested types converted |
 | **Map** | Map | ✅ **Fully Supported** | `object` | Recursively processed as nested object |
 | **Null** | Null | ✅ **Fully Supported** | `null` | Direct conversion |
-| **Date** | Date | ✅ **Fully Supported** | `datetime` | Converted to `datetime` |
-| **DateTime** | DateTime | ✅ **Fully Supported** | `datetime` | Converted to `datetime` |
-| **LocalDateTime** | LocalDateTime | ✅ **Fully Supported** | `datetime` | Converted to `datetime` |
-| **Duration** | Duration | ✅ **Fully Supported** | `duration` | Converted to `duration` |
-| **Time** | Time | 🔶 **Partially Supported** | `object` | Converted to object with hour, minute, second, nanosecond, offset_seconds fields |
-| **LocalTime** | LocalTime | 🔶 **Partially Supported** | `object` | Converted to object with hour, minute, second, nanosecond fields |
-| **Point2D** | Point2D | 🔶 **Partially Supported** | `object` | Converted to object with type, srid, x, y fields, loses spatial indexing |
-| **Point3D** | Point3D | 🔶 **Partially Supported** | `object` | Converted to object with type, srid, x, y, z fields, loses spatial indexing |
-| **Node** | Node | 🔶 **Partially Supported** | `string` | Converted to debug string representation |
-| **Relation** | Relation | 🔶 **Partially Supported** | `string` | Converted to debug string representation |
-| **UnboundedRelation** | UnboundedRelation | 🔶 **Partially Supported** | `string` | Converted to debug string representation |
-| **Bytes** | Bytes | ✅ **Fully Supported** | `bytes` | Converted to SurrealDB bytes type |
-| **Path** | Path | 🔶 **Partially Supported** | `string` | Converted to debug string representation |
+| **Date** | Date | ✅ **Fully Supported** | `datetime` | Converted to UTC datetime (assumes local timezone) |
+| **DateTime** | DateTime | ✅ **Fully Supported** | `datetime` | Converted to UTC datetime |
+| **LocalDateTime** | LocalDateTime | ✅ **Fully Supported** | `datetime` | Converted to UTC datetime (assumes UTC) |
+| **Duration** | Duration | ✅ **Fully Supported** | `duration` | Direct conversion |
+| **Bytes** | Bytes | ✅ **Fully Supported** | `bytes` | Direct conversion |
+| **Time** | Time | 🔶 **Partially Supported** | `object` | Converted to object with `type: "$Neo4jTime"`, hour, minute, second, nanosecond, offset_seconds fields |
+| **LocalTime** | LocalTime | 🔶 **Partially Supported** | `object` | Converted to object with `type: "$Neo4jLocalTime"`, hour, minute, second, nanosecond fields |
+| **Point2D** | Point2D | 🔶 **Partially Supported** | `object` | GeoJSON-like object with `type: "Point"`, `srid` (4326), `coordinates: [longitude, latitude]` |
+| **Point3D** | Point3D | 🔶 **Partially Supported** | `object` | GeoJSON-like object with `type: "Point"`, `srid` (4979), `coordinates: [longitude, latitude, elevation]` |
 | **DateTimeZoneId** | DateTimeZoneId | 🔶 **Partially Supported** | `string` | Converted to debug string representation |
 
 ## Support Status Definitions
 
 - ✅ **Fully Supported**: The data type is converted with complete semantic preservation and no data loss
 - 🔶 **Partially Supported**: The data is preserved but may lose some type-specific semantics, precision, or functionality
-- ❌ **Not Supported**: The data type cannot be migrated (this status is not currently used as all data is preserved in some form)
+- ❌ **Not Supported**: The data type cannot be migrated and will cause migration to fail if encountered
 
-## Limitations and Considerations
+## Spatial Data Type Conversion Details
 
-### Partially Supported Types
+### Point2D and Point3D Conversion
 
-- **Time/LocalTime**: Converted to objects with time components rather than native time types, losing time-specific operations
-- **Spatial Types (Point2D/Point3D)**: Converted to objects with coordinate data but lose spatial indexing and geospatial query capabilities
-- **Graph Types (Node/Relation/UnboundedRelation/Path)**: Converted to string representations, preserving structure but losing graph traversal capabilities
-- **DateTimeZoneId**: Converted to string representation, losing timezone-specific operations
+Neo4j spatial types are converted to GeoJSON-like objects that maintain compatibility with SurrealDB's geometry functions:
+
+**Point2D (WGS-84, SRID 4326):**
+```json
+{
+  "type": "Point",
+  "srid": 4326,
+  "coordinates": [longitude, latitude]
+}
+```
+
+**Point3D (WGS-84 3D, SRID 4979):**
+```json
+{
+  "type": "Point",
+  "srid": 4979,
+  "coordinates": [longitude, latitude, elevation]
+}
+```
+
+These converted objects can be used with SurrealDB's geo functions through `type::point()` conversion:
+- `geo::distance(type::point(obj.coordinates), type::point(other.coordinates))`
+- `geo::bearing(type::point(obj.coordinates), type::point(other.coordinates))`
 
 ## Testing and Validation
 
