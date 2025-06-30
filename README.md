@@ -6,9 +6,6 @@ A command-line tool for migrating data from Neo4j and MongoDB databases to Surre
 
 - **MongoDB Migration**: Migrate document-based data from MongoDB to SurrealDB
 - **Neo4j Migration**: Migrate graph data from Neo4j to SurrealDB
-- **Configurable Batching**: Control migration batch sizes for optimal performance
-- **Dry Run Mode**: Test migrations without writing data
-- **Environment Variable Support**: Configure connections via environment variables
 
 ## Installation
 
@@ -31,12 +28,11 @@ surreal-sync sync <SOURCE_DATABASE> [OPTIONS] --to-namespace <NAMESPACE> --to-da
 ### MongoDB Migration
 
 ```bash
+SOURCE_URL=mongodb://user:pass@localhost:27017 \
 surreal-sync sync mongo-db \
-  --source-uri "mongodb://user:pass@localhost:27017" \
   --source-database "mydb" \
   --to-namespace "production" \
-  --to-database "migrated_data" \
-  --batch-size 500
+  --to-database "migrated_data"
 ```
 
 ### Neo4j Migration
@@ -47,8 +43,7 @@ surreal-sync sync neo4j \
   --source-username "neo4j" \
   --source-password "password" \
   --to-namespace "production" \
-  --to-database "graph_data" \
-  --dry-run
+  --to-database "graph_data"
 ```
 
 ## Environment Variables
@@ -79,11 +74,6 @@ You can set these environment variables instead of using command-line flags:
 - `--surreal-endpoint`: SurrealDB server endpoint (default: http://localhost:8000)
 - `--surreal-username`: SurrealDB username (default: root)
 - `--surreal-password`: SurrealDB password (default: root)
-
-### Migration Options
-
-- `--batch-size`: Number of records to process in each batch (default: 1000)
-- `--dry-run`: Run migration without actually writing data to SurrealDB
 
 ## Development
 
