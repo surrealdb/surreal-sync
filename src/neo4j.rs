@@ -390,6 +390,17 @@ fn convert_neo4j_relationship_to_bindable(
 }
 
 /// Convert Neo4j BoltType to BindableValue
+///
+/// Currently, this function supports only one of the possible modes of operation:
+/// 1. Assume each node has only one label- No dedicated SurrealDB table for all the Neo4j nodes, but rather a SurrealDB table for each Neo4j node label.
+/// 2. Assume each node may have two or more labels- A dedicated SurrealDB table for all the Neo4j nodes, plus additional SurrealDB tables for each Neo4j node label.
+///
+/// This function currently assumes the first mode.
+///
+/// TODO: Add support for the second mode by allowing the caller to specify the name of the SurrealDB table to use for all the Neo4j nodes.
+///
+/// Note that we currently assumes local time zone is GMT+0. See for example what we deal with LocalDateTime with and_utc().
+/// TODO: Make this configurable, so that we can use the local time zone of surreal-sync, utc, or some specific time zone.
 fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType) -> anyhow::Result<BindableValue> {
     match value {
         neo4rs::BoltType::String(s) => Ok(BindableValue::String(s.value)),
@@ -421,13 +432,28 @@ fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType) -> anyhow::Result<Bin
             // TODO: Add proper support for this by respecting id, start_node_id, end_node_id, typ, and properties in the relation object
             Ok(BindableValue::String(format!("{:?}", relation)))
         }
-        neo4rs::BoltType::UnboundedRelation(unbounded_relation) => {
-            // TODO: Add proper support for this by rsepecting id, typ, and properties in the relation object
-            Ok(BindableValue::String(format!("{:?}", unbounded_relation)))
+        // "A relationship without start or end node ID. It is used internally for Path serialization."
+        // https://neo4j.com/docs/bolt/current/bolt/structure-semantics/#structure-unbound
+        neo4rs::BoltType::UnboundedRelation(_unbounded_relation) => {
+            // We assume that unbounded relations are not stored in Neo4j, and therefore
+            // we never encounter them in the input to surreal-sync.
+
+            // Also note that SurrealDB relation needs in and out, which means we cannot convert
+            // unbounded relations to SurrealDB relations anyway.
+            // See https://surrealdb.com/docs/surrealql/statements/relate for more details on how SurrealDB's RELATE works.
+            Err(anyhow::anyhow!(
+                "UnboundedRelation type is not supported for migration from Neo4j to SurrealDB"
+            ))
         }
         neo4rs::BoltType::Point2D(point) => {
             // TODO: We need to turn into into https://geojson.org/
-            // sr_id is the srid, which is not directly representable in SurrealDB
+            // sr_id is the srid, which is not directly representable in SurrealDB.
+            //
+            // TODO: Instead of surrealdb::sql::Geometry::Point, we will use a custom object to represent the point,
+            // whose fields are:
+            // - type: "Point" (See https://surrealdb.com/docs/surrealql/datamodel/geometries#point)
+            // - srid: the srid of the point
+            // - coordinates: an array of two floats [x, y]
             let mut bindables = HashMap::new();
             bindables.insert(
                 "type".to_string(),
@@ -441,6 +467,14 @@ fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType) -> anyhow::Result<Bin
         neo4rs::BoltType::Point3D(point) => {
             // TODO: We need to turn into into https://geojson.org/
             // sr_id is the srid, which is not directly representable in SurrealDB
+            //
+            // TODO: Note that SurrealDB does not support 3-dimensional points yet,
+            // although we use a custom object to represent the 3d point hoping
+            // that SurrealDB will support it in the future.
+            // The custom object will have the following fields:
+            // - type: "Point3D" (This might be changed to a more appropriate name in the future)
+            // - srid: the srid of the point
+            // - coordinates: an array of three floats [x, y, z]
             let mut bindables = HashMap::new();
             bindables.insert(
                 "type".to_string(),
@@ -456,9 +490,13 @@ fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType) -> anyhow::Result<Bin
             // Convert Neo4j bytes to SurrealDB bytes type
             Ok(BindableValue::Bytes(bytes.value.to_vec()))
         }
-        neo4rs::BoltType::Path(path) => {
-            // TODO: Add proper support for this that respects nodes, rels, and indices lists in the path object
-            Ok(BindableValue::String(format!("{:?}", path)))
+        neo4rs::BoltType::Path(_path) => {
+            // We assume Path to never appear in the input to surreal-sync, because it is not a stored data type in Neo4j,
+            // but rather a result of a query that traverses the graph.
+            // See https://neo4j.com/blog/developer/the-power-of-the-path-1/ for more details.
+            Err(anyhow::anyhow!(
+                "Path type is not supported for migration from Neo4j to SurrealDB"
+            ))
         }
         neo4rs::BoltType::Date(date) => {
             let naive_d: chrono::NaiveDate = date.try_into()?;
@@ -475,6 +513,8 @@ fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType) -> anyhow::Result<Bin
             let utc_dt = dt_with_tz.into();
             Ok(BindableValue::DateTime(utc_dt))
         }
+        // "An instant capturing the time of day, and the timezone offset in seconds, but not the date"
+        // https://neo4j.com/docs/bolt/current/bolt/structure-semantics/#structure-time
         neo4rs::BoltType::Time(time) => {
             let t: (chrono::NaiveTime, chrono::FixedOffset) = time.into();
             let mut obj = HashMap::new();
