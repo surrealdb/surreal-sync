@@ -239,12 +239,10 @@ async fn migrate_neo4j_relationships(
             // Convert Neo4j relationship to SurrealDB format
             let surreal_record = convert_neo4j_relationship_to_bindable(
                 relationship,
-                rel_id,
                 start_id,
                 end_id,
                 &start_labels,
                 &end_labels,
-                &rel_type,
             )?;
             let record_id = format!("{}:{}", rel_type.to_lowercase(), rel_id);
 
@@ -323,10 +321,8 @@ fn convert_neo4j_node_to_bindable(
 
     // Add labels as an array
     let labels: Vec<String> = node.labels().into_iter().map(|s| s.to_string()).collect();
-    let labels_bindables: Vec<BindableValue> = labels
-        .into_iter()
-        .map(|s| BindableValue::String(s))
-        .collect();
+    let labels_bindables: Vec<BindableValue> =
+        labels.into_iter().map(BindableValue::String).collect();
     bindable_obj.insert("labels".to_string(), BindableValue::Array(labels_bindables));
 
     // Convert all properties
@@ -342,25 +338,14 @@ fn convert_neo4j_node_to_bindable(
 /// Convert Neo4j relationship to bindable HashMap with BindableValue
 fn convert_neo4j_relationship_to_bindable(
     relationship: neo4rs::Relation,
-    rel_id: i64,
     start_id: i64,
     end_id: i64,
     start_labels: &[String],
     end_labels: &[String],
-    rel_type: &str,
 ) -> anyhow::Result<std::collections::HashMap<String, BindableValue>> {
     let mut bindable_obj = std::collections::HashMap::new();
 
-    // Add neo4j_id as a field (preserve original Neo4j ID)
-    bindable_obj.insert("neo4j_id".to_string(), BindableValue::Int(rel_id));
-
-    // Add relationship type
-    bindable_obj.insert(
-        "relationship_type".to_string(),
-        BindableValue::String(rel_type.to_string()),
-    );
-
-    // Add references to start and end nodes with SurrealDB Thing format
+    // Add SurrealDB RELATE required fields: 'in' and 'out' as Thing types
     let start_table = start_labels
         .first()
         .map(|s| s.to_lowercase())
@@ -370,14 +355,27 @@ fn convert_neo4j_relationship_to_bindable(
         .map(|s| s.to_lowercase())
         .unwrap_or_else(|| "node".to_string());
 
-    bindable_obj.insert(
-        "from_node".to_string(),
-        BindableValue::String(format!("{}:{}", start_table, start_id)),
-    );
-    bindable_obj.insert(
-        "to_node".to_string(),
-        BindableValue::String(format!("{}:{}", end_table, end_id)),
-    );
+    let in_thing = surrealdb::sql::Thing::try_from(
+        format!("{}:{}", start_table, start_id).as_str(),
+    )
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "Failed to create Thing for in field: {}:{}",
+            start_table,
+            start_id
+        )
+    })?;
+    let out_thing = surrealdb::sql::Thing::try_from(format!("{}:{}", end_table, end_id).as_str())
+        .map_err(|_| {
+        anyhow::anyhow!(
+            "Failed to create Thing for out field: {}:{}",
+            end_table,
+            end_id
+        )
+    })?;
+
+    bindable_obj.insert("in".to_string(), BindableValue::Thing(in_thing));
+    bindable_obj.insert("out".to_string(), BindableValue::Thing(out_thing));
 
     // Convert all properties
     for key in relationship.keys() {
