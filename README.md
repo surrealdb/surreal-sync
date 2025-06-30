@@ -89,3 +89,7 @@ To use the devcontainer:
 1. Open the project in VS Code/Cursor
 2. Select "Reopen in Container" when prompted
 3. All services will start automatically
+
+## Roadmap
+
+- [ ] Add support for time zones assumed when converting local datetime and time from Neo4j
