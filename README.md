@@ -94,3 +94,5 @@ To use the devcontainer:
 
 - [ ] Add support for time zones assumed when converting local datetime and time from Neo4j
 - [ ] Explore batching writes to SurrealDB for potentially better performance
+- [ ] Add support for MongoDB `$regularExpression` to SurrealDB `regex` type conversion once SurrealDB v3 gets released
+- [ ] Explore option to use BSON insted JSON Extended Format v2 for MongoDB
