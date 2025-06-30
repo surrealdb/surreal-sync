@@ -423,8 +423,13 @@ fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType) -> anyhow::Result<Bin
             Ok(BindableValue::Array(bindables))
         }
         neo4rs::BoltType::Node(node) => {
-            // TODO: Add proper support for this by respecting id, labels, and properties in the node object
-            Ok(BindableValue::String(format!("{:?}", node)))
+            // We assume that nodes are not stored in Neo4j as node properties.
+            // In other words, nodes are processed and converted in more upper function,
+            // so we should never encounter a node here.
+            Err(anyhow::anyhow!(
+                "Node type is not supported for migration from Neo4j to SurrealDB: {:?}",
+                node
+            ))
         }
         neo4rs::BoltType::Relation(relation) => {
             // We assume that relations are not stored in Neo4j as node propertaies.
