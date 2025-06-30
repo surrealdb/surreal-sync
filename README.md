@@ -93,3 +93,4 @@ To use the devcontainer:
 ## Roadmap
 
 - [ ] Add support for time zones assumed when converting local datetime and time from Neo4j
+- [ ] Explore batching writes to SurrealDB for potentially better performance
