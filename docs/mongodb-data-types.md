@@ -22,10 +22,10 @@ surreal-sync converts MongoDB documents to SurrealDB records by processing BSON 
 | **Binary Data** | Binary | `{"$binary": {"base64": "...", "subType": "..."}}` | ✅ **Fully Supported** | `bytes` | Base64 decoded to bytes, invalid base64 falls back to string |
 | **Regular Expression** | Regex | `{"$regex": "pattern"}` | 🔶 **Partially Supported** | `object` | Preserved as generic object with pattern and flags |
 | **JavaScript Code** | Code | `{"$code": "function(){}"}` | 🔶 **Partially Supported** | `object` | Preserved as generic object, loses executable nature |
-| **Timestamp** | Timestamp | `{"$timestamp": {...}}` | ❌ **Not Implemented** | `object` | TODO: Implementation planned, currently preserved as generic object |
+| **Timestamp** | Timestamp | `{"$timestamp": {"t": 1672531200, "i": 1}}` | ✅ **Fully Supported** | `datetime` | Converted using timestamp seconds |
 | **MinKey** | MinKey | `{"$minKey": 1}` | 🔶 **Partially Supported** | `object` | Preserved as generic object, loses special ordering behavior |
 | **MaxKey** | MaxKey | `{"$maxKey": 1}` | 🔶 **Partially Supported** | `object` | Preserved as generic object, loses special ordering behavior |
-| **DBRef** | DBRef | `{"$ref": "collection", "$id": "..."}` | 🔶 **Partially Supported** | `object` | Preserved as generic object with reference data |
+| **DBRef** | DBRef | `{"$ref": "collection", "$id": "..."}` | ✅ **Fully Supported** | `record` (surrealdb::sql::Thing) | Converted to SurrealDB Thing (collection:id) |
 | **Symbol** | Symbol | `{"$symbol": "text"}` | 🔶 **Partially Supported** | `object` | Preserved as generic object, loses symbol type semantics |
 | **Undefined** | Undefined | `{"$undefined": true}` | 🔶 **Partially Supported** | `object` | Preserved as generic object |
 
@@ -40,7 +40,8 @@ surreal-sync converts MongoDB documents to SurrealDB records by processing BSON 
 ### Not Yet Implemented Types
 
 - **Timestamp**: TODO implementation planned (see src/mongodb.rs:307-308)
-- **Regular Expression**: Loses executable nature and becomes a generic object. Use [string::matches](https://surrealdb.com/docs/surrealql/datamodel/regex) function with the pattern extracted from the object for pattern matching
+- **Regular Expression**: Loses executable nature and becomes a generic object. Use [string::matches](https://surrealdb.com/docs/surrealql/datamodel/regex) function with the pattern extracted from the object for pattern matching.
+  [We will also have `regex` data type since SurrealDB v3](https://surrealdb.com/docs/surrealql/datamodel/regex#regex).
 - **JavaScript Code**: Preserved as generic object but loses executable nature
 - **Special Keys (MinKey/MaxKey)**: Lose their special ordering behavior in queries and comparisons
 - **Symbol/DBRef**: Lose their specialized MongoDB semantics but preserve structural data
