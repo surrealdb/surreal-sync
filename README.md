@@ -7,6 +7,8 @@ A command-line tool for migrating data from Neo4j and MongoDB databases to Surre
 - **MongoDB Migration**: Migrate document-based data from MongoDB to SurrealDB
 - **Neo4j Migration**: Migrate graph data from Neo4j to SurrealDB
 
+See [Supported MongoDB Data Types](/docs/mongodb-data-types.md) and [Supported Neo4j Data Types](/docs/neo4j-data-types.md) for more details.
+
 ## Installation
 
 ### Build from Source
