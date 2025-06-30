@@ -454,44 +454,44 @@ fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType) -> anyhow::Result<Bin
             ))
         }
         neo4rs::BoltType::Point2D(point) => {
-            // TODO: We need to turn into into https://geojson.org/
-            // sr_id is the srid, which is not directly representable in SurrealDB.
-            //
-            // TODO: Instead of surrealdb::sql::Geometry::Point, we will use a custom object to represent the point,
-            // whose fields are:
-            // - type: "Point" (See https://surrealdb.com/docs/surrealql/datamodel/geometries#point)
-            // - srid: the srid of the point
-            // - coordinates: an array of two floats [x, y]
+            // Convert Neo4j Point2D to a custom object with GeoJSON-like structure
+            // This approach preserves the SRID and provides better compatibility
             let mut bindables = HashMap::new();
             bindables.insert(
                 "type".to_string(),
-                BindableValue::String("Point2D".to_string()),
+                BindableValue::String("Point".to_string()),
             );
+            // TODO As the SRID for Point2D is always 4326 in Neo4j (right?),
+            // we can just omit it, and keep the data structure compatible with SurrealDB's
+            // geometry type?
             bindables.insert("srid".to_string(), BindableValue::Int(point.sr_id.value));
-            bindables.insert("x".to_string(), BindableValue::Float(point.x.value));
-            bindables.insert("y".to_string(), BindableValue::Float(point.y.value));
+            // GeoJSON coordinates format: [longitude, latitude]
+            let coordinates = vec![
+                BindableValue::Float(point.x.value),
+                BindableValue::Float(point.y.value),
+            ];
+            bindables.insert("coordinates".to_string(), BindableValue::Array(coordinates));
             Ok(BindableValue::Object(bindables))
         }
         neo4rs::BoltType::Point3D(point) => {
-            // TODO: We need to turn into into https://geojson.org/
-            // sr_id is the srid, which is not directly representable in SurrealDB
-            //
-            // TODO: Note that SurrealDB does not support 3-dimensional points yet,
-            // although we use a custom object to represent the 3d point hoping
-            // that SurrealDB will support it in the future.
-            // The custom object will have the following fields:
-            // - type: "Point3D" (This might be changed to a more appropriate name in the future)
-            // - srid: the srid of the point
-            // - coordinates: an array of three floats [x, y, z]
+            // SurrealDB does not support 3-dimensional points yet, so we use a custom object
+            // to represent the 3D point with GeoJSON-like structure for future compatibility
             let mut bindables = HashMap::new();
             bindables.insert(
                 "type".to_string(),
-                BindableValue::String("Point3D".to_string()),
+                BindableValue::String("Point".to_string()),
             );
+            // TODO As the SRID for Point3D is always 4979 in Neo4j (right?),
+            // we can just omit it, and keep the data structure compatible with SurrealDB's
+            // geometry type?
             bindables.insert("srid".to_string(), BindableValue::Int(point.sr_id.value));
-            bindables.insert("x".to_string(), BindableValue::Float(point.x.value));
-            bindables.insert("y".to_string(), BindableValue::Float(point.y.value));
-            bindables.insert("z".to_string(), BindableValue::Float(point.z.value));
+            // GeoJSON coordinates format: [longitude, latitude, elevation]
+            let coordinates = vec![
+                BindableValue::Float(point.x.value),
+                BindableValue::Float(point.y.value),
+                BindableValue::Float(point.z.value),
+            ];
+            bindables.insert("coordinates".to_string(), BindableValue::Array(coordinates));
             Ok(BindableValue::Object(bindables))
         }
         neo4rs::BoltType::Bytes(bytes) => {

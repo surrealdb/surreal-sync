@@ -1409,3 +1409,313 @@ async fn test_neo4j_bytes_migration() -> Result<(), Box<dyn std::error::Error>> 
     println!("🎉 Neo4j bytes migration test completed successfully!");
     Ok(())
 }
+
+/// Test Neo4j geometry (Point2D/Point3D) conversion and SurrealDB geo functions
+#[tokio::test]
+async fn test_neo4j_geometry_conversion() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug,test=debug")
+        .try_init()
+        .ok();
+
+    // Generate unique test identifier for parallel execution
+    let test_id = generate_test_id();
+    let test_marker = format!("geometry_test_{}", test_id);
+
+    println!(
+        "🧪 Starting Neo4j geometry conversion test (ID: {})",
+        test_id
+    );
+
+    // Setup test database connections
+    let neo4j_uri = "bolt://neo4j:7687";
+    let neo4j_username = "neo4j";
+    let neo4j_password = "password";
+    let neo4j_database = "neo4j";
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let surreal_namespace = format!("geometry_test_ns_{}", test_id);
+    let surreal_database = format!("geometry_test_db_{}", test_id);
+
+    // Connect to Neo4j
+    let config = ConfigBuilder::default()
+        .uri(neo4j_uri)
+        .user(neo4j_username)
+        .password(neo4j_password)
+        .db(neo4j_database)
+        .build()?;
+    let graph = Graph::connect(config)?;
+
+    // Connect to SurrealDB
+    let surreal = connect(surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await?;
+    surreal
+        .use_ns(&surreal_namespace)
+        .use_db(&surreal_database)
+        .await?;
+
+    // Cleanup any existing test data
+    let cleanup_neo4j = Query::new(format!(
+        "MATCH (n) WHERE n.test_marker = '{}' DETACH DELETE n",
+        test_marker
+    ));
+    let mut cleanup_result = graph.execute(cleanup_neo4j).await?;
+    while cleanup_result.next().await?.is_some() {}
+
+    // Create test data with Point2D and Point3D geometry
+    println!("📝 Creating test data with Neo4j Point geometries...");
+
+    // Create a location with Point2D (latitude, longitude)
+    let create_location_query = Query::new(format!(
+        "CREATE (l:Location {{
+            name: 'My Office',
+            test_marker: '{}',
+            coordinates: point({{longitude: -122.4194, latitude: 37.7749}})
+        }}) RETURN l",
+        test_marker
+    ));
+    let mut result = graph.execute(create_location_query).await?;
+    while result.next().await?.is_some() {}
+
+    // Create a building with Point3D (longitude, latitude, elevation)
+    let create_building_query = Query::new(format!(
+        "CREATE (b:Building {{
+            name: 'My Tower',
+            test_marker: '{}',
+            position: point({{longitude: -122.4783, latitude: 37.8199, height: 245.0}})
+        }}) RETURN b",
+        test_marker
+    ));
+    let mut result = graph.execute(create_building_query).await?;
+    while result.next().await?.is_some() {}
+
+    // Run migration
+    println!("🔄 Running geometry migration...");
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: neo4j_uri.to_string(),
+        source_database: Some(neo4j_database.to_string()),
+        source_username: Some(neo4j_username.to_string()),
+        source_password: Some(neo4j_password.to_string()),
+    };
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 100,
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_neo4j(
+        from_opts,
+        surreal_namespace.clone(),
+        surreal_database.clone(),
+        to_opts,
+    )
+    .await?;
+
+    // Test 1: Verify Point2D geometry was migrated properly
+    println!("🔍 Testing Point2D geometry conversion...");
+    let location_query = "SELECT count() AS count FROM location WHERE test_marker = $marker";
+    let mut result = surreal
+        .query(location_query)
+        .bind(("marker", test_marker.clone()))
+        .await?;
+
+    let counts: Vec<i64> = result.take("count")?;
+    assert_eq!(counts.len(), 1, "Should have one count result");
+    assert_eq!(counts[0], 1, "Should have one location record");
+    println!("✅ Point2D geometry migrated successfully");
+
+    // Test 2: Verify Point3D geometry was migrated as custom object
+    println!("🔍 Testing Point3D geometry conversion...");
+    let building_query = "SELECT count() AS count FROM building WHERE test_marker = $marker";
+    let mut result = surreal
+        .query(building_query)
+        .bind(("marker", test_marker.clone()))
+        .await?;
+
+    let building_counts: Vec<i64> = result.take("count")?;
+    assert_eq!(building_counts.len(), 1, "Should have one count result");
+    assert_eq!(building_counts[0], 1, "Should have one building record");
+    println!("✅ Point3D geometry migrated successfully");
+
+    // Test 3: Verify Point2D migrated objects work with SurrealDB geo functions
+    println!("🔍 Testing Point2D migrated objects with SurrealDB geo functions...");
+
+    // Test geo::distance function using migrated Point2D objects from database
+    println!("🔍 Testing geo::distance with migrated Point2D objects from database...");
+    let distance_query = format!(
+        "LET $a = (SELECT coordinates FROM ONLY location WHERE name = 'My Office' AND test_marker = '{}' LIMIT 1);
+         LET $b = (SELECT position FROM ONLY building WHERE name = 'My Tower' AND test_marker = '{}' LIMIT 1);
+         SELECT
+            geo::distance(
+                type::point($a.coordinates.coordinates),
+                type::point([$b.position.coordinates[0], $b.position.coordinates[1]])
+            ) AS distance FROM 1",
+        test_marker, test_marker
+    );
+
+    let mut distance_result = surreal
+        .query(&distance_query)
+        .await
+        .expect("geo::distance query should execute successfully with migrated objects");
+    let distances: Vec<f64> = distance_result
+        .take((2, "distance"))
+        .expect("Should be able to parse distance results from geo::distance function");
+
+    assert!(
+        !distances.is_empty(),
+        "geo::distance should return a result"
+    );
+    assert!(
+        distances[0] > 0.0,
+        "Distance between two different points should be positive"
+    );
+    println!(
+        "✅ geo::distance works with migrated Point2D objects - calculated distance: {} meters",
+        distances[0]
+    );
+
+    // Test geo::bearing function using migrated Point2D objects from database
+    println!("🔍 Testing geo::bearing with migrated Point2D objects from database...");
+    let bearing_query = format!(
+        "LET $a = (SELECT coordinates FROM ONLY location WHERE name = 'My Office' AND test_marker = '{}' LIMIT 1);
+         LET $b = (SELECT position FROM ONLY building WHERE name = 'My Tower' AND test_marker = '{}' LIMIT 1);
+         SELECT 
+            geo::bearing(
+                type::point($a.coordinates.coordinates),
+                type::point([$b.position.coordinates[0], $b.position.coordinates[1]])
+            ) AS bearing FROM 1",
+        test_marker, test_marker
+    );
+
+    let mut bearing_result = surreal
+        .query(&bearing_query)
+        .await
+        .expect("geo::bearing query should execute successfully with migrated objects");
+    let bearings: Vec<f64> = bearing_result
+        .take((2, "bearing"))
+        .expect("Should be able to parse bearing results from geo::bearing function");
+
+    assert!(!bearings.is_empty(), "geo::bearing should return a result");
+    assert!(
+        bearings[0] >= -180.0 && bearings[0] <= 180.0,
+        "Bearing should be between 0 and 360 degrees, but got {}",
+        bearings[0]
+    );
+    println!(
+        "✅ geo::bearing works with migrated Point2D objects - calculated bearing: {} degrees",
+        bearings[0]
+    );
+
+    // Test that our migrated Point2D objects have the correct GeoJSON structure
+    println!("🔍 Testing migrated Point2D objects have correct GeoJSON structure...");
+    let structure_query = format!(
+        "SELECT 
+            coordinates.type AS geom_type,
+            coordinates.coordinates AS coords,
+            coordinates.srid AS srid
+         FROM location 
+         WHERE test_marker = '{}' AND coordinates IS NOT NULL 
+         LIMIT 1",
+        test_marker
+    );
+    let mut structure_result = surreal.query(&structure_query).await?;
+    let geom_types: Vec<String> = structure_result.take("geom_type")?;
+    let coords: Vec<Vec<f64>> = structure_result.take("coords")?;
+    let srids: Vec<i64> = structure_result.take("srid")?;
+
+    assert!(
+        !geom_types.is_empty(),
+        "Should have migrated Point2D objects with geometry type"
+    );
+    assert_eq!(geom_types[0], "Point", "Should have Point geometry type");
+    assert_eq!(coords[0].len(), 2, "Should have 2 coordinates");
+    assert!(srids[0] > 0, "Should have valid SRID");
+    // See https://epsg.io/4326
+    assert_eq!(
+        srids,
+        [4326],
+        "Should have SRID 4326 for GeoJSON compatibility"
+    );
+    assert_eq!(
+        coords,
+        [vec![-122.4194, 37.7749]],
+        "Coordinates should match original Point2D data"
+    );
+    assert_eq!(
+        geom_types,
+        ["Point"],
+        "Geometry type should be Point for migrated Point2D objects"
+    );
+
+    let structure_query = format!(
+        "SELECT
+            position.type AS geom_type,
+            position.coordinates AS coords,
+            position.srid AS srid
+         FROM building
+         WHERE test_marker = '{}' AND position IS NOT NULL
+         LIMIT 1",
+        test_marker
+    );
+    let mut structure_result = surreal.query(&structure_query).await?;
+    let geom_types: Vec<String> = structure_result.take("geom_type")?;
+    let coords: Vec<Vec<f64>> = structure_result.take("coords")?;
+    let srids: Vec<i64> = structure_result.take("srid")?;
+
+    assert!(
+        !geom_types.is_empty(),
+        "Should have migrated Point3D objects with geometry type"
+    );
+    assert_eq!(geom_types[0], "Point", "Should have Point geometry type");
+    assert_eq!(coords[0].len(), 3, "Should have 3 coordinates");
+    assert!(srids[0] > 0, "Should have valid SRID");
+    // See https://epsg.io/4979
+    assert_eq!(
+        srids,
+        [4979],
+        "Should have SRID 4979 for GeoJSON compatibility"
+    );
+    assert_eq!(
+        coords,
+        [vec![-122.4783, 37.8199, 245.0]],
+        "Coordinates should match original Point3D data"
+    );
+    assert_eq!(
+        geom_types,
+        ["Point"],
+        "Geometry type should be Point for migrated Point3D objects"
+    );
+
+    // Cleanup
+    println!("🧹 Cleaning up geometry test data...");
+    let cleanup_neo4j = Query::new(format!(
+        "MATCH (n) WHERE n.test_marker = '{}' DETACH DELETE n",
+        test_marker
+    ));
+    let mut cleanup_result = graph.execute(cleanup_neo4j).await?;
+    while cleanup_result.next().await?.is_some() {}
+
+    // Clean SurrealDB
+    let cleanup_location = "DELETE FROM location WHERE test_marker = $marker";
+    let mut cleanup_result = surreal
+        .query(cleanup_location)
+        .bind(("marker", test_marker.clone()))
+        .await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id")?;
+
+    let cleanup_building = "DELETE FROM building WHERE test_marker = $marker";
+    let mut cleanup_result = surreal
+        .query(cleanup_building)
+        .bind(("marker", test_marker.clone()))
+        .await?;
+    let _: Vec<surrealdb::sql::Thing> = cleanup_result.take("id")?;
+
+    println!("🎉 Neo4j geometry conversion test completed successfully!");
+    Ok(())
+}

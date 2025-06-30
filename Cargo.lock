@@ -376,6 +376,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "atomic-polyfill"
+version = "1.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8cf2bce30dfe09ef0bfaef228b9d414faaf7e563035494d7fe092dba54b300f4"
+dependencies = [
+ "critical-section",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -990,6 +999,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "critical-section"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1584,6 +1599,22 @@ dependencies = [
 
 [[package]]
 name = "geo"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d07d2288645058f3c78bc64eadd615335791cd5adb632e9865840afbc13dad"
+dependencies = [
+ "earcutr",
+ "float_next_after",
+ "geo-types",
+ "geographiclib-rs",
+ "log",
+ "num-traits",
+ "robust 0.2.3",
+ "rstar 0.10.0",
+]
+
+[[package]]
+name = "geo"
 version = "0.28.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f811f663912a69249fa620dcd2a005db7254529da2d8a0b23942e81f47084501"
@@ -1594,8 +1625,8 @@ dependencies = [
  "geographiclib-rs",
  "log",
  "num-traits",
- "robust",
- "rstar",
+ "robust 1.2.0",
+ "rstar 0.12.2",
  "serde",
  "spade",
 ]
@@ -1608,7 +1639,8 @@ checksum = "62ddb1950450d67efee2bbc5e429c68d052a822de3aad010d28b351fbb705224"
 dependencies = [
  "approx 0.5.1",
  "num-traits",
- "rstar",
+ "rstar 0.10.0",
+ "rstar 0.12.2",
  "serde",
 ]
 
@@ -1672,6 +1704,15 @@ dependencies = [
 
 [[package]]
 name = "hash32"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0c35f58762feb77d74ebe43bdbc3210f09be9fe6742234d573bacc26ed92b67"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
+name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
@@ -1707,11 +1748,24 @@ dependencies = [
 
 [[package]]
 name = "heapless"
+version = "0.7.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cdc6457c0eb62c71aac4bc17216026d8410337c4126773b9c5daba343f17964f"
+dependencies = [
+ "atomic-polyfill",
+ "hash32 0.2.1",
+ "rustc_version",
+ "spin",
+ "stable_deref_trait",
+]
+
+[[package]]
+name = "heapless"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0bfb9eb618601c89945a70e254898da93b13be0388091d42117462b265bb3fad"
 dependencies = [
- "hash32",
+ "hash32 0.3.1",
  "stable_deref_trait",
 ]
 
@@ -3506,7 +3560,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "54b8ee532f15b2f0811eb1a50adf10d036e14a6cdae8d99893e7f3b921cb227d"
 dependencies = [
  "chrono",
- "geo",
+ "geo 0.28.0",
  "regex",
  "revision-derive 0.11.0",
  "roaring",
@@ -3624,9 +3678,26 @@ dependencies = [
 
 [[package]]
 name = "robust"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e5864e7ef1a6b7bcf1d6ca3f655e65e724ed3b52546a0d0a663c991522f552ea"
+
+[[package]]
+name = "robust"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
+
+[[package]]
+name = "rstar"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f39465655a1e3d8ae79c6d9e007f4953bfc5d55297602df9dc38f9ae9f1359a"
+dependencies = [
+ "heapless 0.7.17",
+ "num-traits",
+ "smallvec",
+]
 
 [[package]]
 name = "rstar"
@@ -3634,7 +3705,7 @@ version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "421400d13ccfd26dfa5858199c30a5d76f9c54e0dba7575273025b43c5175dbb"
 dependencies = [
- "heapless",
+ "heapless 0.8.0",
  "num-traits",
  "smallvec",
 ]
@@ -4171,7 +4242,7 @@ checksum = "a14e31a007e9f85c32784b04f89e6e194bb252a4d41b4a8ccd9e77245d901c8c"
 dependencies = [
  "hashbrown 0.15.4",
  "num-traits",
- "robust",
+ "robust 1.2.0",
  "smallvec",
 ]
 
@@ -4180,6 +4251,9 @@ name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
+dependencies = [
+ "lock_api",
+]
 
 [[package]]
 name = "stable_deref_trait"
@@ -4296,6 +4370,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "clap",
+ "geo 0.25.1",
  "mongodb",
  "neo4rs",
  "serde",
@@ -4320,7 +4395,7 @@ dependencies = [
  "chrono",
  "dmp",
  "futures",
- "geo",
+ "geo 0.28.0",
  "getrandom 0.3.3",
  "indexmap 2.9.0",
  "path-clean",
@@ -4381,7 +4456,7 @@ dependencies = [
  "fst",
  "futures",
  "fuzzy-matcher",
- "geo",
+ "geo 0.28.0",
  "geo-types",
  "getrandom 0.3.3",
  "hex",
