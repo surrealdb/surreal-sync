@@ -427,8 +427,13 @@ fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType) -> anyhow::Result<Bin
             Ok(BindableValue::String(format!("{:?}", node)))
         }
         neo4rs::BoltType::Relation(relation) => {
-            // TODO: Add proper support for this by respecting id, start_node_id, end_node_id, typ, and properties in the relation object
-            Ok(BindableValue::String(format!("{:?}", relation)))
+            // We assume that relations are not stored in Neo4j as node propertaies.
+            // In other words, nodes are processed and converted in more upper function,
+            // so we should never encounter a relation here.
+            Err(anyhow::anyhow!(
+                "Relation type is not supported for migration from Neo4j to SurrealDB: {:?}",
+                relation
+            ))
         }
         // "A relationship without start or end node ID. It is used internally for Path serialization."
         // https://neo4j.com/docs/bolt/current/bolt/structure-semantics/#structure-unbound
