@@ -1,7 +1,5 @@
-use base64::{self, Engine};
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
-use serde_json::Value;
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, hash::Hash, time::Duration};
 use surrealdb::engine::any::connect;
 
 use crate::{BindableValue, SourceOpts, SurrealOpts};
@@ -130,52 +128,48 @@ pub async fn migrate_from_mongodb(
             let doc = cursor.current();
             tracing::trace!("Got current document from cursor");
 
-            // Convert MongoDB BSON document to JSON
+            // Convert MongoDB BSON document
             tracing::trace!("Converting RawDocument to owned Document");
             let doc_owned: mongodb::bson::Document = doc.try_into()?;
-            tracing::trace!("Converting Document to JSON Value");
 
-            // Add debug logging to see the BSON document before conversion
+            // Convert using BSON mode
+            tracing::trace!("Using BSON mode for document conversion");
+
+            // Add debug logging to see the BSON document
             if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                tracing::debug!("BSON document before conversion: {:?}", doc_owned);
+                tracing::debug!("BSON document: {:?}", doc_owned);
             }
 
-            let json_value: Value = mongodb::bson::from_document(doc_owned)?;
-            tracing::trace!("Document conversion completed");
-
-            // Add debug logging to see the JSON after conversion
-            if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                tracing::debug!("JSON value after conversion: {:?}", json_value);
-            }
-
-            // Extract MongoDB ObjectId and use it as SurrealDB record ID
-            let record_id = if let Some(id_value) = json_value.get("_id") {
-                if let Some(oid) = id_value.get("$oid") {
-                    // Use the ObjectId string as the record ID
-                    format!("{}:{}", collection_name, oid.as_str().unwrap_or("unknown"))
-                } else {
-                    // Handle other ID formats (string, number, etc.)
-                    format!(
-                        "{}:{}",
-                        collection_name,
-                        id_value.to_string().trim_matches('"')
-                    )
+            // Extract MongoDB ObjectId for record ID
+            let record_id = if let Some(id_value) = doc_owned.get("_id") {
+                match id_value {
+                    mongodb::bson::Bson::ObjectId(oid) => {
+                        format!("{}:{}", collection_name, oid.to_string())
+                    }
+                    mongodb::bson::Bson::String(s) => {
+                        format!("{}:{}", collection_name, s)
+                    }
+                    mongodb::bson::Bson::Int32(i) => {
+                        format!("{}:{}", collection_name, i)
+                    }
+                    mongodb::bson::Bson::Int64(i) => {
+                        format!("{}:{}", collection_name, i)
+                    }
+                    _ => {
+                        format!("{}:{}", collection_name, id_value.to_string())
+                    }
                 }
             } else {
-                // This shouldn't happen as MongoDB always has _id, but fallback to table name only
                 collection_name.to_string()
             };
 
-            // Remove MongoDB _id and let SurrealDB use the record_id we specify
-            let mut surreal_doc = json_value.clone();
-            if let Some(obj) = surreal_doc.as_object_mut() {
-                obj.remove("_id");
-            }
+            // Remove _id field before conversion
+            let mut doc_without_id = doc_owned.clone();
+            doc_without_id.remove("_id");
 
-            // Convert MongoDB-specific types to bindable values
-            let bindable_object = convert_mongodb_object_to_bindable(surreal_doc)?;
+            // Convert BSON document to bindable
+            let bindable_object = convert_bson_document_to_bindable(doc_without_id)?;
 
-            // Add debug logging to see the final document before adding to batch
             if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
                 tracing::debug!(
                     "Final document for SurrealDB (record_id: {}): {:?}",
@@ -246,228 +240,134 @@ pub async fn migrate_from_mongodb(
     Ok(())
 }
 
-/// Convert MongoDB Object to bindable HashMap with BindableValue
-fn convert_mongodb_object_to_bindable(
-    value: Value,
-) -> anyhow::Result<std::collections::HashMap<String, BindableValue>> {
-    match value {
-        Value::Object(obj) => {
-            let mut bindable_obj = std::collections::HashMap::new();
-            for (key, val) in obj {
-                let bindable_val = convert_mongodb_types_to_bindable(val)?;
-                bindable_obj.insert(key, bindable_val);
-            }
-            Ok(bindable_obj)
-        }
-        _ => Err(anyhow::anyhow!(
-            "Input must be a JSON Object to convert to bindable HashMap"
-        )),
-    }
-}
+/// Convert BSON values directly to bindable values
+fn convert_bson_to_bindable(bson_value: mongodb::bson::Bson) -> anyhow::Result<BindableValue> {
+    use mongodb::bson::Bson;
 
-/// Convert MongoDB Extended JSON (v2) values to our own bindables
-fn convert_mongodb_types_to_bindable(value: Value) -> anyhow::Result<BindableValue> {
-    match value {
-        Value::Object(obj) => {
-            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Date
-            if let Some(date_str) = obj.get("$date").and_then(|v| v.as_str()) {
-                // Relaxed Format of Date is a string representation of a date and time in ISO-8601
-                let utc_datetime = chrono::DateTime::parse_from_rfc3339(date_str)
-                    .map_err(|e| anyhow::anyhow!("Failed to parse MongoDB datetime: {}", e))?
-                    .to_utc();
-                return Ok(BindableValue::DateTime(utc_datetime));
-            } else if let Some(serde_json::Value::Object(obj)) = obj.get("$date") {
-                // Canonical Format of Date is a JSON object with the following fields:
-                // - $numberLong: The number of milliseconds since the Unix epoch (can be negative in case it's before 1970 or after 9999)
-                if let Some(number_long) = obj.get("$numberLong").and_then(|v| v.as_str()) {
-                    if let Ok(num) = number_long.parse::<i64>() {
-                        if num < 0 {
-                            // TODO Handle negative timestamps
-                            // See "For dates before year 1970 or after year 9999:" in https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Date
-                            return Err(anyhow::anyhow!("Negative timestamps are not supported"));
-                        }
-                        let datetime = chrono::DateTime::from_timestamp_millis(num);
-                        match datetime {
-                            Some(datetime) => return Ok(BindableValue::DateTime(datetime)),
-                            None => {
-                                tracing::warn!("Failed to parse MongoDB datetime: {}", num);
-                                return Err(anyhow::anyhow!("Failed to parse MongoDB datetime"));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-ObjectId
-            if let Some(oid_str) = obj.get("$oid").and_then(|v| v.as_str()) {
-                // Return string for binding
-                return Ok(BindableValue::String(oid_str.to_string()));
-            }
-
-            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Timestamp
-            if let Some(timestamp_obj) = obj.get("$timestamp") {
-                if let Some(ts) = timestamp_obj.as_object() {
-                    // Canonical format: {"$timestamp": {"t": <pos-integer>, "i": <pos-integer>}}
-                    if let (Some(t_val), Some(i_val)) = (ts.get("t"), ts.get("i")) {
-                        if let (Some(t), Some(i)) = (t_val.as_u64(), i_val.as_u64()) {
-                            // Convert timestamp to DateTime using seconds since epoch
-                            // The 't' field represents seconds since Unix epoch
-                            // The 'i' field is an increment and doesn't affect the datetime conversion
-                            if let Some(datetime) = chrono::DateTime::from_timestamp(t as i64, 0) {
-                                return Ok(BindableValue::DateTime(datetime));
-                            } else {
-                                tracing::warn!(
-                                    "Failed to convert MongoDB timestamp to datetime: t={}, i={}",
-                                    t,
-                                    i
-                                );
-                                return Err(anyhow::anyhow!(
-                                    "Failed to convert MongoDB timestamp to datetime"
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-
-            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Binary
-            if let Some(binary_value) = obj.get("$binary") {
-                if let Some(binary_obj) = binary_value.as_object() {
-                    // Canonical format: {"$binary": {"base64": "...", "subType": "..."}}
-                    if let Some(base64_str) = binary_obj.get("base64").and_then(|v| v.as_str()) {
-                        match base64::engine::general_purpose::STANDARD.decode(base64_str) {
-                            Ok(bytes) => return Ok(BindableValue::Bytes(bytes)),
-                            Err(e) => {
-                                tracing::warn!("Failed to decode base64 binary data: {}", e);
-                                return Ok(BindableValue::String(base64_str.to_string()));
-                            }
-                        }
-                    }
-                } else {
-                    return Err(anyhow::anyhow!("Invalid binary object format"));
-                }
-            }
-
-            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Double
-            if let Some(number_double) = obj.get("$numberDouble").and_then(|v| v.as_str()) {
-                if let Ok(num) = number_double.parse::<f64>() {
-                    return Ok(BindableValue::Float(num));
-                }
-            }
-
-            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Int32
-            if let Some(number_int) = obj.get("$numberInt").and_then(|v| v.as_str()) {
-                if let Ok(num) = number_int.parse::<i64>() {
-                    return Ok(BindableValue::Int(num));
-                }
-            }
-
-            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Int64
-            if let Some(number_long) = obj.get("$numberLong").and_then(|v| v.as_str()) {
-                if let Ok(num) = number_long.parse::<i64>() {
-                    return Ok(BindableValue::Int(num));
-                }
-            }
-
-            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Decimal128
-            if let Some(number_decimal) = obj.get("$numberDecimal").and_then(|v| v.as_str()) {
-                match surrealdb::sql::Number::try_from(number_decimal) {
-                    Ok(decimal_num) => return Ok(BindableValue::Decimal(decimal_num)),
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to parse MongoDB Decimal128 '{}': {:?}",
-                            number_decimal,
-                            e
-                        );
-                        // We intentionally NOT fallback to string representation for Decimal128
-                        // because it's not a valid SurrealDB number type nor its hard to tell
-                        // it's correct or not.
-                        return Err(anyhow::anyhow!("Failed to parse MongoDB Decimal128"));
-                    }
-                }
-            }
-
-            // https://docs.mongoing.com/mongo-introduction/bson-types/extended-json-v2#db-reference
-            if let Some(ref_collection) = obj.get("$ref").and_then(|v| v.as_str()) {
-                // "The $ref field holds the name of the collection where the referenced document resides.""
-                // https://www.mongodb.com/docs/manual/reference/database-references/
-
-                // "The $id field contains the value of the _id field in the referenced document."
-                // https://www.mongodb.com/docs/manual/reference/database-references/
-                if let Some(ref_id) = obj.get("$id") {
-                    // MongoDB DBRef format: {"$ref": "collection_name", "$id": "document_id"}
-                    // Convert to SurrealDB Thing: collection_name:document_id
-                    let id_string = match ref_id {
-                        // Could be string if it's as documented in https://docs.mongoing.com/mongo-introduction/bson-types/extended-json-v2#db-reference
-                        serde_json::Value::String(s) => s.clone(),
-
-                        // TODO Is this possible?
-                        // serde_json::Value::Number(n) => n.to_string(),
-
-                        // $id contains ObjectID according to https://www.mongodb.com/docs/manual/reference/database-references/,
-                        serde_json::Value::Object(id_obj) => {
-                            // Handle ObjectId: {"$oid": "..."}
-                            if let Some(oid) = id_obj.get("$oid").and_then(|v| v.as_str()) {
-                                oid.to_string()
-                            } else {
-                                // For other extended JSON types, use the object as string
-                                ref_id.to_string()
-                            }
-                        }
-                        _ => ref_id.to_string(),
-                    };
-
-                    let thing =
-                        surrealdb::sql::Thing::from((ref_collection.to_string(), id_string));
-                    return Ok(BindableValue::Thing(thing));
-                }
-            }
-
-            // TODO How's the `JavaScript` type in MongoDB is expressed in MongoDB Extended JSON?
-            // https://www.mongodb.com/docs/manual/reference/bson-types/
-
-            // MongoDB Document as SurrealDB Object
-            // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Document
-            //
-            // This would also cover the following types:
-            // - $regularExpression: https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Timestamp
-            // - $maxKey: https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-MaxKey
-            // - $minKey: https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-MinKey
-            let mut bindables = HashMap::new();
-            for (key, val) in obj {
-                let bindable_val = convert_mongodb_types_to_bindable(val)?;
-                bindables.insert(key, bindable_val);
-            }
-            Ok(BindableValue::Object(bindables))
-        }
-        // Canonical and Relaxed Array
-        // https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#mongodb-bsontype-Array
-        Value::Array(arr) => {
-            // Recursively process array elements - return as JSON array for binding
+    match bson_value {
+        Bson::Double(f) => Ok(BindableValue::Float(f)),
+        Bson::String(s) => Ok(BindableValue::String(s)),
+        Bson::Array(arr) => {
             let mut bindables = Vec::new();
             for item in arr {
-                let bindable_val = convert_mongodb_types_to_bindable(item)?;
+                let bindable_val = convert_bson_to_bindable(item)?;
                 bindables.push(bindable_val);
             }
             Ok(BindableValue::Array(bindables))
         }
-        // Convert JSON values to bindable types
-        Value::Bool(b) => Ok(BindableValue::Bool(b)),
-        Value::Number(n) => {
-            // According to https://www.mongodb.com/docs/manual/reference/mongodb-extended-json/#type-representations,
-            // Number values can be any of the following types:
-            // - 32-bit integer
-            // - 64-bit integer
-            // - double-precision floating-point number
-            if let Some(i) = n.as_i64() {
-                Ok(BindableValue::Int(i))
-            } else if let Some(f) = n.as_f64() {
-                Ok(BindableValue::Float(f))
+        Bson::Document(doc) => {
+            // Check if this document is a DBRef
+            if let (Some(Bson::String(ref_collection)), Some(ref_id)) =
+                (doc.get("$ref"), doc.get("$id"))
+            {
+                // This is a DBRef - convert to SurrealDB Thing
+                let id_string = match ref_id {
+                    Bson::String(s) => s.clone(),
+                    Bson::ObjectId(oid) => oid.to_string(),
+                    Bson::Document(id_doc) => {
+                        // Handle nested ObjectId: {"$oid": "..."}
+                        if let Some(Bson::String(oid)) = id_doc.get("$oid") {
+                            oid.clone()
+                        } else {
+                            ref_id.to_string()
+                        }
+                    }
+                    _ => ref_id.to_string(),
+                };
+                let thing = surrealdb::sql::Thing::from((ref_collection.clone(), id_string));
+                Ok(BindableValue::Thing(thing))
             } else {
-                Err(anyhow::anyhow!("Unsupported number type"))
+                // Regular document - convert recursively
+                let mut bindables = HashMap::new();
+                for (key, val) in doc {
+                    let bindable_val = convert_bson_to_bindable(val)?;
+                    bindables.insert(key, bindable_val);
+                }
+                Ok(BindableValue::Object(bindables))
             }
         }
-        Value::String(s) => Ok(BindableValue::String(s)),
-        Value::Null => Ok(BindableValue::Null),
+        Bson::Boolean(b) => Ok(BindableValue::Bool(b)),
+        Bson::Null => Ok(BindableValue::Null),
+        Bson::RegularExpression(regex) => {
+            // We assume SurrealDB's regex always use Rust's regex crate under the hood,
+            // so we can say (?OPTIONS)PATTERN in SurrealDB whereas it is /PATTERN/OPTIONS in MongoDB.
+            // Note that teh regex crate does not support the /PATTERN/OPTIONS style.
+            // See https://docs.rs/regex/latest/regex/#grouping-and-flags
+            Ok(BindableValue::String(format!(
+                "(?{}){}",
+                regex.options, regex.pattern
+            )))
+        }
+        Bson::JavaScriptCode(code) => Ok(BindableValue::String(code)),
+        Bson::JavaScriptCodeWithScope(code_with_scope) => {
+            let mut scope = HashMap::new();
+            for (key, val) in code_with_scope.scope {
+                let bindable_val = convert_bson_to_bindable(val)?;
+                scope.insert(key, bindable_val);
+            }
+            let scope = BindableValue::Object(scope);
+            let code = BindableValue::String(code_with_scope.code);
+            let mut code_with_scope = HashMap::new();
+            code_with_scope.insert("$code".to_string(), code);
+            code_with_scope.insert("$scope".to_string(), scope);
+            Ok(BindableValue::Object(code_with_scope))
+        }
+        Bson::Int32(i) => Ok(BindableValue::Int(i as i64)),
+        Bson::Int64(i) => Ok(BindableValue::Int(i)),
+        Bson::Timestamp(ts) => {
+            // MongoDB Timestamp.time is seconds since Unix epoch
+            let seconds = ts.time as i64;
+            // To keep the ordering across timestamps, we exploit the increment component as the nanoseconds.
+            let assumed_ns = ts.increment;
+            if let Some(datetime) = chrono::DateTime::from_timestamp(seconds, assumed_ns) {
+                Ok(BindableValue::DateTime(datetime))
+            } else {
+                Err(anyhow::anyhow!(
+                    "Failed to convert MongoDB timestamp to datetime"
+                ))
+            }
+        }
+        Bson::Binary(binary) => Ok(BindableValue::Bytes(binary.bytes)),
+        Bson::ObjectId(oid) => Ok(BindableValue::String(oid.to_string())),
+        Bson::DateTime(dt) => Ok(BindableValue::DateTime(dt.to_chrono())),
+        Bson::Symbol(s) => Ok(BindableValue::String(s)),
+        Bson::Decimal128(d) => {
+            let decimal_str = d.to_string();
+            match surrealdb::sql::Number::try_from(decimal_str.as_str()) {
+                Ok(decimal_num) => Ok(BindableValue::Decimal(decimal_num)),
+                Err(e) => {
+                    tracing::warn!("Failed to parse BSON Decimal128 '{}': {:?}", decimal_str, e);
+                    Err(anyhow::anyhow!("Failed to parse BSON Decimal128"))
+                }
+            }
+        }
+        Bson::Undefined => Ok(BindableValue::None), // Map undefined to null
+        Bson::MaxKey => {
+            let mut mk = HashMap::new();
+            mk.insert("$maxKey".to_string(), BindableValue::Int(1));
+            Ok(BindableValue::Object(mk))
+        }
+        Bson::MinKey => {
+            let mut mk = HashMap::new();
+            mk.insert("$minKey".to_string(), BindableValue::Int(1));
+            Ok(BindableValue::Object(mk))
+        }
+        Bson::DbPointer(_db_pointer) => {
+            // DBPointer is deprecated and fields are private
+            // Store as a special string to preserve the information
+            Ok(BindableValue::String("$dbPointer".to_string()))
+        }
     }
+}
+
+/// Convert BSON document to bindable HashMap
+fn convert_bson_document_to_bindable(
+    doc: mongodb::bson::Document,
+) -> anyhow::Result<std::collections::HashMap<String, BindableValue>> {
+    let mut bindable_obj = std::collections::HashMap::new();
+    for (key, val) in doc {
+        let bindable_val = convert_bson_to_bindable(val)?;
+        bindable_obj.insert(key, bindable_val);
+    }
+    Ok(bindable_obj)
 }

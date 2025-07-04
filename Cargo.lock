@@ -623,6 +623,7 @@ dependencies = [
  "ahash 0.8.12",
  "base64 0.22.1",
  "bitvec",
+ "chrono",
  "getrandom 0.2.16",
  "getrandom 0.3.3",
  "hex",
@@ -4368,6 +4369,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "bson",
  "chrono",
  "chrono-tz",
  "clap",

@@ -142,7 +142,8 @@ pub async fn migrate_batch(
                 BindableValue::Decimal(d) => q.bind((field_name.clone(), *d)),
                 BindableValue::Thing(t) => q.bind((field_name.clone(), t.clone())),
                 BindableValue::Geometry(g) => q.bind((field_name.clone(), g.clone())),
-                BindableValue::Null => q.bind((field_name.clone(), Option::<String>::None)),
+                BindableValue::Null => q.bind((field_name.clone(), surrealdb::sql::Value::Null)),
+                BindableValue::None => q.bind((field_name.clone(), surrealdb::sql::Value::None)),
             };
         }
 
@@ -212,6 +213,7 @@ fn bindable_to_surrealdb_value(bindable: &BindableValue) -> surrealdb::sql::Valu
         BindableValue::Thing(t) => surrealdb::sql::Value::Thing(t.clone()),
         BindableValue::Geometry(g) => surrealdb::sql::Value::Geometry(g.clone()),
         BindableValue::Null => surrealdb::sql::Value::Null,
+        BindableValue::None => surrealdb::sql::Value::None,
     }
 }
 
@@ -240,4 +242,5 @@ pub enum BindableValue {
     Thing(surrealdb::sql::Thing),
     Geometry(surrealdb::sql::Geometry),
     Null,
+    None,
 }
