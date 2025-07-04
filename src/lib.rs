@@ -27,6 +27,12 @@ pub struct SourceOpts {
     /// Source database password
     #[arg(long, env = "SOURCE_PASSWORD")]
     pub source_password: Option<String>,
+
+    /// Timezone to use for converting Neo4j local datetime and time values
+    /// Format: IANA timezone name (e.g., "America/New_York", "Europe/London", "UTC")
+    /// Default: "UTC"
+    #[arg(long, default_value = "UTC", env = "NEO4J_TIMEZONE")]
+    pub neo4j_timezone: String,
 }
 
 #[derive(Parser)]

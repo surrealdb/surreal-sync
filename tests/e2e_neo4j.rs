@@ -101,6 +101,7 @@ async fn test_neo4j_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
         source_database: Some(neo4j_database.to_string()),
         source_username: Some(neo4j_username.to_string()),
         source_password: Some(neo4j_password.to_string()),
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -194,6 +195,7 @@ async fn test_neo4j_data_types_migration() -> Result<(), Box<dyn std::error::Err
         source_database: Some(neo4j_database.to_string()),
         source_username: Some(neo4j_username.to_string()),
         source_password: Some(neo4j_password.to_string()),
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -281,6 +283,7 @@ async fn test_neo4j_large_dataset_migration() -> Result<(), Box<dyn std::error::
         source_database: Some(neo4j_database.to_string()),
         source_username: Some(neo4j_username.to_string()),
         source_password: Some(neo4j_password.to_string()),
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -966,6 +969,7 @@ async fn test_neo4j_relationship_conversion() -> Result<(), Box<dyn std::error::
         source_database: Some(neo4j_database.to_string()),
         source_username: Some(neo4j_username.to_string()),
         source_password: Some(neo4j_password.to_string()),
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -1345,6 +1349,7 @@ async fn test_neo4j_bytes_migration() -> Result<(), Box<dyn std::error::Error>> 
         source_database: Some(neo4j_database.to_string()),
         source_username: Some(neo4j_username.to_string()),
         source_password: Some(neo4j_password.to_string()),
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -1500,6 +1505,7 @@ async fn test_neo4j_geometry_conversion() -> Result<(), Box<dyn std::error::Erro
         source_database: Some(neo4j_database.to_string()),
         source_username: Some(neo4j_username.to_string()),
         source_password: Some(neo4j_password.to_string()),
+        neo4j_timezone: "UTC".to_string(),
     };
     let to_opts = surreal_sync::SurrealOpts {
         surreal_endpoint: surreal_endpoint.to_string(),

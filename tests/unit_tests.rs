@@ -7,12 +7,14 @@ fn test_source_opts_creation() {
         source_database: Some("test_db".to_string()),
         source_username: Some("test".to_string()),
         source_password: Some("password".to_string()),
+        neo4j_timezone: "UTC".to_string(),
     };
 
     assert_eq!(opts.source_uri, "mongodb://test:test@localhost:27017");
     assert_eq!(opts.source_database, Some("test_db".to_string()));
     assert_eq!(opts.source_username, Some("test".to_string()));
     assert_eq!(opts.source_password, Some("password".to_string()));
+    assert_eq!(opts.neo4j_timezone, "UTC");
 }
 
 #[test]
