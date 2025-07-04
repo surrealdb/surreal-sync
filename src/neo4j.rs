@@ -73,10 +73,12 @@ pub async fn migrate_from_neo4j(
     let mut total_migrated = 0;
 
     // Migrate nodes first
-    total_migrated += migrate_neo4j_nodes(&graph, &surreal, &to_opts, &from_opts.neo4j_timezone).await?;
+    total_migrated +=
+        migrate_neo4j_nodes(&graph, &surreal, &to_opts, &from_opts.neo4j_timezone).await?;
 
     // Then migrate relationships
-    total_migrated += migrate_neo4j_relationships(&graph, &surreal, &to_opts, &from_opts.neo4j_timezone).await?;
+    total_migrated +=
+        migrate_neo4j_relationships(&graph, &surreal, &to_opts, &from_opts.neo4j_timezone).await?;
 
     tracing::info!(
         "Neo4j migration completed: {} total items migrated",
@@ -404,7 +406,10 @@ fn convert_neo4j_relationship_to_bindable(
 ///
 /// The timezone parameter specifies which timezone to use when converting Neo4j local datetime and time values.
 /// This should be an IANA timezone name (e.g., "America/New_York", "Europe/London", "UTC").
-fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType, timezone: &str) -> anyhow::Result<BindableValue> {
+fn convert_neo4j_type_to_bindable(
+    value: neo4rs::BoltType,
+    timezone: &str,
+) -> anyhow::Result<BindableValue> {
     match value {
         neo4rs::BoltType::String(s) => Ok(BindableValue::String(s.value)),
         neo4rs::BoltType::Boolean(b) => Ok(BindableValue::Bool(b.value)),
@@ -522,9 +527,9 @@ fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType, timezone: &str) -> an
                 chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
             );
             // Convert to UTC datetime using the specified timezone
-            let dt_with_tz = tz.from_local_datetime(&naive_dt)
-                .single()
-                .ok_or_else(|| anyhow::anyhow!("Ambiguous or invalid datetime in timezone {}", timezone))?;
+            let dt_with_tz = tz.from_local_datetime(&naive_dt).single().ok_or_else(|| {
+                anyhow::anyhow!("Ambiguous or invalid datetime in timezone {}", timezone)
+            })?;
             let utc_dt = dt_with_tz.with_timezone(&Utc);
             Ok(BindableValue::DateTime(utc_dt))
         }
@@ -595,15 +600,20 @@ fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType, timezone: &str) -> an
             let tz: chrono_tz::Tz = timezone.parse()
                 .map_err(|_| anyhow::anyhow!("Invalid timezone: {}. Use IANA timezone names like 'UTC', 'America/New_York', etc.", timezone))?;
             // Convert to UTC datetime using the specified timezone
-            let dt_with_tz = tz.from_local_datetime(&dt)
-                .single()
-                .ok_or_else(|| anyhow::anyhow!("Ambiguous or invalid datetime in timezone {}", timezone))?;
+            let dt_with_tz = tz.from_local_datetime(&dt).single().ok_or_else(|| {
+                anyhow::anyhow!("Ambiguous or invalid datetime in timezone {}", timezone)
+            })?;
             let utc_dt = dt_with_tz.with_timezone(&Utc);
             Ok(BindableValue::DateTime(utc_dt))
         }
         neo4rs::BoltType::DateTimeZoneId(datetime_zone_id) => {
-            // Convert Neo4j DateTimeZoneId to string representation
-            Ok(BindableValue::String(format!("{:?}", datetime_zone_id)))
+            let dt_with_offset: chrono::DateTime<chrono::FixedOffset> =
+                (&datetime_zone_id).try_into().map_err(|e| {
+                    anyhow::anyhow!("Failed to convert DateTimeZoneId to DateTime: {}", e)
+                })?;
+
+            let utc_dt = dt_with_offset.with_timezone(&Utc);
+            Ok(BindableValue::DateTime(utc_dt))
         }
         neo4rs::BoltType::Duration(duration) => {
             let std_duration: std::time::Duration = duration.into();
@@ -616,17 +626,17 @@ fn convert_neo4j_type_to_bindable(value: neo4rs::BoltType, timezone: &str) -> an
 mod tests {
     use super::*;
     use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
-    use neo4rs::{BoltDate, BoltLocalDateTime};
+    use neo4rs::{BoltDate, BoltDateTimeZoneId, BoltLocalDateTime};
 
     #[test]
     fn test_date_conversion_with_utc_timezone() {
         // Create a Neo4j Date for 2024-01-15
         let date = BoltDate::from(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap());
         let bolt_type = neo4rs::BoltType::Date(date);
-        
+
         // Convert with UTC timezone
         let result = convert_neo4j_type_to_bindable(bolt_type, "UTC").unwrap();
-        
+
         match result {
             BindableValue::DateTime(dt) => {
                 // Date should be at midnight UTC on 2024-01-15
@@ -646,10 +656,10 @@ mod tests {
         // Create a Neo4j Date for 2024-01-15
         let date = BoltDate::from(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap());
         let bolt_type = neo4rs::BoltType::Date(date);
-        
+
         // Convert with America/New_York timezone
         let result = convert_neo4j_type_to_bindable(bolt_type, "America/New_York").unwrap();
-        
+
         match result {
             BindableValue::DateTime(dt) => {
                 // Date at midnight in New York (EST = UTC-5) should be 5 AM UTC
@@ -673,10 +683,10 @@ mod tests {
         );
         let local_dt = BoltLocalDateTime::from(naive_dt);
         let bolt_type = neo4rs::BoltType::LocalDateTime(local_dt);
-        
+
         // Convert with UTC timezone
         let result = convert_neo4j_type_to_bindable(bolt_type, "UTC").unwrap();
-        
+
         match result {
             BindableValue::DateTime(dt) => {
                 // Should be same time in UTC
@@ -700,10 +710,10 @@ mod tests {
         );
         let local_dt = BoltLocalDateTime::from(naive_dt);
         let bolt_type = neo4rs::BoltType::LocalDateTime(local_dt);
-        
+
         // Convert with Asia/Tokyo timezone
         let result = convert_neo4j_type_to_bindable(bolt_type, "Asia/Tokyo").unwrap();
-        
+
         match result {
             BindableValue::DateTime(dt) => {
                 // 14:30 in Tokyo (JST = UTC+9) should be 05:30 UTC
@@ -722,10 +732,10 @@ mod tests {
     fn test_invalid_timezone_returns_error() {
         let date = BoltDate::from(NaiveDate::from_ymd_opt(2024, 1, 15).unwrap());
         let bolt_type = neo4rs::BoltType::Date(date);
-        
+
         // Try with invalid timezone
         let result = convert_neo4j_type_to_bindable(bolt_type, "Invalid/Timezone");
-        
+
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains("Invalid timezone"));
@@ -740,10 +750,10 @@ mod tests {
         );
         let local_dt = BoltLocalDateTime::from(naive_dt);
         let bolt_type = neo4rs::BoltType::LocalDateTime(local_dt);
-        
+
         // Convert with America/New_York timezone - this should handle the DST gap
         let result = convert_neo4j_type_to_bindable(bolt_type, "America/New_York");
-        
+
         // The conversion should either succeed with an adjusted time or fail gracefully
         // depending on how chrono-tz handles DST gaps
         match result {
@@ -755,6 +765,146 @@ mod tests {
                 assert!(e.to_string().contains("Ambiguous or invalid datetime"));
             }
             _ => panic!("Unexpected result type"),
+        }
+    }
+
+    #[test]
+    fn test_datetime_zone_id_conversion_utc() {
+        // Create a DateTimeZoneId with UTC timezone
+        let naive_dt = NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
+            NaiveTime::from_hms_opt(14, 30, 0).unwrap(),
+        );
+
+        let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "UTC"));
+        let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
+
+        // Convert to bindable value
+        let result = convert_neo4j_type_to_bindable(bolt_type, "UTC").unwrap();
+
+        match result {
+            BindableValue::DateTime(dt) => {
+                // Should be same time in UTC
+                assert_eq!(dt.year(), 2024);
+                assert_eq!(dt.month(), 1);
+                assert_eq!(dt.day(), 15);
+                assert_eq!(dt.hour(), 14);
+                assert_eq!(dt.minute(), 30);
+                assert_eq!(dt.second(), 0);
+            }
+            _ => panic!("Expected DateTime, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_datetime_zone_id_conversion_new_york() {
+        // Create a DateTimeZoneId with America/New_York timezone
+        let naive_dt = NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
+            NaiveTime::from_hms_opt(14, 30, 0).unwrap(),
+        );
+
+        let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "America/New_York"));
+        let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
+
+        // Convert to bindable value
+        let result = convert_neo4j_type_to_bindable(bolt_type, "UTC").unwrap();
+
+        match result {
+            BindableValue::DateTime(dt) => {
+                // 14:30 EST (UTC-5) should be 19:30 UTC
+                assert_eq!(dt.year(), 2024);
+                assert_eq!(dt.month(), 1);
+                assert_eq!(dt.day(), 15);
+                assert_eq!(dt.hour(), 19); // 14:30 EST = 19:30 UTC
+                assert_eq!(dt.minute(), 30);
+                assert_eq!(dt.second(), 0);
+            }
+            _ => panic!("Expected DateTime, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_datetime_zone_id_conversion_tokyo() {
+        // Create a DateTimeZoneId with Asia/Tokyo timezone
+        let naive_dt = NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(2024, 1, 15).unwrap(),
+            NaiveTime::from_hms_opt(14, 30, 0).unwrap(),
+        );
+
+        let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "Asia/Tokyo"));
+        let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
+
+        // Convert to bindable value
+        let result = convert_neo4j_type_to_bindable(bolt_type, "UTC").unwrap();
+
+        match result {
+            BindableValue::DateTime(dt) => {
+                // 14:30 JST (UTC+9) should be 05:30 UTC
+                assert_eq!(dt.year(), 2024);
+                assert_eq!(dt.month(), 1);
+                assert_eq!(dt.day(), 15);
+                assert_eq!(dt.hour(), 5); // 14:30 JST = 05:30 UTC
+                assert_eq!(dt.minute(), 30);
+                assert_eq!(dt.second(), 0);
+            }
+            _ => panic!("Expected DateTime, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_datetime_zone_id_conversion_london_dst() {
+        // Create a DateTimeZoneId with Europe/London timezone during DST
+        let naive_dt = NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(2024, 7, 15).unwrap(), // July - during DST
+            NaiveTime::from_hms_opt(14, 30, 0).unwrap(),
+        );
+
+        let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "Europe/London"));
+        let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
+
+        // Convert to bindable value
+        let result = convert_neo4j_type_to_bindable(bolt_type, "UTC").unwrap();
+
+        match result {
+            BindableValue::DateTime(dt) => {
+                // 14:30 BST (UTC+1) should be 13:30 UTC
+                assert_eq!(dt.year(), 2024);
+                assert_eq!(dt.month(), 7);
+                assert_eq!(dt.day(), 15);
+                assert_eq!(dt.hour(), 13); // 14:30 BST = 13:30 UTC
+                assert_eq!(dt.minute(), 30);
+                assert_eq!(dt.second(), 0);
+            }
+            _ => panic!("Expected DateTime, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_datetime_zone_id_conversion_negative_offset() {
+        // Create a DateTimeZoneId with Pacific/Honolulu timezone (UTC-10)
+        let naive_dt = NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(2024, 6, 15).unwrap(),
+            NaiveTime::from_hms_opt(8, 15, 30).unwrap(),
+        );
+
+        let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "Pacific/Honolulu"));
+        let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
+
+        // Convert to bindable value
+        let result = convert_neo4j_type_to_bindable(bolt_type, "UTC").unwrap();
+
+        match result {
+            BindableValue::DateTime(dt) => {
+                // 08:15:30 HST (UTC-10) should be 18:15:30 UTC
+                assert_eq!(dt.year(), 2024);
+                assert_eq!(dt.month(), 6);
+                assert_eq!(dt.day(), 15);
+                assert_eq!(dt.hour(), 18); // 08:15 HST = 18:15 UTC
+                assert_eq!(dt.minute(), 15);
+                assert_eq!(dt.second(), 30);
+            }
+            _ => panic!("Expected DateTime, got {:?}", result),
         }
     }
 }

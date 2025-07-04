@@ -24,7 +24,7 @@ surreal-sync converts Neo4j nodes and relationships to SurrealDB records by proc
 | **LocalTime** | LocalTime | 🔶 **Partially Supported** | `object` | Converted to object with `type: "$Neo4jLocalTime"`, hour, minute, second, nanosecond fields |
 | **Point2D** | Point2D | 🔶 **Partially Supported** | `object` | GeoJSON-like object with `type: "Point"`, `srid` (4326), `coordinates: [longitude, latitude]` |
 | **Point3D** | Point3D | 🔶 **Partially Supported** | `object` | GeoJSON-like object with `type: "Point"`, `srid` (4979), `coordinates: [longitude, latitude, elevation]` |
-| **DateTimeZoneId** | DateTimeZoneId | 🔶 **Partially Supported** | `string` | Converted to debug string representation |
+| **DateTimeZoneId** | DateTimeZoneId | ✅ **Fully Supported** | `datetime` | Converted to UTC datetime using embedded timezone ID |
 
 ## Support Status Definitions
 
