@@ -69,6 +69,7 @@ async fn test_mongodb_migration_e2e() -> Result<(), Box<dyn std::error::Error>> 
         source_database: Some(test_db_name.to_string()),
         source_username: None,
         source_password: None,
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -413,6 +414,7 @@ async fn test_mongodb_binary_migration() -> Result<(), Box<dyn std::error::Error
         source_database: Some(test_db_name.to_string()),
         source_username: None,
         source_password: None,
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -592,6 +594,7 @@ async fn test_mongodb_number_double_migration() -> Result<(), Box<dyn std::error
         source_database: Some(test_db_name.to_string()),
         source_username: None,
         source_password: None,
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -757,6 +760,7 @@ async fn test_mongodb_number_int_migration() -> Result<(), Box<dyn std::error::E
         source_database: Some(test_db_name.to_string()),
         source_username: None,
         source_password: None,
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -925,6 +929,7 @@ async fn test_mongodb_decimal128_migration() -> Result<(), Box<dyn std::error::E
         source_database: Some(test_db_name.to_string()),
         source_username: None,
         source_password: None,
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -1150,6 +1155,7 @@ async fn test_mongodb_document_migration() -> Result<(), Box<dyn std::error::Err
         source_database: Some(test_db_name.to_string()),
         source_username: None,
         source_password: None,
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -1447,6 +1453,7 @@ async fn test_mongodb_array_migration() -> Result<(), Box<dyn std::error::Error>
         source_database: Some(test_db_name.to_string()),
         source_username: None,
         source_password: None,
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -1723,6 +1730,7 @@ async fn test_mongodb_date_canonical_migration() -> Result<(), Box<dyn std::erro
         source_database: Some(test_db_name.to_string()),
         source_username: None,
         source_password: None,
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -1982,6 +1990,7 @@ async fn test_mongodb_timestamp_migration() -> Result<(), Box<dyn std::error::Er
         source_database: Some(test_db_name.to_string()),
         source_username: None,
         source_password: None,
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -2214,6 +2223,7 @@ async fn test_mongodb_dbref_migration() -> Result<(), Box<dyn std::error::Error>
         source_database: Some(test_db_name.to_string()),
         source_username: None,
         source_password: None,
+        neo4j_timezone: "UTC".to_string(),
     };
 
     let to_opts = surreal_sync::SurrealOpts {

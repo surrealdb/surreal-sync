@@ -44,9 +44,12 @@ surreal-sync sync neo4j \
   --source-uri "bolt://localhost:7687" \
   --source-username "neo4j" \
   --source-password "password" \
+  --neo4j-timezone "America/New_York" \
   --to-namespace "production" \
   --to-database "graph_data"
 ```
+
+By default, Neo4j local datetime and time values are assumed to be in UTC. You can specify a different timezone using the `--neo4j-timezone` option or the `NEO4J_TIMEZONE` environment variable.
 
 ## Environment Variables
 
@@ -56,6 +59,7 @@ You can set these environment variables instead of using command-line flags:
 - `SOURCE_DATABASE`: Source database name
 - `SOURCE_USERNAME`: Source database username
 - `SOURCE_PASSWORD`: Source database password
+- `NEO4J_TIMEZONE`: Timezone for Neo4j local datetime/time values (default: UTC)
 - `SURREAL_ENDPOINT`: SurrealDB endpoint (default: http://localhost:8000)
 - `SURREAL_USERNAME`: SurrealDB username (default: root)
 - `SURREAL_PASSWORD`: SurrealDB password (default: root)
@@ -68,6 +72,7 @@ You can set these environment variables instead of using command-line flags:
 - `--source-database`: Name of the source database (optional for some sources)
 - `--source-username`: Username for source database authentication
 - `--source-password`: Password for source database authentication
+- `--neo4j-timezone`: Timezone for Neo4j local datetime/time values (default: UTC). Use IANA timezone names like "America/New_York", "Europe/London", etc.
 
 ### Target SurrealDB Options
 
@@ -92,7 +97,7 @@ To use the devcontainer:
 
 ## Roadmap
 
-- [ ] Add support for time zones assumed when converting local datetime and time from Neo4j
+- [x] Add support for time zones assumed when converting local datetime and time from Neo4j
 - [ ] Explore batching writes to SurrealDB for potentially better performance
 - [ ] Add support for MongoDB `$regularExpression` to SurrealDB `regex` type conversion once SurrealDB v3 gets released
 - [ ] Explore option to use BSON insted JSON Extended Format v2 for MongoDB
