@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary_name: surreal-sync
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary_name: surreal-sync
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            binary_name: surreal-sync
+          # - target: aarch64-unknown-linux-musl
+          #   os: ubuntu-latest
+          #   binary_name: surreal-sync
+          
+          # macOS
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            binary_name: surreal-sync
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            binary_name: surreal-sync
+          
+          # Windows
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary_name: surreal-sync.exe
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            binary_name: surreal-sync.exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          case "${{ matrix.target }}" in
+            aarch64-unknown-linux-gnu)
+              sudo apt-get update
+              sudo apt-get install -y gcc-aarch64-linux-gnu
+              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+              echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+              echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
+              ;;
+            x86_64-unknown-linux-musl)
+              sudo apt-get update
+              sudo apt-get install -y musl-tools
+              ;;
+            aarch64-unknown-linux-musl)
+              sudo dpkg --add-architecture arm64
+              sudo apt-get update
+              sudo apt-get install -y musl-tools:arm64
+              ;;
+          esac
+
+      - name: Build binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Create archive
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            # Windows
+            cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" dist/
+            cd dist
+            7z a "../surreal-sync-${{ matrix.target }}.zip" "${{ matrix.binary_name }}"
+            cd ..
+          else
+            # Unix
+            cp "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" dist/
+            cd dist
+            tar czf "../surreal-sync-${{ matrix.target }}.tar.gz" "${{ matrix.binary_name }}"
+            cd ..
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: surreal-sync-${{ matrix.target }}
+          path: |
+            surreal-sync-${{ matrix.target }}.tar.gz
+            surreal-sync-${{ matrix.target }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: surreal-sync-*
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          sha256sum surreal-sync-*.tar.gz surreal-sync-*.zip > checksums.txt
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          gh release create "$TAG" \
+            --title "Release $TAG" \
+            --notes "Release $TAG" \
+            surreal-sync-*.tar.gz \
+            surreal-sync-*.zip \
+            checksums.txt
