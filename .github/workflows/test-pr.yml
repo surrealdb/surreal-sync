@@ -1,17 +1,16 @@
-name: Test Main
+name: Test PR
 
 on:
-  push:
+  pull_request:
     branches:
       - main
-  workflow_dispatch:
 
 jobs:
   cargo-test:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: read
     steps:
     - name: Checkout repository
       uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -26,7 +25,5 @@ jobs:
           cargo test
         imageName: ghcr.io/surrealdb/surreal-sync-devcontainer
         cacheFrom: ghcr.io/surrealdb/surreal-sync-devcontainer
-        push: filter
-        eventFilterForPush: push
-        refFilterForPush: refs/heads/main
+        push: never
         configFile: .devcontainer/surreal-sync/devcontainer.json
