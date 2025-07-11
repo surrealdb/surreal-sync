@@ -803,9 +803,47 @@ async fn populate_large_dataset(
         // Process all results to ensure query completes
     }
 
-    let total_nodes = user_count + post_count;
-    println!("📊 Created {} users and {} posts", user_count, post_count);
+    // Verify actual node counts in Neo4j
+    let count_users = Query::new(format!(
+        "MATCH (u:User) WHERE u.test_marker = '{}' RETURN count(u) as count",
+        test_marker
+    ));
+    let mut result = graph.execute(count_users).await?;
+    let actual_users = if let Some(row) = result.next().await? {
+        row.get::<i64>("count")? as usize
+    } else {
+        0
+    };
 
+    let count_posts = Query::new(format!(
+        "MATCH (p:Post) WHERE p.test_marker = '{}' RETURN count(p) as count",
+        test_marker
+    ));
+    let mut result = graph.execute(count_posts).await?;
+    let actual_posts = if let Some(row) = result.next().await? {
+        row.get::<i64>("count")? as usize
+    } else {
+        0
+    };
+
+    println!(
+        "📊 Created {} users and {} posts (expected {}/{})",
+        actual_users, actual_posts, user_count, post_count
+    );
+
+    // Fail immediately if Neo4j data creation is incomplete
+    assert_eq!(
+        actual_users, user_count,
+        "Failed to create all users in Neo4j: expected {}, got {}",
+        user_count, actual_users
+    );
+    assert_eq!(
+        actual_posts, post_count,
+        "Failed to create all posts in Neo4j: expected {}, got {}",
+        post_count, actual_posts
+    );
+
+    let total_nodes = actual_users + actual_posts;
     Ok(total_nodes)
 }
 
