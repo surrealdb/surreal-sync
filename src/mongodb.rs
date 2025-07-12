@@ -1,5 +1,5 @@
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
-use std::{collections::HashMap, hash::Hash, time::Duration};
+use std::{collections::HashMap, time::Duration};
 use surrealdb::engine::any::connect;
 
 use crate::{BindableValue, SourceOpts, SurrealOpts};

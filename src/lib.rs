@@ -7,6 +7,7 @@ use clap::Parser;
 use std::collections::HashMap;
 use surrealdb::Surreal;
 
+pub mod jsonl;
 pub mod mongodb;
 pub mod neo4j;
 
@@ -224,6 +225,25 @@ pub async fn migrate_from_neo4j(
     to_opts: SurrealOpts,
 ) -> anyhow::Result<()> {
     neo4j::migrate_from_neo4j(from_opts, to_namespace, to_database, to_opts).await
+}
+
+pub async fn migrate_from_jsonl(
+    from_opts: SourceOpts,
+    to_namespace: String,
+    to_database: String,
+    to_opts: SurrealOpts,
+    id_field: String,
+    conversion_rules: Vec<String>,
+) -> anyhow::Result<()> {
+    jsonl::migrate_from_jsonl(
+        from_opts,
+        to_namespace,
+        to_database,
+        to_opts,
+        id_field,
+        conversion_rules,
+    )
+    .await
 }
 
 /// Enum to represent bindable values that can be bound to SurrealDB queries

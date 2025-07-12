@@ -1,9 +1,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
-use surreal_sync::{migrate_from_mongodb, migrate_from_neo4j, SourceOpts, SurrealOpts};
+use surreal_sync::{
+    migrate_from_jsonl, migrate_from_mongodb, migrate_from_neo4j, SourceOpts, SurrealOpts,
+};
 
 #[derive(Parser)]
 #[command(name = "surreal-sync")]
-#[command(about = "A tool for migrating Neo4j and MongoDB data to SurrealDB")]
+#[command(about = "A tool for migrating Neo4j, MongoDB, and JSONL data to SurrealDB")]
 #[command(long_about = None)]
 struct Cli {
     #[command(subcommand)]
@@ -33,6 +35,14 @@ enum Commands {
         /// Target SurrealDB options
         #[command(flatten)]
         to_opts: SurrealOpts,
+
+        /// ID field name for JSONL source (default: "id")
+        #[arg(long, default_value = "id")]
+        id_field: String,
+
+        /// Conversion rules for JSONL source (format: 'type="page_id",page_id page:page_id')
+        #[arg(long = "rule", value_name = "RULE")]
+        conversion_rules: Vec<String>,
     },
 }
 
@@ -42,6 +52,8 @@ enum SourceDatabase {
     MongoDB,
     /// Neo4j graph database
     Neo4j,
+    /// JSONL files directory
+    Jsonl,
 }
 
 #[tokio::main]
@@ -60,6 +72,8 @@ async fn main() -> anyhow::Result<()> {
             to_namespace,
             to_database,
             to_opts,
+            id_field,
+            conversion_rules,
         } => {
             tracing::info!("Starting migration from {:?} to SurrealDB", from);
             tracing::info!("Target: {}/{}", to_namespace, to_database);
@@ -74,6 +88,17 @@ async fn main() -> anyhow::Result<()> {
                 }
                 SourceDatabase::Neo4j => {
                     migrate_from_neo4j(from_opts, to_namespace, to_database, to_opts).await?;
+                }
+                SourceDatabase::Jsonl => {
+                    migrate_from_jsonl(
+                        from_opts,
+                        to_namespace,
+                        to_database,
+                        to_opts,
+                        id_field,
+                        conversion_rules,
+                    )
+                    .await?;
                 }
             }
 
