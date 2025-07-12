@@ -14,6 +14,12 @@ services:
       - surrealdb
       - mongodb
       - neo4j
+      - neo4j-test1
+      - neo4j-test2
+      - neo4j-test3
+      - neo4j-test4
+      - neo4j-test5
+      - neo4j-test6
 
   surrealdb:
     image: surrealdb/surrealdb:latest
@@ -52,6 +58,73 @@ services:
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
+    networks:
+      - surreal-sync-network
+
+  # Dedicated Neo4j instances for each test to ensure isolation
+  neo4j-test1:
+    image: neo4j:5
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_dbms_default__database=neo4j
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+      - NEO4J_server_bolt_advertised__address=neo4j-test1:7687
+    networks:
+      - surreal-sync-network
+
+  neo4j-test2:
+    image: neo4j:5
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_dbms_default__database=neo4j
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+      - NEO4J_server_bolt_advertised__address=neo4j-test2:7687
+    networks:
+      - surreal-sync-network
+
+  neo4j-test3:
+    image: neo4j:5
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_dbms_default__database=neo4j
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+      - NEO4J_server_bolt_advertised__address=neo4j-test3:7687
+    networks:
+      - surreal-sync-network
+
+  neo4j-test4:
+    image: neo4j:5
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_dbms_default__database=neo4j
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+      - NEO4J_server_bolt_advertised__address=neo4j-test4:7687
+    networks:
+      - surreal-sync-network
+
+  neo4j-test5:
+    image: neo4j:5
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_dbms_default__database=neo4j
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+      - NEO4J_server_bolt_advertised__address=neo4j-test5:7687
+    networks:
+      - surreal-sync-network
+
+  neo4j-test6:
+    image: neo4j:5
+    environment:
+      - NEO4J_AUTH=neo4j/password
+      - NEO4J_dbms_default__database=neo4j
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_security_procedures_allowlist=apoc.*
+      - NEO4J_server_bolt_advertised__address=neo4j-test6:7687
     networks:
       - surreal-sync-network
 

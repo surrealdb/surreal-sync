@@ -38,7 +38,8 @@ async fn test_neo4j_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Setup test database connections with unique identifiers
-    let neo4j_uri = "bolt://neo4j:7687";
+    // Use dedicated neo4j-test1 instance for this test
+    let neo4j_uri = "bolt://neo4j-test1:7687";
     let neo4j_username = "neo4j";
     let neo4j_password = "password";
     let neo4j_database = "neo4j";
@@ -78,17 +79,6 @@ async fn test_neo4j_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
         .use_ns(&surreal_namespace)
         .use_db(&surreal_database)
         .await?;
-
-    // Clean up any existing test data
-    println!("🧹 Cleaning up existing test data...");
-    cleanup_test_data(
-        &graph,
-        &surreal,
-        &surreal_namespace,
-        &surreal_database,
-        &test_marker,
-    )
-    .await?;
 
     // Populate Neo4j with comprehensive test data
     println!("📝 Populating Neo4j with test data...");
@@ -153,7 +143,8 @@ async fn test_neo4j_data_types_migration() -> Result<(), Box<dyn std::error::Err
 
     println!("🧪 Testing Neo4j data types migration (ID: {})", test_id);
 
-    let neo4j_uri = "bolt://neo4j:7687";
+    // Use dedicated neo4j-test2 instance for this test
+    let neo4j_uri = "bolt://neo4j-test2:7687";
     let neo4j_username = "neo4j";
     let neo4j_password = "password";
     let neo4j_database = "neo4j";
@@ -238,7 +229,8 @@ async fn test_neo4j_large_dataset_migration() -> Result<(), Box<dyn std::error::
 
     println!("🧪 Testing Neo4j large dataset migration (ID: {})", test_id);
 
-    let neo4j_uri = "bolt://neo4j:7687";
+    // Use dedicated neo4j-test3 instance for this test
+    let neo4j_uri = "bolt://neo4j-test3:7687";
     let neo4j_username = "neo4j";
     let neo4j_password = "password";
     let neo4j_database = "neo4j";
@@ -903,7 +895,8 @@ async fn test_neo4j_relationship_conversion() -> Result<(), Box<dyn std::error::
     );
 
     // Setup test database connections with unique identifiers
-    let neo4j_uri = "bolt://neo4j:7687";
+    // Use dedicated neo4j-test4 instance for this test
+    let neo4j_uri = "bolt://neo4j-test4:7687";
     let neo4j_username = "neo4j";
     let neo4j_password = "password";
     let neo4j_database = "neo4j";
@@ -1315,7 +1308,8 @@ async fn test_neo4j_bytes_migration() -> Result<(), Box<dyn std::error::Error>> 
     println!("🧪 Starting Neo4j bytes migration test (ID: {})", test_id);
 
     // Setup test database connections with unique identifiers
-    let neo4j_uri = "bolt://neo4j:7687";
+    // Use dedicated neo4j-test5 instance for this test
+    let neo4j_uri = "bolt://neo4j-test5:7687";
     let neo4j_username = "neo4j";
     let neo4j_password = "password";
     let neo4j_database = "neo4j";
@@ -1471,7 +1465,8 @@ async fn test_neo4j_geometry_conversion() -> Result<(), Box<dyn std::error::Erro
     );
 
     // Setup test database connections
-    let neo4j_uri = "bolt://neo4j:7687";
+    // Use dedicated neo4j-test6 instance for this test
+    let neo4j_uri = "bolt://neo4j-test6:7687";
     let neo4j_username = "neo4j";
     let neo4j_password = "password";
     let neo4j_database = "neo4j";
