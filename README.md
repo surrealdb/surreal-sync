@@ -1,15 +1,65 @@
-# SurrealSync
+# surreal-sync
 
-A command-line tool for migrating data from Neo4j and MongoDB databases to SurrealDB.
+`surreal-sync` is a command-line tool complementes SurrealDB's `surreal` command for migrating data from various databases to SurrealDB.
 
-## Features
+## Sources
 
-- **MongoDB Migration**: Migrate document-based data from MongoDB to SurrealDB
-- **Neo4j Migration**: Migrate graph data from Neo4j to SurrealDB
+- **MongoDB**: Migrate documents from MongoDB to SurrealDB
+- **Neo4j**: Migrate nodes and relationships from Neo4j to SurrealDB
 
 See [Supported MongoDB Data Types](/docs/mongodb-data-types.md) and [Supported Neo4j Data Types](/docs/neo4j-data-types.md) for more details.
 
 ## Installation
+
+### Install Pre-built Binaries
+
+#### Latest Release
+
+Install the latest stable release for your platform:
+
+```bash
+# Linux (x86_64)
+curl -L https://github.com/surrealdb/surreal-sync/releases/latest/download/surreal-sync-x86_64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv surreal-sync /usr/local/bin/
+
+# macOS (Apple Silicon)
+curl -L https://github.com/surrealdb/surreal-sync/releases/latest/download/surreal-sync-aarch64-apple-darwin.tar.gz | tar xz
+sudo mv surreal-sync /usr/local/bin/
+
+# Linux (ARM64)
+curl -L https://github.com/surrealdb/surreal-sync/releases/latest/download/surreal-sync-aarch64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv surreal-sync /usr/local/bin/
+```
+
+#### Canary Release (Latest from main branch)
+
+Install the latest canary build:
+
+```bash
+# Linux/macOS (x86_64)
+curl -L https://github.com/surrealdb/surreal-sync/releases/download/canary/surreal-sync-x86_64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv surreal-sync /usr/local/bin/
+
+# macOS (Apple Silicon)
+curl -L https://github.com/surrealdb/surreal-sync/releases/download/canary/surreal-sync-aarch64-apple-darwin.tar.gz | tar xz
+sudo mv surreal-sync /usr/local/bin/
+
+# Linux (ARM64)
+curl -L https://github.com/surrealdb/surreal-sync/releases/download/canary/surreal-sync-aarch64-unknown-linux-gnu.tar.gz | tar xz
+sudo mv surreal-sync /usr/local/bin/
+```
+
+#### Install Script
+
+You can also use this one-liner to automatically detect and install the appropriate binary:
+
+```bash
+# Latest stable release
+curl -sSL https://raw.githubusercontent.com/surrealdb/surreal-sync/main/scripts/install.sh | bash
+
+# Specific release
+curl -sSL https://raw.githubusercontent.com/surrealdb/surreal-sync/main/scripts/install.sh | bash -s -- --version v0.1.0
+```
 
 ### Build from Source
 
@@ -84,16 +134,7 @@ You can set these environment variables instead of using command-line flags:
 
 ## Development
 
-This project is designed to work with the provided devcontainer that includes:
-- SurrealDB server (localhost:8000)
-- MongoDB server (localhost:27017)
-- Neo4j server (localhost:7474/7687)
-
-To use the devcontainer:
-
-1. Open the project in VS Code/Cursor
-2. Select "Reopen in Container" when prompted
-3. All services will start automatically
+See [devcontainer.md](docs/devcontainer.md).
 
 ## Roadmap
 
