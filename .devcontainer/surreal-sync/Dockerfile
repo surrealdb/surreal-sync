@@ -37,3 +37,16 @@ WORKDIR /workspace
 
 # Switch to non-root user
 USER $USERNAME
+
+# This needs to be after the USER command to ensure permissions are correct
+# For example, you might see random permission error like the below if you cargo-install BEFORE the USER command:
+#
+# $ cargo test
+#     Updating crates.io index
+# warning: failed to write cache, path: /usr/local/cargo/registry/index/index.crates.io-1949cf8c6b5b557f/.cache/bs/on/bson, error: Permission denied (os error 13)
+#   Downloaded allocator-api2 v0.2.21
+# error: failed to open `/usr/local/cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/allocator-api2-0.2.21.crate`
+#
+# Caused by:
+#   Permission denied (os error 13)
+RUN cargo install cargo-edit && cargo install cargo-make

@@ -32,7 +32,6 @@
     },
     // We intentionally avoid forwarding ports to avoid conflicts with other services running on the host.
     // "forwardPorts": [8000, 27017, 7474, 7687],
-    "postCreateCommand": "cargo install cargo-edit && cargo install cargo-make",
     "remoteUser": "vscode",
     "features": {
         "ghcr.io/devcontainers/features/docker-in-docker:2": {},
