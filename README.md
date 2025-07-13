@@ -1,6 +1,6 @@
 # surreal-sync
 
-`surreal-sync` is a command-line tool complementes SurrealDB's `surreal` command for migrating data from various databases to SurrealDB.
+`surreal-sync` is a command-line tool complementes SurrealDB's `surreal` command for migrating data from various sources to SurrealDB.
 
 ToC:
 
