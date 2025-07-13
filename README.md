@@ -2,14 +2,28 @@
 
 `surreal-sync` is a command-line tool complementes SurrealDB's `surreal` command for migrating data from various databases to SurrealDB.
 
+ToC:
+
+- [Sources](#sources)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Development](#development)
+- [Roadmap](#roadmap)
+
 ## Sources
 
-- **MongoDB**: Migrate documents from MongoDB to SurrealDB
-- **Neo4j**: Migrate nodes and relationships from Neo4j to SurrealDB
+- **MongoDB**: Migrate documents from MongoDB to SurrealDB ([SupportedData Types](/docs/mongodb-data-types.md))
+- **Neo4j**: Migrate nodes and relationships from Neo4j to SurrealDB ([Supported Data Types](/docs/neo4j-data-types.md))
+- **JSONL**: Migrate data from JSON Lines files to SurrealDB ([Usage](/docs/jsonl.md))
 
-See [Supported MongoDB Data Types](/docs/mongodb-data-types.md) and [Supported Neo4j Data Types](/docs/neo4j-data-types.md) for more details.
+See  and  for more details.
 
 ## Installation
+
+- [Pre-built binaries](#install-pre-built-binaries)
+  - [Latest Release](#latest-release)
+  - [Install Script](#install-script)
+- [Build from source](#build-from-source)
 
 ### Install Pre-built Binaries
 
@@ -28,24 +42,6 @@ sudo mv surreal-sync /usr/local/bin/
 
 # Linux (ARM64)
 curl -L https://github.com/surrealdb/surreal-sync/releases/latest/download/surreal-sync-aarch64-unknown-linux-gnu.tar.gz | tar xz
-sudo mv surreal-sync /usr/local/bin/
-```
-
-#### Canary Release (Latest from main branch)
-
-Install the latest canary build:
-
-```bash
-# Linux/macOS (x86_64)
-curl -L https://github.com/surrealdb/surreal-sync/releases/download/canary/surreal-sync-x86_64-unknown-linux-gnu.tar.gz | tar xz
-sudo mv surreal-sync /usr/local/bin/
-
-# macOS (Apple Silicon)
-curl -L https://github.com/surrealdb/surreal-sync/releases/download/canary/surreal-sync-aarch64-apple-darwin.tar.gz | tar xz
-sudo mv surreal-sync /usr/local/bin/
-
-# Linux (ARM64)
-curl -L https://github.com/surrealdb/surreal-sync/releases/download/canary/surreal-sync-aarch64-unknown-linux-gnu.tar.gz | tar xz
 sudo mv surreal-sync /usr/local/bin/
 ```
 
