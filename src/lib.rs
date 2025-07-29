@@ -101,7 +101,7 @@ pub async fn migrate_batch(
             field_bindings.push(format!("id: {}:{}", record.table(), record.key()));
         }
         let content_fields = format!("{{{}}}", field_bindings.join(", "));
-        println!("{content_fields}");
+
         let query = if is_relationship {
             format!("INSERT RELATION INTO {} {}", record.table(), content_fields)
         } else {
