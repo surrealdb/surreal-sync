@@ -95,7 +95,7 @@ pub async fn migrate_batch(
         let mut field_bindings: Vec<String> = fields
             .keys()
             .filter(|&key| key != "__is_relationship__")
-            .map(|key| format!("{}: ${}", key, key))
+            .map(|key| format!("{key}: ${key}"))
             .collect();
         if is_relationship {
             field_bindings.push(format!("id: {}:{}", record.table(), record.key()));
@@ -105,7 +105,7 @@ pub async fn migrate_batch(
         let query = if is_relationship {
             format!("INSERT RELATION INTO {} {}", record.table(), content_fields)
         } else {
-            format!("CREATE {} CONTENT {}", record_id, content_fields)
+            format!("CREATE {record_id} CONTENT {content_fields}")
         };
 
         tracing::trace!("Executing SurrealDB query with flattened fields: {}", query);
@@ -132,7 +132,7 @@ pub async fn migrate_batch(
                 BindableValue::Array(bindables) => {
                     let mut arr = Vec::new();
                     for item in bindables {
-                        let v = bindable_to_surrealdb_value(&item);
+                        let v = bindable_to_surrealdb_value(item);
                         arr.push(v);
                     }
                     let surreal_arr = surrealdb::sql::Array::from(arr);
@@ -141,13 +141,13 @@ pub async fn migrate_batch(
                 BindableValue::Object(obj) => {
                     let mut map = std::collections::BTreeMap::new();
                     for (key, value) in obj {
-                        let v = bindable_to_surrealdb_value(&value);
+                        let v = bindable_to_surrealdb_value(value);
                         map.insert(key.clone(), v);
                     }
                     let surreal_obj = surrealdb::sql::Object::from(map);
                     q.bind((field_name.clone(), surreal_obj))
                 }
-                BindableValue::Duration(d) => q.bind((field_name.clone(), d.clone())),
+                BindableValue::Duration(d) => q.bind((field_name.clone(), *d)),
                 BindableValue::Bytes(b) => {
                     q.bind((field_name.clone(), surrealdb::sql::Bytes::from(b.clone())))
                 }

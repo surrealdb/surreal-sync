@@ -143,21 +143,11 @@ pub async fn migrate_from_mongodb(
             // Extract MongoDB ObjectId for record ID
             let record_id = if let Some(id_value) = doc_owned.get("_id") {
                 match id_value {
-                    mongodb::bson::Bson::ObjectId(oid) => {
-                        format!("{}:{}", collection_name, oid.to_string())
-                    }
-                    mongodb::bson::Bson::String(s) => {
-                        format!("{}:{}", collection_name, s)
-                    }
-                    mongodb::bson::Bson::Int32(i) => {
-                        format!("{}:{}", collection_name, i)
-                    }
-                    mongodb::bson::Bson::Int64(i) => {
-                        format!("{}:{}", collection_name, i)
-                    }
-                    _ => {
-                        format!("{}:{}", collection_name, id_value.to_string())
-                    }
+                    mongodb::bson::Bson::ObjectId(oid) => format!("{collection_name}:{oid}"),
+                    mongodb::bson::Bson::String(s) => format!("{collection_name}:{s}"),
+                    mongodb::bson::Bson::Int32(i) => format!("{collection_name}:{i}"),
+                    mongodb::bson::Bson::Int64(i) => format!("{collection_name}:{i}"),
+                    _ => format!("{collection_name}:{id_value}"),
                 }
             } else {
                 collection_name.to_string()
