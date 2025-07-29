@@ -383,6 +383,8 @@ fn convert_neo4j_relationship_to_bindable(
 
     bindable_obj.insert("in".to_string(), BindableValue::Thing(in_thing));
     bindable_obj.insert("out".to_string(), BindableValue::Thing(out_thing));
+    // Dummy key to indicate that this is a relationship
+    bindable_obj.insert("__is_relationship__".to_string(), BindableValue::None);
 
     // Convert all properties
     for key in relationship.keys() {

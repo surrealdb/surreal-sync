@@ -5,7 +5,7 @@
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use std::collections::HashMap;
-use surrealdb::Surreal;
+use surrealdb::{RecordId, Surreal};
 
 pub mod jsonl;
 pub mod mongodb;
@@ -86,16 +86,27 @@ pub async fn migrate_batch(
     for (i, (record_id, document)) in batch.iter().enumerate() {
         tracing::trace!("Processing record {}/{}: {}", i + 1, batch.len(), record_id);
 
+        let is_relationship = document.get("__is_relationship__").is_some();
         // Extract fields from the bindable document
         let fields = document;
+        let record: RecordId = record_id.parse()?;
 
         // Build flattened field list for the query
-        let field_bindings: Vec<String> = fields
+        let mut field_bindings: Vec<String> = fields
             .keys()
+            .filter(|&key| key != "__is_relationship__")
             .map(|key| format!("{}: ${}", key, key))
             .collect();
+        if is_relationship {
+            field_bindings.push(format!("id: {}:{}", record.table(), record.key()));
+        }
         let content_fields = format!("{{{}}}", field_bindings.join(", "));
-        let query = format!("CREATE {} CONTENT {}", record_id, content_fields);
+        println!("{content_fields}");
+        let query = if is_relationship {
+            format!("INSERT RELATION INTO {} {}", record.table(), content_fields)
+        } else {
+            format!("CREATE {} CONTENT {}", record_id, content_fields)
+        };
 
         tracing::trace!("Executing SurrealDB query with flattened fields: {}", query);
 
