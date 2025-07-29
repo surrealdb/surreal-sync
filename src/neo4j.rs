@@ -362,24 +362,22 @@ fn convert_neo4j_relationship_to_bindable(
         .map(|s| s.to_lowercase())
         .unwrap_or_else(|| "node".to_string());
 
-    let in_thing = surrealdb::sql::Thing::try_from(
-        format!("{}:{}", start_table, start_id).as_str(),
-    )
-    .map_err(|_| {
-        anyhow::anyhow!(
-            "Failed to create Thing for in field: {}:{}",
-            start_table,
-            start_id
-        )
-    })?;
-    let out_thing = surrealdb::sql::Thing::try_from(format!("{}:{}", end_table, end_id).as_str())
+    let in_thing = surrealdb::sql::Thing::try_from(format!("{start_table}:{start_id}").as_str())
         .map_err(|_| {
-        anyhow::anyhow!(
-            "Failed to create Thing for out field: {}:{}",
-            end_table,
-            end_id
-        )
-    })?;
+            anyhow::anyhow!(
+                "Failed to create Thing for in field: {}:{}",
+                start_table,
+                start_id
+            )
+        })?;
+    let out_thing = surrealdb::sql::Thing::try_from(format!("{end_table}:{end_id}").as_str())
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Failed to create Thing for out field: {}:{}",
+                end_table,
+                end_id
+            )
+        })?;
 
     bindable_obj.insert("in".to_string(), BindableValue::Thing(in_thing));
     bindable_obj.insert("out".to_string(), BindableValue::Thing(out_thing));

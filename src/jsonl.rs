@@ -211,9 +211,9 @@ fn convert_json_to_bindable(
             if key == id_field {
                 // Extract ID for the record
                 if let Value::String(id) = val {
-                    record_id = Some(format!("{}:{}", table_name, id));
+                    record_id = Some(format!("{table_name}:{id}"));
                 } else if let Value::Number(n) = val {
-                    record_id = Some(format!("{}:{}", table_name, n));
+                    record_id = Some(format!("{table_name}:{n}"));
                 } else {
                     return Err(anyhow!("ID field must be a string or number"));
                 }
