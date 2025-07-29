@@ -109,6 +109,7 @@ You can set these environment variables instead of using command-line flags:
 - `SURREAL_ENDPOINT`: SurrealDB endpoint (default: http://localhost:8000)
 - `SURREAL_USERNAME`: SurrealDB username (default: root)
 - `SURREAL_PASSWORD`: SurrealDB password (default: root)
+- `SURREAL_SYNC_DEBUG`: Set to `true` to see more verbose output when migrating
 
 ## Command Line Options
 
