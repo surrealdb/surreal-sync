@@ -86,7 +86,7 @@ pub async fn migrate_batch(
     for (i, (record_id, document)) in batch.iter().enumerate() {
         tracing::trace!("Processing record {}/{}: {}", i + 1, batch.len(), record_id);
 
-        let is_relationship = document.get("__is_relationship__").is_some();
+        let is_relation = document.get("__is_relation__").is_some();
         // Extract fields from the bindable document
         let fields = document;
         let record: RecordId = record_id.parse()?;
@@ -94,15 +94,15 @@ pub async fn migrate_batch(
         // Build flattened field list for the query
         let mut field_bindings: Vec<String> = fields
             .keys()
-            .filter(|&key| key != "__is_relationship__")
+            .filter(|&key| key != "__is_relation__")
             .map(|key| format!("{key}: ${key}"))
             .collect();
-        if is_relationship {
+        if is_relation {
             field_bindings.push(format!("id: {}:{}", record.table(), record.key()));
         }
         let content_fields = format!("{{{}}}", field_bindings.join(", "));
 
-        let query = if is_relationship {
+        let query = if is_relation {
             format!("INSERT RELATION INTO {} {}", record.table(), content_fields)
         } else {
             format!("CREATE {record_id} CONTENT {content_fields}")
