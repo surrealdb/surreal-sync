@@ -228,6 +228,7 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
     )?;
 
     // Setup SurrealDB connection
+    // Change to ws://localhost:8000 if testing locally
     let surreal_endpoint = "ws://surrealdb:8000";
     let surreal = connect(surreal_endpoint).await?;
     surreal
@@ -296,4 +297,101 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
     std::fs::remove_dir_all(&test_dir)?;
 
     Ok(())
+}
+
+#[tokio::test]
+async fn test_jsonl_with_complex_id_field() {
+    // Initialize logging
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync=debug")
+        .try_init()
+        .ok();
+
+    // Create test directory
+    let test_dir = PathBuf::from("/tmp/jsonl_test_custom_id");
+    std::fs::create_dir_all(&test_dir).unwrap();
+
+    // Create test file with custom ID field
+    let test_file = test_dir.join("items.jsonl");
+    std::fs::write(
+        &test_file,
+        r#"{"timestamp":"2025-07-22T03:18:59.349350Z","level":"INFO","target":"surreal::env"}"#,
+    )
+    .unwrap();
+
+    // Setup SurrealDB connection
+    // Change to ws://localhost:8000 if testing locally
+    let surreal_endpoint = "ws://surrealdb:8000";
+    let surreal = connect(surreal_endpoint).await.unwrap();
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: "root",
+            password: "root",
+        })
+        .await
+        .unwrap();
+    surreal
+        .use_ns("test_custom_id")
+        .use_db("test_db")
+        .await
+        .unwrap();
+
+    // Clean up
+    let _: Vec<Thing> = surreal
+        .query("DELETE FROM items")
+        .await
+        .unwrap()
+        .take("id")
+        .unwrap_or_default();
+
+    // Run migration with custom ID field
+    let from_opts = surreal_sync::SourceOpts {
+        source_uri: test_dir.to_string_lossy().to_string(),
+        source_database: None,
+        source_username: None,
+        source_password: None,
+        neo4j_timezone: "UTC".to_string(),
+    };
+
+    let to_opts = surreal_sync::SurrealOpts {
+        surreal_endpoint: surreal_endpoint.to_string(),
+        surreal_username: "root".to_string(),
+        surreal_password: "root".to_string(),
+        batch_size: 10,
+        dry_run: false,
+    };
+
+    surreal_sync::migrate_from_jsonl(
+        from_opts,
+        "test_custom_id".to_string(),
+        "test_db".to_string(),
+        to_opts,
+        "timestamp".to_string(), // Custom ID field
+        vec![],
+    )
+    .await
+    .unwrap();
+
+    // Validate results
+    #[derive(Debug, Deserialize)]
+    struct Item {
+        id: Thing,
+        level: String,
+        target: String,
+    }
+
+    let query = "SELECT * FROM items";
+    let mut response = surreal.query(query).await.unwrap();
+    let items: Vec<Item> = response.take(0).unwrap();
+
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].id.to_string(),
+        "items:⟨2025-07-22T03:18:59.349350Z⟩"
+    );
+    assert_eq!(items[0].level, "INFO");
+    assert_eq!(items[0].target, "surreal::env");
+
+    // Cleanup
+    std::fs::remove_dir_all(&test_dir).unwrap();
 }
