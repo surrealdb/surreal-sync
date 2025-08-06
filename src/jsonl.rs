@@ -211,7 +211,11 @@ fn convert_json_to_bindable(
             if key == id_field {
                 // Extract ID for the record
                 if let Value::String(id) = val {
-                    record_id = Some(format!("{table_name}:{id}"));
+                    if id.chars().any(|c| !c.is_alphanumeric() && c != '_') {
+                        record_id = Some(format!("{table_name}:⟨{id}⟩"));
+                    } else {
+                        record_id = Some(format!("{table_name}:{id}"));
+                    }
                 } else if let Value::Number(n) = val {
                     record_id = Some(format!("{table_name}:{n}"));
                 } else {
