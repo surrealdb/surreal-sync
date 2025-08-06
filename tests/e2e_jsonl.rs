@@ -315,7 +315,8 @@ async fn test_jsonl_with_complex_id_field() {
     let test_file = test_dir.join("items.jsonl");
     std::fs::write(
         &test_file,
-        r#"{"timestamp":"2025-07-22T03:18:59.349350Z","level":"INFO","target":"surreal::env"}"#,
+        r#"{"timestamp":"2025-07-22T03:18:59.349350Z","level":"INFO","target":"surreal::env"}
+        {"timestamp":"2025-07-22T03:19:59.349350Z","level":"INFO","target":"surreal::env"}"#,
     )
     .unwrap();
 
@@ -384,13 +385,19 @@ async fn test_jsonl_with_complex_id_field() {
     let mut response = surreal.query(query).await.unwrap();
     let items: Vec<Item> = response.take(0).unwrap();
 
-    assert_eq!(items.len(), 1);
+    assert_eq!(items.len(), 2);
     assert_eq!(
         items[0].id.to_string(),
         "items:⟨2025-07-22T03:18:59.349350Z⟩"
     );
     assert_eq!(items[0].level, "INFO");
     assert_eq!(items[0].target, "surreal::env");
+    assert_eq!(
+        items[1].id.to_string(),
+        "items:⟨2025-07-22T03:19:59.349350Z⟩"
+    );
+    assert_eq!(items[1].level, "INFO");
+    assert_eq!(items[1].target, "surreal::env");
 
     // Cleanup
     std::fs::remove_dir_all(&test_dir).unwrap();
