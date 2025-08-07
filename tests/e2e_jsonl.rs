@@ -308,7 +308,7 @@ async fn test_jsonl_with_complex_id_field() {
         .ok();
 
     // Create test directory
-    let test_dir = PathBuf::from("/tmp/jsonl_test_custom_id");
+    let test_dir = PathBuf::from("/tmp/jsonl_test_complex_id");
     std::fs::create_dir_all(&test_dir).unwrap();
 
     // Create test file with custom ID field
@@ -332,7 +332,7 @@ async fn test_jsonl_with_complex_id_field() {
         .await
         .unwrap();
     surreal
-        .use_ns("test_custom_id")
+        .use_ns("test_complex_id")
         .use_db("test_db")
         .await
         .unwrap();
@@ -364,7 +364,7 @@ async fn test_jsonl_with_complex_id_field() {
 
     surreal_sync::migrate_from_jsonl(
         from_opts,
-        "test_custom_id".to_string(),
+        "test_complex_id".to_string(),
         "test_db".to_string(),
         to_opts,
         "timestamp".to_string(), // Custom ID field
