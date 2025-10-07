@@ -10,11 +10,9 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     protobuf-compiler \
     curl \
     wget \
+    postgresql-client \
     && apt-get clean -y \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Rust components
-RUN rustup component add rustfmt clippy
 
 # Create a non-root user if it doesn't exist
 ARG USERNAME=vscode
@@ -37,3 +35,9 @@ WORKDIR /workspace
 
 # Switch to non-root user
 USER $USERNAME
+
+# Install Rust components
+# This needs to be done as the non-root user to ensure the components are installed in the correct location
+# Otherwise, you will get:
+#   Error: error: 'cargo-fmt' is not installed for the toolchain
+RUN rustup component add --toolchain 1.88.0-x86_64-unknown-linux-gnu rustfmt clippy

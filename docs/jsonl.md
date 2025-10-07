@@ -13,7 +13,7 @@ JSONL source is particularly useful for:
 ## Basic Usage
 
 ```bash
-surreal-sync sync jsonl \
+surreal-sync full jsonl \
   --source-uri /path/to/jsonl/directory \
   --to-namespace myns \
   --to-database mydb

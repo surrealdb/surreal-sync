@@ -1,0 +1,4 @@
+mod mongodb_full_sync_only_cli;
+mod mongodb_full_sync_only_lib;
+mod mongodb_incremental_sync_only_cli;
+mod mongodb_incremental_sync_only_lib;

@@ -1,4 +1,4 @@
-use crate::{BindableValue, SourceOpts, SurrealOpts};
+use crate::{SourceOpts, SurrealOpts, SurrealValue};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -141,7 +141,7 @@ pub async fn migrate_from_jsonl(
             let file = File::open(&path)?;
             let reader = BufReader::new(file);
 
-            let mut batch = Vec::new();
+            let mut batch: Vec<crate::Record> = Vec::new();
             let mut line_count = 0;
 
             for line in reader.lines() {
@@ -157,15 +157,14 @@ pub async fn migrate_from_jsonl(
                     .map_err(|e| anyhow!("Error parsing JSON at line {}: {}", line_count, e))?;
 
                 // Convert to bindable document
-                let (record_id, document) =
-                    convert_json_to_bindable(&json_value, file_name, &id_field, &rules)?;
+                let document = convert_json_to_record(&json_value, file_name, &id_field, &rules)?;
 
-                batch.push((record_id, document));
+                batch.push(document);
 
                 // Process batch when it reaches the batch size
                 if batch.len() >= to_opts.batch_size {
                     if !to_opts.dry_run {
-                        crate::migrate_batch(&surreal, file_name, &batch).await?;
+                        crate::write_records(&surreal, file_name, &batch).await?;
                     }
                     total_migrated += batch.len();
                     tracing::debug!("Migrated batch of {} documents", batch.len());
@@ -176,7 +175,7 @@ pub async fn migrate_from_jsonl(
             // Process remaining documents
             if !batch.is_empty() {
                 if !to_opts.dry_run {
-                    crate::migrate_batch(&surreal, file_name, &batch).await?;
+                    crate::write_records(&surreal, file_name, &batch).await?;
                 }
                 total_migrated += batch.len();
                 tracing::debug!("Migrated final batch of {} documents", batch.len());
@@ -197,64 +196,72 @@ pub async fn migrate_from_jsonl(
     Ok(())
 }
 
-fn convert_json_to_bindable(
+fn convert_json_to_record(
     value: &Value,
     table_name: &str,
     id_field: &str,
     rules: &[ConversionRule],
-) -> Result<(String, HashMap<String, BindableValue>)> {
+) -> Result<crate::Record> {
+    let mut id: Option<surrealdb::sql::Id> = None;
+
     if let Value::Object(obj) = value {
-        let mut document = HashMap::new();
-        let mut record_id = None;
+        let mut data = HashMap::new();
 
         for (key, val) in obj {
             if key == id_field {
                 // Extract ID for the record
-                if let Value::String(id) = val {
-                    if id.chars().any(|c| !c.is_alphanumeric() && c != '_') {
-                        record_id = Some(format!("{table_name}:⟨{id}⟩"));
-                    } else {
-                        record_id = Some(format!("{table_name}:{id}"));
-                    }
+                if let Value::String(s) = val {
+                    id = Some(surrealdb::sql::Id::from(s));
                 } else if let Value::Number(n) = val {
-                    record_id = Some(format!("{table_name}:{n}"));
+                    if let Some(i) = n.as_i64() {
+                        id = Some(surrealdb::sql::Id::from(i));
+                    } else if let Some(u) = n.as_u64() {
+                        id = Some(surrealdb::sql::Id::from(u));
+                    } else {
+                        anyhow::bail!("ID field number must be an integer: {}", n);
+                    }
                 } else {
                     return Err(anyhow!("ID field must be a string or number"));
                 }
             } else {
                 // Convert the value, applying rules if applicable
-                let bindable_value = convert_value_with_rules(val, rules)?;
-                document.insert(key.clone(), bindable_value);
+                let v = convert_value_with_rules(val, rules)?;
+                data.insert(key.clone(), v);
             }
         }
 
-        let record_id = record_id.ok_or_else(|| anyhow!("Missing ID field: {}", id_field))?;
-        Ok((record_id, document))
+        // Create proper SurrealDB Thing for the record
+        let id = match id {
+            Some(id) => surrealdb::sql::Thing::from((table_name.to_string(), id)),
+            None => return Err(anyhow!("Missing ID field: {}", id_field)),
+        };
+
+        Ok(crate::Record { id, data })
     } else {
         Err(anyhow!("JSONL line must be a JSON object"))
     }
 }
 
-fn convert_value_with_rules(value: &Value, rules: &[ConversionRule]) -> Result<BindableValue> {
+fn convert_value_with_rules(value: &Value, rules: &[ConversionRule]) -> Result<SurrealValue> {
     match value {
-        Value::Null => Ok(BindableValue::Null),
-        Value::Bool(b) => Ok(BindableValue::Bool(*b)),
+        Value::Null => Ok(SurrealValue::Null),
+        Value::Bool(b) => Ok(SurrealValue::Bool(*b)),
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Ok(BindableValue::Int(i))
+                Ok(SurrealValue::Int(i))
             } else if let Some(f) = n.as_f64() {
-                Ok(BindableValue::Float(f))
+                Ok(SurrealValue::Float(f))
             } else {
                 Err(anyhow!("Unsupported number type"))
             }
         }
-        Value::String(s) => Ok(BindableValue::String(s.clone())),
+        Value::String(s) => Ok(SurrealValue::String(s.clone())),
         Value::Array(arr) => {
             let mut bindables = Vec::new();
             for item in arr {
                 bindables.push(convert_value_with_rules(item, rules)?);
             }
-            Ok(BindableValue::Array(bindables))
+            Ok(SurrealValue::Array(bindables))
         }
         Value::Object(obj) => {
             // Check if this object matches any conversion rule
@@ -265,7 +272,7 @@ fn convert_value_with_rules(value: &Value, rules: &[ConversionRule]) -> Result<B
                         if let Some(id_value) = obj.get(&rule.id_field).and_then(|v| v.as_str()) {
                             let thing =
                                 Thing::from((rule.target_table.clone(), id_value.to_string()));
-                            return Ok(BindableValue::Thing(thing));
+                            return Ok(SurrealValue::Thing(thing));
                         }
                     }
                 }
@@ -276,7 +283,252 @@ fn convert_value_with_rules(value: &Value, rules: &[ConversionRule]) -> Result<B
             for (key, val) in obj {
                 bindables.insert(key.clone(), convert_value_with_rules(val, rules)?);
             }
-            Ok(BindableValue::Object(bindables))
+            Ok(SurrealValue::Object(bindables))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Tests parsing a well-formed conversion rule with all components present.
+    /// Rule format: type="user",user_id users:user_id
+    /// Means: Convert objects with type="user" into Thing references to the users table using user_id.
+    #[test]
+    fn test_parse_valid_rule() {
+        let rule_str = r#"type="user",user_id users:user_id"#;
+        let rule = ConversionRule::parse(rule_str).unwrap();
+
+        assert_eq!(rule.type_field, "type");
+        assert_eq!(rule.type_value, "user");
+        assert_eq!(rule.id_field, "user_id");
+        assert_eq!(rule.target_table, "users");
+    }
+
+    /// Tests that the parser correctly handles extra whitespace around delimiters.
+    /// The parser should trim whitespace and extract the same values as without whitespace.
+    #[test]
+    fn test_parse_with_extra_whitespace() {
+        let rule_str = r#"  type="user"  ,  user_id   users:user_id  "#;
+        let rule = ConversionRule::parse(rule_str).unwrap();
+
+        assert_eq!(rule.type_field, "type");
+        assert_eq!(rule.type_value, "user");
+        assert_eq!(rule.id_field, "user_id");
+        assert_eq!(rule.target_table, "users");
+    }
+
+    /// Tests parsing rules with different type values and identifier patterns.
+    /// Each case represents a different entity type that might need conversion:
+    /// - organization: Multi-word type value with corresponding table
+    /// - product: Standard entity type
+    /// - admin_user: Underscore-separated type with simple "id" field name
+    #[test]
+    fn test_parse_different_type_values() {
+        let test_cases = vec![
+            (
+                r#"type="organization",org_id organizations:org_id"#,
+                "organization",
+                "org_id",
+                "organizations",
+            ),
+            (
+                r#"type="product",product_id products:product_id"#,
+                "product",
+                "product_id",
+                "products",
+            ),
+            (
+                r#"type="admin_user",id admins:id"#,
+                "admin_user",
+                "id",
+                "admins",
+            ),
+        ];
+
+        for (rule_str, expected_type, expected_id, expected_table) in test_cases {
+            let rule = ConversionRule::parse(rule_str).unwrap();
+            assert_eq!(rule.type_value, expected_type);
+            assert_eq!(rule.id_field, expected_id);
+            assert_eq!(rule.target_table, expected_table);
+        }
+    }
+
+    /// Tests that parsing fails when the comma separator between type and id_field is missing.
+    /// Without the comma, the parser cannot distinguish between the type specification and id field.
+    #[test]
+    fn test_parse_missing_comma() {
+        let rule_str = r#"type="user" user_id users:user_id"#;
+        let result = ConversionRule::parse(rule_str);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid rule format"));
+    }
+
+    /// Tests that parsing fails when the space between id_field and target is missing.
+    /// The space is required to separate the source id field from the target table:id mapping.
+    #[test]
+    fn test_parse_missing_space() {
+        let rule_str = r#"type="user",user_idusers:user_id"#;
+        let result = ConversionRule::parse(rule_str);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid rule format"));
+    }
+
+    /// Tests that parsing fails when type value is not wrapped in quotes.
+    /// The parser expects: type="value" not type=value
+    #[test]
+    fn test_parse_invalid_type_format_no_quotes() {
+        let rule_str = r#"type=user,user_id users:user_id"#;
+        let result = ConversionRule::parse(rule_str);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid type specification"));
+    }
+
+    /// Tests that parsing fails when the opening quote is missing from the type value.
+    /// The parser requires both opening and closing quotes around the type value.
+    #[test]
+    fn test_parse_invalid_type_format_missing_opening_quote() {
+        let rule_str = r#"type=user",user_id users:user_id"#;
+        let result = ConversionRule::parse(rule_str);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid type specification"));
+    }
+
+    /// Tests that parsing fails when the closing quote is missing from the type value.
+    /// Without proper quote closure, the parser cannot determine where the type value ends.
+    #[test]
+    fn test_parse_invalid_type_format_missing_closing_quote() {
+        let rule_str = r#"type="user,user_id users:user_id"#;
+        let result = ConversionRule::parse(rule_str);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid type specification"));
+    }
+
+    /// Tests that parsing fails when the colon separator is missing from the target specification.
+    /// The parser expects: table:id_field not table_id_field
+    #[test]
+    fn test_parse_missing_colon_in_target() {
+        let rule_str = r#"type="user",user_id users_user_id"#;
+        let result = ConversionRule::parse(rule_str);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid target specification"));
+    }
+
+    /// Tests that parsing fails when there are multiple colons in the target specification.
+    /// The parser expects exactly one colon to separate table from id_field.
+    #[test]
+    fn test_parse_too_many_colons_in_target() {
+        let rule_str = r#"type="user",user_id users:extra:user_id"#;
+        let result = ConversionRule::parse(rule_str);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid target specification"));
+    }
+
+    /// Tests that parsing fails when the source id_field doesn't match the target id_field.
+    /// This validation ensures consistency: if the rule says "user_id", both sides must use "user_id".
+    /// This prevents mistakes like: type="user",user_id users:different_id
+    #[test]
+    fn test_parse_id_field_mismatch() {
+        let rule_str = r#"type="user",user_id users:different_id"#;
+        let result = ConversionRule::parse(rule_str);
+
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("ID field mismatch"));
+        assert!(err_msg.contains("user_id"));
+        assert!(err_msg.contains("different_id"));
+    }
+
+    /// Tests that parsing fails when given an empty string.
+    /// An empty rule has no components to parse.
+    #[test]
+    fn test_parse_empty_string() {
+        let rule_str = "";
+        let result = ConversionRule::parse(rule_str);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid rule format"));
+    }
+
+    /// Tests that parsing fails when only the type part is provided without id and target.
+    /// A complete rule requires all three parts: type specification, id field, and target mapping.
+    #[test]
+    fn test_parse_only_type() {
+        let rule_str = r#"type="user""#;
+        let result = ConversionRule::parse(rule_str);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid rule format"));
+    }
+
+    /// Tests parsing a rule with an empty type value (empty string between quotes).
+    /// While unusual, the parser should accept type="" as a valid empty type value.
+    #[test]
+    fn test_parse_empty_type_value() {
+        let rule_str = r#"type="",user_id users:user_id"#;
+        let rule = ConversionRule::parse(rule_str).unwrap();
+
+        assert_eq!(rule.type_value, "");
+        assert_eq!(rule.id_field, "user_id");
+        assert_eq!(rule.target_table, "users");
+    }
+
+    /// Tests that type values can contain spaces.
+    /// Example: type="admin user" is valid and should preserve the space in the type value.
+    #[test]
+    fn test_parse_type_value_with_spaces() {
+        let rule_str = r#"type="admin user",admin_id admins:admin_id"#;
+        let rule = ConversionRule::parse(rule_str).unwrap();
+
+        assert_eq!(rule.type_value, "admin user");
+        assert_eq!(rule.id_field, "admin_id");
+        assert_eq!(rule.target_table, "admins");
+    }
+
+    /// Tests that type values can contain special characters like hyphens and underscores.
+    /// Example: type="user-profile_v2" should be parsed correctly with all special chars preserved.
+    #[test]
+    fn test_parse_type_value_with_special_chars() {
+        let rule_str = r#"type="user-profile_v2",id profiles:id"#;
+        let rule = ConversionRule::parse(rule_str).unwrap();
+
+        assert_eq!(rule.type_value, "user-profile_v2");
+        assert_eq!(rule.id_field, "id");
+        assert_eq!(rule.target_table, "profiles");
     }
 }
