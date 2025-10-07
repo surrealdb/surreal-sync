@@ -1,17 +1,103 @@
 //! SurrealSync Library
 //!
-//! A library for migrating data from Neo4j and MongoDB databases to SurrealDB.
+//! A library for migrating data from Neo4j, MongoDB, PostgreSQL, and MySQL databases to SurrealDB.
+//!
+//! # Features
+//!
+//! - Full synchronization: Complete data migration from source to target
+//! - Incremental synchronization: Real-time change capture and replication
+//! - Multiple databases: Neo4j, MongoDB, PostgreSQL, MySQL support
+//! - Reliable checkpointing: Resume sync from any point after failures
+//! - Portability: Trigger-based approaches work in any environment
+//!
+//! # Incremental Sync Architecture
+//!
+//! The library provides a universal incremental sync design that works across all
+//! supported databases. See [`sync`] module for the core architecture and
+//! individual database modules for specific implementations:
+//!
+//! - [`neo4j_incremental`] - Neo4j timestamp-based tracking
+//! - [`mongodb_incremental`] - MongoDB change streams
+//! - [`postgresql_incremental`] - PostgreSQL trigger-based tracking
+//! - [`mysql_incremental`] - MySQL audit table tracking
+//!
+//! # Quick Start
+//!
+//! ```ignore
+//! use surreal_sync::sync::{IncrementalSource, SyncCheckpoint};
+//!
+//! // PostgreSQL incremental sync
+//! let mut source = postgresql_incremental::PostgresIncrementalSource::new(
+//!     "postgres://user:pass@localhost/db"
+//! ).await?;
+//!
+//! source.initialize(None).await?;
+//! let mut stream = source.get_changes().await?;
+//!
+//! while let Some(change) = stream.next().await {
+//!     // Process change...
+//! }
+//! ```
 
-use chrono::{DateTime, Utc};
 use clap::Parser;
-use std::collections::HashMap;
-use surrealdb::{RecordId, Surreal};
+use surrealdb::Surreal;
 
+pub mod checkpoint;
 pub mod jsonl;
 pub mod mongodb;
+pub mod mysql;
 pub mod neo4j;
+pub mod postgresql;
+pub mod schema;
+pub mod sync;
+pub mod testing;
+pub mod types;
 
-#[derive(Parser)]
+pub mod connect;
+
+// Re-export types and schema functionality for easy access
+pub use schema::{json_to_sureral, DatabaseSchema, GenericDataType, TableSchema};
+pub use types::{
+    bindable_to_surrealdb_value, json_to_bindable_map, json_value_to_bindable,
+    serialize_bindable_map_to_json, serialize_bindable_value_to_json, SurrealValue,
+};
+
+// Re-export main migration functions for easy access
+pub use jsonl::migrate_from_jsonl;
+pub use mongodb::migrate_from_mongodb;
+
+use crate::sync::ChangeEvent;
+
+/// Parsed configuration for Neo4j JSON-to-object conversion
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Neo4jJsonProperty {
+    pub label: String,
+    pub property: String,
+}
+
+impl Neo4jJsonProperty {
+    /// Parse "Label.property" format into Neo4jJsonProperty
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        let parts: Vec<&str> = s.split('.').collect();
+        if parts.len() != 2 {
+            anyhow::bail!(
+                "Invalid Neo4j JSON property format: '{}'. Expected format: 'NodeLabel.propertyName'",
+                s
+            );
+        }
+        Ok(Neo4jJsonProperty {
+            label: parts[0].to_string(),
+            property: parts[1].to_string(),
+        })
+    }
+
+    /// Parse multiple entries from CLI argument
+    pub fn parse_vec(entries: &[String]) -> anyhow::Result<Vec<Self>> {
+        entries.iter().map(|s| Self::parse(s)).collect()
+    }
+}
+
+#[derive(Parser, Clone)]
 pub struct SourceOpts {
     /// Source database connection string/URI
     #[arg(long, env = "SOURCE_URI")]
@@ -34,9 +120,21 @@ pub struct SourceOpts {
     /// Default: "UTC"
     #[arg(long, default_value = "UTC", env = "NEO4J_TIMEZONE")]
     pub neo4j_timezone: String,
+
+    /// MySQL JSON paths that contain boolean values stored as 0/1
+    /// Format: comma-separated entries like "users.metadata=settings.notifications,posts.config=enabled"
+    /// Each entry: "tablename.columnname=json.path.to.bool"
+    #[arg(long, value_delimiter = ',', env = "MYSQL_BOOLEAN_PATHS")]
+    pub mysql_boolean_paths: Option<Vec<String>>,
+
+    /// Neo4j properties that should be converted from JSON strings to SurrealDB objects
+    /// Format: comma-separated entries like "User.metadata,Post.config"
+    /// Each entry: "NodeLabel.propertyName"
+    #[arg(long, value_delimiter = ',', env = "NEO4J_JSON_PROPERTIES")]
+    pub neo4j_json_properties: Option<Vec<String>>,
 }
 
-#[derive(Parser)]
+#[derive(Parser, Clone)]
 pub struct SurrealOpts {
     /// SurrealDB endpoint URL
     #[arg(
@@ -63,19 +161,174 @@ pub struct SurrealOpts {
     pub dry_run: bool,
 }
 
-pub async fn migrate_from_mongodb(
-    from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
-) -> anyhow::Result<()> {
-    mongodb::migrate_from_mongodb(from_opts, to_namespace, to_database, to_opts).await
+#[derive(Debug, Clone)]
+pub struct Record {
+    pub id: surrealdb::sql::Thing,
+    pub data: std::collections::HashMap<String, SurrealValue>,
 }
 
-pub async fn migrate_batch(
+impl Record {
+    pub fn get_upsert_content(&self) -> surrealdb::sql::Value {
+        let mut m = std::collections::BTreeMap::new();
+        for (k, v) in &self.data {
+            tracing::debug!("Adding field to record: {k} -> {v:?}",);
+            m.insert(k.clone(), bindable_to_surrealdb_value(v));
+        }
+        surrealdb::sql::Value::Object(surrealdb::sql::Object::from(m))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Relation {
+    pub id: surrealdb::sql::Thing,
+    pub input: surrealdb::sql::Thing,
+    pub output: surrealdb::sql::Thing,
+    pub data: std::collections::HashMap<String, SurrealValue>,
+}
+
+impl Relation {
+    pub fn get_in(&self) -> surrealdb::sql::Value {
+        surrealdb::sql::Value::Thing(self.input.clone())
+    }
+    pub fn get_out(&self) -> surrealdb::sql::Value {
+        surrealdb::sql::Value::Thing(self.output.clone())
+    }
+    pub fn get_relate_content(&self) -> surrealdb::sql::Value {
+        // Build content object from all fields (excluding relation marker and in/out for relations)
+        let mut m = std::collections::BTreeMap::new();
+        for (k, v) in &self.data {
+            tracing::debug!("Adding field to relation: {} -> {:?}", k, v);
+            let surreal_value = bindable_to_surrealdb_value(v);
+            m.insert(k.clone(), surreal_value);
+        }
+
+        // Use the Thing directly for the relation id field
+        m.insert(
+            "id".to_string(),
+            surrealdb::sql::Value::Thing(self.id.clone()),
+        );
+
+        surrealdb::sql::Value::Object(surrealdb::sql::Object::from(m))
+    }
+}
+
+// Apply a single change event to SurrealDB
+async fn apply_change(
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+    change: &ChangeEvent,
+) -> anyhow::Result<()> {
+    match change {
+        ChangeEvent::UpsertRecord(record) => {
+            write_record(surreal, record).await?;
+
+            tracing::trace!("Successfully upserted record: {record:?}");
+        }
+        ChangeEvent::DeleteRecord(thing) => {
+            let query = "DELETE $record_id".to_string();
+            tracing::trace!("Executing SurrealDB query: {}", query);
+            log::info!("🔧 migrate_change executing: {query} for record: {thing:?}");
+
+            let mut q = surreal.query(query);
+            q = q.bind(("record_id", thing.clone()));
+
+            q.await?;
+
+            tracing::trace!("Successfully deleted record: {:?}", thing);
+        }
+        ChangeEvent::UpsertRelation(relation) => {
+            write_relation(surreal, relation).await?;
+
+            tracing::trace!("Successfully upserted relation: {relation:?}");
+        }
+        ChangeEvent::DeleteRelation(thing) => {
+            let query = "DELETE $relation_id".to_string();
+            tracing::trace!("Executing SurrealDB query: {}", query);
+            log::info!("🔧 migrate_change executing: {query} for relation: {thing:?}");
+
+            let mut q = surreal.query(query);
+            q = q.bind(("relation_id", thing.clone()));
+            q.await?;
+            tracing::trace!("Successfully deleted relation: {thing:?}");
+        }
+    }
+
+    tracing::debug!("Successfully applied {change:?}");
+
+    Ok(())
+}
+
+// Write a single record to SurrealDB using UPSERT
+async fn write_record(
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+    document: &Record,
+) -> anyhow::Result<()> {
+    let upsert_content = document.get_upsert_content();
+    let record_id = &document.id;
+
+    // Build parameterized query using proper variable binding to prevent injection
+    let query = "UPSERT $record_id CONTENT $content".to_string();
+
+    tracing::trace!("Executing SurrealDB query with flattened fields: {}", query);
+
+    log::info!("🔧 migrate_batch executing: {query} for record: {record_id:?}");
+
+    // Add debug logging to see the document being bound
+    if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+        tracing::debug!("Binding document to SurrealDB query for record {document:?}",);
+    }
+
+    // Build query with proper parameter binding
+    let mut q = surreal.query(query);
+    q = q.bind(("record_id", record_id.clone()));
+    q = q.bind(("content", upsert_content.clone()));
+
+    let mut response: surrealdb::Response = q.await.map_err(|e| {
+        tracing::error!(
+            "SurrealDB query execution failed for record {:?}: {}",
+            record_id,
+            e
+        );
+        if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+            tracing::error!("Failed query content: {upsert_content:?}");
+        }
+        e
+    })?;
+
+    let result: Result<Vec<surrealdb::sql::Thing>, surrealdb::Error> =
+        response.take("id").map_err(|e| {
+            tracing::error!(
+                "SurrealDB response.take() failed for record {:?}: {}",
+                record_id,
+                e
+            );
+            e
+        });
+
+    match result {
+        Ok(res) => {
+            if res.is_empty() {
+                tracing::warn!("Failed to create record: {:?}", record_id);
+            } else {
+                tracing::trace!("Successfully created record: {:?}", record_id);
+            }
+        }
+        Err(e) => {
+            tracing::error!("Error creating record {:?}: {}", record_id, e);
+            if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                tracing::error!("Problematic document: {:?}", document);
+            }
+            return Err(e.into());
+        }
+    }
+
+    Ok(())
+}
+
+// Write a batch of records to SurrealDB using UPSERT
+pub async fn write_records(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     table_name: &str,
-    batch: &[(String, std::collections::HashMap<String, BindableValue>)],
+    batch: &[Record],
 ) -> anyhow::Result<()> {
     tracing::debug!(
         "Starting migration batch for table '{}' with {} records",
@@ -83,101 +336,9 @@ pub async fn migrate_batch(
         batch.len()
     );
 
-    for (i, (record_id, document)) in batch.iter().enumerate() {
-        tracing::trace!("Processing record {}/{}: {}", i + 1, batch.len(), record_id);
-
-        let is_relation = document.get("__is_relation__").is_some();
-        // Extract fields from the bindable document
-        let fields = document;
-        let record: RecordId = record_id.parse()?;
-
-        // Build flattened field list for the query
-        let mut field_bindings: Vec<String> = fields
-            .keys()
-            .filter(|&key| key != "__is_relation__")
-            .map(|key| format!("{key}: ${key}"))
-            .collect();
-        if is_relation {
-            field_bindings.push(format!("id: {}:{}", record.table(), record.key()));
-        }
-        let content_fields = format!("{{{}}}", field_bindings.join(", "));
-
-        let query = if is_relation {
-            format!("INSERT RELATION INTO {} {}", record.table(), content_fields)
-        } else {
-            format!("CREATE {record_id} CONTENT {content_fields}")
-        };
-
-        tracing::trace!("Executing SurrealDB query with flattened fields: {}", query);
-
-        // Add debug logging to see the document being bound
-        if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-            tracing::debug!(
-                "Binding document to SurrealDB query for record {}: {:?}",
-                record_id,
-                document
-            );
-        }
-
-        // Build query with individual field bindings
-        let mut q = surreal.query(query);
-        for (field_name, field_value) in fields {
-            tracing::debug!("Binding field: {} to value: {:?}", field_name, field_value);
-            q = match field_value {
-                BindableValue::Bool(b) => q.bind((field_name.clone(), *b)),
-                BindableValue::Int(i) => q.bind((field_name.clone(), *i)),
-                BindableValue::Float(f) => q.bind((field_name.clone(), *f)),
-                BindableValue::String(s) => q.bind((field_name.clone(), s.clone())),
-                BindableValue::DateTime(dt) => q.bind((field_name.clone(), *dt)),
-                BindableValue::Array(bindables) => {
-                    let mut arr = Vec::new();
-                    for item in bindables {
-                        let v = bindable_to_surrealdb_value(item);
-                        arr.push(v);
-                    }
-                    let surreal_arr = surrealdb::sql::Array::from(arr);
-                    q.bind((field_name.clone(), surreal_arr))
-                }
-                BindableValue::Object(obj) => {
-                    let mut map = std::collections::BTreeMap::new();
-                    for (key, value) in obj {
-                        let v = bindable_to_surrealdb_value(value);
-                        map.insert(key.clone(), v);
-                    }
-                    let surreal_obj = surrealdb::sql::Object::from(map);
-                    q.bind((field_name.clone(), surreal_obj))
-                }
-                BindableValue::Duration(d) => q.bind((field_name.clone(), *d)),
-                BindableValue::Bytes(b) => {
-                    q.bind((field_name.clone(), surrealdb::sql::Bytes::from(b.clone())))
-                }
-                BindableValue::Decimal(d) => q.bind((field_name.clone(), *d)),
-                BindableValue::Thing(t) => q.bind((field_name.clone(), t.clone())),
-                BindableValue::Geometry(g) => q.bind((field_name.clone(), g.clone())),
-                BindableValue::Null => q.bind((field_name.clone(), surrealdb::sql::Value::Null)),
-                BindableValue::None => q.bind((field_name.clone(), surrealdb::sql::Value::None)),
-            };
-        }
-
-        let mut response: surrealdb::Response = q.await?;
-        let result: Result<Vec<surrealdb::sql::Thing>, surrealdb::Error> = response.take("id");
-
-        match result {
-            Ok(res) => {
-                if res.is_empty() {
-                    tracing::warn!("Failed to create record: {}", record_id);
-                } else {
-                    tracing::trace!("Successfully created record: {}", record_id);
-                }
-            }
-            Err(e) => {
-                tracing::error!("Error creating record {}: {}", record_id, e);
-                if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                    tracing::error!("Problematic document: {:?}", document);
-                }
-                return Err(e.into());
-            }
-        }
+    for (i, r) in batch.iter().enumerate() {
+        tracing::trace!("Processing record {}/{}", i + 1, batch.len());
+        write_record(surreal, r).await?;
     }
 
     tracing::debug!(
@@ -188,90 +349,98 @@ pub async fn migrate_batch(
     Ok(())
 }
 
-fn bindable_to_surrealdb_value(bindable: &BindableValue) -> surrealdb::sql::Value {
-    match bindable {
-        BindableValue::Bool(b) => surrealdb::sql::Value::Bool(*b),
-        BindableValue::Int(i) => surrealdb::sql::Value::Number(surrealdb::sql::Number::from(*i)),
-        BindableValue::Float(f) => surrealdb::sql::Value::Number(surrealdb::sql::Number::from(*f)),
-        BindableValue::String(s) => {
-            surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(s.clone()))
-        }
-        BindableValue::DateTime(dt) => {
-            surrealdb::sql::Value::Datetime(surrealdb::sql::Datetime::from(*dt))
-        }
-        BindableValue::Array(bindables) => {
-            let mut arr = Vec::new();
-            for item in bindables {
-                let v = bindable_to_surrealdb_value(item);
-                arr.push(v);
-            }
-            surrealdb::sql::Value::Array(surrealdb::sql::Array::from(arr))
-        }
-        BindableValue::Object(obj) => {
-            let mut map = std::collections::BTreeMap::new();
-            for (key, value) in obj {
-                let v = bindable_to_surrealdb_value(value);
-                map.insert(key.clone(), v);
-            }
-            surrealdb::sql::Value::Object(surrealdb::sql::Object::from(map))
-        }
-        BindableValue::Duration(d) => {
-            surrealdb::sql::Value::Duration(surrealdb::sql::Duration::from(*d))
-        }
-        BindableValue::Bytes(b) => {
-            surrealdb::sql::Value::Bytes(surrealdb::sql::Bytes::from(b.clone()))
-        }
-        BindableValue::Decimal(d) => surrealdb::sql::Value::Number(*d),
-        BindableValue::Thing(t) => surrealdb::sql::Value::Thing(t.clone()),
-        BindableValue::Geometry(g) => surrealdb::sql::Value::Geometry(g.clone()),
-        BindableValue::Null => surrealdb::sql::Value::Null,
-        BindableValue::None => surrealdb::sql::Value::None,
+async fn write_relation(
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+    r: &Relation,
+) -> anyhow::Result<()> {
+    // Build parameterized query using proper variable binding to prevent injection
+    let query = format!("RELATE $in->{}->$out CONTENT $content", r.id.tb);
+
+    let record_id = &r.id;
+
+    tracing::trace!("Executing SurrealDB query with flattened fields: {}", query);
+    log::info!("🔧 migrate_batch executing: {query} for record: {record_id:?}");
+
+    // Add debug logging to see the document being bound
+    if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+        tracing::debug!(
+            "Binding document to SurrealDB query for record {:?}: {:?}",
+            record_id,
+            r
+        );
     }
+
+    // Build query with proper parameter binding
+    let mut q = surreal.query(query);
+    q = q.bind(("in", r.get_in()));
+    q = q.bind(("out", r.get_out()));
+    q = q.bind(("content", r.get_relate_content()));
+
+    let mut response: surrealdb::Response = q.await.map_err(|e| {
+        tracing::error!(
+            "SurrealDB query execution failed for record {:?}: {}",
+            record_id,
+            e
+        );
+        if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+            tracing::error!("Failed query content: {:?}", r.get_relate_content());
+        }
+        e
+    })?;
+
+    let result: Result<Vec<surrealdb::sql::Thing>, surrealdb::Error> =
+        response.take("id").map_err(|e| {
+            tracing::error!(
+                "SurrealDB response.take() failed for record {:?}: {}",
+                record_id,
+                e
+            );
+            if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                tracing::error!("Response take error content: {:?}", r.get_relate_content());
+            }
+            e
+        });
+
+    match result {
+        Ok(res) => {
+            if res.is_empty() {
+                tracing::warn!("Failed to create record: {:?}", record_id);
+            } else {
+                tracing::trace!("Successfully created record: {:?}", record_id);
+            }
+        }
+        Err(e) => {
+            tracing::error!("Error creating record {:?}: {}", record_id, e);
+            if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                tracing::error!("Problematic document: {:?}", r);
+            }
+            return Err(e.into());
+        }
+    }
+
+    Ok(())
 }
 
-pub async fn migrate_from_neo4j(
-    from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
+pub async fn write_relations(
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+    table_name: &str,
+    batch: &[Relation],
 ) -> anyhow::Result<()> {
-    neo4j::migrate_from_neo4j(from_opts, to_namespace, to_database, to_opts).await
-}
+    tracing::debug!(
+        "Starting migration batch for table '{}' with {} records",
+        table_name,
+        batch.len()
+    );
 
-pub async fn migrate_from_jsonl(
-    from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
-    id_field: String,
-    conversion_rules: Vec<String>,
-) -> anyhow::Result<()> {
-    jsonl::migrate_from_jsonl(
-        from_opts,
-        to_namespace,
-        to_database,
-        to_opts,
-        id_field,
-        conversion_rules,
-    )
-    .await
-}
+    for (i, r) in batch.iter().enumerate() {
+        tracing::trace!("Processing record {}/{}", i + 1, batch.len());
+        write_relation(surreal, r).await?;
+    }
 
-/// Enum to represent bindable values that can be bound to SurrealDB queries
-#[derive(Debug, Clone)]
-pub enum BindableValue {
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    String(String),
-    DateTime(DateTime<Utc>),
-    Array(Vec<BindableValue>), // For arrays, we'll use JSON since SurrealDB accepts Vec<T> where T: Into<Value>
-    Object(HashMap<String, BindableValue>), // For objects, use JSON
-    Duration(std::time::Duration),
-    Bytes(Vec<u8>),
-    Decimal(surrealdb::sql::Number),
-    Thing(surrealdb::sql::Thing),
-    Geometry(surrealdb::sql::Geometry),
-    Null,
-    None,
+    tracing::debug!(
+        "Completed migrating relations for table '{}' with {} records",
+        table_name,
+        batch.len()
+    );
+    Ok(())
 }

@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use surrealdb::{engine::any::connect, sql::Thing, Surreal};
 
@@ -7,30 +6,21 @@ use surrealdb::{engine::any::connect, sql::Thing, Surreal};
 struct Page {
     id: Thing,
     title: String,
-    content: String,
     parent: Thing,
-    created_at: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct Block {
     id: Thing,
     r#type: String,
-    text: Option<String>,
-    level: Option<i64>,
-    language: Option<String>,
     items: Option<Vec<String>>,
     parent: Thing,
-    order: i64,
 }
 
 #[derive(Debug, Deserialize)]
 struct Database {
     id: Thing,
     name: String,
-    description: String,
-    created_at: String,
-    properties: HashMap<String, serde_json::Value>,
 }
 
 /// End-to-end test for JSONL to SurrealDB migration
@@ -78,6 +68,8 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
         source_username: None,
         source_password: None,
         neo4j_timezone: "UTC".to_string(),
+        neo4j_json_properties: None,
+        mysql_boolean_paths: None,
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -123,7 +115,7 @@ async fn cleanup_test_data(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let tables = ["pages", "blocks", "databases"];
     for table in tables {
-        let query = format!("DELETE FROM {}", table);
+        let query = format!("DELETE FROM {table}");
         let _: Vec<Thing> = surreal.query(query).await?.take("id").unwrap_or_default();
     }
     Ok(())
@@ -253,6 +245,8 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
         source_username: None,
         source_password: None,
         neo4j_timezone: "UTC".to_string(),
+        neo4j_json_properties: None,
+        mysql_boolean_paths: None,
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -352,6 +346,8 @@ async fn test_jsonl_with_complex_id_field() {
         source_username: None,
         source_password: None,
         neo4j_timezone: "UTC".to_string(),
+        neo4j_json_properties: None,
+        mysql_boolean_paths: None,
     };
 
     let to_opts = surreal_sync::SurrealOpts {
@@ -386,16 +382,20 @@ async fn test_jsonl_with_complex_id_field() {
     let items: Vec<Item> = response.take(0).unwrap();
 
     assert_eq!(items.len(), 2);
-    assert_eq!(
-        items[0].id.to_string(),
-        "items:⟨2025-07-22T03:18:59.349350Z⟩"
-    );
+    // Compare Thing objects directly, not their string representations
+    let expected_id_0 = Thing::from((
+        "items".to_string(),
+        "2025-07-22T03:18:59.349350Z".to_string(),
+    ));
+    let expected_id_1 = Thing::from((
+        "items".to_string(),
+        "2025-07-22T03:19:59.349350Z".to_string(),
+    ));
+
+    assert_eq!(items[0].id, expected_id_0);
     assert_eq!(items[0].level, "INFO");
     assert_eq!(items[0].target, "surreal::env");
-    assert_eq!(
-        items[1].id.to_string(),
-        "items:⟨2025-07-22T03:19:59.349350Z⟩"
-    );
+    assert_eq!(items[1].id, expected_id_1);
     assert_eq!(items[1].level, "INFO");
     assert_eq!(items[1].target, "surreal::env");
 

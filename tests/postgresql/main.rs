@@ -1,0 +1,4 @@
+mod postgresql_full_sync_only_cli;
+mod postgresql_full_sync_only_lib;
+mod postgresql_incremental_sync_only_cli;
+mod postgresql_incremental_sync_only_lib;

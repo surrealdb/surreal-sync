@@ -13,7 +13,10 @@ services:
     depends_on:
       - surrealdb
       - mongodb
+      - mongodb-init
       - neo4j
+      - postgresql
+      - mysql
       - neo4j-test1
       - neo4j-test2
       - neo4j-test3
@@ -35,14 +38,62 @@ services:
     # We intentionally avoid forwarding ports to avoid conflicts with other services running on the host.
     # ports:
     #   - "27017:27017"
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=root
-      - MONGO_INITDB_ROOT_PASSWORD=root
+    # For development, we disable auth to avoid keyFile complexity
+    command: mongod --replSet rs0 --bind_ip_all --noauth
     volumes:
       - mongodb_data:/data/db
-      - ./mongo-init:/docker-entrypoint-initdb.d:ro
     networks:
       - surreal-sync-network
+    healthcheck:
+      test: |
+        mongosh --quiet --eval "db.adminCommand('ping')" || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # Helper service to initialize MongoDB replica set
+  mongodb-init:
+    image: mongo:7
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - surreal-sync-network
+    command: >
+      mongosh --host mongodb:27017 --quiet --eval "
+        try {
+          rs.status();
+          print('Replica set already configured');
+        } catch (e) {
+          print('Initializing replica set...');
+          rs.initiate({
+            _id: 'rs0',
+            members: [{ _id: 0, host: 'mongodb:27017' }]
+          });
+          print('Replica set initialized');
+
+          // Wait for replica set to become primary
+          while (!db.isMaster().ismaster) {
+            sleep(1000);
+          }
+
+          // Create root user for compatibility with tests
+          // Note: This will only work after replica set is initialized
+          db = db.getSiblingDB('admin');
+          try {
+            db.createUser({
+              user: 'root',
+              pwd: 'root',
+              roles: ['root']
+            });
+            print('Root user created');
+          } catch(e) {
+            print('User creation skipped: ' + e);
+          }
+        }
+      "
+    restart: "no"
 
   neo4j:
     image: neo4j:5
@@ -128,6 +179,62 @@ services:
     networks:
       - surreal-sync-network
 
+  # PostgreSQL service for future incremental sync support
+  postgresql:
+    image: postgres:16
+    # We intentionally avoid forwarding ports to avoid conflicts with other services running on the host.
+    # ports:
+    #   - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=testdb
+    command: >
+      postgres
+      -c wal_level=logical
+      -c max_wal_senders=10
+      -c max_replication_slots=10
+      -c track_commit_timestamp=on
+    volumes:
+      - postgresql_data:/var/lib/postgresql/data
+    networks:
+      - surreal-sync-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MySQL service for future incremental sync support
+  mysql:
+    image: mysql:8.0
+    # We intentionally avoid forwarding ports to avoid conflicts with other services running on the host.
+    # ports:
+    #   - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=root
+      - MYSQL_DATABASE=testdb
+      - MYSQL_USER=mysql
+      - MYSQL_PASSWORD=mysql
+    command: >
+      --default-authentication-plugin=mysql_native_password
+      --log-bin=mysql-bin
+      --binlog-format=ROW
+      --binlog-row-image=FULL
+      --expire-logs-days=1
+      --server-id=1
+      --gtid-mode=ON
+      --enforce-gtid-consistency=ON
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - surreal-sync-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 networks:
   surreal-sync-network:
     driver: bridge
@@ -136,3 +243,5 @@ volumes:
   mongodb_data:
   neo4j_data:
   neo4j_logs:
+  postgresql_data:
+  mysql_data:
