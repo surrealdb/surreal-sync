@@ -1,3 +1,7 @@
+[workspace]
+members = ["kafka"]
+resolver = "2"
+
 [package]
 name = "surreal-sync"
 version = "0.1.0"
@@ -11,11 +15,11 @@ clap = { version = "4.5", features = ["derive", "env"] }
 tokio = { version = "1.47", features = ["full"] }
 
 # Serialization
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
 
 # Error handling
-anyhow = "1.0"
+anyhow = "1.0.100"
 
 # Logging
 tracing = "0.1"
