@@ -107,11 +107,7 @@ impl Consumer {
                     let kafka_msg = self.decode_message(&msg)?;
                     buffer.push_back(kafka_msg);
                 }
-                Ok(Err(e)) => {
-                    return Err(Error::Consumer(format!(
-                        "Error receiving message: {e}"
-                    )))
-                }
+                Ok(Err(e)) => return Err(Error::Consumer(format!("Error receiving message: {e}"))),
                 Err(_) => break, // Timeout, no more messages available right now
             }
         }

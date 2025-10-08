@@ -51,6 +51,9 @@ tokio-stream = "0.1"
 tempfile = "3.0"
 geo-types = "0.7.17"
 
+# Kafka source
+surreal-sync-kafka = { path = "crates/kafka" }
+
 [dev-dependencies]
 # Testing
 tokio-test = "0.4"

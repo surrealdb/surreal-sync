@@ -4825,6 +4825,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "surreal-sync-kafka",
  "surrealdb",
  "tempfile",
  "tokio",

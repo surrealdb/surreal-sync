@@ -44,6 +44,7 @@ use surrealdb::Surreal;
 
 pub mod checkpoint;
 pub mod jsonl;
+pub mod kafka;
 pub mod mongodb;
 pub mod mysql;
 pub mod neo4j;

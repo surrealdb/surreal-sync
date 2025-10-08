@@ -60,7 +60,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use surreal_sync::{
     connect::connect_to_surrealdb,
-    migrate_from_jsonl, mongodb, mysql, neo4j, postgresql,
+    kafka, migrate_from_jsonl, mongodb, mysql, neo4j, postgresql,
     sync::{SyncCheckpoint, SyncConfig},
     SourceOpts, SurrealOpts,
 };
@@ -161,6 +161,24 @@ enum Commands {
         #[arg(long)]
         no_cdc: bool,
     },
+
+    Kafka {
+        /// Kafka source configuration
+        #[command(flatten)]
+        config: kafka::Config,
+
+        /// Target SurrealDB namespace
+        #[arg(long)]
+        to_namespace: String,
+
+        /// Target SurrealDB database
+        #[arg(long)]
+        to_database: String,
+
+        /// Target SurrealDB options
+        #[command(flatten)]
+        to_opts: SurrealOpts,
+    },
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -245,6 +263,21 @@ async fn run() -> anyhow::Result<()> {
                 incremental_from,
                 incremental_to,
                 timeout,
+            )
+            .await?;
+        }
+        Commands::Kafka {
+            config,
+            to_namespace,
+            to_database,
+            to_opts,
+        } => {
+            kafka::run_incremental_sync(
+                config,
+                to_namespace,
+                to_database,
+                to_opts,
+                chrono::Utc::now() + chrono::Duration::hours(1),
             )
             .await?;
         }
