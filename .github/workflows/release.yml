@@ -26,7 +26,7 @@ jobs:
             os: ubuntu-latest
             binary_name: surreal-sync
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: ubuntu-24.04-arm
             binary_name: surreal-sync
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
@@ -64,13 +64,6 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           case "${{ matrix.target }}" in
-            aarch64-unknown-linux-gnu)
-              sudo apt-get update
-              sudo apt-get install -y gcc-aarch64-linux-gnu
-              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-              echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-              echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
-              ;;
             x86_64-unknown-linux-musl)
               sudo apt-get update
               sudo apt-get install -y musl-tools
