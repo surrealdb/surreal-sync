@@ -122,8 +122,7 @@ pub fn postgresql_value_to_param(value: &PostgreSQLValue) -> anyhow::Result<Box<
                     | PostgreSQLValue::Char(s) => s.clone(),
                     _ => {
                         return Err(anyhow::anyhow!(
-                            "Unsupported array item type in PostgreSQL array for item: {:?}",
-                            item
+                            "Unsupported array item type in PostgreSQL array for item: {item:?}",
                         ));
                     }
                 };

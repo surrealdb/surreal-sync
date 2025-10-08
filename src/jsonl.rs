@@ -61,9 +61,7 @@ impl ConversionRule {
         // Validate that id_field matches target_id_field
         if id_field != target_id_field {
             return Err(anyhow!(
-                "ID field mismatch: {} != {}",
-                id_field,
-                target_id_field
+                "ID field mismatch: {id_field} != {target_id_field}"
             ));
         }
 
@@ -154,7 +152,7 @@ pub async fn migrate_from_jsonl(
 
                 // Parse JSON line
                 let json_value: Value = serde_json::from_str(&line)
-                    .map_err(|e| anyhow!("Error parsing JSON at line {}: {}", line_count, e))?;
+                    .map_err(|e| anyhow!("Error parsing JSON at line {line_count}: {e}"))?;
 
                 // Convert to bindable document
                 let document = convert_json_to_record(&json_value, file_name, &id_field, &rules)?;
@@ -218,7 +216,7 @@ fn convert_json_to_record(
                     } else if let Some(u) = n.as_u64() {
                         id = Some(surrealdb::sql::Id::from(u));
                     } else {
-                        anyhow::bail!("ID field number must be an integer: {}", n);
+                        anyhow::bail!("ID field number must be an integer: {n}");
                     }
                 } else {
                     return Err(anyhow!("ID field must be a string or number"));
@@ -233,7 +231,7 @@ fn convert_json_to_record(
         // Create proper SurrealDB Thing for the record
         let id = match id {
             Some(id) => surrealdb::sql::Thing::from((table_name.to_string(), id)),
-            None => return Err(anyhow!("Missing ID field: {}", id_field)),
+            None => return Err(anyhow!("Missing ID field: {id_field}")),
         };
 
         Ok(crate::Record { id, data })

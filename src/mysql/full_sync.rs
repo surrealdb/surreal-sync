@@ -363,7 +363,7 @@ fn convert_mysql_value(
     // Get the raw value
     let raw_value = row
         .as_ref(index)
-        .ok_or_else(|| anyhow::anyhow!("Failed to get value at index {}", index))?;
+        .ok_or_else(|| anyhow::anyhow!("Failed to get value at index {index}"))?;
 
     if std::env::var("MYSQL_DEBUG").is_ok() {
         eprintln!(
