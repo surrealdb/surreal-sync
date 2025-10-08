@@ -201,7 +201,7 @@ impl MySQLChangeStream {
                 "UPDATE" => Operation::Update,
                 "DELETE" => Operation::Delete,
                 _ => {
-                    return Err(anyhow!("Unknown operation type: {}", operation));
+                    return Err(anyhow!("Unknown operation type: {operation}"));
                 }
             };
 
@@ -240,7 +240,7 @@ impl MySQLChangeStream {
                     }
                 }
                 "DELETE" => HashMap::new(), // No data for deletes
-                _ => anyhow::bail!("Unknown operation type: {}", operation),
+                _ => anyhow::bail!("Unknown operation type: {operation}"),
             };
 
             changes.push(ChangeEvent::record(

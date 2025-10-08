@@ -140,8 +140,7 @@ impl SyncCheckpoint {
         match self {
             SyncCheckpoint::PostgreSQL { sequence_id, .. } => Ok(*sequence_id),
             _ => Err(anyhow::anyhow!(
-                "Cannot extract PostgreSQL sequence_id from {:?} checkpoint",
-                self
+                "Cannot extract PostgreSQL sequence_id from {self:?} checkpoint",
             )),
         }
     }
@@ -151,8 +150,7 @@ impl SyncCheckpoint {
         match self {
             SyncCheckpoint::MySQL { sequence_id, .. } => Ok(*sequence_id),
             _ => Err(anyhow::anyhow!(
-                "Cannot extract MySQL sequence_id from {:?} checkpoint",
-                self
+                "Cannot extract MySQL sequence_id from {self:?} checkpoint",
             )),
         }
     }
@@ -162,8 +160,7 @@ impl SyncCheckpoint {
         match self {
             SyncCheckpoint::Neo4j(timestamp) => Ok(*timestamp),
             _ => Err(anyhow::anyhow!(
-                "Cannot extract Neo4j timestamp from {:?} checkpoint",
-                self
+                "Cannot extract Neo4j timestamp from {self:?} checkpoint",
             )),
         }
     }
@@ -173,8 +170,7 @@ impl SyncCheckpoint {
         match self {
             SyncCheckpoint::MongoDB { resume_token, .. } => Ok(resume_token.clone()),
             _ => Err(anyhow::anyhow!(
-                "Cannot extract MongoDB resume token from {:?} checkpoint",
-                self
+                "Cannot extract MongoDB resume token from {self:?} checkpoint",
             )),
         }
     }
@@ -190,8 +186,7 @@ impl SyncCheckpoint {
                 timestamp.to_rfc3339()
             )),
             _ => Err(anyhow::anyhow!(
-                "Cannot extract MongoDB checkpoint string from {:?} checkpoint",
-                self
+                "Cannot extract MongoDB checkpoint string from {self:?} checkpoint",
             )),
         }
     }
@@ -200,7 +195,7 @@ impl SyncCheckpoint {
     pub fn from_string(s: &str) -> anyhow::Result<Self> {
         let parts: Vec<&str> = s.splitn(2, ':').collect();
         if parts.len() != 2 {
-            return Err(anyhow::anyhow!("Invalid checkpoint format: {}", s));
+            return Err(anyhow::anyhow!("Invalid checkpoint format: {s}"));
         }
 
         match parts[0] {
@@ -456,8 +451,8 @@ impl SyncManager {
             }
         }
 
-        let file_path = latest_file
-            .ok_or_else(|| anyhow::anyhow!("No checkpoint found for phase: {}", phase))?;
+        let file_path =
+            latest_file.ok_or_else(|| anyhow::anyhow!("No checkpoint found for phase: {phase}"))?;
 
         let content = std::fs::read_to_string(file_path)?;
         let data: serde_json::Value = serde_json::from_str(&content)?;

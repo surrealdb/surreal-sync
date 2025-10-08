@@ -81,8 +81,7 @@ impl Neo4jJsonProperty {
         let parts: Vec<&str> = s.split('.').collect();
         if parts.len() != 2 {
             anyhow::bail!(
-                "Invalid Neo4j JSON property format: '{}'. Expected format: 'NodeLabel.propertyName'",
-                s
+                "Invalid Neo4j JSON property format: '{s}'. Expected format: 'NodeLabel.propertyName'",
             );
         }
         Ok(Neo4jJsonProperty {

@@ -171,8 +171,7 @@ pub fn json_to_sureral(
                 Ok(SurrealValue::Bool(i != 0))
             } else {
                 Err(anyhow::anyhow!(
-                    "Boolean field expected integer value, got non-integer number: {}",
-                    n
+                    "Boolean field expected integer value, got non-integer number: {n}",
                 ))
             }
         }

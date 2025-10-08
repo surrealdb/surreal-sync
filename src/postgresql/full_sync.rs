@@ -235,8 +235,7 @@ async fn get_primary_key_columns(client: &Client, table_name: &str) -> Result<Ve
 
     if rows.is_empty() {
         Err(anyhow::anyhow!(
-            "Table '{}' has no primary key defined - primary key is required for sync operations",
-            table_name
+            "Table '{table_name}' has no primary key defined - primary key is required for sync operations",
         ))
     } else {
         Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
@@ -280,8 +279,7 @@ fn convert_row_to_bindable(
             surrealdb::sql::Id::from(uuid)
         } else {
             return Err(anyhow::anyhow!(
-                "Failed to extract primary key value from column '{}' - unsupported data type",
-                pk_col
+                "Failed to extract primary key value from column '{pk_col}' - unsupported data type",
             ));
         };
         id
@@ -298,8 +296,7 @@ fn convert_row_to_bindable(
                 surrealdb::sql::Value::from(val)
             } else {
                 return Err(anyhow::anyhow!(
-                    "Failed to extract composite primary key value from column '{}' - unsupported data type",
-                    col
+                    "Failed to extract composite primary key value from column '{col}' - unsupported data type",
                 ));
             };
             vs.push(v);
@@ -369,7 +366,7 @@ fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
                                 "Failed to convert NUMERIC decimal '{}' to SurrealDB Number: {:?}",
                                 decimal, e
                             );
-                            Err(anyhow::anyhow!("NUMERIC conversion failed: {:?}", e))
+                            Err(anyhow::anyhow!("NUMERIC conversion failed: {e:?}"))
                         }
                     }
                 }
@@ -379,7 +376,7 @@ fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
                         "Failed to get PostgreSQL NUMERIC as rust_decimal::Decimal: {}",
                         e
                     );
-                    Err(anyhow::anyhow!("NUMERIC type conversion failed: {}", e))
+                    Err(anyhow::anyhow!("NUMERIC type conversion failed: {e}"))
                 }
             }
         }
@@ -445,10 +442,7 @@ fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
             if let Ok(val) = row.try_get::<_, String>(index) {
                 Ok(SurrealValue::String(val))
             } else {
-                Err(anyhow::anyhow!(
-                    "Unsupported PostgreSQL type: {:?}",
-                    pg_type
-                ))
+                Err(anyhow::anyhow!("Unsupported PostgreSQL type: {pg_type:?}",))
             }
         }
     }

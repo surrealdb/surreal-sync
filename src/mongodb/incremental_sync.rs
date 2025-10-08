@@ -52,9 +52,8 @@ impl MongodbIncrementalSource {
         // Validate the resume token by trying to deserialize it
         bson::from_slice::<ResumeToken>(&initial_resume_token).map_err(|e| {
             anyhow::anyhow!(
-                "Invalid resume token provided to MongoDB source constructor: {}. \
+                "Invalid resume token provided to MongoDB source constructor: {e}. \
                 The token may be corrupted or from an incompatible MongoDB version.",
-                e
             )
         })?;
 
@@ -127,10 +126,9 @@ impl MongodbIncrementalSource {
                             // 3. Perform a full sync to ensure consistency
                             anyhow!(
                                 "Failed to deserialize resume token - refusing to start to prevent data loss. \
-                                Error: {}. The resume token may be corrupted or from an incompatible MongoDB version. \
+                                Error: {e}. The resume token may be corrupted or from an incompatible MongoDB version. \
                                 Options: (1) Start without a checkpoint if data loss is acceptable, \
                                 (2) Perform a full sync first, or (3) Provide a valid checkpoint.",
-                                e
                             )
                         })?;
 
@@ -144,10 +142,9 @@ impl MongodbIncrementalSource {
                     // This is likely a configuration error that needs human intervention.
                     return Err(anyhow!(
                         "Invalid checkpoint type for MongoDB incremental sync. \
-                        Expected MongoDB checkpoint, got {:?}. \
+                        Expected MongoDB checkpoint, got {checkpoint:?}. \
                         This prevents resumption from the intended point and could cause data loss. \
                         Please provide a valid MongoDB checkpoint or start without one.",
-                        checkpoint
                     ));
                 }
             }
@@ -168,7 +165,7 @@ impl MongodbIncrementalSource {
                         Ok(event) => {
                             Self::convert_change_event(event, &database_name, resume_token).await
                         }
-                        Err(e) => Err(anyhow!("MongoDB change stream error: {}", e)),
+                        Err(e) => Err(anyhow!("MongoDB change stream error: {e}")),
                     }
                 }
             })

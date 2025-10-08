@@ -129,17 +129,12 @@ impl PostgresIncrementalSource {
         );
 
         let rows = client.query(&pk_check, &[]).await.map_err(|e| {
-            anyhow!(
-                "Failed to detect primary key columns for table '{}': {}",
-                table_name,
-                e
-            )
+            anyhow!("Failed to detect primary key columns for table '{table_name}': {e}",)
         })?;
 
         if rows.is_empty() {
             return Err(anyhow!(
-                "Table '{}' has no primary key defined. Primary key is required for incremental sync.",
-                table_name
+                "Table '{table_name}' has no primary key defined. Primary key is required for incremental sync.",
             ));
         }
 
@@ -475,8 +470,7 @@ impl PostgresChangeStream {
                         }
                         _ => {
                             return Err(anyhow!(
-                                "Unexpected non-object data in audit table for table '{}'",
-                                table_name
+                                "Unexpected non-object data in audit table for table '{table_name}'",
                             ));
                         }
                     }
@@ -499,9 +493,7 @@ impl PostgresChangeStream {
                             SurrealValue::Int(i) => surrealdb::sql::Id::from(i),
                             v => {
                                 anyhow::bail!(
-                                    "Unsupported row_id type in audit table for table '{}': {:?}",
-                                    table_name,
-                                    v
+                                    "Unsupported row_id type in audit table for table '{table_name}': {v:?}",
                                 );
                             }
                         }
@@ -515,9 +507,7 @@ impl PostgresChangeStream {
                                 }
                                 v => {
                                     anyhow::bail!(
-                                        "Unsupported row_id array item type in audit table for table '{}': {:?}",
-                                        table_name,
-                                        v
+                                        "Unsupported row_id array item type in audit table for table '{table_name}': {v:?}",
                                     );
                                 }
                             }

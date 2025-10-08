@@ -37,7 +37,7 @@ impl SurrealValue {
         match self {
             SurrealValue::Int(i) => Ok(surrealdb::sql::Id::from(*i)),
             SurrealValue::String(s) => Ok(surrealdb::sql::Id::from(s.clone())),
-            _ => Err(anyhow::anyhow!("Cannot convert {:?} to SurrealDB Id", self)),
+            _ => Err(anyhow::anyhow!("Cannot convert {self:?} to SurrealDB Id")),
         }
     }
 }

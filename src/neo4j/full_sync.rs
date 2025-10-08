@@ -392,10 +392,7 @@ fn convert_neo4j_row_to_record(
         }
         Some(other) => {
             return Err(anyhow::anyhow!(
-                "Node with label '{}' and id '{}' has non-string 'id' property: {:?}",
-                label,
-                node_id,
-                other
+                "Node with label '{label}' and id '{node_id}' has non-string 'id' property: {other:?}",
             ));
         }
         None => surrealdb::sql::Thing::from((label.to_lowercase(), node_id.to_string())),
@@ -565,8 +562,7 @@ pub fn row_to_relation(
             Some(dt.timestamp_millis())
         } else {
             anyhow::bail!(
-                "Change tracking property '{}' not found or of unsupported type in relationship",
-                change_tracking_property,
+                "Change tracking property '{change_tracking_property}' not found or of unsupported type in relationship",
             );
         }
     } else {
@@ -666,8 +662,7 @@ pub fn convert_neo4j_type_to_bindable(
             // In other words, nodes are processed and converted in more upper function,
             // so we should never encounter a node here.
             Err(anyhow::anyhow!(
-                "Node type is not supported for migration from Neo4j to SurrealDB: {:?}",
-                node
+                "Node type is not supported for migration from Neo4j to SurrealDB: {node:?}",
             ))
         }
         neo4rs::BoltType::Relation(relation) => {
@@ -675,8 +670,7 @@ pub fn convert_neo4j_type_to_bindable(
             // In other words, nodes are processed and converted in more upper function,
             // so we should never encounter a relation here.
             Err(anyhow::anyhow!(
-                "Relation type is not supported for migration from Neo4j to SurrealDB: {:?}",
-                relation
+                "Relation type is not supported for migration from Neo4j to SurrealDB: {relation:?}",
             ))
         }
         // "A relationship without start or end node ID. It is used internally for Path serialization."
@@ -745,7 +739,7 @@ pub fn convert_neo4j_type_to_bindable(
             let naive_d: chrono::NaiveDate = date.try_into()?;
             // Parse the timezone
             let tz: chrono_tz::Tz = timezone.parse()
-                .map_err(|_| anyhow::anyhow!("Invalid timezone: {}. Use IANA timezone names like 'UTC', 'America/New_York', etc.", timezone))?;
+                .map_err(|_| anyhow::anyhow!("Invalid timezone: {timezone}. Use IANA timezone names like 'UTC', 'America/New_York', etc."))?;
             // Create a naive datetime at midnight in the specified timezone
             let naive_dt = chrono::NaiveDateTime::new(
                 naive_d,
@@ -753,7 +747,7 @@ pub fn convert_neo4j_type_to_bindable(
             );
             // Convert to UTC datetime using the specified timezone
             let dt_with_tz = tz.from_local_datetime(&naive_dt).single().ok_or_else(|| {
-                anyhow::anyhow!("Ambiguous or invalid datetime in timezone {}", timezone)
+                anyhow::anyhow!("Ambiguous or invalid datetime in timezone {timezone}")
             })?;
             let utc_dt = dt_with_tz.with_timezone(&Utc);
             Ok(SurrealValue::DateTime(utc_dt))
@@ -811,10 +805,10 @@ pub fn convert_neo4j_type_to_bindable(
             let dt: chrono::NaiveDateTime = local_datetime.try_into()?;
             // Parse the timezone
             let tz: chrono_tz::Tz = timezone.parse()
-                .map_err(|_| anyhow::anyhow!("Invalid timezone: {}. Use IANA timezone names like 'UTC', 'America/New_York', etc.", timezone))?;
+                .map_err(|_| anyhow::anyhow!("Invalid timezone: {timezone}. Use IANA timezone names like 'UTC', 'America/New_York', etc."))?;
             // Convert to UTC datetime using the specified timezone
             let dt_with_tz = tz.from_local_datetime(&dt).single().ok_or_else(|| {
-                anyhow::anyhow!("Ambiguous or invalid datetime in timezone {}", timezone)
+                anyhow::anyhow!("Ambiguous or invalid datetime in timezone {timezone}")
             })?;
             let utc_dt = dt_with_tz.with_timezone(&Utc);
             Ok(SurrealValue::DateTime(utc_dt))
@@ -822,7 +816,7 @@ pub fn convert_neo4j_type_to_bindable(
         neo4rs::BoltType::DateTimeZoneId(datetime_zone_id) => {
             let dt_with_offset: chrono::DateTime<chrono::FixedOffset> =
                 (&datetime_zone_id).try_into().map_err(|e| {
-                    anyhow::anyhow!("Failed to convert DateTimeZoneId to DateTime: {}", e)
+                    anyhow::anyhow!("Failed to convert DateTimeZoneId to DateTime: {e}")
                 })?;
 
             let utc_dt = dt_with_offset.with_timezone(&Utc);
