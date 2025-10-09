@@ -3545,6 +3545,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "protobuf-codegen"
+version = "3.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d3976825c0014bbd2f3b34f0001876604fe87e0c86cd8fa54251530f1544ace"
+dependencies = [
+ "anyhow",
+ "once_cell",
+ "protobuf",
+ "protobuf-parse",
+ "regex",
+ "tempfile",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "protobuf-parse"
 version = "3.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4829,6 +4844,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sync-kafka",
+ "surreal-sync-kafka-producer",
  "surrealdb",
  "tempfile",
  "tokio",
@@ -4858,6 +4874,20 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tokio-test",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "surreal-sync-kafka-producer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "protobuf",
+ "protobuf-codegen",
+ "rdkafka",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

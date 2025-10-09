@@ -1,0 +1,11 @@
+
+syntax = "proto3";
+
+package example;
+
+message UserEvent {
+    string user_id = 1;
+    string event_type = 2;
+    int64 timestamp = 3;
+    string data = 4;
+}

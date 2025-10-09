@@ -1,0 +1,33 @@
+[package]
+name = "surreal-sync-kafka-producer"
+version = "0.1.0"
+edition = "2021"
+description = "Kafka producer example for testing surreal-sync-kafka consumer"
+authors = ["surreal-sync contributors"]
+
+[[bin]]
+name = "kafka-producer"
+path = "src/main.rs"
+
+[dependencies]
+# Kafka client
+rdkafka = { version = "0.36", features = ["tokio"] }
+
+# Protobuf support
+protobuf = "3.5"
+
+# Async runtime
+tokio = { version = "1.47", features = ["full"] }
+
+# Error handling
+anyhow = { version = "1.0.100", features = ["backtrace"] }
+
+# Utilities
+chrono = "0.4"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[build-dependencies]
+protobuf-codegen = "3.5"

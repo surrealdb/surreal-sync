@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kafka"]
+members = ["crates/kafka", "crates/kafka-producer"]
 resolver = "2"
 
 [package]
@@ -58,6 +58,9 @@ surreal-sync-kafka = { path = "crates/kafka" }
 # Testing
 tokio-test = "0.4"
 tempfile = "3.0"
+
+# Example kafka producer for Kafka source testing
+surreal-sync-kafka-producer = { path = "crates/kafka-producer" }
 
 [profile.dev]
 debug = 1
