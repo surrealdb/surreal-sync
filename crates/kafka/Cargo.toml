@@ -17,7 +17,7 @@ protobuf-parse = "3.5"
 tokio = { version = "1.47", features = ["full"] }
 
 # Error handling
-anyhow = "1.0.100"
+anyhow = { version = "1.0.100", features = ["backtrace"] }
 thiserror = "1.0"
 
 # Serialization

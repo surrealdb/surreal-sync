@@ -20,10 +20,20 @@ use surreal_sync_kafka::{Client, ConsumerConfig, Message};
 ///   cargo run --example multi_consumer
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
     // Initialize tracing
     tracing_subscriber::fmt::init();
 
+    match run_main().await {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            std::process::exit(1);
+        }
+    }
+}
+
+async fn run_main() -> anyhow::Result<()> {
     // Example .proto content
     let proto_content = r#"
         syntax = "proto3";
