@@ -1,6 +1,4 @@
-use crate::{
-    SurrealOpts,
-};
+use crate::SurrealOpts;
 use anyhow::Result;
 use clap::Parser;
 use std::sync::atomic::{AtomicU64, Ordering};
