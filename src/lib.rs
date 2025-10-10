@@ -53,8 +53,6 @@ pub mod surreal;
 pub mod sync;
 pub mod testing;
 
-pub mod connect;
-
 // Re-export types and schema functionality for easy access
 pub use surreal::{
     json_to_surreal_without_schema, Change, Record, Relation, SurrealDatabaseSchema,

@@ -1,7 +1,7 @@
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
 use std::{collections::HashMap, time::Duration};
-use surrealdb::engine::any::connect;
 
+use crate::surreal::surreal_connect;
 use crate::sync::IncrementalSource;
 use crate::{SourceOpts, SurrealOpts, SurrealValue};
 
@@ -91,14 +91,7 @@ pub async fn run_full_sync(
         None
     };
 
-    // Connect to SurrealDB
-    let surreal_endpoint = to_opts
-        .surreal_endpoint
-        .replace("http://", "ws://")
-        .replace("https://", "wss://");
-    tracing::debug!("Connecting to SurrealDB at: {}", surreal_endpoint);
-    let surreal = connect(surreal_endpoint).await?;
-    tracing::debug!("SurrealDB connection established");
+    let surreal = surreal_connect(&to_opts, &to_namespace, &to_database).await?;
 
     tracing::debug!(
         "Signing in to SurrealDB with username: {}",

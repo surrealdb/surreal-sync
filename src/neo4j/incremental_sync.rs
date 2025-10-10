@@ -15,7 +15,7 @@
 //! exactly matches Neo4j.
 
 use crate::neo4j::Neo4jConversionContext;
-use crate::surreal::Change;
+use crate::surreal::{surreal_connect, Change};
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use crate::{Record, SourceOpts, SurrealValue};
 use async_trait::async_trait;
@@ -329,12 +329,7 @@ pub async fn run_incremental_sync(
         initial_timestamp,
     )?);
 
-    // Connect to SurrealDB
-    let surreal_endpoint = to_opts
-        .surreal_endpoint
-        .replace("http://", "ws://")
-        .replace("https://", "wss://");
-    let surreal = surrealdb::engine::any::connect(surreal_endpoint).await?;
+    let surreal = surreal_connect(&to_opts, &to_namespace, &to_database).await?;
 
     surreal
         .signin(surrealdb::opt::auth::Root {

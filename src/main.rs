@@ -58,8 +58,8 @@
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
+use surreal_sync::surreal::surreal_connect;
 use surreal_sync::{
-    connect::connect_to_surrealdb,
     kafka, migrate_from_jsonl, mongodb, mysql, neo4j, postgresql,
     sync::{SyncCheckpoint, SyncConfig},
     SourceOpts, SurrealOpts,
@@ -305,7 +305,7 @@ async fn run_full_sync(
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
-    let surreal = connect_to_surrealdb(&to_opts, to_namespace.clone(), to_database.clone()).await?;
+    let surreal = surreal_connect(&to_opts, &to_namespace, &to_database).await?;
 
     match from {
         SourceDatabase::MongoDB => {

@@ -3,7 +3,7 @@
 //! This module provides incremental synchronization capabilities for MongoDB using
 //! Change Streams, which provide real-time change notifications.
 
-use crate::surreal::{Change, ChangeOp};
+use crate::surreal::{surreal_connect, Change, ChangeOp};
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -18,7 +18,6 @@ use mongodb::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use surrealdb::engine::any::connect;
 use tokio::sync::Mutex;
 
 /// Convert a BSON document directly to a SurrealValue map
@@ -349,12 +348,7 @@ pub async fn run_incremental_sync(
         MongodbIncrementalSource::new(&connection_string, &source_database, initial_resume_token)
             .await?;
 
-    // Connect to SurrealDB
-    let surreal_endpoint = to_opts
-        .surreal_endpoint
-        .replace("http://", "ws://")
-        .replace("https://", "wss://");
-    let surreal = connect(surreal_endpoint).await?;
+    let surreal = surreal_connect(&to_opts, &to_namespace, &to_database).await?;
 
     // Authenticate
     surreal

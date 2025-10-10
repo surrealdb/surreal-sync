@@ -55,10 +55,10 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
         dry_run: false,
     };
 
-    let surreal2 = surreal_sync::connect::connect_to_surrealdb(
+    let surreal2 = surreal_sync::surreal::surreal_connect(
         &surreal_opts,
-        surreal_config.surreal_namespace.clone(),
-        surreal_config.surreal_database.clone(),
+        &surreal_config.surreal_namespace,
+        &surreal_config.surreal_database,
     )
     .await?;
 

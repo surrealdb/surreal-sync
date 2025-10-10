@@ -65,10 +65,10 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         checkpoint_dir: Some(".test-checkpoints".to_string()),
     };
 
-    let surreal2 = surreal_sync::connect::connect_to_surrealdb(
+    let surreal2 = surreal_sync::surreal::surreal_connect(
         &surreal_opts,
-        surreal_config.surreal_namespace.clone(),
-        surreal_config.surreal_database.clone(),
+        &surreal_config.surreal_namespace,
+        &surreal_config.surreal_database,
     )
     .await?;
 

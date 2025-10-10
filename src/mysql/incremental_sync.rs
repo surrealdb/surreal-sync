@@ -3,6 +3,7 @@
 //! This module provides functionality to perform incremental database migration from MySQL
 //! to SurrealDB.
 
+use crate::surreal::surreal_connect;
 use crate::{SourceOpts, SurrealOpts};
 use anyhow::Result;
 use tracing::{debug, info, warn};
@@ -32,21 +33,7 @@ pub async fn run_incremental_sync(
     // Initialize source (schema collection, connection check)
     source.initialize().await?;
 
-    // Connect to SurrealDB
-    let surreal_endpoint = to_opts
-        .surreal_endpoint
-        .replace("http://", "ws://")
-        .replace("https://", "wss://");
-    let surreal = surrealdb::engine::any::connect(surreal_endpoint).await?;
-
-    surreal
-        .signin(surrealdb::opt::auth::Root {
-            username: &to_opts.surreal_username,
-            password: &to_opts.surreal_password,
-        })
-        .await?;
-
-    surreal.use_ns(&to_namespace).use_db(&to_database).await?;
+    let surreal = surreal_connect(&to_opts, &to_namespace, &to_database).await?;
 
     // Get change stream
     let mut stream = source.get_changes().await?;
