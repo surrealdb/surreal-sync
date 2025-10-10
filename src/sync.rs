@@ -46,9 +46,10 @@
 //! Checkpoints are managed by [`SyncManager`] and can be persisted to disk for
 //! reliable resumption after failures.
 
+use crate::surreal::Change;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt::Debug};
+use std::fmt::Debug;
 
 /// Represents different phases of the synchronization process for checkpoint management
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -253,58 +254,6 @@ impl SyncCheckpoint {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Operation {
-    Create,
-    Update,
-    Delete,
-}
-
-#[derive(Debug, Clone)]
-pub enum ChangeEvent {
-    UpsertRecord(Record),
-    DeleteRecord(surrealdb::sql::Thing),
-    UpsertRelation(Relation),
-    DeleteRelation(surrealdb::sql::Thing),
-}
-
-impl ChangeEvent {
-    pub fn record(
-        operation: Operation,
-        id: surrealdb::sql::Thing,
-        data: HashMap<String, crate::SurrealValue>,
-    ) -> Self {
-        match operation {
-            Operation::Create | Operation::Update => ChangeEvent::UpsertRecord(Record {
-                id: id.clone(),
-                data,
-            }),
-            Operation::Delete => ChangeEvent::DeleteRecord(id.clone()),
-        }
-    }
-
-    pub fn relation(
-        operation: Operation,
-        id: surrealdb::sql::Thing,
-        input: surrealdb::sql::Thing,
-        output: surrealdb::sql::Thing,
-        data: Option<std::collections::HashMap<String, crate::SurrealValue>>,
-    ) -> Self {
-        match operation {
-            Operation::Create | Operation::Update => {
-                let data = data.expect("Data must be provided for create/update relation");
-                ChangeEvent::UpsertRelation(Relation {
-                    id,
-                    input,
-                    output,
-                    data,
-                })
-            }
-            Operation::Delete => ChangeEvent::DeleteRelation(id.clone()),
-        }
-    }
-}
-
 /// Source database types
 #[derive(Debug, Clone, PartialEq)]
 pub enum SourceDatabase {
@@ -341,7 +290,7 @@ pub trait IncrementalSource: Send + Sync {
 pub trait ChangeStream: Send + Sync {
     /// Get the next change event from the stream
     /// Returns None when no more changes are available
-    async fn next(&mut self) -> Option<anyhow::Result<ChangeEvent>>;
+    async fn next(&mut self) -> Option<anyhow::Result<Change>>;
 
     /// Get the current checkpoint of the stream
     /// This can be used to resume from this position later
@@ -464,5 +413,3 @@ impl SyncManager {
 
 // Re-export base64 for checkpoint serialization
 pub use base64::{engine::general_purpose, Engine as _};
-
-use crate::{Record, Relation};

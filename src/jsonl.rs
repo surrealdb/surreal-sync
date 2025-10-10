@@ -1,3 +1,4 @@
+use crate::surreal::Record;
 use crate::{SourceOpts, SurrealOpts, SurrealValue};
 use anyhow::{anyhow, Result};
 use serde_json::Value;
@@ -139,7 +140,7 @@ pub async fn migrate_from_jsonl(
             let file = File::open(&path)?;
             let reader = BufReader::new(file);
 
-            let mut batch: Vec<crate::Record> = Vec::new();
+            let mut batch: Vec<Record> = Vec::new();
             let mut line_count = 0;
 
             for line in reader.lines() {
@@ -154,10 +155,10 @@ pub async fn migrate_from_jsonl(
                 let json_value: Value = serde_json::from_str(&line)
                     .map_err(|e| anyhow!("Error parsing JSON at line {line_count}: {e}"))?;
 
-                // Convert to bindable document
-                let document = convert_json_to_record(&json_value, file_name, &id_field, &rules)?;
+                // Convert to surreal record
+                let record = convert_json_to_record(&json_value, file_name, &id_field, &rules)?;
 
-                batch.push(document);
+                batch.push(record);
 
                 // Process batch when it reaches the batch size
                 if batch.len() >= to_opts.batch_size {
@@ -199,7 +200,7 @@ fn convert_json_to_record(
     table_name: &str,
     id_field: &str,
     rules: &[ConversionRule],
-) -> Result<crate::Record> {
+) -> Result<Record> {
     let mut id: Option<surrealdb::sql::Id> = None;
 
     if let Value::Object(obj) = value {
@@ -234,7 +235,7 @@ fn convert_json_to_record(
             None => return Err(anyhow!("Missing ID field: {id_field}")),
         };
 
-        Ok(crate::Record { id, data })
+        Ok(Record { id, data })
     } else {
         Err(anyhow!("JSONL line must be a JSON object"))
     }
@@ -255,11 +256,11 @@ fn convert_value_with_rules(value: &Value, rules: &[ConversionRule]) -> Result<S
         }
         Value::String(s) => Ok(SurrealValue::String(s.clone())),
         Value::Array(arr) => {
-            let mut bindables = Vec::new();
+            let mut values = Vec::new();
             for item in arr {
-                bindables.push(convert_value_with_rules(item, rules)?);
+                values.push(convert_value_with_rules(item, rules)?);
             }
-            Ok(SurrealValue::Array(bindables))
+            Ok(SurrealValue::Array(values))
         }
         Value::Object(obj) => {
             // Check if this object matches any conversion rule
@@ -277,11 +278,11 @@ fn convert_value_with_rules(value: &Value, rules: &[ConversionRule]) -> Result<S
             }
 
             // No matching rule, convert as regular object
-            let mut bindables = HashMap::new();
+            let mut kvs = HashMap::new();
             for (key, val) in obj {
-                bindables.insert(key.clone(), convert_value_with_rules(val, rules)?);
+                kvs.insert(key.clone(), convert_value_with_rules(val, rules)?);
             }
-            Ok(SurrealValue::Object(bindables))
+            Ok(SurrealValue::Object(kvs))
         }
     }
 }

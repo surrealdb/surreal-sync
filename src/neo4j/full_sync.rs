@@ -371,7 +371,7 @@ async fn migrate_neo4j_relationships(
     Ok(total_migrated)
 }
 
-// Convert Neo4j node row to bindable HashMap with BindableValue
+// Convert Neo4j node row to surreal record
 fn convert_neo4j_row_to_record(
     row: &neo4rs::Row,
     label: &str,
@@ -384,7 +384,7 @@ fn convert_neo4j_row_to_record(
     let id_property = "id"; // Use 'id' property as the SurrealDB record ID if present
 
     // Convert Neo4j node to SurrealDB format
-    let mut data = convert_neo4j_node_to_bindable(node, node_id, label, ctx)?;
+    let mut data = convert_neo4j_node_to_surreal_kvs(node, node_id, label, ctx)?;
     // Create proper SurrealDB Thing for the record
     let id = match data.remove(id_property) {
         Some(SurrealValue::String(id)) => {
@@ -401,23 +401,26 @@ fn convert_neo4j_row_to_record(
     anyhow::Ok(crate::Record { id, data })
 }
 
-/// Convert Neo4j node to bindable HashMap with BindableValue
-fn convert_neo4j_node_to_bindable(
+/// Convert Neo4j node to keys and surreal values
+fn convert_neo4j_node_to_surreal_kvs(
     node: neo4rs::Node,
     node_id: i64,
     label: &str,
     ctx: &Neo4jConversionContext,
 ) -> anyhow::Result<std::collections::HashMap<String, SurrealValue>> {
-    let mut bindable_obj = std::collections::HashMap::new();
+    let mut kvs = std::collections::HashMap::new();
 
     // Add neo4j_id as a field (preserve original Neo4j ID)
-    bindable_obj.insert("neo4j_id".to_string(), SurrealValue::Int(node_id));
+    kvs.insert("neo4j_id".to_string(), SurrealValue::Int(node_id));
 
     // Add labels as an array
     let labels: Vec<String> = node.labels().into_iter().map(|s| s.to_string()).collect();
-    let labels_bindables: Vec<SurrealValue> =
+    let labels_surreal_values: Vec<SurrealValue> =
         labels.into_iter().map(SurrealValue::String).collect();
-    bindable_obj.insert("labels".to_string(), SurrealValue::Array(labels_bindables));
+    kvs.insert(
+        "labels".to_string(),
+        SurrealValue::Array(labels_surreal_values),
+    );
 
     // Convert all properties
     for key in node.keys() {
@@ -431,12 +434,12 @@ fn convert_neo4j_node_to_bindable(
             label,
             should_parse_json
         );
-        let val = convert_neo4j_type_to_bindable(value, &ctx.timezone, should_parse_json)?;
+        let val = convert_neo4j_type_to_surreal_value(value, &ctx.timezone, should_parse_json)?;
 
-        bindable_obj.insert(key.to_string(), val);
+        kvs.insert(key.to_string(), val);
     }
 
-    Ok(bindable_obj)
+    Ok(kvs)
 }
 
 pub struct Relation {
@@ -477,7 +480,7 @@ impl Relation {
         for k in self.relationship.keys() {
             let value = self.relationship.get::<neo4rs::BoltType>(k)?;
             // Relationships don't have labels, so we can't use JSON-to-object for them
-            let v = convert_neo4j_type_to_bindable(value, &ctx.timezone, false)?;
+            let v = convert_neo4j_type_to_surreal_value(value, &ctx.timezone, false)?;
             data.insert(k.to_string(), v);
         }
 
@@ -487,45 +490,6 @@ impl Relation {
             output,
             data,
         })
-    }
-
-    pub fn to_bindable(
-        &self,
-        ctx: &Neo4jConversionContext,
-    ) -> anyhow::Result<HashMap<String, SurrealValue>> {
-        let mut o = std::collections::HashMap::new();
-
-        // Add SurrealDB RELATE required fields: 'in' and 'out' as Thing types
-        let start_table = self
-            .start_labels
-            .first()
-            .map(|s| s.to_lowercase())
-            .unwrap_or_else(|| "node".to_string());
-        let end_table = self
-            .end_labels
-            .first()
-            .map(|s| s.to_lowercase())
-            .unwrap_or_else(|| "node".to_string());
-
-        let in_thing = surrealdb::sql::Thing::from((
-            start_table,
-            surrealdb::sql::Id::from(self.start_node_id),
-        ));
-        let out_thing =
-            surrealdb::sql::Thing::from((end_table, surrealdb::sql::Id::from(self.end_node_id)));
-
-        o.insert("in".to_string(), SurrealValue::Thing(in_thing));
-        o.insert("out".to_string(), SurrealValue::Thing(out_thing));
-
-        // Convert all properties
-        for key in self.relationship.keys() {
-            let value = self.relationship.get::<neo4rs::BoltType>(key)?;
-            // Relationships don't have labels, so we can't use JSON-to-object for them
-            let v = convert_neo4j_type_to_bindable(value, &ctx.timezone, false)?;
-            o.insert(key.to_string(), v);
-        }
-
-        Ok(o)
     }
 
     pub fn surreal_record_id(&self) -> surrealdb::sql::Thing {
@@ -581,7 +545,7 @@ pub fn row_to_relation(
     })
 }
 
-/// Convert Neo4j BoltType to BindableValue
+/// Convert Neo4j BoltType to SurrealValue
 ///
 /// Currently, this function supports only one of the possible modes of operation:
 /// 1. Assume each node has only one label- No dedicated SurrealDB table for all the Neo4j nodes, but rather a SurrealDB table for each Neo4j node label.
@@ -595,7 +559,7 @@ pub fn row_to_relation(
 /// This should be an IANA timezone name (e.g., "America/New_York", "Europe/London", "UTC").
 ///
 /// If should_parse_json is true and the value is a String, attempt to parse it as JSON and convert to Object.
-pub fn convert_neo4j_type_to_bindable(
+pub fn convert_neo4j_type_to_surreal_value(
     value: neo4rs::BoltType,
     timezone: &str,
     should_parse_json: bool,
@@ -606,18 +570,18 @@ pub fn convert_neo4j_type_to_bindable(
             if should_parse_json {
                 match serde_json::from_str::<serde_json::Value>(&s.value) {
                     Ok(json_val) => {
-                        // Successfully parsed as JSON - convert to BindableValue
-                        match crate::json_value_to_bindable(json_val) {
-                            Ok(bindable) => {
+                        // Successfully parsed as JSON - convert to SurrealValue
+                        match crate::json_to_surreal_without_schema(json_val) {
+                            Ok(v) => {
                                 tracing::debug!(
                                     "Successfully converted JSON string to object: {}",
                                     &s.value[..s.value.len().min(100)]
                                 );
-                                return Ok(bindable);
+                                return Ok(v);
                             }
                             Err(e) => {
                                 tracing::warn!(
-                                    "Failed to convert parsed JSON to BindableValue: {}. Keeping as string.",
+                                    "Failed to convert parsed JSON to SurrealValue: {}. Keeping as string.",
                                     e
                                 );
                             }
@@ -637,25 +601,25 @@ pub fn convert_neo4j_type_to_bindable(
         }
         neo4rs::BoltType::Boolean(b) => Ok(SurrealValue::Bool(b.value)),
         neo4rs::BoltType::Map(map) => {
-            let mut bindables = HashMap::new();
+            let mut vs = HashMap::new();
             for (key, val) in map.value {
                 // Recursive calls should not parse JSON (only top-level properties)
-                let bindable_val = convert_neo4j_type_to_bindable(val, timezone, false)?;
-                bindables.insert(key.to_string(), bindable_val);
+                let v = convert_neo4j_type_to_surreal_value(val, timezone, false)?;
+                vs.insert(key.to_string(), v);
             }
-            Ok(SurrealValue::Object(bindables))
+            Ok(SurrealValue::Object(vs))
         }
         neo4rs::BoltType::Null(_) => Ok(SurrealValue::Null),
         neo4rs::BoltType::Integer(i) => Ok(SurrealValue::Int(i.value)),
         neo4rs::BoltType::Float(f) => Ok(SurrealValue::Float(f.value)),
         neo4rs::BoltType::List(list) => {
-            let mut bindables = Vec::new();
+            let mut vs = Vec::new();
             for item in list.value {
                 // Recursive calls should not parse JSON (only top-level properties)
-                let bindable_val = convert_neo4j_type_to_bindable(item, timezone, false)?;
-                bindables.push(bindable_val);
+                let v = convert_neo4j_type_to_surreal_value(item, timezone, false)?;
+                vs.push(v);
             }
-            Ok(SurrealValue::Array(bindables))
+            Ok(SurrealValue::Array(vs))
         }
         neo4rs::BoltType::Node(node) => {
             // We assume that nodes are not stored in Neo4j as node properties.
@@ -689,39 +653,39 @@ pub fn convert_neo4j_type_to_bindable(
         neo4rs::BoltType::Point2D(point) => {
             // Convert Neo4j Point2D to a custom object with GeoJSON-like structure
             // This approach preserves the SRID and provides better compatibility
-            let mut bindables = HashMap::new();
-            bindables.insert(
+            let mut kvs = HashMap::new();
+            kvs.insert(
                 "type".to_string(),
                 SurrealValue::String("Point".to_string()),
             );
             // Note: Neo4j Point2D uses SRID 4326 (WGS84) by default, compatible with SurrealDB geometry
-            bindables.insert("srid".to_string(), SurrealValue::Int(point.sr_id.value));
+            kvs.insert("srid".to_string(), SurrealValue::Int(point.sr_id.value));
             // GeoJSON coordinates format: [longitude, latitude]
             let coordinates = vec![
                 SurrealValue::Float(point.x.value),
                 SurrealValue::Float(point.y.value),
             ];
-            bindables.insert("coordinates".to_string(), SurrealValue::Array(coordinates));
-            Ok(SurrealValue::Object(bindables))
+            kvs.insert("coordinates".to_string(), SurrealValue::Array(coordinates));
+            Ok(SurrealValue::Object(kvs))
         }
         neo4rs::BoltType::Point3D(point) => {
             // SurrealDB does not support 3-dimensional points yet, so we use a custom object
             // to represent the 3D point with GeoJSON-like structure for future compatibility
-            let mut bindables = HashMap::new();
-            bindables.insert(
+            let mut kvs = HashMap::new();
+            kvs.insert(
                 "type".to_string(),
                 SurrealValue::String("Point".to_string()),
             );
             // Note: Neo4j Point3D uses SRID 4979 (WGS84 3D) by default, compatible with SurrealDB geometry
-            bindables.insert("srid".to_string(), SurrealValue::Int(point.sr_id.value));
+            kvs.insert("srid".to_string(), SurrealValue::Int(point.sr_id.value));
             // GeoJSON coordinates format: [longitude, latitude, elevation]
             let coordinates = vec![
                 SurrealValue::Float(point.x.value),
                 SurrealValue::Float(point.y.value),
                 SurrealValue::Float(point.z.value),
             ];
-            bindables.insert("coordinates".to_string(), SurrealValue::Array(coordinates));
-            Ok(SurrealValue::Object(bindables))
+            kvs.insert("coordinates".to_string(), SurrealValue::Array(coordinates));
+            Ok(SurrealValue::Object(kvs))
         }
         neo4rs::BoltType::Bytes(bytes) => {
             // Convert Neo4j bytes to SurrealDB bytes type
@@ -842,7 +806,7 @@ mod tests {
         let bolt_type = neo4rs::BoltType::Date(date);
 
         // Convert with UTC timezone
-        let result = convert_neo4j_type_to_bindable(bolt_type, "UTC", false).unwrap();
+        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
             SurrealValue::DateTime(dt) => {
@@ -865,7 +829,8 @@ mod tests {
         let bolt_type = neo4rs::BoltType::Date(date);
 
         // Convert with America/New_York timezone
-        let result = convert_neo4j_type_to_bindable(bolt_type, "America/New_York", false).unwrap();
+        let result =
+            convert_neo4j_type_to_surreal_value(bolt_type, "America/New_York", false).unwrap();
 
         match result {
             SurrealValue::DateTime(dt) => {
@@ -892,7 +857,7 @@ mod tests {
         let bolt_type = neo4rs::BoltType::LocalDateTime(local_dt);
 
         // Convert with UTC timezone
-        let result = convert_neo4j_type_to_bindable(bolt_type, "UTC", false).unwrap();
+        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
             SurrealValue::DateTime(dt) => {
@@ -919,7 +884,7 @@ mod tests {
         let bolt_type = neo4rs::BoltType::LocalDateTime(local_dt);
 
         // Convert with Asia/Tokyo timezone
-        let result = convert_neo4j_type_to_bindable(bolt_type, "Asia/Tokyo", false).unwrap();
+        let result = convert_neo4j_type_to_surreal_value(bolt_type, "Asia/Tokyo", false).unwrap();
 
         match result {
             SurrealValue::DateTime(dt) => {
@@ -941,7 +906,7 @@ mod tests {
         let bolt_type = neo4rs::BoltType::Date(date);
 
         // Try with invalid timezone
-        let result = convert_neo4j_type_to_bindable(bolt_type, "Invalid/Timezone", false);
+        let result = convert_neo4j_type_to_surreal_value(bolt_type, "Invalid/Timezone", false);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -959,7 +924,7 @@ mod tests {
         let bolt_type = neo4rs::BoltType::LocalDateTime(local_dt);
 
         // Convert with America/New_York timezone - this should handle the DST gap
-        let result = convert_neo4j_type_to_bindable(bolt_type, "America/New_York", false);
+        let result = convert_neo4j_type_to_surreal_value(bolt_type, "America/New_York", false);
 
         // The conversion should either succeed with an adjusted time or fail gracefully
         // depending on how chrono-tz handles DST gaps
@@ -986,8 +951,8 @@ mod tests {
         let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "UTC"));
         let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
 
-        // Convert to bindable value
-        let result = convert_neo4j_type_to_bindable(bolt_type, "UTC", false).unwrap();
+        // Convert to surreal value
+        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
             SurrealValue::DateTime(dt) => {
@@ -1014,8 +979,8 @@ mod tests {
         let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "America/New_York"));
         let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
 
-        // Convert to bindable value
-        let result = convert_neo4j_type_to_bindable(bolt_type, "UTC", false).unwrap();
+        // Convert to surreal value
+        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
             SurrealValue::DateTime(dt) => {
@@ -1042,8 +1007,8 @@ mod tests {
         let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "Asia/Tokyo"));
         let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
 
-        // Convert to bindable value
-        let result = convert_neo4j_type_to_bindable(bolt_type, "UTC", false).unwrap();
+        // Convert to surreal value
+        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
             SurrealValue::DateTime(dt) => {
@@ -1070,8 +1035,8 @@ mod tests {
         let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "Europe/London"));
         let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
 
-        // Convert to bindable value
-        let result = convert_neo4j_type_to_bindable(bolt_type, "UTC", false).unwrap();
+        // Convert to surreal value
+        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
             SurrealValue::DateTime(dt) => {
@@ -1098,8 +1063,8 @@ mod tests {
         let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "Pacific/Honolulu"));
         let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
 
-        // Convert to bindable value
-        let result = convert_neo4j_type_to_bindable(bolt_type, "UTC", false).unwrap();
+        // Convert to surreal value
+        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
             SurrealValue::DateTime(dt) => {
@@ -1122,7 +1087,7 @@ mod tests {
         let bolt_type = neo4rs::BoltType::String(neo4rs::BoltString::new(json_string));
 
         // Convert with JSON parsing enabled
-        let result = convert_neo4j_type_to_bindable(bolt_type.clone(), "UTC", true).unwrap();
+        let result = convert_neo4j_type_to_surreal_value(bolt_type.clone(), "UTC", true).unwrap();
 
         match result {
             SurrealValue::Object(obj) => {
@@ -1148,7 +1113,7 @@ mod tests {
         }
 
         // Test that without JSON parsing, it remains a string
-        let result_no_parse = convert_neo4j_type_to_bindable(bolt_type, "UTC", false).unwrap();
+        let result_no_parse = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
         match result_no_parse {
             SurrealValue::String(s) => {
                 assert_eq!(s, json_string);

@@ -1,3 +1,4 @@
+use crate::surreal::{SurrealTableSchema, SurrealType};
 use crate::{SourceOpts, SurrealOpts, SurrealValue};
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -129,7 +130,7 @@ async fn migrate_table(
     table_name: &str,
     to_opts: &SurrealOpts,
     boolean_paths: &Option<Vec<String>>,
-    table_schema: &crate::schema::TableSchema,
+    table_schema: &SurrealTableSchema,
 ) -> Result<usize> {
     // Get primary key column(s)
     let pk_columns = super::schema::get_primary_key_columns(conn, table_name).await?;
@@ -187,16 +188,21 @@ async fn migrate_table(
     Ok(total_processed)
 }
 
-// Convert a MySQL row to a map of bindable values, ensuring 'id' is a Thing
+// Convert a MySQL row to a surreal record, ensuring 'id' is a Thing
 fn convert_row_to_record(
     row: Row,
     pk_columns: &[String],
     table_name: &str,
     boolean_paths: &Option<Vec<String>>,
-    table_schema: &crate::schema::TableSchema,
+    table_schema: &SurrealTableSchema,
 ) -> Result<crate::Record> {
-    let mut data =
-        _convert_row_to_bindable(row, pk_columns, table_name, boolean_paths, table_schema)?;
+    let mut data = _convert_row_to_keys_and_surreal_values(
+        row,
+        pk_columns,
+        table_name,
+        boolean_paths,
+        table_schema,
+    )?;
 
     // Extract original MySQL ID to ensure deterministic SurrealDB record IDs
     // NEVER use random UUIDs as fallback - this breaks UPSERT functionality!
@@ -223,13 +229,13 @@ fn convert_row_to_record(
     Ok(crate::Record { id, data })
 }
 
-/// Convert a MySQL row to a map of bindable values
-fn _convert_row_to_bindable(
+/// Convert a MySQL row to a map of surreal values
+fn _convert_row_to_keys_and_surreal_values(
     row: Row,
     pk_columns: &[String],
     table_name: &str,
     boolean_paths: &Option<Vec<String>>,
-    table_schema: &crate::schema::TableSchema,
+    table_schema: &SurrealTableSchema,
 ) -> Result<HashMap<String, SurrealValue>> {
     let mut record = HashMap::new();
 
@@ -332,13 +338,13 @@ fn parse_json_boolean_paths(
 }
 
 /// Build json_set_paths from table schema - identifies columns with SET type
-fn build_json_set_paths(table_schema: &crate::schema::TableSchema) -> Vec<String> {
+fn build_json_set_paths(table_schema: &SurrealTableSchema) -> Vec<String> {
     let mut set_paths = Vec::new();
 
     for (column_name, column_type) in &table_schema.columns {
         // Check if this column is a SET type (represented as Array of String)
-        if matches!(column_type, crate::schema::GenericDataType::Array(inner)
-            if matches!(inner.as_ref(), crate::schema::GenericDataType::String))
+        if matches!(column_type, SurrealType::Array(inner)
+            if matches!(inner.as_ref(), SurrealType::String))
         {
             set_paths.push(column_name.clone());
         }
@@ -347,14 +353,14 @@ fn build_json_set_paths(table_schema: &crate::schema::TableSchema) -> Vec<String
     set_paths
 }
 
-/// Convert a MySQL value to a BindableValue
+/// Convert a MySQL value to a SurrealValue
 fn convert_mysql_value(
     row: &Row,
     index: usize,
     _column_name: &str,
     json_boolean_paths: Option<&Vec<String>>,
     json_set_paths: &[String],
-    column_type: &crate::schema::GenericDataType,
+    column_type: &SurrealType,
 ) -> Result<SurrealValue> {
     let columns = row.columns();
     let column = &columns[index];
@@ -414,7 +420,7 @@ fn convert_mysql_value(
                     let s = String::from_utf8_lossy(bytes).to_string();
 
                     // Check if this is a SET column from schema
-                    if let crate::schema::GenericDataType::Array(_) = column_type {
+                    if let SurrealType::Array(_) = column_type {
                         // SET type - split comma-separated values into array
                         if s.is_empty() {
                             Ok(SurrealValue::Array(Vec::new()))
@@ -430,13 +436,13 @@ fn convert_mysql_value(
                     }
                 }
                 ColumnType::MYSQL_TYPE_JSON => {
-                    // JSON type - parse and convert to BindableValue
+                    // JSON type - parse and convert to SurrealValue
                     let s = String::from_utf8_lossy(bytes).to_string();
-                    // Parse JSON and convert to BindableValue recursively
+                    // Parse JSON and convert to SurrealValue recursively
                     match serde_json::from_str::<serde_json::Value>(&s) {
                         Ok(json_value) => {
                             // MySQL can store boolean as 0/1 in JSON, so we need to handle this
-                            convert_mysql_json_to_bindable(
+                            convert_mysql_json_to_surreal_value(
                                 json_value,
                                 "",
                                 json_boolean_paths.unwrap_or(&Vec::new()),
@@ -578,8 +584,8 @@ fn convert_mysql_value(
     result
 }
 
-/// Convert MySQL JSON to BindableValue, handling MySQL-specific quirks
-pub fn convert_mysql_json_to_bindable(
+/// Convert MySQL JSON to SurrealValue, handling MySQL-specific quirks
+pub fn convert_mysql_json_to_surreal_value(
     value: serde_json::Value,
     current_path: &str,
     json_boolean_paths: &[String],
@@ -625,21 +631,21 @@ pub fn convert_mysql_json_to_bindable(
             }
         }
         serde_json::Value::Array(arr) => {
-            let mut bindable_arr = Vec::new();
+            let mut vs = Vec::new();
             for (idx, item) in arr.into_iter().enumerate() {
                 // Arrays don't typically have boolean conversion, but pass path for completeness
                 let item_path = format!("{current_path}[{idx}]");
-                bindable_arr.push(convert_mysql_json_to_bindable(
+                vs.push(convert_mysql_json_to_surreal_value(
                     item,
                     &item_path,
                     json_boolean_paths,
                     json_set_paths,
                 )?);
             }
-            Ok(SurrealValue::Array(bindable_arr))
+            Ok(SurrealValue::Array(vs))
         }
         serde_json::Value::Object(map) => {
-            let mut bindable_obj = std::collections::HashMap::new();
+            let mut kvs = std::collections::HashMap::new();
             for (key, val) in map {
                 // Build the nested path for this field
                 let nested_path = if current_path.is_empty() {
@@ -647,9 +653,9 @@ pub fn convert_mysql_json_to_bindable(
                 } else {
                     format!("{current_path}.{key}")
                 };
-                bindable_obj.insert(
+                kvs.insert(
                     key,
-                    convert_mysql_json_to_bindable(
+                    convert_mysql_json_to_surreal_value(
                         val,
                         &nested_path,
                         json_boolean_paths,
@@ -657,7 +663,7 @@ pub fn convert_mysql_json_to_bindable(
                     )?,
                 );
             }
-            Ok(SurrealValue::Object(bindable_obj))
+            Ok(SurrealValue::Object(kvs))
         }
     }
 }

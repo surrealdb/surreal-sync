@@ -1,7 +1,8 @@
-use crate::sync::{
-    ChangeEvent, ChangeStream, IncrementalSource, Operation, SourceDatabase, SyncCheckpoint,
+use crate::surreal::{
+    json_to_surreal_with_schema, json_to_surreal_without_schema, Change, ChangeOp,
+    SurrealDatabaseSchema, SurrealValue,
 };
-use crate::types::SurrealValue;
+use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -44,7 +45,7 @@ pub struct PostgresIncrementalSource {
     client: Arc<Mutex<Client>>,
     tracking_table: String,
     last_sequence: i64,
-    database_schema: Option<crate::schema::DatabaseSchema>,
+    database_schema: Option<SurrealDatabaseSchema>,
 }
 
 impl PostgresIncrementalSource {
@@ -367,9 +368,9 @@ pub struct PostgresChangeStream {
     client: Arc<Mutex<Client>>,
     tracking_table: String,
     last_sequence: i64,
-    buffer: Vec<ChangeEvent>,
+    buffer: Vec<Change>,
     empty_poll_count: usize,
-    database_schema: Option<crate::schema::DatabaseSchema>,
+    database_schema: Option<SurrealDatabaseSchema>,
 }
 
 impl PostgresChangeStream {
@@ -377,7 +378,7 @@ impl PostgresChangeStream {
         client: Arc<Mutex<Client>>,
         tracking_table: String,
         start_sequence: i64,
-        database_schema: Option<crate::schema::DatabaseSchema>,
+        database_schema: Option<SurrealDatabaseSchema>,
     ) -> Result<Self> {
         Ok(Self {
             client,
@@ -389,7 +390,7 @@ impl PostgresChangeStream {
         })
     }
 
-    async fn fetch_changes(&mut self) -> Result<Vec<ChangeEvent>> {
+    async fn fetch_changes(&mut self) -> Result<Vec<Change>> {
         log::debug!(
             "PostgresChangeStream::fetch_changes() called, last_sequence: {}",
             self.last_sequence
@@ -434,36 +435,35 @@ impl PostgresChangeStream {
             let new_data: Option<JsonValue> = row.get(5);
             let _changed_at: DateTime<Utc> = row.get(6);
 
-            let data = match operation.as_str() {
+            let json_data = match operation.as_str() {
                 "INSERT" | "UPDATE" => new_data,
                 "DELETE" => old_data,
                 _ => None,
             };
 
             let op = match operation.as_str() {
-                "INSERT" => Operation::Create,
-                "UPDATE" => Operation::Update,
-                "DELETE" => Operation::Delete,
+                "INSERT" => ChangeOp::Create,
+                "UPDATE" => ChangeOp::Update,
+                "DELETE" => ChangeOp::Delete,
                 _ => {
                     warn!("Unknown operation type in audit table: {operation:?}");
                     continue;
                 }
             };
 
-            let bindable_data = if let Some(json_data) = data {
+            let surreal_data = if let Some(json_value) = json_data {
                 // Use schema-aware conversion if schema is available
-                if let (Some(_schema), Some(table_schema)) = (
-                    &self.database_schema,
-                    self.database_schema
-                        .as_ref()
-                        .and_then(|s| s.tables.get(&table_name)),
-                ) {
+                if let Some(table_schema) = self
+                    .database_schema
+                    .as_ref()
+                    .and_then(|s| s.tables.get(&table_name))
+                {
                     // Convert JSON object using schema information
-                    match json_data {
+                    match json_value {
                         serde_json::Value::Object(map) => {
                             let mut m = std::collections::HashMap::new();
                             for (key, val) in map {
-                                let v = crate::json_to_sureral(val, &key, table_schema)?;
+                                let v = json_to_surreal_with_schema(val, &key, table_schema)?;
                                 m.insert(key, v);
                             }
                             m
@@ -475,8 +475,9 @@ impl PostgresChangeStream {
                         }
                     }
                 } else {
-                    // Fallback to basic JSON conversion if no schema available
-                    crate::json_to_bindable_map(json_data)?
+                    anyhow::bail!(
+                        "No schema information available for table '{table_name}'. Cannot convert data.",
+                    );
                 }
             } else {
                 HashMap::new()
@@ -486,7 +487,7 @@ impl PostgresChangeStream {
                 Some(serde_json::Value::Array(arr)) => {
                     if arr.len() == 1 {
                         // Single primary key value
-                        match crate::types::json_value_to_bindable(arr[0].clone())? {
+                        match json_to_surreal_without_schema(arr[0].clone())? {
                             SurrealValue::String(s) => {
                                 surrealdb::sql::Id::from(surrealdb::sql::Strand::from(s))
                             }
@@ -500,7 +501,7 @@ impl PostgresChangeStream {
                     } else {
                         let mut surrealdb_values_array = Vec::new();
                         for item in arr {
-                            match crate::types::json_value_to_bindable(item)? {
+                            match json_to_surreal_without_schema(item)? {
                                 SurrealValue::String(s) => {
                                     surrealdb_values_array
                                         .push(surrealdb::sql::Value::Strand(s.into()));
@@ -526,10 +527,10 @@ impl PostgresChangeStream {
 
             info!("Change event: record_id: {record_id:?}");
 
-            changes.push(ChangeEvent::record(
+            changes.push(Change::record(
                 op,
                 surrealdb::sql::Thing::from((table_name, record_id)),
-                bindable_data,
+                surreal_data,
             ));
 
             self.last_sequence = sequence_id;
@@ -541,7 +542,7 @@ impl PostgresChangeStream {
 
 #[async_trait]
 impl ChangeStream for PostgresChangeStream {
-    async fn next(&mut self) -> Option<Result<ChangeEvent>> {
+    async fn next(&mut self) -> Option<Result<Change>> {
         log::debug!(
             "🔄 PostgresChangeStream::next() called, empty_poll_count: {}, last_sequence: {}",
             self.empty_poll_count,

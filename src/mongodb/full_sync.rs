@@ -184,14 +184,14 @@ pub async fn run_full_sync(
                 tracing::debug!("BSON document: {:?}", doc_owned);
             }
 
-            // Convert BSON document to bindable and add Thing as id
-            let bindable_object = convert_bson_document_to_record(doc_owned, &collection_name)?;
+            // Convert BSON document to surreal record and add Thing as id
+            let surreal_record = convert_bson_document_to_record(doc_owned, &collection_name)?;
 
             if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                tracing::debug!("Final document for SurrealDB: {bindable_object:?}",);
+                tracing::debug!("Final document for SurrealDB: {surreal_record:?}",);
             }
 
-            batch.push(bindable_object);
+            batch.push(surreal_record);
 
             if batch.len() >= to_opts.batch_size {
                 tracing::debug!(
@@ -284,20 +284,22 @@ pub async fn run_full_sync(
     Ok(())
 }
 
-/// Convert BSON values directly to bindable values
-pub fn convert_bson_to_bindable(bson_value: mongodb::bson::Bson) -> anyhow::Result<SurrealValue> {
+/// Convert BSON values directly to surreal values
+pub fn convert_bson_to_surreal_value(
+    bson_value: mongodb::bson::Bson,
+) -> anyhow::Result<SurrealValue> {
     use mongodb::bson::Bson;
 
     match bson_value {
         Bson::Double(f) => Ok(SurrealValue::Float(f)),
         Bson::String(s) => Ok(SurrealValue::String(s)),
         Bson::Array(arr) => {
-            let mut bindables = Vec::new();
+            let mut vs = Vec::new();
             for item in arr {
-                let bindable_val = convert_bson_to_bindable(item)?;
-                bindables.push(bindable_val);
+                let v = convert_bson_to_surreal_value(item)?;
+                vs.push(v);
             }
-            Ok(SurrealValue::Array(bindables))
+            Ok(SurrealValue::Array(vs))
         }
         Bson::Document(doc) => {
             // Check if this document is a DBRef
@@ -322,12 +324,12 @@ pub fn convert_bson_to_bindable(bson_value: mongodb::bson::Bson) -> anyhow::Resu
                 Ok(SurrealValue::Thing(thing))
             } else {
                 // Regular document - convert recursively
-                let mut bindables = HashMap::new();
+                let mut vs = HashMap::new();
                 for (key, val) in doc {
-                    let bindable_val = convert_bson_to_bindable(val)?;
-                    bindables.insert(key, bindable_val);
+                    let v = convert_bson_to_surreal_value(val)?;
+                    vs.insert(key, v);
                 }
-                Ok(SurrealValue::Object(bindables))
+                Ok(SurrealValue::Object(vs))
             }
         }
         Bson::Boolean(b) => Ok(SurrealValue::Bool(b)),
@@ -346,8 +348,8 @@ pub fn convert_bson_to_bindable(bson_value: mongodb::bson::Bson) -> anyhow::Resu
         Bson::JavaScriptCodeWithScope(code_with_scope) => {
             let mut scope = HashMap::new();
             for (key, val) in code_with_scope.scope {
-                let bindable_val = convert_bson_to_bindable(val)?;
-                scope.insert(key, bindable_val);
+                let v = convert_bson_to_surreal_value(val)?;
+                scope.insert(key, v);
             }
             let scope = SurrealValue::Object(scope);
             let code = SurrealValue::String(code_with_scope.code);
@@ -404,7 +406,7 @@ pub fn convert_bson_to_bindable(bson_value: mongodb::bson::Bson) -> anyhow::Resu
     }
 }
 
-// Converts a BSON document containing _id to a bindable HashMap, mapping _id to SurrealDB Thing
+// Converts a BSON document containing _id to a surreal record, mapping _id to SurrealDB Thing
 fn convert_bson_document_to_record(
     doc: mongodb::bson::Document,
     collection_name: &str,
@@ -426,8 +428,8 @@ fn convert_bson_document_to_record(
     let mut data = std::collections::HashMap::new();
     for (key, value) in doc {
         if key != "_id" {
-            let bindable_value = convert_bson_to_bindable(value)?;
-            data.insert(key, bindable_value);
+            let v = convert_bson_to_surreal_value(value)?;
+            data.insert(key, v);
         }
     }
 

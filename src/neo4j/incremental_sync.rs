@@ -15,7 +15,8 @@
 //! exactly matches Neo4j.
 
 use crate::neo4j::Neo4jConversionContext;
-use crate::sync::{ChangeEvent, ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
+use crate::surreal::Change;
+use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use crate::{Record, SourceOpts, SurrealValue};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -94,7 +95,7 @@ pub struct Neo4jChangeStream {
     /// Conversion context with timezone and JSON-to-object configuration
     ctx: Neo4jConversionContext,
     /// Buffer for batched changes
-    change_buffer: Vec<ChangeEvent>,
+    change_buffer: Vec<Change>,
     /// Whether we've finished reading all changes
     finished: bool,
 }
@@ -161,16 +162,17 @@ impl Neo4jChangeStream {
 
             max_checkpoint = max_checkpoint.max(node_checkpoint);
 
-            // Convert node to bindable data
-            let mut data = HashMap::new();
-            data.insert("neo4j_id".to_string(), SurrealValue::Int(node_id));
+            // Convert node to surreal data
+            let mut keys_and_surreal_values = HashMap::new();
+            keys_and_surreal_values.insert("neo4j_id".to_string(), SurrealValue::Int(node_id));
             record_id = surrealdb::sql::Id::from(node_id);
 
-            let labels_bindables: Vec<SurrealValue> = labels
+            let surreal_labels: Vec<SurrealValue> = labels
                 .iter()
                 .map(|s| SurrealValue::String(s.clone()))
                 .collect();
-            data.insert("labels".to_string(), SurrealValue::Array(labels_bindables));
+            keys_and_surreal_values
+                .insert("labels".to_string(), SurrealValue::Array(surreal_labels));
 
             // Add all node properties with field renaming
             for key in node.keys() {
@@ -178,19 +180,19 @@ impl Neo4jChangeStream {
                     // Determine label for JSON-to-object check
                     let should_parse_json = self.ctx.should_parse_json(label, key);
 
-                    if let Ok(bindable) = crate::neo4j::convert_neo4j_type_to_bindable(
+                    if let Ok(v) = crate::neo4j::convert_neo4j_type_to_surreal_value(
                         value,
                         &self.ctx.timezone,
                         should_parse_json,
                     ) {
                         // Rename 'id' field to 'neo4j_original_id' to avoid conflict with SurrealDB record ID
                         let field_name = if key == "id" {
-                            record_id = bindable.to_id()?;
+                            record_id = v.to_surrealql_id()?;
                             "neo4j_original_id".to_string()
                         } else {
                             key.to_string()
                         };
-                        data.insert(field_name, bindable);
+                        keys_and_surreal_values.insert(field_name, v);
                     }
                 }
             }
@@ -200,9 +202,9 @@ impl Neo4jChangeStream {
                 .map(|s| s.to_lowercase())
                 .unwrap_or_else(|| "node".to_string());
 
-            batch_changes.push(ChangeEvent::UpsertRecord(Record {
+            batch_changes.push(Change::UpsertRecord(Record {
                 id: surrealdb::sql::Thing::from((table, record_id)),
-                data,
+                data: keys_and_surreal_values,
             }));
         }
 
@@ -223,7 +225,7 @@ impl Neo4jChangeStream {
         let mut rel_result = self.graph.execute(rel_query).await?;
 
         while let Some(row) = rel_result.next().await? {
-            // Convert relationship to bindable data
+            // Convert relationship to surreal data
             let r = crate::neo4j::row_to_relation(
                 &row,
                 None,
@@ -232,7 +234,7 @@ impl Neo4jChangeStream {
 
             max_checkpoint = max_checkpoint.max(r.updated_at);
 
-            batch_changes.push(ChangeEvent::UpsertRelation(r.to_relation(&self.ctx)?));
+            batch_changes.push(Change::UpsertRelation(r.to_relation(&self.ctx)?));
         }
 
         if batch_changes.is_empty() {
@@ -248,7 +250,7 @@ impl Neo4jChangeStream {
 
 #[async_trait]
 impl ChangeStream for Neo4jChangeStream {
-    async fn next(&mut self) -> Option<anyhow::Result<ChangeEvent>> {
+    async fn next(&mut self) -> Option<anyhow::Result<Change>> {
         // If buffer is empty, fetch next batch
         if self.change_buffer.is_empty() && !self.finished {
             if let Err(e) = self.fetch_next_batch().await {
@@ -268,7 +270,7 @@ impl ChangeStream for Neo4jChangeStream {
 /// Apply incremental changes to SurrealDB
 pub async fn apply_incremental_changes(
     surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
-    changes: Vec<ChangeEvent>,
+    changes: Vec<Change>,
     dry_run: bool,
 ) -> anyhow::Result<usize> {
     let mut applied_count = 0;

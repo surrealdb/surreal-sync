@@ -3,33 +3,31 @@
 //! This module provides functions for collecting PostgreSQL database schema information
 //! and mapping PostgreSQL column types to generic data types for schema-aware conversion.
 
-use crate::schema::{DatabaseSchema, GenericDataType, TableSchema};
+use crate::surreal::{SurrealDatabaseSchema, SurrealTableSchema, SurrealType};
 use std::collections::HashMap;
 
-/// Convert PostgreSQL column type information to GenericDataType
-pub fn column_type_to_generic_data_type(
+/// Convert PostgreSQL column type information to SurrealType
+pub fn column_type_to_surreal_type(
     data_type: &str,
     precision: Option<u32>,
     scale: Option<u32>,
-) -> GenericDataType {
+) -> SurrealType {
     match data_type.to_lowercase().as_str() {
-        "numeric" | "decimal" => GenericDataType::Decimal { precision, scale },
-        "timestamp" | "timestamp without time zone" => GenericDataType::Timestamp,
-        "timestamptz" | "timestamp with time zone" => GenericDataType::TimestampWithTimezone,
-        "uuid" => GenericDataType::Uuid,
-        "json" | "jsonb" => GenericDataType::Json,
-        "boolean" | "bool" => GenericDataType::Boolean,
-        "integer" | "int4" | "bigint" | "int8" | "smallint" | "int2" => GenericDataType::Integer,
-        "real" | "float4" | "double precision" | "float8" => GenericDataType::Float,
-        "text" | "varchar" | "char" | "character varying" | "character" => GenericDataType::String,
-        "bytea" => GenericDataType::Bytes,
-        "date" => GenericDataType::Date,
-        "time" | "time without time zone" => GenericDataType::Time,
-        "interval" => GenericDataType::Duration,
-        "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" => {
-            GenericDataType::Geometry
-        }
-        _ => GenericDataType::SourceSpecific(data_type.to_string()),
+        "numeric" | "decimal" => SurrealType::Decimal { precision, scale },
+        "timestamp" | "timestamp without time zone" => SurrealType::Timestamp,
+        "timestamptz" | "timestamp with time zone" => SurrealType::TimestampWithTimezone,
+        "uuid" => SurrealType::Uuid,
+        "json" | "jsonb" => SurrealType::Json,
+        "boolean" | "bool" => SurrealType::Boolean,
+        "integer" | "int4" | "bigint" | "int8" | "smallint" | "int2" => SurrealType::Integer,
+        "real" | "float4" | "double precision" | "float8" => SurrealType::Float,
+        "text" | "varchar" | "char" | "character varying" | "character" => SurrealType::String,
+        "bytea" => SurrealType::Bytes,
+        "date" => SurrealType::Date,
+        "time" | "time without time zone" => SurrealType::Time,
+        "interval" => SurrealType::Duration,
+        "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" => SurrealType::Geometry,
+        _ => SurrealType::SourceSpecific(data_type.to_string()),
     }
 }
 
@@ -37,7 +35,7 @@ pub fn column_type_to_generic_data_type(
 pub async fn collect_postgresql_schema(
     client: &tokio_postgres::Client,
     _database: &str,
-) -> anyhow::Result<DatabaseSchema> {
+) -> anyhow::Result<SurrealDatabaseSchema> {
     let query = "
         SELECT table_name, column_name, data_type, numeric_precision, numeric_scale
         FROM information_schema.columns
@@ -58,11 +56,11 @@ pub async fn collect_postgresql_schema(
         let precision = precision.map(|p| p as u32);
         let scale = scale.map(|s| s as u32);
 
-        let generic_type = column_type_to_generic_data_type(&data_type, precision, scale);
+        let generic_type = column_type_to_surreal_type(&data_type, precision, scale);
 
         let table_schema = tables
             .entry(table_name.clone())
-            .or_insert_with(|| TableSchema {
+            .or_insert_with(|| SurrealTableSchema {
                 table_name: table_name.clone(),
                 columns: HashMap::new(),
             });
@@ -70,5 +68,5 @@ pub async fn collect_postgresql_schema(
         table_schema.columns.insert(column_name, generic_type);
     }
 
-    Ok(DatabaseSchema { tables })
+    Ok(SurrealDatabaseSchema { tables })
 }

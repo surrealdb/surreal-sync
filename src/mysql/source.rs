@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
-use crate::sync::{
-    ChangeEvent, ChangeStream, IncrementalSource, Operation, SourceDatabase, SyncCheckpoint,
-};
+use crate::surreal::{json_to_surreal_with_schema, Change, ChangeOp, SurrealDatabaseSchema};
+use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -65,7 +64,7 @@ pub struct MySQLIncrementalSource {
     pool: Pool,
     server_id: u32,
     sequence_id: i64,
-    database_schema: Option<crate::schema::DatabaseSchema>,
+    database_schema: Option<SurrealDatabaseSchema>,
 }
 
 impl MySQLIncrementalSource {
@@ -135,9 +134,9 @@ pub struct MySQLChangeStream {
     connection: Option<Conn>,
     #[allow(dead_code)]
     server_id: u32,
-    buffer: Vec<ChangeEvent>,
+    buffer: Vec<Change>,
     last_sequence_id: i64,
-    database_schema: Option<crate::schema::DatabaseSchema>,
+    database_schema: Option<SurrealDatabaseSchema>,
 }
 
 impl MySQLChangeStream {
@@ -145,7 +144,7 @@ impl MySQLChangeStream {
         pool: Pool,
         server_id: u32,
         starting_sequence_id: i64,
-        database_schema: Option<crate::schema::DatabaseSchema>,
+        database_schema: Option<SurrealDatabaseSchema>,
     ) -> Result<Self> {
         let connection = pool.get_conn().await?;
 
@@ -159,7 +158,7 @@ impl MySQLChangeStream {
         })
     }
 
-    async fn fetch_changes(&mut self) -> Result<Vec<ChangeEvent>> {
+    async fn fetch_changes(&mut self) -> Result<Vec<Change>> {
         let conn = self
             .connection
             .as_mut()
@@ -197,19 +196,21 @@ impl MySQLChangeStream {
             let new_data: Option<Value> = row.get(5);
 
             let op = match operation.as_str() {
-                "INSERT" => Operation::Create,
-                "UPDATE" => Operation::Update,
-                "DELETE" => Operation::Delete,
+                "INSERT" => ChangeOp::Create,
+                "UPDATE" => ChangeOp::Update,
+                "DELETE" => ChangeOp::Delete,
                 _ => {
                     return Err(anyhow!("Unknown operation type: {operation}"));
                 }
             };
 
-            // Convert JSON data to BindableValue map using schema-aware conversion
-            let bindable_data = match operation.as_str() {
+            // Convert JSON data to SurrealValue map using schema-aware conversion
+            let surreal_data = match operation.as_str() {
                 "INSERT" | "UPDATE" => {
-                    if let Some(Value::Bytes(bytes)) = new_data {
-                        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    if let Some(Value::Bytes(json_data)) = new_data {
+                        if let Ok(json_value) =
+                            serde_json::from_slice::<serde_json::Value>(&json_data)
+                        {
                             // Use schema-aware conversion if available
                             if let (Some(_schema), Some(table_schema)) = (
                                 &self.database_schema,
@@ -217,36 +218,45 @@ impl MySQLChangeStream {
                                     .as_ref()
                                     .and_then(|s| s.tables.get(&table_name)),
                             ) {
-                                match json {
+                                match json_value {
                                     serde_json::Value::Object(map) => {
-                                        let mut bindable_map = std::collections::HashMap::new();
+                                        let mut kvs = std::collections::HashMap::new();
                                         for (key, val) in map {
-                                            let bindable_val =
-                                                crate::json_to_sureral(val, &key, table_schema)?;
-                                            bindable_map.insert(key, bindable_val);
+                                            let v = json_to_surreal_with_schema(
+                                                val,
+                                                &key,
+                                                table_schema,
+                                            )?;
+                                            kvs.insert(key, v);
                                         }
-                                        bindable_map
+                                        kvs
                                     }
-                                    _ => crate::json_to_bindable_map(json)?,
+                                    _ => {
+                                        anyhow::bail!(
+                                            "Expected JSON object for row data in table '{table_name}'",
+                                        );
+                                    }
                                 }
                             } else {
-                                crate::json_to_bindable_map(json)?
+                                anyhow::bail!(
+                                    "No schema information available for table '{table_name}'. Cannot convert data.",
+                                );
                             }
                         } else {
-                            HashMap::new()
+                            anyhow::bail!("Invalid JSON data in new_data for table '{table_name}'");
                         }
                     } else {
-                        HashMap::new()
+                        anyhow::bail!("Missing new_data for INSERT/UPDATE in table '{table_name}'");
                     }
                 }
                 "DELETE" => HashMap::new(), // No data for deletes
                 _ => anyhow::bail!("Unknown operation type: {operation}"),
             };
 
-            changes.push(ChangeEvent::record(
+            changes.push(Change::record(
                 op,
                 surrealdb::sql::Thing::from((table_name, row_id)),
-                bindable_data,
+                surreal_data,
             ));
 
             self.last_sequence_id = sequence_id;
@@ -258,7 +268,7 @@ impl MySQLChangeStream {
 
 #[async_trait]
 impl ChangeStream for MySQLChangeStream {
-    async fn next(&mut self) -> Option<Result<ChangeEvent>> {
+    async fn next(&mut self) -> Option<Result<Change>> {
         // Return buffered changes first
         if !self.buffer.is_empty() {
             return Some(Ok(self.buffer.remove(0)));

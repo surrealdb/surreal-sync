@@ -49,25 +49,21 @@ pub mod mongodb;
 pub mod mysql;
 pub mod neo4j;
 pub mod postgresql;
-pub mod schema;
+pub mod surreal;
 pub mod sync;
 pub mod testing;
-pub mod types;
 
 pub mod connect;
 
 // Re-export types and schema functionality for easy access
-pub use schema::{json_to_sureral, DatabaseSchema, GenericDataType, TableSchema};
-pub use types::{
-    bindable_to_surrealdb_value, json_to_bindable_map, json_value_to_bindable,
-    serialize_bindable_map_to_json, serialize_bindable_value_to_json, SurrealValue,
+pub use surreal::{
+    json_to_surreal_without_schema, Change, Record, Relation, SurrealDatabaseSchema,
+    SurrealTableSchema, SurrealType, SurrealValue,
 };
 
 // Re-export main migration functions for easy access
 pub use jsonl::migrate_from_jsonl;
 pub use mongodb::migrate_from_mongodb;
-
-use crate::sync::ChangeEvent;
 
 /// Parsed configuration for Neo4j JSON-to-object conversion
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -161,69 +157,18 @@ pub struct SurrealOpts {
     pub dry_run: bool,
 }
 
-#[derive(Debug, Clone)]
-pub struct Record {
-    pub id: surrealdb::sql::Thing,
-    pub data: std::collections::HashMap<String, SurrealValue>,
-}
-
-impl Record {
-    pub fn get_upsert_content(&self) -> surrealdb::sql::Value {
-        let mut m = std::collections::BTreeMap::new();
-        for (k, v) in &self.data {
-            tracing::debug!("Adding field to record: {k} -> {v:?}",);
-            m.insert(k.clone(), bindable_to_surrealdb_value(v));
-        }
-        surrealdb::sql::Value::Object(surrealdb::sql::Object::from(m))
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Relation {
-    pub id: surrealdb::sql::Thing,
-    pub input: surrealdb::sql::Thing,
-    pub output: surrealdb::sql::Thing,
-    pub data: std::collections::HashMap<String, SurrealValue>,
-}
-
-impl Relation {
-    pub fn get_in(&self) -> surrealdb::sql::Value {
-        surrealdb::sql::Value::Thing(self.input.clone())
-    }
-    pub fn get_out(&self) -> surrealdb::sql::Value {
-        surrealdb::sql::Value::Thing(self.output.clone())
-    }
-    pub fn get_relate_content(&self) -> surrealdb::sql::Value {
-        // Build content object from all fields (excluding relation marker and in/out for relations)
-        let mut m = std::collections::BTreeMap::new();
-        for (k, v) in &self.data {
-            tracing::debug!("Adding field to relation: {} -> {:?}", k, v);
-            let surreal_value = bindable_to_surrealdb_value(v);
-            m.insert(k.clone(), surreal_value);
-        }
-
-        // Use the Thing directly for the relation id field
-        m.insert(
-            "id".to_string(),
-            surrealdb::sql::Value::Thing(self.id.clone()),
-        );
-
-        surrealdb::sql::Value::Object(surrealdb::sql::Object::from(m))
-    }
-}
-
 // Apply a single change event to SurrealDB
 async fn apply_change(
     surreal: &Surreal<surrealdb::engine::any::Any>,
-    change: &ChangeEvent,
+    change: &Change,
 ) -> anyhow::Result<()> {
     match change {
-        ChangeEvent::UpsertRecord(record) => {
+        Change::UpsertRecord(record) => {
             write_record(surreal, record).await?;
 
             tracing::trace!("Successfully upserted record: {record:?}");
         }
-        ChangeEvent::DeleteRecord(thing) => {
+        Change::DeleteRecord(thing) => {
             let query = "DELETE $record_id".to_string();
             tracing::trace!("Executing SurrealDB query: {}", query);
             log::info!("🔧 migrate_change executing: {query} for record: {thing:?}");
@@ -235,12 +180,12 @@ async fn apply_change(
 
             tracing::trace!("Successfully deleted record: {:?}", thing);
         }
-        ChangeEvent::UpsertRelation(relation) => {
+        Change::UpsertRelation(relation) => {
             write_relation(surreal, relation).await?;
 
             tracing::trace!("Successfully upserted relation: {relation:?}");
         }
-        ChangeEvent::DeleteRelation(thing) => {
+        Change::DeleteRelation(thing) => {
             let query = "DELETE $relation_id".to_string();
             tracing::trace!("Executing SurrealDB query: {}", query);
             log::info!("🔧 migrate_change executing: {query} for relation: {thing:?}");

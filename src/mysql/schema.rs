@@ -3,43 +3,41 @@
 //! This module provides functions for collecting MySQL database schema information
 //! and mapping MySQL column types to generic data types for schema-aware conversion.
 
-use crate::schema::{DatabaseSchema, GenericDataType, TableSchema};
+use crate::surreal::{SurrealDatabaseSchema, SurrealTableSchema, SurrealType};
 use mysql_async::prelude::*;
 use std::collections::HashMap;
 
-/// Convert MySQL column type information to GenericDataType
-pub fn column_type_to_generic_data_type(
+/// Convert MySQL column type information to SurrealType
+pub fn column_type_to_surreal_type(
     data_type: &str,
     column_type: &str,
     precision: Option<u32>,
     scale: Option<u32>,
-) -> GenericDataType {
+) -> SurrealType {
     match data_type.to_uppercase().as_str() {
-        "DECIMAL" | "NUMERIC" => GenericDataType::Decimal { precision, scale },
-        "TIMESTAMP" | "DATETIME" => GenericDataType::Timestamp,
-        "JSON" => GenericDataType::Json,
-        "BOOLEAN" | "BOOL" => GenericDataType::Boolean,
+        "DECIMAL" | "NUMERIC" => SurrealType::Decimal { precision, scale },
+        "TIMESTAMP" | "DATETIME" => SurrealType::Timestamp,
+        "JSON" => SurrealType::Json,
+        "BOOLEAN" | "BOOL" => SurrealType::Boolean,
         "TINYINT" => {
             // TINYINT(1) is commonly used for boolean in MySQL
             if column_type.to_lowercase().starts_with("tinyint(1)") {
-                GenericDataType::Boolean
+                SurrealType::Boolean
             } else {
-                GenericDataType::Integer
+                SurrealType::Integer
             }
         }
-        "INT" | "INTEGER" | "BIGINT" | "SMALLINT" | "MEDIUMINT" => GenericDataType::Integer,
-        "FLOAT" | "DOUBLE" | "REAL" => GenericDataType::Float,
-        "VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => {
-            GenericDataType::String
-        }
+        "INT" | "INTEGER" | "BIGINT" | "SMALLINT" | "MEDIUMINT" => SurrealType::Integer,
+        "FLOAT" | "DOUBLE" | "REAL" => SurrealType::Float,
+        "VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => SurrealType::String,
         "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => {
-            GenericDataType::Bytes
+            SurrealType::Bytes
         }
-        "DATE" => GenericDataType::Date,
-        "TIME" => GenericDataType::Time,
-        "GEOMETRY" | "POINT" | "LINESTRING" | "POLYGON" => GenericDataType::Geometry,
-        "SET" => GenericDataType::Array(Box::new(GenericDataType::String)),
-        _ => GenericDataType::SourceSpecific(data_type.to_string()),
+        "DATE" => SurrealType::Date,
+        "TIME" => SurrealType::Time,
+        "GEOMETRY" | "POINT" | "LINESTRING" | "POLYGON" => SurrealType::Geometry,
+        "SET" => SurrealType::Array(Box::new(SurrealType::String)),
+        _ => SurrealType::SourceSpecific(data_type.to_string()),
     }
 }
 
@@ -47,7 +45,7 @@ pub fn column_type_to_generic_data_type(
 pub async fn collect_mysql_schema(
     conn: &mut mysql_async::Conn,
     _database: &str,
-) -> anyhow::Result<DatabaseSchema> {
+) -> anyhow::Result<SurrealDatabaseSchema> {
     use mysql_async::prelude::*;
 
     let query = "
@@ -75,12 +73,11 @@ pub async fn collect_mysql_schema(
         let precision: Option<u32> = row.get::<Option<u32>, _>(4).unwrap_or(None);
         let scale: Option<u32> = row.get::<Option<u32>, _>(5).unwrap_or(None);
 
-        let generic_type =
-            column_type_to_generic_data_type(&data_type, &column_type, precision, scale);
+        let generic_type = column_type_to_surreal_type(&data_type, &column_type, precision, scale);
 
         let table_schema = tables
             .entry(table_name.clone())
-            .or_insert_with(|| TableSchema {
+            .or_insert_with(|| SurrealTableSchema {
                 table_name: table_name.clone(),
                 columns: HashMap::new(),
             });
@@ -88,7 +85,7 @@ pub async fn collect_mysql_schema(
         table_schema.columns.insert(column_name, generic_type);
     }
 
-    Ok(DatabaseSchema { tables })
+    Ok(SurrealDatabaseSchema { tables })
 }
 
 /// Get primary key columns for a table

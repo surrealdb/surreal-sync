@@ -3,9 +3,8 @@
 //! This module provides incremental synchronization capabilities for MongoDB using
 //! Change Streams, which provide real-time change notifications.
 
-use crate::sync::{
-    ChangeEvent, ChangeStream, IncrementalSource, Operation, SourceDatabase, SyncCheckpoint,
-};
+use crate::surreal::{Change, ChangeOp};
+use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use bson::Document;
@@ -22,13 +21,15 @@ use std::sync::Arc;
 use surrealdb::engine::any::connect;
 use tokio::sync::Mutex;
 
-/// Convert a BSON document directly to a BindableValue map without JSON intermediate
-fn bson_document_to_bindable_map(doc: Document) -> Result<HashMap<String, crate::SurrealValue>> {
+/// Convert a BSON document directly to a SurrealValue map
+fn bson_doc_to_keys_and_surreal_values(
+    doc: Document,
+) -> Result<HashMap<String, crate::SurrealValue>> {
     let mut map = HashMap::new();
 
     for (key, value) in doc {
-        let bindable_value = crate::mongodb::convert_bson_to_bindable(value)?;
-        map.insert(key, bindable_value);
+        let v = crate::mongodb::convert_bson_to_surreal_value(value)?;
+        map.insert(key, v);
     }
 
     Ok(map)
@@ -98,7 +99,7 @@ impl MongodbIncrementalSource {
     async fn start_change_stream(
         &self,
         checkpoint: Option<SyncCheckpoint>,
-    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChangeEvent>> + Send>>> {
+    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>>> {
         let database = self.client.database(&self.database);
 
         // Build change stream options
@@ -172,9 +173,8 @@ impl MongodbIncrementalSource {
             .buffer_unordered(1);
 
         // Box the stream with Send bound
-        let boxed_stream: std::pin::Pin<
-            Box<dyn futures::Stream<Item = Result<ChangeEvent>> + Send>,
-        > = Box::pin(stream);
+        let boxed_stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>> =
+            Box::pin(stream);
 
         Ok(boxed_stream)
     }
@@ -184,7 +184,7 @@ impl MongodbIncrementalSource {
         event: ChangeStreamEvent<Document>,
         _database_name: &str,
         resume_token: Arc<Mutex<Vec<u8>>>,
-    ) -> Result<ChangeEvent> {
+    ) -> Result<Change> {
         // Extract and store the resume token from the event's _id field
         // The _id field contains the resume token for this specific event
         if let Ok(token_bytes) = bson::to_vec(&event.id) {
@@ -193,10 +193,10 @@ impl MongodbIncrementalSource {
 
         // Determine operation type
         let operation = match event.operation_type {
-            mongodb::change_stream::event::OperationType::Insert => Operation::Create,
-            mongodb::change_stream::event::OperationType::Update => Operation::Update,
-            mongodb::change_stream::event::OperationType::Replace => Operation::Update,
-            mongodb::change_stream::event::OperationType::Delete => Operation::Delete,
+            mongodb::change_stream::event::OperationType::Insert => ChangeOp::Create,
+            mongodb::change_stream::event::OperationType::Update => ChangeOp::Update,
+            mongodb::change_stream::event::OperationType::Replace => ChangeOp::Update,
+            mongodb::change_stream::event::OperationType::Delete => ChangeOp::Delete,
             op => {
                 // Skip other operation types (like invalidate, drop, etc.)
                 return Err(anyhow!("Unsupported operation type: {op:?}"));
@@ -229,14 +229,14 @@ impl MongodbIncrementalSource {
         };
 
         let data = match operation {
-            Operation::Delete => HashMap::new(),
+            ChangeOp::Delete => HashMap::new(),
             _ => {
                 let d = event.full_document.unwrap();
-                bson_document_to_bindable_map(d)?
+                bson_doc_to_keys_and_surreal_values(d)?
             }
         };
 
-        Ok(ChangeEvent::record(operation, id, data))
+        Ok(Change::record(operation, id, data))
     }
 }
 
@@ -277,7 +277,7 @@ impl IncrementalSource for MongodbIncrementalSource {
 
 // Type alias for complex MongoDB change stream type
 type MongoStreamType =
-    Arc<Mutex<std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChangeEvent>> + Send>>>>;
+    Arc<Mutex<std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>>>>;
 
 /// A change stream wrapper for MongoDB incremental sync
 pub struct MongoChangeStream {
@@ -288,7 +288,7 @@ pub struct MongoChangeStream {
 
 impl MongoChangeStream {
     pub fn new(
-        stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<ChangeEvent>> + Send>>,
+        stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>>,
         initial_resume_token: Vec<u8>,
     ) -> Self {
         Self {
@@ -303,7 +303,7 @@ impl MongoChangeStream {
 
 #[async_trait]
 impl ChangeStream for MongoChangeStream {
-    async fn next(&mut self) -> Option<Result<ChangeEvent>> {
+    async fn next(&mut self) -> Option<Result<Change>> {
         let mut stream = self.stream.lock().await;
         stream.next().await
     }

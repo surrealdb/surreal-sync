@@ -247,14 +247,14 @@ fn convert_row_to_record(
     row: &Row,
     pk_columns: &[String],
 ) -> anyhow::Result<crate::Record> {
-    let (id, data) = convert_row_to_bindable(row, pk_columns)?;
+    let (id, data) = convert_row_to_keys_and_surreal_values(row, pk_columns)?;
     let id = surrealdb::sql::Thing::from((table, id));
 
     Ok(crate::Record { id, data })
 }
 
-/// Convert a PostgreSQL row to a map of bindable values
-fn convert_row_to_bindable(
+/// Convert a PostgreSQL row to a map of surreal values
+fn convert_row_to_keys_and_surreal_values(
     row: &Row,
     pk_columns: &[String],
 ) -> Result<(surrealdb::sql::Id, HashMap<String, SurrealValue>)> {
@@ -321,7 +321,7 @@ fn convert_row_to_bindable(
     Ok((id, record))
 }
 
-/// Convert a PostgreSQL value to a BindableValue
+/// Convert a PostgreSQL value to a SurrealValue
 fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
     use tokio_postgres::types::Type;
 
@@ -354,7 +354,7 @@ fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
             None => Ok(SurrealValue::Null),
         },
         Type::NUMERIC => {
-            // PostgreSQL NUMERIC type - ALWAYS maps to BindableValue::Decimal (deterministic)
+            // PostgreSQL NUMERIC type - ALWAYS maps to SurrealValue::Decimal (deterministic)
             match row.try_get::<_, Option<Decimal>>(index) {
                 Ok(Some(decimal)) => {
                     // Convert rust_decimal::Decimal to surrealdb::sql::Number (preserves precision)
@@ -412,7 +412,7 @@ fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
             None => Ok(SurrealValue::Null),
         },
         Type::JSON | Type::JSONB => match row.try_get::<_, Option<serde_json::Value>>(index)? {
-            Some(json) => crate::json_value_to_bindable(json),
+            Some(json) => crate::json_to_surreal_without_schema(json),
             None => Ok(SurrealValue::Null),
         },
         Type::UUID => match row.try_get::<_, Option<uuid::Uuid>>(index)? {
