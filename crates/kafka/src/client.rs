@@ -53,10 +53,10 @@ impl Client {
         &self,
         batch_size: usize,
         processor: F,
-    ) -> Result<JoinHandle<Result<()>>>
+    ) -> anyhow::Result<JoinHandle<anyhow::Result<()>>>
     where
         F: Fn(Vec<Message>) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<()>> + Send + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         let consumer = self.create_consumer()?;
 
@@ -95,10 +95,10 @@ impl Client {
         num_consumers: usize,
         batch_size: usize,
         processor: F,
-    ) -> Result<Vec<JoinHandle<Result<()>>>>
+    ) -> anyhow::Result<Vec<JoinHandle<anyhow::Result<()>>>>
     where
         F: Fn(Vec<Message>) -> Fut + Send + Clone + 'static,
-        Fut: Future<Output = Result<()>> + Send + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
         let mut handles = Vec::new();
 

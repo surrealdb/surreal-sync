@@ -9,9 +9,9 @@ pub struct ProtoMessage {
     /// Message type name
     pub message_type: String,
     /// Decoded field values
-    fields: HashMap<String, ProtoFieldValue>,
+    pub fields: HashMap<String, ProtoFieldValue>,
     /// Schema reference for field introspection
-    descriptor: ProtoMessageDescriptor,
+    pub descriptor: ProtoMessageDescriptor,
 }
 
 /// Represents a field value in a decoded message

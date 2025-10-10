@@ -72,16 +72,63 @@ async fn run_main() -> anyhow::Result<()> {
             let counter = Arc::clone(&counter);
             async move {
                 for message in messages {
-                    // Extract fields from the decoded message
-                    let user_id = message.message.get_string("user_id")?;
-                    let event_type = message.message.get_string("event_type")?;
-                    let timestamp = message.message.get_int64("timestamp")?;
-                    let data = message.message.get_string("data")?;
+                    let topic = message.topic;
+                    let partition = message.partition;
+                    let key = message.key;
 
-                    println!(
-                        "[Partition {}] User: {}, Event: {}, Timestamp: {}, Data: {}",
-                        message.partition, user_id, event_type, timestamp, data
-                    );
+                    println!("[Topic {topic} Partition {partition}] Message Key: {key:?}",);
+
+                    match &message.payload {
+                        surreal_sync_kafka::consumer::Payload::Protobuf(proto_msg) => {
+                            // Extract fields from the decoded message
+                            for (field_name, field_value) in &proto_msg.fields {
+                                match field_value {
+                                    surreal_sync_kafka::proto::decoder::ProtoFieldValue::Bytes(v) => {
+                                        println!("Field: {field_name}, Bytes Value: {v:?}");
+                                    }
+                                    surreal_sync_kafka::proto::decoder::ProtoFieldValue::Double(v) => {
+                                        println!("Field: {field_name}, Double Value: {v}");
+                                    }
+                                    surreal_sync_kafka::proto::decoder::ProtoFieldValue::Float(v) => {
+                                        println!("Field: {field_name}, Float Value: {v}");
+                                    }
+                                    surreal_sync_kafka::proto::decoder::ProtoFieldValue::Int32(v) => {
+                                        println!("Field: {field_name}, Int32 Value: {v}");
+                                    }
+                                    surreal_sync_kafka::proto::decoder::ProtoFieldValue::Int64(v) => {
+                                        println!("Field: {field_name}, Int64 Value: {v}");
+                                    }
+                                    surreal_sync_kafka::proto::decoder::ProtoFieldValue::Uint32(v) => {
+                                        println!("Field: {field_name}, Uint32 Value: {v}");
+                                    }
+                                    surreal_sync_kafka::proto::decoder::ProtoFieldValue::Uint64(v) => {
+                                        println!("Field: {field_name}, Uint64 Value: {v}");
+                                    }
+                                    surreal_sync_kafka::proto::decoder::ProtoFieldValue::String(v) => {
+                                        println!("Field: {field_name}, String Value: {v}");
+                                    }
+                                    surreal_sync_kafka::proto::decoder::ProtoFieldValue::Bool(v) => {
+                                        println!("Field: {field_name}, Bool Value: {v}");
+                                    }
+                                    surreal_sync_kafka::proto::decoder::ProtoFieldValue::Message(nested_msg) => {
+                                        println!("Field: {field_name}, Nested Message:");
+                                        for (nested_field, nested_value) in &nested_msg.fields {
+                                            println!("  Nested Field: {nested_field}, Value: {nested_value:?}");
+                                        }
+                                    }
+                                    surreal_sync_kafka::proto::decoder::ProtoFieldValue::Repeated(v) => {
+                                        println!("Field: {field_name}, Repeated Values:");
+                                        for (i, item) in v.iter().enumerate() {
+                                            println!("  Item {i}: {item:?}");
+                                        }
+                                    }
+                                    surreal_sync_kafka::proto::decoder::ProtoFieldValue::Null => {
+                                        println!("Field: {field_name}, Value: null");
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     // Increment counter
                     let count = counter.fetch_add(1, Ordering::SeqCst) + 1;

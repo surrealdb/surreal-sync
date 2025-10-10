@@ -49,7 +49,7 @@ impl Default for ConsumerConfig {
 #[derive(Debug, Clone)]
 pub struct Message {
     /// Decoded protobuf message content
-    pub message: ProtoMessage,
+    pub payload: Payload,
     /// Kafka topic
     pub topic: String,
     /// Kafka partition
@@ -60,6 +60,11 @@ pub struct Message {
     pub key: Option<Vec<u8>>,
     /// Message timestamp (milliseconds since epoch)
     pub timestamp: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Payload {
+    Protobuf(ProtoMessage),
 }
 
 /// Kafka consumer with peek buffer and manual offset management
@@ -191,7 +196,7 @@ impl Consumer {
         let decoded = self.decoder.decode(&self.config.message_type, payload)?;
 
         Ok(Message {
-            message: decoded,
+            payload: Payload::Protobuf(decoded),
             topic: msg.topic().to_string(),
             partition: msg.partition(),
             offset: msg.offset(),
