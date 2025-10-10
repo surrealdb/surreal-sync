@@ -17,16 +17,40 @@ pub struct ConsumerConfig {
     /// Consumer group ID
     pub group_id: String,
     /// Topic to consume from
+    ///
+    /// All the messages' payloads must be of the same protobuf message type
+    /// specified by the .proto schema and the message_type field.
+    ///
+    /// In case of multiple topics, use separate consumers for each topic.
+    /// This is because we assume you may want to configure the proto schema file, and the proto message type in the
+    /// proto schema, and the number of consumers in the consumer group, buffer size, and so on,
+    /// per topic.
     pub topic: String,
     /// Protobuf message type name
+    ///
+    /// Must match a message defined in the provided .proto schema.
     pub message_type: String,
     /// Maximum buffer size for peeked messages
+    ///
+    /// The larger the buffer, the more messages can be peeked without blocking,
+    /// but it also consumes more memory.
+    /// Generally, a larger buffer is better for high-throughput scenarios,
+    /// in exchange for higher memory usage and higher chance of duplicates on failure.
     pub buffer_size: usize,
     /// Auto offset reset strategy ("earliest" or "latest")
+    ///
+    /// "earliest" means the consumer will start from the beginning of the topic
+    /// if no committed offsets are found for the consumer group.
+    /// "latest" means the consumer will start from the end of the topic.
+    ///
+    /// Generally, "earliest" is preferred for CDC use cases to avoid missing messages = missing updates.
     pub auto_offset_reset: String,
     /// Session timeout in milliseconds
     pub session_timeout_ms: String,
     /// Enable auto commit (should be false for manual offset management)
+    ///
+    /// This is false by default, as surreal-sync manages offsets manually to ensure
+    /// atomic processing and committing of batches.
     pub enable_auto_commit: bool,
 }
 
