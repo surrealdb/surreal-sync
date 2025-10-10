@@ -284,7 +284,7 @@ pub async fn apply_incremental_changes(
             continue;
         }
 
-        crate::apply_change(surreal, &change).await?;
+        crate::surreal::apply_change(surreal, &change).await?;
 
         applied_count += 1;
     }

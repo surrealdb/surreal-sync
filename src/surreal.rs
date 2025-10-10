@@ -4,6 +4,7 @@ mod record;
 mod relation;
 mod schema;
 mod types;
+mod write;
 
 pub use change::*;
 pub use connect::*;
@@ -11,3 +12,4 @@ pub use record::*;
 pub use relation::*;
 pub use schema::*;
 pub use types::*;
+pub use write::*;

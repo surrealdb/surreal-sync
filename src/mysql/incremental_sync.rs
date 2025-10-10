@@ -80,7 +80,7 @@ pub async fn run_incremental_sync(
                     }
                 }
 
-                crate::apply_change(&surreal, &change).await?;
+                crate::surreal::apply_change(&surreal, &change).await?;
 
                 change_count += 1;
                 if change_count % 100 == 0 {

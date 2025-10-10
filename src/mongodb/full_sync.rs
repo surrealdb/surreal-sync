@@ -194,7 +194,7 @@ pub async fn run_full_sync(
                 );
                 if !to_opts.dry_run {
                     tracing::debug!("Migrating batch of {} documents to SurrealDB", batch.len());
-                    crate::write_records(&surreal, &collection_name, &batch).await?;
+                    crate::surreal::write_records(&surreal, &collection_name, &batch).await?;
                     tracing::debug!("Batch migration completed");
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
@@ -223,7 +223,7 @@ pub async fn run_full_sync(
                     "Migrating final batch of {} documents to SurrealDB",
                     batch.len()
                 );
-                crate::write_records(&surreal, &collection_name, &batch).await?;
+                crate::surreal::write_records(&surreal, &collection_name, &batch).await?;
                 tracing::debug!("Final batch migration completed");
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");
