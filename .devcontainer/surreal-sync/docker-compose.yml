@@ -168,6 +168,12 @@ services:
       timeout: 5s
       retries: 5
 
+  kafka:
+    image: apache/kafka:latest
+    # We intentionally avoid forwarding ports to avoid conflicts with other services running on the host.
+    # ports:
+    #   - "9092:9092"
+
 networks:
   surreal-sync-network:
     driver: bridge
