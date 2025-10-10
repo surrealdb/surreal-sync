@@ -24,7 +24,7 @@ message UserEvent {
     // Compile the proto file using cargo_out_dir
     protobuf_codegen::Codegen::new()
         .protoc()
-        .includes(&[&proto_dir])
+        .includes([&proto_dir])
         .input(&proto_file)
         .cargo_out_dir("protos")
         .run_from_script();
