@@ -163,7 +163,7 @@ pub async fn migrate_from_jsonl(
                 // Process batch when it reaches the batch size
                 if batch.len() >= to_opts.batch_size {
                     if !to_opts.dry_run {
-                        crate::write_records(&surreal, file_name, &batch).await?;
+                        crate::surreal::write_records(&surreal, file_name, &batch).await?;
                     }
                     total_migrated += batch.len();
                     tracing::debug!("Migrated batch of {} documents", batch.len());
@@ -174,7 +174,7 @@ pub async fn migrate_from_jsonl(
             // Process remaining documents
             if !batch.is_empty() {
                 if !to_opts.dry_run {
-                    crate::write_records(&surreal, file_name, &batch).await?;
+                    crate::surreal::write_records(&surreal, file_name, &batch).await?;
                 }
                 total_migrated += batch.len();
                 tracing::debug!("Migrated final batch of {} documents", batch.len());

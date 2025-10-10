@@ -1,10 +1,11 @@
+use crate::surreal::SurrealValue;
 use crate::SurrealOpts;
 use anyhow::Result;
 use clap::Parser;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use surreal_sync_kafka::{ConsumerConfig, Message};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 /// Configuration for Kafka source
 #[derive(Debug, Clone, Parser)]
@@ -34,12 +35,15 @@ pub struct Config {
 /// Run incremental sync from Kafka to SurrealDB
 pub async fn run_incremental_sync(
     config: Config,
-    _to_namespace: String,
-    _to_database: String,
-    _to_opts: SurrealOpts,
+    to_namespace: String,
+    to_database: String,
+    to_opts: SurrealOpts,
     _deadline: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
     info!("Starting Kafka incremental sync",);
+
+    let surreal = crate::surreal::surreal_connect(&to_opts, &to_namespace, &to_database).await?;
+    let surreal = Arc::new(surreal);
 
     let consumer_config: ConsumerConfig = ConsumerConfig {
         brokers: config.brokers.join(","),
@@ -57,11 +61,13 @@ pub async fn run_incremental_sync(
     // Shared counter for processed messages
     let processed_count = Arc::new(AtomicU64::new(0));
 
+    let surreal = Arc::clone(&surreal);
     // Message processor function
     let processor = {
         let counter = Arc::clone(&processed_count);
         move |messages: Vec<Message>| {
             let counter = Arc::clone(&counter);
+            let surreal = Arc::clone(&surreal);
             async move {
                 for message in messages {
                     debug!("Received message: {:?}", message);
@@ -70,7 +76,27 @@ pub async fn run_incremental_sync(
                     // The topic name becomes the SurrealDB table name.
                     // The message fields become the record fields.
                     // Either the message key, or the "id" field in the message is used as the record ID.
-                    warn!("SurrealDB integration not yet implemented for Kafka source");
+                    let message_key = message.key.clone();
+                    let topic = message.topic.clone();
+
+                    let mut keys_and_surreal_values =
+                        super::conversion::message_to_keys_and_surreal_values(message)?;
+
+                    let surreal_id = if let Some(surreal_id) = keys_and_surreal_values.remove("id")
+                    {
+                        surreal_id.to_surrealql_id()?
+                    } else if let Some(surreal_key) = message_key {
+                        SurrealValue::Bytes(surreal_key).to_surrealql_id()?
+                    } else {
+                        anyhow::bail!("Message has no key and no 'id' field");
+                    };
+
+                    let r = crate::surreal::Record {
+                        id: surrealdb::sql::Thing::from((topic.as_str(), surreal_id)),
+                        data: keys_and_surreal_values,
+                    };
+
+                    crate::surreal::write_record(&surreal, &r).await?;
 
                     let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
                     if count % 100 == 0 {

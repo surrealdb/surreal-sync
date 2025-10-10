@@ -23,7 +23,7 @@ pub mod proto;
 
 // Re-export main types for easy access
 pub use client::Client;
-pub use consumer::{Consumer, ConsumerConfig, Message};
+pub use consumer::{Consumer, ConsumerConfig, Message, Payload};
 pub use error::{Error, Result};
 pub use proto::decoder::{ProtoDecoder, ProtoFieldValue, ProtoMessage};
 pub use proto::parser::{ProtoFieldDescriptor, ProtoMessageDescriptor, ProtoSchema, ProtoType};

@@ -156,7 +156,7 @@ async fn migrate_table(
             let batch_size = batch.len();
 
             if !to_opts.dry_run {
-                crate::write_records(surreal, table_name, &batch).await?;
+                crate::surreal::write_records(surreal, table_name, &batch).await?;
             } else {
                 debug!(
                     "Dry-run: Would insert {} records into {}",
@@ -174,7 +174,7 @@ async fn migrate_table(
         let batch_size = batch.len();
 
         if !to_opts.dry_run {
-            crate::write_records(surreal, table_name, &batch).await?;
+            crate::surreal::write_records(surreal, table_name, &batch).await?;
         } else {
             debug!(
                 "Dry-run: Would insert {} records into {}",

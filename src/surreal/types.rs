@@ -3,6 +3,7 @@
 //! This module provides the fundamental data types used throughout surreal-sync
 //! for representing data that can be bound to SurrealDB queries.
 
+use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
@@ -38,7 +39,7 @@ impl SurrealValue {
             SurrealValue::Int(i) => Ok(surrealdb::sql::Id::from(*i)),
             SurrealValue::String(s) => Ok(surrealdb::sql::Id::from(s.clone())),
             SurrealValue::Bytes(data) => {
-                let b64 = base64::engine::general_purpose::STANDARD::encode(data);
+                let b64 = STANDARD.encode(data);
                 Ok(surrealdb::sql::Id::from(b64))
             }
             _ => Err(anyhow::anyhow!("Cannot convert {self:?} to SurrealDB Id")),
