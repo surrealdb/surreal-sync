@@ -17,12 +17,7 @@ services:
       - neo4j
       - postgresql
       - mysql
-      - neo4j-test1
-      - neo4j-test2
-      - neo4j-test3
-      - neo4j-test4
-      - neo4j-test5
-      - neo4j-test6
+      - kafka
 
   surrealdb:
     image: surrealdb/surrealdb:latest
