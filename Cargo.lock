@@ -4839,7 +4839,7 @@ dependencies = [
  "mongodb",
  "mysql_async",
  "neo4rs",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rust_decimal",
  "serde",
  "serde_json",
