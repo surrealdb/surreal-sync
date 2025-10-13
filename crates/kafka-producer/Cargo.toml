@@ -5,6 +5,10 @@ edition = "2021"
 description = "Kafka producer example for testing surreal-sync-kafka consumer"
 authors = ["surreal-sync contributors"]
 
+[lib]
+name = "surreal_sync_kafka_producer"
+path = "src/lib.rs"
+
 [[bin]]
 name = "kafka-producer"
 path = "src/main.rs"

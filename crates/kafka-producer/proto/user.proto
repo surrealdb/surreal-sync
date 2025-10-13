@@ -1,0 +1,44 @@
+syntax = "proto3";
+
+package kafka.testing;
+
+message User {
+  // Primary identifier
+  string id = 1;
+
+  // High-precision decimal
+  string account_balance = 2;
+
+  // Complex nested metadata
+  Metadata metadata = 3;
+
+  // Validation logic (stored as string)
+  string validation_logic = 4;
+
+  // Reference ID (ObjectId as string)
+  string reference_id = 5;
+
+  // Common fields
+  string name = 6;
+  string email = 7;
+  int32 age = 8;
+  bool active = 9;
+  int64 created_at = 10;  // Unix timestamp in seconds
+  double score = 11;
+}
+
+message Metadata {
+  Preferences preferences = 1;
+  repeated string tags = 2;
+  Settings settings = 3;
+}
+
+message Preferences {
+  string theme = 1;
+  string language = 2;
+}
+
+message Settings {
+  bool notifications = 1;
+  string privacy = 2;
+}

@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package kafka.testing;
+
+message UserPostRelation {
+  // 'in' edge - points to user
+  string user_id = 1;
+
+  // 'out' edge - points to post
+  string post_id = 2;
+
+  // Relationship metadata
+  int64 relationship_created = 3;  // Unix timestamp in seconds
+}

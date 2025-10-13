@@ -59,7 +59,7 @@ surreal-sync-kafka = { path = "crates/kafka" }
 tokio-test = "0.4"
 tempfile = "3.0"
 
-# Example kafka producer for Kafka source testing
+# Kafka producer library for Kafka source testing
 surreal-sync-kafka-producer = { path = "crates/kafka-producer" }
 
 [profile.dev]

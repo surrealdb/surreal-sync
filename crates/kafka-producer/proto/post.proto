@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package kafka.testing;
+
+message Post {
+  // Primary identifier
+  string id = 1;
+
+  // Author reference
+  string author_id = 2;
+
+  // Content fields
+  string title = 3;
+  string content = 4;
+
+  // Metrics
+  int64 view_count = 5;
+  bool published = 6;
+
+  // Content pattern (regex as string)
+  string content_pattern = 7;
+
+  // Categories (array of strings)
+  repeated string post_categories = 8;
+
+  // Timestamps
+  int64 created_at = 9;   // Unix timestamp in seconds
+  int64 updated_at = 10;  // Unix timestamp in seconds
+}

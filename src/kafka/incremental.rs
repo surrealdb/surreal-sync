@@ -30,6 +30,9 @@ pub struct Config {
     /// Batch size for processing messages
     #[clap(long, default_value_t = 100)]
     pub batch_size: usize,
+    /// Optional table name to use in SurrealDB (defaults to topic name)
+    #[clap(long)]
+    pub table_name: Option<String>,
 }
 
 /// Run incremental sync from Kafka to SurrealDB
@@ -44,6 +47,12 @@ pub async fn run_incremental_sync(
 
     let surreal = crate::surreal::surreal_connect(&to_opts, &to_namespace, &to_database).await?;
     let surreal = Arc::new(surreal);
+
+    // Determine table name: use configured table_name if provided, otherwise use topic name
+    let table_name = config
+        .table_name
+        .clone()
+        .unwrap_or_else(|| config.topic.clone());
 
     let consumer_config: ConsumerConfig = ConsumerConfig {
         brokers: config.brokers.join(","),
@@ -62,22 +71,24 @@ pub async fn run_incremental_sync(
     let processed_count = Arc::new(AtomicU64::new(0));
 
     let surreal = Arc::clone(&surreal);
+
     // Message processor function
     let processor = {
         let counter = Arc::clone(&processed_count);
+        let table_name = table_name.clone();
         move |messages: Vec<Message>| {
             let counter = Arc::clone(&counter);
             let surreal = Arc::clone(&surreal);
+            let table_name = table_name.clone();
             async move {
                 for message in messages {
                     debug!("Received message: {:?}", message);
 
                     // Put the message as a record into SurrealDB.
-                    // The topic name becomes the SurrealDB table name.
+                    // The table name is either configured explicitly or defaults to topic name.
                     // The message fields become the record fields.
                     // Either the message key, or the "id" field in the message is used as the record ID.
                     let message_key = message.key.clone();
-                    let topic = message.topic.clone();
 
                     let mut keys_and_surreal_values =
                         super::conversion::message_to_keys_and_surreal_values(message)?;
@@ -92,7 +103,7 @@ pub async fn run_incremental_sync(
                     };
 
                     let r = crate::surreal::Record {
-                        id: surrealdb::sql::Thing::from((topic.as_str(), surreal_id)),
+                        id: surrealdb::sql::Thing::from((table_name.as_str(), surreal_id)),
                         data: keys_and_surreal_values,
                     };
 
