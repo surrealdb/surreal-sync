@@ -1,5 +1,6 @@
 use crate::surreal::SurrealValue;
 use std::collections::HashMap;
+use tracing::debug;
 
 pub fn message_to_keys_and_surreal_values(
     message: surreal_sync_kafka::Message,
@@ -30,6 +31,32 @@ fn proto_to_surreal(value: surreal_sync_kafka::ProtoFieldValue) -> anyhow::Resul
         surreal_sync_kafka::ProtoFieldValue::String(s) => Ok(SurrealValue::String(s)),
         surreal_sync_kafka::ProtoFieldValue::Bytes(b) => Ok(SurrealValue::Bytes(b)),
         surreal_sync_kafka::ProtoFieldValue::Message(m) => {
+            match m.message_type.as_str() {
+                "" => anyhow::bail!("Nested message has no type"),
+                "google.protobuf.Timestamp" => {
+                    // Special handling for google.protobuf.Timestamp
+                    if let Some(surreal_sync_kafka::ProtoFieldValue::Int64(seconds)) =
+                        m.fields.get("seconds")
+                    {
+                        let nanos = if let Some(surreal_sync_kafka::ProtoFieldValue::Int32(n)) =
+                            m.fields.get("nanos")
+                        {
+                            *n as u32
+                        } else {
+                            0
+                        };
+                        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(*seconds, nanos).ok_or_else(|| {
+                            anyhow::anyhow!("Invalid timestamp with seconds: {seconds} and nanos: {nanos}")
+                        })?;
+                        return Ok(SurrealValue::DateTime(dt));
+                    } else {
+                        anyhow::bail!("Timestamp message missing 'seconds' field");
+                    }
+                }
+                t => {
+                    debug!("Converting nested message of type {t} to generic SurrealDB object");
+                }
+            }
             let mut map = HashMap::new();
             for (k, v) in m.fields {
                 map.insert(k, proto_to_surreal(v)?);
