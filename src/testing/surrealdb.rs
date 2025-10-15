@@ -276,7 +276,17 @@ pub async fn compare_sync_results_in_surrealdb(
                     match expected_value {
                         SurrealDBValue::String(_) => {
                             let actual: Option<String> =
-                                field_response.take((0, field_name.as_str()))?;
+                                field_response.take((0, field_name.as_str())).map_err(|e| {
+                                    format!(
+                                        "{}: Failed to take string field '{}' for document {}: {}",
+                                        test_description,
+                                        field_name,
+                                        doc_idx + 1,
+                                        e
+                                    )
+                                })?;
+
+
                             if let (Some(actual_str), SurrealDBValue::String(expected_str)) =
                                 (actual, expected_value)
                             {
@@ -379,7 +389,15 @@ pub async fn compare_sync_results_in_surrealdb(
                         SurrealDBValue::DateTime(_) => {
                             // For DateTime, MongoDB stores as string so validate as string
                             let actual: Option<chrono::DateTime<chrono::Utc>> =
-                                field_response.take((0, field_name.as_str()))?;
+                                field_response.take((0, field_name.as_str())).map_err(|e| {
+                                    format!(
+                                        "{}: Failed to take datetime field '{}' for document {}: {}",
+                                        test_description,
+                                        field_name,
+                                        doc_idx + 1,
+                                        e
+                                    )
+                                })?;
                             if actual.is_none() {
                                 panic!(
                                     "{}: Document {}, Field '{}' datetime not found",
@@ -434,7 +452,15 @@ pub async fn compare_sync_results_in_surrealdb(
                                     .bind(("record_id", record_id.clone()))
                                     .await?;
                                 let actual_string: Option<String> =
-                                    response.take((0, "string_field"))?;
+                                    response.take((0, "string_field")).map_err(|e| {
+                                        format!(
+                                            "{}: Failed to take string reference id field '{}' for document {}: {}",
+                                            test_description,
+                                            field_name,
+                                            doc_idx + 1,
+                                            e
+                                        )
+                                    })?;
 
                                 if let Some(actual_str) = actual_string {
                                     // Validate the string ID matches what we expect
@@ -602,7 +628,15 @@ pub async fn compare_sync_results_in_surrealdb(
                         }
                         SurrealDBValue::Uuid(expected_uuid) => {
                             let actual: Option<String> =
-                                field_response.take((0, field_name.as_str()))?;
+                                field_response.take((0, field_name.as_str())).map_err(|e| {
+                                    format!(
+                                        "{}: Failed to take UUID field '{}' for document {}: {}",
+                                        test_description,
+                                        field_name,
+                                        doc_idx + 1,
+                                        e
+                                    )
+                                })?;
                             if let Some(actual_str) = actual {
                                 assert_eq!(
                                     actual_str,
