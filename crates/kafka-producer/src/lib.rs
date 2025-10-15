@@ -173,8 +173,18 @@ impl KafkaTestProducer {
         proto_post.published = post.published;
         proto_post.content_pattern = post.content_pattern.clone();
         proto_post.post_categories = post.post_categories.clone();
-        proto_post.created_at = post.created_at;
-        proto_post.updated_at = post.updated_at;
+
+        // Convert DateTime to protobuf Timestamp for created_at
+        let mut created_timestamp = protobuf::well_known_types::timestamp::Timestamp::new();
+        created_timestamp.seconds = post.created_at.timestamp();
+        created_timestamp.nanos = post.created_at.timestamp_subsec_nanos() as i32;
+        proto_post.created_at = Some(created_timestamp).into();
+
+        // Convert DateTime to protobuf Timestamp for updated_at
+        let mut updated_timestamp = protobuf::well_known_types::timestamp::Timestamp::new();
+        updated_timestamp.seconds = post.updated_at.timestamp();
+        updated_timestamp.nanos = post.updated_at.timestamp_subsec_nanos() as i32;
+        proto_post.updated_at = Some(updated_timestamp).into();
 
         let payload = proto_post
             .write_to_bytes()
@@ -202,7 +212,12 @@ impl KafkaTestProducer {
         let mut proto_relation = UserPostRelation::new();
         proto_relation.user_id = relation.user_id.clone();
         proto_relation.post_id = relation.post_id.clone();
-        proto_relation.relationship_created = relation.relationship_created;
+
+        // Convert DateTime to protobuf Timestamp
+        let mut timestamp = protobuf::well_known_types::timestamp::Timestamp::new();
+        timestamp.seconds = relation.relationship_created.timestamp();
+        timestamp.nanos = relation.relationship_created.timestamp_subsec_nanos() as i32;
+        proto_relation.relationship_created = Some(timestamp).into();
 
         let payload = proto_relation
             .write_to_bytes()
@@ -274,8 +289,8 @@ pub struct PostMessage {
     pub published: bool,
     pub content_pattern: String,
     pub post_categories: Vec<String>,
-    pub created_at: i64, // Unix timestamp in seconds
-    pub updated_at: i64, // Unix timestamp in seconds
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
 }
 
 /// User-Post relation message structure for Kafka
@@ -283,7 +298,7 @@ pub struct PostMessage {
 pub struct UserPostRelationMessage {
     pub user_id: String,
     pub post_id: String,
-    pub relationship_created: i64, // Unix timestamp in seconds
+    pub relationship_created: chrono::DateTime<chrono::Utc>,
 }
 
 #[cfg(test)]
@@ -335,8 +350,8 @@ mod tests {
             published: true,
             content_pattern: "/test/i".to_string(),
             post_categories: vec!["tech".to_string()],
-            created_at: 1234567890,
-            updated_at: 1234567890,
+            created_at: chrono::DateTime::from_timestamp(1234567890, 0).unwrap(),
+            updated_at: chrono::DateTime::from_timestamp(1234567890, 0).unwrap(),
         };
 
         let mut proto_post = Post::new();

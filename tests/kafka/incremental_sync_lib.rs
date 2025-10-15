@@ -315,7 +315,7 @@ async fn publish_test_posts(
     producer: &KafkaTestProducer,
     topic: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let now = Utc::now().timestamp();
+    let now = Utc::now();
 
     // Post 1
     let post1 = PostMessage {
@@ -359,7 +359,7 @@ async fn publish_test_relations(
     producer: &KafkaTestProducer,
     topic: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let now = Utc::now().timestamp();
+    let now = Utc::now();
 
     // Relation 1: user_001 -> post_001
     let relation1 = UserPostRelationMessage {

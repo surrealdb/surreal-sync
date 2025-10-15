@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+import "google/protobuf/timestamp.proto";
+
 package kafka.testing;
 
 message UserPostRelation {
@@ -10,5 +12,5 @@ message UserPostRelation {
   string post_id = 2;
 
   // Relationship metadata
-  int64 relationship_created = 3;  // Unix timestamp in seconds
+  google.protobuf.Timestamp relationship_created = 3;
 }

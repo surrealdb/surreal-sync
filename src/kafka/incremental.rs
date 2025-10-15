@@ -5,7 +5,7 @@ use clap::Parser;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use surreal_sync_kafka::{ConsumerConfig, Message};
-use tracing::{debug, info, error};
+use tracing::{debug, error, info};
 
 /// Configuration for Kafka source
 #[derive(Debug, Clone, Parser)]
@@ -43,7 +43,10 @@ pub async fn run_incremental_sync(
     to_opts: SurrealOpts,
     _deadline: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
-    info!("Starting Kafka incremental sync for message {} from topic {}", config.message_type, config.topic);
+    info!(
+        "Starting Kafka incremental sync for message {} from topic {}",
+        config.message_type, config.topic
+    );
 
     let surreal = crate::surreal::surreal_connect(&to_opts, &to_namespace, &to_database).await?;
     let surreal = Arc::new(surreal);
@@ -65,7 +68,10 @@ pub async fn run_incremental_sync(
     };
 
     let client = surreal_sync_kafka::Client::from_proto_file(config.proto_path, consumer_config)?;
-    info!("Kafka client created successfully: schema={:?}", client.schema());
+    info!(
+        "Kafka client created successfully: schema={:?}",
+        client.schema()
+    );
 
     // Shared counter for processed messages
     let processed_count = Arc::new(AtomicU64::new(0));

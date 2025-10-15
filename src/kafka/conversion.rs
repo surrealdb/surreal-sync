@@ -46,8 +46,11 @@ fn proto_to_surreal(value: surreal_sync_kafka::ProtoFieldValue) -> anyhow::Resul
                         } else {
                             0
                         };
-                        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(*seconds, nanos).ok_or_else(|| {
-                            anyhow::anyhow!("Invalid timestamp with seconds: {seconds} and nanos: {nanos}")
+                        let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(*seconds, nanos)
+                            .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Invalid timestamp with seconds: {seconds} and nanos: {nanos}"
+                            )
                         })?;
                         return Ok(SurrealValue::DateTime(dt));
                     } else {
@@ -60,24 +63,22 @@ fn proto_to_surreal(value: surreal_sync_kafka::ProtoFieldValue) -> anyhow::Resul
             }
             let mut map = HashMap::new();
             for k in m.descriptor.field_order.iter() {
-                let f = m.descriptor.fields.get(k).ok_or_else(|| {
-                    anyhow::anyhow!("Field descriptor for '{k}' not found")
-                })?;
+                let f = m
+                    .descriptor
+                    .fields
+                    .get(k)
+                    .ok_or_else(|| anyhow::anyhow!("Field descriptor for '{k}' not found"))?;
                 let v = match m.fields.get(k) {
                     Some(v) => v,
-                    None => {
-                        match f.field_type {
-                            surreal_sync_kafka::ProtoType::Bool => {
-                                &ProtoFieldValue::Bool(false)
-                            }
-                            surreal_sync_kafka::ProtoType::Repeated(_) => {
-                                &ProtoFieldValue::Repeated(vec![])
-                            }
-                            _ => {
-                               anyhow::bail!("Field '{k}' listed in descriptor but missing in fields");
-                            }
+                    None => match f.field_type {
+                        surreal_sync_kafka::ProtoType::Bool => &ProtoFieldValue::Bool(false),
+                        surreal_sync_kafka::ProtoType::Repeated(_) => {
+                            &ProtoFieldValue::Repeated(vec![])
                         }
-                    }
+                        _ => {
+                            anyhow::bail!("Field '{k}' listed in descriptor but missing in fields");
+                        }
+                    },
                 };
                 debug!("Converting nested field {k}={v:?} to SurrealDB value");
                 map.insert(k.to_owned(), proto_to_surreal(v.to_owned())?);

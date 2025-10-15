@@ -112,9 +112,7 @@ impl ProtoSchema {
             .parse_and_typecheck()
             .map_err(|e| Error::ProtobufParse(e.to_string()))?;
 
-        let file_descriptors = parsed
-            .file_descriptors
-            .into_iter();
+        let file_descriptors = parsed.file_descriptors.into_iter();
 
         let mut messages = HashMap::new();
 
