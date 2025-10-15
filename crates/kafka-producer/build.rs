@@ -26,7 +26,9 @@ fn main() {
 
     // Compile all proto files using cargo_out_dir
     protobuf_codegen::Codegen::new()
-        .protoc()
+        // Use .pure() instead of .protoc() to use the bundled .proto files like
+        // google/protobuf/timestamp.proto
+        .pure()
         .includes([&proto_dir])
         .inputs(&proto_paths)
         .cargo_out_dir("protos")

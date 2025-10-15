@@ -249,7 +249,7 @@ async fn publish_test_users(
     producer: &KafkaTestProducer,
     topic: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let now = Utc::now().timestamp();
+    let now = Utc::now();
 
     // User 1
     let user1 = UserMessage {

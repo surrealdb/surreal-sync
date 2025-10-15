@@ -44,7 +44,7 @@ impl ProtoFieldValue {
             ProtoFieldValue::Bool(_) => ProtoType::Bool,
             ProtoFieldValue::String(_) => ProtoType::String,
             ProtoFieldValue::Bytes(_) => ProtoType::Bytes,
-            ProtoFieldValue::Message(_) => ProtoType::Message("message".into()),
+            ProtoFieldValue::Message(msg) => ProtoType::Message(msg.message_type.clone()),
             ProtoFieldValue::Repeated(_) => ProtoType::Repeated(Box::new(ProtoType::Null)), // Placeholder,
             ProtoFieldValue::Null => ProtoType::Null,
         }

@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+import "google/protobuf/timestamp.proto";
+
 package kafka.testing;
 
 message User {
@@ -23,7 +25,7 @@ message User {
   string email = 7;
   int32 age = 8;
   bool active = 9;
-  int64 created_at = 10;  // Unix timestamp in seconds
+  google.protobuf.Timestamp created_at = 10;
   double score = 11;
 }
 

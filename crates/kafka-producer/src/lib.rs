@@ -119,7 +119,13 @@ impl KafkaTestProducer {
         proto_user.email = user.email.clone();
         proto_user.age = user.age;
         proto_user.active = user.active;
-        proto_user.created_at = user.created_at;
+
+        // Convert DateTime to protobuf Timestamp
+        let mut timestamp = protobuf::well_known_types::timestamp::Timestamp::new();
+        timestamp.seconds = user.created_at.timestamp();
+        timestamp.nanos = user.created_at.timestamp_subsec_nanos() as i32;
+        proto_user.created_at = Some(timestamp).into();
+
         proto_user.score = user.score;
 
         // Build metadata
@@ -234,7 +240,7 @@ pub struct UserMessage {
     pub email: String,
     pub age: i32,
     pub active: bool,
-    pub created_at: i64, // Unix timestamp in seconds
+    pub created_at: chrono::DateTime<chrono::Utc>,
     pub score: f64,
 }
 
@@ -306,7 +312,7 @@ mod tests {
             email: "alice@example.com".to_string(),
             age: 30,
             active: true,
-            created_at: 1234567890,
+            created_at: chrono::DateTime::from_timestamp(1234567890, 0).unwrap(),
             score: 95.7,
         };
 

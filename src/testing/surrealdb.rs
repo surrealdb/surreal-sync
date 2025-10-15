@@ -286,7 +286,6 @@ pub async fn compare_sync_results_in_surrealdb(
                                     )
                                 })?;
 
-
                             if let (Some(actual_str), SurrealDBValue::String(expected_str)) =
                                 (actual, expected_value)
                             {
