@@ -1,5 +1,6 @@
 use crate::surreal::SurrealValue;
 use std::collections::HashMap;
+use surreal_sync_kafka::ProtoFieldValue;
 use tracing::debug;
 
 pub fn message_to_keys_and_surreal_values(
@@ -58,8 +59,28 @@ fn proto_to_surreal(value: surreal_sync_kafka::ProtoFieldValue) -> anyhow::Resul
                 }
             }
             let mut map = HashMap::new();
-            for (k, v) in m.fields {
-                map.insert(k, proto_to_surreal(v)?);
+            for k in m.descriptor.field_order.iter() {
+                let f = m.descriptor.fields.get(k).ok_or_else(|| {
+                    anyhow::anyhow!("Field descriptor for '{k}' not found")
+                })?;
+                let v = match m.fields.get(k) {
+                    Some(v) => v,
+                    None => {
+                        match f.field_type {
+                            surreal_sync_kafka::ProtoType::Bool => {
+                                &ProtoFieldValue::Bool(false)
+                            }
+                            surreal_sync_kafka::ProtoType::Repeated(_) => {
+                                &ProtoFieldValue::Repeated(vec![])
+                            }
+                            _ => {
+                               anyhow::bail!("Field '{k}' listed in descriptor but missing in fields");
+                            }
+                        }
+                    }
+                };
+                debug!("Converting nested field {k}={v:?} to SurrealDB value");
+                map.insert(k.to_owned(), proto_to_surreal(v.to_owned())?);
             }
             Ok(SurrealValue::Object(map))
         }
