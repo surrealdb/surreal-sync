@@ -254,7 +254,7 @@ async fn publish_test_users(
     // User 1
     let user1 = UserMessage {
         id: "user_001".to_string(),
-        account_balance: "12345.67890".to_string(),
+        account_balance: 12345.67890,
         metadata: UserMetadata {
             preferences: UserPreferences {
                 theme: "dark".to_string(),
@@ -282,7 +282,7 @@ async fn publish_test_users(
     // User 2
     let user2 = UserMessage {
         id: "user_002".to_string(),
-        account_balance: "98765.43210".to_string(),
+        account_balance: 98765.43210,
         metadata: UserMetadata {
             preferences: UserPreferences {
                 theme: "light".to_string(),

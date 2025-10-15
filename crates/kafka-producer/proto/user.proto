@@ -7,7 +7,7 @@ message User {
   string id = 1;
 
   // High-precision decimal
-  string account_balance = 2;
+  double account_balance = 2;
 
   // Complex nested metadata
   Metadata metadata = 3;

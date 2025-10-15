@@ -112,7 +112,7 @@ impl KafkaTestProducer {
     pub async fn publish_user(&self, topic: &str, user: &UserMessage) -> Result<()> {
         let mut proto_user = User::new();
         proto_user.id = user.id.clone();
-        proto_user.account_balance = user.account_balance.clone();
+        proto_user.account_balance = user.account_balance;
         proto_user.validation_logic = user.validation_logic.clone();
         proto_user.reference_id = user.reference_id.clone();
         proto_user.name = user.name.clone();
@@ -226,7 +226,7 @@ impl KafkaTestProducer {
 #[derive(Debug, Clone)]
 pub struct UserMessage {
     pub id: String,
-    pub account_balance: String,
+    pub account_balance: f64,
     pub metadata: UserMetadata,
     pub validation_logic: String,
     pub reference_id: String,
@@ -288,7 +288,7 @@ mod tests {
     fn test_user_message_encoding() {
         let user = UserMessage {
             id: "user_001".to_string(),
-            account_balance: "12345.67890".to_string(),
+            account_balance: 12345.67890,
             metadata: UserMetadata {
                 preferences: UserPreferences {
                     theme: "dark".to_string(),
