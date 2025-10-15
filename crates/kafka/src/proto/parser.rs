@@ -112,62 +112,62 @@ impl ProtoSchema {
             .parse_and_typecheck()
             .map_err(|e| Error::ProtobufParse(e.to_string()))?;
 
-        let file_descriptor = parsed
+        let file_descriptors = parsed
             .file_descriptors
-            .into_iter()
-            .next()
-            .ok_or_else(|| Error::ProtobufParse("No file descriptor found".to_string()))?;
+            .into_iter();
 
         let mut messages = HashMap::new();
 
         // Extract all message types from the file descriptor
-        for message in &file_descriptor.message_type {
-            let mut fields = HashMap::new();
-            let mut field_order = Vec::new();
+        for file_descriptor in file_descriptors {
+            for message in &file_descriptor.message_type {
+                let mut fields = HashMap::new();
+                let mut field_order = Vec::new();
 
-            for field in &message.field {
-                let field_name = field.name.clone().unwrap_or_default();
-                if field_name.is_empty() {
-                    continue;
+                for field in &message.field {
+                    let field_name = field.name.clone().unwrap_or_default();
+                    if field_name.is_empty() {
+                        continue;
+                    }
+                    field_order.push(field_name.clone());
+
+                    let field_type = Self::parse_field_type(field)?;
+
+                    let descriptor = ProtoFieldDescriptor {
+                        name: field_name.clone(),
+                        number: field.number.unwrap_or(0),
+                        field_type,
+                        is_repeated: field.label
+                            == Some(
+                                protobuf::descriptor::field_descriptor_proto::Label::LABEL_REPEATED
+                                    .into(),
+                            ),
+                        is_optional: field.label
+                            == Some(
+                                protobuf::descriptor::field_descriptor_proto::Label::LABEL_OPTIONAL
+                                    .into(),
+                            ),
+                    };
+
+                    fields.insert(field_name, descriptor);
                 }
-                field_order.push(field_name.clone());
 
-                let field_type = Self::parse_field_type(field)?;
-
-                let descriptor = ProtoFieldDescriptor {
-                    name: field_name.clone(),
-                    number: field.number.unwrap_or(0),
-                    field_type,
-                    is_repeated: field.label
-                        == Some(
-                            protobuf::descriptor::field_descriptor_proto::Label::LABEL_REPEATED
-                                .into(),
-                        ),
-                    is_optional: field.label
-                        == Some(
-                            protobuf::descriptor::field_descriptor_proto::Label::LABEL_OPTIONAL
-                                .into(),
-                        ),
+                let message_name_simple = message.name.clone().unwrap_or_default();
+                let message_name = if let Some(ref package) = file_descriptor.package {
+                    format!("{package}.{message_name_simple}")
+                } else {
+                    message_name_simple.clone()
                 };
 
-                fields.insert(field_name, descriptor);
+                messages.insert(
+                    message_name_simple,
+                    ProtoMessageDescriptor {
+                        name: message_name,
+                        fields,
+                        field_order,
+                    },
+                );
             }
-
-            let message_name_simple = message.name.clone().unwrap_or_default();
-            let message_name = if let Some(ref package) = file_descriptor.package {
-                format!("{package}.{message_name_simple}")
-            } else {
-                message_name_simple.clone()
-            };
-
-            messages.insert(
-                message_name_simple,
-                ProtoMessageDescriptor {
-                    name: message_name,
-                    fields,
-                    field_order,
-                },
-            );
         }
 
         Ok(ProtoSchema { messages })
