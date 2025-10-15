@@ -5,7 +5,7 @@ use clap::Parser;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use surreal_sync_kafka::{ConsumerConfig, Message};
-use tracing::{debug, info};
+use tracing::{debug, info, error};
 
 /// Configuration for Kafka source
 #[derive(Debug, Clone, Parser)]
@@ -43,7 +43,7 @@ pub async fn run_incremental_sync(
     to_opts: SurrealOpts,
     _deadline: chrono::DateTime<chrono::Utc>,
 ) -> Result<()> {
-    info!("Starting Kafka incremental sync",);
+    info!("Starting Kafka incremental sync for message {} from topic {}", config.message_type, config.topic);
 
     let surreal = crate::surreal::surreal_connect(&to_opts, &to_namespace, &to_database).await?;
     let surreal = Arc::new(surreal);
@@ -65,7 +65,7 @@ pub async fn run_incremental_sync(
     };
 
     let client = surreal_sync_kafka::Client::from_proto_file(config.proto_path, consumer_config)?;
-    println!("Kafka client created successfully");
+    info!("Kafka client created successfully: schema={:?}", client.schema());
 
     // Shared counter for processed messages
     let processed_count = Arc::new(AtomicU64::new(0));
@@ -111,7 +111,7 @@ pub async fn run_incremental_sync(
 
                     let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
                     if count % 100 == 0 {
-                        println!("Processed {count} messages total");
+                        info!("Processed {count} messages total");
                     }
                 }
 
@@ -121,18 +121,18 @@ pub async fn run_incremental_sync(
     };
 
     let num_consumers = config.num_consumers;
-    println!("Spawning {num_consumers} consumers in the same consumer group...");
+    info!("Spawning {num_consumers} consumers in the same consumer group...");
     let handles =
         client.spawn_batch_consumer_group(config.num_consumers, config.batch_size, processor)?;
 
-    println!("Consumers running. Press Ctrl+C to stop.");
+    info!("Consumers running. Press Ctrl+C to stop.");
 
     // Wait for all consumers (runs indefinitely until Ctrl+C)
     for (i, handle) in handles.into_iter().enumerate() {
         match handle.await {
-            Ok(Ok(())) => println!("Consumer {i} finished successfully"),
-            Ok(Err(e)) => eprintln!("Consumer {i} error: {e}"),
-            Err(e) => eprintln!("Consumer {i} task error: {e}"),
+            Ok(Ok(())) => info!("Consumer {i} finished successfully"),
+            Ok(Err(e)) => error!("Consumer {i} error: {e}"),
+            Err(e) => error!("Consumer {i} task error: {e}"),
         }
     }
 
