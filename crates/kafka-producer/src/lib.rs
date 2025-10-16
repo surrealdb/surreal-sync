@@ -49,10 +49,15 @@ use std::time::Duration;
 // Include generated protobuf code
 mod protos;
 
+// Test data helpers module
+pub mod testdata;
+
 // Re-export protobuf types for convenience
 pub use protos::post::Post;
 pub use protos::user::{Metadata, Preferences, Settings, User};
 pub use protos::user_post_relation::UserPostRelation;
+
+pub use testdata::{publish_test_posts, publish_test_relations, publish_test_users};
 
 /// Kafka producer wrapper for testing
 pub struct KafkaTestProducer {
