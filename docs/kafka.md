@@ -6,7 +6,7 @@ The Kafka source in surreal-sync allows you to import Kafka messages into Surrea
 
 The Kafka source acts as a Kafka consumer in a consumer group, that subscribes to a specific topic in the cluster.
 
-The specified Kafka topic becomes a table in SurrealDB, where each message coming from the topic becomes a document in that table, with optional deduplication mechanism.
+The specified Kafka topic becomes a table in SurrealDB, where each message coming from the topic becomes a record in the table, with optional deduplication.
 
 Each Kafka message must be encoded using Protobuf. The Kafka source tries to decode every Kafka message payload using Protobuf and turn it into SurrealDB Upsert queries, so that the payloads are converted to SurrealDB records.
 
@@ -65,6 +65,6 @@ surreal start --user root --pass root
 
 ## Production Scenarios
 
-### Run one surreal-synce process per topic
+### Run one surreal-sync process per topic
 
 - In case you are to import two or more Kafka topics to SurrealDB, run the Kafka source for each topic. This is so to simplify the usage of the Kafka source- by running a `surreal-sync kafka` process per topic, you can differentiate the group IDs, topics, message types, and the proto schema files per topic, which enables it to adapt to whatever advanced scenarios we can imagine.
