@@ -36,6 +36,7 @@ See source-specific guides for more details:
 - **[PostgreSQL](docs/postgresql.md)**: Full and incremental sync using trigger-based CDC + sequence checkpoints
 - **[Neo4j](docs/neo4j.md)**: Full and incremental sync using timestamp-based tracking
 - **[JSONL](docs/jsonl.md)**: Bulk import from JSON Lines files
+- **[Kafka](docs/kafka.md)**: Kafka consumer that subscribes to a topic, importing Kafka message payloads into SurrealDB with optional deduplication
 
 ## Development
 
