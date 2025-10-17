@@ -35,6 +35,48 @@ impl Client {
         }
     }
 
+    /// Gets the current WAL LSN position
+    ///
+    /// This is useful for capturing the LSN position before taking a snapshot,
+    /// so you can later replay all changes from that point onwards. This ensures
+    /// consistency when the snapshot might be taken at a lower isolation level.
+    ///
+    /// # Returns
+    /// * `Result<String>` - The current WAL LSN as a string (e.g., "0/1949850")
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Capture LSN before taking snapshot
+    /// let start_lsn = client.get_current_wal_lsn().await?;
+    ///
+    /// // Take your snapshot here
+    /// take_database_snapshot().await?;
+    ///
+    /// // Later, replay changes from the captured LSN
+    /// // using pg_logical_slot_peek_changes with the start_lsn
+    /// ```
+    pub async fn get_current_wal_lsn(&self) -> Result<String> {
+        info!("Getting current WAL LSN position");
+
+        let query = "SELECT pg_current_wal_lsn()::text";
+        let rows = self
+            .pg_client
+            .query(query, &[])
+            .await
+            .context("Failed to get current WAL LSN")?;
+
+        if rows.is_empty() {
+            bail!("No result returned from pg_current_wal_lsn()");
+        }
+
+        let lsn: String = rows[0]
+            .try_get(0)
+            .context("Failed to extract LSN from query result")?;
+
+        info!("Current WAL LSN: {}", lsn);
+        Ok(lsn)
+    }
+
     /// Creates a logical replication slot if it doesn't exist
     ///
     /// # Arguments

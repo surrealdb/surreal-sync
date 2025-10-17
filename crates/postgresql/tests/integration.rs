@@ -1,6 +1,6 @@
 //! Integration tests for PostgreSQL logical replication with wal2json
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use surreal_sync_postgresql_replication::{testing::container::PostgresContainer, Client};
 use tokio_postgres::NoTls;
@@ -454,5 +454,112 @@ async fn test_multiple_inserts_and_batch_advance() -> Result<()> {
     container.stop()?;
 
     info!("Batch processing test completed successfully");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_get_current_wal_lsn() -> Result<()> {
+    init_logging();
+    info!("Starting get_current_wal_lsn test");
+
+    // Create container configuration
+    let container = PostgresContainer::new("test-wal-lsn", TEST_PORT + 2);
+
+    // Build and start container
+    container.build_image()?;
+    container.start()?;
+    container.wait_until_ready(30).await?;
+
+    // Connect to PostgreSQL
+    let (pg_client, connection) = tokio_postgres::connect(&container.connection_string, NoTls)
+        .await
+        .context("Failed to connect to PostgreSQL")?;
+
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            eprintln!("Connection error: {e}");
+        }
+    });
+
+    // Create the replication client
+    let repl_client = Client::new(pg_client, vec![]);
+
+    // Get the current WAL LSN before any operations
+    let lsn_before = repl_client
+        .get_current_wal_lsn()
+        .await
+        .context("Failed to get initial WAL LSN")?;
+    info!("Initial WAL LSN: {}", lsn_before);
+
+    // Verify it's in the expected format (e.g., "0/1949850")
+    assert!(
+        lsn_before.contains('/'),
+        "LSN should be in format like '0/1949850'"
+    );
+
+    // Create a table and insert data to advance the WAL
+    let (pg_client2, connection2) = tokio_postgres::connect(&container.connection_string, NoTls)
+        .await
+        .context("Failed to connect to PostgreSQL")?;
+
+    tokio::spawn(async move {
+        if let Err(e) = connection2.await {
+            eprintln!("Connection error: {e}");
+        }
+    });
+
+    pg_client2
+        .execute(
+            "CREATE TABLE lsn_test (id SERIAL PRIMARY KEY, data TEXT)",
+            &[],
+        )
+        .await?;
+    pg_client2
+        .execute("INSERT INTO lsn_test (data) VALUES ('test1')", &[])
+        .await?;
+    pg_client2
+        .execute("INSERT INTO lsn_test (data) VALUES ('test2')", &[])
+        .await?;
+
+    // Get the WAL LSN after operations
+    let lsn_after = repl_client
+        .get_current_wal_lsn()
+        .await
+        .context("Failed to get WAL LSN after operations")?;
+    info!("WAL LSN after operations: {}", lsn_after);
+
+    // The LSN should have advanced
+    assert_ne!(
+        lsn_before, lsn_after,
+        "LSN should advance after database operations"
+    );
+
+    // Parse and compare LSNs to ensure lsn_after is greater
+    let parse_lsn = |lsn: &str| -> Result<(u64, u64)> {
+        let parts: Vec<&str> = lsn.split('/').collect();
+        if parts.len() != 2 {
+            bail!("Invalid LSN format: {}", lsn);
+        }
+        let high = u64::from_str_radix(parts[0], 16).context("Failed to parse high part of LSN")?;
+        let low = u64::from_str_radix(parts[1], 16).context("Failed to parse low part of LSN")?;
+        Ok((high, low))
+    };
+
+    let (before_high, before_low) = parse_lsn(&lsn_before)?;
+    let (after_high, after_low) = parse_lsn(&lsn_after)?;
+
+    assert!(
+        (after_high > before_high) || (after_high == before_high && after_low > before_low),
+        "LSN should increase: {} -> {}",
+        lsn_before,
+        lsn_after
+    );
+
+    info!("Successfully verified WAL LSN advancement");
+
+    // Cleanup
+    container.stop()?;
+
+    info!("get_current_wal_lsn test completed successfully");
     Ok(())
 }
