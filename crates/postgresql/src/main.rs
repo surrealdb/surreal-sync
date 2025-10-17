@@ -4,10 +4,10 @@
 //! to create a replication slot and stream changes to stdout.
 
 use anyhow::Result;
-use surreal_sync_postgresql_replication::{Client, Stream};
 use std::env;
+use surreal_sync_postgresql_replication::{Client, Slot};
 use tokio_postgres::NoTls;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 /// Main entry point for the demo program
@@ -61,11 +61,19 @@ async fn main() -> Result<()> {
 
     let repl_client = Client::new(client, table_names);
 
-    // Start replication with a named slot
+    // Get slot name from environment
     let slot_name = env::var("SLOT_NAME").unwrap_or_else(|_| "demo_slot".to_string());
-    info!("Starting replication with slot: {}", slot_name);
 
-    let mut stream = repl_client
+    // Create the replication slot if it doesn't exist
+    info!("Creating replication slot: {}", slot_name);
+    repl_client
+        .create_slot(&slot_name)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create replication slot: {e}"))?;
+
+    // Start replication with the slot
+    info!("Starting replication with slot: {}", slot_name);
+    let slot = repl_client
         .start_replication(Some(&slot_name))
         .await
         .map_err(|e| anyhow::anyhow!("Failed to start replication: {e}"))?;
@@ -78,13 +86,13 @@ async fn main() -> Result<()> {
     let shutdown = setup_shutdown_handler();
 
     // Stream changes to stdout
-    stream_changes(&mut stream, shutdown).await?;
+    stream_changes(&slot, shutdown).await?;
 
     // Cleanup: drop the replication slot
     info!("");
     info!("Shutting down...");
 
-    match stream.drop_slot().await {
+    match repl_client.drop_slot(&slot_name).await {
         Ok(_) => info!("Replication slot dropped successfully"),
         Err(e) => warn!("Failed to drop replication slot: {}", e),
     }
@@ -95,7 +103,7 @@ async fn main() -> Result<()> {
 
 /// Streams changes to stdout until shutdown signal is received
 async fn stream_changes(
-    stream: &mut Stream,
+    slot: &Slot,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
 ) -> Result<()> {
     loop {
@@ -104,22 +112,50 @@ async fn stream_changes(
                 info!("Received shutdown signal");
                 break;
             }
-            result = stream.next() => {
-                match result {
-                    Ok(Some(change)) => {
-                        // Pretty print the JSON to stdout
-                        let pretty = serde_json::to_string_pretty(&change)?;
-                        println!("=== Change Received ===");
-                        println!("{pretty}");
-                        println!("======================\n");
-                    }
-                    Ok(None) => {
-                        // No changes available, wait a bit before polling again
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
+                // Peek at available changes
+                match slot.peek().await {
+                    Ok(changes) => {
+                        if changes.is_empty() {
+                            debug!("No new changes available");
+                            continue;
+                        }
+
+                        let mut last_lsn = String::new();
+
+                        // Process all changes in the batch
+                        for (lsn, change) in &changes {
+                            // Pretty print the JSON to stdout
+                            let pretty = serde_json::to_string_pretty(&change)?;
+                            println!("=== Change Received ===");
+                            println!("LSN: {lsn}");
+                            println!("{pretty}");
+                            println!("======================\n");
+
+                            // Track the last LSN for batch advancement
+                            last_lsn = lsn.clone();
+                        }
+
+                        // Advance to the last LSN after successfully processing ALL changes
+                        // This batches the acknowledgment for better performance
+                        // In a real application, you would advance only after
+                        // successfully writing all changes to your target database
+                        if !last_lsn.is_empty() {
+                            match slot.advance(&last_lsn).await {
+                                Ok(_) => {
+                                    debug!("Batch advanced slot to LSN: {} ({} changes processed)", last_lsn, changes.len());
+                                }
+                                Err(e) => {
+                                    error!("Failed to advance slot to {}: {}. Changes will be redelivered.", last_lsn, e);
+                                    // The changes will be redelivered on next iteration
+                                    // This ensures at-least-once delivery
+                                }
+                            }
+                        }
                     }
                     Err(e) => {
-                        error!("Error reading from stream: {}", e);
-                        // Continue trying unless it's a fatal error
+                        error!("Error peeking changes from slot: {}", e);
+                        // Wait longer before retrying on error
                         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
                     }
                 }

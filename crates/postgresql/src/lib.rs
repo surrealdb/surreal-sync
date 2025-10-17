@@ -6,5 +6,5 @@
 mod logical_replication;
 mod wal2json;
 
-pub use logical_replication::{Client, Stream};
+pub use logical_replication::{Client, Slot};
 pub use wal2json::parse_wal2json;

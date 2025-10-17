@@ -1,13 +1,13 @@
-//! PostgreSQL logical replication client and stream
+//! PostgreSQL logical replication client and slot
 //!
-//! This module provides Client and Stream structs for managing PostgreSQL
+//! This module provides Client and Slot structs for managing PostgreSQL
 //! logical replication using regular SQL connections and wal2json.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio_postgres::Client as PgClient;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::wal2json::parse_wal2json;
 
@@ -35,20 +35,15 @@ impl Client {
         }
     }
 
-    /// Starts logical replication and returns a Stream
-    ///
-    /// Creates a logical replication slot if it doesn't exist and
-    /// returns a Stream for consuming changes.
+    /// Creates a logical replication slot if it doesn't exist
     ///
     /// # Arguments
-    /// * `slot_name` - Name for the replication slot (default: "test_slot")
+    /// * `slot_name` - Name for the replication slot
     ///
     /// # Returns
-    /// * `Result<Stream>` - A Stream for consuming replication changes
-    pub async fn start_replication(&self, slot_name: Option<&str>) -> Result<Stream> {
-        let slot_name = slot_name.unwrap_or("test_slot");
-
-        info!("Starting logical replication with slot: {}", slot_name);
+    /// * `Result<()>` - Ok if slot exists or was created successfully
+    pub async fn create_slot(&self, slot_name: &str) -> Result<()> {
+        info!("Checking logical replication slot: {}", slot_name);
 
         // Check if the slot already exists
         let check_slot_query = "SELECT slot_name FROM pg_replication_slots WHERE slot_name = $1";
@@ -61,9 +56,8 @@ impl Client {
         if rows.is_empty() {
             // Create the logical replication slot with wal2json plugin
             info!("Creating new logical replication slot: {}", slot_name);
-            let create_slot_query = format!(
-                "SELECT * FROM pg_create_logical_replication_slot('{slot_name}', 'wal2json')",
-            );
+            let create_slot_query =
+                format!("SELECT pg_create_logical_replication_slot('{slot_name}', 'wal2json')",);
             self.pg_client
                 .execute(&create_slot_query, &[])
                 .await
@@ -93,8 +87,58 @@ impl Client {
             );
         }
 
-        // Create and return a Stream
-        Ok(Stream::new(
+        Ok(())
+    }
+
+    /// Drops a replication slot
+    ///
+    /// Cleans up the replication slot when it's no longer needed.
+    ///
+    /// # Arguments
+    /// * `slot_name` - Name of the replication slot to drop
+    ///
+    /// # Returns
+    /// * `Result<()>` - Ok if slot was dropped successfully
+    pub async fn drop_slot(&self, slot_name: &str) -> Result<()> {
+        info!("Dropping replication slot: {}", slot_name);
+        let query = format!("SELECT pg_drop_replication_slot('{slot_name}')");
+        self.pg_client
+            .execute(&query, &[])
+            .await
+            .context("Failed to drop replication slot")?;
+        info!("Successfully dropped replication slot: {}", slot_name);
+        Ok(())
+    }
+
+    /// Starts logical replication and returns a Slot
+    ///
+    /// Returns a Slot for consuming changes from an existing replication slot.
+    /// The slot must already exist - use `create_slot()` to create one if needed,
+    /// or create it manually using PostgreSQL commands.
+    ///
+    /// # Arguments
+    /// * `slot_name` - Name for the replication slot (default: "test_slot")
+    ///
+    /// # Returns
+    /// * `Result<Slot>` - A Slot for consuming replication changes
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Option 1: Create slot using this library
+    /// client.create_slot("my_slot").await?;
+    /// let slot = client.start_replication(Some("my_slot")).await?;
+    ///
+    /// // Option 2: Assume slot was created manually via SQL
+    /// // SELECT pg_create_logical_replication_slot('my_slot', 'wal2json');
+    /// let slot = client.start_replication(Some("my_slot")).await?;
+    /// ```
+    pub async fn start_replication(&self, slot_name: Option<&str>) -> Result<Slot> {
+        let slot_name = slot_name.unwrap_or("test_slot");
+
+        info!("Starting logical replication with slot: {}", slot_name);
+
+        // Create and return a Slot for the existing slot
+        Ok(Slot::new(
             Arc::clone(&self.pg_client),
             slot_name.to_string(),
             self.table_names.clone(),
@@ -102,11 +146,12 @@ impl Client {
     }
 }
 
-/// Stream for consuming logical replication changes
+/// Slot for consuming logical replication changes
 ///
 /// Provides an interface for reading changes from a PostgreSQL
-/// logical replication slot using pg_logical_slot_get_changes.
-pub struct Stream {
+/// logical replication slot using pg_logical_slot_peek_changes and
+/// pg_logical_slot_advance.
+pub struct Slot {
     /// The PostgreSQL client connection
     pg_client: Arc<PgClient>,
     /// Name of the replication slot
@@ -115,8 +160,8 @@ pub struct Stream {
     table_names: Vec<String>,
 }
 
-impl Stream {
-    /// Creates a new Stream instance
+impl Slot {
+    /// Creates a new Slot instance
     fn new(pg_client: Arc<PgClient>, slot_name: String, table_names: Vec<String>) -> Self {
         Self {
             pg_client,
@@ -125,95 +170,91 @@ impl Stream {
         }
     }
 
-    /// Gets the next change from the replication stream
+    /// Advances the replication slot to the specified LSN
     ///
-    /// Polls the logical replication slot for changes and returns
-    /// the next available change as a parsed JSON object.
+    /// This consumes all changes up to and including the specified LSN.
+    /// Should only be called after successfully processing changes.
+    ///
+    /// # Arguments
+    /// * `lsn` - The Log Sequence Number to advance to
     ///
     /// # Returns
-    /// * `Result<Option<Value>>` - The next change as JSON, or None if no changes available
-    pub async fn next(&mut self) -> Result<Option<Value>> {
-        // wal2json options for formatting
-        //
-        // 'format-version', '2' - use format version 2
-        // 'include-lsn': 'true' - add nextlsn to each changeset
-        // 'include-transaction': 'false' - do not emit records denoting the start and end of each transaction
-        // 'include-pk': 'true' - add primary key information as pk. Column name and data type is included
-        let wal2json_options = "'format-version', '2', 'include-lsn', 'true', 'include-transaction', 'false', 'include-pk', 'true'";
-
-        // Query for changes using pg_logical_slot_get_changes
-        // This function consumes changes (they won't be returned again)
-        let query = format!(
-            "SELECT lsn, data FROM pg_logical_slot_get_changes('{}', NULL, NULL, {wal2json_options})",
-            self.slot_name
+    /// * `Result<()>` - Ok if advancement was successful
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Peek at available changes
+    /// let changes = slot.peek().await?;
+    ///
+    /// if !changes.is_empty() {
+    ///     // Process all changes in the batch
+    ///     for (lsn, change) in &changes {
+    ///         handle_change(&change)?;
+    ///     }
+    ///
+    ///     // Advance to the last LSN after all changes are processed
+    ///     let last_lsn = &changes.last().unwrap().0;
+    ///     slot.advance(last_lsn).await?;
+    /// }
+    /// ```
+    pub async fn advance(&self, lsn: &str) -> Result<()> {
+        info!(
+            "Advancing replication slot {} to LSN: {}",
+            self.slot_name, lsn
         );
 
-        let rows = self
-            .pg_client
-            .query(&query, &[])
+        // Use pg_replication_slot_advance to move the slot forward
+        // This is more efficient than consuming with pg_logical_slot_get_changes
+        let query = format!(
+            "SELECT pg_replication_slot_advance('{}', '{}')",
+            self.slot_name, lsn
+        );
+
+        self.pg_client
+            .execute(&query, &[])
             .await
-            .context("Failed to get changes from replication slot")?;
+            .context("Failed to advance replication slot")?;
 
-        if rows.is_empty() {
-            debug!("No new changes available");
-            return Ok(None);
-        }
-
-        // Process the first available change
-        // In a real implementation, you might want to batch these
-        for row in rows {
-            let _lsn: String = row.get(0); // Log Sequence Number
-            let data: String = row.get(1); // wal2json formatted data
-
-            debug!("Received change with LSN: {}", _lsn);
-
-            // Parse the wal2json data
-            match parse_wal2json(&data) {
-                Ok(parsed) => {
-                    // Optional: Filter by table names if needed
-                    if !self.table_names.is_empty() {
-                        // Check if this change is for one of our tracked tables
-                        // wal2json format includes table information in the change
-                        if let Some(changes) = parsed.get("change") {
-                            if let Some(change_array) = changes.as_array() {
-                                for change in change_array {
-                                    if let Some(table) = change.get("table") {
-                                        if let Some(table_str) = table.as_str() {
-                                            if self.table_names.iter().any(|t| t == table_str) {
-                                                return Ok(Some(parsed));
-                                            }
-                                        }
-                                    }
-                                }
-                                // Change is not for a tracked table, skip it
-                                debug!("Skipping change for untracked table");
-                                continue;
-                            }
-                        }
-                    }
-
-                    return Ok(Some(parsed));
-                }
-                Err(e) => {
-                    warn!("Failed to parse wal2json data: {}", e);
-                    warn!("Raw data: {}", data);
-                    // Continue to next change instead of failing
-                    continue;
-                }
-            }
-        }
-
-        Ok(None)
+        debug!("Successfully advanced slot to LSN: {}", lsn);
+        Ok(())
     }
 
     /// Peek at changes without consuming them
     ///
     /// Uses pg_logical_slot_peek_changes to look at changes without consuming them.
-    /// Useful for debugging or preview purposes.
-    pub async fn peek(&self) -> Result<Vec<Value>> {
+    /// Returns a vector of tuples containing (LSN, change data).
+    ///
+    /// # Returns
+    /// * `Result<Vec<(String, Value)>>` - Vector of (LSN, change JSON) tuples
+    ///
+    /// # Usage Pattern (batch processing with at-least-once delivery)
+    /// ```ignore
+    /// // 1. Peek at available changes
+    /// let changes = slot.peek().await?;
+    ///
+    /// if !changes.is_empty() {
+    ///     // 2. Process all changes in the batch
+    ///     for (lsn, change) in &changes {
+    ///         process_change(&change)?;
+    ///     }
+    ///
+    ///     // 3. Advance to the last LSN after ALL changes are processed successfully
+    ///     let last_lsn = &changes.last().unwrap().0;
+    ///     slot.advance(last_lsn).await?;
+    /// }
+    /// ```
+    pub async fn peek(&self) -> Result<Vec<(String, Value)>> {
+        // wal2json options for formatting
+        //
+        // 'format-version', '2' - use format version 2
+        // 'include-transaction': 'false' - do not emit records denoting the start and end of each transaction
+        // 'include-pk': 'true' - add primary key information as pk. Column name and data type is included
+        let wal2json_options =
+            "'format-version', '2', 'include-transaction', 'false', 'include-pk', 'true'";
+
         let query = format!(
-            "SELECT lsn, data FROM pg_logical_slot_peek_changes('{}', NULL, NULL, 'format-version', '2', 'include-timestamp', 'true')",
-            self.slot_name
+            "SELECT lsn, data FROM pg_logical_slot_peek_changes('{}', NULL, NULL, {})",
+            self.slot_name, wal2json_options
         );
 
         let rows = self
@@ -224,27 +265,40 @@ impl Stream {
 
         let mut changes = Vec::new();
         for row in rows {
+            let lsn: String = row.get(0);
             let data: String = row.get(1);
-            if let Ok(parsed) = parse_wal2json(&data) {
-                changes.push(parsed);
+
+            match parse_wal2json(&data) {
+                Ok(parsed) => {
+                    // Optional: Filter by table names if needed
+                    if !self.table_names.is_empty() {
+                        // Check if this change is for one of our tracked tables
+                        if let Some(change_list) = parsed.get("change") {
+                            if let Some(change_array) = change_list.as_array() {
+                                let has_tracked_table = change_array.iter().any(|change| {
+                                    if let Some(table) = change.get("table") {
+                                        if let Some(table_str) = table.as_str() {
+                                            return self.table_names.iter().any(|t| t == table_str);
+                                        }
+                                    }
+                                    false
+                                });
+
+                                if has_tracked_table {
+                                    changes.push((lsn, parsed));
+                                }
+                            }
+                        }
+                    } else {
+                        changes.push((lsn, parsed));
+                    }
+                }
+                Err(e) => {
+                    bail!("Failed to parse wal2json data at LSN {lsn}, due to {e}: {data}");
+                }
             }
         }
 
         Ok(changes)
-    }
-
-    /// Drops the replication slot
-    ///
-    /// Cleans up the replication slot when it's no longer needed.
-    /// This should be called when shutting down the replication stream.
-    pub async fn drop_slot(&self) -> Result<()> {
-        info!("Dropping replication slot: {}", self.slot_name);
-        let query = format!("SELECT pg_drop_replication_slot('{}')", self.slot_name);
-        self.pg_client
-            .execute(&query, &[])
-            .await
-            .context("Failed to drop replication slot")?;
-        info!("Successfully dropped replication slot");
-        Ok(())
     }
 }

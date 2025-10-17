@@ -14,7 +14,7 @@
 #   docker run --network=container:postgres1 -it --rm -e POSTGRES_PASSWORD=postgres postgres:16 psql --user postgres -h localhost
 #
 # In psql, create a replication slot with:
-#   SELECT * FROM pg_create_logical_replication_slot('test_slot', 'wal2json');
+#   SELECT pg_create_logical_replication_slot('test_slot', 'wal2json');
 #
 # Create a sample table and insert some data:
 #    CREATE table test (id int primary key);
