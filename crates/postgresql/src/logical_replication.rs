@@ -222,38 +222,42 @@ impl Slot {
     /// Peek at changes without consuming them
     ///
     /// Uses pg_logical_slot_peek_changes to look at changes without consuming them.
-    /// Returns a vector of tuples containing (LSN, change data).
+    /// Returns a tuple containing the changes and the nextlsn to use for advancement.
     ///
     /// # Returns
-    /// * `Result<Vec<(String, Value)>>` - Vector of (LSN, change JSON) tuples
+    /// * `Result<(Vec<Value>, String)>` - Tuple of (changes, nextlsn)
+    ///   - changes: Vector of change JSON objects (excluding transaction begin/commit)
+    ///   - nextlsn: The nextlsn from the last commit action, to be used with advance()
     ///
     /// # Usage Pattern (batch processing with at-least-once delivery)
     /// ```ignore
-    /// // 1. Peek at available changes
-    /// let changes = slot.peek().await?;
+    /// loop {
+    ///     // 1. Peek at available changes
+    ///     let (changes, nextlsn) = slot.peek().await?;
     ///
-    /// if !changes.is_empty() {
+    ///     if changes.is_empty() {
+    ///         break; // No more changes
+    ///     }
+    ///
     ///     // 2. Process all changes in the batch
-    ///     for (lsn, change) in &changes {
+    ///     for change in &changes {
     ///         process_change(&change)?;
     ///     }
     ///
-    ///     // 3. Advance to the last LSN after ALL changes are processed successfully
-    ///     let last_lsn = &changes.last().unwrap().0;
-    ///     slot.advance(last_lsn).await?;
+    ///     // 3. Advance to nextlsn after successful processing
+    ///     slot.advance(&nextlsn).await?;
     /// }
     /// ```
-    pub async fn peek(&self) -> Result<Vec<(String, Value)>> {
+    pub async fn peek(&self) -> Result<(Vec<Value>, String)> {
         // wal2json options for formatting
         //
         // 'format-version', '2' - use format version 2
-        // 'include-transaction': 'false' - do not emit records denoting the start and end of each transaction
-        // 'include-pk': 'true' - add primary key information as pk. Column name and data type is included
-        let wal2json_options =
-            "'format-version', '2', 'include-transaction', 'false', 'include-pk', 'true'";
+        // 'include-lsn', 'true' - include LSN and nextlsn fields in the output
+        // 'include-pk', 'true' - add primary key information as pk. Column name and data type is included
+        let wal2json_options = "'format-version', '2', 'include-lsn', 'true', 'include-pk', 'true'";
 
         let query = format!(
-            "SELECT lsn, data FROM pg_logical_slot_peek_changes('{}', NULL, NULL, {})",
+            "SELECT lsn::text, xid::text, data FROM pg_logical_slot_peek_changes('{}', NULL, NULL, {})",
             self.slot_name, wal2json_options
         );
 
@@ -264,41 +268,87 @@ impl Slot {
             .context("Failed to peek changes from replication slot")?;
 
         let mut changes = Vec::new();
+        let mut last_nextlsn = String::new();
+        let mut current_xid: Option<String> = None;
+
         for row in rows {
-            let lsn: String = row.get(0);
-            let data: String = row.get(1);
+            let _lsn: String = row.get(0);
+            let xid: String = row.get(1);
+            let data: String = row.get(2);
 
             match parse_wal2json(&data) {
                 Ok(parsed) => {
-                    // Optional: Filter by table names if needed
-                    if !self.table_names.is_empty() {
-                        // Check if this change is for one of our tracked tables
-                        if let Some(change_list) = parsed.get("change") {
-                            if let Some(change_array) = change_list.as_array() {
-                                let has_tracked_table = change_array.iter().any(|change| {
-                                    if let Some(table) = change.get("table") {
-                                        if let Some(table_str) = table.as_str() {
-                                            return self.table_names.iter().any(|t| t == table_str);
+                    // Check the action type
+                    if let Some(action) = parsed.get("action").and_then(|a| a.as_str()) {
+                        match action {
+                            "B" => {
+                                // Begin transaction
+                                if current_xid.is_some() {
+                                    bail!("Found Begin transaction xid={} while previous transaction xid={} is not committed",
+                                          xid, current_xid.as_ref().unwrap());
+                                }
+                                current_xid = Some(xid.clone());
+                                debug!("Begin transaction xid={}", xid);
+                            }
+                            "C" => {
+                                // Commit transaction - extract nextlsn
+                                if let Some(ref expected_xid) = current_xid {
+                                    if expected_xid != &xid {
+                                        bail!("Transaction xid mismatch: expected {expected_xid} but got {xid} in Commit");
+                                    }
+                                } else {
+                                    bail!("Found Commit for xid={xid} without corresponding Begin");
+                                }
+
+                                if let Some(nextlsn) =
+                                    parsed.get("nextlsn").and_then(|n| n.as_str())
+                                {
+                                    last_nextlsn = nextlsn.to_string();
+                                    debug!("Commit transaction xid={xid} with nextlsn: {nextlsn}");
+                                }
+                                current_xid = None;
+                            }
+                            "I" | "U" | "D" => {
+                                // Insert, Update, or Delete - actual data changes
+                                // Validate transaction consistency
+                                if let Some(ref expected_xid) = current_xid {
+                                    if expected_xid != &xid {
+                                        bail!("Transaction xid mismatch: expected {expected_xid} but got {xid} in {action} action");
+                                    }
+                                } else {
+                                    bail!("Found {action} action with xid={xid} outside of transaction");
+                                }
+
+                                // Only include changes if they match our table filter (if any)
+                                if !self.table_names.is_empty() {
+                                    if let Some(table) =
+                                        parsed.get("table").and_then(|t| t.as_str())
+                                    {
+                                        if self.table_names.iter().any(|t| t == table) {
+                                            changes.push(parsed);
                                         }
                                     }
-                                    false
-                                });
-
-                                if has_tracked_table {
-                                    changes.push((lsn, parsed));
+                                } else {
+                                    changes.push(parsed);
                                 }
                             }
+                            _ => {
+                                bail!("Unknown action type '{action}' in wal2json data: {data}");
+                            }
                         }
-                    } else {
-                        changes.push((lsn, parsed));
                     }
                 }
                 Err(e) => {
-                    bail!("Failed to parse wal2json data at LSN {lsn}, due to {e}: {data}");
+                    bail!("Failed to parse wal2json data, due to {e}: {data}");
                 }
             }
         }
 
-        Ok(changes)
+        // If we have no nextlsn, it means no complete transactions were found
+        if last_nextlsn.is_empty() && !changes.is_empty() {
+            bail!("Found changes but no complete transaction (missing COMMIT). This may indicate a long-running transaction.");
+        }
+
+        Ok((changes, last_nextlsn))
     }
 }

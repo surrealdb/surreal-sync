@@ -6,5 +6,9 @@
 mod logical_replication;
 mod wal2json;
 
+// Make testing module available for integration tests
+#[doc(hidden)]
+pub mod testing;
+
 pub use logical_replication::{Client, Slot};
 pub use wal2json::parse_wal2json;

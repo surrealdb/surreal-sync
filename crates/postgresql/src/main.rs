@@ -115,41 +115,32 @@ async fn stream_changes(
             _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
                 // Peek at available changes
                 match slot.peek().await {
-                    Ok(changes) => {
+                    Ok((changes, nextlsn)) => {
                         if changes.is_empty() {
                             debug!("No new changes available");
                             continue;
                         }
 
-                        let mut last_lsn = String::new();
-
                         // Process all changes in the batch
-                        for (lsn, change) in &changes {
+                        for change in &changes {
                             // Pretty print the JSON to stdout
                             let pretty = serde_json::to_string_pretty(&change)?;
                             println!("=== Change Received ===");
-                            println!("LSN: {lsn}");
                             println!("{pretty}");
                             println!("======================\n");
-
-                            // Track the last LSN for batch advancement
-                            last_lsn = lsn.clone();
                         }
 
-                        // Advance to the last LSN after successfully processing ALL changes
-                        // This batches the acknowledgment for better performance
-                        // In a real application, you would advance only after
-                        // successfully writing all changes to your target database
-                        if !last_lsn.is_empty() {
-                            match slot.advance(&last_lsn).await {
-                                Ok(_) => {
-                                    debug!("Batch advanced slot to LSN: {} ({} changes processed)", last_lsn, changes.len());
-                                }
-                                Err(e) => {
-                                    error!("Failed to advance slot to {}: {}. Changes will be redelivered.", last_lsn, e);
-                                    // The changes will be redelivered on next iteration
-                                    // This ensures at-least-once delivery
-                                }
+                        // Advance to nextlsn after successfully processing all changes
+                        debug!("Batch processed {} changes, advancing to nextlsn: {}", changes.len(), nextlsn);
+
+                        match slot.advance(&nextlsn).await {
+                            Ok(_) => {
+                                debug!("Successfully advanced slot to {}", nextlsn);
+                            }
+                            Err(e) => {
+                                error!("Failed to advance slot to {}: {}. Changes will be redelivered.", nextlsn, e);
+                                // The changes will be redelivered on next iteration
+                                // This ensures at-least-once delivery
                             }
                         }
                     }
