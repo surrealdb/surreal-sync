@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kafka", "crates/kafka-producer"]
+members = ["crates/kafka", "crates/kafka-producer", "crates/postgresql"]
 resolver = "2"
 
 [package]

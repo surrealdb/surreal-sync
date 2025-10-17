@@ -4893,6 +4893,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "surreal-sync-postgresql-replication"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "surrealdb"
 version = "2.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"

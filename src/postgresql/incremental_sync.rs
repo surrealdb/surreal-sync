@@ -1,8 +1,9 @@
 use crate::surreal::{
-    json_to_surreal_with_schema, json_to_surreal_without_schema, Change, ChangeOp,
+    json_to_surreal_with_schema, json_to_surreal_without_schema, surreal_connect, Change, ChangeOp,
     SurrealDatabaseSchema, SurrealValue,
 };
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
+use crate::{SourceOpts, SurrealOpts};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -12,6 +13,135 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
+use tracing::debug;
+
+/// Run incremental sync from PostgreSQL to SurrealDB
+pub async fn run_incremental_sync(
+    from_opts: SourceOpts,
+    to_namespace: String,
+    to_database: String,
+    to_opts: SurrealOpts,
+    from_checkpoint: crate::sync::SyncCheckpoint,
+    deadline: chrono::DateTime<chrono::Utc>,
+    target_checkpoint: Option<crate::sync::SyncCheckpoint>,
+) -> Result<()> {
+    log::debug!("🎯 ENTERING run_incremental_sync function with checkpoint: {from_checkpoint:?}");
+    info!(
+        "Starting PostgreSQL incremental sync from checkpoint: {}",
+        from_checkpoint.to_string()
+    );
+
+    // Create PostgreSQL incremental source using trigger-based tracking (reliable, no special config needed)
+    // Extract sequence_id from checkpoint
+    let sequence_id = from_checkpoint.to_postgresql_sequence_id()?;
+
+    log::debug!("🚀 Creating PostgreSQL incremental source");
+    let client = super::client::new_postgresql_client(&from_opts.source_uri).await?;
+    let mut source = super::incremental_sync::PostgresIncrementalSource::new(client, sequence_id);
+    log::debug!("PostgreSQL incremental source created");
+
+    // Initialize source (schema collection)
+    log::debug!("🔧 Initializing source");
+    source.initialize().await?;
+    log::debug!("Source initialized");
+
+    // Get list of user tables to track
+    let (pg_client, pg_connection) =
+        tokio_postgres::connect(&from_opts.source_uri, tokio_postgres::NoTls).await?;
+
+    tokio::spawn(async move {
+        if let Err(e) = pg_connection.await {
+            eprintln!("PostgreSQL connection error: {e}");
+        }
+    });
+
+    let tables = super::autoconf::get_user_tables(
+        &pg_client,
+        from_opts.source_database.as_deref().unwrap_or("public"),
+    )
+    .await?;
+    info!("Setting up tracking for tables: {tables:?}");
+
+    // Set up trigger-based tracking - this creates audit tables and triggers
+    log::debug!("🔨 Setting up tracking for tables: {tables:?}");
+    source.setup_tracking(tables).await?;
+    log::debug!("Tracking setup completed");
+
+    let surreal = surreal_connect(&to_opts, &to_namespace, &to_database).await?;
+
+    // Get change stream
+    log::debug!("📡 Getting change stream");
+    let mut stream = source.get_changes().await?;
+    log::debug!("Change stream obtained");
+
+    info!("Starting to consume PostgreSQL change stream...");
+
+    let mut change_count = 0;
+    while let Some(result) = stream.next().await {
+        log::debug!("🔄 Main loop: Got result from stream.next(), change_count: {change_count}");
+        match result {
+            Ok(change) => {
+                debug!("Received change: {:?}", change);
+
+                // Check if we've reached the deadline
+                if chrono::Utc::now() >= deadline {
+                    info!("Reached deadline: {deadline}, stopping incremental sync");
+                    break;
+                }
+
+                // Check if we've reached the target checkpoint
+                if let Some(ref target) = target_checkpoint {
+                    if let (
+                        Some(crate::sync::SyncCheckpoint::PostgreSQL {
+                            sequence_id: current_seq,
+                            ..
+                        }),
+                        crate::sync::SyncCheckpoint::PostgreSQL {
+                            sequence_id: target_seq,
+                            ..
+                        },
+                    ) = (stream.checkpoint(), target)
+                    {
+                        if current_seq >= *target_seq {
+                            info!(
+                                "Reached target checkpoint: {}, stopping incremental sync",
+                                target.to_string()
+                            );
+                            break;
+                        }
+                    }
+                }
+
+                crate::surreal::apply_change(&surreal, &change).await?;
+
+                change_count += 1;
+                if change_count % 100 == 0 {
+                    info!("Processed {change_count} changes");
+                }
+            }
+            Err(e) => {
+                warn!("Error reading change stream: {e}");
+                break;
+            }
+        }
+
+        // Stop after reasonable number of changes to avoid infinite loop
+        if change_count >= 1000 {
+            info!("Processed {change_count} changes, stopping to prevent infinite loop");
+            break;
+        }
+    }
+
+    info!("PostgreSQL incremental sync completed. Processed {change_count} changes");
+
+    // Cleanup
+    log::debug!("Starting cleanup");
+    source.cleanup().await?;
+    log::debug!("Cleanup completed");
+
+    log::debug!("run_incremental_sync about to return Ok(())");
+    Ok(())
+}
 
 /// Configuration for tracking a table in PostgreSQL
 #[derive(Debug, Clone)]

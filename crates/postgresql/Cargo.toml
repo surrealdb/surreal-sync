@@ -1,0 +1,21 @@
+[package]
+name = "surreal-sync-postgresql-replication"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tokio-postgres = "0.7"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bin]]
+name = "surreal-sync-postgresql-replication-demo"
+path = "src/main.rs"
+
+[lib]
+name = "surreal_sync_postgresql_replication"
+path = "src/lib.rs"

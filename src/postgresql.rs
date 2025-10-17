@@ -1,3 +1,4 @@
+mod autoconf;
 mod client;
 mod full_sync;
 mod incremental_sync;
