@@ -38,4 +38,4 @@ See [the demo application](./src/main.rs) and the test instructions in it, along
 
 ## Implementation Notes
 
-This implementation uses regular SQL connections with `pg_logical_slot_peek_changes()` and `pg_replication_slot_advance()` instead of the PostgreSQL replication protocol, as the rust-postgres library doesn't support replication sessions (see [issue #116](https://github.com/rust-postgres/rust-postgres/issues/116)).
+This implementation uses regular SQL connections with `pg_logical_slot_peek_changes()` and `pg_replication_slot_advance()` instead of [the PostgreSQL replication protocol](https://www.postgresql.org/docs/current/protocol-replication.html), as the rust-postgres library doesn't support replication sessions (see [issue #116](https://github.com/rust-postgres/rust-postgres/issues/116)).
