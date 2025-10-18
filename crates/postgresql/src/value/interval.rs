@@ -52,14 +52,13 @@ impl Interval {
             else if i + 1 < parts.len() {
                 let value: f64 = part
                     .parse()
-                    .map_err(|_| format!("Invalid interval value: {}", part))?;
+                    .map_err(|_| format!("Invalid interval value: {part}"))?;
                 let unit = parts[i + 1];
                 total_secs += Self::unit_to_seconds(value, unit)?;
                 i += 2;
             } else {
                 return Err(format!(
-                    "Invalid interval format at position {}: {}",
-                    i, part
+                    "Invalid interval format at position {i}: {part}",
                 ));
             }
         }
@@ -93,7 +92,7 @@ impl Interval {
             "week" | "weeks" | "w" => 604800.0,
             "month" | "months" | "mon" | "mons" => 2592000.0, // 30 days
             "year" | "years" | "yr" | "yrs" | "y" => 31104000.0, // 360 days (12 months × 30 days)
-            _ => return Err(format!("Unsupported interval unit: {}", unit)),
+            _ => return Err(format!("Unsupported interval unit: {unit}")),
         };
 
         Ok(value * multiplier)

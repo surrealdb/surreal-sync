@@ -125,7 +125,7 @@ async fn stream_changes(
                         for change in &changes {
                             // Print the action to stdout
                             println!("=== Change Received ===");
-                            println!("{:#?}", change);
+                            println!("{change:#?}");
                             println!("======================\n");
                         }
 

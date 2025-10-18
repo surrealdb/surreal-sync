@@ -46,7 +46,7 @@ impl TimestampTz {
             let tz_start = s.len() - 3;
             if s[tz_start..tz_start+1] == *"+" || s[tz_start..tz_start+1] == *"-" {
                 // Format like +00 or -08, add :00
-                format!("{}:00", s)
+                format!("{s}:00")
             } else {
                 s.to_string()
             }
@@ -68,7 +68,7 @@ impl TimestampTz {
             }
         }
 
-        Err(format!("Failed to parse PostgreSQL wal2json format: {}", s))
+        Err(format!("Failed to parse PostgreSQL wal2json format: {s}"))
     }
 
     /// Parses traditional SQL timestamp format: "12/17/1997 07:37:16.00 PST"
@@ -164,7 +164,7 @@ impl TimestampTz {
             "Oct" => Ok(10),
             "Nov" => Ok(11),
             "Dec" => Ok(12),
-            _ => Err(format!("Invalid month: {}", s)),
+            _ => Err(format!("Invalid month: {s}")),
         }
     }
 
@@ -180,7 +180,7 @@ impl TimestampTz {
             "EST" => -5, // Eastern Standard Time
             "EDT" => -4, // Eastern Daylight Time
             "UTC" | "GMT" => 0,
-            _ => return Err(format!("Unsupported timezone: {}", tz)),
+            _ => return Err(format!("Unsupported timezone: {tz}")),
         };
 
         // Convert to UTC by subtracting the offset
