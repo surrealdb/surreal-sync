@@ -4,11 +4,11 @@
 //! logical replication using regular SQL connections and wal2json.
 
 use anyhow::{bail, Context, Result};
-use serde_json::Value;
 use std::sync::Arc;
 use tokio_postgres::Client as PgClient;
 use tracing::{debug, info};
 
+use crate::change::{wal2json_to_psql, Action};
 use crate::wal2json::parse_wal2json;
 
 /// Client for PostgreSQL logical replication
@@ -267,8 +267,8 @@ impl Slot {
     /// Returns a tuple containing the changes and the nextlsn to use for advancement.
     ///
     /// # Returns
-    /// * `Result<(Vec<Value>, String)>` - Tuple of (changes, nextlsn)
-    ///   - changes: Vector of change JSON objects (excluding transaction begin/commit)
+    /// * `Result<(Vec<Action>, String)>` - Tuple of (changes, nextlsn)
+    ///   - changes: Vector of Action enums (Insert, Update, Delete - excluding transaction begin/commit)
     ///   - nextlsn: The nextlsn from the last commit action, to be used with advance()
     ///
     /// # Usage Pattern (batch processing with at-least-once delivery)
@@ -290,7 +290,7 @@ impl Slot {
     ///     slot.advance(&nextlsn).await?;
     /// }
     /// ```
-    pub async fn peek(&self) -> Result<(Vec<Value>, String)> {
+    pub async fn peek(&self) -> Result<(Vec<Action>, String)> {
         // wal2json options for formatting
         //
         // 'format-version', '2' - use format version 2
@@ -320,63 +320,61 @@ impl Slot {
 
             match parse_wal2json(&data) {
                 Ok(parsed) => {
-                    // Check the action type
-                    if let Some(action) = parsed.get("action").and_then(|a| a.as_str()) {
-                        match action {
-                            "B" => {
-                                // Begin transaction
-                                if current_xid.is_some() {
-                                    bail!("Found Begin transaction xid={} while previous transaction xid={} is not committed",
-                                          xid, current_xid.as_ref().unwrap());
-                                }
-                                current_xid = Some(xid.clone());
-                                debug!("Begin transaction xid={}", xid);
-                            }
-                            "C" => {
-                                // Commit transaction - extract nextlsn
-                                if let Some(ref expected_xid) = current_xid {
-                                    if expected_xid != &xid {
-                                        bail!("Transaction xid mismatch: expected {expected_xid} but got {xid} in Commit");
+                    // Convert to strongly-typed Action
+                    match wal2json_to_psql(&parsed) {
+                        Ok(action) => {
+                            match &action {
+                                Action::Begin {
+                                    xid: action_xid, ..
+                                } => {
+                                    // Begin transaction
+                                    if current_xid.is_some() {
+                                        bail!("Found Begin transaction xid={} while previous transaction xid={} is not committed",
+                                              action_xid, current_xid.as_ref().unwrap());
                                     }
-                                } else {
-                                    bail!("Found Commit for xid={xid} without corresponding Begin");
+                                    current_xid = Some(xid.clone());
+                                    debug!("Begin transaction xid={}", xid);
                                 }
-
-                                if let Some(nextlsn) =
-                                    parsed.get("nextlsn").and_then(|n| n.as_str())
-                                {
-                                    last_nextlsn = nextlsn.to_string();
-                                    debug!("Commit transaction xid={xid} with nextlsn: {nextlsn}");
-                                }
-                                current_xid = None;
-                            }
-                            "I" | "U" | "D" => {
-                                // Insert, Update, or Delete - actual data changes
-                                // Validate transaction consistency
-                                if let Some(ref expected_xid) = current_xid {
-                                    if expected_xid != &xid {
-                                        bail!("Transaction xid mismatch: expected {expected_xid} but got {xid} in {action} action");
-                                    }
-                                } else {
-                                    bail!("Found {action} action with xid={xid} outside of transaction");
-                                }
-
-                                // Only include changes if they match our table filter (if any)
-                                if !self.table_names.is_empty() {
-                                    if let Some(table) =
-                                        parsed.get("table").and_then(|t| t.as_str())
-                                    {
-                                        if self.table_names.iter().any(|t| t == table) {
-                                            changes.push(parsed);
+                                Action::Commit { nextlsn, .. } => {
+                                    // Commit transaction - extract nextlsn
+                                    if let Some(ref expected_xid) = current_xid {
+                                        if expected_xid != &xid {
+                                            bail!("Transaction xid mismatch: expected {expected_xid} but got {xid} in Commit");
                                         }
+                                    } else {
+                                        bail!("Found Commit for xid={xid} without corresponding Begin");
                                     }
-                                } else {
-                                    changes.push(parsed);
+
+                                    last_nextlsn = nextlsn.clone();
+                                    debug!("Commit transaction xid={xid} with nextlsn: {nextlsn}");
+                                    current_xid = None;
+                                }
+                                Action::Insert(row) | Action::Update(row) | Action::Delete(row) => {
+                                    // Insert, Update, or Delete - actual data changes
+                                    // Validate transaction consistency
+                                    if let Some(ref expected_xid) = current_xid {
+                                        if expected_xid != &xid {
+                                            bail!("Transaction xid mismatch: expected {expected_xid} but got {xid} in {action} action");
+                                        }
+                                    } else {
+                                        bail!("Found {action} action with xid={xid} outside of transaction");
+                                    }
+
+                                    // Only include changes if they match our table filter (if any)
+                                    let should_include = if !self.table_names.is_empty() {
+                                        self.table_names.iter().any(|t| t == &row.table)
+                                    } else {
+                                        true
+                                    };
+
+                                    if should_include {
+                                        changes.push(action);
+                                    }
                                 }
                             }
-                            _ => {
-                                bail!("Unknown action type '{action}' in wal2json data: {data}");
-                            }
+                        }
+                        Err(e) => {
+                            bail!("Failed to convert wal2json to Action: {e}");
                         }
                     }
                 }

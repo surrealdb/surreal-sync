@@ -2,6 +2,7 @@
 
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
+use std::fmt;
 
 use crate::value::{Date, Interval, Time, TimeTz, Timestamp, TimestampTz, Uuid};
 
@@ -82,6 +83,18 @@ pub enum Action {
         nextlsn: String,
         timestamp: Option<String>,
     },
+}
+
+impl fmt::Display for Action {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Action::Insert(_) => write!(f, "Insert"),
+            Action::Update(_) => write!(f, "Update"),
+            Action::Delete(_) => write!(f, "Delete"),
+            Action::Begin { .. } => write!(f, "Begin"),
+            Action::Commit { .. } => write!(f, "Commit"),
+        }
+    }
 }
 
 /// Converts a wal2json parsed value into an Action enum

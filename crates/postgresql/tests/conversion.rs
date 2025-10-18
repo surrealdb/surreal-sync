@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use surreal_sync_postgresql_replication::{
-    testing::container::PostgresContainer, wal2json_to_psql, Action, Client, Value,
+    testing::container::PostgresContainer, Action, Client, Value,
 };
 use tokio_postgres::NoTls;
 use tracing::info;
@@ -101,21 +101,15 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
     let (changes, _nextlsn) = slot.peek().await?;
     assert!(!changes.is_empty(), "Should have captured INSERT change");
 
-    // Find the INSERT action (skip Begin/Commit)
-    let insert_change = changes
+    // Find the INSERT action (now it's already an Action, not JSON)
+    let insert_action = changes
         .iter()
-        .find(|c| c.get("action").and_then(|a| a.as_str()) == Some("I"))
+        .find(|c| matches!(c, Action::Insert(_)))
         .context("Should find INSERT action")?;
 
-    info!(
-        "Raw wal2json INSERT: {}",
-        serde_json::to_string_pretty(insert_change)?
-    );
+    info!("Converted INSERT action: {:#?}", insert_action);
 
-    // Convert using our new function
-    let action = wal2json_to_psql(insert_change)?;
-
-    match action {
+    match insert_action {
         Action::Insert(row) => {
             info!("Converted to Insert action");
             assert_eq!(row.table, "conversion_test");
@@ -178,12 +172,10 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     let (changes2, _) = slot.peek().await?;
-    let update_change = changes2
+    let update_action = changes2
         .iter()
-        .find(|c| c.get("action").and_then(|a| a.as_str()) == Some("U"))
+        .find(|c| matches!(c, Action::Update(_)))
         .context("Should find UPDATE action")?;
-
-    let update_action = wal2json_to_psql(update_change)?;
 
     match update_action {
         Action::Update(row) => {
@@ -207,12 +199,10 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     let (changes3, _) = slot.peek().await?;
-    let delete_change = changes3
+    let delete_action = changes3
         .iter()
-        .find(|c| c.get("action").and_then(|a| a.as_str()) == Some("D"))
+        .find(|c| matches!(c, Action::Delete(_)))
         .context("Should find DELETE action")?;
-
-    let delete_action = wal2json_to_psql(delete_change)?;
 
     match delete_action {
         Action::Delete(row) => {

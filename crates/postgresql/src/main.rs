@@ -123,10 +123,9 @@ async fn stream_changes(
 
                         // Process all changes in the batch
                         for change in &changes {
-                            // Pretty print the JSON to stdout
-                            let pretty = serde_json::to_string_pretty(&change)?;
+                            // Print the action to stdout
                             println!("=== Change Received ===");
-                            println!("{pretty}");
+                            println!("{:#?}", change);
                             println!("======================\n");
                         }
 

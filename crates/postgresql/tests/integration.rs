@@ -1,8 +1,7 @@
 //! Integration tests for PostgreSQL logical replication with wal2json
 
 use anyhow::{bail, Context, Result};
-use serde_json::Value;
-use surreal_sync_postgresql_replication::{testing::container::PostgresContainer, Client};
+use surreal_sync_postgresql_replication::{testing::container::PostgresContainer, Action, Client};
 use tokio_postgres::NoTls;
 use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -128,103 +127,30 @@ async fn insert_test_data(client: &tokio_postgres::Client) -> Result<()> {
 }
 
 /// Verifies that the change contains expected data
-fn verify_change(change: &Value) -> Result<()> {
-    // Check that it's a JSON object
-    assert!(change.is_object(), "Change should be a JSON object");
-
+fn verify_change(change: &Action) -> Result<()> {
     // Debug: print the actual structure
-    info!(
-        "Actual change structure: {}",
-        serde_json::to_string_pretty(change)?
-    );
+    info!("Actual change structure: {:#?}", change);
 
-    // Check for expected wal2json structure
-    let change_obj = change.as_object().unwrap();
+    // Verify it's an Insert action
+    match change {
+        Action::Insert(row) => {
+            // Check schema and table
+            assert_eq!(row.schema, "public", "Schema should be 'public'");
+            assert_eq!(row.table, "test_data", "Table should be 'test_data'");
 
-    // wal2json v2 format doesn't have a 'change' field at the root - it IS the change
-    // Check for expected fields directly
-    if change_obj.contains_key("action") {
-        // Direct format: {"action": "I", "schema": "public", "table": "test_data", ...}
-        assert_eq!(change_obj.get("action").and_then(|v| v.as_str()), Some("I"));
-        assert_eq!(
-            change_obj.get("schema").and_then(|v| v.as_str()),
-            Some("public")
-        );
-        assert_eq!(
-            change_obj.get("table").and_then(|v| v.as_str()),
-            Some("test_data")
-        );
+            // Verify we have all the columns (should match our insert)
+            // +1 for id which is SERIAL
+            assert!(
+                row.columns.len() >= 14,
+                "Should have all columns from our test table, got {}",
+                row.columns.len()
+            );
 
-        // Check for columns
-        assert!(change_obj.contains_key("columns"), "Should have columns");
-
-        let columns = change_obj["columns"]
-            .as_array()
-            .context("columns should be an array")?;
-
-        // Verify we have all the columns (should match our insert)
-        // +1 for id which is SERIAL
-        assert!(
-            columns.len() >= 14,
-            "Should have all columns from our test table"
-        );
-    } else if change_obj.contains_key("change") {
-        // Nested format: {"change": [...]}
-        let changes = change_obj["change"]
-            .as_array()
-            .context("'change' should be an array")?;
-
-        assert!(!changes.is_empty(), "Should have at least one change");
-
-        // Check the first change
-        let first_change = &changes[0];
-        assert!(first_change.is_object(), "Each change should be an object");
-
-        let change_fields = first_change.as_object().unwrap();
-
-        // Verify expected fields
-        assert_eq!(
-            change_fields.get("kind").and_then(|v| v.as_str()),
-            Some("insert")
-        );
-        assert_eq!(
-            change_fields.get("schema").and_then(|v| v.as_str()),
-            Some("public")
-        );
-        assert_eq!(
-            change_fields.get("table").and_then(|v| v.as_str()),
-            Some("test_data")
-        );
-
-        // Check for columns
-        assert!(
-            change_fields.contains_key("columnnames"),
-            "Should have column names"
-        );
-        assert!(
-            change_fields.contains_key("columntypes"),
-            "Should have column types"
-        );
-        assert!(
-            change_fields.contains_key("columnvalues"),
-            "Should have column values"
-        );
-
-        let column_values = change_fields["columnvalues"]
-            .as_array()
-            .context("columnvalues should be an array")?;
-
-        // Verify we have all the columns (should match our insert)
-        assert!(
-            column_values.len() >= 14,
-            "Should have all columns from our test table"
-        );
-    } else {
-        panic!("Unexpected change format");
+            info!("Change verification successful");
+            Ok(())
+        }
+        _ => bail!("Expected Insert action, got {}", change),
     }
-
-    info!("Change verification successful");
-    Ok(())
 }
 
 #[tokio::test]
@@ -430,7 +356,7 @@ async fn test_multiple_inserts_and_batch_advance() -> Result<()> {
 
     // Process all changes (simulated)
     for (i, change) in changes.iter().enumerate() {
-        debug!("Processing change {}: {:?}", i + 1, change.get("table"));
+        debug!("Processing change {}: {:#?}", i + 1, change);
     }
 
     // Advance using the nextlsn from the batch
