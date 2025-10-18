@@ -3,6 +3,8 @@
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;
 
+use crate::value::{Date, Interval, Time, TimeTz, Timestamp, TimestampTz, Uuid};
+
 /// Represents a PostgreSQL value with proper type information
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -26,19 +28,19 @@ pub enum Value {
     Bytea(Vec<u8>),
 
     // UUID
-    Uuid(String),
+    Uuid(Uuid),
 
     // JSON types
     Json(serde_json::Value),
     Jsonb(serde_json::Value),
 
     // Date/Time types
-    Timestamp(String),
-    TimestampTz(String),
-    Date(String),
-    Time(String),
-    TimeTz(String),
-    Interval(String),
+    Timestamp(Timestamp),
+    TimestampTz(TimestampTz),
+    Date(Date),
+    Time(Time),
+    TimeTz(TimeTz),
+    Interval(Interval),
 
     // Arrays
     Array(Vec<Value>),
@@ -332,7 +334,7 @@ fn convert_postgres_value(value: Option<&serde_json::Value>, pg_type: &str) -> R
         // UUID
         "uuid" => {
             let val = value.as_str().context("Failed to parse uuid")?.to_string();
-            Ok(Value::Uuid(val))
+            Ok(Value::Uuid(Uuid(val)))
         }
 
         // JSON types
@@ -355,36 +357,36 @@ fn convert_postgres_value(value: Option<&serde_json::Value>, pg_type: &str) -> R
                 .as_str()
                 .context("Failed to parse timestamp")?
                 .to_string();
-            Ok(Value::Timestamp(val))
+            Ok(Value::Timestamp(Timestamp(val)))
         }
         "timestamptz" | "timestamp with time zone" => {
             let val = value
                 .as_str()
                 .context("Failed to parse timestamptz")?
                 .to_string();
-            Ok(Value::TimestampTz(val))
+            Ok(Value::TimestampTz(TimestampTz(val)))
         }
         "date" => {
             let val = value.as_str().context("Failed to parse date")?.to_string();
-            Ok(Value::Date(val))
+            Ok(Value::Date(Date(val)))
         }
         "time" | "time without time zone" => {
             let val = value.as_str().context("Failed to parse time")?.to_string();
-            Ok(Value::Time(val))
+            Ok(Value::Time(Time(val)))
         }
         "timetz" | "time with time zone" => {
             let val = value
                 .as_str()
                 .context("Failed to parse timetz")?
                 .to_string();
-            Ok(Value::TimeTz(val))
+            Ok(Value::TimeTz(TimeTz(val)))
         }
         "interval" => {
             let val = value
                 .as_str()
                 .context("Failed to parse interval")?
                 .to_string();
-            Ok(Value::Interval(val))
+            Ok(Value::Interval(Interval(val)))
         }
 
         // Array types

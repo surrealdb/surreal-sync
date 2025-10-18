@@ -166,9 +166,7 @@ impl PostgresContainer {
             }
         }
 
-        anyhow::bail!(
-            "PostgreSQL did not become ready within {timeout_secs} seconds",
-        )
+        anyhow::bail!("PostgreSQL did not become ready within {timeout_secs} seconds",)
     }
 
     /// Tests if we can connect to PostgreSQL
