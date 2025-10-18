@@ -538,7 +538,7 @@ async fn test_get_current_wal_lsn() -> Result<()> {
     let parse_lsn = |lsn: &str| -> Result<(u64, u64)> {
         let parts: Vec<&str> = lsn.split('/').collect();
         if parts.len() != 2 {
-            bail!("Invalid LSN format: {}", lsn);
+            bail!("Invalid LSN format: {lsn}");
         }
         let high = u64::from_str_radix(parts[0], 16).context("Failed to parse high part of LSN")?;
         let low = u64::from_str_radix(parts[1], 16).context("Failed to parse low part of LSN")?;
@@ -550,9 +550,7 @@ async fn test_get_current_wal_lsn() -> Result<()> {
 
     assert!(
         (after_high > before_high) || (after_high == before_high && after_low > before_low),
-        "LSN should increase: {} -> {}",
-        lsn_before,
-        lsn_after
+        "LSN should increase: {lsn_before} -> {lsn_after}"
     );
 
     info!("Successfully verified WAL LSN advancement");

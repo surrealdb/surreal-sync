@@ -21,10 +21,9 @@ pub struct PostgresContainer {
 impl PostgresContainer {
     /// Creates a new PostgreSQL container configuration
     pub fn new(container_name: &str, host_port: u16) -> Self {
-        let image_name = format!("postgres-wal2json-test-{}", container_name);
+        let image_name = format!("postgres-wal2json-test-{container_name}");
         let connection_string = format!(
-            "host=localhost port={} user=postgres password=postgres dbname=testdb",
-            host_port
+            "host=localhost port={host_port} user=postgres password=postgres dbname=testdb",
         );
 
         Self {
@@ -68,7 +67,7 @@ impl PostgresContainer {
         info!("Using context: {:?}", context_path);
 
         let output = Command::new("docker")
-            .args(&[
+            .args([
                 "build",
                 "-t",
                 &self.image_name,
@@ -95,20 +94,20 @@ impl PostgresContainer {
 
         // First, try to stop and remove any existing container with the same name
         let _ = Command::new("docker")
-            .args(&["stop", &self.container_name])
+            .args(["stop", &self.container_name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
 
         let _ = Command::new("docker")
-            .args(&["rm", &self.container_name])
+            .args(["rm", &self.container_name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
 
         // Start the new container
         let output = Command::new("docker")
-            .args(&[
+            .args([
                 "run",
                 "--name",
                 &self.container_name,
@@ -137,7 +136,7 @@ impl PostgresContainer {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("Failed to start container: {}", stderr);
+            anyhow::bail!("Failed to start container: {stderr}");
         }
 
         let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -168,8 +167,7 @@ impl PostgresContainer {
         }
 
         anyhow::bail!(
-            "PostgreSQL did not become ready within {} seconds",
-            timeout_secs
+            "PostgreSQL did not become ready within {timeout_secs} seconds",
         )
     }
 
@@ -198,7 +196,7 @@ impl PostgresContainer {
         info!("Stopping container: {}", self.container_name);
 
         let output = Command::new("docker")
-            .args(&["stop", &self.container_name])
+            .args(["stop", &self.container_name])
             .output()
             .context("Failed to stop container")?;
 
@@ -208,7 +206,7 @@ impl PostgresContainer {
         }
 
         let output = Command::new("docker")
-            .args(&["rm", &self.container_name])
+            .args(["rm", &self.container_name])
             .output()
             .context("Failed to remove container")?;
 
@@ -224,14 +222,14 @@ impl PostgresContainer {
     /// Gets logs from the container
     pub fn get_logs(&self) -> Result<String> {
         let output = Command::new("docker")
-            .args(&["logs", &self.container_name])
+            .args(["logs", &self.container_name])
             .output()
             .context("Failed to get container logs")?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
-        Ok(format!("STDOUT:\n{}\n\nSTDERR:\n{}", stdout, stderr))
+        Ok(format!("STDOUT:\n{stdout}\n\nSTDERR:\n{stderr}"))
     }
 }
 

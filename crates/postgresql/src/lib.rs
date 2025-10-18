@@ -4,6 +4,7 @@
 //! using regular SQL connections and the wal2json output plugin.
 
 mod change;
+mod config;
 mod logical_replication;
 mod wal2json;
 
@@ -12,5 +13,6 @@ mod wal2json;
 pub mod testing;
 
 pub use change::{wal2json_to_psql, Action, Row, Value};
+pub use config::Config;
 pub use logical_replication::{Client, Slot};
 pub use wal2json::parse_wal2json;

@@ -1,7 +1,6 @@
 //! PostgreSQL change data structures and conversion from wal2json format
 
 use anyhow::{bail, Context, Result};
-use serde_json;
 use std::collections::HashMap;
 
 /// Represents a PostgreSQL value with proper type information
@@ -249,10 +248,10 @@ pub fn wal2json_to_psql(wal2json_value: &serde_json::Value) -> Result<Action> {
                 "I" => Ok(Action::Insert(row)),
                 "U" => Ok(Action::Update(row)),
                 "D" => Ok(Action::Delete(row)),
-                _ => bail!("Unknown action type: {}", action_str),
+                _ => bail!("Unknown action type: {action_str}"),
             }
         }
-        _ => bail!("Unknown action type: {}", action_str),
+        _ => bail!("Unknown action type: {action_str}"),
     }
 }
 
