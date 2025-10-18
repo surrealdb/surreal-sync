@@ -8,11 +8,17 @@ impl TimestampTz {
     /// Converts to chrono DateTime<Utc>
     /// Supports multiple PostgreSQL timestamp formats:
     /// - ISO 8601: "2024-01-15T10:30:00+00:00", "1997-12-17T15:37:16Z"
+    /// - PostgreSQL wal2json: "2024-01-15 10:30:00+00", "1997-12-17 15:37:16+00"
     /// - Traditional SQL: "12/17/1997 07:37:16.00 PST"
     /// - Traditional PostgreSQL: "Wed Dec 17 07:37:16 1997 PST"
     pub fn to_chrono_datetime_utc(&self) -> Result<DateTime<Utc>, String> {
         // Try ISO 8601 format first (most common from wal2json)
         if let Ok(dt) = self.0.parse::<DateTime<Utc>>() {
+            return Ok(dt);
+        }
+
+        // Try PostgreSQL wal2json format: "2024-01-15 10:30:00+00"
+        if let Ok(dt) = Self::parse_postgresql_wal2json_format(&self.0) {
             return Ok(dt);
         }
 
@@ -27,6 +33,42 @@ impl TimestampTz {
         }
 
         Err(format!("Unable to parse timestamp: {}", self.0))
+    }
+
+    /// Parses PostgreSQL wal2json format: "2024-01-15 10:30:00+00"
+    /// Format: YYYY-MM-DD HH:MM:SS±HH[:MM]
+    fn parse_postgresql_wal2json_format(s: &str) -> Result<DateTime<Utc>, String> {
+        // PostgreSQL wal2json outputs timestamps in format "2024-01-15 10:30:00+00"
+        // We need to normalize +00 to +00:00 for chrono to parse it
+
+        // Check if we have a short timezone offset like +00 or -08
+        let normalized = if s.len() > 3 {
+            let tz_start = s.len() - 3;
+            if s[tz_start..tz_start+1] == *"+" || s[tz_start..tz_start+1] == *"-" {
+                // Format like +00 or -08, add :00
+                format!("{}:00", s)
+            } else {
+                s.to_string()
+            }
+        } else {
+            s.to_string()
+        };
+
+        // Try parsing with different timezone formats
+        let formats = vec![
+            "%Y-%m-%d %H:%M:%S%:z",     // 2024-01-15 10:30:00+00:00
+            "%Y-%m-%d %H:%M:%S%z",      // 2024-01-15 10:30:00+0000
+            "%Y-%m-%d %H:%M:%S%.f%:z",  // With fractional seconds
+            "%Y-%m-%d %H:%M:%S%.f%z",   // With fractional seconds
+        ];
+
+        for format in formats {
+            if let Ok(dt) = DateTime::parse_from_str(&normalized, format) {
+                return Ok(dt.with_timezone(&Utc));
+            }
+        }
+
+        Err(format!("Failed to parse PostgreSQL wal2json format: {}", s))
     }
 
     /// Parses traditional SQL timestamp format: "12/17/1997 07:37:16.00 PST"
