@@ -44,7 +44,7 @@ impl TimestampTz {
         // Check if we have a short timezone offset like +00 or -08
         let normalized = if s.len() > 3 {
             let tz_start = s.len() - 3;
-            if s[tz_start..tz_start+1] == *"+" || s[tz_start..tz_start+1] == *"-" {
+            if s[tz_start..tz_start + 1] == *"+" || s[tz_start..tz_start + 1] == *"-" {
                 // Format like +00 or -08, add :00
                 format!("{s}:00")
             } else {
@@ -56,10 +56,10 @@ impl TimestampTz {
 
         // Try parsing with different timezone formats
         let formats = vec![
-            "%Y-%m-%d %H:%M:%S%:z",     // 2024-01-15 10:30:00+00:00
-            "%Y-%m-%d %H:%M:%S%z",      // 2024-01-15 10:30:00+0000
-            "%Y-%m-%d %H:%M:%S%.f%:z",  // With fractional seconds
-            "%Y-%m-%d %H:%M:%S%.f%z",   // With fractional seconds
+            "%Y-%m-%d %H:%M:%S%:z",    // 2024-01-15 10:30:00+00:00
+            "%Y-%m-%d %H:%M:%S%z",     // 2024-01-15 10:30:00+0000
+            "%Y-%m-%d %H:%M:%S%.f%:z", // With fractional seconds
+            "%Y-%m-%d %H:%M:%S%.f%z",  // With fractional seconds
         ];
 
         for format in formats {

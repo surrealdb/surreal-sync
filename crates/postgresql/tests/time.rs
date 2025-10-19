@@ -1,7 +1,6 @@
-//! Integration tests for TIMESTAMP replication with various timestamp formats
+//! Integration tests for TIME replication with various time formats
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use surreal_sync_postgresql_replication::{
     testing::container::PostgresContainer, Action, Client, Value,
 };
@@ -24,12 +23,12 @@ fn init_logging() {
 }
 
 #[tokio::test]
-async fn test_timestamp_replication_formats() -> Result<()> {
+async fn test_time_replication_formats() -> Result<()> {
     init_logging();
-    info!("Starting TIMESTAMP replication format test");
+    info!("Starting TIME replication format test");
 
     // Create container configuration
-    let container = PostgresContainer::new("test-timestamp", TEST_PORT);
+    let container = PostgresContainer::new("test-time", TEST_PORT);
 
     // Build and start container
     container.build_image()?;
@@ -47,18 +46,18 @@ async fn test_timestamp_replication_formats() -> Result<()> {
         }
     });
 
-    // Create a test table with id and timestamp field (without timezone)
+    // Create a test table with id and time field
     pg_client
         .execute(
-            "CREATE TABLE timestamp_test (
+            "CREATE TABLE time_test (
                 id INTEGER PRIMARY KEY,
-                event_time TIMESTAMP
+                event_time TIME
             )",
             &[],
         )
         .await?;
 
-    info!("Created timestamp_test table");
+    info!("Created time_test table");
 
     // Create replication client
     let (repl_pg_client, repl_connection) =
@@ -73,58 +72,57 @@ async fn test_timestamp_replication_formats() -> Result<()> {
     });
 
     let repl_client = Client::new(repl_pg_client, vec![]);
-    let slot_name = "timestamp_slot";
+    let slot_name = "time_slot";
     repl_client.create_slot(slot_name).await?;
     let slot = repl_client.start_replication(Some(slot_name)).await?;
 
-    // Insert test data with various timestamp formats
-    // Note: TIMESTAMP (without timezone) stores timestamps without timezone information
-    // PostgreSQL will interpret them in the server's timezone context
+    // Insert test data with various time formats
+    // PostgreSQL will normalize these to TIME internally
 
     // 1. ISO 8601 format
     pg_client
         .execute(
-            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMP '2024-01-15T10:30:00')",
+            "INSERT INTO time_test (id, event_time) VALUES ($1, TIME '04:05:06')",
             &[&1i32],
         )
         .await?;
-    info!("Inserted ISO 8601 timestamp");
+    info!("Inserted ISO 8601 time format");
 
-    // 2. ISO 8601 with microseconds
+    // 2. Time with microseconds
     pg_client
         .execute(
-            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMP '1997-12-17T15:37:16.123456')",
+            "INSERT INTO time_test (id, event_time) VALUES ($1, TIME '04:05:06.789012')",
             &[&2i32],
         )
         .await?;
-    info!("Inserted ISO 8601 with microseconds timestamp");
+    info!("Inserted time with microseconds");
 
-    // 3. Traditional SQL format
+    // 3. Time without seconds
     pg_client
         .execute(
-            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMP '12/17/1997 07:37:16.00')",
+            "INSERT INTO time_test (id, event_time) VALUES ($1, TIME '04:05')",
             &[&3i32],
         )
         .await?;
-    info!("Inserted traditional SQL format timestamp");
+    info!("Inserted time without seconds");
 
-    // 4. PostgreSQL date + time format
+    // 4. Midnight
     pg_client
         .execute(
-            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMP '1997-12-17 15:37:16')",
+            "INSERT INTO time_test (id, event_time) VALUES ($1, TIME '00:00:00')",
             &[&4i32],
         )
         .await?;
-    info!("Inserted PostgreSQL date+time format timestamp");
+    info!("Inserted midnight time");
 
-    // 5. Traditional PostgreSQL format
+    // 5. End of day (just before midnight)
     pg_client
         .execute(
-            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMP 'Wed Dec 17 07:37:16 1997')",
+            "INSERT INTO time_test (id, event_time) VALUES ($1, TIME '23:59:59.999999')",
             &[&5i32],
         )
         .await?;
-    info!("Inserted traditional PostgreSQL format timestamp");
+    info!("Inserted end of day time");
 
     // Wait for replication
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
@@ -136,13 +134,13 @@ async fn test_timestamp_replication_formats() -> Result<()> {
     // We should have 5 INSERT actions
     assert_eq!(changes.len(), 5, "Should have 5 INSERT changes");
 
-    // Verify each insert can be converted to DateTime<Utc>
+    // Verify each insert
     for (idx, change) in changes.iter().enumerate() {
         match change {
             Action::Insert(row) => {
                 info!("Verifying change {} for id={}", idx + 1, idx + 1);
 
-                assert_eq!(row.table, "timestamp_test");
+                assert_eq!(row.table, "time_test");
                 assert_eq!(row.schema, "public");
 
                 // Extract the event_time field
@@ -151,16 +149,16 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                     .get("event_time")
                     .context("Should have event_time column")?;
 
-                // Verify it's a Timestamp value
+                // Verify it's a Time value
                 match event_time {
-                    Value::Timestamp(ts) => {
-                        info!("Raw timestamp value: {}", ts.0);
+                    Value::Time(time_val) => {
+                        info!("Raw time value: {}", time_val.0);
 
-                        // Convert to DateTime<Utc>
-                        let dt = ts.to_chrono_datetime_utc().map_err(|e| {
+                        // Convert to DateTime<Utc> (uses epoch date 1970-01-01)
+                        let dt = time_val.to_chrono_datetime_utc().map_err(|e| {
                             anyhow::anyhow!(
-                                "Failed to convert timestamp to DateTime<Utc>: {} - {}",
-                                ts.0,
+                                "Failed to convert time to DateTime<Utc>: {} - {}",
+                                time_val.0,
                                 e
                             )
                         })?;
@@ -170,37 +168,37 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                             dt.to_rfc3339()
                         );
 
-                        // Verify the timestamp makes sense (not in the future, not before 1990)
-                        let now = Utc::now();
-                        assert!(
-                            dt < now,
-                            "Timestamp should be in the past: {}",
-                            dt.to_rfc3339()
-                        );
-
-                        let min_time =
-                            DateTime::parse_from_rfc3339("1990-01-01T00:00:00Z").unwrap();
-                        assert!(
-                            dt > min_time.with_timezone(&Utc),
-                            "Timestamp should be after 1990: {}",
-                            dt.to_rfc3339()
-                        );
-
-                        // For known timestamps (IDs 1-5), verify they were parsed successfully
-                        // Note: TIMESTAMP without timezone doesn't preserve timezone info,
-                        // so we just verify that parsing succeeded
+                        // Verify specific values based on ID
                         let id = match row.primary_key {
                             Value::Integer(i) => i,
                             _ => panic!("Expected integer primary key"),
                         };
 
-                        info!(
-                            "Successfully verified timestamp for id={}: {}",
-                            id,
-                            dt.to_rfc3339()
-                        );
+                        match id {
+                            1 => {
+                                // 04:05:06 on epoch date
+                                assert_eq!(dt.to_rfc3339(), "1970-01-01T04:05:06+00:00");
+                            }
+                            2 => {
+                                // 04:05:06.789012 on epoch date
+                                assert_eq!(dt.to_rfc3339(), "1970-01-01T04:05:06.789012+00:00");
+                            }
+                            3 => {
+                                // 04:05:00 (seconds default to 0) on epoch date
+                                assert_eq!(dt.to_rfc3339(), "1970-01-01T04:05:00+00:00");
+                            }
+                            4 => {
+                                // 00:00:00 (midnight) on epoch date
+                                assert_eq!(dt.to_rfc3339(), "1970-01-01T00:00:00+00:00");
+                            }
+                            5 => {
+                                // 23:59:59.999999 on epoch date
+                                assert_eq!(dt.to_rfc3339(), "1970-01-01T23:59:59.999999+00:00");
+                            }
+                            _ => panic!("Unexpected id: {id}"),
+                        }
                     }
-                    _ => panic!("Expected Timestamp value, got {event_time:?}"),
+                    _ => panic!("Expected Time value, got {event_time:?}"),
                 }
             }
             _ => panic!("Expected Insert action, got {change}"),
@@ -212,12 +210,12 @@ async fn test_timestamp_replication_formats() -> Result<()> {
     // Now test UPDATE to ensure it also works
     pg_client
         .execute(
-            "UPDATE timestamp_test SET event_time = TIMESTAMP '2025-06-01 12:00:00' WHERE id = $1",
+            "UPDATE time_test SET event_time = TIME '12:30:45' WHERE id = $1",
             &[&1i32],
         )
         .await?;
 
-    info!("Updated id=1 with new timestamp");
+    info!("Updated id=1 with new time");
 
     // Wait and peek again
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
@@ -239,20 +237,17 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                 .context("Should have event_time column in UPDATE")?;
 
             match event_time {
-                Value::Timestamp(ts) => {
-                    let dt = ts.to_chrono_datetime_utc().map_err(|e| {
-                        anyhow::anyhow!("Failed to convert updated timestamp: {} - {}", ts.0, e)
+                Value::Time(time_val) => {
+                    let dt = time_val.to_chrono_datetime_utc().map_err(|e| {
+                        anyhow::anyhow!("Failed to convert updated time: {} - {}", time_val.0, e)
                     })?;
 
-                    info!(
-                        "UPDATE timestamp successfully converted: {}",
-                        dt.to_rfc3339()
-                    );
+                    info!("UPDATE time successfully converted: {}", dt.to_rfc3339());
 
-                    // Verify it's a valid timestamp
-                    assert!(dt > Utc::now() - chrono::Duration::days(365 * 2));
+                    // Verify the updated value (12:30:45 on epoch date)
+                    assert_eq!(dt.to_rfc3339(), "1970-01-01T12:30:45+00:00");
                 }
-                _ => panic!("Expected Timestamp value in UPDATE"),
+                _ => panic!("Expected Time value in UPDATE"),
             }
         }
         _ => panic!("Expected Update action"),
@@ -264,6 +259,6 @@ async fn test_timestamp_replication_formats() -> Result<()> {
     repl_client.drop_slot(slot_name).await?;
     container.stop()?;
 
-    info!("TIMESTAMP replication format test completed successfully");
+    info!("TIME replication format test completed successfully");
     Ok(())
 }

@@ -7,9 +7,10 @@ pub struct Interval(pub String);
 impl Interval {
     /// Converts to std::time::Duration
     /// Handles PostgreSQL interval formats including:
-    /// - "6 years 5 months 4 days 3 hours 2 minutes 1 second"
-    /// - "6years 5months 4days 3hours 2minutes 1second"
-    /// - "1 day", "2 hours", "30 seconds"
+    /// - HH:MM:SS format: "00:00:30", "02:30:45"
+    /// - Verbose format: "30 seconds", "1 day", "2 hours"
+    /// - Mixed format: "1 day 02:30:00" (combines verbose with HH:MM:SS)
+    /// - ISO 8601 format: "P1DT2H30M" (parsed by PostgreSQL)
     ///
     /// Note: Years are 360 days (12 months × 30 days), months are 30 days
     ///
@@ -33,43 +34,102 @@ impl Interval {
     /// - Systems where calendar-aware arithmetic is not required
     /// - Logging and display purposes
     pub fn to_duration(&self) -> Result<Duration, String> {
-        let mut total_secs: f64 = 0.0;
         let input = self.0.trim();
 
-        // Split by whitespace first
-        let parts: Vec<&str> = input.split_whitespace().collect();
+        // Special case: if the entire string is in HH:MM:SS format, parse it directly
+        if Self::is_pure_hms_format(input) {
+            return Self::parse_hms_component(input)
+                .map(Duration::from_secs_f64)
+                .ok_or_else(|| format!("Invalid HH:MM:SS format: {input}"));
+        }
+
+        // Otherwise, parse as a potentially mixed format
+        let mut total_seconds: f64 = 0.0;
+
+        // Split by whitespace to get tokens
+        let tokens: Vec<&str> = input.split_whitespace().collect();
 
         let mut i = 0;
-        while i < parts.len() {
-            let part = parts[i];
+        while i < tokens.len() {
+            let token = tokens[i];
 
-            // Try to parse as "valueunit" format (e.g., "6years")
-            if let Some((value, unit)) = Self::parse_combined_part(part) {
-                total_secs += Self::unit_to_seconds(value, unit)?;
-                i += 1;
+            // Check if this token looks like HH:MM:SS
+            if Self::is_pure_hms_format(token) {
+                if let Some(seconds) = Self::parse_hms_component(token) {
+                    total_seconds += seconds;
+                    i += 1;
+                    continue;
+                }
             }
-            // Try to parse as "value unit" format (e.g., "6 years")
-            else if i + 1 < parts.len() {
-                let value: f64 = part
-                    .parse()
-                    .map_err(|_| format!("Invalid interval value: {part}"))?;
-                let unit = parts[i + 1];
-                total_secs += Self::unit_to_seconds(value, unit)?;
-                i += 2;
+
+            // Try to parse as a number
+            if let Ok(value) = token.parse::<f64>() {
+                // Look for the unit in the next token
+                if i + 1 < tokens.len() {
+                    let unit = tokens[i + 1];
+
+                    // Check if the unit is actually an HH:MM:SS format
+                    if Self::is_pure_hms_format(unit) {
+                        // This means we have something like "1 02:30:00" which should be "1 day 02:30:00"
+                        // The number is likely days
+                        total_seconds += value * 86400.0; // Assume days
+                        if let Some(hms_seconds) = Self::parse_hms_component(unit) {
+                            total_seconds += hms_seconds;
+                        }
+                        i += 2;
+                    } else {
+                        // Normal unit
+                        total_seconds += Self::unit_to_seconds(value, unit)?;
+                        i += 2;
+                    }
+                } else {
+                    return Err(format!("Value without unit: {token}"));
+                }
             } else {
-                return Err(format!(
-                    "Invalid interval format at position {i}: {part}",
-                ));
+                // Not a number, might be a combined format like "6years"
+                if let Some((value, unit)) = Self::parse_combined_part(token) {
+                    total_seconds += Self::unit_to_seconds(value, unit)?;
+                    i += 1;
+                } else {
+                    return Err(format!("Invalid interval token: {token}"));
+                }
             }
         }
 
-        Ok(Duration::from_secs_f64(total_secs))
+        Ok(Duration::from_secs_f64(total_seconds))
+    }
+
+    /// Checks if a string is in HH:MM:SS format
+    fn is_pure_hms_format(s: &str) -> bool {
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.len() != 3 {
+            return false;
+        }
+
+        // Check if all parts can be parsed as numbers (allowing decimals in seconds)
+        parts[0].parse::<f64>().is_ok()
+            && parts[1].parse::<f64>().is_ok()
+            && parts[2].parse::<f64>().is_ok()
+    }
+
+    /// Parses HH:MM:SS or HH:MM:SS.microseconds format into total seconds
+    fn parse_hms_component(s: &str) -> Option<f64> {
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.len() != 3 {
+            return None;
+        }
+
+        let hours = parts[0].parse::<f64>().ok()?;
+        let minutes = parts[1].parse::<f64>().ok()?;
+        let seconds = parts[2].parse::<f64>().ok()?;
+
+        Some(hours * 3600.0 + minutes * 60.0 + seconds)
     }
 
     /// Parses a combined part like "6years" into (value, unit)
     fn parse_combined_part(part: &str) -> Option<(f64, &str)> {
-        // Find where the unit starts (first non-digit, non-decimal point character)
-        let unit_start = part.find(|c: char| !c.is_ascii_digit() && c != '.')?;
+        // Find where the unit starts (first non-digit, non-decimal point, non-minus character)
+        let unit_start = part.find(|c: char| !c.is_ascii_digit() && c != '.' && c != '-')?;
 
         let value_str = &part[..unit_start];
         let unit_str = &part[unit_start..];
@@ -104,8 +164,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_interval_to_duration() {
-        // Simple formats
+    fn test_hms_formats() {
+        // Pure HH:MM:SS formats
+        assert_eq!(
+            Interval("00:00:30".to_string()).to_duration().unwrap(),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            Interval("00:05:00".to_string()).to_duration().unwrap(),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            Interval("02:00:00".to_string()).to_duration().unwrap(),
+            Duration::from_secs(7200)
+        );
+        assert_eq!(
+            Interval("01:30:00".to_string()).to_duration().unwrap(),
+            Duration::from_secs(5400)
+        );
+
+        // With fractional seconds
+        assert_eq!(
+            Interval("00:00:30.5".to_string()).to_duration().unwrap(),
+            Duration::from_secs_f64(30.5)
+        );
+    }
+
+    #[test]
+    fn test_verbose_formats() {
+        // Simple verbose formats
         assert_eq!(
             Interval("30 seconds".to_string()).to_duration().unwrap(),
             Duration::from_secs(30)
@@ -122,36 +209,129 @@ mod tests {
             Interval("1 day".to_string()).to_duration().unwrap(),
             Duration::from_secs(86400)
         );
+        assert_eq!(
+            Interval("3 days".to_string()).to_duration().unwrap(),
+            Duration::from_secs(259200)
+        );
+        assert_eq!(
+            Interval("14 days".to_string()).to_duration().unwrap(),
+            Duration::from_secs(1209600)
+        );
+        assert_eq!(
+            Interval("1 mon".to_string()).to_duration().unwrap(),
+            Duration::from_secs(2592000)
+        );
+        assert_eq!(
+            Interval("1 year".to_string()).to_duration().unwrap(),
+            Duration::from_secs(31104000)
+        );
+    }
 
-        // Combined format with spaces
-        let complex_interval =
-            Interval("6 years 5 months 4 days 3 hours 2 minutes 1 second".to_string());
-        let result = complex_interval.to_duration().unwrap();
-        let expected_secs = 6.0 * 31104000.0  // 6 years (360 days each)
-            + 5.0 * 2592000.0  // 5 months (30 days each)
+    #[test]
+    fn test_mixed_formats() {
+        // PostgreSQL's mixed format: verbose + HH:MM:SS
+        assert_eq!(
+            Interval("1 day 02:30:00".to_string())
+                .to_duration()
+                .unwrap(),
+            Duration::from_secs(86400 + 9000) // 1 day + 2.5 hours
+        );
+
+        // Just "1 02:30:00" should interpret 1 as days
+        assert_eq!(
+            Interval("1 02:30:00".to_string()).to_duration().unwrap(),
+            Duration::from_secs(86400 + 9000) // 1 day + 2.5 hours
+        );
+
+        // Complex mixed format
+        assert_eq!(
+            Interval("2 days 03:45:30".to_string())
+                .to_duration()
+                .unwrap(),
+            Duration::from_secs(2 * 86400 + 3 * 3600 + 45 * 60 + 30)
+        );
+    }
+
+    #[test]
+    fn test_combined_unit_formats() {
+        // Combined format without spaces
+        assert_eq!(
+            Interval("30seconds".to_string()).to_duration().unwrap(),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            Interval("5minutes".to_string()).to_duration().unwrap(),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            Interval("2hours".to_string()).to_duration().unwrap(),
+            Duration::from_secs(7200)
+        );
+        assert_eq!(
+            Interval("1day".to_string()).to_duration().unwrap(),
+            Duration::from_secs(86400)
+        );
+    }
+
+    #[test]
+    fn test_complex_intervals() {
+        // Multiple units with spaces
+        let interval = Interval("1 day 2 hours 30 minutes".to_string());
+        assert_eq!(
+            interval.to_duration().unwrap(),
+            Duration::from_secs(86400 + 7200 + 1800)
+        );
+
+        // Multiple units without spaces
+        let interval = Interval("1day 2hours 30minutes".to_string());
+        assert_eq!(
+            interval.to_duration().unwrap(),
+            Duration::from_secs(86400 + 7200 + 1800)
+        );
+
+        // Very complex format
+        let interval = Interval("6 years 5 months 4 days 3 hours 2 minutes 1 second".to_string());
+        let expected_secs = 6.0 * 31104000.0  // 6 years
+            + 5.0 * 2592000.0  // 5 months
             + 4.0 * 86400.0    // 4 days
             + 3.0 * 3600.0     // 3 hours
             + 2.0 * 60.0       // 2 minutes
             + 1.0; // 1 second
-        assert_eq!(result, Duration::from_secs_f64(expected_secs));
-
-        // Combined format without spaces
-        let compact_interval = Interval("6years 5months 4days 3hours 2minutes 1second".to_string());
-        let result = compact_interval.to_duration().unwrap();
-        assert_eq!(result, Duration::from_secs_f64(expected_secs));
-
-        // Mixed format
-        let mixed = Interval("1 day 12 hours".to_string());
         assert_eq!(
-            mixed.to_duration().unwrap(),
-            Duration::from_secs(86400 + 43200)
+            interval.to_duration().unwrap(),
+            Duration::from_secs_f64(expected_secs)
+        );
+    }
+
+    #[test]
+    fn test_edge_cases() {
+        // Empty string
+        assert_eq!(
+            Interval("".to_string()).to_duration().unwrap(),
+            Duration::from_secs(0)
         );
 
-        // Compact mixed format
-        let compact_mixed = Interval("1day 12hours".to_string());
+        // Just whitespace
         assert_eq!(
-            compact_mixed.to_duration().unwrap(),
-            Duration::from_secs(86400 + 43200)
+            Interval("  ".to_string()).to_duration().unwrap(),
+            Duration::from_secs(0)
+        );
+
+        // Note: Negative intervals are not supported by std::time::Duration
+        // They would need to be handled at the application level
+    }
+
+    #[test]
+    fn test_iso8601_style() {
+        // PostgreSQL converts ISO 8601 durations internally
+        // When it outputs them, they're already converted to verbose format
+        // So "P1DT2H30M" becomes "1 day 02:30:00"
+        // This test verifies our parser handles what PostgreSQL outputs
+        assert_eq!(
+            Interval("1 day 02:30:00".to_string())
+                .to_duration()
+                .unwrap(),
+            Duration::from_secs(86400 + 9000)
         );
     }
 }

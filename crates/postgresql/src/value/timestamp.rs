@@ -20,10 +20,10 @@ impl Timestamp {
         // Try PostgreSQL wal2json format: "2024-01-15 10:30:00"
         // This is a NaiveDateTime (no timezone), so we interpret it as UTC
         let formats = vec![
-            "%Y-%m-%d %H:%M:%S",        // 2024-01-15 10:30:00
-            "%Y-%m-%d %H:%M:%S%.f",     // With fractional seconds
-            "%Y-%m-%dT%H:%M:%S",         // ISO 8601 without timezone
-            "%Y-%m-%dT%H:%M:%S%.f",      // ISO 8601 with fractional seconds, no timezone
+            "%Y-%m-%d %H:%M:%S",    // 2024-01-15 10:30:00
+            "%Y-%m-%d %H:%M:%S%.f", // With fractional seconds
+            "%Y-%m-%dT%H:%M:%S",    // ISO 8601 without timezone
+            "%Y-%m-%dT%H:%M:%S%.f", // ISO 8601 with fractional seconds, no timezone
         ];
 
         for format in formats {
