@@ -60,7 +60,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use surreal_sync::surreal::surreal_connect;
 use surreal_sync::{
-    kafka, migrate_from_jsonl, mongodb, mysql, neo4j, postgresql,
+    csv, kafka, migrate_from_jsonl, mongodb, mysql, neo4j, postgresql,
     sync::{SyncCheckpoint, SyncConfig},
     SourceOpts, SurrealOpts,
 };
@@ -210,6 +210,41 @@ enum Commands {
         #[command(flatten)]
         to_opts: SurrealOpts,
     },
+
+    /// Import CSV files to SurrealDB
+    Csv {
+        /// CSV file paths to import (can specify multiple)
+        #[arg(long, required = true, value_name = "FILE")]
+        files: Vec<std::path::PathBuf>,
+
+        /// Target SurrealDB table name
+        #[arg(long)]
+        table: String,
+
+        /// Target SurrealDB namespace
+        #[arg(long)]
+        to_namespace: String,
+
+        /// Target SurrealDB database
+        #[arg(long)]
+        to_database: String,
+
+        /// Whether the CSV has headers (default: true)
+        #[arg(long, default_value = "true")]
+        has_headers: bool,
+
+        /// CSV delimiter character (default: ',')
+        #[arg(long, default_value = ",")]
+        delimiter: char,
+
+        /// Field to use as record ID (optional, auto-generates if not specified)
+        #[arg(long)]
+        id_field: Option<String>,
+
+        /// Target SurrealDB options
+        #[command(flatten)]
+        to_opts: SurrealOpts,
+    },
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -331,6 +366,30 @@ async fn run() -> anyhow::Result<()> {
                 to_opts,
             };
             postgresql::sync(config).await?;
+        }
+        Commands::Csv {
+            files,
+            table,
+            to_namespace,
+            to_database,
+            has_headers,
+            delimiter,
+            id_field,
+            to_opts,
+        } => {
+            let config = csv::Config {
+                files,
+                table,
+                batch_size: to_opts.batch_size,
+                namespace: to_namespace,
+                database: to_database,
+                surreal_opts: to_opts,
+                has_headers,
+                delimiter: delimiter as u8,
+                id_field,
+                dry_run: false,
+            };
+            csv::sync(config).await?;
         }
     }
 

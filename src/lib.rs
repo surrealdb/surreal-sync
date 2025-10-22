@@ -42,6 +42,7 @@
 use clap::Parser;
 
 pub mod checkpoint;
+pub mod csv;
 pub mod jsonl;
 pub mod kafka;
 pub mod mongodb;
