@@ -6,8 +6,8 @@
 
 use crate::SurrealOpts;
 use anyhow::Result;
-use tokio_postgres::NoTls;
-use tracing::error;
+mod incremental;
+mod initial;
 
 /// Configuration for PostgreSQL logical decoding sync
 #[derive(Clone)]
@@ -61,7 +61,7 @@ pub async fn sync(config: Config) -> Result<()> {
     let surreal =
         crate::surreal::surreal_connect(&config.to_opts, &config.to_namespace, &config.to_database)
             .await?;
-    let store = super::state::Store::new(surreal);
+    let store = super::state::Store::new(surreal.clone());
     let id = super::state::StateID::from_connection_and_slot(
         &config.connection_string,
         &config.schema,
@@ -89,23 +89,7 @@ pub async fn sync(config: Config) -> Result<()> {
                 "PostgreSQL logical decoding sync from Pending state is not yet implemented"
             );
 
-            // Connect to PostgreSQL
-            let (psql_client, connection) =
-                tokio_postgres::connect(&config.connection_string, NoTls)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to connect to PostgreSQL: {e}"))?;
-
-            // Spawn connection handler
-            tokio::spawn(async move {
-                if let Err(e) = connection.await {
-                    error!("Connection error: {e}");
-                }
-            });
-            let client = surreal_sync_postgresql_replication::Client::new(
-                psql_client,
-                config.tables.clone(),
-            );
-            let pre_lsn = client.get_current_wal_lsn().await?;
+            let pre_lsn = initial::sync(&surreal, &config).await?;
 
             store
                 .transition(&id, super::state::State::Initial { pre_lsn })
@@ -114,9 +98,7 @@ pub async fn sync(config: Config) -> Result<()> {
         super::state::State::Initial { pre_lsn } => {
             tracing::info!("Resuming from Initial state with pre_lsn: {}", pre_lsn);
 
-            store
-                .transition(&id, super::state::State::Incremental)
-                .await?;
+            incremental::sync(&surreal, &config).await?;
         }
         super::state::State::Incremental => {
             tracing::info!("Resuming from Incremental state");

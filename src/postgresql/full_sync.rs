@@ -131,7 +131,7 @@ pub async fn run_full_sync(
 }
 
 /// Migrate a single table from PostgreSQL to SurrealDB
-async fn migrate_table(
+pub async fn migrate_table(
     client: &Client,
     surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
     table_name: &str,
