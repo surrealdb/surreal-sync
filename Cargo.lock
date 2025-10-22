@@ -4845,6 +4845,7 @@ dependencies = [
  "serde_json",
  "surreal-sync-kafka",
  "surreal-sync-kafka-producer",
+ "surreal-sync-postgresql-replication",
  "surrealdb",
  "tempfile",
  "tokio",

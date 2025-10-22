@@ -179,6 +179,37 @@ enum Commands {
         #[command(flatten)]
         to_opts: SurrealOpts,
     },
+
+    #[command(name = "postgresql")]
+    PostgreSQL {
+        /// PostgreSQL connection string
+        #[arg(long)]
+        connection_string: String,
+
+        /// Replication slot name (default: "surreal_sync_slot")
+        #[arg(long, default_value = "surreal_sync_slot")]
+        slot: String,
+
+        /// Tables to sync (comma-separated, empty means all tables)
+        #[arg(long, value_delimiter = ',')]
+        tables: Vec<String>,
+
+        /// PostgreSQL schema (default: "public")
+        #[arg(long, default_value = "public")]
+        schema: String,
+
+        /// Target SurrealDB namespace
+        #[arg(long)]
+        to_namespace: String,
+
+        /// Target SurrealDB database
+        #[arg(long)]
+        to_database: String,
+
+        /// Target SurrealDB options
+        #[command(flatten)]
+        to_opts: SurrealOpts,
+    },
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -280,6 +311,26 @@ async fn run() -> anyhow::Result<()> {
                 chrono::Utc::now() + chrono::Duration::hours(1),
             )
             .await?;
+        }
+        Commands::PostgreSQL {
+            connection_string,
+            slot,
+            tables,
+            schema,
+            to_namespace,
+            to_database,
+            to_opts,
+        } => {
+            let config = postgresql::Config {
+                connection_string,
+                slot,
+                tables,
+                schema,
+                to_namespace,
+                to_database,
+                to_opts,
+            };
+            postgresql::sync(config).await?;
         }
     }
 

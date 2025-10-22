@@ -54,6 +54,9 @@ geo-types = "0.7.17"
 # Kafka source
 surreal-sync-kafka = { path = "crates/kafka" }
 
+# PostgreSQL replication library
+surreal-sync-postgresql-replication = { path = "crates/postgresql" }
+
 [dev-dependencies]
 # Testing
 tokio-test = "0.4"
