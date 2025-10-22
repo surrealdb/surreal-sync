@@ -6,6 +6,8 @@
 
 use crate::SurrealOpts;
 use anyhow::Result;
+use tokio_postgres::NoTls;
+use tracing::error;
 
 /// Configuration for PostgreSQL logical decoding sync
 #[derive(Clone)]
@@ -55,6 +57,71 @@ pub async fn sync(config: Config) -> Result<()> {
     tracing::info!("Schema: {}", config.schema);
     tracing::info!("Tables: {:?}", config.tables);
     tracing::info!("Target: {}/{}", config.to_namespace, config.to_database);
+
+    let surreal =
+        crate::surreal::surreal_connect(&config.to_opts, &config.to_namespace, &config.to_database)
+            .await?;
+    let store = super::state::Store::new(surreal);
+    let id = super::state::StateID::from_connection_and_slot(
+        &config.connection_string,
+        &config.schema,
+        &config.slot,
+    )?;
+    let state = store.get_state(&id).await?;
+    let mut current = super::state::State::Pending;
+    match state {
+        None => {
+            tracing::info!("No existing state found, starting fresh");
+            store.transition(&id, super::state::State::Pending).await?;
+        }
+        _ => {
+            tracing::info!("Existing state found: {:?}", state);
+            current = state.unwrap();
+        }
+    }
+
+    tracing::info!("Current state: {:?}", current);
+    match current {
+        super::state::State::Pending => {
+            tracing::info!("Resuming from Pending state");
+
+            tracing::warn!(
+                "PostgreSQL logical decoding sync from Pending state is not yet implemented"
+            );
+
+            // Connect to PostgreSQL
+            let (psql_client, connection) =
+                tokio_postgres::connect(&config.connection_string, NoTls)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to connect to PostgreSQL: {e}"))?;
+
+            // Spawn connection handler
+            tokio::spawn(async move {
+                if let Err(e) = connection.await {
+                    error!("Connection error: {e}");
+                }
+            });
+            let client = surreal_sync_postgresql_replication::Client::new(
+                psql_client,
+                config.tables.clone(),
+            );
+            let pre_lsn = client.get_current_wal_lsn().await?;
+
+            store
+                .transition(&id, super::state::State::Initial { pre_lsn })
+                .await?;
+        }
+        super::state::State::Initial { pre_lsn } => {
+            tracing::info!("Resuming from Initial state with pre_lsn: {}", pre_lsn);
+
+            store
+                .transition(&id, super::state::State::Incremental)
+                .await?;
+        }
+        super::state::State::Incremental => {
+            tracing::info!("Resuming from Incremental state");
+        }
+    }
 
     tracing::warn!("PostgreSQL logical decoding sync is not yet implemented");
 
