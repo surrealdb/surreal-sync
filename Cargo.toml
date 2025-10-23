@@ -48,6 +48,7 @@ async-trait = "0.1"
 
 # Streams
 tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io-util"] }
 tempfile = "3.0"
 geo-types = "0.7.17"
 
