@@ -212,10 +212,15 @@ enum Commands {
     },
 
     /// Import CSV files to SurrealDB
+    #[group(id = "source", required = true, multiple = false, args = ["files", "s3-uris"])]
     Csv {
         /// CSV file paths to import (can specify multiple)
         #[arg(long, required = true, value_name = "FILE")]
         files: Vec<std::path::PathBuf>,
+
+        /// S3 URIs to import (can specify multiple)
+        #[arg(long, value_name = "S3_URI")]
+        s3_uris: Vec<String>,
 
         /// Target SurrealDB table name
         #[arg(long)]
@@ -369,6 +374,7 @@ async fn run() -> anyhow::Result<()> {
         }
         Commands::Csv {
             files,
+            s3_uris,
             table,
             to_namespace,
             to_database,
@@ -379,6 +385,7 @@ async fn run() -> anyhow::Result<()> {
         } => {
             let config = csv::Config {
                 files,
+                s3_uris,
                 table,
                 batch_size: to_opts.batch_size,
                 namespace: to_namespace,
