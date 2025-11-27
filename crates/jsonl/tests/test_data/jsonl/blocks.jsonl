@@ -1,0 +1,4 @@
+{"id": "block1", "type": "paragraph", "text": "This is a paragraph block", "parent": {"type": "page_id", "page_id": "page1"}, "order": 1}
+{"id": "block2", "type": "heading", "text": "Introduction", "level": 1, "parent": {"type": "page_id", "page_id": "page1"}, "order": 2}
+{"id": "block3", "type": "code", "text": "console.log('Hello World');", "language": "javascript", "parent": {"type": "page_id", "page_id": "page2"}, "order": 1}
+{"id": "block4", "type": "list", "items": ["Item 1", "Item 2", "Item 3"], "parent": {"type": "block_id", "block_id": "block2"}, "order": 3}

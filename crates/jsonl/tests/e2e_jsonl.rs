@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::path::PathBuf;
+use surreal_sync_jsonl::{migrate_from_jsonl, ConversionRule, SourceOpts, SurrealOpts};
 use surrealdb::{engine::any::connect, sql::Thing, Surreal};
 
 #[derive(Debug, Deserialize)]
@@ -28,7 +29,7 @@ struct Database {
 async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging for the test
     tracing_subscriber::fmt()
-        .with_env_filter("surreal_sync=debug,test=debug")
+        .with_env_filter("surreal_sync_jsonl=debug,test=debug")
         .try_init()
         .ok();
 
@@ -40,7 +41,7 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
     let surreal_database = "test_jsonl_db";
 
     // Get the test data directory path
-    let test_data_dir = PathBuf::from("/workspace/tests/test_data/jsonl");
+    let test_data_dir = PathBuf::from("tests/test_data/jsonl");
 
     // Connect to SurrealDB
     println!("🗄️  Connecting to SurrealDB...");
@@ -62,17 +63,11 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
 
     // Run the migration using the library functions directly
     println!("🔄 Running JSONL migration...");
-    let from_opts = surreal_sync::SourceOpts {
+    let from_opts = SourceOpts {
         source_uri: test_data_dir.to_string_lossy().to_string(),
-        source_database: None,
-        source_username: None,
-        source_password: None,
-        neo4j_timezone: "UTC".to_string(),
-        neo4j_json_properties: None,
-        mysql_boolean_paths: None,
     };
 
-    let to_opts = surreal_sync::SurrealOpts {
+    let to_opts = SurrealOpts {
         surreal_endpoint: surreal_endpoint.to_string(),
         surreal_username: "root".to_string(),
         surreal_password: "root".to_string(),
@@ -88,7 +83,7 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     // Execute the migration
-    surreal_sync::migrate_from_jsonl(
+    migrate_from_jsonl(
         from_opts,
         surreal_namespace.to_string(),
         surreal_database.to_string(),
@@ -181,8 +176,6 @@ async fn validate_migration_results(
 
 #[tokio::test]
 async fn test_jsonl_conversion_rules() -> Result<(), Box<dyn std::error::Error>> {
-    use surreal_sync::jsonl::ConversionRule;
-
     // Test valid rule parsing
     let rule_str = r#"type="page_id",page_id pages:page_id"#;
     let rule = ConversionRule::parse(rule_str)?;
@@ -203,7 +196,7 @@ async fn test_jsonl_conversion_rules() -> Result<(), Box<dyn std::error::Error>>
 async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize logging
     tracing_subscriber::fmt()
-        .with_env_filter("surreal_sync=debug")
+        .with_env_filter("surreal_sync_jsonl=debug")
         .try_init()
         .ok();
 
@@ -220,7 +213,6 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
     )?;
 
     // Setup SurrealDB connection
-    // Change to ws://localhost:8000 if testing locally
     let surreal_endpoint = "ws://surrealdb:8000";
     let surreal = connect(surreal_endpoint).await?;
     surreal
@@ -239,17 +231,11 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
         .unwrap_or_default();
 
     // Run migration with custom ID field
-    let from_opts = surreal_sync::SourceOpts {
+    let from_opts = SourceOpts {
         source_uri: test_dir.to_string_lossy().to_string(),
-        source_database: None,
-        source_username: None,
-        source_password: None,
-        neo4j_timezone: "UTC".to_string(),
-        neo4j_json_properties: None,
-        mysql_boolean_paths: None,
     };
 
-    let to_opts = surreal_sync::SurrealOpts {
+    let to_opts = SurrealOpts {
         surreal_endpoint: surreal_endpoint.to_string(),
         surreal_username: "root".to_string(),
         surreal_password: "root".to_string(),
@@ -257,7 +243,7 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
         dry_run: false,
     };
 
-    surreal_sync::migrate_from_jsonl(
+    migrate_from_jsonl(
         from_opts,
         "test_custom_id".to_string(),
         "test_db".to_string(),
@@ -297,7 +283,7 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
 async fn test_jsonl_with_complex_id_field() {
     // Initialize logging
     tracing_subscriber::fmt()
-        .with_env_filter("surreal_sync=debug")
+        .with_env_filter("surreal_sync_jsonl=debug")
         .try_init()
         .ok();
 
@@ -315,7 +301,6 @@ async fn test_jsonl_with_complex_id_field() {
     .unwrap();
 
     // Setup SurrealDB connection
-    // Change to ws://localhost:8000 if testing locally
     let surreal_endpoint = "ws://surrealdb:8000";
     let surreal = connect(surreal_endpoint).await.unwrap();
     surreal
@@ -340,17 +325,11 @@ async fn test_jsonl_with_complex_id_field() {
         .unwrap_or_default();
 
     // Run migration with custom ID field
-    let from_opts = surreal_sync::SourceOpts {
+    let from_opts = SourceOpts {
         source_uri: test_dir.to_string_lossy().to_string(),
-        source_database: None,
-        source_username: None,
-        source_password: None,
-        neo4j_timezone: "UTC".to_string(),
-        neo4j_json_properties: None,
-        mysql_boolean_paths: None,
     };
 
-    let to_opts = surreal_sync::SurrealOpts {
+    let to_opts = SurrealOpts {
         surreal_endpoint: surreal_endpoint.to_string(),
         surreal_username: "root".to_string(),
         surreal_password: "root".to_string(),
@@ -358,7 +337,7 @@ async fn test_jsonl_with_complex_id_field() {
         dry_run: false,
     };
 
-    surreal_sync::migrate_from_jsonl(
+    migrate_from_jsonl(
         from_opts,
         "test_complex_id".to_string(),
         "test_db".to_string(),

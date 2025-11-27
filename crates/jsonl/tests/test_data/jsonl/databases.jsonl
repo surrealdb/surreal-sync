@@ -1,0 +1,2 @@
+{"id": "db1", "name": "Documentation", "description": "Main documentation database", "created_at": "2023-12-01T10:00:00Z", "properties": {"status": "active", "version": 1.0}}
+{"id": "db2", "name": "API Docs", "description": "API reference documentation", "created_at": "2023-12-15T10:00:00Z", "properties": {"status": "beta", "version": 0.5}}

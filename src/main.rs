@@ -60,7 +60,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use surreal_sync::surreal::surreal_connect;
 use surreal_sync::{
-    csv, kafka, migrate_from_jsonl, mongodb, mysql, neo4j, postgresql,
+    csv, jsonl, kafka, mongodb, mysql, neo4j, postgresql,
     sync::{SyncCheckpoint, SyncConfig},
     SourceOpts, SurrealOpts,
 };
@@ -523,11 +523,22 @@ async fn run_full_sync(
         }
         SourceDatabase::Jsonl => {
             // Note: JSONL sync is file-based and does not require checkpoints
-            migrate_from_jsonl(
-                from_opts,
+            // Convert SourceOpts and SurrealOpts to jsonl crate types
+            let jsonl_from_opts = jsonl::SourceOpts {
+                source_uri: from_opts.source_uri,
+            };
+            let jsonl_to_opts = jsonl::SurrealOpts {
+                surreal_endpoint: to_opts.surreal_endpoint,
+                surreal_username: to_opts.surreal_username,
+                surreal_password: to_opts.surreal_password,
+                batch_size: to_opts.batch_size,
+                dry_run: to_opts.dry_run,
+            };
+            jsonl::migrate_from_jsonl(
+                jsonl_from_opts,
                 to_namespace,
                 to_database,
-                to_opts,
+                jsonl_to_opts,
                 id_field,
                 conversion_rules,
             )

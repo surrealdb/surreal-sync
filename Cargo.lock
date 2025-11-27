@@ -5790,6 +5790,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sync-csv",
+ "surreal-sync-jsonl",
  "surreal-sync-kafka",
  "surreal-sync-kafka-producer",
  "surreal-sync-postgresql-replication",
@@ -5827,6 +5828,20 @@ dependencies = [
  "tokio-test",
  "tokio-util",
  "tower",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "surreal-sync-jsonl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "surrealdb",
+ "tokio",
+ "tokio-test",
  "tracing",
  "tracing-subscriber",
 ]

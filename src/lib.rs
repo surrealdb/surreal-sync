@@ -42,7 +42,6 @@
 use clap::Parser;
 
 pub mod checkpoint;
-pub mod jsonl;
 pub mod kafka;
 pub mod mongodb;
 pub mod mysql;
@@ -55,6 +54,9 @@ pub mod testing;
 // Re-export CSV crate
 pub use surreal_sync_csv as csv;
 
+// Re-export JSONL crate
+pub use surreal_sync_jsonl as jsonl;
+
 // Re-export types and schema functionality for easy access
 pub use surreal::{
     json_to_surreal_without_schema, Change, Record, Relation, SurrealDatabaseSchema,
@@ -62,7 +64,6 @@ pub use surreal::{
 };
 
 // Re-export main migration functions for easy access
-pub use jsonl::migrate_from_jsonl;
 pub use mongodb::migrate_from_mongodb;
 
 /// Parsed configuration for Neo4j JSON-to-object conversion
