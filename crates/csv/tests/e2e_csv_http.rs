@@ -85,7 +85,7 @@ async fn start_test_server() -> anyhow::Result<(String, tokio::task::JoinHandle<
     // Bind to any available port
     let listener = TcpListener::bind("0.0.0.0:0").await?;
     let addr = listener.local_addr()?;
-    let base_url = format!("http://{}", addr);
+    let base_url = format!("http://{addr}");
 
     // Spawn server in background
     let server_handle = tokio::spawn(async move {
@@ -121,7 +121,7 @@ async fn test_csv_http_import() {
     // Start test HTTP server
     let (base_url, server_handle) = start_test_server().await.unwrap();
 
-    let csv_url = format!("{}/test.csv", base_url);
+    let csv_url = format!("{base_url}/test.csv");
     tracing::info!("Test server started at: {}", base_url);
     tracing::info!("CSV URL: {}", csv_url);
 
@@ -142,13 +142,14 @@ async fn test_csv_http_import() {
         has_headers: true,
         delimiter: b',',
         id_field: Some("id".to_string()),
+        column_names: None,
         emit_metrics: None,
         dry_run: false,
     };
 
     // Run CSV import
     let result = sync(config).await;
-    assert!(result.is_ok(), "CSV import should succeed: {:?}", result);
+    assert!(result.is_ok(), "CSV import should succeed: {result:?}");
 
     // Verify data was imported correctly
     let query = format!("SELECT name, age, active FROM {table}");
@@ -166,7 +167,7 @@ async fn test_csv_http_import() {
     assert_eq!(users.len(), 5, "Should have imported 5 records");
     assert_eq!(users[0].name, "Alice");
     assert_eq!(users[0].age, 30);
-    assert_eq!(users[0].active, true);
+    assert!(users[0].active);
     assert_eq!(users[1].name, "Bob");
     assert_eq!(users[4].name, "Eve");
 
@@ -195,12 +196,12 @@ async fn test_csv_http_import_with_path() {
     cleanup_namespace(&surreal, namespace).await.unwrap();
 
     // Reconnect after cleanup
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let _surreal = setup_surrealdb(namespace, database).await.unwrap();
 
     // Start test HTTP server
     let (base_url, server_handle) = start_test_server().await.unwrap();
 
-    let csv_url = format!("{}/data/test.csv", base_url);
+    let csv_url = format!("{base_url}/data/test.csv");
     tracing::info!("Test server started at: {}", base_url);
     tracing::info!("CSV URL: {}", csv_url);
 
@@ -221,13 +222,14 @@ async fn test_csv_http_import_with_path() {
         has_headers: true,
         delimiter: b',',
         id_field: Some("id".to_string()), // Use id field from CSV
+        column_names: None,
         emit_metrics: None,
         dry_run: false,
     };
 
     // Run CSV import
     let result = sync(config).await;
-    assert!(result.is_ok(), "CSV import should succeed: {:?}", result);
+    assert!(result.is_ok(), "CSV import should succeed: {result:?}");
 
     // Reconnect to verify data (ensures we're seeing fresh data)
     let surreal = setup_surrealdb(namespace, database).await.unwrap();
@@ -238,7 +240,7 @@ async fn test_csv_http_import_with_path() {
 
     #[derive(Debug, serde::Deserialize)]
     struct CountResult {
-        count: i64,
+        _count: i64,
     }
 
     let counts: Vec<CountResult> = count_response.take(0).unwrap();
@@ -251,8 +253,8 @@ async fn test_csv_http_import_with_path() {
     #[derive(Debug, serde::Deserialize)]
     struct Person {
         name: String,
-        age: i64,
-        active: bool,
+        _age: i64,
+        _active: bool,
     }
 
     let people: Vec<Person> = response.take(0).unwrap();
@@ -294,7 +296,7 @@ async fn test_csv_http_404_error() {
     // Start test HTTP server
     let (base_url, server_handle) = start_test_server().await.unwrap();
 
-    let csv_url = format!("{}/nonexistent.csv", base_url);
+    let csv_url = format!("{base_url}/nonexistent.csv");
 
     // Configure CSV import with non-existent file
     let config = Config {
@@ -313,6 +315,7 @@ async fn test_csv_http_404_error() {
         has_headers: true,
         delimiter: b',',
         id_field: None,
+        column_names: None,
         emit_metrics: None,
         dry_run: false,
     };
@@ -324,8 +327,7 @@ async fn test_csv_http_404_error() {
     let error_msg = format!("{:?}", result.unwrap_err());
     assert!(
         error_msg.contains("404") || error_msg.contains("HTTP request failed"),
-        "Error should mention HTTP failure: {}",
-        error_msg
+        "Error should mention HTTP failure: {error_msg}"
     );
 
     // Cleanup after test

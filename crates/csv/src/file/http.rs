@@ -29,12 +29,12 @@ impl HttpFileReader {
             .get(&url)
             .send()
             .await
-            .context(format!("Failed to fetch URL: {}", url))?;
+            .context(format!("Failed to fetch URL: {url}"))?;
 
         // Check for successful status
         let status = response.status();
         if !status.is_success() {
-            anyhow::bail!("HTTP request failed with status: {}", status);
+            anyhow::bail!("HTTP request failed with status: {status}");
         }
 
         // Get all bytes at once (for CSV files, this is reasonable)

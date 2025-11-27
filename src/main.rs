@@ -250,6 +250,11 @@ enum Commands {
         #[arg(long)]
         id_field: Option<String>,
 
+        /// Column names when has_headers is false (comma-separated, e.g., "id,name,age")
+        /// Must match the number of columns in the CSV file
+        #[arg(long, value_delimiter = ',')]
+        column_names: Option<Vec<String>>,
+
         /// Emit metrics to this file during execution (for load testing)
         #[arg(long, value_name = "PATH")]
         emit_metrics: Option<std::path::PathBuf>,
@@ -390,6 +395,7 @@ async fn run() -> anyhow::Result<()> {
             has_headers,
             delimiter,
             id_field,
+            column_names,
             emit_metrics,
             to_opts,
         } => {
@@ -409,6 +415,7 @@ async fn run() -> anyhow::Result<()> {
                 has_headers,
                 delimiter: delimiter as u8,
                 id_field,
+                column_names,
                 emit_metrics,
                 dry_run: to_opts.dry_run,
             };

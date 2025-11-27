@@ -21,10 +21,10 @@ impl LocalFileReader {
     /// ).await?;
     /// let csv_reader = csv::Reader::from_reader(reader);
     /// ```
-    pub async fn open(path: PathBuf, buffer_size: usize) -> Result<Box<dyn std::io::Read + Send>> {
-        let file = tokio::fs::File::open(&path).await?;
-        let buffered = tokio::io::BufReader::with_capacity(buffer_size, file);
-        let reader = tokio_util::io::SyncIoBridge::new(buffered);
+    pub async fn open(path: PathBuf, _buffer_size: usize) -> Result<Box<dyn std::io::Read + Send>> {
+        // Read the entire file into memory to avoid SyncIoBridge runtime issues
+        let contents = tokio::fs::read(&path).await?;
+        let reader = std::io::Cursor::new(contents);
         Ok(Box::new(reader))
     }
 }

@@ -44,6 +44,10 @@ pub struct Config {
     /// Optional field to use as record ID
     pub id_field: Option<String>,
 
+    /// Optional column names when has_headers is false
+    /// If provided, must match the number of columns in the CSV
+    pub column_names: Option<Vec<String>>,
+
     /// Optional path to emit metrics during execution
     pub emit_metrics: Option<PathBuf>,
 
@@ -69,6 +73,7 @@ impl Default for Config {
             has_headers: true,
             delimiter: b',',
             id_field: None,
+            column_names: None,
             emit_metrics: None,
             dry_run: false,
         }
@@ -116,16 +121,136 @@ async fn process_csv_reader(
             .iter()
             .map(|h| h.to_string())
             .collect::<Vec<String>>()
+    } else if let Some(ref column_names) = config.column_names {
+        // Use provided column names
+        column_names.clone()
     } else {
-        // Generate column names if no headers
-        let record = csv_reader.records().next();
-        match record {
-            Some(Ok(ref r)) => (0..r.len()).map(|i| format!("column_{i}")).collect(),
-            _ => {
-                warn!("Could not determine column count from CSV");
-                vec![]
+        // Generate column names if no headers and no names provided
+        // We need to peek at the first record to determine column count
+        // Since we can't peek without consuming, we'll use a workaround:
+        // Read all records into memory first
+        let all_records: Vec<_> = csv_reader
+            .records()
+            .collect::<Result<Vec<_>, _>>()
+            .context("Failed to read CSV records")?;
+
+        if all_records.is_empty() {
+            warn!("CSV file is empty");
+            return Ok(());
+        }
+
+        let column_count = all_records[0].len();
+        let headers: Vec<String> = (0..column_count).map(|i| format!("column_{i}")).collect();
+
+        // Process all the records we just read
+        let mut total_processed = 0;
+        let mut record_count = 0;
+        let mut batch: Vec<crate::surreal::Record> = Vec::new();
+
+        for record in all_records {
+            // Validate column count matches
+            if record.len() != headers.len() {
+                anyhow::bail!(
+                    "Column count mismatch in CSV row {}: expected {} columns ({}), but found {} columns",
+                    record_count + 1,
+                    headers.len(),
+                    headers.join(", "),
+                    record.len()
+                );
+            }
+
+            // Convert CSV record to SurrealDB Record
+            let mut data = HashMap::new();
+
+            for (i, value) in record.iter().enumerate() {
+                if i < headers.len() {
+                    let column_name = &headers[i];
+
+                    // Try to parse as number, boolean, or keep as string
+                    let parsed_value = if let Ok(n) = value.parse::<i64>() {
+                        crate::surreal::SurrealValue::Int(n)
+                    } else if let Ok(f) = value.parse::<f64>() {
+                        crate::surreal::SurrealValue::Float(f)
+                    } else if let Ok(b) = value.parse::<bool>() {
+                        crate::surreal::SurrealValue::Bool(b)
+                    } else if value.is_empty() {
+                        crate::surreal::SurrealValue::Null
+                    } else {
+                        crate::surreal::SurrealValue::String(value.to_string())
+                    };
+
+                    data.insert(column_name.clone(), parsed_value);
+                }
+            }
+
+            // Create the ID for the record
+            let id = if let Some(ref id_field) = config.id_field {
+                // Use specified field as ID
+                if let Some(id_value) = data.get(id_field) {
+                    match id_value {
+                        crate::surreal::SurrealValue::String(s) => Id::String(s.clone()),
+                        crate::surreal::SurrealValue::Int(n) => Id::Number(*n),
+                        _ => Id::ulid(), // Fallback to ULID
+                    }
+                } else {
+                    Id::ulid()
+                }
+            } else {
+                Id::ulid()
+            };
+
+            let surreal_record = crate::surreal::Record {
+                id: Thing::from((config.table.as_str(), id)),
+                data,
+            };
+
+            batch.push(surreal_record);
+            record_count += 1;
+
+            // Process batch when it reaches the configured size
+            if batch.len() >= config.batch_size {
+                if !config.dry_run {
+                    crate::surreal::write_records(surreal, &config.table, &batch).await?;
+                    total_processed += batch.len();
+                } else {
+                    debug!("Dry run: Would insert batch of {} records", batch.len());
+                    total_processed += batch.len();
+                }
+
+                // Update metrics
+                if let Some(collector) = metrics_collector {
+                    collector.add_rows(batch.len() as u64);
+                }
+
+                batch.clear();
             }
         }
+
+        // Process remaining records
+        if !batch.is_empty() {
+            if !config.dry_run {
+                crate::surreal::write_records(surreal, &config.table, &batch).await?;
+                total_processed += batch.len();
+            } else {
+                debug!(
+                    "Dry run: Would insert final batch of {} records",
+                    batch.len()
+                );
+                total_processed += batch.len();
+            }
+
+            // Update metrics for final batch
+            if let Some(collector) = metrics_collector {
+                collector.add_rows(batch.len() as u64);
+            }
+        }
+
+        info!(
+            "Processed {record_count} records from {source_name} (total processed: {total_processed})",
+        );
+
+        // Return early since we already processed everything
+        return Ok(());
     };
 
     debug!("CSV headers/columns: {headers:?}");
@@ -137,6 +262,17 @@ async fn process_csv_reader(
 
     for result in csv_reader.records() {
         let record = result.context("Failed to read CSV record")?;
+
+        // Validate column count matches
+        if record.len() != headers.len() {
+            anyhow::bail!(
+                "Column count mismatch in CSV row {}: expected {} columns ({}), but found {} columns",
+                record_count + 1,
+                headers.len(),
+                headers.join(", "),
+                record.len()
+            );
+        }
 
         // Convert CSV record to SurrealDB Record
         let mut data = HashMap::new();
