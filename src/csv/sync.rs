@@ -41,6 +41,9 @@ pub struct Config {
     /// Optional field to use as record ID
     pub id_field: Option<String>,
 
+    /// Optional path to emit metrics during execution
+    pub emit_metrics: Option<PathBuf>,
+
     /// Whether to perform a dry run without writing data
     pub dry_run: bool,
 }
@@ -64,6 +67,7 @@ impl Default for Config {
             has_headers: true,
             delimiter: b',',
             id_field: None,
+            emit_metrics: None,
             dry_run: false,
         }
     }
@@ -92,6 +96,7 @@ async fn process_csv_reader(
     config: &Config,
     reader: Box<dyn std::io::Read + Send>,
     source_name: &str,
+    metrics_collector: Option<&super::metrics::MetricsCollector>,
 ) -> Result<()> {
     info!("Processing CSV from: {source_name}");
 
@@ -188,6 +193,12 @@ async fn process_csv_reader(
                 debug!("Dry run: Would insert batch of {} records", batch.len());
                 total_processed += batch.len();
             }
+
+            // Update metrics
+            if let Some(collector) = metrics_collector {
+                collector.add_rows(batch.len() as u64);
+            }
+
             batch.clear();
         }
     }
@@ -203,6 +214,11 @@ async fn process_csv_reader(
                 batch.len()
             );
             total_processed += batch.len();
+        }
+
+        // Update metrics for final batch
+        if let Some(collector) = metrics_collector {
+            collector.add_rows(batch.len() as u64);
         }
     }
 
@@ -234,11 +250,24 @@ pub async fn sync(config: Config) -> Result<()> {
         warn!("Running in dry-run mode - no data will be written");
     }
 
+    // Start metrics collection if requested
+    let metrics_task = if let Some(ref metrics_path) = config.emit_metrics {
+        info!("Metrics emission enabled: {}", metrics_path.display());
+        let collector = super::metrics::MetricsCollector::new(metrics_path.clone());
+        let task = collector.start_emission_task(std::time::Duration::from_secs(1));
+        Some((collector, task))
+    } else {
+        None
+    };
+
     // Connect to SurrealDB using the standard connection function
     let surreal =
         crate::surreal::surreal_connect(&config.surreal_opts, &config.namespace, &config.database)
             .await
             .context("Failed to connect to SurrealDB")?;
+
+    // Get metrics collector reference for passing to process_csv_reader
+    let metrics_ref = metrics_task.as_ref().map(|(collector, _)| collector);
 
     // Process each local CSV file
     for file_path in &config.files {
@@ -250,7 +279,7 @@ pub async fn sync(config: Config) -> Result<()> {
         .context("Failed to open CSV file")?;
 
         let source_name = file_path.display().to_string();
-        process_csv_reader(&surreal, &config, reader, &source_name).await?;
+        process_csv_reader(&surreal, &config, reader, &source_name, metrics_ref).await?;
     }
 
     // Process each S3 CSV file
@@ -261,7 +290,12 @@ pub async fn sync(config: Config) -> Result<()> {
                 .await
                 .context("Failed to open S3 CSV file")?;
 
-        process_csv_reader(&surreal, &config, reader, s3_uri).await?;
+        process_csv_reader(&surreal, &config, reader, s3_uri, metrics_ref).await?;
+    }
+
+    // Stop metrics collection if it was started
+    if let Some((_collector, task)) = metrics_task {
+        task.abort();
     }
 
     info!("CSV sync completed successfully");

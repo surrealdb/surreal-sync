@@ -246,6 +246,10 @@ enum Commands {
         #[arg(long)]
         id_field: Option<String>,
 
+        /// Emit metrics to this file during execution (for load testing)
+        #[arg(long, value_name = "PATH")]
+        emit_metrics: Option<std::path::PathBuf>,
+
         /// Target SurrealDB options
         #[command(flatten)]
         to_opts: SurrealOpts,
@@ -381,6 +385,7 @@ async fn run() -> anyhow::Result<()> {
             has_headers,
             delimiter,
             id_field,
+            emit_metrics,
             to_opts,
         } => {
             let config = csv::Config {
@@ -394,6 +399,7 @@ async fn run() -> anyhow::Result<()> {
                 has_headers,
                 delimiter: delimiter as u8,
                 id_field,
+                emit_metrics,
                 dry_run: false,
             };
             csv::sync(config).await?;
