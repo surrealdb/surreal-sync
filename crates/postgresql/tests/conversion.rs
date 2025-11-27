@@ -88,7 +88,7 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
                 &123i32,
                 &"Test Name",
                 &true,
-                &3.14f32,
+                &std::f32::consts::PI,
                 &json_data,
                 &vec!["tag1", "tag2", "tag3"],
             ],
@@ -127,7 +127,7 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
 
             // Check float
             if let Some(Value::Real(score)) = row.columns.get("score") {
-                assert!((score - 3.14).abs() < 0.001);
+                assert!((score - std::f32::consts::PI).abs() < 0.001);
             } else {
                 panic!("Expected Real value for score");
             }

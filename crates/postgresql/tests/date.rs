@@ -199,7 +199,7 @@ async fn test_date_replication_formats() -> Result<()> {
                         };
 
                         match id {
-                            1 | 2 | 3 => {
+                            1..=3 => {
                                 // All these should normalize to 1999-01-08
                                 assert_eq!(dt.to_rfc3339(), "1999-01-08T00:00:00+00:00");
                             }

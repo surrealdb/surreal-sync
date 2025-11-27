@@ -100,8 +100,8 @@ async fn insert_test_data(client: &tokio_postgres::Client) -> Result<()> {
                 &32767i16,               // small_int
                 &2147483647i32,          // normal_int
                 &9223372036854775807i64, // big_int
-                &3.14159f32,             // real_num
-                &2.718281828459045f64,   // double_num
+                &std::f32::consts::PI,   // real_num
+                &std::f64::consts::E,    // double_num
                 // String types
                 &"Test varchar", // varchar_field
                 &"This is a longer text field with multiple words and sentences.", // text_field
@@ -149,7 +149,7 @@ fn verify_change(change: &Action) -> Result<()> {
             info!("Change verification successful");
             Ok(())
         }
-        _ => bail!("Expected Insert action, got {}", change),
+        _ => bail!("Expected Insert action, got {change}"),
     }
 }
 

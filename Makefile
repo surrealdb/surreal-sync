@@ -24,16 +24,16 @@ fmt:
 	cargo fmt --all
 	@echo "✅ Code formatting complete"
 
-# Check for compilation warnings (fail if any warnings found)
+# Check for compilation warnings (fail if any warnings found, including all workspace members)
 check:
 	@echo "🔍 Checking for compilation warnings..."
-	cargo check --all-targets --all-features
+	cargo check --workspace --all-targets --all-features
 	@echo "✅ No compilation warnings found"
 
-# Run clippy linter for code quality
+# Run clippy linter for code quality (including all workspace members)
 clippy:
 	@echo "📎 Running clippy linter..."
-	cargo clippy --all-targets --all-features -- -D warnings
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
 	@echo "✅ Clippy checks passed with no warnings"
 
 # Build the release binary
