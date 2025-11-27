@@ -9,6 +9,10 @@ surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
 anyhow = "1.0"
 tracing = "0.1"
 tokio = { version = "1.47", features = ["full"] }
+reqwest = { version = "0.12", features = ["stream"] }
+aws-sdk-s3 = "1.54"
+aws-config = "1.5"
+tokio-util = { version = "0.7", features = ["io-util"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

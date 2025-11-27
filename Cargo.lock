@@ -5837,11 +5837,15 @@ name = "surreal-sync-jsonl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aws-config",
+ "aws-sdk-s3",
+ "reqwest",
  "serde",
  "serde_json",
  "surrealdb",
  "tokio",
  "tokio-test",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]
