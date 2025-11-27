@@ -212,7 +212,7 @@ enum Commands {
     },
 
     /// Import CSV files to SurrealDB
-    #[group(id = "source", required = true, multiple = false, args = ["files", "s3-uris"])]
+    #[group(id = "source", required = true, multiple = false, args = ["files", "s3-uris", "http-uris"])]
     Csv {
         /// CSV file paths to import (can specify multiple)
         #[arg(long, required = true, value_name = "FILE")]
@@ -221,6 +221,10 @@ enum Commands {
         /// S3 URIs to import (can specify multiple)
         #[arg(long, value_name = "S3_URI")]
         s3_uris: Vec<String>,
+
+        /// HTTP/HTTPS URLs to import (can specify multiple)
+        #[arg(long, value_name = "HTTP_URI")]
+        http_uris: Vec<String>,
 
         /// Target SurrealDB table name
         #[arg(long)]
@@ -379,6 +383,7 @@ async fn run() -> anyhow::Result<()> {
         Commands::Csv {
             files,
             s3_uris,
+            http_uris,
             table,
             to_namespace,
             to_database,
@@ -391,16 +396,21 @@ async fn run() -> anyhow::Result<()> {
             let config = csv::Config {
                 files,
                 s3_uris,
+                http_uris,
                 table,
                 batch_size: to_opts.batch_size,
                 namespace: to_namespace,
                 database: to_database,
-                surreal_opts: to_opts,
+                surreal_opts: csv::surreal::SurrealOpts {
+                    surreal_endpoint: to_opts.surreal_endpoint,
+                    surreal_username: to_opts.surreal_username,
+                    surreal_password: to_opts.surreal_password,
+                },
                 has_headers,
                 delimiter: delimiter as u8,
                 id_field,
                 emit_metrics,
-                dry_run: false,
+                dry_run: to_opts.dry_run,
             };
             csv::sync(config).await?;
         }

@@ -1,6 +1,6 @@
 //! CSV synchronization implementation
 //!
-//! This module handles streaming CSV files and importing them into SurrealDB tables.
+//! This module handles streaming CSV files from various sources and importing them into SurrealDB tables.
 
 use anyhow::{Context, Result};
 use std::collections::HashMap;
@@ -17,6 +17,9 @@ pub struct Config {
     /// List of S3 URIs to import
     pub s3_uris: Vec<String>,
 
+    /// List of HTTP/HTTPS URLs to import
+    pub http_uris: Vec<String>,
+
     /// Target SurrealDB table name
     pub table: String,
 
@@ -30,7 +33,7 @@ pub struct Config {
     pub database: String,
 
     /// SurrealDB connection options
-    pub surreal_opts: crate::SurrealOpts,
+    pub surreal_opts: crate::surreal::SurrealOpts,
 
     /// Whether the CSV has headers (default: true)
     pub has_headers: bool,
@@ -53,16 +56,15 @@ impl Default for Config {
         Self {
             files: vec![],
             s3_uris: vec![],
+            http_uris: vec![],
             table: String::new(),
             batch_size: 1000,
             namespace: "test".to_string(),
             database: "test".to_string(),
-            surreal_opts: crate::SurrealOpts {
+            surreal_opts: crate::surreal::SurrealOpts {
                 surreal_endpoint: "ws://localhost:8000".to_string(),
                 surreal_username: "root".to_string(),
                 surreal_password: "root".to_string(),
-                batch_size: 1000,
-                dry_run: false,
             },
             has_headers: true,
             delimiter: b',',
@@ -90,7 +92,7 @@ fn parse_s3_uri(uri: &str) -> Result<(String, String)> {
 /// Process CSV data from a reader and import into SurrealDB
 ///
 /// This function handles all CSV parsing, data conversion, and SurrealDB insertion
-/// for a single CSV source (file or S3).
+/// for a single CSV source (file, S3, or HTTP).
 async fn process_csv_reader(
     surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
     config: &Config,
@@ -186,7 +188,7 @@ async fn process_csv_reader(
 
         // Process batch when it reaches the configured size
         if batch.len() >= config.batch_size {
-            if !config.dry_run && !config.surreal_opts.dry_run {
+            if !config.dry_run {
                 crate::surreal::write_records(surreal, &config.table, &batch).await?;
                 total_processed += batch.len();
             } else {
@@ -205,7 +207,7 @@ async fn process_csv_reader(
 
     // Process remaining records
     if !batch.is_empty() {
-        if !config.dry_run && !config.surreal_opts.dry_run {
+        if !config.dry_run {
             crate::surreal::write_records(surreal, &config.table, &batch).await?;
             total_processed += batch.len();
         } else {
@@ -231,7 +233,7 @@ async fn process_csv_reader(
 
 /// Sync CSV files to SurrealDB
 ///
-/// This function streams CSV files and imports them into a SurrealDB table
+/// This function streams CSV files from various sources and imports them into a SurrealDB table
 /// in configurable batches.
 ///
 /// # Arguments
@@ -244,9 +246,10 @@ pub async fn sync(config: Config) -> Result<()> {
     info!("Target table: {}", config.table);
     info!("Files to process: {:?}", config.files);
     info!("S3 URIs to process: {:?}", config.s3_uris);
+    info!("HTTP/HTTPS URIs to process: {:?}", config.http_uris);
     info!("Batch size: {}", config.batch_size);
 
-    if config.dry_run || config.surreal_opts.dry_run {
+    if config.dry_run {
         warn!("Running in dry-run mode - no data will be written");
     }
 
@@ -293,6 +296,18 @@ pub async fn sync(config: Config) -> Result<()> {
         process_csv_reader(&surreal, &config, reader, s3_uri, metrics_ref).await?;
     }
 
+    // Process each HTTP/HTTPS CSV file
+    for http_uri in &config.http_uris {
+        let reader = crate::file::http::HttpFileReader::open(
+            http_uri.clone(),
+            crate::file::DEFAULT_BUFFER_SIZE,
+        )
+        .await
+        .context("Failed to open HTTP/HTTPS CSV file")?;
+
+        process_csv_reader(&surreal, &config, reader, http_uri, metrics_ref).await?;
+    }
+
     // Stop metrics collection if it was started
     if let Some((_collector, task)) = metrics_task {
         task.abort();
@@ -331,12 +346,10 @@ mod tests {
             table: "test_table".to_string(),
             batch_size: 10,
             dry_run: true, // Don't actually write to DB
-            surreal_opts: crate::SurrealOpts {
+            surreal_opts: crate::surreal::SurrealOpts {
                 surreal_endpoint: "ws://localhost:8000".to_string(),
                 surreal_username: "root".to_string(),
                 surreal_password: "root".to_string(),
-                batch_size: 1000,
-                dry_run: true,
             },
             ..Default::default()
         };

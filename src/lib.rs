@@ -42,8 +42,6 @@
 use clap::Parser;
 
 pub mod checkpoint;
-pub mod csv;
-pub mod file;
 pub mod jsonl;
 pub mod kafka;
 pub mod mongodb;
@@ -53,6 +51,9 @@ pub mod postgresql;
 pub mod surreal;
 pub mod sync;
 pub mod testing;
+
+// Re-export CSV crate
+pub use surreal_sync_csv as csv;
 
 // Re-export types and schema functionality for easy access
 pub use surreal::{

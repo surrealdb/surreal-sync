@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kafka", "crates/kafka-producer", "crates/postgresql"]
+members = ["crates/kafka", "crates/kafka-producer", "crates/postgresql", "crates/csv"]
 resolver = "2"
 
 [package]
@@ -64,6 +64,9 @@ surreal-sync-kafka = { path = "crates/kafka" }
 
 # PostgreSQL replication library
 surreal-sync-postgresql-replication = { path = "crates/postgresql" }
+
+# CSV source
+surreal-sync-csv = { path = "crates/csv" }
 
 [dev-dependencies]
 # Testing
