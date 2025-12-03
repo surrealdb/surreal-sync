@@ -51,20 +51,20 @@ clean:
 # Depends on build because cli tests need the binary
 test: fmt check clippy build
 	@echo "📊 Unit tests..."
-	@if ! cargo test --no-fail-fast --lib; then \
+	@if ! cargo test --workspace --no-fail-fast --lib; then \
 		echo "❌ Unit tests failed"; \
 		exit 1; \
 	fi
 
 	@echo "🔗 Integration tests..."
 	@echo "   Running all integration tests with database isolation..."
-	@if ! RUST_TEST_THREADS=1 cargo test --no-fail-fast --tests; then \
+	@if ! RUST_TEST_THREADS=1 cargo test --workspace --no-fail-fast --tests; then \
 		echo "❌ Integration tests failed"; \
 		exit 1; \
 	fi
 
 	@echo "📖 Documentation tests..."
-	@if ! cargo test --no-fail-fast --doc; then \
+	@if ! cargo test --workspace --no-fail-fast --doc; then \
 		echo "❌ Documentation tests failed"; \
 		exit 1; \
 	fi
