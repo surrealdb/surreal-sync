@@ -5,19 +5,24 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};
 use surrealdb::sql::{Id, Thing};
 use tracing::{debug, info, warn};
 
 /// Configuration for CSV import
 #[derive(Clone)]
 pub struct Config {
-    /// List of CSV file paths to import
+    /// Unified file sources (files, directories, S3 URIs, HTTP URLs)
+    /// Directories (paths ending with /) will be expanded to list all files
+    pub sources: Vec<FileSource>,
+
+    /// List of CSV file paths to import (legacy, use `sources` instead)
     pub files: Vec<PathBuf>,
 
-    /// List of S3 URIs to import
+    /// List of S3 URIs to import (legacy, use `sources` instead)
     pub s3_uris: Vec<String>,
 
-    /// List of HTTP/HTTPS URLs to import
+    /// List of HTTP/HTTPS URLs to import (legacy, use `sources` instead)
     pub http_uris: Vec<String>,
 
     /// Target SurrealDB table name
@@ -58,6 +63,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            sources: vec![],
             files: vec![],
             s3_uris: vec![],
             http_uris: vec![],
@@ -78,20 +84,6 @@ impl Default for Config {
             dry_run: false,
         }
     }
-}
-
-/// Parse S3 URI in the format: s3://bucket/key/to/file.csv
-fn parse_s3_uri(uri: &str) -> Result<(String, String)> {
-    let uri = uri
-        .strip_prefix("s3://")
-        .context("S3 URI must start with 's3://'")?;
-
-    let parts: Vec<&str> = uri.splitn(2, '/').collect();
-    if parts.len() != 2 {
-        anyhow::bail!("S3 URI must be in format 's3://bucket/key/to/file'");
-    }
-
-    Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
 /// Process CSV data from a reader and import into SurrealDB
@@ -380,9 +372,13 @@ async fn process_csv_reader(
 pub async fn sync(config: Config) -> Result<()> {
     info!("Starting CSV sync to SurrealDB");
     info!("Target table: {}", config.table);
-    info!("Files to process: {:?}", config.files);
-    info!("S3 URIs to process: {:?}", config.s3_uris);
-    info!("HTTP/HTTPS URIs to process: {:?}", config.http_uris);
+    info!("Sources to process: {:?}", config.sources);
+    info!("Files to process (legacy): {:?}", config.files);
+    info!("S3 URIs to process (legacy): {:?}", config.s3_uris);
+    info!(
+        "HTTP/HTTPS URIs to process (legacy): {:?}",
+        config.http_uris
+    );
     info!("Batch size: {}", config.batch_size);
 
     if config.dry_run {
@@ -408,40 +404,69 @@ pub async fn sync(config: Config) -> Result<()> {
     // Get metrics collector reference for passing to process_csv_reader
     let metrics_ref = metrics_task.as_ref().map(|(collector, _)| collector);
 
-    // Process each local CSV file
+    // Collect all resolved sources
+    let mut all_resolved: Vec<ResolvedSource> = Vec::new();
+
+    // Process new unified sources
+    for source in &config.sources {
+        let resolved = source
+            .resolve()
+            .await
+            .with_context(|| format!("Failed to resolve source: {}", source.display_name()))?;
+
+        // Filter by .csv extension
+        let csv_files: Vec<_> = resolved
+            .into_iter()
+            .filter(|r| {
+                r.extension()
+                    .map(|e| e.eq_ignore_ascii_case("csv"))
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        if csv_files.is_empty() && source.is_directory() {
+            warn!("No CSV files found in directory: {}", source.display_name());
+        }
+
+        all_resolved.extend(csv_files);
+    }
+
+    // Also process legacy fields for backward compatibility
     for file_path in &config.files {
-        let reader = crate::file::local::LocalFileReader::open(
-            file_path.clone(),
-            crate::file::DEFAULT_BUFFER_SIZE,
-        )
-        .await
-        .context("Failed to open CSV file")?;
-
-        let source_name = file_path.display().to_string();
-        process_csv_reader(&surreal, &config, reader, &source_name, metrics_ref).await?;
+        all_resolved.push(ResolvedSource::Local(file_path.clone()));
     }
 
-    // Process each S3 CSV file
     for s3_uri in &config.s3_uris {
-        let (bucket, key) = parse_s3_uri(s3_uri)?;
-        let reader =
-            crate::file::s3::S3FileReader::open(bucket, key, crate::file::DEFAULT_BUFFER_SIZE)
-                .await
-                .context("Failed to open S3 CSV file")?;
-
-        process_csv_reader(&surreal, &config, reader, s3_uri, metrics_ref).await?;
+        let (bucket, key) = surreal_sync_file::parse_s3_uri(s3_uri)?;
+        all_resolved.push(ResolvedSource::S3 { bucket, key });
     }
 
-    // Process each HTTP/HTTPS CSV file
     for http_uri in &config.http_uris {
-        let reader = crate::file::http::HttpFileReader::open(
-            http_uri.clone(),
-            crate::file::DEFAULT_BUFFER_SIZE,
-        )
-        .await
-        .context("Failed to open HTTP/HTTPS CSV file")?;
+        all_resolved.push(ResolvedSource::Http(http_uri.clone()));
+    }
 
-        process_csv_reader(&surreal, &config, reader, http_uri, metrics_ref).await?;
+    info!("Resolved {} CSV sources to process", all_resolved.len());
+
+    // Process each resolved source
+    for resolved_source in &all_resolved {
+        let reader = resolved_source
+            .open(DEFAULT_BUFFER_SIZE)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to open CSV source: {}",
+                    resolved_source.display_name()
+                )
+            })?;
+
+        process_csv_reader(
+            &surreal,
+            &config,
+            reader,
+            &resolved_source.display_name(),
+            metrics_ref,
+        )
+        .await?;
     }
 
     // Stop metrics collection if it was started

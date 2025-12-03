@@ -12,7 +12,7 @@
 //! ## Usage
 //!
 //! ```rust,no_run
-//! use surreal_sync_kafka_producer::{KafkaTestProducer, UserMessage, PostMessage};
+//! use surreal_sync_kafka_producer::{KafkaTestProducer, UserMessage, UserMetadata, UserPreferences, UserSettings};
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
@@ -28,9 +28,22 @@
 //!         email: "alice@example.com".to_string(),
 //!         age: 30,
 //!         active: true,
-//!         created_at: chrono::Utc::now().timestamp(),
+//!         created_at: chrono::Utc::now(),
 //!         score: 95.7,
-//!         // ... other fields
+//!         account_balance: 12345.67,
+//!         validation_logic: "function validate() { return true; }".to_string(),
+//!         reference_id: "507f1f77bcf86cd799439011".to_string(),
+//!         metadata: UserMetadata {
+//!             preferences: UserPreferences {
+//!                 theme: "dark".to_string(),
+//!                 language: "en".to_string(),
+//!             },
+//!             tags: vec!["premium".to_string(), "verified".to_string()],
+//!             settings: UserSettings {
+//!                 notifications: true,
+//!                 privacy: "strict".to_string(),
+//!             },
+//!         },
 //!     };
 //!
 //!     producer.publish_user("users-topic", &user).await?;

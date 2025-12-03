@@ -54,6 +54,7 @@ async fn test_csv_with_custom_column_names() {
     let surreal = setup_surrealdb(namespace, database).await.unwrap();
 
     let config = Config {
+        sources: vec![],
         files: vec![temp_file.path().to_path_buf()],
         s3_uris: vec![],
         http_uris: vec![],
@@ -126,6 +127,7 @@ async fn test_csv_column_count_mismatch_error() {
     cleanup_namespace(&surreal, namespace).await.unwrap();
 
     let config = Config {
+        sources: vec![],
         files: vec![temp_file.path().to_path_buf()],
         s3_uris: vec![],
         http_uris: vec![],
@@ -186,6 +188,7 @@ async fn test_csv_without_headers_auto_generated_names() {
     let surreal = setup_surrealdb(namespace, database).await.unwrap();
 
     let config = Config {
+        sources: vec![],
         files: vec![temp_file.path().to_path_buf()],
         s3_uris: vec![],
         http_uris: vec![],
@@ -250,6 +253,7 @@ async fn test_csv_column_count_mismatch_with_extra_columns_in_row() {
     cleanup_namespace(&surreal, namespace).await.unwrap();
 
     let config = Config {
+        sources: vec![],
         files: vec![temp_file.path().to_path_buf()],
         s3_uris: vec![],
         http_uris: vec![],

@@ -7,18 +7,23 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use surreal_sync_file::{FileSource, DEFAULT_BUFFER_SIZE};
 use surrealdb::sql::Thing;
 
 /// Configuration for JSONL import
 #[derive(Clone)]
 pub struct Config {
-    /// List of JSONL file paths to import
+    /// List of file sources to import (supports local files, S3 URIs, HTTP URLs, and directories)
+    /// When a source ends with '/', it is treated as a directory and all .jsonl files are imported
+    pub sources: Vec<FileSource>,
+
+    /// List of JSONL file paths to import (legacy, use `sources` instead)
     pub files: Vec<PathBuf>,
 
-    /// List of S3 URIs to import
+    /// List of S3 URIs to import (legacy, use `sources` instead)
     pub s3_uris: Vec<String>,
 
-    /// List of HTTP/HTTPS URLs to import
+    /// List of HTTP/HTTPS URLs to import (legacy, use `sources` instead)
     pub http_uris: Vec<String>,
 
     /// Target namespace
@@ -46,6 +51,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            sources: vec![],
             files: vec![],
             s3_uris: vec![],
             http_uris: vec![],
@@ -64,20 +70,6 @@ impl Default for Config {
             dry_run: false,
         }
     }
-}
-
-/// Parse S3 URI in the format: s3://bucket/key/to/file.jsonl
-fn parse_s3_uri(uri: &str) -> Result<(String, String)> {
-    let uri = uri
-        .strip_prefix("s3://")
-        .context("S3 URI must start with 's3://'")?;
-
-    let parts: Vec<&str> = uri.splitn(2, '/').collect();
-    if parts.len() != 2 {
-        anyhow::bail!("S3 URI must be in format 's3://bucket/key/to/file'");
-    }
-
-    Ok((parts[0].to_string(), parts[1].to_string()))
 }
 
 /// Process JSONL data from a reader and import into SurrealDB
@@ -184,6 +176,7 @@ async fn process_jsonl_reader(
 /// Returns Ok(()) on successful completion, or an error if the sync fails
 pub async fn sync(config: Config) -> Result<()> {
     tracing::info!("Starting JSONL migration");
+    tracing::info!("Sources to process: {:?}", config.sources);
     tracing::info!("Files to process: {:?}", config.files);
     tracing::info!("S3 URIs to process: {:?}", config.s3_uris);
     tracing::info!("HTTP/HTTPS URIs to process: {:?}", config.http_uris);
@@ -207,43 +200,78 @@ pub async fn sync(config: Config) -> Result<()> {
 
     let mut total_sources = 0;
 
-    // Process each local JSONL file
-    for file_path in &config.files {
-        let reader = crate::file::local::LocalFileReader::open(
-            file_path.clone(),
-            crate::file::DEFAULT_BUFFER_SIZE,
-        )
-        .await
-        .context("Failed to open JSONL file")?;
+    // Process sources from the new unified interface
+    for source in &config.sources {
+        let resolved_sources = source.resolve().await?;
 
-        let source_name = file_path.display().to_string();
-        process_jsonl_reader(&surreal, &config, reader, &source_name, &rules).await?;
-        total_sources += 1;
+        // Filter for .jsonl files only
+        let jsonl_sources: Vec<_> = resolved_sources
+            .into_iter()
+            .filter(|s| s.extension() == Some("jsonl"))
+            .collect();
+
+        if jsonl_sources.is_empty() && source.is_directory() {
+            tracing::warn!("No .jsonl files found in directory: {:?}", source);
+        }
+
+        for resolved in jsonl_sources {
+            let source_name = resolved.display_name();
+            let reader = resolved
+                .open(DEFAULT_BUFFER_SIZE)
+                .await
+                .with_context(|| format!("Failed to open JSONL source: {source_name}"))?;
+
+            process_jsonl_reader(&surreal, &config, reader, &source_name, &rules).await?;
+            total_sources += 1;
+        }
     }
 
-    // Process each S3 JSONL file
+    // Legacy: Process each local JSONL file
+    for file_path in &config.files {
+        let source = FileSource::Local(file_path.clone());
+        let resolved = source.resolve().await?;
+
+        for r in resolved {
+            let source_name = r.display_name();
+            let reader = r
+                .open(DEFAULT_BUFFER_SIZE)
+                .await
+                .context("Failed to open JSONL file")?;
+            process_jsonl_reader(&surreal, &config, reader, &source_name, &rules).await?;
+            total_sources += 1;
+        }
+    }
+
+    // Legacy: Process each S3 JSONL file
     for s3_uri in &config.s3_uris {
-        let (bucket, key) = parse_s3_uri(s3_uri)?;
-        let reader =
-            crate::file::s3::S3FileReader::open(bucket, key, crate::file::DEFAULT_BUFFER_SIZE)
+        let source = FileSource::parse(s3_uri)?;
+        let resolved = source.resolve().await?;
+
+        for r in resolved {
+            let source_name = r.display_name();
+            let reader = r
+                .open(DEFAULT_BUFFER_SIZE)
                 .await
                 .context("Failed to open S3 JSONL file")?;
-
-        process_jsonl_reader(&surreal, &config, reader, s3_uri, &rules).await?;
-        total_sources += 1;
+            process_jsonl_reader(&surreal, &config, reader, &source_name, &rules).await?;
+            total_sources += 1;
+        }
     }
 
-    // Process each HTTP/HTTPS JSONL file
+    // Legacy: Process each HTTP/HTTPS JSONL file
     for http_uri in &config.http_uris {
-        let reader = crate::file::http::HttpFileReader::open(
-            http_uri.clone(),
-            crate::file::DEFAULT_BUFFER_SIZE,
-        )
-        .await
-        .context("Failed to open HTTP/HTTPS JSONL file")?;
+        let source = FileSource::parse(http_uri)?;
+        let resolved = source.resolve().await?;
 
-        process_jsonl_reader(&surreal, &config, reader, http_uri, &rules).await?;
-        total_sources += 1;
+        for r in resolved {
+            let source_name = r.display_name();
+            let reader = r
+                .open(DEFAULT_BUFFER_SIZE)
+                .await
+                .context("Failed to open HTTP/HTTPS JSONL file")?;
+            process_jsonl_reader(&surreal, &config, reader, &source_name, &rules).await?;
+            total_sources += 1;
+        }
     }
 
     tracing::info!(
@@ -300,6 +328,7 @@ pub async fn migrate_from_jsonl(
 
     // Use the new sync interface
     let config = Config {
+        sources: vec![],
         files,
         s3_uris: vec![],
         http_uris: vec![],

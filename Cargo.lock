@@ -5813,23 +5813,35 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
- "aws-config",
- "aws-sdk-s3",
  "axum",
  "chrono",
  "csv",
  "futures",
- "reqwest",
  "serde",
  "serde_json",
+ "surreal-sync-file",
  "surrealdb",
  "tempfile",
  "tokio",
  "tokio-test",
- "tokio-util",
  "tower",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "surreal-sync-file"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aws-config",
+ "aws-sdk-s3",
+ "reqwest",
+ "tempfile",
+ "tokio",
+ "tokio-test",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -5837,15 +5849,12 @@ name = "surreal-sync-jsonl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aws-config",
- "aws-sdk-s3",
- "reqwest",
  "serde",
  "serde_json",
+ "surreal-sync-file",
  "surrealdb",
  "tokio",
  "tokio-test",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

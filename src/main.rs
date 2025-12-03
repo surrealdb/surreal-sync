@@ -400,6 +400,7 @@ async fn run() -> anyhow::Result<()> {
             to_opts,
         } => {
             let config = csv::Config {
+                sources: vec![],
                 files,
                 s3_uris,
                 http_uris,

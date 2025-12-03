@@ -127,6 +127,7 @@ async fn test_csv_http_import() {
 
     // Configure CSV import
     let config = Config {
+        sources: vec![],
         files: vec![],
         s3_uris: vec![],
         http_uris: vec![csv_url.clone()],
@@ -207,6 +208,7 @@ async fn test_csv_http_import_with_path() {
 
     // Configure CSV import
     let config = Config {
+        sources: vec![],
         files: vec![],
         s3_uris: vec![],
         http_uris: vec![csv_url],
@@ -235,40 +237,67 @@ async fn test_csv_http_import_with_path() {
     let surreal = setup_surrealdb(namespace, database).await.unwrap();
 
     // First, try getting count
-    let count_query = format!("SELECT count() FROM {table} GROUP ALL");
+    let count_query = format!("SELECT count() AS count FROM {table} GROUP ALL");
     let mut count_response = surreal.query(count_query).await.unwrap();
 
     #[derive(Debug, serde::Deserialize)]
     struct CountResult {
-        _count: i64,
+        count: i64,
     }
 
     let counts: Vec<CountResult> = count_response.take(0).unwrap();
     tracing::info!("Count query result: {:?}", counts);
+    assert_eq!(counts.len(), 1, "Should have exactly one count result");
+    assert_eq!(counts[0].count, 5, "Should have 5 records");
 
     // Verify data was imported
     let query = format!("SELECT name, age, active FROM {table}");
     let mut response = surreal.query(query).await.unwrap();
 
-    #[derive(Debug, serde::Deserialize)]
+    #[derive(Debug, PartialEq, serde::Deserialize)]
     struct Person {
         name: String,
-        _age: i64,
-        _active: bool,
+        age: i64,
+        active: bool,
     }
 
-    let people: Vec<Person> = response.take(0).unwrap();
+    let mut people: Vec<Person> = response.take(0).unwrap();
     tracing::info!("People query result: {:?}", people);
 
     assert_eq!(people.len(), 5, "Should have imported 5 records");
 
-    // Verify we have all expected names
-    let names: Vec<String> = people.iter().map(|p| p.name.clone()).collect();
-    assert!(names.contains(&"Alice".to_string()));
-    assert!(names.contains(&"Bob".to_string()));
-    assert!(names.contains(&"Charlie".to_string()));
-    assert!(names.contains(&"Diana".to_string()));
-    assert!(names.contains(&"Eve".to_string()));
+    // Sort by name for consistent comparison
+    people.sort_by(|a, b| a.name.cmp(&b.name));
+
+    // Verify all Person records match expected data
+    let expected = vec![
+        Person {
+            name: "Alice".to_string(),
+            age: 30,
+            active: true,
+        },
+        Person {
+            name: "Bob".to_string(),
+            age: 25,
+            active: false,
+        },
+        Person {
+            name: "Charlie".to_string(),
+            age: 35,
+            active: true,
+        },
+        Person {
+            name: "Diana".to_string(),
+            age: 28,
+            active: false,
+        },
+        Person {
+            name: "Eve".to_string(),
+            age: 32,
+            active: true,
+        },
+    ];
+    assert_eq!(people, expected);
 
     // Cleanup after test
     cleanup_namespace(&surreal, namespace).await.unwrap();
@@ -300,6 +329,7 @@ async fn test_csv_http_404_error() {
 
     // Configure CSV import with non-existent file
     let config = Config {
+        sources: vec![],
         files: vec![],
         s3_uris: vec![],
         http_uris: vec![csv_url],

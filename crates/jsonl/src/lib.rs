@@ -4,10 +4,12 @@
 //! It supports conversion rules that transform JSON objects into SurrealDB Thing references.
 
 pub mod conversion;
-pub mod file;
 mod surreal;
 mod sync;
 
 pub use conversion::ConversionRule;
 pub use surreal::{SourceOpts, SurrealOpts};
 pub use sync::{migrate_from_jsonl, sync, Config};
+
+// Re-export file source types for convenience
+pub use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};

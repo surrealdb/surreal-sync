@@ -1,0 +1,28 @@
+[package]
+name = "surreal-sync-file"
+version = "0.1.0"
+edition = "2021"
+description = "File source abstraction for surreal-sync (local, S3, HTTP)"
+authors = ["surreal-sync contributors"]
+
+[dependencies]
+# HTTP client
+reqwest = { version = "0.12", features = ["stream"] }
+
+# AWS S3
+aws-sdk-s3 = "1.54"
+aws-config = "1.5"
+
+# Async runtime
+tokio = { version = "1.47", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io-util"] }
+
+# Error handling
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.0"
