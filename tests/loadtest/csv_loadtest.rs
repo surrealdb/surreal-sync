@@ -110,6 +110,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
             column_names: None,
             emit_metrics: None,
             dry_run: false,
+            schema: Some(schema.clone()), // Pass schema for type-aware conversion
         };
 
         sync(config).await?;
@@ -254,6 +255,7 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
         column_names: None,
         emit_metrics: None,
         dry_run: false,
+        schema: Some(schema.clone()), // Pass schema for type-aware conversion
     };
 
     sync(config).await?;

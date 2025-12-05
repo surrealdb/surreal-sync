@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};
 use surrealdb::sql::{Id, Thing};
+use sync_core::{SyncDataType, SyncSchema};
 use tracing::{debug, info, warn};
 
 /// Configuration for CSV import
@@ -58,6 +59,11 @@ pub struct Config {
 
     /// Whether to perform a dry run without writing data
     pub dry_run: bool,
+
+    /// Optional schema for type-aware conversion
+    /// When provided, CSV string values will be parsed according to the schema's
+    /// type definitions (e.g., JSON strings will be parsed to objects/arrays)
+    pub schema: Option<SyncSchema>,
 }
 
 impl Default for Config {
@@ -82,7 +88,240 @@ impl Default for Config {
             column_names: None,
             emit_metrics: None,
             dry_run: false,
+            schema: None,
         }
+    }
+}
+
+/// Parse a CSV string value according to the schema type.
+///
+/// When a schema is provided, this function parses values based on their declared type:
+/// - JSON/JSONB types: Parse JSON string to Object or Array
+/// - Array types: Parse JSON array string to Array
+/// - UUID types: Parse UUID string to Uuid
+/// - DateTime types: Parse ISO 8601 string to DateTime
+/// - Otherwise: Fall back to default parsing (number/bool/string detection)
+fn parse_value_with_schema(
+    value: &str,
+    schema_type: Option<&SyncDataType>,
+) -> crate::surreal::SurrealValue {
+    // If we have a schema type hint, use it for parsing
+    if let Some(data_type) = schema_type {
+        match data_type {
+            // JSON types - parse the JSON string
+            SyncDataType::Json | SyncDataType::Jsonb => {
+                if value.is_empty() {
+                    return crate::surreal::SurrealValue::Null;
+                }
+                match serde_json::from_str::<serde_json::Value>(value) {
+                    Ok(json) => json_to_surreal_value(json),
+                    Err(e) => {
+                        warn!("Failed to parse JSON value '{}': {}", value, e);
+                        crate::surreal::SurrealValue::String(value.to_string())
+                    }
+                }
+            }
+
+            // Array types - parse JSON array string with element type coercion
+            SyncDataType::Array { element_type } => {
+                if value.is_empty() {
+                    return crate::surreal::SurrealValue::Array(vec![]);
+                }
+                match serde_json::from_str::<serde_json::Value>(value) {
+                    Ok(serde_json::Value::Array(arr)) => {
+                        let items: Vec<crate::surreal::SurrealValue> = arr
+                            .into_iter()
+                            .map(|item| json_to_surreal_value_with_type(item, element_type))
+                            .collect();
+                        crate::surreal::SurrealValue::Array(items)
+                    }
+                    Ok(other) => {
+                        warn!("Expected array but got {:?} for value '{}'", other, value);
+                        crate::surreal::SurrealValue::String(value.to_string())
+                    }
+                    Err(e) => {
+                        warn!("Failed to parse array value '{}': {}", value, e);
+                        crate::surreal::SurrealValue::String(value.to_string())
+                    }
+                }
+            }
+
+            // UUID type - parse UUID string
+            SyncDataType::Uuid => {
+                if value.is_empty() {
+                    return crate::surreal::SurrealValue::Null;
+                }
+                match uuid::Uuid::parse_str(value) {
+                    Ok(uuid) => crate::surreal::SurrealValue::Uuid(uuid),
+                    Err(e) => {
+                        warn!("Failed to parse UUID value '{}': {}", value, e);
+                        crate::surreal::SurrealValue::String(value.to_string())
+                    }
+                }
+            }
+
+            // DateTime types - parse ISO 8601 string
+            SyncDataType::DateTime | SyncDataType::DateTimeNano | SyncDataType::TimestampTz => {
+                if value.is_empty() {
+                    return crate::surreal::SurrealValue::Null;
+                }
+                match chrono::DateTime::parse_from_rfc3339(value) {
+                    Ok(dt) => {
+                        crate::surreal::SurrealValue::DateTime(dt.with_timezone(&chrono::Utc))
+                    }
+                    Err(_) => {
+                        // Try parsing without timezone
+                        match chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
+                            Ok(ndt) => crate::surreal::SurrealValue::DateTime(ndt.and_utc()),
+                            Err(e) => {
+                                warn!("Failed to parse datetime value '{}': {}", value, e);
+                                crate::surreal::SurrealValue::String(value.to_string())
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Boolean type - strict parsing
+            SyncDataType::Bool | SyncDataType::TinyInt { width: 1 } => {
+                if value.is_empty() {
+                    return crate::surreal::SurrealValue::Null;
+                }
+                match value.to_lowercase().as_str() {
+                    "true" | "1" | "yes" => crate::surreal::SurrealValue::Bool(true),
+                    "false" | "0" | "no" => crate::surreal::SurrealValue::Bool(false),
+                    _ => crate::surreal::SurrealValue::String(value.to_string()),
+                }
+            }
+
+            // Integer types
+            SyncDataType::TinyInt { .. }
+            | SyncDataType::SmallInt
+            | SyncDataType::Int
+            | SyncDataType::BigInt => {
+                if value.is_empty() {
+                    return crate::surreal::SurrealValue::Null;
+                }
+                match value.parse::<i64>() {
+                    Ok(n) => crate::surreal::SurrealValue::Int(n),
+                    Err(_) => crate::surreal::SurrealValue::String(value.to_string()),
+                }
+            }
+
+            // Float types
+            SyncDataType::Float | SyncDataType::Double | SyncDataType::Decimal { .. } => {
+                if value.is_empty() {
+                    return crate::surreal::SurrealValue::Null;
+                }
+                match value.parse::<f64>() {
+                    Ok(f) => crate::surreal::SurrealValue::Float(f),
+                    Err(_) => crate::surreal::SurrealValue::String(value.to_string()),
+                }
+            }
+
+            // Enum type - keep as string (SurrealDB stores enums as strings)
+            SyncDataType::Enum { .. } => {
+                if value.is_empty() {
+                    return crate::surreal::SurrealValue::Null;
+                }
+                crate::surreal::SurrealValue::String(value.to_string())
+            }
+
+            // All other types - use default string parsing
+            _ => parse_value_default(value),
+        }
+    } else {
+        // No schema type - use default parsing
+        parse_value_default(value)
+    }
+}
+
+/// Default value parsing without schema hints.
+/// Tries to parse as number, boolean, or keeps as string.
+fn parse_value_default(value: &str) -> crate::surreal::SurrealValue {
+    if let Ok(n) = value.parse::<i64>() {
+        crate::surreal::SurrealValue::Int(n)
+    } else if let Ok(f) = value.parse::<f64>() {
+        crate::surreal::SurrealValue::Float(f)
+    } else if let Ok(b) = value.parse::<bool>() {
+        crate::surreal::SurrealValue::Bool(b)
+    } else if value.is_empty() {
+        crate::surreal::SurrealValue::Null
+    } else {
+        crate::surreal::SurrealValue::String(value.to_string())
+    }
+}
+
+/// Convert a serde_json::Value to SurrealValue
+fn json_to_surreal_value(json: serde_json::Value) -> crate::surreal::SurrealValue {
+    match json {
+        serde_json::Value::Null => crate::surreal::SurrealValue::Null,
+        serde_json::Value::Bool(b) => crate::surreal::SurrealValue::Bool(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                crate::surreal::SurrealValue::Int(i)
+            } else if let Some(f) = n.as_f64() {
+                crate::surreal::SurrealValue::Float(f)
+            } else {
+                crate::surreal::SurrealValue::String(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => crate::surreal::SurrealValue::String(s),
+        serde_json::Value::Array(arr) => {
+            let items: Vec<crate::surreal::SurrealValue> =
+                arr.into_iter().map(json_to_surreal_value).collect();
+            crate::surreal::SurrealValue::Array(items)
+        }
+        serde_json::Value::Object(obj) => {
+            let map: HashMap<String, crate::surreal::SurrealValue> = obj
+                .into_iter()
+                .map(|(k, v)| (k, json_to_surreal_value(v)))
+                .collect();
+            crate::surreal::SurrealValue::Object(map)
+        }
+    }
+}
+
+/// Convert a serde_json::Value to SurrealValue with type coercion based on target type.
+/// This is used for array elements where the schema specifies the element type.
+fn json_to_surreal_value_with_type(
+    json: serde_json::Value,
+    target_type: &SyncDataType,
+) -> crate::surreal::SurrealValue {
+    match (json, target_type) {
+        // Coerce string to integer
+        (
+            serde_json::Value::String(s),
+            SyncDataType::Int
+            | SyncDataType::SmallInt
+            | SyncDataType::BigInt
+            | SyncDataType::TinyInt { .. },
+        ) => match s.parse::<i64>() {
+            Ok(i) => crate::surreal::SurrealValue::Int(i),
+            Err(_) => {
+                warn!("Failed to parse '{}' as integer, keeping as string", s);
+                crate::surreal::SurrealValue::String(s)
+            }
+        },
+        // Coerce string to float
+        (
+            serde_json::Value::String(s),
+            SyncDataType::Float | SyncDataType::Double | SyncDataType::Decimal { .. },
+        ) => match s.parse::<f64>() {
+            Ok(f) => crate::surreal::SurrealValue::Float(f),
+            Err(_) => {
+                warn!("Failed to parse '{}' as float, keeping as string", s);
+                crate::surreal::SurrealValue::String(s)
+            }
+        },
+        // Coerce string to bool
+        (serde_json::Value::String(s), SyncDataType::Bool) => match s.to_lowercase().as_str() {
+            "true" | "1" | "yes" => crate::surreal::SurrealValue::Bool(true),
+            "false" | "0" | "no" => crate::surreal::SurrealValue::Bool(false),
+            _ => crate::surreal::SurrealValue::String(s),
+        },
+        // Otherwise use default conversion
+        (json, _) => json_to_surreal_value(json),
     }
 }
 
@@ -151,6 +390,12 @@ async fn process_csv_reader(
                 );
             }
 
+            // Get table schema if available for type-aware parsing
+            let table_schema = config
+                .schema
+                .as_ref()
+                .and_then(|s| s.get_table(&config.table));
+
             // Convert CSV record to SurrealDB Record
             let mut data = HashMap::new();
 
@@ -158,18 +403,11 @@ async fn process_csv_reader(
                 if i < headers.len() {
                     let column_name = &headers[i];
 
-                    // Try to parse as number, boolean, or keep as string
-                    let parsed_value = if let Ok(n) = value.parse::<i64>() {
-                        crate::surreal::SurrealValue::Int(n)
-                    } else if let Ok(f) = value.parse::<f64>() {
-                        crate::surreal::SurrealValue::Float(f)
-                    } else if let Ok(b) = value.parse::<bool>() {
-                        crate::surreal::SurrealValue::Bool(b)
-                    } else if value.is_empty() {
-                        crate::surreal::SurrealValue::Null
-                    } else {
-                        crate::surreal::SurrealValue::String(value.to_string())
-                    };
+                    // Get schema type for this column if available
+                    let schema_type = table_schema.and_then(|ts| ts.get_field_type(column_name));
+
+                    // Parse value with schema-aware conversion
+                    let parsed_value = parse_value_with_schema(value, schema_type);
 
                     data.insert(column_name.clone(), parsed_value);
                 }
@@ -247,6 +485,12 @@ async fn process_csv_reader(
 
     debug!("CSV headers/columns: {headers:?}");
 
+    // Get table schema if available for type-aware parsing
+    let table_schema = config
+        .schema
+        .as_ref()
+        .and_then(|s| s.get_table(&config.table));
+
     // Process records in batches
     let mut batch: Vec<crate::surreal::Record> = Vec::new();
     let mut total_processed = 0;
@@ -273,18 +517,11 @@ async fn process_csv_reader(
             if i < headers.len() {
                 let column_name = &headers[i];
 
-                // Try to parse as number, boolean, or keep as string
-                let parsed_value = if let Ok(n) = value.parse::<i64>() {
-                    crate::surreal::SurrealValue::Int(n)
-                } else if let Ok(f) = value.parse::<f64>() {
-                    crate::surreal::SurrealValue::Float(f)
-                } else if let Ok(b) = value.parse::<bool>() {
-                    crate::surreal::SurrealValue::Bool(b)
-                } else if value.is_empty() {
-                    crate::surreal::SurrealValue::Null
-                } else {
-                    crate::surreal::SurrealValue::String(value.to_string())
-                };
+                // Get schema type for this column if available
+                let schema_type = table_schema.and_then(|ts| ts.get_field_type(column_name));
+
+                // Parse value with schema-aware conversion
+                let parsed_value = parse_value_with_schema(value, schema_type);
 
                 data.insert(column_name.clone(), parsed_value);
             }

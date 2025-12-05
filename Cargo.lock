@@ -6041,12 +6041,14 @@ dependencies = [
  "serde_json",
  "surreal-sync-file",
  "surrealdb",
+ "sync-core",
  "tempfile",
  "tokio",
  "tokio-test",
  "tower",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

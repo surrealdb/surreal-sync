@@ -35,7 +35,12 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .expect("Failed to load test schema");
 
     let test_id = generate_test_id();
-    let table_names: Vec<&str> = schema.table_names();
+    // Filter out 'products' table which has complex types (UUID, JSON, Array) not supported by MySQL populator
+    let table_names: Vec<&str> = schema
+        .table_names()
+        .into_iter()
+        .filter(|t| *t != "products")
+        .collect();
 
     // Connect to MySQL
     let mysql_config = surreal_sync::testing::mysql::create_mysql_config();
@@ -58,11 +63,13 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .await?;
 
     // === CLEANUP BEFORE (ensure clean initial state) ===
-    tracing::info!("Cleaning up MySQL tables: {:?}", table_names);
-    surreal_sync::testing::mysql_cleanup::full_cleanup(&mut mysql_conn, &table_names).await?;
+    // Clean ALL schema tables (including 'products' which may be left over from other tests)
+    let all_table_names: Vec<&str> = schema.table_names();
+    tracing::info!("Cleaning up MySQL tables: {:?}", all_table_names);
+    surreal_sync::testing::mysql_cleanup::full_cleanup(&mut mysql_conn, &all_table_names).await?;
 
-    tracing::info!("Cleaning up SurrealDB tables: {:?}", table_names);
-    test_helpers::cleanup_surrealdb_test_data(&surreal, &table_names).await?;
+    tracing::info!("Cleaning up SurrealDB tables: {:?}", all_table_names);
+    test_helpers::cleanup_surrealdb_test_data(&surreal, &all_table_names).await?;
 
     // === PHASE 1: POPULATE MySQL with deterministic test data ===
     tracing::info!(

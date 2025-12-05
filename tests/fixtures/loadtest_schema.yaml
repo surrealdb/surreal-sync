@@ -4,6 +4,7 @@
 version: 1
 
 tables:
+  # Basic types test table
   - name: users
     id:
       type: big_int
@@ -36,6 +37,7 @@ tables:
           min: 0.0
           max: 100.0
 
+  # Decimal and timestamp test table
   - name: orders
     id:
       type: big_int
@@ -65,3 +67,60 @@ tables:
           type: timestamp_range
           start: "2024-01-01T00:00:00Z"
           end: "2024-12-31T23:59:59Z"
+
+  # Complex types test table (UUID, JSON, Array, Enum)
+  - name: products
+    id:
+      type: big_int
+      generator:
+        type: sequential
+        start: 1
+    fields:
+      # UUID field (not as ID)
+      - name: sku
+        type: uuid
+        generator:
+          type: uuid_v4
+      # JSON object field
+      - name: metadata
+        type: json
+        generator:
+          type: static
+          value:
+            version: 1
+            source: "loadtest"
+            tags: ["test", "sample"]
+      # Enum field (for databases that support it)
+      - name: category
+        type:
+          type: enum
+          values: ["electronics", "clothing", "food", "books", "toys"]
+        generator:
+          type: one_of
+          values: ["electronics", "clothing", "food", "books", "toys"]
+      # Array of integers
+      - name: ratings
+        type:
+          type: array
+          element_type: int
+        generator:
+          type: sample_array
+          pool: ["1", "2", "3", "4", "5"]
+          min_length: 1
+          max_length: 5
+      # Array of strings (tags)
+      - name: tags
+        type:
+          type: array
+          element_type: text
+        generator:
+          type: sample_array
+          pool: ["sale", "new", "featured", "clearance", "popular", "trending"]
+          min_length: 0
+          max_length: 3
+      # Text field for description
+      - name: description
+        type: text
+        generator:
+          type: pattern
+          pattern: "Product {index} description with some sample text for testing purposes."

@@ -146,6 +146,7 @@ async fn test_csv_http_import() {
         column_names: None,
         emit_metrics: None,
         dry_run: false,
+        schema: None,
     };
 
     // Run CSV import
@@ -227,6 +228,7 @@ async fn test_csv_http_import_with_path() {
         column_names: None,
         emit_metrics: None,
         dry_run: false,
+        schema: None,
     };
 
     // Run CSV import
@@ -348,6 +350,7 @@ async fn test_csv_http_404_error() {
         column_names: None,
         emit_metrics: None,
         dry_run: false,
+        schema: None,
     };
 
     // Run CSV import - should fail with HTTP 404

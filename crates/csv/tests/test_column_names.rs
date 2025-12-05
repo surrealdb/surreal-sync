@@ -78,6 +78,7 @@ async fn test_csv_with_custom_column_names() {
         ]),
         emit_metrics: None,
         dry_run: false,
+        schema: None,
     };
 
     let result = sync(config).await;
@@ -152,6 +153,7 @@ async fn test_csv_column_count_mismatch_error() {
         ]),
         emit_metrics: None,
         dry_run: false,
+        schema: None,
     };
 
     let result = sync(config).await;
@@ -207,6 +209,7 @@ async fn test_csv_without_headers_auto_generated_names() {
         column_names: None, // Let it auto-generate column_0, column_1, column_2
         emit_metrics: None,
         dry_run: false,
+        schema: None,
     };
 
     let result = sync(config).await;
@@ -276,6 +279,7 @@ async fn test_csv_column_count_mismatch_with_extra_columns_in_row() {
         ]),
         emit_metrics: None,
         dry_run: false,
+        schema: None,
     };
 
     let result = sync(config).await;

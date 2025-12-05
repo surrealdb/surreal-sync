@@ -2,7 +2,47 @@
 
 use rand::seq::SliceRandom;
 use rand::Rng;
-use sync_core::GeneratedValue;
+use sync_core::{GeneratedValue, SyncDataType};
+
+/// Convert a string value to the appropriate GeneratedValue based on the target type.
+fn string_to_typed_value(s: &str, target_type: &SyncDataType) -> GeneratedValue {
+    match target_type {
+        SyncDataType::Int | SyncDataType::SmallInt | SyncDataType::BigInt => {
+            match s.parse::<i64>() {
+                Ok(i) => GeneratedValue::Int64(i),
+                Err(_) => GeneratedValue::String(s.to_string()),
+            }
+        }
+        SyncDataType::TinyInt { width: 1 } => {
+            // TinyInt(1) is often used as boolean
+            match s.to_lowercase().as_str() {
+                "true" | "1" | "yes" => GeneratedValue::Bool(true),
+                "false" | "0" | "no" => GeneratedValue::Bool(false),
+                _ => match s.parse::<i32>() {
+                    Ok(i) => GeneratedValue::Int32(i),
+                    Err(_) => GeneratedValue::String(s.to_string()),
+                },
+            }
+        }
+        SyncDataType::TinyInt { .. } => match s.parse::<i32>() {
+            Ok(i) => GeneratedValue::Int32(i),
+            Err(_) => GeneratedValue::String(s.to_string()),
+        },
+        SyncDataType::Float | SyncDataType::Double | SyncDataType::Decimal { .. } => {
+            match s.parse::<f64>() {
+                Ok(f) => GeneratedValue::Float64(f),
+                Err(_) => GeneratedValue::String(s.to_string()),
+            }
+        }
+        SyncDataType::Bool => match s.to_lowercase().as_str() {
+            "true" | "1" | "yes" => GeneratedValue::Bool(true),
+            "false" | "0" | "no" => GeneratedValue::Bool(false),
+            _ => GeneratedValue::String(s.to_string()),
+        },
+        // For text types and all others, keep as string
+        _ => GeneratedValue::String(s.to_string()),
+    }
+}
 
 /// Generate an array by sampling from a pool of values.
 pub fn generate_sample_array<R: Rng>(
@@ -10,6 +50,18 @@ pub fn generate_sample_array<R: Rng>(
     pool: &[String],
     min_length: usize,
     max_length: usize,
+) -> GeneratedValue {
+    // Default to string element type
+    generate_sample_array_typed(rng, pool, min_length, max_length, &SyncDataType::Text)
+}
+
+/// Generate an array by sampling from a pool of values with type-aware conversion.
+pub fn generate_sample_array_typed<R: Rng>(
+    rng: &mut R,
+    pool: &[String],
+    min_length: usize,
+    max_length: usize,
+    element_type: &SyncDataType,
 ) -> GeneratedValue {
     if pool.is_empty() || max_length == 0 {
         return GeneratedValue::Array(vec![]);
@@ -21,7 +73,7 @@ pub fn generate_sample_array<R: Rng>(
     let items: Vec<GeneratedValue> = (0..length)
         .map(|_| {
             let item = pool.choose(rng).unwrap();
-            GeneratedValue::String(item.clone())
+            string_to_typed_value(item, element_type)
         })
         .collect();
 

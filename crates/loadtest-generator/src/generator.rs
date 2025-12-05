@@ -1,6 +1,6 @@
 //! Main data generator for producing test data rows.
 
-use crate::generators::generate_value;
+use crate::generators::generate_value_typed;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::collections::HashMap;
@@ -81,14 +81,24 @@ impl DataGenerator {
         let table_name = table_schema.name.clone();
 
         // Generate the primary key
-        let id = generate_value(&table_schema.id.generator, &mut self.rng, index);
+        let id = generate_value_typed(
+            &table_schema.id.generator,
+            &mut self.rng,
+            index,
+            Some(&table_schema.id.id_type),
+        );
 
-        // Generate all fields
+        // Generate all fields with type-aware generation
         let fields: HashMap<String, GeneratedValue> = table_schema
             .fields
             .iter()
             .map(|field| {
-                let value = generate_value(&field.generator, &mut self.rng, index);
+                let value = generate_value_typed(
+                    &field.generator,
+                    &mut self.rng,
+                    index,
+                    Some(&field.field_type),
+                );
                 (field.name.clone(), value)
             })
             .collect();

@@ -328,9 +328,23 @@ impl StreamingVerifier {
                 Ok(val.map(|v| SurrealValue::Strand(surrealdb::sql::Strand::from(v))))
             }
             SyncDataType::Uuid => {
-                // UUIDs can be stored as UUID type or as string
-                let val: Option<String> = response.take((0, field_name))?;
-                Ok(val.map(|v| SurrealValue::Strand(surrealdb::sql::Strand::from(v))))
+                // UUIDs can be stored as native UUID type or as string
+                // Try native UUID first, fall back to string
+                let result: Result<Option<uuid::Uuid>, _> = response.take((0, field_name));
+                match result {
+                    Ok(Some(v)) => Ok(Some(SurrealValue::Uuid(surrealdb::sql::Uuid::from(v)))),
+                    Ok(None) => Ok(None),
+                    Err(_) => {
+                        // Try as string (for JSONL which stores UUIDs as strings)
+                        let mut response2 = self
+                            .surreal
+                            .query(format!("SELECT {field_name} FROM $record_id"))
+                            .bind(("record_id", record_id.clone()))
+                            .await?;
+                        let val: Option<String> = response2.take((0, field_name))?;
+                        Ok(val.map(|v| SurrealValue::Strand(surrealdb::sql::Strand::from(v))))
+                    }
+                }
             }
             SyncDataType::DateTime | SyncDataType::DateTimeNano | SyncDataType::TimestampTz => {
                 let val: Option<chrono::DateTime<chrono::Utc>> = response.take((0, field_name))?;
@@ -349,12 +363,44 @@ impl StreamingVerifier {
                 Ok(val.map(|v| SurrealValue::Bytes(surrealdb::sql::Bytes::from(v))))
             }
             SyncDataType::Json | SyncDataType::Jsonb => {
-                // JSON values - try to get as string
-                let val: Option<String> = response.take((0, field_name))?;
-                Ok(val.map(|v| SurrealValue::Strand(surrealdb::sql::Strand::from(v))))
+                // JSON values are stored as native Objects in SurrealDB
+                // Use serde_json::Value for dynamic JSON extraction
+                let val: Option<serde_json::Value> = response.take((0, field_name))?;
+                Ok(val.map(|v| json_value_to_surreal(&v)))
             }
-            SyncDataType::Array { .. } | SyncDataType::Set { .. } => {
-                // Arrays - for now just skip complex array handling
+            SyncDataType::Array { element_type } => {
+                // Extract array based on element type
+                match element_type.as_ref() {
+                    SyncDataType::Int | SyncDataType::SmallInt | SyncDataType::BigInt => {
+                        let val: Option<Vec<i64>> = response.take((0, field_name))?;
+                        Ok(val.map(|arr| {
+                            let items: Vec<SurrealValue> = arr
+                                .into_iter()
+                                .map(|i| SurrealValue::Number(surrealdb::sql::Number::Int(i)))
+                                .collect();
+                            SurrealValue::Array(surrealdb::sql::Array::from(items))
+                        }))
+                    }
+                    SyncDataType::Text
+                    | SyncDataType::VarChar { .. }
+                    | SyncDataType::Char { .. } => {
+                        let val: Option<Vec<String>> = response.take((0, field_name))?;
+                        Ok(val.map(|arr| {
+                            let items: Vec<SurrealValue> = arr
+                                .into_iter()
+                                .map(|s| SurrealValue::Strand(surrealdb::sql::Strand::from(s)))
+                                .collect();
+                            SurrealValue::Array(surrealdb::sql::Array::from(items))
+                        }))
+                    }
+                    _ => {
+                        // For other element types, skip for now
+                        Ok(None)
+                    }
+                }
+            }
+            SyncDataType::Set { .. } => {
+                // Sets - for now just skip complex set handling
                 Ok(None)
             }
             SyncDataType::Geometry { .. } => {
@@ -428,6 +474,37 @@ fn format_id(value: &sync_core::GeneratedValue) -> String {
         sync_core::GeneratedValue::Int32(i) => i.to_string(),
         sync_core::GeneratedValue::String(s) => s.clone(),
         _ => format!("{value:?}"),
+    }
+}
+
+/// Convert a serde_json::Value to surrealdb::sql::Value for comparison.
+fn json_value_to_surreal(v: &serde_json::Value) -> SurrealValue {
+    match v {
+        serde_json::Value::Null => SurrealValue::None,
+        serde_json::Value::Bool(b) => SurrealValue::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                SurrealValue::Number(surrealdb::sql::Number::Int(i))
+            } else if let Some(f) = n.as_f64() {
+                SurrealValue::Number(surrealdb::sql::Number::Float(f))
+            } else {
+                SurrealValue::Strand(surrealdb::sql::Strand::from(n.to_string()))
+            }
+        }
+        serde_json::Value::String(s) => {
+            SurrealValue::Strand(surrealdb::sql::Strand::from(s.clone()))
+        }
+        serde_json::Value::Array(arr) => {
+            let items: Vec<SurrealValue> = arr.iter().map(json_value_to_surreal).collect();
+            SurrealValue::Array(surrealdb::sql::Array::from(items))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut m = std::collections::BTreeMap::new();
+            for (k, val) in obj {
+                m.insert(k.clone(), json_value_to_surreal(val));
+            }
+            SurrealValue::Object(surrealdb::sql::Object::from(m))
+        }
     }
 }
 

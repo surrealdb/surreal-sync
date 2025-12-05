@@ -475,6 +475,7 @@ async fn run() -> anyhow::Result<()> {
                 column_names,
                 emit_metrics,
                 dry_run: to_opts.dry_run,
+                schema: None, // CLI doesn't support schema yet (future: add --schema flag)
             };
             csv::sync(config).await?;
         }

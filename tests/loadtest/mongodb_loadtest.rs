@@ -37,7 +37,12 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
         .expect("Failed to load test schema");
 
     let test_id = generate_test_id();
-    let table_names: Vec<&str> = schema.table_names();
+    // Filter out 'products' table which has complex types (UUID, JSON, Array) not supported by MongoDB populator
+    let table_names: Vec<&str> = schema
+        .table_names()
+        .into_iter()
+        .filter(|t| *t != "products")
+        .collect();
 
     // Connect to MongoDB
     let mongo_client = mongodb::Client::with_uri_str(MONGODB_URI).await?;
@@ -58,15 +63,17 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
         .await?;
 
     // === CLEANUP BEFORE (ensure clean initial state) ===
-    tracing::info!("Cleaning up MongoDB collections: {:?}", table_names);
-    for table_name in &table_names {
+    // Clean ALL schema tables (including 'products' which may be left over from other tests)
+    let all_table_names: Vec<&str> = schema.table_names();
+    tracing::info!("Cleaning up MongoDB collections: {:?}", all_table_names);
+    for table_name in &all_table_names {
         let collection: mongodb::Collection<mongodb::bson::Document> =
             mongo_db.collection(table_name);
         collection.drop().await.ok();
     }
 
-    tracing::info!("Cleaning up SurrealDB tables: {:?}", table_names);
-    test_helpers::cleanup_surrealdb_test_data(&surreal, &table_names).await?;
+    tracing::info!("Cleaning up SurrealDB tables: {:?}", all_table_names);
+    test_helpers::cleanup_surrealdb_test_data(&surreal, &all_table_names).await?;
 
     // === PHASE 1: POPULATE MongoDB with deterministic test data ===
     tracing::info!(
