@@ -1,0 +1,21 @@
+[package]
+name = "postgresql-types"
+version = "0.1.0"
+edition = "2021"
+description = "PostgreSQL type conversions for sync-core types"
+license = "MIT"
+
+[dependencies]
+sync-core = { path = "../sync-core" }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1", "with-geo-types-0_7"] }
+postgres-types = { version = "0.2", features = ["derive", "with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+rust_decimal = { version = "^1.23", features = ["db-tokio-postgres"] }
+geo-types = "0.7"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }

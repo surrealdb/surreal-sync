@@ -65,6 +65,15 @@ use surreal_sync::{
     SourceOpts, SurrealOpts,
 };
 
+// Load testing imports
+use loadtest_populate_csv::CSVPopulateArgs;
+use loadtest_populate_jsonl::JSONLPopulateArgs;
+use loadtest_populate_mongodb::MongoDBPopulateArgs;
+use loadtest_populate_mysql::MySQLPopulateArgs;
+use loadtest_populate_postgresql::PostgreSQLPopulateArgs;
+use loadtest_verify::VerifyArgs;
+use sync_core::SyncSchema;
+
 #[derive(Parser)]
 #[command(name = "surreal-sync")]
 #[command(about = "A tool for migrating Neo4j, MongoDB, and JSONL data to SurrealDB")]
@@ -263,6 +272,53 @@ enum Commands {
         #[command(flatten)]
         to_opts: SurrealOpts,
     },
+
+    /// Populate source database with deterministic test data for load testing
+    Populate {
+        #[command(subcommand)]
+        source: PopulateSource,
+    },
+
+    /// Verify synced data in SurrealDB matches expected values
+    Verify {
+        #[command(flatten)]
+        args: VerifyArgs,
+    },
+}
+
+/// Source database to populate with test data
+#[derive(Subcommand)]
+enum PopulateSource {
+    /// Populate MySQL database with test data
+    #[command(name = "mysql")]
+    MySQL {
+        #[command(flatten)]
+        args: MySQLPopulateArgs,
+    },
+    /// Populate PostgreSQL database with test data
+    #[command(name = "postgresql")]
+    PostgreSQL {
+        #[command(flatten)]
+        args: PostgreSQLPopulateArgs,
+    },
+    /// Populate MongoDB database with test data
+    #[command(name = "mongodb")]
+    MongoDB {
+        #[command(flatten)]
+        args: MongoDBPopulateArgs,
+    },
+    /// Generate CSV files with test data
+    #[command(name = "csv")]
+    Csv {
+        #[command(flatten)]
+        args: CSVPopulateArgs,
+    },
+    /// Generate JSONL files with test data
+    #[command(name = "jsonl")]
+    Jsonl {
+        #[command(flatten)]
+        args: JSONLPopulateArgs,
+    },
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -421,6 +477,12 @@ async fn run() -> anyhow::Result<()> {
                 dry_run: to_opts.dry_run,
             };
             csv::sync(config).await?;
+        }
+        Commands::Populate { source } => {
+            run_populate(source).await?;
+        }
+        Commands::Verify { args } => {
+            run_verify(args).await?;
         }
     }
 
@@ -669,4 +731,294 @@ async fn run_incremental_sync(
     tracing::info!("Incremental sync completed successfully");
 
     Ok(())
+}
+
+/// Run populate command to fill source database with deterministic test data
+async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
+    match source {
+        PopulateSource::MySQL { args } => {
+            let schema = SyncSchema::from_file(&args.common.schema)
+                .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
+
+            tracing::info!(
+                "Populating MySQL with {} rows per table (seed={})",
+                args.common.row_count,
+                args.common.seed
+            );
+
+            let mut populator = loadtest_populate_mysql::MySQLPopulator::new(
+                &args.mysql_connection_string,
+                schema.clone(),
+                args.common.seed,
+            )
+            .await
+            .context("Failed to connect to MySQL")?
+            .with_batch_size(args.common.batch_size);
+
+            let tables = if args.common.tables.is_empty() {
+                schema.table_names()
+            } else {
+                args.common.tables.iter().map(|s| s.as_str()).collect()
+            };
+
+            for table_name in &tables {
+                populator
+                    .create_table(table_name)
+                    .await
+                    .with_context(|| format!("Failed to create table '{table_name}'"))?;
+
+                let metrics = populator
+                    .populate(table_name, args.common.row_count)
+                    .await
+                    .with_context(|| format!("Failed to populate table '{table_name}'"))?;
+
+                tracing::info!(
+                    "Populated {}: {} rows in {:?}",
+                    table_name,
+                    metrics.rows_inserted,
+                    metrics.total_duration
+                );
+            }
+        }
+        PopulateSource::PostgreSQL { args } => {
+            let schema = SyncSchema::from_file(&args.common.schema)
+                .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
+
+            tracing::info!(
+                "Populating PostgreSQL with {} rows per table (seed={})",
+                args.common.row_count,
+                args.common.seed
+            );
+
+            let mut populator = loadtest_populate_postgresql::PostgreSQLPopulator::new(
+                &args.postgresql_connection_string,
+                schema.clone(),
+                args.common.seed,
+            )
+            .await
+            .context("Failed to connect to PostgreSQL")?
+            .with_batch_size(args.common.batch_size);
+
+            let tables = if args.common.tables.is_empty() {
+                schema.table_names()
+            } else {
+                args.common.tables.iter().map(|s| s.as_str()).collect()
+            };
+
+            for table_name in &tables {
+                populator
+                    .create_table(table_name)
+                    .await
+                    .with_context(|| format!("Failed to create table '{table_name}'"))?;
+
+                let metrics = populator
+                    .populate(table_name, args.common.row_count)
+                    .await
+                    .with_context(|| format!("Failed to populate table '{table_name}'"))?;
+
+                tracing::info!(
+                    "Populated {}: {} rows in {:?}",
+                    table_name,
+                    metrics.rows_inserted,
+                    metrics.total_duration
+                );
+            }
+        }
+        PopulateSource::MongoDB { args } => {
+            let schema = SyncSchema::from_file(&args.common.schema)
+                .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
+
+            tracing::info!(
+                "Populating MongoDB with {} documents per collection (seed={})",
+                args.common.row_count,
+                args.common.seed
+            );
+
+            let mut populator = loadtest_populate_mongodb::MongoDBPopulator::new(
+                &args.mongodb_connection_string,
+                &args.mongodb_database,
+                schema.clone(),
+                args.common.seed,
+            )
+            .await
+            .context("Failed to connect to MongoDB")?
+            .with_batch_size(args.common.batch_size);
+
+            let tables = if args.common.tables.is_empty() {
+                schema.table_names()
+            } else {
+                args.common.tables.iter().map(|s| s.as_str()).collect()
+            };
+
+            for table_name in &tables {
+                let metrics = populator
+                    .populate(table_name, args.common.row_count)
+                    .await
+                    .with_context(|| format!("Failed to populate collection '{table_name}'"))?;
+
+                tracing::info!(
+                    "Populated {}: {} documents in {:?}",
+                    table_name,
+                    metrics.rows_inserted,
+                    metrics.total_duration
+                );
+            }
+        }
+        PopulateSource::Csv { args } => {
+            let schema = SyncSchema::from_file(&args.common.schema)
+                .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
+
+            tracing::info!(
+                "Generating CSV files with {} rows per table (seed={})",
+                args.common.row_count,
+                args.common.seed
+            );
+
+            std::fs::create_dir_all(&args.output_dir).with_context(|| {
+                format!("Failed to create output directory {:?}", args.output_dir)
+            })?;
+
+            let mut populator =
+                loadtest_populate_csv::CSVPopulator::new(schema.clone(), args.common.seed);
+
+            let tables = if args.common.tables.is_empty() {
+                schema.table_names()
+            } else {
+                args.common.tables.iter().map(|s| s.as_str()).collect()
+            };
+
+            for table_name in &tables {
+                let output_path = args.output_dir.join(format!("{table_name}.csv"));
+                let metrics = populator
+                    .populate(table_name, &output_path, args.common.row_count)
+                    .with_context(|| format!("Failed to generate CSV for '{table_name}'"))?;
+
+                tracing::info!(
+                    "Generated {:?}: {} rows in {:?}",
+                    output_path,
+                    metrics.rows_written,
+                    metrics.total_duration
+                );
+            }
+        }
+        PopulateSource::Jsonl { args } => {
+            let schema = SyncSchema::from_file(&args.common.schema)
+                .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
+
+            tracing::info!(
+                "Generating JSONL files with {} rows per table (seed={})",
+                args.common.row_count,
+                args.common.seed
+            );
+
+            std::fs::create_dir_all(&args.output_dir).with_context(|| {
+                format!("Failed to create output directory {:?}", args.output_dir)
+            })?;
+
+            let mut populator =
+                loadtest_populate_jsonl::JsonlPopulator::new(schema.clone(), args.common.seed);
+
+            let tables = if args.common.tables.is_empty() {
+                schema.table_names()
+            } else {
+                args.common.tables.iter().map(|s| s.as_str()).collect()
+            };
+
+            for table_name in &tables {
+                let output_path = args.output_dir.join(format!("{table_name}.jsonl"));
+                let metrics = populator
+                    .populate(table_name, &output_path, args.common.row_count)
+                    .with_context(|| format!("Failed to generate JSONL for '{table_name}'"))?;
+
+                tracing::info!(
+                    "Generated {:?}: {} rows in {:?}",
+                    output_path,
+                    metrics.rows_written,
+                    metrics.total_duration
+                );
+            }
+        }
+    }
+
+    tracing::info!("Populate completed successfully");
+    Ok(())
+}
+
+/// Run verify command to check synced data in SurrealDB
+async fn run_verify(args: VerifyArgs) -> anyhow::Result<()> {
+    let schema = SyncSchema::from_file(&args.schema)
+        .with_context(|| format!("Failed to load schema from {:?}", args.schema))?;
+
+    tracing::info!(
+        "Verifying {} rows per table in SurrealDB (seed={})",
+        args.row_count,
+        args.seed
+    );
+
+    let surreal = surrealdb::engine::any::connect(&args.surreal_endpoint)
+        .await
+        .context("Failed to connect to SurrealDB")?;
+
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: &args.surreal_username,
+            password: &args.surreal_password,
+        })
+        .await
+        .context("Failed to authenticate with SurrealDB")?;
+
+    surreal
+        .use_ns(&args.surreal_namespace)
+        .use_db(&args.surreal_database)
+        .await
+        .context("Failed to select namespace/database")?;
+
+    let tables = if args.tables.is_empty() {
+        schema.table_names()
+    } else {
+        args.tables.iter().map(|s| s.as_str()).collect()
+    };
+
+    let mut all_passed = true;
+
+    for table_name in &tables {
+        let mut verifier = loadtest_verify::StreamingVerifier::new(
+            surreal.clone(),
+            schema.clone(),
+            args.seed,
+            table_name,
+        )
+        .with_context(|| format!("Failed to create verifier for table '{table_name}'"))?;
+
+        let report = verifier
+            .verify_streaming(args.row_count)
+            .await
+            .with_context(|| format!("Failed to verify table '{table_name}'"))?;
+
+        if report.is_success() {
+            tracing::info!(
+                "Table '{}': {} rows verified successfully",
+                table_name,
+                report.matched
+            );
+        } else {
+            tracing::error!(
+                "Table '{}': {} matched, {} missing, {} mismatched",
+                table_name,
+                report.matched,
+                report.missing,
+                report.mismatched
+            );
+            all_passed = false;
+        }
+    }
+
+    if all_passed {
+        tracing::info!("Verification completed successfully - all tables match expected data");
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Verification failed - some tables have missing or mismatched data"
+        ))
+    }
 }

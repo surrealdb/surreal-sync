@@ -3131,6 +3131,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "json-types"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "jsonwebtoken"
 version = "9.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3280,6 +3294,158 @@ name = "litemap"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "241eaef5fd12c88705a01fc1066c48c4b36e0dd4377dcdc7ec3942cea7a69956"
+
+[[package]]
+name = "loadtest-framework"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "loadtest-generator",
+ "loadtest-populate-csv",
+ "loadtest-populate-jsonl",
+ "loadtest-populate-mongodb",
+ "loadtest-populate-mysql",
+ "loadtest-populate-postgresql",
+ "loadtest-verify",
+ "mongodb",
+ "mysql_async",
+ "serde",
+ "serde_yaml",
+ "surrealdb",
+ "sync-core",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-postgres",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
+name = "loadtest-generator"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio-test",
+ "uuid",
+]
+
+[[package]]
+name = "loadtest-populate-csv"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "csv",
+ "json-types",
+ "loadtest-generator",
+ "sync-core",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "loadtest-populate-jsonl"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "json-types",
+ "loadtest-generator",
+ "serde_json",
+ "sync-core",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "loadtest-populate-mongodb"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bson",
+ "chrono",
+ "clap",
+ "loadtest-generator",
+ "mongodb",
+ "mongodb-types",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "loadtest-populate-mysql"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "clap",
+ "loadtest-generator",
+ "mysql-types",
+ "mysql_async",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
+name = "loadtest-populate-postgresql"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "clap",
+ "geo-types",
+ "loadtest-generator",
+ "postgres-types",
+ "postgresql-types",
+ "rust_decimal",
+ "serde_json",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-postgres",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "loadtest-verify"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "clap",
+ "loadtest-generator",
+ "serde",
+ "serde_json",
+ "surrealdb",
+ "surrealdb-types",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
 
 [[package]]
 name = "lock_api"
@@ -3571,6 +3737,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mongodb-types"
+version = "0.1.0"
+dependencies = [
+ "bson",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "multer"
 version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3603,6 +3783,21 @@ dependencies = [
  "syn 2.0.103",
  "termcolor",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "mysql-types"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "mysql_async",
+ "serde",
+ "serde_json",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -4262,6 +4457,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
+name = "postgres-derive"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56df96f5394370d1b20e49de146f9e6c25aa9ae750f449c9d665eafecb3ccae6"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.103",
+]
+
+[[package]]
 name = "postgres-protocol"
 version = "0.6.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4289,9 +4496,27 @@ dependencies = [
  "chrono",
  "fallible-iterator",
  "geo-types",
+ "postgres-derive",
  "postgres-protocol",
  "serde",
  "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "postgresql-types"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "geo-types",
+ "postgres-types",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-postgres",
  "uuid",
 ]
 
@@ -5487,6 +5712,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_yaml"
+version = "0.9.34+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
+dependencies = [
+ "indexmap 2.9.0",
+ "itoa",
+ "ryu",
+ "serde",
+ "unsafe-libyaml",
+]
+
+[[package]]
 name = "sha1"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5781,6 +6019,13 @@ dependencies = [
  "futures",
  "geo 0.31.0",
  "geo-types",
+ "loadtest-generator",
+ "loadtest-populate-csv",
+ "loadtest-populate-jsonl",
+ "loadtest-populate-mongodb",
+ "loadtest-populate-mysql",
+ "loadtest-populate-postgresql",
+ "loadtest-verify",
  "log",
  "mongodb",
  "mysql_async",
@@ -5795,6 +6040,7 @@ dependencies = [
  "surreal-sync-kafka-producer",
  "surreal-sync-postgresql-replication",
  "surrealdb",
+ "sync-core",
  "tempfile",
  "tokio",
  "tokio-postgres",
@@ -6045,6 +6291,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "surrealdb-types"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "geo-types",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "surrealdb",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "surrealkv"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6083,6 +6345,18 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "sync-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_yaml",
+ "thiserror 1.0.69",
+ "tokio-test",
+ "uuid",
 ]
 
 [[package]]
@@ -6719,6 +6993,12 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "unsafe-libyaml"
+version = "0.2.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

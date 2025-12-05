@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kafka", "crates/kafka-producer", "crates/postgresql", "crates/csv", "crates/jsonl", "crates/file"]
+members = ["crates/kafka", "crates/kafka-producer", "crates/postgresql", "crates/csv", "crates/jsonl", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surrealdb-types", "crates/json-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-verify", "crates/loadtest-framework"]
 resolver = "2"
 
 [package]
@@ -71,6 +71,19 @@ surreal-sync-csv = { path = "crates/csv" }
 # JSONL source
 surreal-sync-jsonl = { path = "crates/jsonl" }
 
+# Load testing populators
+loadtest-populate-mysql = { path = "crates/loadtest-populate-mysql" }
+loadtest-populate-postgresql = { path = "crates/loadtest-populate-postgresql" }
+loadtest-populate-mongodb = { path = "crates/loadtest-populate-mongodb" }
+loadtest-populate-csv = { path = "crates/loadtest-populate-csv" }
+loadtest-populate-jsonl = { path = "crates/loadtest-populate-jsonl" }
+
+# Load testing verifier
+loadtest-verify = { path = "crates/loadtest-verify" }
+
+# Sync core (for LoadTestSchema)
+sync-core = { path = "crates/sync-core" }
+
 [dev-dependencies]
 # Testing
 tokio-test = "0.4"
@@ -78,6 +91,9 @@ tempfile = "3.0"
 
 # Kafka producer library for Kafka source testing
 surreal-sync-kafka-producer = { path = "crates/kafka-producer" }
+
+# Load testing generator
+loadtest-generator = { path = "crates/loadtest-generator" }
 
 [profile.dev]
 debug = 1

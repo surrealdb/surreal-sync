@@ -1,0 +1,19 @@
+[package]
+name = "mysql-types"
+version = "0.1.0"
+edition = "2021"
+description = "MySQL type conversions for sync-core types"
+license = "MIT"
+
+[dependencies]
+sync-core = { path = "../sync-core" }
+mysql_async = { version = "0.34" }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+base64 = "0.22"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }

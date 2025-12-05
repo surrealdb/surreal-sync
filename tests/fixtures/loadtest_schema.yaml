@@ -1,0 +1,67 @@
+# Sync schema for integration testing
+# This schema defines deterministic test data generation rules.
+# Using the same seed produces identical data for verification.
+version: 1
+
+tables:
+  - name: users
+    id:
+      type: big_int
+      generator:
+        type: sequential
+        start: 1
+    fields:
+      - name: email
+        type:
+          type: var_char
+          length: 255
+        generator:
+          type: pattern
+          pattern: "user_{index}@test.com"
+      - name: age
+        type: int
+        generator:
+          type: int_range
+          min: 18
+          max: 80
+      - name: is_active
+        type: bool
+        generator:
+          type: weighted_bool
+          true_weight: 0.8
+      - name: score
+        type: double
+        generator:
+          type: float_range
+          min: 0.0
+          max: 100.0
+
+  - name: orders
+    id:
+      type: big_int
+      generator:
+        type: sequential
+        start: 1
+    fields:
+      - name: total
+        type:
+          type: decimal
+          precision: 10
+          scale: 2
+        generator:
+          type: decimal_range
+          min: 10.0
+          max: 500.0
+      - name: status
+        type:
+          type: var_char
+          length: 50
+        generator:
+          type: one_of
+          values: ["pending", "completed", "cancelled", "refunded"]
+      - name: created_at
+        type: date_time
+        generator:
+          type: timestamp_range
+          start: "2024-01-01T00:00:00Z"
+          end: "2024-12-31T23:59:59Z"

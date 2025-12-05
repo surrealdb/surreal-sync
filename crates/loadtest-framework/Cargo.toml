@@ -1,0 +1,31 @@
+[package]
+name = "loadtest-framework"
+version = "0.1.0"
+edition = "2021"
+description = "Load testing framework for surreal-sync"
+license = "MIT"
+
+[dependencies]
+sync-core = { path = "../sync-core" }
+loadtest-generator = { path = "../loadtest-generator" }
+loadtest-verify = { path = "../loadtest-verify" }
+loadtest-populate-mysql = { path = "../loadtest-populate-mysql" }
+loadtest-populate-postgresql = { path = "../loadtest-populate-postgresql" }
+loadtest-populate-mongodb = { path = "../loadtest-populate-mongodb" }
+loadtest-populate-csv = { path = "../loadtest-populate-csv" }
+loadtest-populate-jsonl = { path = "../loadtest-populate-jsonl" }
+
+surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+mysql_async = { version = "0.34" }
+tokio-postgres = { version = "0.7" }
+mongodb = { version = "3.0" }
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+thiserror = "1.0"
+tracing = "0.1"
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.0"

@@ -216,7 +216,14 @@ fn convert_row_to_record(
     };
 
     let id = match v {
-        SurrealValue::String(s) => surrealdb::sql::Id::from(s),
+        SurrealValue::String(s) => {
+            // Try to parse as integer first for numeric IDs
+            if let Ok(n) = s.parse::<i64>() {
+                surrealdb::sql::Id::from(n)
+            } else {
+                surrealdb::sql::Id::from(s)
+            }
+        }
         SurrealValue::Int(i) => surrealdb::sql::Id::from(i),
         _ => {
             anyhow::bail!("MySQL record ID field has unsupported type - deterministic IDs required")
@@ -489,9 +496,10 @@ fn convert_mysql_value(
                         column.name_str()
                     );
 
-                    // Parse MySQL datetime format: "YYYY-MM-DD HH:MM:SS"
+                    // Parse MySQL datetime format: "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD HH:MM:SS.ffffff"
                     use chrono::NaiveDateTime;
-                    NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S")
+                    NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f")
+                        .or_else(|_| NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S"))
                         .map(|ndt| {
                             SurrealValue::DateTime(DateTime::<Utc>::from_naive_utc_and_offset(
                                 ndt, Utc,
