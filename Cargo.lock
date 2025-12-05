@@ -3296,32 +3296,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "241eaef5fd12c88705a01fc1066c48c4b36e0dd4377dcdc7ec3942cea7a69956"
 
 [[package]]
-name = "loadtest-framework"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "loadtest-generator",
- "loadtest-populate-csv",
- "loadtest-populate-jsonl",
- "loadtest-populate-mongodb",
- "loadtest-populate-mysql",
- "loadtest-populate-postgresql",
- "loadtest-verify",
- "mongodb",
- "mysql_async",
- "serde",
- "serde_yaml",
- "surrealdb",
- "sync-core",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
- "tokio-postgres",
- "tokio-test",
- "tracing",
-]
-
-[[package]]
 name = "loadtest-generator"
 version = "0.1.0"
 dependencies = [

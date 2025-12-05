@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kafka", "crates/kafka-producer", "crates/postgresql", "crates/csv", "crates/jsonl", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surrealdb-types", "crates/json-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-verify", "crates/loadtest-framework"]
+members = ["crates/kafka", "crates/kafka-producer", "crates/postgresql", "crates/csv", "crates/jsonl", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surrealdb-types", "crates/json-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-verify"]
 resolver = "2"
 
 [package]
