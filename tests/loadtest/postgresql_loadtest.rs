@@ -36,12 +36,8 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
         .expect("Failed to load test schema");
 
     let test_id = generate_test_id();
-    // Filter out 'products' table which has complex types (UUID, JSON, Array) not supported by PostgreSQL populator
-    let table_names: Vec<&str> = schema
-        .table_names()
-        .into_iter()
-        .filter(|t| *t != "products")
-        .collect();
+    // All tables including 'products' with complex types (UUID, JSON, Array, Enum)
+    let table_names: Vec<&str> = schema.table_names();
 
     // Connect to PostgreSQL
     let pg_config = surreal_sync::testing::postgresql::create_postgres_config();

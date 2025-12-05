@@ -35,12 +35,8 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .expect("Failed to load test schema");
 
     let test_id = generate_test_id();
-    // Filter out 'products' table which has complex types (UUID, JSON, Array) not supported by MySQL populator
-    let table_names: Vec<&str> = schema
-        .table_names()
-        .into_iter()
-        .filter(|t| *t != "products")
-        .collect();
+    // All tables including 'products' with complex types (UUID, JSON, Array, Enum)
+    let table_names: Vec<&str> = schema.table_names();
 
     // Connect to MySQL
     let mysql_config = surreal_sync::testing::mysql::create_mysql_config();

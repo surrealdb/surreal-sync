@@ -414,6 +414,23 @@ fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
             }
             None => Ok(SurrealValue::Null),
         },
+        Type::INT4_ARRAY => match row.try_get::<_, Option<Vec<i32>>>(index)? {
+            Some(arr) => {
+                let vals = arr
+                    .into_iter()
+                    .map(|v| SurrealValue::Int(v as i64))
+                    .collect();
+                Ok(SurrealValue::Array(vals))
+            }
+            None => Ok(SurrealValue::Null),
+        },
+        Type::INT8_ARRAY => match row.try_get::<_, Option<Vec<i64>>>(index)? {
+            Some(arr) => {
+                let vals = arr.into_iter().map(SurrealValue::Int).collect();
+                Ok(SurrealValue::Array(vals))
+            }
+            None => Ok(SurrealValue::Null),
+        },
         Type::POINT => match row.try_get::<_, Option<geo_types::Point<f64>>>(index)? {
             Some(p) => Ok(SurrealValue::Geometry(surrealdb::sql::Geometry::Point(p))),
             None => Ok(SurrealValue::Null),
