@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use surreal_sync_file::{FileSource, DEFAULT_BUFFER_SIZE};
 use surrealdb::sql::Thing;
+use sync_core::{SyncDataType, SyncSchema, TableSchema};
 
 /// Configuration for JSONL import
 #[derive(Clone)]
@@ -46,6 +47,9 @@ pub struct Config {
 
     /// Whether to perform a dry run without writing data
     pub dry_run: bool,
+
+    /// Optional schema for type-aware conversion (e.g., UUID, DateTime parsing)
+    pub schema: Option<SyncSchema>,
 }
 
 impl Default for Config {
@@ -68,6 +72,7 @@ impl Default for Config {
             conversion_rules: vec![],
             batch_size: 1000,
             dry_run: false,
+            schema: None,
         }
     }
 }
@@ -117,6 +122,12 @@ async fn process_jsonl_reader(
 
     tracing::info!("Target table: {table_name}");
 
+    // Get table schema for type-aware conversion if available
+    let table_schema = config
+        .schema
+        .as_ref()
+        .and_then(|s| s.get_table(&table_name));
+
     for (line_count, line) in buf_reader.lines().enumerate() {
         let line = line?;
         let line_count = line_count + 1; // Convert to 1-based line numbering for error messages
@@ -129,8 +140,14 @@ async fn process_jsonl_reader(
         let json_value: Value = serde_json::from_str(&line)
             .map_err(|e| anyhow!("Error parsing JSON at line {line_count}: {e}"))?;
 
-        // Convert to surreal record
-        let record = convert_json_to_record(&json_value, &table_name, &config.id_field, rules)?;
+        // Convert to surreal record with schema-aware conversion
+        let record = convert_json_to_record(
+            &json_value,
+            &table_name,
+            &config.id_field,
+            rules,
+            table_schema,
+        )?;
 
         batch.push(record);
 
@@ -339,6 +356,7 @@ pub async fn migrate_from_jsonl(
         conversion_rules,
         batch_size: 1000,
         dry_run: false,
+        schema: None, // Legacy interface doesn't support schema
     };
 
     sync(config).await
@@ -349,6 +367,7 @@ fn convert_json_to_record(
     table_name: &str,
     id_field: &str,
     rules: &[ConversionRule],
+    table_schema: Option<&TableSchema>,
 ) -> Result<Record> {
     let mut id: Option<surrealdb::sql::Id> = None;
 
@@ -372,8 +391,11 @@ fn convert_json_to_record(
                     return Err(anyhow!("ID field must be a string or number"));
                 }
             } else {
-                // Convert the value, applying rules if applicable
-                let v = convert_value_with_rules(val, rules)?;
+                // Get schema type hint for this field if available
+                let data_type = table_schema.and_then(|ts| ts.get_field_type(key));
+
+                // Convert the value with schema-aware conversion
+                let v = convert_value_with_schema(val, rules, data_type)?;
                 data.insert(key.clone(), v);
             }
         }
@@ -387,6 +409,87 @@ fn convert_json_to_record(
         Ok(Record { id, data })
     } else {
         Err(anyhow!("JSONL line must be a JSON object"))
+    }
+}
+
+/// Convert a JSON value to SurrealValue with optional schema type hint
+fn convert_value_with_schema(
+    value: &Value,
+    rules: &[ConversionRule],
+    data_type: Option<&SyncDataType>,
+) -> Result<SurrealValue> {
+    // If we have a schema type hint, use it for type-aware conversion
+    if let Some(dt) = data_type {
+        return convert_value_typed(value, dt, rules);
+    }
+
+    // Fall back to generic conversion
+    convert_value_with_rules(value, rules)
+}
+
+/// Convert a JSON value using a specific schema data type
+fn convert_value_typed(
+    value: &Value,
+    data_type: &SyncDataType,
+    rules: &[ConversionRule],
+) -> Result<SurrealValue> {
+    match data_type {
+        SyncDataType::Uuid => {
+            // UUID can be stored as string in JSONL
+            if let Value::String(s) = value {
+                match uuid::Uuid::parse_str(s) {
+                    Ok(u) => Ok(SurrealValue::Uuid(u)),
+                    Err(_) => Ok(SurrealValue::String(s.clone())), // Not a valid UUID, keep as string
+                }
+            } else {
+                convert_value_with_rules(value, rules)
+            }
+        }
+        SyncDataType::DateTime => {
+            // DateTime can be stored as ISO string in JSONL
+            if let Value::String(s) = value {
+                match chrono::DateTime::parse_from_rfc3339(s) {
+                    Ok(dt) => Ok(SurrealValue::DateTime(dt.with_timezone(&chrono::Utc))),
+                    Err(_) => Ok(SurrealValue::String(s.clone())), // Not a valid DateTime, keep as string
+                }
+            } else {
+                convert_value_with_rules(value, rules)
+            }
+        }
+        SyncDataType::Json => {
+            // JSON objects are native in JSONL, convert to SurrealValue::Object
+            if let Value::Object(obj) = value {
+                let mut kvs = HashMap::new();
+                for (key, val) in obj {
+                    kvs.insert(key.clone(), convert_value_with_rules(val, rules)?);
+                }
+                Ok(SurrealValue::Object(kvs))
+            } else {
+                convert_value_with_rules(value, rules)
+            }
+        }
+        SyncDataType::Array { element_type } => {
+            // Arrays are native in JSONL
+            if let Value::Array(arr) = value {
+                let mut values = Vec::new();
+                for item in arr {
+                    values.push(convert_value_typed(item, element_type.as_ref(), rules)?);
+                }
+                Ok(SurrealValue::Array(values))
+            } else {
+                convert_value_with_rules(value, rules)
+            }
+        }
+        SyncDataType::Enum { values: _ } => {
+            // Enum stored as string in JSONL
+            if let Value::String(s) = value {
+                Ok(SurrealValue::String(s.clone()))
+            } else {
+                convert_value_with_rules(value, rules)
+            }
+        }
+        // For other types, use standard conversion
+        _ => convert_value_with_rules(value, rules),
     }
 }
 

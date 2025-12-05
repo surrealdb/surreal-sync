@@ -6071,14 +6071,17 @@ name = "surreal-sync-jsonl"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "serde",
  "serde_json",
  "surreal-sync-file",
  "surrealdb",
+ "sync-core",
  "tokio",
  "tokio-test",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

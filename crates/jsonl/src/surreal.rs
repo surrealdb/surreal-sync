@@ -15,6 +15,8 @@ pub enum SurrealValue {
     Array(Vec<SurrealValue>),
     Object(HashMap<String, SurrealValue>),
     Thing(Thing),
+    Uuid(uuid::Uuid),
+    DateTime(chrono::DateTime<chrono::Utc>),
     Null,
 }
 
@@ -45,6 +47,10 @@ impl SurrealValue {
                 surrealdb::sql::Value::Object(surrealdb::sql::Object::from(map))
             }
             SurrealValue::Thing(t) => surrealdb::sql::Value::Thing(t.clone()),
+            SurrealValue::Uuid(u) => surrealdb::sql::Value::Uuid(surrealdb::sql::Uuid::from(*u)),
+            SurrealValue::DateTime(dt) => {
+                surrealdb::sql::Value::Datetime(surrealdb::sql::Datetime::from(*dt))
+            }
             SurrealValue::Null => surrealdb::sql::Value::Null,
         }
     }
