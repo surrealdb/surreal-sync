@@ -10,6 +10,7 @@
 
 mod csv_loadtest;
 mod jsonl_loadtest;
+mod kafka_loadtest;
 mod mongodb_incremental_loadtest;
 mod mongodb_loadtest;
 mod mysql_incremental_loadtest;

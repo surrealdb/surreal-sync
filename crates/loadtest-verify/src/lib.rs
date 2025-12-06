@@ -23,7 +23,7 @@ pub mod report;
 pub mod verifier;
 
 pub use args::VerifyArgs;
-pub use compare::{compare_values, CompareResult};
+pub use compare::{compare_values, compare_values_with_options, CompareOptions, CompareResult};
 pub use error::VerifyError;
 pub use report::{MismatchInfo, VerificationReport};
 pub use verifier::StreamingVerifier;

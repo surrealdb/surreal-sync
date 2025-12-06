@@ -3345,6 +3345,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "loadtest-populate-kafka"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "clap",
+ "loadtest-generator",
+ "protobuf",
+ "protobuf-parse",
+ "rdkafka",
+ "serde_json",
+ "sync-core",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "loadtest-populate-mongodb"
 version = "0.1.0"
 dependencies = [
@@ -3425,6 +3447,7 @@ name = "loadtest-verify"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "loadtest-generator",
@@ -6015,6 +6038,7 @@ dependencies = [
  "loadtest-generator",
  "loadtest-populate-csv",
  "loadtest-populate-jsonl",
+ "loadtest-populate-kafka",
  "loadtest-populate-mongodb",
  "loadtest-populate-mysql",
  "loadtest-populate-neo4j",

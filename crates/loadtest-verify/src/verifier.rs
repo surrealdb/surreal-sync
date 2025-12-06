@@ -1,6 +1,6 @@
 //! Streaming verifier implementation.
 
-use crate::compare::{compare_values, CompareResult};
+use crate::compare::{compare_values_with_options, CompareOptions, CompareResult};
 use crate::error::VerifyError;
 use crate::report::{FieldMismatch, MismatchInfo, MissingInfo, VerificationReport};
 use loadtest_generator::DataGenerator;
@@ -20,6 +20,8 @@ pub struct StreamingVerifier {
     /// When true, all IDs are converted to strings for SurrealDB lookups.
     /// This is needed for Neo4j sources which always store IDs as strings.
     force_string_ids: bool,
+    /// Options for configuring comparison behavior.
+    compare_options: CompareOptions,
 }
 
 /// A record result that we manually extract field-by-field
@@ -58,6 +60,7 @@ impl StreamingVerifier {
             generator,
             table_name: table_name.to_string(),
             force_string_ids: false,
+            compare_options: CompareOptions::default(),
         })
     }
 
@@ -85,6 +88,41 @@ impl StreamingVerifier {
     /// defined types, and this `force_string_ids` workaround will no longer be needed.
     pub fn with_force_string_ids(mut self, force: bool) -> Self {
         self.force_string_ids = force;
+        self
+    }
+
+    /// Accept JSON objects stored as strings during comparison.
+    ///
+    /// # When to use
+    /// Enable this for Kafka sources where the protobuf encoder serializes JSON/Object
+    /// fields as strings rather than native SurrealDB objects.
+    ///
+    /// # Future work: Remove this workaround
+    /// The Kafka source should be enhanced to:
+    /// 1. Read the SyncSchema to identify JSON/Object field types
+    /// 2. Parse the protobuf string field as JSON
+    /// 3. Store as native SurrealDB Object type instead of Strand
+    ///
+    /// Once implemented, this flag can be removed and tests will pass without it.
+    pub fn with_accept_object_as_json_string(mut self, accept: bool) -> Self {
+        self.compare_options.accept_object_as_json_string = accept;
+        self
+    }
+
+    /// Accept empty arrays as equivalent to missing fields during comparison.
+    ///
+    /// # When to use
+    /// Enable this for Kafka sources where protobuf doesn't write empty repeated fields,
+    /// causing the field to be entirely absent from the synced document.
+    ///
+    /// # Future work: Remove this workaround
+    /// The Kafka source should be enhanced to:
+    /// 1. Read the SyncSchema to identify Array field types
+    /// 2. For array fields not present in the protobuf message, explicitly write an empty array `[]`
+    ///
+    /// Once implemented, this flag can be removed and tests will pass without it.
+    pub fn with_accept_missing_as_empty_array(mut self, accept: bool) -> Self {
+        self.compare_options.accept_missing_as_empty_array = accept;
         self
     }
 
@@ -468,30 +506,40 @@ impl StreamingVerifier {
             let actual_value = actual.fields.get(&field_schema.name);
 
             match (expected_value, actual_value) {
-                (Some(exp), Some(act)) => match compare_values(exp, act) {
-                    CompareResult::Match => {}
-                    CompareResult::Mismatch { expected, actual } => {
-                        mismatches.push(FieldMismatch {
-                            field: field_schema.name.clone(),
-                            expected,
-                            actual,
-                        });
+                (Some(exp), Some(act)) => {
+                    match compare_values_with_options(exp, act, &self.compare_options) {
+                        CompareResult::Match => {}
+                        CompareResult::Mismatch { expected, actual } => {
+                            mismatches.push(FieldMismatch {
+                                field: field_schema.name.clone(),
+                                expected,
+                                actual,
+                            });
+                        }
+                        CompareResult::Missing => {
+                            mismatches.push(FieldMismatch {
+                                field: field_schema.name.clone(),
+                                expected: format!("{exp:?}"),
+                                actual: "MISSING".to_string(),
+                            });
+                        }
                     }
-                    CompareResult::Missing => {
+                }
+                (Some(exp), None) => {
+                    // Expected field but not found in SurrealDB
+                    // When accept_missing_as_empty_array is enabled, treat missing field as
+                    // equivalent to empty array (protobuf doesn't write empty repeated fields)
+                    let is_empty_array =
+                        matches!(exp, sync_core::GeneratedValue::Array(arr) if arr.is_empty());
+                    if is_empty_array && self.compare_options.accept_missing_as_empty_array {
+                        // Empty array expected and field missing - this is a match
+                    } else {
                         mismatches.push(FieldMismatch {
                             field: field_schema.name.clone(),
                             expected: format!("{exp:?}"),
                             actual: "MISSING".to_string(),
                         });
                     }
-                },
-                (Some(exp), None) => {
-                    // Expected field but not found in SurrealDB
-                    mismatches.push(FieldMismatch {
-                        field: field_schema.name.clone(),
-                        expected: format!("{exp:?}"),
-                        actual: "MISSING".to_string(),
-                    });
                 }
                 (None, Some(act)) => {
                     // Extra field in SurrealDB (this is usually okay, but log it)

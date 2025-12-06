@@ -67,6 +67,7 @@ use surreal_sync::{
 // Load testing imports
 use loadtest_populate_csv::CSVPopulateArgs;
 use loadtest_populate_jsonl::JSONLPopulateArgs;
+use loadtest_populate_kafka::KafkaPopulateArgs;
 use loadtest_populate_mongodb::MongoDBPopulateArgs;
 use loadtest_populate_mysql::MySQLPopulateArgs;
 use loadtest_populate_postgresql::PostgreSQLPopulateArgs;
@@ -327,6 +328,12 @@ enum PopulateSource {
     Jsonl {
         #[command(flatten)]
         args: JSONLPopulateArgs,
+    },
+    /// Populate Kafka topics with test data
+    #[command(name = "kafka")]
+    Kafka {
+        #[command(flatten)]
+        args: KafkaPopulateArgs,
     },
 }
 
@@ -947,6 +954,61 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                     output_path,
                     metrics.rows_written,
                     metrics.total_duration
+                );
+            }
+        }
+        PopulateSource::Kafka { args } => {
+            let schema = SyncSchema::from_file(&args.common.schema)
+                .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
+
+            tracing::info!(
+                "Populating Kafka topics with {} rows per table (seed={})",
+                args.common.row_count,
+                args.common.seed
+            );
+
+            let tables = if args.common.tables.is_empty() {
+                schema.table_names()
+            } else {
+                args.common.tables.iter().map(|s| s.as_str()).collect()
+            };
+
+            for table_name in &tables {
+                // Create a fresh populator for each table to reset the generator index
+                let mut populator = loadtest_populate_kafka::KafkaPopulator::new(
+                    &args.kafka_brokers,
+                    schema.clone(),
+                    args.common.seed,
+                )
+                .await
+                .context("Failed to create Kafka populator")?
+                .with_batch_size(args.common.batch_size);
+
+                // Prepare table (generates .proto file)
+                let proto_path = populator
+                    .prepare_table(table_name)
+                    .with_context(|| format!("Failed to prepare proto for '{table_name}'"))?;
+
+                tracing::info!("Generated proto file: {:?}", proto_path);
+
+                // Create topic
+                populator
+                    .create_topic(table_name)
+                    .await
+                    .with_context(|| format!("Failed to create topic '{table_name}'"))?;
+
+                // Populate
+                let metrics = populator
+                    .populate(table_name, args.common.row_count)
+                    .await
+                    .with_context(|| format!("Failed to populate topic '{table_name}'"))?;
+
+                tracing::info!(
+                    "Populated '{}': {} messages in {:?} ({:.2} msg/sec)",
+                    table_name,
+                    metrics.messages_published,
+                    metrics.total_duration,
+                    metrics.messages_per_second()
                 );
             }
         }
