@@ -1,7 +1,5 @@
 //! Field comparison logic.
 
-use serde_json;
-use std::collections::HashMap;
 use surrealdb::sql::Value as SurrealValue;
 use sync_core::GeneratedValue;
 
@@ -16,54 +14,8 @@ pub enum CompareResult {
     Missing,
 }
 
-/// Options for configuring comparison behavior.
-///
-/// These options enable workarounds for sources that don't yet fully preserve
-/// type information when syncing to SurrealDB. Each option should be removed
-/// once the underlying source is enhanced to properly handle the data type.
-#[derive(Debug, Clone, Default)]
-pub struct CompareOptions {
-    /// Accept JSON objects stored as strings (e.g., `{"key": "value"}` stored as `"{"key":"value"}"`).
-    ///
-    /// # When to use
-    /// Enable this for Kafka sources where the protobuf encoder serializes JSON/Object
-    /// fields as strings rather than native SurrealDB objects.
-    ///
-    /// # Future work: Remove this workaround
-    /// The Kafka source should be enhanced to:
-    /// 1. Read the SyncSchema to identify JSON/Object field types
-    /// 2. Parse the protobuf string field as JSON
-    /// 3. Store as native SurrealDB Object type instead of Strand
-    ///
-    /// Once implemented, this flag can be removed and tests will pass without it.
-    pub accept_object_as_json_string: bool,
-
-    /// Accept empty arrays as equivalent to missing fields.
-    ///
-    /// # When to use
-    /// Enable this for Kafka sources where protobuf doesn't write empty repeated fields,
-    /// causing the field to be entirely absent from the synced document.
-    ///
-    /// # Future work: Remove this workaround
-    /// The Kafka source should be enhanced to:
-    /// 1. Read the SyncSchema to identify Array field types
-    /// 2. For array fields not present in the protobuf message, explicitly write an empty array `[]`
-    ///
-    /// Once implemented, this flag can be removed and tests will pass without it.
-    pub accept_missing_as_empty_array: bool,
-}
-
-/// Compare a generated value with a SurrealDB value using default options.
+/// Compare a generated value with a SurrealDB value.
 pub fn compare_values(expected: &GeneratedValue, actual: &SurrealValue) -> CompareResult {
-    compare_values_with_options(expected, actual, &CompareOptions::default())
-}
-
-/// Compare a generated value with a SurrealDB value with configurable options.
-pub fn compare_values_with_options(
-    expected: &GeneratedValue,
-    actual: &SurrealValue,
-    options: &CompareOptions,
-) -> CompareResult {
     match (expected, actual) {
         // Null comparison
         (GeneratedValue::Null, SurrealValue::None) => CompareResult::Match,
@@ -230,7 +182,7 @@ pub fn compare_values_with_options(
                 };
             }
             for (i, (exp_item, act_item)) in e.iter().zip(a.iter()).enumerate() {
-                match compare_values_with_options(exp_item, act_item, options) {
+                match compare_values(exp_item, act_item) {
                     CompareResult::Match => continue,
                     CompareResult::Mismatch { expected, actual } => {
                         return CompareResult::Mismatch {
@@ -245,21 +197,13 @@ pub fn compare_values_with_options(
             }
             CompareResult::Match
         }
-        // Empty array vs None - only match if accept_missing_as_empty_array is enabled
-        // NOTE: This handles the case when the field exists but is None.
-        // The case when the field is entirely missing is handled in verifier.rs compare_row.
-        (GeneratedValue::Array(e), SurrealValue::None)
-            if e.is_empty() && options.accept_missing_as_empty_array =>
-        {
-            CompareResult::Match
-        }
 
         // Object comparison (for JSON)
         (GeneratedValue::Object(e), SurrealValue::Object(a)) => {
             for (key, exp_val) in e {
                 let act_val = a.get(key);
                 match act_val {
-                    Some(av) => match compare_values_with_options(exp_val, av, options) {
+                    Some(av) => match compare_values(exp_val, av) {
                         CompareResult::Match => continue,
                         CompareResult::Mismatch { expected, actual } => {
                             return CompareResult::Mismatch {
@@ -281,100 +225,12 @@ pub fn compare_values_with_options(
             }
             CompareResult::Match
         }
-        // Object stored as JSON string - only match if accept_object_as_json_string is enabled
-        // This handles sources (like Kafka protobuf) that serialize JSON objects as strings
-        (GeneratedValue::Object(e), SurrealValue::Strand(a))
-            if options.accept_object_as_json_string =>
-        {
-            // Try to parse the string as JSON and compare
-            match serde_json::from_str::<serde_json::Value>(a.as_str()) {
-                Ok(parsed) => {
-                    // Convert GeneratedValue::Object to serde_json::Value for comparison
-                    let expected_json = generated_object_to_json(e);
-                    if json_values_equal(&expected_json, &parsed) {
-                        CompareResult::Match
-                    } else {
-                        CompareResult::Mismatch {
-                            expected: serde_json::to_string(&expected_json).unwrap_or_default(),
-                            actual: a.to_string(),
-                        }
-                    }
-                }
-                Err(_) => CompareResult::Mismatch {
-                    expected: format!("{e:?}"),
-                    actual: a.to_string(),
-                },
-            }
-        }
 
         // Type mismatch
         (expected, actual) => CompareResult::Mismatch {
             expected: format!("{expected:?}"),
             actual: format!("{actual:?}"),
         },
-    }
-}
-
-/// Convert GeneratedValue::Object to serde_json::Value
-fn generated_object_to_json(obj: &HashMap<String, GeneratedValue>) -> serde_json::Value {
-    let mut map = serde_json::Map::new();
-    for (k, v) in obj {
-        map.insert(k.clone(), generated_value_to_json(v));
-    }
-    serde_json::Value::Object(map)
-}
-
-/// Convert GeneratedValue to serde_json::Value
-fn generated_value_to_json(val: &GeneratedValue) -> serde_json::Value {
-    match val {
-        GeneratedValue::Null => serde_json::Value::Null,
-        GeneratedValue::Bool(b) => serde_json::Value::Bool(*b),
-        GeneratedValue::Int32(i) => serde_json::Value::Number((*i).into()),
-        GeneratedValue::Int64(i) => serde_json::Value::Number((*i).into()),
-        GeneratedValue::Float64(f) => serde_json::Number::from_f64(*f)
-            .map(serde_json::Value::Number)
-            .unwrap_or(serde_json::Value::Null),
-        GeneratedValue::String(s) => serde_json::Value::String(s.clone()),
-        GeneratedValue::Bytes(b) => serde_json::Value::String(base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            b,
-        )),
-        GeneratedValue::Uuid(u) => serde_json::Value::String(u.to_string()),
-        GeneratedValue::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
-        GeneratedValue::Decimal { value, .. } => serde_json::Value::String(value.clone()),
-        GeneratedValue::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(generated_value_to_json).collect())
-        }
-        GeneratedValue::Object(obj) => generated_object_to_json(obj),
-    }
-}
-
-/// Compare two serde_json::Values
-fn json_values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
-    match (a, b) {
-        (serde_json::Value::Null, serde_json::Value::Null) => true,
-        (serde_json::Value::Bool(a), serde_json::Value::Bool(b)) => a == b,
-        (serde_json::Value::Number(a), serde_json::Value::Number(b)) => {
-            // Compare as f64 with tolerance
-            let a_f64 = a.as_f64().unwrap_or(0.0);
-            let b_f64 = b.as_f64().unwrap_or(0.0);
-            (a_f64 - b_f64).abs() < 1e-10
-        }
-        (serde_json::Value::String(a), serde_json::Value::String(b)) => a == b,
-        (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
-            if a.len() != b.len() {
-                return false;
-            }
-            a.iter().zip(b.iter()).all(|(a, b)| json_values_equal(a, b))
-        }
-        (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
-            if a.len() != b.len() {
-                return false;
-            }
-            a.iter()
-                .all(|(k, v)| b.get(k).is_some_and(|bv| json_values_equal(v, bv)))
-        }
-        _ => false,
     }
 }
 
