@@ -1,15 +1,16 @@
-// ! JSONL synchronization logic
+//! JSONL synchronization logic
 
 use crate::conversion::ConversionRule;
-use crate::surreal::{Record, SourceOpts, SurrealOpts, SurrealValue};
+use crate::surreal::{FieldValue, Record, SourceOpts, SurrealOpts};
 use anyhow::{anyhow, Context, Result};
+use json_types::JsonValueWithSchema;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use surreal_sync_file::{FileSource, DEFAULT_BUFFER_SIZE};
 use surrealdb::sql::Thing;
-use sync_core::{SyncDataType, SyncSchema, TableSchema};
+use sync_core::{GeneratedValue, SyncDataType, SyncSchema, TableSchema, TypedValue};
 
 /// Configuration for JSONL import
 #[derive(Clone)]
@@ -394,8 +395,8 @@ fn convert_json_to_record(
                 // Get schema type hint for this field if available
                 let data_type = table_schema.and_then(|ts| ts.get_field_type(key));
 
-                // Convert the value with schema-aware conversion
-                let v = convert_value_with_schema(val, rules, data_type)?;
+                // Convert the value with schema-aware conversion using json-types
+                let v = convert_value_with_schema(val, rules, data_type);
                 data.insert(key.clone(), v);
             }
         }
@@ -412,129 +413,83 @@ fn convert_json_to_record(
     }
 }
 
-/// Convert a JSON value to SurrealValue with optional schema type hint
+/// Convert a JSON value to FieldValue with optional schema type hint
 fn convert_value_with_schema(
     value: &Value,
     rules: &[ConversionRule],
     data_type: Option<&SyncDataType>,
-) -> Result<SurrealValue> {
-    // If we have a schema type hint, use it for type-aware conversion
-    if let Some(dt) = data_type {
-        return convert_value_typed(value, dt, rules);
-    }
-
-    // Fall back to generic conversion
-    convert_value_with_rules(value, rules)
-}
-
-/// Convert a JSON value using a specific schema data type
-fn convert_value_typed(
-    value: &Value,
-    data_type: &SyncDataType,
-    rules: &[ConversionRule],
-) -> Result<SurrealValue> {
-    match data_type {
-        SyncDataType::Uuid => {
-            // UUID can be stored as string in JSONL
-            if let Value::String(s) = value {
-                match uuid::Uuid::parse_str(s) {
-                    Ok(u) => Ok(SurrealValue::Uuid(u)),
-                    Err(_) => Ok(SurrealValue::String(s.clone())), // Not a valid UUID, keep as string
-                }
-            } else {
-                convert_value_with_rules(value, rules)
-            }
-        }
-        SyncDataType::DateTime => {
-            // DateTime can be stored as ISO string in JSONL
-            if let Value::String(s) = value {
-                match chrono::DateTime::parse_from_rfc3339(s) {
-                    Ok(dt) => Ok(SurrealValue::DateTime(dt.with_timezone(&chrono::Utc))),
-                    Err(_) => Ok(SurrealValue::String(s.clone())), // Not a valid DateTime, keep as string
-                }
-            } else {
-                convert_value_with_rules(value, rules)
-            }
-        }
-        SyncDataType::Json => {
-            // JSON objects are native in JSONL, convert to SurrealValue::Object
-            if let Value::Object(obj) = value {
-                let mut kvs = HashMap::new();
-                for (key, val) in obj {
-                    kvs.insert(key.clone(), convert_value_with_rules(val, rules)?);
-                }
-                Ok(SurrealValue::Object(kvs))
-            } else {
-                convert_value_with_rules(value, rules)
-            }
-        }
-        SyncDataType::Array { element_type } => {
-            // Arrays are native in JSONL
-            if let Value::Array(arr) = value {
-                let mut values = Vec::new();
-                for item in arr {
-                    values.push(convert_value_typed(item, element_type.as_ref(), rules)?);
-                }
-                Ok(SurrealValue::Array(values))
-            } else {
-                convert_value_with_rules(value, rules)
-            }
-        }
-        SyncDataType::Enum { values: _ } => {
-            // Enum stored as string in JSONL
-            if let Value::String(s) = value {
-                Ok(SurrealValue::String(s.clone()))
-            } else {
-                convert_value_with_rules(value, rules)
-            }
-        }
-        // For other types, use standard conversion
-        _ => convert_value_with_rules(value, rules),
-    }
-}
-
-fn convert_value_with_rules(value: &Value, rules: &[ConversionRule]) -> Result<SurrealValue> {
-    match value {
-        Value::Null => Ok(SurrealValue::Null),
-        Value::Bool(b) => Ok(SurrealValue::Bool(*b)),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(SurrealValue::Int(i))
-            } else if let Some(f) = n.as_f64() {
-                Ok(SurrealValue::Float(f))
-            } else {
-                Err(anyhow!("Unsupported number type"))
-            }
-        }
-        Value::String(s) => Ok(SurrealValue::String(s.clone())),
-        Value::Array(arr) => {
-            let mut values = Vec::new();
-            for item in arr {
-                values.push(convert_value_with_rules(item, rules)?);
-            }
-            Ok(SurrealValue::Array(values))
-        }
-        Value::Object(obj) => {
-            // Check if this object matches any conversion rule
-            if let Some(type_value) = obj.get("type").and_then(|v| v.as_str()) {
-                for rule in rules {
-                    if rule.type_value == type_value {
-                        // This object matches the rule, convert to Thing
-                        if let Some(id_value) = obj.get(&rule.id_field).and_then(|v| v.as_str()) {
-                            let thing =
-                                Thing::from((rule.target_table.clone(), id_value.to_string()));
-                            return Ok(SurrealValue::Thing(thing));
-                        }
+) -> FieldValue {
+    // First check if this is an object that matches a conversion rule (Thing reference)
+    if let Value::Object(obj) = value {
+        if let Some(type_value) = obj.get("type").and_then(|v| v.as_str()) {
+            for rule in rules {
+                if rule.type_value == type_value {
+                    // This object matches the rule, convert to Thing reference
+                    if let Some(id_value) = obj.get(&rule.id_field).and_then(|v| v.as_str()) {
+                        let thing = Thing::from((rule.target_table.clone(), id_value.to_string()));
+                        return FieldValue::Thing(thing);
                     }
                 }
             }
+        }
+    }
 
-            // No matching rule, convert as regular object
-            let mut kvs = HashMap::new();
-            for (key, val) in obj {
-                kvs.insert(key.clone(), convert_value_with_rules(val, rules)?);
+    // If we have a schema type hint, use json-types for type-aware conversion
+    if let Some(dt) = data_type {
+        return FieldValue::Typed(
+            JsonValueWithSchema::new(value.clone(), dt.clone()).to_typed_value(),
+        );
+    }
+
+    // Fall back to generic conversion (inferred types)
+    FieldValue::Typed(convert_value_inferred(value))
+}
+
+/// Convert a JSON value to TypedValue with inferred types (no schema)
+///
+/// Note: This function does NOT handle Thing conversion rules.
+/// Thing conversion is handled in convert_value_with_schema before calling this.
+fn convert_value_inferred(value: &Value) -> TypedValue {
+    match value {
+        Value::Null => TypedValue::null(SyncDataType::Text),
+        Value::Bool(b) => TypedValue::bool(*b),
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                TypedValue::bigint(i)
+            } else if let Some(f) = n.as_f64() {
+                TypedValue::double(f)
+            } else {
+                TypedValue::null(SyncDataType::BigInt)
             }
-            Ok(SurrealValue::Object(kvs))
+        }
+        Value::String(s) => {
+            // Try to parse as UUID
+            if let Ok(uuid) = uuid::Uuid::parse_str(s) {
+                return TypedValue::uuid(uuid);
+            }
+            // Try to parse as DateTime
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+                return TypedValue::datetime(dt.with_timezone(&chrono::Utc));
+            }
+            TypedValue::text(s)
+        }
+        Value::Array(arr) => {
+            let values: Vec<GeneratedValue> = arr
+                .iter()
+                .map(|item| convert_value_inferred(item).value)
+                .collect();
+            TypedValue::array(values, SyncDataType::Text)
+        }
+        Value::Object(obj) => {
+            // Convert as regular object (Thing rules already checked in convert_value_with_schema)
+            let mut map = HashMap::new();
+            for (key, val) in obj {
+                map.insert(key.clone(), convert_value_inferred(val).value);
+            }
+            TypedValue {
+                sync_type: SyncDataType::Json,
+                value: GeneratedValue::Object(map),
+            }
         }
     }
 }

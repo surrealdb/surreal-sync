@@ -1,58 +1,33 @@
-// ! SurrealDB utilities for JSONL import
+//! SurrealDB utilities for JSONL import
 
 use anyhow::Result;
 use std::collections::HashMap;
 use surrealdb::sql::Thing;
 use surrealdb::Surreal;
+use surrealdb_types::SurrealValue;
+use sync_core::TypedValue;
 
-/// Represents a value that can be written to SurrealDB
-#[derive(Debug, Clone, PartialEq)]
-pub enum SurrealValue {
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    String(String),
-    Array(Vec<SurrealValue>),
-    Object(HashMap<String, SurrealValue>),
+/// A value that can be stored in a JSONL record field.
+///
+/// This enum allows us to handle both regular TypedValues and SurrealDB Thing
+/// references (created via ConversionRules).
+#[derive(Debug, Clone)]
+pub enum FieldValue {
+    /// A typed value that will be converted via surrealdb_types
+    Typed(TypedValue),
+    /// A SurrealDB Thing reference (record link)
     Thing(Thing),
-    Uuid(uuid::Uuid),
-    DateTime(chrono::DateTime<chrono::Utc>),
-    Null,
 }
 
-impl SurrealValue {
-    /// Convert SurrealValue to SurrealDB Value for query binding
-    pub fn to_surrealql_value(&self) -> surrealdb::sql::Value {
-        match self {
-            SurrealValue::Bool(b) => surrealdb::sql::Value::Bool(*b),
-            SurrealValue::Int(i) => surrealdb::sql::Value::Number(surrealdb::sql::Number::from(*i)),
-            SurrealValue::Float(f) => {
-                surrealdb::sql::Value::Number(surrealdb::sql::Number::from(*f))
-            }
-            SurrealValue::String(s) => {
-                surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(s.clone()))
-            }
-            SurrealValue::Array(vs) => {
-                let mut arr = Vec::new();
-                for item in vs {
-                    arr.push(item.to_surrealql_value());
-                }
-                surrealdb::sql::Value::Array(surrealdb::sql::Array::from(arr))
-            }
-            SurrealValue::Object(obj) => {
-                let mut map = std::collections::BTreeMap::new();
-                for (key, value) in obj {
-                    map.insert(key.clone(), value.to_surrealql_value());
-                }
-                surrealdb::sql::Value::Object(surrealdb::sql::Object::from(map))
-            }
-            SurrealValue::Thing(t) => surrealdb::sql::Value::Thing(t.clone()),
-            SurrealValue::Uuid(u) => surrealdb::sql::Value::Uuid(surrealdb::sql::Uuid::from(*u)),
-            SurrealValue::DateTime(dt) => {
-                surrealdb::sql::Value::Datetime(surrealdb::sql::Datetime::from(*dt))
-            }
-            SurrealValue::Null => surrealdb::sql::Value::Null,
-        }
+impl From<TypedValue> for FieldValue {
+    fn from(tv: TypedValue) -> Self {
+        FieldValue::Typed(tv)
+    }
+}
+
+impl From<Thing> for FieldValue {
+    fn from(thing: Thing) -> Self {
+        FieldValue::Thing(thing)
     }
 }
 
@@ -60,14 +35,18 @@ impl SurrealValue {
 #[derive(Debug, Clone)]
 pub struct Record {
     pub id: Thing,
-    pub data: HashMap<String, SurrealValue>,
+    pub data: HashMap<String, FieldValue>,
 }
 
 impl Record {
-    pub fn get_upsert_content(&self) -> surrealdb::sql::Value {
+    fn get_upsert_content(&self) -> surrealdb::sql::Value {
         let mut m = std::collections::BTreeMap::new();
         for (k, v) in &self.data {
-            m.insert(k.clone(), v.to_surrealql_value());
+            let sql_value: surrealdb::sql::Value = match v {
+                FieldValue::Typed(tv) => SurrealValue::from(tv.clone()).into_inner(),
+                FieldValue::Thing(thing) => surrealdb::sql::Value::Thing(thing.clone()),
+            };
+            m.insert(k.clone(), sql_value);
         }
         surrealdb::sql::Value::Object(surrealdb::sql::Object::from(m))
     }

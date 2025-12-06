@@ -18,6 +18,10 @@ surreal-sync-file = { path = "../file" }
 # Schema support for type-aware conversion
 sync-core = { path = "../sync-core" }
 
+# Type conversion crates
+json-types = { path = "../json-types" }
+surrealdb-types = { path = "../surrealdb-types" }
+
 [dev-dependencies]
 tokio-test = "0.4"
 serde = { version = "1.0", features = ["derive"] }

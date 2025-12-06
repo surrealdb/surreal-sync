@@ -1,7 +1,7 @@
 //! JSONL populator for load testing.
 
 use crate::error::JsonlPopulatorError;
-use json_types::forward::JsonValue;
+use json_types::JsonValue;
 use loadtest_generator::DataGenerator;
 use std::fs::File;
 use std::io::{BufWriter, Write};

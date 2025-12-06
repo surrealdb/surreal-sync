@@ -6132,10 +6132,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "json-types",
  "serde",
  "serde_json",
  "surreal-sync-file",
  "surrealdb",
+ "surrealdb-types",
  "sync-core",
  "tokio",
  "tokio-test",
