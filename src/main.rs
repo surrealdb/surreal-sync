@@ -428,12 +428,15 @@ async fn run() -> anyhow::Result<()> {
             to_database,
             to_opts,
         } => {
+            // For CLI usage, schema is optional - pass None
+            // Schema can be loaded from a file if needed in future
             kafka::run_incremental_sync(
                 config,
                 to_namespace,
                 to_database,
                 to_opts,
                 chrono::Utc::now() + chrono::Duration::hours(1),
+                None, // table_schema - not available in CLI yet
             )
             .await?;
         }

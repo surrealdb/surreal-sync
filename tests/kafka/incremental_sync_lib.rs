@@ -130,8 +130,10 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         let database = surreal_config.surreal_database.clone();
         let opts = surreal_opts.clone();
         async move {
-            surreal_sync::kafka::run_incremental_sync(config, namespace, database, opts, deadline)
-                .await
+            surreal_sync::kafka::run_incremental_sync(
+                config, namespace, database, opts, deadline, None,
+            )
+            .await
         }
     });
 
@@ -175,8 +177,10 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         let database = surreal_config.surreal_database.clone();
         let opts = surreal_opts.clone();
         async move {
-            surreal_sync::kafka::run_incremental_sync(config, namespace, database, opts, deadline)
-                .await
+            surreal_sync::kafka::run_incremental_sync(
+                config, namespace, database, opts, deadline, None,
+            )
+            .await
         }
     });
 
@@ -219,8 +223,10 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         let database = surreal_config.surreal_database.clone();
         let opts = surreal_opts;
         async move {
-            surreal_sync::kafka::run_incremental_sync(config, namespace, database, opts, deadline)
-                .await
+            surreal_sync::kafka::run_incremental_sync(
+                config, namespace, database, opts, deadline, None,
+            )
+            .await
         }
     });
 

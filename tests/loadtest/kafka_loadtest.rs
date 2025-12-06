@@ -174,13 +174,21 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         // Run sync with a deadline
         let deadline = Utc::now() + chrono::Duration::seconds(SYNC_TIMEOUT_SECS);
 
+        // Get the table schema for schema-aware conversion
+        let table_schema = schema.get_table(table_name).cloned();
+
         let sync_handle = tokio::spawn({
             let namespace = surreal_config.surreal_namespace.clone();
             let database = surreal_config.surreal_database.clone();
             let opts = surreal_opts.clone();
             async move {
                 surreal_sync::kafka::run_incremental_sync(
-                    config, namespace, database, opts, deadline,
+                    config,
+                    namespace,
+                    database,
+                    opts,
+                    deadline,
+                    table_schema,
                 )
                 .await
             }
@@ -211,26 +219,12 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     );
 
     for table_name in &table_names {
-        // Create verifier with Kafka-specific workarounds enabled.
-        //
-        // WORKAROUNDS EXPLANATION:
-        // These workarounds are needed because the Kafka source (protobuf decoder) doesn't
-        // yet use schema information to properly convert protobuf fields to SurrealDB types.
-        //
-        // 1. accept_object_as_json_string: Protobuf encodes JSON/Object fields as strings.
-        //    The Kafka source should be enhanced to read the schema, identify Object fields,
-        //    parse the protobuf string as JSON, and store as native SurrealDB Object.
-        //
-        // 2. accept_missing_as_empty_array: Protobuf doesn't write empty repeated fields.
-        //    The Kafka source should be enhanced to read the schema, identify Array fields,
-        //    and explicitly write empty arrays when the field is absent in the protobuf message.
-        //
-        // Once these enhancements are implemented in the Kafka source, these flags can be
-        // removed and the test will pass with strict comparison.
+        // Create verifier for Kafka.
+        // Schema-aware conversion in the Kafka source now handles:
+        // - JSON/Object fields: parsed from protobuf strings to native SurrealDB Objects
+        // - Missing array fields: explicitly added as empty arrays based on schema
         let mut verifier =
             StreamingVerifier::new(surreal.clone(), schema.clone(), SEED, table_name)?
-                .with_accept_object_as_json_string(true)
-                .with_accept_missing_as_empty_array(true)
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
                 .with_skip_fields(vec!["updated_at".to_string()]);
 

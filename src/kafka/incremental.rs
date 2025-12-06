@@ -5,6 +5,7 @@ use clap::Parser;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use surreal_sync_kafka::{ConsumerConfig, Message};
+use sync_core::TableSchema;
 use tracing::{debug, error, info};
 
 /// Configuration for Kafka source
@@ -42,6 +43,7 @@ pub async fn run_incremental_sync(
     to_database: String,
     to_opts: SurrealOpts,
     _deadline: chrono::DateTime<chrono::Utc>,
+    table_schema: Option<TableSchema>,
 ) -> Result<()> {
     info!(
         "Starting Kafka incremental sync for message {} from topic {}",
@@ -82,10 +84,12 @@ pub async fn run_incremental_sync(
     let processor = {
         let counter = Arc::clone(&processed_count);
         let table_name = table_name.clone();
+        let table_schema = table_schema.clone();
         move |messages: Vec<Message>| {
             let counter = Arc::clone(&counter);
             let surreal = Arc::clone(&surreal);
             let table_name = table_name.clone();
+            let table_schema = table_schema.clone();
             async move {
                 for message in messages {
                     debug!("Received message: {:?}", message);
@@ -97,7 +101,10 @@ pub async fn run_incremental_sync(
                     let message_key = message.key.clone();
 
                     let mut keys_and_surreal_values =
-                        super::conversion::message_to_keys_and_surreal_values(message)?;
+                        super::conversion::message_to_keys_and_surreal_values(
+                            message,
+                            table_schema.as_ref(),
+                        )?;
 
                     let surreal_id = if let Some(surreal_id) = keys_and_surreal_values.remove("id")
                     {
