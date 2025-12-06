@@ -1,32 +1,31 @@
-//! JSON and CSV type conversions for sync-core types.
+//! JSON type conversions for sync-core types.
 //!
 //! This crate provides bidirectional type conversions between sync-core's
-//! `TypedValue` and JSON/CSV formats.
+//! `TypedValue` and JSON formats.
 //!
 //! # Modules
 //!
 //! - [`forward`] - TypedValue → JSON value conversion
 //! - [`reverse`] - JSON value → TypedValue conversion
-//! - [`csv`] - TypedValue → CSV string conversion
 //!
 //! # Example
 //!
 //! ```ignore
-//! use json_types::{JsonValue, CsvValue};
-//! use sync_core::TypedValue;
+//! use json_types::{JsonValue, JsonValueWithSchema};
+//! use sync_core::{TypedValue, SyncDataType};
 //!
-//! // Convert TypedValue to JSON value
+//! // Forward: TypedValue → JSON value
 //! let tv = TypedValue::text("hello");
 //! let json_val: JsonValue = tv.into();
 //!
-//! // Convert TypedValue to CSV string
-//! let csv_val: CsvValue = tv.into();
+//! // Reverse: JSON value → TypedValue
+//! let json = serde_json::json!(42);
+//! let json_with_schema = JsonValueWithSchema::new(json, &SyncDataType::Int);
+//! let tv = json_with_schema.to_typed_value().unwrap();
 //! ```
 
-pub mod csv;
 pub mod forward;
 pub mod reverse;
 
-pub use csv::CsvValue;
 pub use forward::JsonValue;
 pub use reverse::JsonValueWithSchema;

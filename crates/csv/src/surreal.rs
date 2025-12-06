@@ -1,70 +1,27 @@
 //! SurrealDB utilities for CSV import
 
 use anyhow::Result;
-use serde::Serialize;
 use std::collections::HashMap;
 use surrealdb::sql::Thing;
 use surrealdb::Surreal;
-
-/// Represents a value that can be written to SurrealDB
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(untagged)]
-pub enum SurrealValue {
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    String(String),
-    Array(Vec<SurrealValue>),
-    Object(HashMap<String, SurrealValue>),
-    Uuid(uuid::Uuid),
-    DateTime(chrono::DateTime<chrono::Utc>),
-    Null,
-}
+use surrealdb_types::SurrealValue;
+use sync_core::TypedValue;
 
 /// A record to be written to SurrealDB
 #[derive(Debug, Clone)]
 pub struct Record {
     pub id: Thing,
-    pub data: HashMap<String, SurrealValue>,
+    pub data: HashMap<String, TypedValue>,
 }
 
 impl Record {
     fn get_upsert_content(&self) -> surrealdb::sql::Value {
         let mut m = std::collections::BTreeMap::new();
         for (k, v) in &self.data {
-            let sql_value = surreal_value_to_sql(v);
+            let sql_value: surrealdb::sql::Value = SurrealValue::from(v.clone()).into_inner();
             m.insert(k.clone(), sql_value);
         }
         surrealdb::sql::Value::Object(surrealdb::sql::Object::from(m))
-    }
-}
-
-/// Convert a SurrealValue to surrealdb::sql::Value
-fn surreal_value_to_sql(v: &SurrealValue) -> surrealdb::sql::Value {
-    match v {
-        SurrealValue::Bool(b) => surrealdb::sql::Value::Bool(*b),
-        SurrealValue::Int(i) => surrealdb::sql::Value::Number(surrealdb::sql::Number::from(*i)),
-        SurrealValue::Float(f) => surrealdb::sql::Value::Number(surrealdb::sql::Number::from(*f)),
-        SurrealValue::String(s) => {
-            surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(s.clone()))
-        }
-        SurrealValue::Array(arr) => {
-            let sql_arr: Vec<surrealdb::sql::Value> =
-                arr.iter().map(surreal_value_to_sql).collect();
-            surrealdb::sql::Value::Array(surrealdb::sql::Array::from(sql_arr))
-        }
-        SurrealValue::Object(obj) => {
-            let mut m = std::collections::BTreeMap::new();
-            for (k, v) in obj {
-                m.insert(k.clone(), surreal_value_to_sql(v));
-            }
-            surrealdb::sql::Value::Object(surrealdb::sql::Object::from(m))
-        }
-        SurrealValue::Uuid(u) => surrealdb::sql::Value::Uuid(surrealdb::sql::Uuid::from(*u)),
-        SurrealValue::DateTime(dt) => {
-            surrealdb::sql::Value::Datetime(surrealdb::sql::Datetime::from(*dt))
-        }
-        SurrealValue::Null => surrealdb::sql::Value::Null,
     }
 }
 

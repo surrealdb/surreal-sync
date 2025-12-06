@@ -1,4 +1,4 @@
-use crate::surreal::SurrealValue;
+use crate::surreal::{json_to_surreal_without_schema, SurrealValue};
 use std::collections::HashMap;
 use surreal_sync_kafka::ProtoFieldValue;
 use sync_core::{SyncDataType, TableSchema};
@@ -64,7 +64,7 @@ fn proto_to_surreal_with_schema(
                             e
                         )
                     })?;
-                    return json_to_surreal_value(json_value);
+                    return json_to_surreal_without_schema(json_value);
                 }
             }
             Ok(SurrealValue::String(s))
@@ -147,37 +147,5 @@ fn proto_to_surreal(value: surreal_sync_kafka::ProtoFieldValue) -> anyhow::Resul
             Ok(SurrealValue::Array(arr))
         }
         surreal_sync_kafka::ProtoFieldValue::Null => Ok(SurrealValue::Null),
-    }
-}
-
-/// Convert a JSON value to SurrealValue
-fn json_to_surreal_value(value: serde_json::Value) -> anyhow::Result<SurrealValue> {
-    match value {
-        serde_json::Value::Null => Ok(SurrealValue::Null),
-        serde_json::Value::Bool(b) => Ok(SurrealValue::Bool(b)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(SurrealValue::Int(i))
-            } else if let Some(f) = n.as_f64() {
-                Ok(SurrealValue::Float(f))
-            } else {
-                Ok(SurrealValue::String(n.to_string()))
-            }
-        }
-        serde_json::Value::String(s) => Ok(SurrealValue::String(s)),
-        serde_json::Value::Array(arr) => {
-            let mut result = Vec::new();
-            for item in arr {
-                result.push(json_to_surreal_value(item)?);
-            }
-            Ok(SurrealValue::Array(result))
-        }
-        serde_json::Value::Object(obj) => {
-            let mut map = HashMap::new();
-            for (key, val) in obj {
-                map.insert(key, json_to_surreal_value(val)?);
-            }
-            Ok(SurrealValue::Object(map))
-        }
     }
 }

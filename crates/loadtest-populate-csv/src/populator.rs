@@ -2,7 +2,7 @@
 
 use crate::error::CSVPopulatorError;
 use csv::Writer;
-use json_types::csv::CsvValue;
+use csv_types::CsvValue;
 use loadtest_generator::DataGenerator;
 use std::fs::File;
 use std::io::BufWriter;

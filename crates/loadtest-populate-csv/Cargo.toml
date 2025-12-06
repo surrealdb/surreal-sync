@@ -8,7 +8,7 @@ license = "MIT"
 [dependencies]
 sync-core = { path = "../sync-core" }
 loadtest-generator = { path = "../loadtest-generator" }
-json-types = { path = "../json-types" }
+csv-types = { path = "../csv-types" }
 
 clap = { version = "4.5", features = ["derive", "env"] }
 csv = "1.3"

@@ -1,6 +1,6 @@
-//! CSV string conversion for TypedValue.
+//! Forward conversion: TypedValue → CSV string.
 //!
-//! This module provides conversion from sync-core's `TypedValue` to CSV-compatible strings.
+//! This module provides conversion from sync-core's `TypedValue` to CSV string values.
 
 use base64::Engine;
 use sync_core::{GeneratedValue, SyncDataType, TypedValue};

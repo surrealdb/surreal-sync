@@ -1664,6 +1664,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "csv-types"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "darling"
 version = "0.20.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3316,7 +3330,7 @@ version = "0.1.0"
 dependencies = [
  "clap",
  "csv",
- "json-types",
+ "csv-types",
  "loadtest-generator",
  "sync-core",
  "tempfile",
@@ -6080,11 +6094,13 @@ dependencies = [
  "axum",
  "chrono",
  "csv",
+ "csv-types",
  "futures",
  "serde",
  "serde_json",
  "surreal-sync-file",
  "surrealdb",
+ "surrealdb-types",
  "sync-core",
  "tempfile",
  "tokio",

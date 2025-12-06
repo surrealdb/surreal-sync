@@ -15,6 +15,10 @@ surreal-sync-file = { path = "../file" }
 # Schema support for type-aware conversion
 sync-core = { path = "../sync-core" }
 
+# Type conversion crates
+csv-types = { path = "../csv-types" }
+surrealdb-types = { path = "../surrealdb-types" }
+
 # Async runtime
 tokio = { version = "1.47", features = ["full"] }
 
