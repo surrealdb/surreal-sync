@@ -122,6 +122,10 @@ enum Commands {
         /// Directory to write checkpoint files (default: .surreal-sync-checkpoints)
         #[arg(long, default_value = ".surreal-sync-checkpoints")]
         checkpoint_dir: String,
+
+        /// Sync schema file for type-aware conversion (enables proper type handling)
+        #[arg(long, short = 's', value_name = "PATH")]
+        sync_schema: Option<std::path::PathBuf>,
     },
 
     /// Run incremental sync from source database to SurrealDB
@@ -169,6 +173,10 @@ enum Commands {
         /// Force use of custom change tracking instead of CDC (Neo4j only)
         #[arg(long)]
         no_cdc: bool,
+
+        /// Sync schema file for type-aware conversion (enables proper type handling)
+        #[arg(long, short = 's', value_name = "PATH")]
+        sync_schema: Option<std::path::PathBuf>,
     },
 
     Kafka {
@@ -187,6 +195,10 @@ enum Commands {
         /// Target SurrealDB options
         #[command(flatten)]
         to_opts: SurrealOpts,
+
+        /// Schema file for type-aware conversion (enables JSON field parsing and empty array handling)
+        #[arg(long, short = 's', value_name = "PATH")]
+        sync_schema: Option<std::path::PathBuf>,
     },
 
     #[command(name = "postgresql")]
@@ -218,6 +230,10 @@ enum Commands {
         /// Target SurrealDB options
         #[command(flatten)]
         to_opts: SurrealOpts,
+
+        /// Sync schema file for type-aware conversion (enables proper type handling)
+        #[arg(long, value_name = "PATH")]
+        sync_schema: Option<std::path::PathBuf>,
     },
 
     /// Import CSV files to SurrealDB
@@ -271,6 +287,10 @@ enum Commands {
         /// Target SurrealDB options
         #[command(flatten)]
         to_opts: SurrealOpts,
+
+        /// Sync schema file for type-aware conversion (enables proper type parsing from strings)
+        #[arg(long, short = 's', value_name = "PATH")]
+        sync_schema: Option<std::path::PathBuf>,
     },
 
     /// Load testing utilities for populating and verifying test data
@@ -384,7 +404,18 @@ async fn run() -> anyhow::Result<()> {
             conversion_rules,
             emit_checkpoints,
             checkpoint_dir,
+            sync_schema,
         } => {
+            // Load sync schema if provided (for future use in type-aware conversion)
+            let _sync_schema =
+                if let Some(schema_path) = sync_schema {
+                    Some(SyncSchema::from_file(&schema_path).with_context(|| {
+                        format!("Failed to load sync schema from {schema_path:?}")
+                    })?)
+                } else {
+                    None
+                };
+
             run_full_sync(
                 from,
                 from_opts,
@@ -409,7 +440,18 @@ async fn run() -> anyhow::Result<()> {
             timeout,
             change_tracking_property: _,
             no_cdc: _,
+            sync_schema,
         } => {
+            // Load sync schema if provided (for future use in type-aware conversion)
+            let _sync_schema =
+                if let Some(schema_path) = sync_schema {
+                    Some(SyncSchema::from_file(&schema_path).with_context(|| {
+                        format!("Failed to load sync schema from {schema_path:?}")
+                    })?)
+                } else {
+                    None
+                };
+
             run_incremental_sync(
                 from,
                 from_opts,
@@ -427,16 +469,26 @@ async fn run() -> anyhow::Result<()> {
             to_namespace,
             to_database,
             to_opts,
+            sync_schema,
         } => {
-            // For CLI usage, schema is optional - pass None
-            // Schema can be loaded from a file if needed in future
+            // Load schema if provided for type-aware conversion
+            let table_schema = if let Some(schema_path) = sync_schema {
+                let schema = SyncSchema::from_file(&schema_path)
+                    .with_context(|| format!("Failed to load sync schema from {schema_path:?}"))?;
+                // Get the table schema using the configured table name or topic name
+                let table_name = config.table_name.as_ref().unwrap_or(&config.topic);
+                schema.get_table(table_name).cloned()
+            } else {
+                None
+            };
+
             kafka::run_incremental_sync(
                 config,
                 to_namespace,
                 to_database,
                 to_opts,
                 chrono::Utc::now() + chrono::Duration::hours(1),
-                None, // table_schema - not available in CLI yet
+                table_schema,
             )
             .await?;
         }
@@ -448,7 +500,18 @@ async fn run() -> anyhow::Result<()> {
             to_namespace,
             to_database,
             to_opts,
+            sync_schema,
         } => {
+            // Load sync schema if provided (for future use in type-aware conversion)
+            let _sync_schema =
+                if let Some(schema_path) = sync_schema {
+                    Some(SyncSchema::from_file(&schema_path).with_context(|| {
+                        format!("Failed to load sync schema from {schema_path:?}")
+                    })?)
+                } else {
+                    None
+                };
+
             let config = postgresql::Config {
                 connection_string,
                 slot,
@@ -473,7 +536,18 @@ async fn run() -> anyhow::Result<()> {
             column_names,
             emit_metrics,
             to_opts,
+            sync_schema,
         } => {
+            // Load sync schema if provided for type-aware conversion
+            let schema =
+                if let Some(schema_path) = sync_schema {
+                    Some(SyncSchema::from_file(&schema_path).with_context(|| {
+                        format!("Failed to load sync schema from {schema_path:?}")
+                    })?)
+                } else {
+                    None
+                };
+
             let config = csv::Config {
                 sources: vec![],
                 files,
@@ -494,7 +568,7 @@ async fn run() -> anyhow::Result<()> {
                 column_names,
                 emit_metrics,
                 dry_run: to_opts.dry_run,
-                schema: None, // CLI doesn't support schema yet (future: add --schema flag)
+                schema,
             };
             csv::sync(config).await?;
         }
