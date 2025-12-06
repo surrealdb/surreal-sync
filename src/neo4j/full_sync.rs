@@ -387,16 +387,33 @@ fn convert_neo4j_row_to_record(
     // Convert Neo4j node to SurrealDB format
     let mut data = convert_neo4j_node_to_surreal_kvs(node, node_id, label, ctx)?;
     // Create proper SurrealDB Thing for the record
+    // Neo4j stores all properties as bolt types - integers are preserved as Integer,
+    // strings as String, etc. We convert each type to the appropriate SurrealDB ID type.
     let id = match data.remove(id_property) {
-        Some(SurrealValue::String(id)) => {
-            surrealdb::sql::Thing::from((label.to_lowercase(), id.clone()))
+        Some(SurrealValue::String(s)) => {
+            // String ID - try to parse as integer first (common case: numeric strings)
+            if let Ok(n) = s.parse::<i64>() {
+                surrealdb::sql::Thing::from((label.to_lowercase(), surrealdb::sql::Id::Number(n)))
+            } else {
+                // Keep as string ID
+                surrealdb::sql::Thing::from((label.to_lowercase(), s))
+            }
+        }
+        Some(SurrealValue::Int(n)) => {
+            // Integer ID - use Number ID type directly
+            surrealdb::sql::Thing::from((label.to_lowercase(), surrealdb::sql::Id::Number(n)))
         }
         Some(other) => {
             return Err(anyhow::anyhow!(
-                "Node with label '{label}' and id '{node_id}' has non-string 'id' property: {other:?}",
+                "Node with label '{label}' and id '{node_id}' has unsupported 'id' property type: {other:?}. \
+                 Expected String or Int.",
             ));
         }
-        None => surrealdb::sql::Thing::from((label.to_lowercase(), node_id.to_string())),
+        None => {
+            // No 'id' property - use Neo4j's internal node_id as string
+            // Note: Could be improved to use Number ID if desired
+            surrealdb::sql::Thing::from((label.to_lowercase(), node_id.to_string()))
+        }
     };
 
     anyhow::Ok(crate::Record { id, data })

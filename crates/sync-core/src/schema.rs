@@ -222,6 +222,15 @@ pub enum GeneratorConfig {
         end: String,
     },
 
+    /// Generate current timestamp at generation time
+    ///
+    /// This generator produces the current UTC timestamp when the row is generated.
+    /// Useful for `updated_at` or `created_at` fields where the actual insert time
+    /// is needed (e.g., for Neo4j incremental sync which filters by timestamp).
+    ///
+    /// Note: This is NOT deterministic - each generation produces a different value.
+    TimestampNow,
+
     /// Generate weighted boolean values
     WeightedBool {
         /// Weight for true value (0.0 to 1.0)

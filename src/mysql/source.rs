@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use crate::surreal::{json_to_surreal_with_schema, Change, ChangeOp, SurrealDatabaseSchema};
+use crate::surreal::{
+    convert_id_with_schema, json_to_surreal_with_schema, Change, ChangeOp, SurrealDatabaseSchema,
+};
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -280,11 +282,18 @@ impl MySQLChangeStream {
                 _ => anyhow::bail!("Unknown operation type: {operation}"),
             };
 
-            changes.push(Change::record(
-                op,
-                surrealdb::sql::Thing::from((table_name, row_id)),
-                surreal_data,
-            ));
+            // Convert the string row_id to the proper type using schema information
+            // This ensures that BIGINT IDs are stored as numbers, UUIDs as UUIDs, etc.
+            let record_id = if let Some(schema) = &self.database_schema {
+                // Use schema-aware conversion to get proper ID type
+                let surreal_id = convert_id_with_schema(&row_id, &table_name, "id", schema)?;
+                surrealdb::sql::Thing::from((table_name.clone(), surreal_id))
+            } else {
+                // Fallback to string ID if no schema available (shouldn't happen)
+                surrealdb::sql::Thing::from((table_name.clone(), row_id))
+            };
+
+            changes.push(Change::record(op, record_id, surreal_data));
 
             self.last_sequence_id = sequence_id;
         }

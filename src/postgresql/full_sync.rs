@@ -43,7 +43,7 @@ pub async fn run_full_sync(
         .await?;
         let incremental_client =
             super::client::new_postgresql_client(&from_opts.source_uri).await?;
-        let incremental_source =
+        let mut incremental_source =
             super::incremental_sync::PostgresIncrementalSource::new(incremental_client, 0);
         incremental_source.setup_tracking(tables).await?;
 

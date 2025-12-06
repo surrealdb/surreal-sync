@@ -192,18 +192,10 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
     );
 
     for table_name in &table_names {
-        // WORKAROUND: PostgreSQL incremental sync stores IDs as strings in the JSONB row_id array.
-        // The trigger uses `row_json->>'pk_col'` which always returns text, not the original type.
-        //
-        // TODO: Remove this workaround once PostgreSQL incremental source is enhanced to:
-        // 1. Use schema information to determine PK column types
-        // 2. Convert string IDs back to proper types (BIGINT, UUID, etc.) when creating SurrealDB records
-        // 3. Support composite primary keys with proper type handling
-        //
-        // See `with_force_string_ids` documentation for more details.
         let mut verifier =
             StreamingVerifier::new(surreal.clone(), schema.clone(), SEED, table_name)?
-                .with_force_string_ids(true);
+                // Skip updated_at - it uses timestamp_now generator which is non-deterministic
+                .with_skip_fields(vec!["updated_at".to_string()]);
 
         let report = verifier.verify_streaming(ROW_COUNT).await?;
 

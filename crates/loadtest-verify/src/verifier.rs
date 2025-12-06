@@ -22,6 +22,12 @@ pub struct StreamingVerifier {
     force_string_ids: bool,
     /// Options for configuring comparison behavior.
     compare_options: CompareOptions,
+    /// Fields to skip during verification.
+    ///
+    /// This is useful for non-deterministic fields like `updated_at` that use
+    /// `timestamp_now` generator - the generated value will differ from the
+    /// actual synced value since they are produced at different times.
+    skip_fields: Vec<String>,
 }
 
 /// A record result that we manually extract field-by-field
@@ -61,6 +67,7 @@ impl StreamingVerifier {
             table_name: table_name.to_string(),
             force_string_ids: false,
             compare_options: CompareOptions::default(),
+            skip_fields: Vec::new(),
         })
     }
 
@@ -123,6 +130,23 @@ impl StreamingVerifier {
     /// Once implemented, this flag can be removed and tests will pass without it.
     pub fn with_accept_missing_as_empty_array(mut self, accept: bool) -> Self {
         self.compare_options.accept_missing_as_empty_array = accept;
+        self
+    }
+
+    /// Skip specific fields during verification.
+    ///
+    /// # When to use
+    /// Use this for non-deterministic fields like `updated_at` that use `timestamp_now`
+    /// generator. Since the generator produces the timestamp at generation time and the
+    /// actual synced value is from when the data was inserted, these will always differ.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let verifier = StreamingVerifier::new(surreal, schema, seed, "users")?
+    ///     .with_skip_fields(vec!["updated_at".to_string()]);
+    /// ```
+    pub fn with_skip_fields(mut self, fields: Vec<String>) -> Self {
+        self.skip_fields = fields;
         self
     }
 
@@ -502,6 +526,11 @@ impl StreamingVerifier {
         let mut mismatches = Vec::new();
 
         for field_schema in &table_schema.fields {
+            // Skip fields that are configured to be skipped (e.g., non-deterministic updated_at)
+            if self.skip_fields.contains(&field_schema.name) {
+                continue;
+            }
+
             let expected_value = expected.get_field(&field_schema.name);
             let actual_value = actual.fields.get(&field_schema.name);
 

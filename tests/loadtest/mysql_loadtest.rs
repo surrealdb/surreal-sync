@@ -130,7 +130,9 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
 
     for table_name in &table_names {
         let mut verifier =
-            StreamingVerifier::new(surreal.clone(), schema.clone(), SEED, table_name)?;
+            StreamingVerifier::new(surreal.clone(), schema.clone(), SEED, table_name)?
+                // Skip updated_at - it uses timestamp_now generator which is non-deterministic
+                .with_skip_fields(vec!["updated_at".to_string()]);
 
         let report = verifier.verify_streaming(ROW_COUNT).await?;
 

@@ -1,6 +1,10 @@
 # Sync schema for integration testing
 # This schema defines deterministic test data generation rules.
 # Using the same seed produces identical data for verification.
+#
+# Note: All tables include an `updated_at` field with `timestamp_now` generator.
+# This enables incremental sync for databases that use timestamp-based tracking
+# (e.g., Neo4j). The verifier should skip this field since it's non-deterministic.
 version: 1
 
 tables:
@@ -36,6 +40,10 @@ tables:
           type: float_range
           min: 0.0
           max: 100.0
+      - name: updated_at
+        type: date_time
+        generator:
+          type: timestamp_now
 
   # Decimal and timestamp test table
   - name: orders
@@ -67,6 +75,10 @@ tables:
           type: timestamp_range
           start: "2024-01-01T00:00:00Z"
           end: "2024-12-31T23:59:59Z"
+      - name: updated_at
+        type: date_time
+        generator:
+          type: timestamp_now
 
   # Complex types test table (UUID, JSON, Array, Enum)
   - name: products
@@ -124,3 +136,7 @@ tables:
         generator:
           type: pattern
           pattern: "Product {index} description with some sample text for testing purposes."
+      - name: updated_at
+        type: date_time
+        generator:
+          type: timestamp_now

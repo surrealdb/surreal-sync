@@ -230,7 +230,9 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         let mut verifier =
             StreamingVerifier::new(surreal.clone(), schema.clone(), SEED, table_name)?
                 .with_accept_object_as_json_string(true)
-                .with_accept_missing_as_empty_array(true);
+                .with_accept_missing_as_empty_array(true)
+                // Skip updated_at - it uses timestamp_now generator which is non-deterministic
+                .with_skip_fields(vec!["updated_at".to_string()]);
 
         let report = verifier.verify_streaming(ROW_COUNT).await?;
 

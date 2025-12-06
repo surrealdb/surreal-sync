@@ -4,6 +4,14 @@ use chrono::{DateTime, Utc};
 use rand::Rng;
 use sync_core::GeneratedValue;
 
+/// Generate the current UTC timestamp.
+///
+/// This is NOT deterministic - each call returns the current time.
+/// Useful for `updated_at` fields in incremental sync scenarios.
+pub fn generate_timestamp_now() -> GeneratedValue {
+    GeneratedValue::DateTime(Utc::now())
+}
+
 /// Generate a random timestamp in the given range.
 ///
 /// The start and end should be ISO 8601 formatted timestamps.

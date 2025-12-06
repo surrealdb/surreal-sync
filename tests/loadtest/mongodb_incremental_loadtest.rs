@@ -182,7 +182,9 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
         // NOTE: MongoDB incremental sync preserves numeric ID types (BIGINT -> Number).
         // Unlike MySQL and PostgreSQL incremental sync, we do NOT need force_string_ids.
         let mut verifier =
-            StreamingVerifier::new(surreal.clone(), schema.clone(), SEED, table_name)?;
+            StreamingVerifier::new(surreal.clone(), schema.clone(), SEED, table_name)?
+                // Skip updated_at - it uses timestamp_now generator which is non-deterministic
+                .with_skip_fields(vec!["updated_at".to_string()]);
 
         let report = verifier.verify_streaming(ROW_COUNT).await?;
 

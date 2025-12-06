@@ -52,6 +52,8 @@ pub fn generate_value_typed<R: Rng>(
             timestamp::generate_timestamp_range(rng, start, end)
         }
 
+        GeneratorConfig::TimestampNow => timestamp::generate_timestamp_now(),
+
         GeneratorConfig::WeightedBool { true_weight } => {
             GeneratedValue::Bool(rng.gen_bool(*true_weight))
         }

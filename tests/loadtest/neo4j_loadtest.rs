@@ -145,17 +145,10 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     );
 
     for table_name in &table_names {
-        // WORKAROUND: Neo4j stores all IDs as strings (Neo4j node properties don't preserve
-        // numeric types for the 'id' field), so we need to tell the verifier to use string IDs.
-        //
-        // TODO: Remove this workaround once Neo4j source is enhanced to:
-        // 1. Read and use schema information
-        // 2. Convert Neo4j string IDs to the SurrealDB type specified in the schema
-        //
-        // See `with_force_string_ids` documentation for more details.
         let mut verifier =
             StreamingVerifier::new(surreal.clone(), schema.clone(), SEED, table_name)?
-                .with_force_string_ids(true);
+                // Skip updated_at - it uses timestamp_now generator which is non-deterministic
+                .with_skip_fields(vec!["updated_at".to_string()]);
 
         let report = verifier.verify_streaming(ROW_COUNT).await?;
 

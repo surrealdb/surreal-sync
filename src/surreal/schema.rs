@@ -214,6 +214,73 @@ pub fn json_to_surreal_with_schema(
     }
 }
 
+/// Convert a string ID value to the proper SurrealDB ID type using schema information
+///
+/// This function is used to convert string representations of IDs (from audit tables,
+/// JSON extractions, etc.) back to their proper types (Integer, UUID) for creating
+/// SurrealDB Thing IDs.
+///
+/// # Arguments
+/// * `id_str` - The string representation of the ID
+/// * `table_name` - The name of the table to look up the ID column type
+/// * `id_column` - The name of the ID column (usually "id")
+/// * `schema` - The database schema containing type information
+///
+/// # Returns
+/// A `surrealdb::sql::Id` with the proper type, or an error if conversion fails
+pub fn convert_id_with_schema(
+    id_str: &str,
+    table_name: &str,
+    id_column: &str,
+    schema: &SurrealDatabaseSchema,
+) -> anyhow::Result<surrealdb::sql::Id> {
+    // Look up the table schema
+    let table_schema = schema
+        .tables
+        .get(table_name)
+        .ok_or_else(|| anyhow::anyhow!("Table '{table_name}' not found in schema"))?;
+
+    // Look up the ID column type
+    let id_type = table_schema.columns.get(id_column).ok_or_else(|| {
+        anyhow::anyhow!("Column '{id_column}' not found in table '{table_name}' schema")
+    })?;
+
+    // Convert based on the schema-defined type
+    match id_type {
+        SurrealType::Integer => {
+            // Parse as integer
+            let id_int: i64 = id_str.parse().map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to parse ID '{id_str}' as integer for table '{table_name}': {e}"
+                )
+            })?;
+            Ok(surrealdb::sql::Id::Number(id_int))
+        }
+        SurrealType::Uuid => {
+            // Parse as UUID
+            let uuid = uuid::Uuid::parse_str(id_str).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to parse ID '{id_str}' as UUID for table '{table_name}': {e}"
+                )
+            })?;
+            Ok(surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(uuid)))
+        }
+        SurrealType::String => {
+            // Keep as string
+            Ok(surrealdb::sql::Id::String(id_str.to_string()))
+        }
+        other => {
+            // For other types, default to string but log a warning
+            tracing::warn!(
+                "Unexpected ID column type {:?} for table '{}', using string ID",
+                other,
+                table_name
+            );
+            Ok(surrealdb::sql::Id::String(id_str.to_string()))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,5 +387,91 @@ mod tests {
             SurrealValue::String(s) => assert_eq!(s, "test"),
             _ => panic!("Expected String, got {result:?}"),
         }
+    }
+
+    #[test]
+    fn test_convert_id_with_schema_integer() {
+        let mut tables = HashMap::new();
+        let mut columns = HashMap::new();
+        columns.insert("id".to_string(), SurrealType::Integer);
+        tables.insert(
+            "users".to_string(),
+            SurrealTableSchema {
+                table_name: "users".to_string(),
+                columns,
+            },
+        );
+        let schema = SurrealDatabaseSchema { tables };
+
+        // Test integer ID conversion
+        let id = convert_id_with_schema("12345", "users", "id", &schema).unwrap();
+        match id {
+            surrealdb::sql::Id::Number(n) => assert_eq!(n, 12345),
+            _ => panic!("Expected Number, got {id:?}"),
+        }
+    }
+
+    #[test]
+    fn test_convert_id_with_schema_uuid() {
+        let mut tables = HashMap::new();
+        let mut columns = HashMap::new();
+        columns.insert("id".to_string(), SurrealType::Uuid);
+        tables.insert(
+            "products".to_string(),
+            SurrealTableSchema {
+                table_name: "products".to_string(),
+                columns,
+            },
+        );
+        let schema = SurrealDatabaseSchema { tables };
+
+        // Test UUID ID conversion
+        let uuid_str = "550e8400-e29b-41d4-a716-446655440000";
+        let id = convert_id_with_schema(uuid_str, "products", "id", &schema).unwrap();
+        match id {
+            surrealdb::sql::Id::Uuid(u) => {
+                // SurrealDB UUID wrapper formats as u'...' - extract inner UUID for comparison
+                let inner_uuid: uuid::Uuid = u.into();
+                assert_eq!(inner_uuid.to_string(), uuid_str);
+            }
+            _ => panic!("Expected Uuid, got {id:?}"),
+        }
+    }
+
+    #[test]
+    fn test_convert_id_with_schema_string() {
+        let mut tables = HashMap::new();
+        let mut columns = HashMap::new();
+        columns.insert("id".to_string(), SurrealType::String);
+        tables.insert(
+            "documents".to_string(),
+            SurrealTableSchema {
+                table_name: "documents".to_string(),
+                columns,
+            },
+        );
+        let schema = SurrealDatabaseSchema { tables };
+
+        // Test string ID conversion (should remain as string)
+        let id = convert_id_with_schema("doc-123-abc", "documents", "id", &schema).unwrap();
+        match id {
+            surrealdb::sql::Id::String(s) => assert_eq!(s, "doc-123-abc"),
+            _ => panic!("Expected String, got {id:?}"),
+        }
+    }
+
+    #[test]
+    fn test_convert_id_with_schema_table_not_found() {
+        let schema = SurrealDatabaseSchema {
+            tables: HashMap::new(),
+        };
+
+        // Test error when table not found
+        let result = convert_id_with_schema("123", "nonexistent", "id", &schema);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not found in schema"));
     }
 }

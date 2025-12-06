@@ -1,6 +1,6 @@
 use crate::surreal::{
-    json_to_surreal_with_schema, json_to_surreal_without_schema, surreal_connect, Change, ChangeOp,
-    SurrealDatabaseSchema, SurrealValue,
+    convert_id_with_schema, json_to_surreal_with_schema, surreal_connect, Change, ChangeOp,
+    SurrealDatabaseSchema,
 };
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use crate::{SourceOpts, SurrealOpts};
@@ -176,6 +176,9 @@ pub struct PostgresIncrementalSource {
     tracking_table: String,
     last_sequence: i64,
     database_schema: Option<SurrealDatabaseSchema>,
+    /// Mapping of table names to their primary key column names
+    /// Used for schema-aware ID type conversion in the change stream
+    pk_columns: HashMap<String, Vec<String>>,
 }
 
 impl PostgresIncrementalSource {
@@ -187,6 +190,7 @@ impl PostgresIncrementalSource {
             tracking_table,
             last_sequence: initial_sequence_id,
             database_schema: None,
+            pk_columns: HashMap::new(),
         }
     }
 
@@ -339,13 +343,17 @@ impl PostgresIncrementalSource {
 
     /// Set up trigger-based tracking for specified tables (backward compatibility)
     /// Auto-detects primary key columns for each table
-    pub async fn setup_tracking(&self, tables: Vec<String>) -> Result<()> {
+    pub async fn setup_tracking(&mut self, tables: Vec<String>) -> Result<()> {
         let client = self.client.lock().await;
         let mut configs: Vec<TableTrackingConfig> = Vec::new();
 
         // Auto-detect primary key for each table
         for table_name in tables {
             let id_columns = Self::query_composite_primary_id_columns(&client, &table_name).await?;
+
+            // Store PK columns for schema-aware ID conversion in change stream
+            self.pk_columns
+                .insert(table_name.clone(), id_columns.clone());
 
             configs.push(TableTrackingConfig {
                 table_name,
@@ -474,6 +482,7 @@ impl IncrementalSource for PostgresIncrementalSource {
             self.tracking_table.clone(),
             self.last_sequence,
             self.database_schema.clone(),
+            self.pk_columns.clone(),
         )
         .await?;
 
@@ -501,6 +510,8 @@ pub struct PostgresChangeStream {
     buffer: Vec<Change>,
     empty_poll_count: usize,
     database_schema: Option<SurrealDatabaseSchema>,
+    /// Mapping of table names to their primary key column names
+    pk_columns: HashMap<String, Vec<String>>,
 }
 
 impl PostgresChangeStream {
@@ -509,6 +520,7 @@ impl PostgresChangeStream {
         tracking_table: String,
         start_sequence: i64,
         database_schema: Option<SurrealDatabaseSchema>,
+        pk_columns: HashMap<String, Vec<String>>,
     ) -> Result<Self> {
         Ok(Self {
             client,
@@ -517,6 +529,7 @@ impl PostgresChangeStream {
             buffer: Vec::new(),
             empty_poll_count: 0,
             database_schema,
+            pk_columns,
         })
     }
 
@@ -581,6 +594,14 @@ impl PostgresChangeStream {
                 }
             };
 
+            // Get PK columns for this table (needed for filtering content data)
+            let pk_cols = self.pk_columns.get(&table_name).ok_or_else(|| {
+                anyhow!(
+                    "No PK column information available for table '{table_name}'. \
+                    Was setup_tracking() called for this table?"
+                )
+            })?;
+
             let surreal_data = if let Some(json_value) = json_data {
                 // Use schema-aware conversion if schema is available
                 if let Some(table_schema) = self
@@ -589,48 +610,41 @@ impl PostgresChangeStream {
                     .and_then(|s| s.tables.get(&table_name))
                 {
                     // Convert JSON object using schema information
-                    // NOTE: We must filter out primary key column(s) from the content data.
+                    // NOTE: We must filter out ALL primary key column(s) from the content data.
                     // SurrealDB's `UPSERT $record_id CONTENT $content` will fail if `id` is
                     // present in the content (error: "Found X for the `id` field, but a
                     // specific record has been specified").
                     //
-                    // LIMITATION: This code currently assumes the primary key column is named 'id'.
-                    // PostgreSQL incremental sync actually supports composite primary keys and
-                    // knows the PK columns at trigger setup time, but that information is not
-                    // propagated to the change stream processing. A proper fix would:
-                    // 1. Store PK column names in the tracking table or cache them in the source
-                    // 2. Filter ALL PK columns from content, not just 'id'
-                    // 3. Validate that filtered PK values match the row_id JSONB array
-                    //
-                    // For now, we filter 'id' and validate it matches row_id[0] for single-PK tables.
+                    // We use the pk_columns mapping to know which columns to filter, and validate
+                    // that the filtered values match the row_id JSONB array.
                     match json_value {
                         serde_json::Value::Object(map) => {
                             let mut m = std::collections::HashMap::new();
                             for (key, val) in map {
-                                // Filter out the 'id' column to avoid SurrealDB record ID conflict
-                                if key == "id" {
-                                    // Validate that the JSON id value matches row_id[0]
+                                // Check if this column is a primary key column
+                                if let Some(pk_index) = pk_cols.iter().position(|col| col == &key) {
+                                    // Validate that the JSON value matches the corresponding row_id element
                                     if let Some(serde_json::Value::Array(arr)) = &row_id {
-                                        if arr.len() == 1 {
-                                            let json_id_str = match &val {
+                                        if pk_index < arr.len() {
+                                            let json_val_str = match &val {
                                                 serde_json::Value::Number(n) => n.to_string(),
                                                 serde_json::Value::String(s) => s.clone(),
                                                 other => format!("{other}"),
                                             };
-                                            let row_id_str = match &arr[0] {
+                                            let row_id_str = match &arr[pk_index] {
                                                 serde_json::Value::Number(n) => n.to_string(),
                                                 serde_json::Value::String(s) => s.clone(),
                                                 other => format!("{other}"),
                                             };
-                                            if json_id_str != row_id_str {
+                                            if json_val_str != row_id_str {
                                                 anyhow::bail!(
-                                                    "row_id and JSON id field mismatch in table '{table_name}': \
-                                                    row_id[0]={row_id_str}, json_id={json_id_str}. \
-                                                    This may indicate the 'id' column is not the primary key."
+                                                    "row_id and JSON PK field mismatch in table '{table_name}': \
+                                                    row_id[{pk_index}]={row_id_str}, json_{key}={json_val_str}."
                                                 );
                                             }
                                         }
                                     }
+                                    // Skip PK columns - they're used as record ID, not content
                                     continue;
                                 }
                                 let v = json_to_surreal_with_schema(val, &key, table_schema)?;
@@ -653,45 +667,87 @@ impl PostgresChangeStream {
                 HashMap::new()
             };
 
+            // Convert row_id to proper type using schema information
+            // The row_id is a JSONB array (supports composite PKs) where each element
+            // is extracted via row_json->>'column', which always returns text in PostgreSQL.
+            //
+            // We use the pk_columns mapping (populated during setup_tracking) to know which
+            // column names correspond to each position in the row_id array, then use the
+            // database_schema to look up the proper type for conversion.
             let record_id = match row_id {
                 Some(serde_json::Value::Array(arr)) => {
+                    // pk_cols was already retrieved above for filtering content data
+                    if arr.len() != pk_cols.len() {
+                        anyhow::bail!(
+                            "Mismatch between row_id array length ({}) and PK columns ({}) for table '{table_name}'",
+                            arr.len(),
+                            pk_cols.len()
+                        );
+                    }
+
                     if arr.len() == 1 {
-                        // Single primary key value
-                        match json_to_surreal_without_schema(arr[0].clone())? {
-                            SurrealValue::String(s) => {
-                                surrealdb::sql::Id::from(surrealdb::sql::Strand::from(s))
-                            }
-                            SurrealValue::Int(i) => surrealdb::sql::Id::from(i),
-                            v => {
-                                anyhow::bail!(
-                                    "Unsupported row_id type in audit table for table '{table_name}': {v:?}",
-                                );
+                        // Single primary key - use schema-aware conversion
+                        let id_str = match &arr[0] {
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            other => format!("{other}"),
+                        };
+
+                        let pk_column = &pk_cols[0];
+
+                        // Use schema-aware conversion if schema is available
+                        if let Some(schema) = &self.database_schema {
+                            convert_id_with_schema(&id_str, &table_name, pk_column, schema)?
+                        } else {
+                            // Fallback to value-based inference if no schema
+                            if let Ok(n) = id_str.parse::<i64>() {
+                                surrealdb::sql::Id::Number(n)
+                            } else if let Ok(uuid) = uuid::Uuid::parse_str(&id_str) {
+                                surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(uuid))
+                            } else {
+                                surrealdb::sql::Id::from(surrealdb::sql::Strand::from(id_str))
                             }
                         }
                     } else {
+                        // Composite primary key - convert each value using schema
                         let mut surrealdb_values_array = Vec::new();
-                        for item in arr {
-                            match json_to_surreal_without_schema(item)? {
-                                SurrealValue::String(s) => {
-                                    surrealdb_values_array
-                                        .push(surrealdb::sql::Value::Strand(s.into()));
+                        for (i, item) in arr.into_iter().enumerate() {
+                            let id_str = match item {
+                                serde_json::Value::String(s) => s,
+                                serde_json::Value::Number(n) => n.to_string(),
+                                other => format!("{other}"),
+                            };
+
+                            let pk_column = &pk_cols[i];
+
+                            // Use schema-aware conversion if schema is available
+                            let surreal_id = if let Some(schema) = &self.database_schema {
+                                convert_id_with_schema(&id_str, &table_name, pk_column, schema)?
+                            } else {
+                                // Fallback to string if no schema
+                                surrealdb::sql::Id::String(id_str)
+                            };
+
+                            // Convert Id to Value for the array
+                            let value = match surreal_id {
+                                surrealdb::sql::Id::Number(n) => {
+                                    surrealdb::sql::Value::Number(surrealdb::sql::Number::Int(n))
                                 }
-                                v => {
+                                surrealdb::sql::Id::String(s) => {
+                                    surrealdb::sql::Value::Strand(s.into())
+                                }
+                                surrealdb::sql::Id::Uuid(u) => surrealdb::sql::Value::Uuid(u),
+                                other => {
                                     anyhow::bail!(
-                                        "Unsupported row_id array item type in audit table for table '{table_name}': {v:?}",
+                                        "Unsupported ID type in composite PK for table '{table_name}': {other:?}"
                                     );
                                 }
-                            }
+                            };
+                            surrealdb_values_array.push(value);
                         }
                         surrealdb::sql::Id::from(surrealdb_values_array)
                     }
                 }
-                // Some(serde_json::Value::String(s)) => {
-                //     surrealdb::sql::Id::from(surrealdb::sql::Strand::from(s))
-                // }
-                // Some(serde_json::Value::Number(n)) if n.is_i64() => {
-                //     surrealdb::sql::Id::from(n.as_i64().unwrap())
-                // }
                 value => return Err(anyhow!("Unsupported JSON value type: {value:?}")),
             };
 

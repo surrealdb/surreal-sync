@@ -190,18 +190,10 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
     );
 
     for table_name in &table_names {
-        // WORKAROUND: MySQL incremental sync stores IDs as strings (row_id is VARCHAR in the
-        // audit table) so we need to tell the verifier to use string IDs.
-        //
-        // TODO: Remove this workaround once MySQL incremental source is enhanced to:
-        // 1. Preserve primary key value types in the tracking table (instead of VARCHAR)
-        // 2. Support composite primary keys (not just single-column 'id')
-        // 3. Read/leverage schema to convert PKs to correct SurrealDB types
-        //
-        // See `with_force_string_ids` documentation for more details.
         let mut verifier =
             StreamingVerifier::new(surreal.clone(), schema.clone(), SEED, table_name)?
-                .with_force_string_ids(true);
+                // Skip updated_at - it uses timestamp_now generator which is non-deterministic
+                .with_skip_fields(vec!["updated_at".to_string()]);
 
         let report = verifier.verify_streaming(ROW_COUNT).await?;
 
