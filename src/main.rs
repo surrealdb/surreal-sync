@@ -5,13 +5,13 @@
 //! ## Full Sync
 //! ```bash
 //! # MongoDB full sync
-//! surreal-sync sync mongodb \
+//! surreal-sync full mongodb \
 //!   --source-uri mongodb://localhost:27017 \
 //!   --source-database mydb \
 //!   --to-namespace test --to-database test
 //!
 //! # Neo4j full sync with checkpoints
-//! surreal-sync sync neo4j \
+//! surreal-sync full neo4j \
 //!   --source-uri bolt://localhost:7687 \
 //!   --to-namespace test --to-database test \
 //!   --emit-checkpoints
@@ -34,20 +34,19 @@
 //!   --incremental-to "neo4j:2024-01-01T12:00:00Z"
 //! ```
 //!
+//! ## Load Testing
 //! ```bash
-//! # Run full sync with checkpoint emission
-//! surreal-sync sync mongodb \
-//!   --source-uri mongodb://localhost:27017 \
-//!   --source-database mydb \
-//!   --to-namespace test --to-database test \
-//!   --emit-checkpoints
+//! # Populate MySQL with test data
+//! surreal-sync loadtest populate mysql \
+//!   --schema loadtest_schema.yaml \
+//!   --row-count 1000 \
+//!   --mysql-connection-string "mysql://root:root@localhost:3306/testdb"
 //!
-//! # Run incremental sync from checkpoint
-//! surreal-sync incremental mongodb \
-//!   --source-uri mongodb://localhost:27017 \
-//!   --source-database mydb \
-//!   --to-namespace test --to-database test \
-//!   --incremental-from mongodb:token:2024-01-01T00:00:00Z
+//! # Verify synced data in SurrealDB
+//! surreal-sync loadtest verify \
+//!   --schema loadtest_schema.yaml \
+//!   --row-count 1000 \
+//!   --surreal-endpoint ws://localhost:8000
 //! ```
 //!
 //! ## Checkpoint Formats
@@ -273,6 +272,16 @@ enum Commands {
         to_opts: SurrealOpts,
     },
 
+    /// Load testing utilities for populating and verifying test data
+    Loadtest {
+        #[command(subcommand)]
+        command: LoadtestCommand,
+    },
+}
+
+/// Load testing subcommands
+#[derive(Subcommand)]
+enum LoadtestCommand {
     /// Populate source database with deterministic test data for load testing
     Populate {
         #[command(subcommand)]
@@ -479,12 +488,14 @@ async fn run() -> anyhow::Result<()> {
             };
             csv::sync(config).await?;
         }
-        Commands::Populate { source } => {
-            run_populate(source).await?;
-        }
-        Commands::Verify { args } => {
-            run_verify(args).await?;
-        }
+        Commands::Loadtest { command } => match command {
+            LoadtestCommand::Populate { source } => {
+                run_populate(source).await?;
+            }
+            LoadtestCommand::Verify { args } => {
+                run_verify(args).await?;
+            }
+        },
     }
 
     Ok(())
