@@ -123,9 +123,9 @@ enum Commands {
         #[arg(long, default_value = ".surreal-sync-checkpoints")]
         checkpoint_dir: String,
 
-        /// Sync schema file for type-aware conversion (enables proper type handling)
-        #[arg(long, short = 's', value_name = "PATH")]
-        sync_schema: Option<std::path::PathBuf>,
+        /// Schema file for type-aware conversion (enables proper type handling)
+        #[arg(long, value_name = "PATH")]
+        schema_file: Option<std::path::PathBuf>,
     },
 
     /// Run incremental sync from source database to SurrealDB
@@ -174,9 +174,9 @@ enum Commands {
         #[arg(long)]
         no_cdc: bool,
 
-        /// Sync schema file for type-aware conversion (enables proper type handling)
-        #[arg(long, short = 's', value_name = "PATH")]
-        sync_schema: Option<std::path::PathBuf>,
+        /// Schema file for type-aware conversion (enables proper type handling)
+        #[arg(long, value_name = "PATH")]
+        schema_file: Option<std::path::PathBuf>,
     },
 
     Kafka {
@@ -197,8 +197,8 @@ enum Commands {
         to_opts: SurrealOpts,
 
         /// Schema file for type-aware conversion (enables JSON field parsing and empty array handling)
-        #[arg(long, short = 's', value_name = "PATH")]
-        sync_schema: Option<std::path::PathBuf>,
+        #[arg(long, value_name = "PATH")]
+        schema_file: Option<std::path::PathBuf>,
     },
 
     #[command(name = "postgresql")]
@@ -231,9 +231,9 @@ enum Commands {
         #[command(flatten)]
         to_opts: SurrealOpts,
 
-        /// Sync schema file for type-aware conversion (enables proper type handling)
+        /// Schema file for type-aware conversion (enables proper type handling)
         #[arg(long, value_name = "PATH")]
-        sync_schema: Option<std::path::PathBuf>,
+        schema_file: Option<std::path::PathBuf>,
     },
 
     /// Import CSV files to SurrealDB
@@ -288,9 +288,9 @@ enum Commands {
         #[command(flatten)]
         to_opts: SurrealOpts,
 
-        /// Sync schema file for type-aware conversion (enables proper type parsing from strings)
-        #[arg(long, short = 's', value_name = "PATH")]
-        sync_schema: Option<std::path::PathBuf>,
+        /// Schema file for type-aware conversion (enables proper type parsing from strings)
+        #[arg(long, value_name = "PATH")]
+        schema_file: Option<std::path::PathBuf>,
     },
 
     /// Load testing utilities for populating and verifying test data
@@ -404,11 +404,11 @@ async fn run() -> anyhow::Result<()> {
             conversion_rules,
             emit_checkpoints,
             checkpoint_dir,
-            sync_schema,
+            schema_file,
         } => {
             // Load sync schema if provided (for future use in type-aware conversion)
-            let _sync_schema =
-                if let Some(schema_path) = sync_schema {
+            let _schema =
+                if let Some(schema_path) = schema_file {
                     Some(SyncSchema::from_file(&schema_path).with_context(|| {
                         format!("Failed to load sync schema from {schema_path:?}")
                     })?)
@@ -440,11 +440,11 @@ async fn run() -> anyhow::Result<()> {
             timeout,
             change_tracking_property: _,
             no_cdc: _,
-            sync_schema,
+            schema_file,
         } => {
             // Load sync schema if provided (for future use in type-aware conversion)
-            let _sync_schema =
-                if let Some(schema_path) = sync_schema {
+            let _schema =
+                if let Some(schema_path) = schema_file {
                     Some(SyncSchema::from_file(&schema_path).with_context(|| {
                         format!("Failed to load sync schema from {schema_path:?}")
                     })?)
@@ -469,10 +469,10 @@ async fn run() -> anyhow::Result<()> {
             to_namespace,
             to_database,
             to_opts,
-            sync_schema,
+            schema_file,
         } => {
             // Load schema if provided for type-aware conversion
-            let table_schema = if let Some(schema_path) = sync_schema {
+            let table_schema = if let Some(schema_path) = schema_file {
                 let schema = SyncSchema::from_file(&schema_path)
                     .with_context(|| format!("Failed to load sync schema from {schema_path:?}"))?;
                 // Get the table schema using the configured table name or topic name
@@ -500,17 +500,17 @@ async fn run() -> anyhow::Result<()> {
             to_namespace,
             to_database,
             to_opts,
-            sync_schema,
+            schema_file,
         } => {
             // Load sync schema if provided (for future use in type-aware conversion)
-            let _sync_schema =
-                if let Some(schema_path) = sync_schema {
-                    Some(SyncSchema::from_file(&schema_path).with_context(|| {
-                        format!("Failed to load sync schema from {schema_path:?}")
-                    })?)
-                } else {
-                    None
-                };
+            let _schema = if let Some(schema_path) = schema_file {
+                Some(
+                    SyncSchema::from_file(&schema_path)
+                        .with_context(|| format!("Failed to load schema from {schema_path:?}"))?,
+                )
+            } else {
+                None
+            };
 
             let config = postgresql::Config {
                 connection_string,
@@ -536,11 +536,11 @@ async fn run() -> anyhow::Result<()> {
             column_names,
             emit_metrics,
             to_opts,
-            sync_schema,
+            schema_file,
         } => {
             // Load sync schema if provided for type-aware conversion
             let schema =
-                if let Some(schema_path) = sync_schema {
+                if let Some(schema_path) = schema_file {
                     Some(SyncSchema::from_file(&schema_path).with_context(|| {
                         format!("Failed to load sync schema from {schema_path:?}")
                     })?)
