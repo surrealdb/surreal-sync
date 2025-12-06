@@ -108,8 +108,18 @@ pub fn json_to_surreal_with_schema(
                 let dt =
                     chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ndt, chrono::Utc);
                 Ok(SurrealValue::DateTime(dt))
-            // Try MySQL Timestamp-like format with fractional seconds
+            // Try MySQL Timestamp-like format with fractional seconds (space separator)
             } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f") {
+                let dt =
+                    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ndt, chrono::Utc);
+                Ok(SurrealValue::DateTime(dt))
+            // Try ISO 8601 format with T separator (PostgreSQL to_jsonb output)
+            } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.f") {
+                let dt =
+                    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ndt, chrono::Utc);
+                Ok(SurrealValue::DateTime(dt))
+            // Try ISO 8601 format without fractional seconds
+            } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
                 let dt =
                     chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ndt, chrono::Utc);
                 Ok(SurrealValue::DateTime(dt))

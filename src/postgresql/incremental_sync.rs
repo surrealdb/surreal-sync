@@ -589,10 +589,50 @@ impl PostgresChangeStream {
                     .and_then(|s| s.tables.get(&table_name))
                 {
                     // Convert JSON object using schema information
+                    // NOTE: We must filter out primary key column(s) from the content data.
+                    // SurrealDB's `UPSERT $record_id CONTENT $content` will fail if `id` is
+                    // present in the content (error: "Found X for the `id` field, but a
+                    // specific record has been specified").
+                    //
+                    // LIMITATION: This code currently assumes the primary key column is named 'id'.
+                    // PostgreSQL incremental sync actually supports composite primary keys and
+                    // knows the PK columns at trigger setup time, but that information is not
+                    // propagated to the change stream processing. A proper fix would:
+                    // 1. Store PK column names in the tracking table or cache them in the source
+                    // 2. Filter ALL PK columns from content, not just 'id'
+                    // 3. Validate that filtered PK values match the row_id JSONB array
+                    //
+                    // For now, we filter 'id' and validate it matches row_id[0] for single-PK tables.
                     match json_value {
                         serde_json::Value::Object(map) => {
                             let mut m = std::collections::HashMap::new();
                             for (key, val) in map {
+                                // Filter out the 'id' column to avoid SurrealDB record ID conflict
+                                if key == "id" {
+                                    // Validate that the JSON id value matches row_id[0]
+                                    if let Some(serde_json::Value::Array(arr)) = &row_id {
+                                        if arr.len() == 1 {
+                                            let json_id_str = match &val {
+                                                serde_json::Value::Number(n) => n.to_string(),
+                                                serde_json::Value::String(s) => s.clone(),
+                                                other => format!("{other}"),
+                                            };
+                                            let row_id_str = match &arr[0] {
+                                                serde_json::Value::Number(n) => n.to_string(),
+                                                serde_json::Value::String(s) => s.clone(),
+                                                other => format!("{other}"),
+                                            };
+                                            if json_id_str != row_id_str {
+                                                anyhow::bail!(
+                                                    "row_id and JSON id field mismatch in table '{table_name}': \
+                                                    row_id[0]={row_id_str}, json_id={json_id_str}. \
+                                                    This may indicate the 'id' column is not the primary key."
+                                                );
+                                            }
+                                        }
+                                    }
+                                    continue;
+                                }
                                 let v = json_to_surreal_with_schema(val, &key, table_schema)?;
                                 m.insert(key, v);
                             }
