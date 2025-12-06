@@ -17,9 +17,6 @@ pub struct StreamingVerifier {
     schema: SyncSchema,
     generator: DataGenerator,
     table_name: String,
-    /// When true, all IDs are converted to strings for SurrealDB lookups.
-    /// This is needed for Neo4j sources which always store IDs as strings.
-    force_string_ids: bool,
     /// Options for configuring comparison behavior.
     compare_options: CompareOptions,
     /// Fields to skip during verification.
@@ -65,37 +62,9 @@ impl StreamingVerifier {
             schema,
             generator,
             table_name: table_name.to_string(),
-            force_string_ids: false,
             compare_options: CompareOptions::default(),
             skip_fields: Vec::new(),
         })
-    }
-
-    /// Enable forcing all IDs to be treated as strings.
-    /// This is needed for Neo4j sources which always store IDs as strings in SurrealDB,
-    /// and for MySQL incremental sync which stores row_id as VARCHAR in the audit table.
-    ///
-    /// # Future Work: Remove this workaround
-    ///
-    /// This method is a temporary workaround that should be removed once the following
-    /// enhancements are implemented:
-    ///
-    /// 1. **Neo4j source schema support**: Enhance the Neo4j source to read and use schema
-    ///    information, so it can convert Neo4j string IDs (which are required to be strings
-    ///    in Neo4j) to the SurrealDB type that users specify in their schema.
-    ///
-    /// 2. **MySQL incremental source enhancements**:
-    ///    - Support encoding primary keys in the tracking table while preserving value types
-    ///      (currently stores as VARCHAR, losing type information)
-    ///    - Support composite primary keys (currently only supports single-column PKs named 'id')
-    ///    - Read/leverage schema information to convert primary key values from the tracking
-    ///      table to the correct SurrealDB data types
-    ///
-    /// Once these enhancements are complete, sources will properly convert IDs to schema-
-    /// defined types, and this `force_string_ids` workaround will no longer be needed.
-    pub fn with_force_string_ids(mut self, force: bool) -> Self {
-        self.force_string_ids = force;
-        self
     }
 
     /// Accept JSON objects stored as strings during comparison.
@@ -294,36 +263,23 @@ impl StreamingVerifier {
         use surrealdb::sql::{Id, Thing};
 
         // Construct proper Thing based on ID type to match how sync stores records
-        // If force_string_ids is enabled, always use string representation for IDs
-        let thing = if self.force_string_ids {
-            // Force all IDs to strings (needed for Neo4j which stores all IDs as strings)
-            let id_str = match &expected_row.id {
-                sync_core::GeneratedValue::Int32(i) => i.to_string(),
-                sync_core::GeneratedValue::Int64(i) => i.to_string(),
-                sync_core::GeneratedValue::Uuid(u) => u.to_string(),
-                sync_core::GeneratedValue::String(s) => s.clone(),
-                other => format_id(other),
-            };
-            Thing::from((self.table_name.as_str(), Id::String(id_str)))
-        } else {
-            match &expected_row.id {
-                sync_core::GeneratedValue::Uuid(u) => Thing::from((
-                    self.table_name.as_str(),
-                    Id::Uuid(surrealdb::sql::Uuid::from(*u)),
-                )),
-                sync_core::GeneratedValue::Int64(i) => {
-                    Thing::from((self.table_name.as_str(), Id::Number(*i)))
-                }
-                sync_core::GeneratedValue::Int32(i) => {
-                    Thing::from((self.table_name.as_str(), Id::Number(*i as i64)))
-                }
-                sync_core::GeneratedValue::String(s) => {
-                    Thing::from((self.table_name.as_str(), Id::String(s.clone())))
-                }
-                other => {
-                    // Fallback for other types - use string representation
-                    Thing::from((self.table_name.as_str(), Id::String(format_id(other))))
-                }
+        let thing = match &expected_row.id {
+            sync_core::GeneratedValue::Uuid(u) => Thing::from((
+                self.table_name.as_str(),
+                Id::Uuid(surrealdb::sql::Uuid::from(*u)),
+            )),
+            sync_core::GeneratedValue::Int64(i) => {
+                Thing::from((self.table_name.as_str(), Id::Number(*i)))
+            }
+            sync_core::GeneratedValue::Int32(i) => {
+                Thing::from((self.table_name.as_str(), Id::Number(*i as i64)))
+            }
+            sync_core::GeneratedValue::String(s) => {
+                Thing::from((self.table_name.as_str(), Id::String(s.clone())))
+            }
+            other => {
+                // Fallback for other types - use string representation
+                Thing::from((self.table_name.as_str(), Id::String(format_id(other))))
             }
         };
 
