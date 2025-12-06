@@ -17,6 +17,9 @@ pub struct StreamingVerifier {
     schema: SyncSchema,
     generator: DataGenerator,
     table_name: String,
+    /// When true, all IDs are converted to strings for SurrealDB lookups.
+    /// This is needed for Neo4j sources which always store IDs as strings.
+    force_string_ids: bool,
 }
 
 /// A record result that we manually extract field-by-field
@@ -54,7 +57,15 @@ impl StreamingVerifier {
             schema,
             generator,
             table_name: table_name.to_string(),
+            force_string_ids: false,
         })
+    }
+
+    /// Enable forcing all IDs to be treated as strings.
+    /// This is needed for Neo4j sources which always store IDs as strings in SurrealDB.
+    pub fn with_force_string_ids(mut self, force: bool) -> Self {
+        self.force_string_ids = force;
+        self
     }
 
     /// Set the starting index for verification (for incremental verification).
@@ -201,23 +212,36 @@ impl StreamingVerifier {
         use surrealdb::sql::{Id, Thing};
 
         // Construct proper Thing based on ID type to match how sync stores records
-        let thing = match &expected_row.id {
-            sync_core::GeneratedValue::Uuid(u) => Thing::from((
-                self.table_name.as_str(),
-                Id::Uuid(surrealdb::sql::Uuid::from(*u)),
-            )),
-            sync_core::GeneratedValue::Int64(i) => {
-                Thing::from((self.table_name.as_str(), Id::Number(*i)))
-            }
-            sync_core::GeneratedValue::Int32(i) => {
-                Thing::from((self.table_name.as_str(), Id::Number(*i as i64)))
-            }
-            sync_core::GeneratedValue::String(s) => {
-                Thing::from((self.table_name.as_str(), Id::String(s.clone())))
-            }
-            other => {
-                // Fallback for other types - use string representation
-                Thing::from((self.table_name.as_str(), Id::String(format_id(other))))
+        // If force_string_ids is enabled, always use string representation for IDs
+        let thing = if self.force_string_ids {
+            // Force all IDs to strings (needed for Neo4j which stores all IDs as strings)
+            let id_str = match &expected_row.id {
+                sync_core::GeneratedValue::Int32(i) => i.to_string(),
+                sync_core::GeneratedValue::Int64(i) => i.to_string(),
+                sync_core::GeneratedValue::Uuid(u) => u.to_string(),
+                sync_core::GeneratedValue::String(s) => s.clone(),
+                other => format_id(other),
+            };
+            Thing::from((self.table_name.as_str(), Id::String(id_str)))
+        } else {
+            match &expected_row.id {
+                sync_core::GeneratedValue::Uuid(u) => Thing::from((
+                    self.table_name.as_str(),
+                    Id::Uuid(surrealdb::sql::Uuid::from(*u)),
+                )),
+                sync_core::GeneratedValue::Int64(i) => {
+                    Thing::from((self.table_name.as_str(), Id::Number(*i)))
+                }
+                sync_core::GeneratedValue::Int32(i) => {
+                    Thing::from((self.table_name.as_str(), Id::Number(*i as i64)))
+                }
+                sync_core::GeneratedValue::String(s) => {
+                    Thing::from((self.table_name.as_str(), Id::String(s.clone())))
+                }
+                other => {
+                    // Fallback for other types - use string representation
+                    Thing::from((self.table_name.as_str(), Id::String(format_id(other))))
+                }
             }
         };
 

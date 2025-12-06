@@ -3380,6 +3380,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "loadtest-populate-neo4j"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "loadtest-generator",
+ "neo4rs",
+ "serde_json",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "loadtest-populate-postgresql"
 version = "0.1.0"
 dependencies = [
@@ -5998,6 +6017,7 @@ dependencies = [
  "loadtest-populate-jsonl",
  "loadtest-populate-mongodb",
  "loadtest-populate-mysql",
+ "loadtest-populate-neo4j",
  "loadtest-populate-postgresql",
  "loadtest-verify",
  "log",

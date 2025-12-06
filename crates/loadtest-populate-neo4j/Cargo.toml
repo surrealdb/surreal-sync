@@ -1,0 +1,33 @@
+[package]
+name = "loadtest-populate-neo4j"
+version = "0.1.0"
+edition = "2021"
+description = "Neo4j populator for surreal-sync loadtests"
+
+[dependencies]
+# Core dependencies
+sync-core = { path = "../sync-core" }
+loadtest-generator = { path = "../loadtest-generator" }
+
+# Neo4j driver
+neo4rs = "0.9.0-rc.8"
+
+# Async runtime
+tokio = { version = "1.47", features = ["full"] }
+async-trait = "0.1"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging
+tracing = "0.1"
+
+# Data types
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.11", features = ["v4"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+tokio-test = "0.4"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

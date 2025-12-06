@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kafka", "crates/kafka-producer", "crates/postgresql", "crates/csv", "crates/jsonl", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surrealdb-types", "crates/json-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-verify"]
+members = ["crates/kafka", "crates/kafka-producer", "crates/postgresql", "crates/csv", "crates/jsonl", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surrealdb-types", "crates/json-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-verify"]
 resolver = "2"
 
 [package]
@@ -77,6 +77,7 @@ loadtest-populate-postgresql = { path = "crates/loadtest-populate-postgresql" }
 loadtest-populate-mongodb = { path = "crates/loadtest-populate-mongodb" }
 loadtest-populate-csv = { path = "crates/loadtest-populate-csv" }
 loadtest-populate-jsonl = { path = "crates/loadtest-populate-jsonl" }
+loadtest-populate-neo4j = { path = "crates/loadtest-populate-neo4j" }
 
 # Load testing verifier
 loadtest-verify = { path = "crates/loadtest-verify" }
