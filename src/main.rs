@@ -237,7 +237,7 @@ enum Commands {
     },
 
     /// Import CSV files to SurrealDB
-    #[group(id = "source", required = true, multiple = false, args = ["files", "s3-uris", "http-uris"])]
+    #[group(id = "source", required = true, multiple = false, args = ["files", "s3_uris", "http_uris"])]
     Csv {
         /// CSV file paths to import (can specify multiple)
         #[arg(long, required = true, value_name = "FILE")]
