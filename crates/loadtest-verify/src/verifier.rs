@@ -62,7 +62,27 @@ impl StreamingVerifier {
     }
 
     /// Enable forcing all IDs to be treated as strings.
-    /// This is needed for Neo4j sources which always store IDs as strings in SurrealDB.
+    /// This is needed for Neo4j sources which always store IDs as strings in SurrealDB,
+    /// and for MySQL incremental sync which stores row_id as VARCHAR in the audit table.
+    ///
+    /// # Future Work: Remove this workaround
+    ///
+    /// This method is a temporary workaround that should be removed once the following
+    /// enhancements are implemented:
+    ///
+    /// 1. **Neo4j source schema support**: Enhance the Neo4j source to read and use schema
+    ///    information, so it can convert Neo4j string IDs (which are required to be strings
+    ///    in Neo4j) to the SurrealDB type that users specify in their schema.
+    ///
+    /// 2. **MySQL incremental source enhancements**:
+    ///    - Support encoding primary keys in the tracking table while preserving value types
+    ///      (currently stores as VARCHAR, losing type information)
+    ///    - Support composite primary keys (currently only supports single-column PKs named 'id')
+    ///    - Read/leverage schema information to convert primary key values from the tracking
+    ///      table to the correct SurrealDB data types
+    ///
+    /// Once these enhancements are complete, sources will properly convert IDs to schema-
+    /// defined types, and this `force_string_ids` workaround will no longer be needed.
     pub fn with_force_string_ids(mut self, force: bool) -> Self {
         self.force_string_ids = force;
         self

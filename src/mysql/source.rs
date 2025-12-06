@@ -222,6 +222,33 @@ impl MySQLChangeStream {
                                     serde_json::Value::Object(map) => {
                                         let mut kvs = std::collections::HashMap::new();
                                         for (key, val) in map {
+                                            // Skip the 'id' field as it's used as the record ID (row_id)
+                                            // SurrealDB doesn't allow 'id' in content when using UPSERT $record_id
+                                            //
+                                            // LIMITATION: MySQL incremental sync assumes the primary key column
+                                            // is always named 'id'. Tables with different primary key column names
+                                            // (e.g., 'user_id') won't sync correctly. Additionally, if a table has
+                                            // an 'id' column that is NOT the primary key, this check will incorrectly
+                                            // skip it, causing data loss for that column.
+                                            //
+                                            // The row_id comes from NEW.id/OLD.id in the trigger (see change_tracking.rs)
+                                            // and the JSON 'id' field also contains the same value.
+                                            if key == "id" {
+                                                // Verify they match - row_id should equal the JSON id value
+                                                let json_id_str = match &val {
+                                                    serde_json::Value::Number(n) => n.to_string(),
+                                                    serde_json::Value::String(s) => s.clone(),
+                                                    other => format!("{other}"),
+                                                };
+                                                if row_id != json_id_str {
+                                                    anyhow::bail!(
+                                                        "row_id and JSON id field mismatch in table '{table_name}': \
+                                                        row_id={row_id}, json_id={json_id_str}. \
+                                                        This may indicate the 'id' column is not the primary key."
+                                                    );
+                                                }
+                                                continue;
+                                            }
                                             let v = json_to_surreal_with_schema(
                                                 val,
                                                 &key,

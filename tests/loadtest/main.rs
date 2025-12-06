@@ -11,6 +11,7 @@
 mod csv_loadtest;
 mod jsonl_loadtest;
 mod mongodb_loadtest;
+mod mysql_incremental_loadtest;
 mod mysql_loadtest;
 mod neo4j_loadtest;
 mod postgresql_loadtest;
