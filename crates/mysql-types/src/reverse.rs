@@ -285,11 +285,17 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                 Ok(TypedValue::set(values, vec![]))
             }
 
-            // Geometry
+            // Geometry - store as GeoJSON with base64-encoded WKB
             MYSQL_TYPE_GEOMETRY => {
                 let bytes = extract_bytes(&mv.value)?;
-                Ok(TypedValue::geometry_wkb(
-                    bytes,
+                use base64::Engine;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                let geojson = serde_json::json!({
+                    "type": "Point",
+                    "wkb_base64": encoded
+                });
+                Ok(TypedValue::geometry_geojson(
+                    geojson,
                     sync_core::GeometryType::Point,
                 ))
             }
@@ -1314,6 +1320,7 @@ mod tests {
 
     #[test]
     fn test_geometry_column() {
+        use base64::Engine;
         use sync_core::values::GeometryData;
         let wkb_point = vec![0x01, 0x01, 0x00, 0x00, 0x00]; // Minimal WKB point prefix
         let mv = MySQLValueWithSchema::new(
@@ -1324,11 +1331,11 @@ mod tests {
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::Geometry { .. }));
         if let UniversalValue::Geometry { data, .. } = tv.value {
-            if let GeometryData::Wkb(b) = data {
-                assert_eq!(b, wkb_point);
-            } else {
-                panic!("Expected WKB geometry data");
-            }
+            let GeometryData(json) = data;
+            // Verify the GeoJSON contains the base64-encoded WKB
+            let expected_b64 = base64::engine::general_purpose::STANDARD.encode(&wkb_point);
+            assert_eq!(json["type"], "Point");
+            assert_eq!(json["wkb_base64"], expected_b64);
         } else {
             panic!("Expected Geometry value, got {:?}", tv.value);
         }

@@ -177,15 +177,11 @@ impl From<TypedValue> for MySQLValue {
                 MySQLValue(Value::Bytes(value.into_bytes()))
             }
 
-            // Geometry - stored as WKB (Well-Known Binary)
+            // Geometry - stored as GeoJSON string
             (UniversalType::Geometry { .. }, UniversalValue::Geometry { data, .. }) => {
                 use sync_core::values::GeometryData;
-                match data {
-                    GeometryData::Wkb(b) => MySQLValue(Value::Bytes(b)),
-                    GeometryData::GeoJson(json_val) => {
-                        MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
-                    }
-                }
+                let GeometryData(json_val) = data;
+                MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
             }
 
             // Null
@@ -236,12 +232,8 @@ impl From<TypedValue> for MySQLValue {
             }
             (_, UniversalValue::Geometry { data, .. }) => {
                 use sync_core::values::GeometryData;
-                match data {
-                    GeometryData::Wkb(b) => MySQLValue(Value::Bytes(b)),
-                    GeometryData::GeoJson(json_val) => {
-                        MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
-                    }
-                }
+                let GeometryData(json_val) = data;
+                MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
             }
         }
     }
@@ -294,10 +286,8 @@ fn generated_to_json(gv: UniversalValue) -> serde_json::Value {
         UniversalValue::Json(json_val) | UniversalValue::Jsonb(json_val) => *json_val,
         UniversalValue::Geometry { data, .. } => {
             use sync_core::values::GeometryData;
-            match data {
-                GeometryData::Wkb(b) => serde_json::Value::String(BASE64.encode(&b)),
-                GeometryData::GeoJson(json_val) => json_val,
-            }
+            let GeometryData(json_val) = data;
+            json_val
         }
     }
 }

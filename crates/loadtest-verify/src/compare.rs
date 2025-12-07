@@ -378,70 +378,22 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
             CompareResult::Match
         }
 
-        // Geometry comparison (strict 1:1) - stored as JSON object in SurrealDB
+        // Geometry comparison - always stored as JSON object in SurrealDB
         (UniversalValue::Geometry { data, .. }, SurrealValue::Object(a)) => {
-            match data {
-                GeometryData::GeoJson(expected_json) => {
-                    // Convert SurrealDB Object to JSON and compare
-                    let actual_json = surreal_object_to_json(a);
-                    if json_values_equal(expected_json, &actual_json) {
-                        CompareResult::Match
-                    } else {
-                        CompareResult::Mismatch {
-                            expected: serde_json::to_string(expected_json)
-                                .unwrap_or_else(|_| format!("{expected_json:?}")),
-                            actual: serde_json::to_string(&actual_json)
-                                .unwrap_or_else(|_| format!("{actual_json:?}")),
-                        }
-                    }
-                }
-                GeometryData::Wkb(expected_bytes) => {
-                    // For WKB, check if object has a "wkb" field with matching hex string
-                    if let Some(SurrealValue::Strand(wkb_str)) = a.get("wkb") {
-                        let expected_hex: String =
-                            expected_bytes.iter().map(|b| format!("{b:02x}")).collect();
-                        if expected_hex == wkb_str.as_str() {
-                            CompareResult::Match
-                        } else {
-                            CompareResult::Mismatch {
-                                expected: expected_hex,
-                                actual: wkb_str.to_string(),
-                            }
-                        }
-                    } else {
-                        CompareResult::Mismatch {
-                            expected: format!("WKB geometry with {} bytes", expected_bytes.len()),
-                            actual: format!("{a:?}"),
-                        }
-                    }
+            let GeometryData(expected_json) = data;
+            // Convert SurrealDB Object to JSON and compare
+            let actual_json = surreal_object_to_json(a);
+            if json_values_equal(expected_json, &actual_json) {
+                CompareResult::Match
+            } else {
+                CompareResult::Mismatch {
+                    expected: serde_json::to_string(expected_json)
+                        .unwrap_or_else(|_| format!("{expected_json:?}")),
+                    actual: serde_json::to_string(&actual_json)
+                        .unwrap_or_else(|_| format!("{actual_json:?}")),
                 }
             }
         }
-        // WKB geometry stored as base64-encoded string in SurrealDB
-        // Note: GeoJSON geometry is stored as Object, not Strand
-        (UniversalValue::Geometry { data, .. }, SurrealValue::Strand(a)) => match data {
-            GeometryData::GeoJson(_) => {
-                // GeoJSON should be stored as Object, not Strand - this is a type mismatch
-                CompareResult::Mismatch {
-                    expected: "Geometry as Object (GeoJSON)".to_string(),
-                    actual: format!("Strand: {}", a.as_str()),
-                }
-            }
-            GeometryData::Wkb(expected_bytes) => {
-                // surrealdb-types stores WKB as base64-encoded string
-                use base64::Engine;
-                let expected_base64 =
-                    base64::engine::general_purpose::STANDARD.encode(expected_bytes);
-                if expected_base64 == a.as_str() {
-                    CompareResult::Match
-                } else {
-                    CompareResult::Mismatch {
-                        expected: expected_base64,
-                        actual: a.to_string(),
-                    }
-                }
-            }
-        },
 
         // Type mismatch
         (expected, actual) => CompareResult::Mismatch {
@@ -753,7 +705,7 @@ mod tests {
             "coordinates": [-73.97, 40.77]
         });
         let expected = UniversalValue::Geometry {
-            data: GeometryData::GeoJson(geojson),
+            data: GeometryData(geojson),
             geometry_type: GeometryType::Point,
         };
 

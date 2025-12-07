@@ -639,15 +639,12 @@ mod tests {
         .unwrap();
         match &result.value {
             UniversalValue::Geometry { data, .. } => {
-                if let GeometryData::GeoJson(geo_json) = data {
-                    if let serde_json::Value::Object(map) = geo_json {
-                        assert!(map.contains_key("type"));
-                        assert!(map.contains_key("coordinates"));
-                    } else {
-                        panic!("Expected Object inside GeoJson");
-                    }
+                let GeometryData(geo_json) = data;
+                if let serde_json::Value::Object(map) = geo_json {
+                    assert!(map.contains_key("type"));
+                    assert!(map.contains_key("coordinates"));
                 } else {
-                    panic!("Expected GeoJson geometry data");
+                    panic!("Expected Object inside GeometryData");
                 }
             }
             _ => panic!("Expected Geometry, got {:?}", result.value),

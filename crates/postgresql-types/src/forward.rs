@@ -7,7 +7,7 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rust_decimal::Decimal;
 use serde_json::json;
 use std::str::FromStr;
-use sync_core::{GeometryType, TypedValue, UniversalType, UniversalValue};
+use sync_core::{TypedValue, UniversalType, UniversalValue};
 use uuid::Uuid;
 
 /// PostgreSQL value wrapper for type-safe conversions.
@@ -170,28 +170,13 @@ impl From<TypedValue> for PostgreSQLValue {
             }
 
             // Geometry - strict 1:1 matching
-            (UniversalType::Geometry { geometry_type }, UniversalValue::Geometry { data, .. }) => {
+            (
+                UniversalType::Geometry { geometry_type: _ },
+                UniversalValue::Geometry { data, .. },
+            ) => {
                 use sync_core::values::GeometryData;
-                match data {
-                    GeometryData::Wkb(b) => {
-                        match geometry_type {
-                            GeometryType::Point => {
-                                // Try to interpret as point (x, y)
-                                if b.len() >= 16 {
-                                    let x =
-                                        f64::from_le_bytes(b[0..8].try_into().unwrap_or([0; 8]));
-                                    let y =
-                                        f64::from_le_bytes(b[8..16].try_into().unwrap_or([0; 8]));
-                                    PostgreSQLValue::Point(x, y)
-                                } else {
-                                    PostgreSQLValue::Bytes(b)
-                                }
-                            }
-                            _ => PostgreSQLValue::Bytes(b),
-                        }
-                    }
-                    GeometryData::GeoJson(json_val) => PostgreSQLValue::Json(json_val),
-                }
+                let GeometryData(json_val) = data;
+                PostgreSQLValue::Json(json_val)
             }
 
             // Fallback conversions for type mismatches

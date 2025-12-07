@@ -183,15 +183,8 @@ impl From<TypedValue> for SurrealValue {
                 UniversalValue::Geometry { data, .. },
             ) => {
                 use sync_core::values::GeometryData;
-                match data {
-                    GeometryData::GeoJson(json_val) => SurrealValue(json_to_surreal(json_val)),
-                    GeometryData::Wkb(bytes) => {
-                        // Fallback to base64-encoded binary
-                        use base64::Engine;
-                        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-                        SurrealValue(Value::Strand(Strand::from(encoded)))
-                    }
-                }
+                let GeometryData(json_val) = data;
+                SurrealValue(json_to_surreal(json_val))
             }
 
             // Explicit failure for unexpected type combinations

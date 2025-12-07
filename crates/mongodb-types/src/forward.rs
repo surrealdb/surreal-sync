@@ -166,22 +166,12 @@ impl From<TypedValue> for BsonValue {
                     GeometryType::MultiPolygon => "MultiPolygon",
                     GeometryType::GeometryCollection => "GeometryCollection",
                 };
-                match data {
-                    GeometryData::GeoJson(json_val) => {
-                        let mut bson_val = json_value_to_bson(json_val);
-                        if let Bson::Document(ref mut doc) = bson_val {
-                            doc.insert("type", geojson_type);
-                        }
-                        BsonValue(bson_val)
-                    }
-                    GeometryData::Wkb(bytes) => {
-                        // Store WKB as binary
-                        BsonValue(Bson::Binary(bson::Binary {
-                            subtype: bson::spec::BinarySubtype::Generic,
-                            bytes: bytes.clone(),
-                        }))
-                    }
+                let GeometryData(json_val) = data;
+                let mut bson_val = json_value_to_bson(json_val);
+                if let Bson::Document(ref mut doc) = bson_val {
+                    doc.insert("type", geojson_type);
                 }
+                BsonValue(bson_val)
             }
 
             // Fallback - panic instead of silently returning null
@@ -266,13 +256,8 @@ fn generated_value_to_bson(value: &UniversalValue) -> Bson {
         UniversalValue::Enum { value, .. } => Bson::String(value.clone()),
         UniversalValue::Geometry { data, .. } => {
             use sync_core::values::GeometryData;
-            match data {
-                GeometryData::GeoJson(json_val) => serde_json_to_bson(json_val),
-                GeometryData::Wkb(bytes) => Bson::Binary(bson::Binary {
-                    subtype: bson::spec::BinarySubtype::Generic,
-                    bytes: bytes.clone(),
-                }),
-            }
+            let GeometryData(json_val) = data;
+            serde_json_to_bson(json_val)
         }
     }
 }

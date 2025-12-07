@@ -215,13 +215,8 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
         UniversalValue::Json(payload) | UniversalValue::Jsonb(payload) => (**payload).clone(),
         UniversalValue::Geometry { data, .. } => {
             use sync_core::values::GeometryData;
-            match data {
-                GeometryData::GeoJson(value) => value.clone(),
-                GeometryData::Wkb(bytes) => {
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-                    serde_json::json!({"wkb": encoded})
-                }
-            }
+            let GeometryData(json) = data;
+            json.clone()
         }
     }
 }

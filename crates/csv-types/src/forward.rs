@@ -113,18 +113,11 @@ impl From<TypedValue> for CsvValue {
                 CsvValue(value.clone())
             }
 
-            // Geometry types - serialize as GeoJSON or WKB
+            // Geometry types - serialize as GeoJSON
             (UniversalType::Geometry { .. }, UniversalValue::Geometry { data, .. }) => {
                 use sync_core::values::GeometryData;
-                match data {
-                    GeometryData::GeoJson(value) => {
-                        CsvValue(serde_json::to_string(value).unwrap_or_default())
-                    }
-                    GeometryData::Wkb(bytes) => {
-                        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-                        CsvValue(encoded)
-                    }
-                }
+                let GeometryData(value) = data;
+                CsvValue(serde_json::to_string(value).unwrap_or_default())
             }
 
             // Fallback - panic instead of silently returning empty string
@@ -171,13 +164,8 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
         UniversalValue::Json(payload) | UniversalValue::Jsonb(payload) => (**payload).clone(),
         UniversalValue::Geometry { data, .. } => {
             use sync_core::values::GeometryData;
-            match data {
-                GeometryData::GeoJson(value) => value.clone(),
-                GeometryData::Wkb(bytes) => {
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-                    serde_json::json!({"wkb": encoded})
-                }
-            }
+            let GeometryData(value) = data;
+            value.clone()
         }
     }
 }

@@ -170,15 +170,8 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
         // Geometry type - store as GeoJSON string
         UniversalValue::Geometry { data, .. } => {
             use sync_core::GeometryData;
-            let json_str = match data {
-                GeometryData::GeoJson(json) => {
-                    serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string())
-                }
-                GeometryData::Wkb(bytes) => {
-                    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-                    format!("{{\"wkb\":\"{hex}\"}}")
-                }
-            };
+            let GeometryData(json) = data;
+            let json_str = serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string());
             escape_neo4j_string(&json_str)
         }
 

@@ -124,14 +124,8 @@ impl From<TypedValue> for JsonValue {
                 UniversalValue::Geometry { data, .. },
             ) => {
                 use sync_core::values::GeometryData;
-                let json_obj = match data {
-                    GeometryData::GeoJson(value) => value.clone(),
-                    GeometryData::Wkb(bytes) => {
-                        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-                        json!({"wkb": encoded})
-                    }
-                };
-                if let serde_json::Value::Object(mut obj) = json_obj {
+                let GeometryData(json_obj) = data;
+                if let serde_json::Value::Object(mut obj) = json_obj.clone() {
                     let type_str = match geometry_type {
                         GeometryType::Point => "Point",
                         GeometryType::LineString => "LineString",
@@ -144,7 +138,7 @@ impl From<TypedValue> for JsonValue {
                     obj.insert("type".to_string(), json!(type_str));
                     JsonValue(serde_json::Value::Object(obj))
                 } else {
-                    JsonValue(json_obj)
+                    JsonValue(json_obj.clone())
                 }
             }
 
@@ -195,13 +189,8 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
         UniversalValue::Json(payload) | UniversalValue::Jsonb(payload) => (**payload).clone(),
         UniversalValue::Geometry { data, .. } => {
             use sync_core::values::GeometryData;
-            match data {
-                GeometryData::GeoJson(value) => value.clone(),
-                GeometryData::Wkb(b) => {
-                    let encoded = base64::engine::general_purpose::STANDARD.encode(b);
-                    json!({"wkb": encoded})
-                }
-            }
+            let GeometryData(value) = data;
+            value.clone()
         }
     }
 }

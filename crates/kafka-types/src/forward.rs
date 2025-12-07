@@ -248,15 +248,8 @@ pub fn encode_generated_value(
         // Geometry type - encode as GeoJSON string
         UniversalValue::Geometry { data, .. } => {
             use sync_core::GeometryData;
-            let json_str = match data {
-                GeometryData::GeoJson(json) => {
-                    serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string())
-                }
-                GeometryData::Wkb(bytes) => {
-                    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-                    format!("{{\"wkb\":\"{hex}\"}}")
-                }
-            };
+            let GeometryData(json) = data;
+            let json_str = serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string());
             stream
                 .write_string(field_number, &json_str)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;

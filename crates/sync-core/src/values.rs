@@ -172,13 +172,11 @@ pub enum UniversalValue {
 }
 
 /// Geometry data representation.
+///
+/// Currently only supports GeoJSON format. Native geometry types
+/// (Point, LineString, Polygon, etc.) may be added in the future.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum GeometryData {
-    /// Well-Known Binary (WKB) format
-    Wkb(Vec<u8>),
-    /// GeoJSON object format
-    GeoJson(serde_json::Value),
-}
+pub struct GeometryData(pub serde_json::Value);
 
 impl UniversalValue {
     // === Factory methods ===
@@ -237,21 +235,13 @@ impl UniversalValue {
         }
     }
 
-    /// Create a Geometry value from WKB bytes.
-    pub fn geometry_wkb(data: Vec<u8>, geometry_type: crate::types::GeometryType) -> Self {
-        Self::Geometry {
-            data: GeometryData::Wkb(data),
-            geometry_type,
-        }
-    }
-
     /// Create a Geometry value from GeoJSON.
     pub fn geometry_geojson(
         data: serde_json::Value,
         geometry_type: crate::types::GeometryType,
     ) -> Self {
         Self::Geometry {
-            data: GeometryData::GeoJson(data),
+            data: GeometryData(data),
             geometry_type,
         }
     }
@@ -818,19 +808,6 @@ impl TypedValue {
         )
     }
 
-    /// Create a GEOMETRY typed value from WKB bytes.
-    pub fn geometry_wkb(value: Vec<u8>, geometry_type: crate::types::GeometryType) -> Self {
-        Self::new(
-            UniversalType::Geometry {
-                geometry_type: geometry_type.clone(),
-            },
-            UniversalValue::Geometry {
-                data: GeometryData::Wkb(value),
-                geometry_type,
-            },
-        )
-    }
-
     /// Create a GEOMETRY typed value from a GeoJSON object.
     pub fn geometry_geojson(
         value: serde_json::Value,
@@ -841,7 +818,7 @@ impl TypedValue {
                 geometry_type: geometry_type.clone(),
             },
             UniversalValue::Geometry {
-                data: GeometryData::GeoJson(value),
+                data: GeometryData(value),
                 geometry_type,
             },
         )

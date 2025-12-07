@@ -912,16 +912,13 @@ mod tests {
         let tv = TypedValue::from(jv);
         if let UniversalValue::Geometry { data, .. } = tv.value {
             use sync_core::values::GeometryData;
-            if let GeometryData::GeoJson(ref geo_json) = data {
-                if let serde_json::Value::Object(map) = geo_json {
-                    assert!(
-                        matches!(map.get("type"), Some(serde_json::Value::String(s)) if s == "Point")
-                    );
-                } else {
-                    panic!("Expected Object inside GeoJson");
-                }
+            let GeometryData(ref geo_json) = data;
+            if let serde_json::Value::Object(map) = geo_json {
+                assert!(
+                    matches!(map.get("type"), Some(serde_json::Value::String(s)) if s == "Point")
+                );
             } else {
-                panic!("Expected GeoJson geometry data");
+                panic!("Expected Object inside GeometryData");
             }
         } else {
             panic!("Expected Geometry, got {:?}", tv.value);

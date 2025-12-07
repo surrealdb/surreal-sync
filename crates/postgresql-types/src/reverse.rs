@@ -379,11 +379,12 @@ impl PostgreSQLValueWithSchema {
             // Point
             t if *t == Type::POINT => {
                 if let PostgreSQLRawValue::Point(x, y) = &self.value {
-                    // Store as bytes (simple x,y encoding)
-                    let mut bytes = Vec::with_capacity(16);
-                    bytes.extend_from_slice(&x.to_le_bytes());
-                    bytes.extend_from_slice(&y.to_le_bytes());
-                    Ok(TypedValue::geometry_wkb(bytes, GeometryType::Point))
+                    // Store as GeoJSON Point
+                    let geojson = serde_json::json!({
+                        "type": "Point",
+                        "coordinates": [x, y]
+                    });
+                    Ok(TypedValue::geometry_geojson(geojson, GeometryType::Point))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "point".to_string(),
