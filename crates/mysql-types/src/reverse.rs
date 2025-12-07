@@ -301,8 +301,11 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             MYSQL_TYPE_JSON => {
                 let s = extract_string(&mv.value)?;
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&s) {
-                    let gv = json_to_generated_value(json);
-                    Ok(TypedValue::new(SyncDataType::Json, gv))
+                    Ok(json_to_typed_value_with_config(
+                        json,
+                        "",
+                        &JsonConversionConfig::default(),
+                    ))
                 } else {
                     Ok(TypedValue::new(
                         SyncDataType::Json,
@@ -581,41 +584,6 @@ fn is_uuid_format(s: &str) -> bool {
     }
     let chars: Vec<char> = s.chars().collect();
     chars[8] == '-' && chars[13] == '-' && chars[18] == '-' && chars[23] == '-'
-}
-
-/// Convert serde_json::Value to GeneratedValue.
-///
-/// This function does NOT fail because JSON values from MySQL are always valid.
-/// The only case where a number can't be represented as i64 or f64 is if it's
-/// extremely large, which is already stored as a string by serde_json.
-fn json_to_generated_value(json: serde_json::Value) -> GeneratedValue {
-    match json {
-        serde_json::Value::Null => GeneratedValue::Null,
-        serde_json::Value::Bool(b) => GeneratedValue::Bool(b),
-        serde_json::Value::Number(n) => {
-            // Try i64 first, then f64
-            // Note: serde_json can represent numbers that don't fit in i64 or f64,
-            // but in practice MySQL JSON doesn't produce such values.
-            if let Some(i) = n.as_i64() {
-                GeneratedValue::Int64(i)
-            } else if let Some(f) = n.as_f64() {
-                GeneratedValue::Float64(f)
-            } else {
-                // Fallback to string for very large numbers that can't be represented
-                // as i64 or f64 (e.g., u64 values > i64::MAX that also lose precision as f64)
-                GeneratedValue::String(n.to_string())
-            }
-        }
-        serde_json::Value::String(s) => GeneratedValue::String(s),
-        serde_json::Value::Array(arr) => {
-            GeneratedValue::Array(arr.into_iter().map(json_to_generated_value).collect())
-        }
-        serde_json::Value::Object(obj) => GeneratedValue::Object(
-            obj.into_iter()
-                .map(|(k, v)| (k, json_to_generated_value(v)))
-                .collect(),
-        ),
-    }
 }
 
 /// Configuration for row-level type conversion.
