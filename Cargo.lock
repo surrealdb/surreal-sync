@@ -3174,6 +3174,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "kafka-types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "json-types",
+ "protobuf",
+ "serde_json",
+ "surreal-sync-kafka",
+ "surrealdb",
+ "surrealdb-types",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "keyed_priority_queue"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3366,6 +3385,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "clap",
+ "kafka-types",
  "loadtest-generator",
  "protobuf",
  "protobuf-parse",
@@ -6049,6 +6069,8 @@ dependencies = [
  "futures",
  "geo 0.31.0",
  "geo-types",
+ "json-types",
+ "kafka-types",
  "loadtest-generator",
  "loadtest-populate-csv",
  "loadtest-populate-jsonl",
@@ -6072,6 +6094,7 @@ dependencies = [
  "surreal-sync-kafka-producer",
  "surreal-sync-postgresql-replication",
  "surrealdb",
+ "surrealdb-types",
  "sync-core",
  "tempfile",
  "tokio",

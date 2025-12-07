@@ -1,0 +1,36 @@
+[package]
+name = "kafka-types"
+version = "0.1.0"
+edition = "2021"
+description = "Type conversion between TypedValue and Kafka protobuf for surreal-sync"
+authors = ["surreal-sync contributors"]
+
+[dependencies]
+# Core types
+sync-core = { path = "../sync-core" }
+surreal-sync-kafka = { path = "../kafka" }
+json-types = { path = "../json-types" }
+surrealdb-types = { path = "../surrealdb-types" }
+
+# SurrealDB client for Value type
+surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+
+# Protobuf encoding
+protobuf = "3.5"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# DateTime support
+chrono = "0.4"
+
+# Serialization for JSON fields
+serde_json = "1.0"
+
+# Logging
+tracing = "0.1"
+
+[dev-dependencies]
+tokio-test = "0.4"
+uuid = { version = "1.0", features = ["v4"] }

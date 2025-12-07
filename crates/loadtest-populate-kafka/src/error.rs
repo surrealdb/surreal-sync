@@ -26,3 +26,9 @@ pub enum KafkaPopulatorError {
     #[error("Topic creation error: {0}")]
     TopicCreation(String),
 }
+
+impl From<kafka_types::KafkaTypesError> for KafkaPopulatorError {
+    fn from(err: kafka_types::KafkaTypesError) -> Self {
+        KafkaPopulatorError::ProtoEncoding(err.to_string())
+    }
+}
