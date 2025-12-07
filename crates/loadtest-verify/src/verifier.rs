@@ -230,13 +230,13 @@ impl StreamingVerifier {
                 self.table_name.as_str(),
                 Id::Uuid(surrealdb::sql::Uuid::from(*u)),
             )),
-            sync_core::UniversalValue::Int64(i) => {
+            sync_core::UniversalValue::BigInt(i) => {
                 Thing::from((self.table_name.as_str(), Id::Number(*i)))
             }
-            sync_core::UniversalValue::Int32(i) => {
+            sync_core::UniversalValue::Int(i) => {
                 Thing::from((self.table_name.as_str(), Id::Number(*i as i64)))
             }
-            sync_core::UniversalValue::String(s) => {
+            sync_core::UniversalValue::Text(s) => {
                 Thing::from((self.table_name.as_str(), Id::String(s.clone())))
             }
             other => {
@@ -499,9 +499,9 @@ impl StreamingVerifier {
 fn format_id(value: &sync_core::UniversalValue) -> String {
     match value {
         sync_core::UniversalValue::Uuid(u) => u.to_string(),
-        sync_core::UniversalValue::Int64(i) => i.to_string(),
-        sync_core::UniversalValue::Int32(i) => i.to_string(),
-        sync_core::UniversalValue::String(s) => s.clone(),
+        sync_core::UniversalValue::BigInt(i) => i.to_string(),
+        sync_core::UniversalValue::Int(i) => i.to_string(),
+        sync_core::UniversalValue::Text(s) => s.clone(),
         _ => format!("{value:?}"),
     }
 }
@@ -585,9 +585,12 @@ tables:
             format_id(&sync_core::UniversalValue::Uuid(uuid)),
             "550e8400-e29b-41d4-a716-446655440000"
         );
-        assert_eq!(format_id(&sync_core::UniversalValue::Int64(12345)), "12345");
         assert_eq!(
-            format_id(&sync_core::UniversalValue::String("test-id".to_string())),
+            format_id(&sync_core::UniversalValue::BigInt(12345)),
+            "12345"
+        );
+        assert_eq!(
+            format_id(&sync_core::UniversalValue::Text("test-id".to_string())),
             "test-id"
         );
     }

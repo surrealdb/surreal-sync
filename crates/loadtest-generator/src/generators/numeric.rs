@@ -5,12 +5,12 @@ use sync_core::UniversalValue;
 
 /// Generate a random integer in the given range (inclusive).
 pub fn generate_int_range<R: Rng>(rng: &mut R, min: i64, max: i64) -> UniversalValue {
-    UniversalValue::Int64(rng.gen_range(min..=max))
+    UniversalValue::BigInt(rng.gen_range(min..=max))
 }
 
 /// Generate a random float in the given range (inclusive).
 pub fn generate_float_range<R: Rng>(rng: &mut R, min: f64, max: f64) -> UniversalValue {
-    UniversalValue::Float64(rng.gen_range(min..=max))
+    UniversalValue::Double(rng.gen_range(min..=max))
 }
 
 /// Generate a random decimal in the given range.
@@ -38,10 +38,10 @@ mod tests {
 
         for _ in 0..100 {
             let value = generate_int_range(&mut rng, 10, 20);
-            if let UniversalValue::Int64(v) = value {
+            if let UniversalValue::BigInt(v) = value {
                 assert!((10..=20).contains(&v));
             } else {
-                panic!("Expected Int64 value");
+                panic!("Expected BigInt value");
             }
         }
     }
@@ -52,10 +52,10 @@ mod tests {
 
         for _ in 0..100 {
             let value = generate_float_range(&mut rng, 0.0, 100.0);
-            if let UniversalValue::Float64(v) = value {
+            if let UniversalValue::Double(v) = value {
                 assert!((0.0..=100.0).contains(&v));
             } else {
-                panic!("Expected Float64 value");
+                panic!("Expected Double value");
             }
         }
     }

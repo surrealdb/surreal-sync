@@ -133,7 +133,7 @@ impl PostgreSQLValueWithSchema {
             // Integer types
             t if *t == Type::INT2 => {
                 if let PostgreSQLRawValue::Int16(i) = self.value {
-                    Ok(TypedValue::smallint(i as i32))
+                    Ok(TypedValue::smallint(i))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "int16".to_string(),
@@ -167,7 +167,7 @@ impl PostgreSQLValueWithSchema {
             // Floating point
             t if *t == Type::FLOAT4 => {
                 if let PostgreSQLRawValue::Float32(f) = self.value {
-                    Ok(TypedValue::float(f as f64))
+                    Ok(TypedValue::float(f))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "float32".to_string(),
@@ -295,11 +295,10 @@ impl PostgreSQLValueWithSchema {
             // JSON/JSONB
             t if *t == Type::JSON || *t == Type::JSONB => {
                 if let PostgreSQLRawValue::Json(j) = &self.value {
-                    let gv = json_to_generated_value(j.clone());
                     if *t == Type::JSONB {
-                        Ok(TypedValue::jsonb(gv))
+                        Ok(TypedValue::jsonb(j.clone()))
                     } else {
-                        Ok(TypedValue::json(gv))
+                        Ok(TypedValue::json(j.clone()))
                     }
                 } else {
                     Err(ConversionError::TypeMismatch {
@@ -314,7 +313,7 @@ impl PostgreSQLValueWithSchema {
                 if let PostgreSQLRawValue::TextArray(arr) = &self.value {
                     let values: Vec<UniversalValue> = arr
                         .iter()
-                        .map(|s| UniversalValue::String(s.clone()))
+                        .map(|s| UniversalValue::Text(s.clone()))
                         .collect();
                     Ok(TypedValue::array(values, UniversalType::Text))
                 } else {
@@ -328,7 +327,7 @@ impl PostgreSQLValueWithSchema {
             t if *t == Type::INT4_ARRAY => {
                 if let PostgreSQLRawValue::Int32Array(arr) = &self.value {
                     let values: Vec<UniversalValue> =
-                        arr.iter().map(|i| UniversalValue::Int32(*i)).collect();
+                        arr.iter().map(|i| UniversalValue::Int(*i)).collect();
                     Ok(TypedValue::array(values, UniversalType::Int))
                 } else {
                     Err(ConversionError::TypeMismatch {
@@ -341,7 +340,7 @@ impl PostgreSQLValueWithSchema {
             t if *t == Type::INT8_ARRAY => {
                 if let PostgreSQLRawValue::Int64Array(arr) = &self.value {
                     let values: Vec<UniversalValue> =
-                        arr.iter().map(|i| UniversalValue::Int64(*i)).collect();
+                        arr.iter().map(|i| UniversalValue::BigInt(*i)).collect();
                     Ok(TypedValue::array(values, UniversalType::BigInt))
                 } else {
                     Err(ConversionError::TypeMismatch {
@@ -354,7 +353,7 @@ impl PostgreSQLValueWithSchema {
             t if *t == Type::FLOAT8_ARRAY => {
                 if let PostgreSQLRawValue::Float64Array(arr) = &self.value {
                     let values: Vec<UniversalValue> =
-                        arr.iter().map(|f| UniversalValue::Float64(*f)).collect();
+                        arr.iter().map(|f| UniversalValue::Double(*f)).collect();
                     Ok(TypedValue::array(values, UniversalType::Double))
                 } else {
                     Err(ConversionError::TypeMismatch {
@@ -384,7 +383,7 @@ impl PostgreSQLValueWithSchema {
                     let mut bytes = Vec::with_capacity(16);
                     bytes.extend_from_slice(&x.to_le_bytes());
                     bytes.extend_from_slice(&y.to_le_bytes());
-                    Ok(TypedValue::geometry_bytes(bytes, GeometryType::Point))
+                    Ok(TypedValue::geometry_wkb(bytes, GeometryType::Point))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "point".to_string(),
@@ -452,28 +451,32 @@ fn pg_type_to_sync_type(pg_type: &Type) -> UniversalType {
 }
 
 /// Convert serde_json::Value to UniversalValue.
+#[allow(dead_code)]
 fn json_to_generated_value(json: serde_json::Value) -> UniversalValue {
     match json {
         serde_json::Value::Null => UniversalValue::Null,
         serde_json::Value::Bool(b) => UniversalValue::Bool(b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                UniversalValue::Int64(i)
+                UniversalValue::BigInt(i)
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Float64(f)
+                UniversalValue::Double(f)
             } else {
-                UniversalValue::String(n.to_string())
+                UniversalValue::Text(n.to_string())
             }
         }
-        serde_json::Value::String(s) => UniversalValue::String(s),
+        serde_json::Value::String(s) => UniversalValue::Text(s),
         serde_json::Value::Array(arr) => {
-            UniversalValue::Array(arr.into_iter().map(json_to_generated_value).collect())
+            let elements: Vec<UniversalValue> =
+                arr.into_iter().map(json_to_generated_value).collect();
+            UniversalValue::Array {
+                elements,
+                element_type: Box::new(UniversalType::Json),
+            }
         }
-        serde_json::Value::Object(obj) => UniversalValue::Object(
-            obj.into_iter()
-                .map(|(k, v)| (k, json_to_generated_value(v)))
-                .collect(),
-        ),
+        serde_json::Value::Object(obj) => {
+            UniversalValue::Json(Box::new(serde_json::Value::Object(obj)))
+        }
     }
 }
 
@@ -495,7 +498,7 @@ mod tests {
         let pv = PostgreSQLValueWithSchema::new(Type::INT4, PostgreSQLRawValue::Int32(42));
         let tv = pv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::Int));
-        assert!(matches!(tv.value, UniversalValue::Int32(42)));
+        assert!(matches!(tv.value, UniversalValue::Int(42)));
     }
 
     #[test]
@@ -508,7 +511,7 @@ mod tests {
         assert!(matches!(tv.sync_type, UniversalType::BigInt));
         assert!(matches!(
             tv.value,
-            UniversalValue::Int64(9_223_372_036_854_775_807)
+            UniversalValue::BigInt(9_223_372_036_854_775_807)
         ));
     }
 
@@ -520,7 +523,7 @@ mod tests {
         );
         let tv = pv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::Text));
-        if let UniversalValue::String(s) = tv.value {
+        if let UniversalValue::Text(s) = tv.value {
             assert_eq!(s, "hello world");
         } else {
             panic!("Expected String value");
@@ -567,11 +570,15 @@ mod tests {
         let pv = PostgreSQLValueWithSchema::new(Type::JSON, PostgreSQLRawValue::Json(json));
         let tv = pv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::Json));
-        if let UniversalValue::Object(obj) = tv.value {
-            assert!(obj.contains_key("name"));
-            assert!(obj.contains_key("age"));
+        if let UniversalValue::Json(json_val) = tv.value {
+            if let serde_json::Value::Object(obj) = json_val.as_ref() {
+                assert!(obj.contains_key("name"));
+                assert!(obj.contains_key("age"));
+            } else {
+                panic!("Expected JSON Object");
+            }
         } else {
-            panic!("Expected Object value");
+            panic!("Expected Json value");
         }
     }
 
@@ -604,8 +611,8 @@ mod tests {
         } else {
             panic!("Expected Array type");
         }
-        if let UniversalValue::Array(values) = tv.value {
-            assert_eq!(values.len(), 3);
+        if let UniversalValue::Array { elements, .. } = tv.value {
+            assert_eq!(elements.len(), 3);
         } else {
             panic!("Expected Array value");
         }
@@ -617,9 +624,9 @@ mod tests {
         let pv =
             PostgreSQLValueWithSchema::new(Type::INT4_ARRAY, PostgreSQLRawValue::Int32Array(arr));
         let tv = pv.to_typed_value().unwrap();
-        if let UniversalValue::Array(values) = tv.value {
-            assert_eq!(values.len(), 3);
-            assert!(matches!(values[0], UniversalValue::Int32(1)));
+        if let UniversalValue::Array { elements, .. } = tv.value {
+            assert_eq!(elements.len(), 3);
+            assert!(matches!(elements[0], UniversalValue::Int(1)));
         } else {
             panic!("Expected Array value");
         }

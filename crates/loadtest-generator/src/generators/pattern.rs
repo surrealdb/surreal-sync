@@ -38,7 +38,7 @@ pub fn generate_pattern<R: Rng>(pattern: &str, rng: &mut R, index: u64) -> Unive
         }
     }
 
-    UniversalValue::String(result)
+    UniversalValue::Text(result)
 }
 
 /// Generate a random number with exactly N digits.
@@ -73,7 +73,7 @@ mod tests {
 
         assert_eq!(
             value,
-            UniversalValue::String("user_123@example.com".to_string())
+            UniversalValue::Text("user_123@example.com".to_string())
         );
     }
 
@@ -82,11 +82,11 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let value = generate_pattern("id-{uuid}", &mut rng, 0);
 
-        if let UniversalValue::String(s) = value {
+        if let UniversalValue::Text(s) = value {
             assert!(s.starts_with("id-"));
             assert_eq!(s.len(), 3 + 36); // "id-" + UUID
         } else {
-            panic!("Expected String value");
+            panic!("Expected Text value");
         }
     }
 
@@ -95,14 +95,14 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let value = generate_pattern("code-{rand:6}", &mut rng, 0);
 
-        if let UniversalValue::String(s) = value {
+        if let UniversalValue::Text(s) = value {
             assert!(s.starts_with("code-"));
             assert_eq!(s.len(), 5 + 6); // "code-" + 6 digits
                                         // Check that the random part is all digits
             let random_part = &s[5..];
             assert!(random_part.chars().all(|c| c.is_ascii_digit()));
         } else {
-            panic!("Expected String value");
+            panic!("Expected Text value");
         }
     }
 
@@ -111,12 +111,12 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let value = generate_pattern("user_{index}_code_{rand:4}", &mut rng, 42);
 
-        if let UniversalValue::String(s) = value {
+        if let UniversalValue::Text(s) = value {
             assert!(s.starts_with("user_42_code_"));
             // Total length: "user_42_code_" (13) + 4 digits
             assert_eq!(s.len(), 13 + 4);
         } else {
-            panic!("Expected String value");
+            panic!("Expected Text value");
         }
     }
 }

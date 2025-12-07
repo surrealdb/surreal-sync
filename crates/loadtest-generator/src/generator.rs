@@ -215,16 +215,21 @@ tables:
         assert_eq!(row.table, "users");
         assert_eq!(row.index, 0);
         assert!(matches!(row.id, UniversalValue::Uuid(_)));
-        assert_eq!(
-            row.get_field("email"),
-            Some(&UniversalValue::String("user_0@example.com".to_string()))
-        );
+        // Email is VarChar(255), so it should be a VarChar value
+        if let Some(UniversalValue::VarChar { value, .. }) = row.get_field("email") {
+            assert_eq!(value, "user_0@example.com");
+        } else {
+            panic!(
+                "Expected VarChar for email, got {:?}",
+                row.get_field("email")
+            );
+        }
 
-        // Age should be in range
-        if let Some(UniversalValue::Int64(age)) = row.get_field("age") {
+        // Age should be in range - field type is Int so should be Int value
+        if let Some(UniversalValue::Int(age)) = row.get_field("age") {
             assert!(*age >= 18 && *age <= 80);
         } else {
-            panic!("Expected Int64 for age");
+            panic!("Expected Int for age, got {:?}", row.get_field("age"));
         }
     }
 
@@ -260,7 +265,7 @@ tables:
 
         // Verify emails contain correct indices
         for (i, row) in rows.iter().enumerate() {
-            if let Some(UniversalValue::String(email)) = row.get_field("email") {
+            if let Some(UniversalValue::VarChar { value: email, .. }) = row.get_field("email") {
                 assert!(email.contains(&format!("user_{i}")));
             }
         }
@@ -285,10 +290,13 @@ tables:
         assert_eq!(row1.index, 5);
 
         // Email should use index 5
-        if let Some(UniversalValue::String(email)) = row1.get_field("email") {
+        if let Some(UniversalValue::VarChar { value: email, .. }) = row1.get_field("email") {
             assert!(email.contains("user_5"));
         } else {
-            panic!("Expected String for email");
+            panic!(
+                "Expected VarChar for email, got {:?}",
+                row1.get_field("email")
+            );
         }
     }
 

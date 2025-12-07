@@ -152,12 +152,10 @@ impl MySQLChangeStream {
             if matches!(inner.as_ref(), crate::surreal::SurrealType::String) {
                 // This is a SET column - parse comma-separated string to array
                 if let serde_json::Value::String(s) = &value {
-                    let values: Vec<sync_core::UniversalValue> = if s.is_empty() {
+                    let values: Vec<String> = if s.is_empty() {
                         Vec::new()
                     } else {
-                        s.split(',')
-                            .map(|v| sync_core::UniversalValue::String(v.to_string()))
-                            .collect()
+                        s.split(',').map(|v| v.to_string()).collect()
                     };
                     return Ok(sync_core::TypedValue::set(values, vec![]));
                 }

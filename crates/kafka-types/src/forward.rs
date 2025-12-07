@@ -96,51 +96,100 @@ pub fn encode_generated_value(
     value: &UniversalValue,
 ) -> Result<()> {
     match value {
+        UniversalValue::Null => {
+            // Skip null values (proto3 default behavior)
+        }
         UniversalValue::Bool(b) => {
             // Wire type 0 (varint)
             stream
                 .write_bool(field_number, *b)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::Int32(i) => {
+
+        // Integer types - strict 1:1 matching
+        UniversalValue::TinyInt { value: i, .. } => {
+            stream
+                .write_int64(field_number, *i as i64)
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
+        UniversalValue::SmallInt(i) => {
+            stream
+                .write_int64(field_number, *i as i64)
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
+        UniversalValue::Int(i) => {
             // Wire type 0 (varint) - encode as int64 for proto3 compatibility
             stream
                 .write_int64(field_number, *i as i64)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::Int64(i) => {
+        UniversalValue::BigInt(i) => {
             // Wire type 0 (varint)
             stream
                 .write_int64(field_number, *i)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::Float64(f) => {
+
+        // Float types - strict 1:1 matching
+        UniversalValue::Float(f) => {
+            stream
+                .write_float(field_number, *f)
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
+        UniversalValue::Double(f) => {
             // Wire type 1 (64-bit)
             stream
                 .write_double(field_number, *f)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::String(s) => {
-            // Wire type 2 (length-delimited)
+        UniversalValue::Decimal { value, .. } => {
+            // Encode decimal as string to preserve precision
+            stream
+                .write_string(field_number, value)
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
+
+        // String types - strict 1:1 matching
+        UniversalValue::Text(s) => {
             stream
                 .write_string(field_number, s)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
+        UniversalValue::Char { value: s, .. } => {
+            stream
+                .write_string(field_number, s)
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
+        UniversalValue::VarChar { value: s, .. } => {
+            stream
+                .write_string(field_number, s)
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
+
+        // Binary types - strict 1:1 matching
         UniversalValue::Bytes(b) => {
-            // Wire type 2 (length-delimited)
             stream
                 .write_bytes(field_number, b)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
+        UniversalValue::Blob(b) => {
+            stream
+                .write_bytes(field_number, b)
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
+
         UniversalValue::Uuid(u) => {
             // Encode UUID as string
             stream
                 .write_string(field_number, &u.to_string())
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::DateTime(dt) => {
+
+        // DateTime types - strict 1:1 matching
+        UniversalValue::DateTime(dt)
+        | UniversalValue::DateTimeNano(dt)
+        | UniversalValue::TimestampTz(dt) => {
             // Encode as google.protobuf.Timestamp (nested message)
-            // Timestamp has: int64 seconds = 1, int32 nanos = 2
             let mut timestamp_bytes = Vec::new();
             {
                 let mut ts_stream = CodedOutputStream::vec(&mut timestamp_bytes);
@@ -154,33 +203,71 @@ pub fn encode_generated_value(
                     .flush()
                     .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
             }
-            // Write as length-delimited message
             stream
                 .write_bytes(field_number, &timestamp_bytes)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::Decimal { value, .. } => {
-            // Encode decimal as string to preserve precision
+        UniversalValue::Date(dt) => {
+            // Encode date as string
             stream
-                .write_string(field_number, value)
+                .write_string(field_number, &dt.format("%Y-%m-%d").to_string())
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::Array(arr) => {
-            // Encode as repeated field - each element is written separately
-            for element in arr {
-                encode_generated_value(stream, field_number, element)?;
-            }
+        UniversalValue::Time(dt) => {
+            // Encode time as string
+            stream
+                .write_string(field_number, &dt.format("%H:%M:%S").to_string())
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::Object(obj) => {
-            // Encode object as JSON string
+
+        // JSON types - strict 1:1 matching
+        UniversalValue::Json(obj) | UniversalValue::Jsonb(obj) => {
             let json = serde_json::to_string(obj)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
             stream
                 .write_string(field_number, &json)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::Null => {
-            // Skip null values (proto3 default behavior)
+
+        // Enum type - strict 1:1 matching
+        UniversalValue::Enum { value, .. } => {
+            stream
+                .write_string(field_number, value)
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
+
+        // Set type - encode as repeated strings
+        UniversalValue::Set { elements, .. } => {
+            for element in elements {
+                stream
+                    .write_string(field_number, element)
+                    .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+            }
+        }
+
+        // Geometry type - encode as GeoJSON string
+        UniversalValue::Geometry { data, .. } => {
+            use sync_core::GeometryData;
+            let json_str = match data {
+                GeometryData::GeoJson(json) => {
+                    serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string())
+                }
+                GeometryData::Wkb(bytes) => {
+                    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+                    format!("{{\"wkb\":\"{hex}\"}}")
+                }
+            };
+            stream
+                .write_string(field_number, &json_str)
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
+
+        // Array type - recursive handling
+        UniversalValue::Array { elements: arr, .. } => {
+            // Encode as repeated field - each element is written separately
+            for element in arr {
+                encode_generated_value(stream, field_number, element)?;
+            }
         }
     }
     Ok(())
@@ -210,10 +297,18 @@ pub fn get_message_key_from_typed_values(
 /// Convert a UniversalValue to message key bytes.
 fn generated_value_to_key(value: &UniversalValue) -> Vec<u8> {
     match value {
-        UniversalValue::Int64(i) => i.to_string().into_bytes(),
-        UniversalValue::Int32(i) => i.to_string().into_bytes(),
-        UniversalValue::String(s) => s.as_bytes().to_vec(),
+        // Integer types
+        UniversalValue::TinyInt { value: i, .. } => i.to_string().into_bytes(),
+        UniversalValue::SmallInt(i) => i.to_string().into_bytes(),
+        UniversalValue::Int(i) => i.to_string().into_bytes(),
+        UniversalValue::BigInt(i) => i.to_string().into_bytes(),
+        // String types
+        UniversalValue::Text(s) => s.as_bytes().to_vec(),
+        UniversalValue::Char { value: s, .. } => s.as_bytes().to_vec(),
+        UniversalValue::VarChar { value: s, .. } => s.as_bytes().to_vec(),
+        // UUID
         UniversalValue::Uuid(u) => u.to_string().into_bytes(),
+        // Fallback - try to produce meaningful key
         _ => format!("{value:?}").into_bytes(),
     }
 }
@@ -292,12 +387,12 @@ mod tests {
         let mut fields = HashMap::new();
         fields.insert(
             "email".to_string(),
-            UniversalValue::String("test@example.com".to_string()),
+            UniversalValue::Text("test@example.com".to_string()),
         );
-        fields.insert("age".to_string(), UniversalValue::Int32(25));
+        fields.insert("age".to_string(), UniversalValue::Int(25));
         fields.insert("is_active".to_string(), UniversalValue::Bool(true));
 
-        let row = UniversalRow::new("users", 0, UniversalValue::Int64(1), fields);
+        let row = UniversalRow::new("users", 0, UniversalValue::BigInt(1), fields);
 
         let encoded = encode_row(&row, &schema).unwrap();
         assert!(!encoded.is_empty());
@@ -335,7 +430,7 @@ mod tests {
         let mut fields = HashMap::new();
         fields.insert("created_at".to_string(), UniversalValue::DateTime(dt));
 
-        let row = UniversalRow::new("events", 0, UniversalValue::Int64(1), fields);
+        let row = UniversalRow::new("events", 0, UniversalValue::BigInt(1), fields);
         let encoded = encode_row(&row, &schema).unwrap();
         assert!(!encoded.is_empty());
     }
@@ -365,20 +460,23 @@ mod tests {
         let mut fields = HashMap::new();
         fields.insert(
             "tags".to_string(),
-            UniversalValue::Array(vec![
-                UniversalValue::String("tag1".to_string()),
-                UniversalValue::String("tag2".to_string()),
-            ]),
+            UniversalValue::Array {
+                elements: vec![
+                    UniversalValue::Text("tag1".to_string()),
+                    UniversalValue::Text("tag2".to_string()),
+                ],
+                element_type: Box::new(UniversalType::Text),
+            },
         );
 
-        let row = UniversalRow::new("products", 0, UniversalValue::Int64(1), fields);
+        let row = UniversalRow::new("products", 0, UniversalValue::BigInt(1), fields);
         let encoded = encode_row(&row, &schema).unwrap();
         assert!(!encoded.is_empty());
     }
 
     #[test]
     fn test_get_message_key_int() {
-        let row = UniversalRow::new("test", 0, UniversalValue::Int64(42), HashMap::new());
+        let row = UniversalRow::new("test", 0, UniversalValue::BigInt(42), HashMap::new());
         let key = get_message_key(&row);
         assert_eq!(key, b"42");
     }
@@ -399,7 +497,7 @@ mod tests {
         let row = UniversalRow::new(
             "test",
             0,
-            UniversalValue::String("my-key".to_string()),
+            UniversalValue::Text("my-key".to_string()),
             HashMap::new(),
         );
         let key = get_message_key(&row);

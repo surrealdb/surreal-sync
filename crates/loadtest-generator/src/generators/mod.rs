@@ -33,10 +33,10 @@ pub fn generate_value_typed<R: Rng>(
     index: u64,
     target_type: Option<&UniversalType>,
 ) -> UniversalValue {
-    match config {
+    let raw_value = match config {
         GeneratorConfig::UuidV4 => uuid::generate_uuid_v4(rng),
 
-        GeneratorConfig::Sequential { start } => UniversalValue::Int64(start + index as i64),
+        GeneratorConfig::Sequential { start } => UniversalValue::BigInt(start + index as i64),
 
         GeneratorConfig::Pattern { pattern } => pattern::generate_pattern(pattern, rng, index),
 
@@ -83,5 +83,95 @@ pub fn generate_value_typed<R: Rng>(
         GeneratorConfig::Static { value } => static_value::yaml_to_generated_value(value),
 
         GeneratorConfig::Null => UniversalValue::Null,
+    };
+
+    // Convert to strict 1:1 type-value matching if target_type is specified
+    convert_to_strict_type(raw_value, target_type)
+}
+
+/// Convert a raw UniversalValue to the strict 1:1 matching value for the target type.
+fn convert_to_strict_type(
+    value: UniversalValue,
+    target_type: Option<&UniversalType>,
+) -> UniversalValue {
+    match (target_type, value) {
+        // Keep null as-is
+        (_, UniversalValue::Null) => UniversalValue::Null,
+
+        // String type conversions - strict 1:1 matching
+        (Some(UniversalType::Char { length }), UniversalValue::Text(s)) => UniversalValue::Char {
+            value: s,
+            length: *length,
+        },
+        (Some(UniversalType::VarChar { length }), UniversalValue::Text(s)) => {
+            UniversalValue::VarChar {
+                value: s,
+                length: *length,
+            }
+        }
+
+        // Integer type conversions - strict 1:1 matching
+        (Some(UniversalType::TinyInt { width }), UniversalValue::BigInt(i)) => {
+            UniversalValue::TinyInt {
+                value: i as i8,
+                width: *width,
+            }
+        }
+        (Some(UniversalType::SmallInt), UniversalValue::BigInt(i)) => {
+            UniversalValue::SmallInt(i as i16)
+        }
+        (Some(UniversalType::Int), UniversalValue::BigInt(i)) => UniversalValue::Int(i as i32),
+
+        // Float type conversions - strict 1:1 matching
+        (Some(UniversalType::Float), UniversalValue::Double(f)) => UniversalValue::Float(f as f32),
+
+        // Decimal conversion
+        (Some(UniversalType::Decimal { precision, scale }), UniversalValue::Double(f)) => {
+            UniversalValue::Decimal {
+                value: f.to_string(),
+                precision: *precision,
+                scale: *scale,
+            }
+        }
+
+        // Date/time conversions - strict 1:1 matching
+        (Some(UniversalType::Date), UniversalValue::DateTime(dt)) => UniversalValue::Date(dt),
+        (Some(UniversalType::Time), UniversalValue::DateTime(dt)) => UniversalValue::Time(dt),
+        (Some(UniversalType::DateTimeNano), UniversalValue::DateTime(dt)) => {
+            UniversalValue::DateTimeNano(dt)
+        }
+        (Some(UniversalType::TimestampTz), UniversalValue::DateTime(dt)) => {
+            UniversalValue::TimestampTz(dt)
+        }
+
+        // Binary type conversions
+        (Some(UniversalType::Blob), UniversalValue::Bytes(b)) => UniversalValue::Blob(b),
+
+        // Enum conversion - strict 1:1 matching
+        (Some(UniversalType::Enum { values }), UniversalValue::Text(s)) => UniversalValue::Enum {
+            value: s,
+            allowed_values: values.clone(),
+        },
+
+        // Set conversion - strict 1:1 matching
+        (Some(UniversalType::Set { values }), UniversalValue::Array { elements, .. }) => {
+            let set_elements: Vec<String> = elements
+                .into_iter()
+                .filter_map(|v| {
+                    if let UniversalValue::Text(s) = v {
+                        Some(s)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            UniversalValue::Set {
+                elements: set_elements,
+                allowed_values: values.clone(),
+            }
+        }
+
+        // No conversion needed or type not specified
+        (_, value) => value,
     }
 }

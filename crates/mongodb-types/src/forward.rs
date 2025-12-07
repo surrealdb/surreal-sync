@@ -3,6 +3,7 @@
 //! This module provides conversion from sync-core's `TypedValue` to MongoDB BSON values.
 
 use bson::{Bson, DateTime as BsonDateTime};
+use sync_core::values::GeometryData;
 use sync_core::{GeometryType, TypedValue, UniversalType, UniversalValue};
 
 /// Wrapper for BSON values that can be inserted into MongoDB.
@@ -30,19 +31,19 @@ impl From<TypedValue> for BsonValue {
             // Boolean
             (UniversalType::Bool, UniversalValue::Bool(b)) => BsonValue(Bson::Boolean(*b)),
 
-            // Integer types - MongoDB uses i32 and i64; handle both Int32 and Int64 from generators
-            (UniversalType::TinyInt { .. }, UniversalValue::Int32(i)) => BsonValue(Bson::Int32(*i)),
-            (UniversalType::TinyInt { .. }, UniversalValue::Int64(i)) => BsonValue(Bson::Int64(*i)),
-            (UniversalType::SmallInt, UniversalValue::Int32(i)) => BsonValue(Bson::Int32(*i)),
-            (UniversalType::SmallInt, UniversalValue::Int64(i)) => BsonValue(Bson::Int64(*i)),
-            (UniversalType::Int, UniversalValue::Int32(i)) => BsonValue(Bson::Int32(*i)),
-            (UniversalType::Int, UniversalValue::Int64(i)) => BsonValue(Bson::Int64(*i)),
-            (UniversalType::BigInt, UniversalValue::Int64(i)) => BsonValue(Bson::Int64(*i)),
-            (UniversalType::BigInt, UniversalValue::Int32(i)) => BsonValue(Bson::Int64(*i as i64)),
+            // Integer types - MongoDB uses i32 and i64
+            (UniversalType::TinyInt { .. }, UniversalValue::TinyInt { value, .. }) => {
+                BsonValue(Bson::Int32(*value as i32))
+            }
+            (UniversalType::SmallInt, UniversalValue::SmallInt(i)) => {
+                BsonValue(Bson::Int32(*i as i32))
+            }
+            (UniversalType::Int, UniversalValue::Int(i)) => BsonValue(Bson::Int32(*i)),
+            (UniversalType::BigInt, UniversalValue::BigInt(i)) => BsonValue(Bson::Int64(*i)),
 
             // Floating point
-            (UniversalType::Float, UniversalValue::Float64(f)) => BsonValue(Bson::Double(*f)),
-            (UniversalType::Double, UniversalValue::Float64(f)) => BsonValue(Bson::Double(*f)),
+            (UniversalType::Float, UniversalValue::Float(f)) => BsonValue(Bson::Double(*f as f64)),
+            (UniversalType::Double, UniversalValue::Double(f)) => BsonValue(Bson::Double(*f)),
 
             // Decimal - MongoDB has Decimal128, but we'll use string for precision
             (UniversalType::Decimal { .. }, UniversalValue::Decimal { value, .. }) => {
@@ -51,16 +52,16 @@ impl From<TypedValue> for BsonValue {
             }
 
             // String types
-            (UniversalType::Char { .. }, UniversalValue::String(s)) => {
-                BsonValue(Bson::String(s.clone()))
+            (UniversalType::Char { .. }, UniversalValue::Char { value, .. }) => {
+                BsonValue(Bson::String(value.clone()))
             }
-            (UniversalType::VarChar { .. }, UniversalValue::String(s)) => {
-                BsonValue(Bson::String(s.clone()))
+            (UniversalType::VarChar { .. }, UniversalValue::VarChar { value, .. }) => {
+                BsonValue(Bson::String(value.clone()))
             }
-            (UniversalType::Text, UniversalValue::String(s)) => BsonValue(Bson::String(s.clone())),
+            (UniversalType::Text, UniversalValue::Text(s)) => BsonValue(Bson::String(s.clone())),
 
             // Binary types
-            (UniversalType::Blob, UniversalValue::Bytes(b)) => {
+            (UniversalType::Blob, UniversalValue::Blob(b)) => {
                 BsonValue(Bson::Binary(bson::Binary {
                     subtype: bson::spec::BinarySubtype::Generic,
                     bytes: b.clone(),
@@ -74,22 +75,22 @@ impl From<TypedValue> for BsonValue {
             }
 
             // Date/time types
-            (UniversalType::Date, UniversalValue::DateTime(dt)) => {
+            (UniversalType::Date, UniversalValue::Date(dt)) => {
                 // Store date as string in YYYY-MM-DD format
                 BsonValue(Bson::String(dt.format("%Y-%m-%d").to_string()))
             }
-            (UniversalType::Time, UniversalValue::DateTime(dt)) => {
+            (UniversalType::Time, UniversalValue::Time(dt)) => {
                 // Store time as string in HH:MM:SS format
                 BsonValue(Bson::String(dt.format("%H:%M:%S").to_string()))
             }
             (UniversalType::DateTime, UniversalValue::DateTime(dt)) => {
                 BsonValue(Bson::DateTime(BsonDateTime::from_chrono(*dt)))
             }
-            (UniversalType::DateTimeNano, UniversalValue::DateTime(dt)) => {
+            (UniversalType::DateTimeNano, UniversalValue::DateTimeNano(dt)) => {
                 // MongoDB DateTime has millisecond precision, so we lose nanoseconds
                 BsonValue(Bson::DateTime(BsonDateTime::from_chrono(*dt)))
             }
-            (UniversalType::TimestampTz, UniversalValue::DateTime(dt)) => {
+            (UniversalType::TimestampTz, UniversalValue::TimestampTz(dt)) => {
                 BsonValue(Bson::DateTime(BsonDateTime::from_chrono(*dt)))
             }
 
@@ -102,32 +103,32 @@ impl From<TypedValue> for BsonValue {
             }
 
             // JSON types - convert to BSON document
-            (UniversalType::Json, UniversalValue::Object(map)) => {
-                let doc = hashmap_to_bson_doc(map);
-                BsonValue(Bson::Document(doc))
+            (UniversalType::Json, UniversalValue::Json(json_val)) => {
+                let bson_val = json_value_to_bson(json_val);
+                BsonValue(bson_val)
             }
-            (UniversalType::Jsonb, UniversalValue::Object(map)) => {
-                let doc = hashmap_to_bson_doc(map);
-                BsonValue(Bson::Document(doc))
+            (UniversalType::Jsonb, UniversalValue::Json(json_val)) => {
+                let bson_val = json_value_to_bson(json_val);
+                BsonValue(bson_val)
             }
             // JSON can also be a string
-            (UniversalType::Json, UniversalValue::String(s)) => {
+            (UniversalType::Json, UniversalValue::Text(s)) => {
                 // Try to parse as JSON, otherwise store as string
                 match serde_json::from_str::<serde_json::Value>(s) {
-                    Ok(v) => BsonValue(json_to_bson(&v)),
+                    Ok(v) => BsonValue(serde_json_to_bson(&v)),
                     Err(_) => BsonValue(Bson::String(s.clone())),
                 }
             }
-            (UniversalType::Jsonb, UniversalValue::String(s)) => {
+            (UniversalType::Jsonb, UniversalValue::Text(s)) => {
                 match serde_json::from_str::<serde_json::Value>(s) {
-                    Ok(v) => BsonValue(json_to_bson(&v)),
+                    Ok(v) => BsonValue(serde_json_to_bson(&v)),
                     Err(_) => BsonValue(Bson::String(s.clone())),
                 }
             }
 
             // Array types
-            (UniversalType::Array { element_type }, UniversalValue::Array(arr)) => {
-                let bson_arr: Vec<Bson> = arr
+            (UniversalType::Array { element_type }, UniversalValue::Array { elements, .. }) => {
+                let bson_arr: Vec<Bson> = elements
                     .iter()
                     .map(|v| {
                         let tv = TypedValue {
@@ -141,24 +142,21 @@ impl From<TypedValue> for BsonValue {
             }
 
             // Set - stored as array
-            (UniversalType::Set { .. }, UniversalValue::Array(arr)) => {
-                let bson_arr: Vec<Bson> = arr
-                    .iter()
-                    .map(|v| match v {
-                        UniversalValue::String(s) => Bson::String(s.clone()),
-                        _ => Bson::Null,
-                    })
-                    .collect();
+            (UniversalType::Set { .. }, UniversalValue::Set { elements, .. }) => {
+                let bson_arr: Vec<Bson> = elements.iter().map(|s| Bson::String(s.clone())).collect();
                 BsonValue(Bson::Array(bson_arr))
             }
 
             // Enum - stored as string
-            (UniversalType::Enum { .. }, UniversalValue::String(s)) => {
-                BsonValue(Bson::String(s.clone()))
+            (UniversalType::Enum { .. }, UniversalValue::Enum { value, .. }) => {
+                BsonValue(Bson::String(value.clone()))
             }
 
             // Geometry types - store as GeoJSON
-            (UniversalType::Geometry { geometry_type }, UniversalValue::Object(map)) => {
+            (
+                UniversalType::Geometry { geometry_type },
+                UniversalValue::Geometry { data, .. },
+            ) => {
                 let geojson_type = match geometry_type {
                     GeometryType::Point => "Point",
                     GeometryType::LineString => "LineString",
@@ -168,9 +166,22 @@ impl From<TypedValue> for BsonValue {
                     GeometryType::MultiPolygon => "MultiPolygon",
                     GeometryType::GeometryCollection => "GeometryCollection",
                 };
-                let mut doc = hashmap_to_bson_doc(map);
-                doc.insert("type", geojson_type);
-                BsonValue(Bson::Document(doc))
+                match data {
+                    GeometryData::GeoJson(json_val) => {
+                        let mut bson_val = json_value_to_bson(json_val);
+                        if let Bson::Document(ref mut doc) = bson_val {
+                            doc.insert("type", geojson_type);
+                        }
+                        BsonValue(bson_val)
+                    }
+                    GeometryData::Wkb(bytes) => {
+                        // Store WKB as binary
+                        BsonValue(Bson::Binary(bson::Binary {
+                            subtype: bson::spec::BinarySubtype::Generic,
+                            bytes: bytes.clone(),
+                        }))
+                    }
+                }
             }
 
             // Fallback - panic instead of silently returning null
@@ -181,26 +192,55 @@ impl From<TypedValue> for BsonValue {
     }
 }
 
-/// Convert a HashMap of UniversalValue to a BSON Document.
-fn hashmap_to_bson_doc(map: &std::collections::HashMap<String, UniversalValue>) -> bson::Document {
+/// Convert a serde_json::Value to a BSON value.
+fn json_value_to_bson(json: &serde_json::Value) -> Bson {
+    match json {
+        serde_json::Value::Null => Bson::Null,
+        serde_json::Value::Bool(b) => Bson::Boolean(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
+                    Bson::Int32(i as i32)
+                } else {
+                    Bson::Int64(i)
+                }
+            } else if let Some(f) = n.as_f64() {
+                Bson::Double(f)
+            } else {
+                Bson::String(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => Bson::String(s.clone()),
+        serde_json::Value::Array(arr) => Bson::Array(arr.iter().map(json_value_to_bson).collect()),
+        serde_json::Value::Object(obj) => Bson::Document(json_object_to_bson_doc(obj)),
+    }
+}
+
+/// Convert a serde_json::Map to a BSON Document.
+fn json_object_to_bson_doc(map: &serde_json::Map<String, serde_json::Value>) -> bson::Document {
     let mut doc = bson::Document::new();
     for (key, value) in map {
-        let bson_val = generated_value_to_bson(value);
-        doc.insert(key.clone(), bson_val);
+        doc.insert(key.clone(), json_value_to_bson(value));
     }
     doc
 }
 
 /// Convert a UniversalValue to a BSON value (without type context).
+#[allow(dead_code)]
 fn generated_value_to_bson(value: &UniversalValue) -> Bson {
     match value {
         UniversalValue::Null => Bson::Null,
         UniversalValue::Bool(b) => Bson::Boolean(*b),
-        UniversalValue::Int32(i) => Bson::Int32(*i),
-        UniversalValue::Int64(i) => Bson::Int64(*i),
-        UniversalValue::Float64(f) => Bson::Double(*f),
-        UniversalValue::String(s) => Bson::String(s.clone()),
-        UniversalValue::Bytes(b) => Bson::Binary(bson::Binary {
+        UniversalValue::TinyInt { value, .. } => Bson::Int32(*value as i32),
+        UniversalValue::SmallInt(i) => Bson::Int32(*i as i32),
+        UniversalValue::Int(i) => Bson::Int32(*i),
+        UniversalValue::BigInt(i) => Bson::Int64(*i),
+        UniversalValue::Float(f) => Bson::Double(*f as f64),
+        UniversalValue::Double(f) => Bson::Double(*f),
+        UniversalValue::Char { value, .. } => Bson::String(value.clone()),
+        UniversalValue::VarChar { value, .. } => Bson::String(value.clone()),
+        UniversalValue::Text(s) => Bson::String(s.clone()),
+        UniversalValue::Blob(b) | UniversalValue::Bytes(b) => Bson::Binary(bson::Binary {
             subtype: bson::spec::BinarySubtype::Generic,
             bytes: b.clone(),
         }),
@@ -208,17 +248,37 @@ fn generated_value_to_bson(value: &UniversalValue) -> Bson {
             subtype: bson::spec::BinarySubtype::Uuid,
             bytes: u.as_bytes().to_vec(),
         }),
-        UniversalValue::DateTime(dt) => Bson::DateTime(BsonDateTime::from_chrono(*dt)),
+        UniversalValue::Date(dt)
+        | UniversalValue::Time(dt)
+        | UniversalValue::DateTime(dt)
+        | UniversalValue::DateTimeNano(dt)
+        | UniversalValue::TimestampTz(dt) => Bson::DateTime(BsonDateTime::from_chrono(*dt)),
         UniversalValue::Decimal { value, .. } => Bson::String(value.clone()),
-        UniversalValue::Array(arr) => {
-            Bson::Array(arr.iter().map(generated_value_to_bson).collect())
+        UniversalValue::Array { elements, .. } => {
+            Bson::Array(elements.iter().map(generated_value_to_bson).collect())
         }
-        UniversalValue::Object(map) => Bson::Document(hashmap_to_bson_doc(map)),
+        UniversalValue::Json(json_val) | UniversalValue::Jsonb(json_val) => {
+            json_value_to_bson(json_val)
+        }
+        UniversalValue::Set { elements, .. } => {
+            Bson::Array(elements.iter().map(|s| Bson::String(s.clone())).collect())
+        }
+        UniversalValue::Enum { value, .. } => Bson::String(value.clone()),
+        UniversalValue::Geometry { data, .. } => {
+            use sync_core::values::GeometryData;
+            match data {
+                GeometryData::GeoJson(json_val) => serde_json_to_bson(json_val),
+                GeometryData::Wkb(bytes) => Bson::Binary(bson::Binary {
+                    subtype: bson::spec::BinarySubtype::Generic,
+                    bytes: bytes.clone(),
+                }),
+            }
+        }
     }
 }
 
 /// Convert a serde_json::Value to BSON.
-fn json_to_bson(value: &serde_json::Value) -> Bson {
+fn serde_json_to_bson(value: &serde_json::Value) -> Bson {
     match value {
         serde_json::Value::Null => Bson::Null,
         serde_json::Value::Bool(b) => Bson::Boolean(*b),
@@ -236,11 +296,11 @@ fn json_to_bson(value: &serde_json::Value) -> Bson {
             }
         }
         serde_json::Value::String(s) => Bson::String(s.clone()),
-        serde_json::Value::Array(arr) => Bson::Array(arr.iter().map(json_to_bson).collect()),
+        serde_json::Value::Array(arr) => Bson::Array(arr.iter().map(serde_json_to_bson).collect()),
         serde_json::Value::Object(map) => {
             let mut doc = bson::Document::new();
             for (k, v) in map {
-                doc.insert(k.clone(), json_to_bson(v));
+                doc.insert(k.clone(), serde_json_to_bson(v));
             }
             Bson::Document(doc)
         }
@@ -268,7 +328,6 @@ where
 mod tests {
     use super::*;
     use chrono::{Datelike, TimeZone, Utc};
-    use std::collections::HashMap;
 
     #[test]
     fn test_null_conversion() {
@@ -290,10 +349,7 @@ mod tests {
 
     #[test]
     fn test_tinyint_conversion() {
-        let tv = TypedValue {
-            sync_type: UniversalType::TinyInt { width: 4 },
-            value: UniversalValue::Int32(127),
-        };
+        let tv = TypedValue::tinyint(127, 4);
         let bson_val: BsonValue = tv.into();
         assert!(matches!(bson_val.0, Bson::Int32(127)));
     }
@@ -324,7 +380,7 @@ mod tests {
         let tv = TypedValue::float(1.234);
         let bson_val: BsonValue = tv.into();
         if let Bson::Double(f) = bson_val.0 {
-            assert!((f - 1.234).abs() < 0.0001);
+            assert!((f - 1.234).abs() < 0.001);
         } else {
             panic!("Expected Double");
         }
@@ -350,20 +406,14 @@ mod tests {
 
     #[test]
     fn test_char_conversion() {
-        let tv = TypedValue {
-            sync_type: UniversalType::Char { length: 10 },
-            value: UniversalValue::String("test".to_string()),
-        };
+        let tv = TypedValue::char_type("test", 10);
         let bson_val: BsonValue = tv.into();
         assert!(matches!(bson_val.0, Bson::String(ref s) if s == "test"));
     }
 
     #[test]
     fn test_varchar_conversion() {
-        let tv = TypedValue {
-            sync_type: UniversalType::VarChar { length: 255 },
-            value: UniversalValue::String("hello world".to_string()),
-        };
+        let tv = TypedValue::varchar("hello world", 255);
         let bson_val: BsonValue = tv.into();
         assert!(matches!(bson_val.0, Bson::String(ref s) if s == "hello world"));
     }
@@ -377,10 +427,7 @@ mod tests {
 
     #[test]
     fn test_blob_conversion() {
-        let tv = TypedValue {
-            sync_type: UniversalType::Blob,
-            value: UniversalValue::Bytes(vec![0x01, 0x02, 0x03]),
-        };
+        let tv = TypedValue::blob(vec![0x01, 0x02, 0x03]);
         let bson_val: BsonValue = tv.into();
         if let Bson::Binary(bin) = bson_val.0 {
             assert_eq!(bin.bytes, vec![0x01, 0x02, 0x03]);
@@ -432,10 +479,7 @@ mod tests {
     #[test]
     fn test_date_conversion() {
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 0, 0, 0).unwrap();
-        let tv = TypedValue {
-            sync_type: UniversalType::Date,
-            value: UniversalValue::DateTime(dt),
-        };
+        let tv = TypedValue::date(dt);
         let bson_val: BsonValue = tv.into();
         assert!(matches!(bson_val.0, Bson::String(ref s) if s == "2024-06-15"));
     }
@@ -443,27 +487,24 @@ mod tests {
     #[test]
     fn test_time_conversion() {
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 14, 30, 45).unwrap();
-        let tv = TypedValue {
-            sync_type: UniversalType::Time,
-            value: UniversalValue::DateTime(dt),
-        };
+        let tv = TypedValue::time(dt);
         let bson_val: BsonValue = tv.into();
         assert!(matches!(bson_val.0, Bson::String(ref s) if s == "14:30:45"));
     }
 
     #[test]
     fn test_json_object_conversion() {
-        let mut map = HashMap::new();
+        let mut map = serde_json::Map::new();
         map.insert(
             "name".to_string(),
-            UniversalValue::String("test".to_string()),
+            serde_json::Value::String("test".to_string()),
         );
-        map.insert("count".to_string(), UniversalValue::Int32(42));
+        map.insert(
+            "count".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(42)),
+        );
 
-        let tv = TypedValue {
-            sync_type: UniversalType::Json,
-            value: UniversalValue::Object(map),
-        };
+        let tv = TypedValue::json(serde_json::Value::Object(map));
         let bson_val: BsonValue = tv.into();
         if let Bson::Document(doc) = bson_val.0 {
             assert_eq!(doc.get_str("name").unwrap(), "test");
@@ -477,7 +518,7 @@ mod tests {
     fn test_json_string_conversion() {
         let tv = TypedValue {
             sync_type: UniversalType::Json,
-            value: UniversalValue::String(r#"{"key": "value"}"#.to_string()),
+            value: UniversalValue::Text(r#"{"key": "value"}"#.to_string()),
         };
         let bson_val: BsonValue = tv.into();
         if let Bson::Document(doc) = bson_val.0 {
@@ -491,9 +532,9 @@ mod tests {
     fn test_array_int_conversion() {
         let tv = TypedValue::array(
             vec![
-                UniversalValue::Int32(1),
-                UniversalValue::Int32(2),
-                UniversalValue::Int32(3),
+                UniversalValue::Int(1),
+                UniversalValue::Int(2),
+                UniversalValue::Int(3),
             ],
             UniversalType::Int,
         );
@@ -512,8 +553,8 @@ mod tests {
     fn test_array_text_conversion() {
         let tv = TypedValue::array(
             vec![
-                UniversalValue::String("a".to_string()),
-                UniversalValue::String("b".to_string()),
+                UniversalValue::Text("a".to_string()),
+                UniversalValue::Text("b".to_string()),
             ],
             UniversalType::Text,
         );
@@ -529,15 +570,10 @@ mod tests {
 
     #[test]
     fn test_set_conversion() {
-        let tv = TypedValue {
-            sync_type: UniversalType::Set {
-                values: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            },
-            value: UniversalValue::Array(vec![
-                UniversalValue::String("a".to_string()),
-                UniversalValue::String("b".to_string()),
-            ]),
-        };
+        let tv = TypedValue::set(
+            vec!["a".to_string(), "b".to_string()],
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        );
         let bson_val: BsonValue = tv.into();
         if let Bson::Array(arr) = bson_val.0 {
             assert_eq!(arr.len(), 2);
@@ -548,33 +584,25 @@ mod tests {
 
     #[test]
     fn test_enum_conversion() {
-        let tv = TypedValue {
-            sync_type: UniversalType::Enum {
-                values: vec!["active".to_string(), "inactive".to_string()],
-            },
-            value: UniversalValue::String("active".to_string()),
-        };
+        let tv =
+            TypedValue::enum_type("active", vec!["active".to_string(), "inactive".to_string()]);
         let bson_val: BsonValue = tv.into();
         assert!(matches!(bson_val.0, Bson::String(ref s) if s == "active"));
     }
 
     #[test]
     fn test_geometry_point_conversion() {
-        let mut coords = HashMap::new();
+        let mut coords = serde_json::Map::new();
         coords.insert(
             "coordinates".to_string(),
-            UniversalValue::Array(vec![
-                UniversalValue::Float64(-73.97),
-                UniversalValue::Float64(40.77),
+            serde_json::Value::Array(vec![
+                serde_json::Value::Number(serde_json::Number::from_f64(-73.97).unwrap()),
+                serde_json::Value::Number(serde_json::Number::from_f64(40.77).unwrap()),
             ]),
         );
 
-        let tv = TypedValue {
-            sync_type: UniversalType::Geometry {
-                geometry_type: GeometryType::Point,
-            },
-            value: UniversalValue::Object(coords),
-        };
+        let tv =
+            TypedValue::geometry_geojson(serde_json::Value::Object(coords), GeometryType::Point);
         let bson_val: BsonValue = tv.into();
         if let Bson::Document(doc) = bson_val.0 {
             assert_eq!(doc.get_str("type").unwrap(), "Point");
@@ -601,10 +629,7 @@ mod tests {
     #[test]
     fn test_timestamptz_conversion() {
         let dt = Utc.with_ymd_and_hms(2024, 12, 25, 15, 30, 0).unwrap();
-        let tv = TypedValue {
-            sync_type: UniversalType::TimestampTz,
-            value: UniversalValue::DateTime(dt),
-        };
+        let tv = TypedValue::timestamptz(dt);
         let bson_val: BsonValue = tv.into();
         assert!(matches!(bson_val.0, Bson::DateTime(_)));
     }

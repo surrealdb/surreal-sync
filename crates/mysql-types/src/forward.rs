@@ -33,36 +33,35 @@ impl From<TypedValue> for MySQLValue {
             }
 
             // Integer types
-            (UniversalType::TinyInt { .. }, UniversalValue::Int32(i)) => {
+            (UniversalType::TinyInt { .. }, UniversalValue::TinyInt { value, .. }) => {
+                MySQLValue(Value::Int(value as i64))
+            }
+            (UniversalType::SmallInt, UniversalValue::SmallInt(i)) => {
                 MySQLValue(Value::Int(i as i64))
             }
-            (UniversalType::SmallInt, UniversalValue::Int32(i)) => MySQLValue(Value::Int(i as i64)),
-            (UniversalType::Int, UniversalValue::Int32(i)) => MySQLValue(Value::Int(i as i64)),
-            (UniversalType::Int, UniversalValue::Int64(i)) => MySQLValue(Value::Int(i)),
-            (UniversalType::BigInt, UniversalValue::Int64(i)) => MySQLValue(Value::Int(i)),
+            (UniversalType::Int, UniversalValue::Int(i)) => MySQLValue(Value::Int(i as i64)),
+            (UniversalType::BigInt, UniversalValue::BigInt(i)) => MySQLValue(Value::Int(i)),
 
             // Floating point
-            (UniversalType::Float, UniversalValue::Float64(f)) => {
-                MySQLValue(Value::Float(f as f32))
-            }
-            (UniversalType::Double, UniversalValue::Float64(f)) => MySQLValue(Value::Double(f)),
+            (UniversalType::Float, UniversalValue::Float(f)) => MySQLValue(Value::Float(f)),
+            (UniversalType::Double, UniversalValue::Double(f)) => MySQLValue(Value::Double(f)),
 
             // Decimal - stored as string in MySQL for precision
             (UniversalType::Decimal { .. }, UniversalValue::Decimal { value, .. }) => {
                 MySQLValue(Value::Bytes(value.into_bytes()))
             }
-            (UniversalType::Decimal { .. }, UniversalValue::String(s)) => {
+            (UniversalType::Decimal { .. }, UniversalValue::Text(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // String types
-            (UniversalType::Char { .. }, UniversalValue::String(s)) => {
-                MySQLValue(Value::Bytes(s.into_bytes()))
+            (UniversalType::Char { .. }, UniversalValue::Char { value, .. }) => {
+                MySQLValue(Value::Bytes(value.into_bytes()))
             }
-            (UniversalType::VarChar { .. }, UniversalValue::String(s)) => {
-                MySQLValue(Value::Bytes(s.into_bytes()))
+            (UniversalType::VarChar { .. }, UniversalValue::VarChar { value, .. }) => {
+                MySQLValue(Value::Bytes(value.into_bytes()))
             }
-            (UniversalType::Text, UniversalValue::String(s)) => {
+            (UniversalType::Text, UniversalValue::Text(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
@@ -74,7 +73,7 @@ impl From<TypedValue> for MySQLValue {
             (UniversalType::Uuid, UniversalValue::Uuid(u)) => {
                 MySQLValue(Value::Bytes(u.to_string().into_bytes()))
             }
-            (UniversalType::Uuid, UniversalValue::String(s)) => {
+            (UniversalType::Uuid, UniversalValue::Text(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
@@ -122,12 +121,21 @@ impl From<TypedValue> for MySQLValue {
                 0,
                 0,
             )),
-            (UniversalType::Date, UniversalValue::String(s)) => {
+            (UniversalType::Date, UniversalValue::Date(dt)) => MySQLValue(Value::Date(
+                dt.year() as u16,
+                dt.month() as u8,
+                dt.day() as u8,
+                0,
+                0,
+                0,
+                0,
+            )),
+            (UniversalType::Date, UniversalValue::Text(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // Time - MySQL TIME
-            (UniversalType::Time, UniversalValue::DateTime(dt)) => MySQLValue(Value::Time(
+            (UniversalType::Time, UniversalValue::Time(dt)) => MySQLValue(Value::Time(
                 false, // not negative
                 0,     // days
                 dt.hour() as u8,
@@ -135,58 +143,49 @@ impl From<TypedValue> for MySQLValue {
                 dt.second() as u8,
                 dt.nanosecond() / 1000,
             )),
-            (UniversalType::Time, UniversalValue::String(s)) => {
+            (UniversalType::Time, UniversalValue::Text(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // JSON - MySQL JSON type
-            (UniversalType::Json, UniversalValue::Object(obj)) => {
-                let json = generated_object_to_json(obj);
-                MySQLValue(Value::Bytes(json.to_string().into_bytes()))
+            (UniversalType::Json, UniversalValue::Json(json_val)) => {
+                MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
             }
-            (UniversalType::Json, UniversalValue::String(s)) => {
+            (UniversalType::Json, UniversalValue::Text(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
-            (UniversalType::Jsonb, UniversalValue::Object(obj)) => {
-                let json = generated_object_to_json(obj);
-                MySQLValue(Value::Bytes(json.to_string().into_bytes()))
+            (UniversalType::Jsonb, UniversalValue::Jsonb(json_val)) => {
+                MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
             }
-            (UniversalType::Jsonb, UniversalValue::String(s)) => {
+            (UniversalType::Jsonb, UniversalValue::Text(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // Array - MySQL stores as JSON
-            (UniversalType::Array { .. }, UniversalValue::Array(arr)) => {
-                let json = generated_array_to_json(arr);
+            (UniversalType::Array { .. }, UniversalValue::Array { elements, .. }) => {
+                let json = generated_array_to_json(elements);
                 MySQLValue(Value::Bytes(json.to_string().into_bytes()))
             }
 
             // Set - MySQL SET type
-            (UniversalType::Set { .. }, UniversalValue::Array(arr)) => {
-                let values: Vec<String> = arr
-                    .into_iter()
-                    .filter_map(|v| {
-                        if let UniversalValue::String(s) = v {
-                            Some(s)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                MySQLValue(Value::Bytes(values.join(",").into_bytes()))
+            (UniversalType::Set { .. }, UniversalValue::Set { elements, .. }) => {
+                MySQLValue(Value::Bytes(elements.join(",").into_bytes()))
             }
 
             // Enum - MySQL ENUM
-            (UniversalType::Enum { .. }, UniversalValue::String(s)) => {
-                MySQLValue(Value::Bytes(s.into_bytes()))
+            (UniversalType::Enum { .. }, UniversalValue::Enum { value, .. }) => {
+                MySQLValue(Value::Bytes(value.into_bytes()))
             }
 
             // Geometry - stored as WKB (Well-Known Binary)
-            (UniversalType::Geometry { .. }, UniversalValue::Bytes(b)) => {
-                MySQLValue(Value::Bytes(b))
-            }
-            (UniversalType::Geometry { .. }, UniversalValue::String(s)) => {
-                MySQLValue(Value::Bytes(s.into_bytes()))
+            (UniversalType::Geometry { .. }, UniversalValue::Geometry { data, .. }) => {
+                use sync_core::values::GeometryData;
+                match data {
+                    GeometryData::Wkb(b) => MySQLValue(Value::Bytes(b)),
+                    GeometryData::GeoJson(json_val) => {
+                        MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
+                    }
+                }
             }
 
             // Null
@@ -194,13 +193,25 @@ impl From<TypedValue> for MySQLValue {
 
             // Fallback for type mismatches - try to do reasonable conversion
             (_, UniversalValue::Bool(b)) => MySQLValue(Value::Int(if b { 1 } else { 0 })),
-            (_, UniversalValue::Int32(i)) => MySQLValue(Value::Int(i as i64)),
-            (_, UniversalValue::Int64(i)) => MySQLValue(Value::Int(i)),
-            (_, UniversalValue::Float64(f)) => MySQLValue(Value::Double(f)),
-            (_, UniversalValue::String(s)) => MySQLValue(Value::Bytes(s.into_bytes())),
+            (_, UniversalValue::TinyInt { value, .. }) => MySQLValue(Value::Int(value as i64)),
+            (_, UniversalValue::SmallInt(i)) => MySQLValue(Value::Int(i as i64)),
+            (_, UniversalValue::Int(i)) => MySQLValue(Value::Int(i as i64)),
+            (_, UniversalValue::BigInt(i)) => MySQLValue(Value::Int(i)),
+            (_, UniversalValue::Float(f)) => MySQLValue(Value::Float(f)),
+            (_, UniversalValue::Double(f)) => MySQLValue(Value::Double(f)),
+            (_, UniversalValue::Char { value, .. }) => MySQLValue(Value::Bytes(value.into_bytes())),
+            (_, UniversalValue::VarChar { value, .. }) => {
+                MySQLValue(Value::Bytes(value.into_bytes()))
+            }
+            (_, UniversalValue::Text(s)) => MySQLValue(Value::Bytes(s.into_bytes())),
+            (_, UniversalValue::Blob(b)) => MySQLValue(Value::Bytes(b)),
             (_, UniversalValue::Bytes(b)) => MySQLValue(Value::Bytes(b)),
             (_, UniversalValue::Uuid(u)) => MySQLValue(Value::Bytes(u.to_string().into_bytes())),
-            (_, UniversalValue::DateTime(dt)) => MySQLValue(Value::Date(
+            (_, UniversalValue::Date(dt))
+            | (_, UniversalValue::Time(dt))
+            | (_, UniversalValue::DateTime(dt))
+            | (_, UniversalValue::DateTimeNano(dt))
+            | (_, UniversalValue::TimestampTz(dt)) => MySQLValue(Value::Date(
                 dt.year() as u16,
                 dt.month() as u8,
                 dt.day() as u8,
@@ -212,13 +223,25 @@ impl From<TypedValue> for MySQLValue {
             (_, UniversalValue::Decimal { value, .. }) => {
                 MySQLValue(Value::Bytes(value.into_bytes()))
             }
-            (_, UniversalValue::Array(arr)) => {
-                let json = generated_array_to_json(arr);
+            (_, UniversalValue::Array { elements, .. }) => {
+                let json = generated_array_to_json(elements);
                 MySQLValue(Value::Bytes(json.to_string().into_bytes()))
             }
-            (_, UniversalValue::Object(obj)) => {
-                let json = generated_object_to_json(obj);
-                MySQLValue(Value::Bytes(json.to_string().into_bytes()))
+            (_, UniversalValue::Set { elements, .. }) => {
+                MySQLValue(Value::Bytes(elements.join(",").into_bytes()))
+            }
+            (_, UniversalValue::Enum { value, .. }) => MySQLValue(Value::Bytes(value.into_bytes())),
+            (_, UniversalValue::Json(json_val)) | (_, UniversalValue::Jsonb(json_val)) => {
+                MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
+            }
+            (_, UniversalValue::Geometry { data, .. }) => {
+                use sync_core::values::GeometryData;
+                match data {
+                    GeometryData::Wkb(b) => MySQLValue(Value::Bytes(b)),
+                    GeometryData::GeoJson(json_val) => {
+                        MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
+                    }
+                }
             }
         }
     }
@@ -230,34 +253,52 @@ fn generated_array_to_json(arr: Vec<UniversalValue>) -> serde_json::Value {
     serde_json::Value::Array(values)
 }
 
-/// Convert a UniversalValue object to a serde_json::Value object.
-fn generated_object_to_json(
-    obj: std::collections::HashMap<String, UniversalValue>,
-) -> serde_json::Value {
-    let map: serde_json::Map<String, serde_json::Value> = obj
-        .into_iter()
-        .map(|(k, v)| (k, generated_to_json(v)))
-        .collect();
-    serde_json::Value::Object(map)
-}
-
 /// Convert any UniversalValue to serde_json::Value.
 fn generated_to_json(gv: UniversalValue) -> serde_json::Value {
     match gv {
         UniversalValue::Null => serde_json::Value::Null,
         UniversalValue::Bool(b) => serde_json::Value::Bool(b),
-        UniversalValue::Int32(i) => serde_json::Value::Number(serde_json::Number::from(i)),
-        UniversalValue::Int64(i) => serde_json::Value::Number(serde_json::Number::from(i)),
-        UniversalValue::Float64(f) => serde_json::Number::from_f64(f)
+        UniversalValue::TinyInt { value, .. } => {
+            serde_json::Value::Number(serde_json::Number::from(value))
+        }
+        UniversalValue::SmallInt(i) => serde_json::Value::Number(serde_json::Number::from(i)),
+        UniversalValue::Int(i) => serde_json::Value::Number(serde_json::Number::from(i)),
+        UniversalValue::BigInt(i) => serde_json::Value::Number(serde_json::Number::from(i)),
+        UniversalValue::Float(f) => serde_json::Number::from_f64(f as f64)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        UniversalValue::String(s) => serde_json::Value::String(s),
+        UniversalValue::Double(f) => serde_json::Number::from_f64(f)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null),
+        UniversalValue::Char { value, .. } => serde_json::Value::String(value),
+        UniversalValue::VarChar { value, .. } => serde_json::Value::String(value),
+        UniversalValue::Text(s) => serde_json::Value::String(s),
+        UniversalValue::Blob(b) => serde_json::Value::String(BASE64.encode(&b)),
         UniversalValue::Bytes(b) => serde_json::Value::String(BASE64.encode(&b)),
         UniversalValue::Uuid(u) => serde_json::Value::String(u.to_string()),
-        UniversalValue::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
+        UniversalValue::Date(dt)
+        | UniversalValue::Time(dt)
+        | UniversalValue::DateTime(dt)
+        | UniversalValue::DateTimeNano(dt)
+        | UniversalValue::TimestampTz(dt) => serde_json::Value::String(dt.to_rfc3339()),
         UniversalValue::Decimal { value, .. } => serde_json::Value::String(value),
-        UniversalValue::Array(arr) => generated_array_to_json(arr),
-        UniversalValue::Object(obj) => generated_object_to_json(obj),
+        UniversalValue::Array { elements, .. } => generated_array_to_json(elements),
+        UniversalValue::Set { elements, .. } => {
+            let arr: Vec<serde_json::Value> = elements
+                .into_iter()
+                .map(serde_json::Value::String)
+                .collect();
+            serde_json::Value::Array(arr)
+        }
+        UniversalValue::Enum { value, .. } => serde_json::Value::String(value),
+        UniversalValue::Json(json_val) | UniversalValue::Jsonb(json_val) => *json_val,
+        UniversalValue::Geometry { data, .. } => {
+            use sync_core::values::GeometryData;
+            match data {
+                GeometryData::Wkb(b) => serde_json::Value::String(BASE64.encode(&b)),
+                GeometryData::GeoJson(json_val) => json_val,
+            }
+        }
     }
 }
 
@@ -378,9 +419,9 @@ mod tests {
     #[test]
     fn test_array_conversion() {
         let arr = vec![
-            UniversalValue::Int64(1),
-            UniversalValue::Int64(2),
-            UniversalValue::Int64(3),
+            UniversalValue::BigInt(1),
+            UniversalValue::BigInt(2),
+            UniversalValue::BigInt(3),
         ];
         let tv = TypedValue::array(arr, UniversalType::BigInt);
         let mysql_val: MySQLValue = tv.into();
@@ -397,10 +438,13 @@ mod tests {
         let mut obj = std::collections::HashMap::new();
         obj.insert(
             "name".to_string(),
-            UniversalValue::String("Alice".to_string()),
+            serde_json::Value::String("Alice".to_string()),
         );
-        obj.insert("age".to_string(), UniversalValue::Int64(30));
-        let tv = TypedValue::json_object(obj);
+        obj.insert(
+            "age".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(30)),
+        );
+        let tv = TypedValue::json(serde_json::Value::Object(serde_json::Map::from_iter(obj)));
         let mysql_val: MySQLValue = tv.into();
         if let Value::Bytes(b) = mysql_val.0 {
             let json: serde_json::Value = serde_json::from_slice(&b).unwrap();

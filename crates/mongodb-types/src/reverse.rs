@@ -43,9 +43,9 @@ impl From<BsonValueWithSchema> for TypedValue {
             // Integer types
             (UniversalType::TinyInt { width }, Bson::Int32(i)) => TypedValue {
                 sync_type: UniversalType::TinyInt { width: *width },
-                value: UniversalValue::Int32(*i),
+                value: UniversalValue::Int(*i),
             },
-            (UniversalType::SmallInt, Bson::Int32(i)) => TypedValue::smallint(*i),
+            (UniversalType::SmallInt, Bson::Int32(i)) => TypedValue::smallint(*i as i16),
             (UniversalType::Int, Bson::Int32(i)) => TypedValue::int(*i),
             (UniversalType::BigInt, Bson::Int64(i)) => TypedValue::bigint(*i),
             // Handle Int64 for Int (MongoDB might return Int64)
@@ -54,7 +54,7 @@ impl From<BsonValueWithSchema> for TypedValue {
             (UniversalType::BigInt, Bson::Int32(i)) => TypedValue::bigint(*i as i64),
 
             // Floating point
-            (UniversalType::Float, Bson::Double(f)) => TypedValue::float(*f),
+            (UniversalType::Float, Bson::Double(f)) => TypedValue::float(*f as f32),
             (UniversalType::Double, Bson::Double(f)) => TypedValue::double(*f),
 
             // Decimal - stored as string in MongoDB for precision
@@ -69,11 +69,11 @@ impl From<BsonValueWithSchema> for TypedValue {
             // String types
             (UniversalType::Char { length }, Bson::String(s)) => TypedValue {
                 sync_type: UniversalType::Char { length: *length },
-                value: UniversalValue::String(s.clone()),
+                value: UniversalValue::Text(s.clone()),
             },
             (UniversalType::VarChar { length }, Bson::String(s)) => TypedValue {
                 sync_type: UniversalType::VarChar { length: *length },
-                value: UniversalValue::String(s.clone()),
+                value: UniversalValue::Text(s.clone()),
             },
             (UniversalType::Text, Bson::String(s)) => TypedValue::text(s),
 
@@ -150,17 +150,17 @@ impl From<BsonValueWithSchema> for TypedValue {
 
             // JSON types
             (UniversalType::Json, Bson::Document(doc)) => {
-                let map = bson_doc_to_hashmap(doc);
+                let json = bson_doc_to_json(doc);
                 TypedValue {
                     sync_type: UniversalType::Json,
-                    value: UniversalValue::Object(map),
+                    value: UniversalValue::Json(Box::new(json)),
                 }
             }
             (UniversalType::Jsonb, Bson::Document(doc)) => {
-                let map = bson_doc_to_hashmap(doc);
+                let json = bson_doc_to_json(doc);
                 TypedValue {
                     sync_type: UniversalType::Jsonb,
-                    value: UniversalValue::Object(map),
+                    value: UniversalValue::Json(Box::new(json)),
                 }
             }
 
@@ -182,7 +182,7 @@ impl From<BsonValueWithSchema> for TypedValue {
                     .iter()
                     .filter_map(|v| {
                         if let Bson::String(s) = v {
-                            Some(UniversalValue::String(s.clone()))
+                            Some(UniversalValue::Text(s.clone()))
                         } else {
                             None
                         }
@@ -192,7 +192,10 @@ impl From<BsonValueWithSchema> for TypedValue {
                     sync_type: UniversalType::Set {
                         values: set_values.clone(),
                     },
-                    value: UniversalValue::Array(values),
+                    value: UniversalValue::Array {
+                        elements: values,
+                        element_type: Box::new(UniversalType::Text),
+                    },
                 }
             }
 
@@ -206,17 +209,17 @@ impl From<BsonValueWithSchema> for TypedValue {
                 sync_type: UniversalType::Enum {
                     values: enum_values.clone(),
                 },
-                value: UniversalValue::String(s.clone()),
+                value: UniversalValue::Text(s.clone()),
             },
 
             // Geometry types - stored as GeoJSON document
             (UniversalType::Geometry { geometry_type }, Bson::Document(doc)) => {
-                let map = bson_doc_to_hashmap(doc);
+                let json = bson_doc_to_json(doc);
                 TypedValue {
                     sync_type: UniversalType::Geometry {
                         geometry_type: geometry_type.clone(),
                     },
-                    value: UniversalValue::Object(map),
+                    value: UniversalValue::Json(Box::new(json)),
                 }
             }
 
@@ -227,6 +230,7 @@ impl From<BsonValueWithSchema> for TypedValue {
 }
 
 /// Convert a BSON document to a HashMap of UniversalValue.
+#[allow(dead_code)]
 fn bson_doc_to_hashmap(doc: &bson::Document) -> HashMap<String, UniversalValue> {
     let mut map = HashMap::new();
     for (key, value) in doc {
@@ -235,15 +239,40 @@ fn bson_doc_to_hashmap(doc: &bson::Document) -> HashMap<String, UniversalValue> 
     map
 }
 
+/// Convert a BSON document to serde_json::Value.
+fn bson_doc_to_json(doc: &bson::Document) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (key, value) in doc {
+        map.insert(key.clone(), bson_to_json(value));
+    }
+    serde_json::Value::Object(map)
+}
+
+/// Convert a BSON value to serde_json::Value.
+fn bson_to_json(value: &Bson) -> serde_json::Value {
+    match value {
+        Bson::Null => serde_json::Value::Null,
+        Bson::Boolean(b) => serde_json::Value::Bool(*b),
+        Bson::Int32(i) => serde_json::json!(*i),
+        Bson::Int64(i) => serde_json::json!(*i),
+        Bson::Double(f) => serde_json::json!(*f),
+        Bson::String(s) => serde_json::Value::String(s.clone()),
+        Bson::Array(arr) => serde_json::Value::Array(arr.iter().map(bson_to_json).collect()),
+        Bson::Document(doc) => bson_doc_to_json(doc),
+        _ => serde_json::Value::Null,
+    }
+}
+
 /// Convert a BSON value to UniversalValue (without type context).
+#[allow(dead_code)]
 fn bson_to_generated_value(value: &Bson) -> UniversalValue {
     match value {
         Bson::Null => UniversalValue::Null,
         Bson::Boolean(b) => UniversalValue::Bool(*b),
-        Bson::Int32(i) => UniversalValue::Int32(*i),
-        Bson::Int64(i) => UniversalValue::Int64(*i),
-        Bson::Double(f) => UniversalValue::Float64(*f),
-        Bson::String(s) => UniversalValue::String(s.clone()),
+        Bson::Int32(i) => UniversalValue::Int(*i),
+        Bson::Int64(i) => UniversalValue::BigInt(*i),
+        Bson::Double(f) => UniversalValue::Double(*f),
+        Bson::String(s) => UniversalValue::Text(s.clone()),
         Bson::Binary(bin) => {
             if bin.subtype == bson::spec::BinarySubtype::Uuid
                 || bin.subtype == bson::spec::BinarySubtype::UuidOld
@@ -263,12 +292,13 @@ fn bson_to_generated_value(value: &Bson) -> UniversalValue {
             precision: 38,
             scale: 10,
         },
-        Bson::Array(arr) => {
-            UniversalValue::Array(arr.iter().map(bson_to_generated_value).collect())
-        }
-        Bson::Document(doc) => UniversalValue::Object(bson_doc_to_hashmap(doc)),
+        Bson::Array(arr) => UniversalValue::Array {
+            elements: arr.iter().map(bson_to_generated_value).collect(),
+            element_type: Box::new(UniversalType::Text),
+        },
+        Bson::Document(doc) => UniversalValue::Json(Box::new(bson_doc_to_json(doc))),
         // ObjectId - convert to string
-        Bson::ObjectId(oid) => UniversalValue::String(oid.to_hex()),
+        Bson::ObjectId(oid) => UniversalValue::Text(oid.to_hex()),
         // Timestamp - convert to DateTime
         Bson::Timestamp(ts) => {
             let secs = ts.time as i64;
@@ -280,20 +310,18 @@ fn bson_to_generated_value(value: &Bson) -> UniversalValue {
         }
         // Regex - convert to string pattern
         Bson::RegularExpression(regex) => {
-            UniversalValue::String(format!("/{}/{}", regex.pattern, regex.options))
+            UniversalValue::Text(format!("/{}/{}", regex.pattern, regex.options))
         }
         // JavaScript - convert to string
-        Bson::JavaScriptCode(code) => UniversalValue::String(code.clone()),
-        Bson::JavaScriptCodeWithScope(code_scope) => {
-            UniversalValue::String(code_scope.code.clone())
-        }
+        Bson::JavaScriptCode(code) => UniversalValue::Text(code.clone()),
+        Bson::JavaScriptCodeWithScope(code_scope) => UniversalValue::Text(code_scope.code.clone()),
         // Symbol - convert to string
-        Bson::Symbol(s) => UniversalValue::String(s.clone()),
+        Bson::Symbol(s) => UniversalValue::Text(s.clone()),
         // Undefined - treat as null
         Bson::Undefined => UniversalValue::Null,
         // MinKey/MaxKey - convert to string
-        Bson::MinKey => UniversalValue::String("$minKey".to_string()),
-        Bson::MaxKey => UniversalValue::String("$maxKey".to_string()),
+        Bson::MinKey => UniversalValue::Text("$minKey".to_string()),
+        Bson::MaxKey => UniversalValue::Text("$maxKey".to_string()),
         // DbPointer is deprecated
         Bson::DbPointer(_) => UniversalValue::Null,
     }
@@ -345,21 +373,21 @@ mod tests {
     fn test_int32_conversion() {
         let bv = BsonValueWithSchema::new(Bson::Int32(42), UniversalType::Int);
         let tv = TypedValue::from(bv);
-        assert!(matches!(tv.value, UniversalValue::Int32(42)));
+        assert!(matches!(tv.value, UniversalValue::Int(42)));
     }
 
     #[test]
     fn test_int64_conversion() {
         let bv = BsonValueWithSchema::new(Bson::Int64(9876543210), UniversalType::BigInt);
         let tv = TypedValue::from(bv);
-        assert!(matches!(tv.value, UniversalValue::Int64(9876543210)));
+        assert!(matches!(tv.value, UniversalValue::BigInt(9876543210)));
     }
 
     #[test]
     fn test_double_conversion() {
         let bv = BsonValueWithSchema::new(Bson::Double(1.23456), UniversalType::Double);
         let tv = TypedValue::from(bv);
-        if let UniversalValue::Float64(f) = tv.value {
+        if let UniversalValue::Double(f) = tv.value {
             assert!((f - 1.23456).abs() < 0.00001);
         } else {
             panic!("Expected Float64");
@@ -395,7 +423,7 @@ mod tests {
         let bv =
             BsonValueWithSchema::new(Bson::String("hello world".to_string()), UniversalType::Text);
         let tv = TypedValue::from(bv);
-        assert!(matches!(tv.value, UniversalValue::String(ref s) if s == "hello world"));
+        assert!(matches!(tv.value, UniversalValue::Text(ref s) if s == "hello world"));
     }
 
     #[test]
@@ -409,7 +437,7 @@ mod tests {
             tv.sync_type,
             UniversalType::VarChar { length: 100 }
         ));
-        assert!(matches!(tv.value, UniversalValue::String(ref s) if s == "test"));
+        assert!(matches!(tv.value, UniversalValue::Text(ref s) if s == "test"));
     }
 
     #[test]
@@ -500,11 +528,19 @@ mod tests {
         };
         let bv = BsonValueWithSchema::new(Bson::Document(doc), UniversalType::Json);
         let tv = TypedValue::from(bv);
-        if let UniversalValue::Object(map) = tv.value {
-            assert!(matches!(map.get("name"), Some(UniversalValue::String(s)) if s == "test"));
-            assert!(matches!(map.get("count"), Some(UniversalValue::Int32(42))));
+        if let UniversalValue::Json(json_val) = tv.value {
+            if let serde_json::Value::Object(map) = json_val.as_ref() {
+                assert!(
+                    matches!(map.get("name"), Some(serde_json::Value::String(s)) if s == "test")
+                );
+                assert!(
+                    matches!(map.get("count"), Some(serde_json::Value::Number(n)) if n.as_i64() == Some(42))
+                );
+            } else {
+                panic!("Expected Object");
+            }
         } else {
-            panic!("Expected Object");
+            panic!("Expected Json");
         }
     }
 
@@ -518,11 +554,11 @@ mod tests {
             },
         );
         let tv = TypedValue::from(bv);
-        if let UniversalValue::Array(values) = tv.value {
-            assert_eq!(values.len(), 3);
-            assert!(matches!(values[0], UniversalValue::Int32(1)));
-            assert!(matches!(values[1], UniversalValue::Int32(2)));
-            assert!(matches!(values[2], UniversalValue::Int32(3)));
+        if let UniversalValue::Array { elements, .. } = tv.value {
+            assert_eq!(elements.len(), 3);
+            assert!(matches!(elements[0], UniversalValue::Int(1)));
+            assert!(matches!(elements[1], UniversalValue::Int(2)));
+            assert!(matches!(elements[2], UniversalValue::Int(3)));
         } else {
             panic!("Expected Array");
         }
@@ -538,8 +574,8 @@ mod tests {
             },
         );
         let tv = TypedValue::from(bv);
-        if let UniversalValue::Array(values) = tv.value {
-            assert_eq!(values.len(), 2);
+        if let UniversalValue::Array { elements, .. } = tv.value {
+            assert_eq!(elements.len(), 2);
         } else {
             panic!("Expected Array");
         }
@@ -554,7 +590,7 @@ mod tests {
             },
         );
         let tv = TypedValue::from(bv);
-        assert!(matches!(tv.value, UniversalValue::String(ref s) if s == "active"));
+        assert!(matches!(tv.value, UniversalValue::Text(ref s) if s == "active"));
     }
 
     #[test]
@@ -570,10 +606,16 @@ mod tests {
             },
         );
         let tv = TypedValue::from(bv);
-        if let UniversalValue::Object(map) = tv.value {
-            assert!(matches!(map.get("type"), Some(UniversalValue::String(s)) if s == "Point"));
+        if let UniversalValue::Json(json_val) = tv.value {
+            if let serde_json::Value::Object(map) = json_val.as_ref() {
+                assert!(
+                    matches!(map.get("type"), Some(serde_json::Value::String(s)) if s == "Point")
+                );
+            } else {
+                panic!("Expected Object");
+            }
         } else {
-            panic!("Expected Object");
+            panic!("Expected Json");
         }
     }
 
@@ -584,10 +626,10 @@ mod tests {
             "age": 30
         };
         let name = extract_field(&doc, "name", &UniversalType::Text);
-        assert!(matches!(name.value, UniversalValue::String(ref s) if s == "Alice"));
+        assert!(matches!(name.value, UniversalValue::Text(ref s) if s == "Alice"));
 
         let age = extract_field(&doc, "age", &UniversalType::Int);
-        assert!(matches!(age.value, UniversalValue::Int32(30)));
+        assert!(matches!(age.value, UniversalValue::Int(30)));
 
         let missing = extract_field(&doc, "missing", &UniversalType::Text);
         assert!(matches!(missing.value, UniversalValue::Null));
@@ -609,13 +651,13 @@ mod tests {
         let values = document_to_typed_values(&doc, &schema);
         assert!(matches!(
             values.get("name").unwrap().value,
-            UniversalValue::String(ref s) if s == "Bob"
+            UniversalValue::Text(ref s) if s == "Bob"
         ));
         assert!(matches!(
             values.get("active").unwrap().value,
             UniversalValue::Bool(true)
         ));
-        if let UniversalValue::Float64(f) = values.get("score").unwrap().value {
+        if let UniversalValue::Double(f) = values.get("score").unwrap().value {
             assert!((f - 95.5).abs() < 0.001);
         } else {
             panic!("Expected Float64");
@@ -627,7 +669,7 @@ mod tests {
         // MongoDB might return Int64 when we expect Int32
         let bv = BsonValueWithSchema::new(Bson::Int64(100), UniversalType::Int);
         let tv = TypedValue::from(bv);
-        assert!(matches!(tv.value, UniversalValue::Int32(100)));
+        assert!(matches!(tv.value, UniversalValue::Int(100)));
     }
 
     #[test]
@@ -635,7 +677,7 @@ mod tests {
         // MongoDB might return Int32 when we expect Int64
         let bv = BsonValueWithSchema::new(Bson::Int32(100), UniversalType::BigInt);
         let tv = TypedValue::from(bv);
-        assert!(matches!(tv.value, UniversalValue::Int64(100)));
+        assert!(matches!(tv.value, UniversalValue::BigInt(100)));
     }
 
     #[test]
@@ -645,7 +687,7 @@ mod tests {
             "_id": oid
         };
         let map = bson_doc_to_hashmap(&doc);
-        if let Some(UniversalValue::String(s)) = map.get("_id") {
+        if let Some(UniversalValue::Text(s)) = map.get("_id") {
             assert_eq!(s, &oid.to_hex());
         } else {
             panic!("Expected String for ObjectId");

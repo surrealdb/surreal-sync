@@ -15,6 +15,7 @@ serde_json = "1.0"
 thiserror = "1.0"
 rust_decimal = { version = "^1.23" }
 geo-types = "0.7"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["full"] }

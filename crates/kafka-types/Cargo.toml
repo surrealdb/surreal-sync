@@ -24,6 +24,9 @@ chrono = "0.4"
 # Serialization for JSON fields
 serde_json = "1.0"
 
+# Base64 encoding
+base64 = "0.22"
+
 # Logging
 tracing = "0.1"
 

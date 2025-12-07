@@ -4,7 +4,6 @@
 
 use base64::Engine;
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
-use std::collections::HashMap;
 use sync_core::{TypedValue, UniversalType, UniversalValue};
 
 /// A CSV string with schema information for reverse conversion.
@@ -92,20 +91,31 @@ pub fn csv_string_to_typed_value(
             }),
         },
 
-        // Integer types
-        UniversalType::TinyInt { .. } | UniversalType::SmallInt | UniversalType::Int => {
-            match value.parse::<i32>() {
-                Ok(i) => Ok(TypedValue {
-                    sync_type: schema_type.clone(),
-                    value: UniversalValue::Int32(i),
-                }),
-                Err(_) => Err(CsvParseError {
-                    message: "Invalid integer".to_string(),
-                    value: value.to_string(),
-                    expected_type: format!("{schema_type:?}"),
-                }),
-            }
-        }
+        // Integer types - strict 1:1 matching
+        UniversalType::TinyInt { width } => match value.parse::<i8>() {
+            Ok(i) => Ok(TypedValue::tinyint(i, *width)),
+            Err(_) => Err(CsvParseError {
+                message: "Invalid tinyint".to_string(),
+                value: value.to_string(),
+                expected_type: "TinyInt".to_string(),
+            }),
+        },
+        UniversalType::SmallInt => match value.parse::<i16>() {
+            Ok(i) => Ok(TypedValue::smallint(i)),
+            Err(_) => Err(CsvParseError {
+                message: "Invalid smallint".to_string(),
+                value: value.to_string(),
+                expected_type: "SmallInt".to_string(),
+            }),
+        },
+        UniversalType::Int => match value.parse::<i32>() {
+            Ok(i) => Ok(TypedValue::int(i)),
+            Err(_) => Err(CsvParseError {
+                message: "Invalid integer".to_string(),
+                value: value.to_string(),
+                expected_type: "Int".to_string(),
+            }),
+        },
 
         UniversalType::BigInt => match value.parse::<i64>() {
             Ok(i) => Ok(TypedValue::bigint(i)),
@@ -116,16 +126,21 @@ pub fn csv_string_to_typed_value(
             }),
         },
 
-        // Float types
-        UniversalType::Float | UniversalType::Double => match value.parse::<f64>() {
-            Ok(f) => Ok(TypedValue {
-                sync_type: schema_type.clone(),
-                value: UniversalValue::Float64(f),
-            }),
+        // Float types - strict 1:1 matching
+        UniversalType::Float => match value.parse::<f32>() {
+            Ok(f) => Ok(TypedValue::float(f)),
             Err(_) => Err(CsvParseError {
                 message: "Invalid float".to_string(),
                 value: value.to_string(),
-                expected_type: format!("{schema_type:?}"),
+                expected_type: "Float".to_string(),
+            }),
+        },
+        UniversalType::Double => match value.parse::<f64>() {
+            Ok(f) => Ok(TypedValue::double(f)),
+            Err(_) => Err(CsvParseError {
+                message: "Invalid double".to_string(),
+                value: value.to_string(),
+                expected_type: "Double".to_string(),
             }),
         },
 
@@ -147,37 +162,34 @@ pub fn csv_string_to_typed_value(
             }
         }
 
-        // String types
-        UniversalType::Char { .. } | UniversalType::VarChar { .. } | UniversalType::Text => {
-            Ok(TypedValue {
-                sync_type: schema_type.clone(),
-                value: UniversalValue::String(value.to_string()),
-            })
-        }
+        // String types - strict 1:1 matching
+        UniversalType::Char { length } => Ok(TypedValue::char_type(value, *length)),
+        UniversalType::VarChar { length } => Ok(TypedValue::varchar(value, *length)),
+        UniversalType::Text => Ok(TypedValue::text(value)),
 
-        // Binary types - base64 decode
-        UniversalType::Blob | UniversalType::Bytes => {
-            match base64::engine::general_purpose::STANDARD.decode(value) {
-                Ok(bytes) => Ok(TypedValue {
-                    sync_type: schema_type.clone(),
-                    value: UniversalValue::Bytes(bytes),
-                }),
-                Err(_) => Err(CsvParseError {
-                    message: "Invalid base64".to_string(),
-                    value: value.to_string(),
-                    expected_type: "Bytes".to_string(),
-                }),
-            }
-        }
+        // Binary types - strict 1:1 matching
+        UniversalType::Blob => match base64::engine::general_purpose::STANDARD.decode(value) {
+            Ok(bytes) => Ok(TypedValue::blob(bytes)),
+            Err(_) => Err(CsvParseError {
+                message: "Invalid base64".to_string(),
+                value: value.to_string(),
+                expected_type: "Blob".to_string(),
+            }),
+        },
+        UniversalType::Bytes => match base64::engine::general_purpose::STANDARD.decode(value) {
+            Ok(bytes) => Ok(TypedValue::bytes(bytes)),
+            Err(_) => Err(CsvParseError {
+                message: "Invalid base64".to_string(),
+                value: value.to_string(),
+                expected_type: "Bytes".to_string(),
+            }),
+        },
 
-        // Date - YYYY-MM-DD format
+        // Date - strict 1:1 matching
         UniversalType::Date => match NaiveDate::parse_from_str(value, "%Y-%m-%d") {
             Ok(date) => {
                 let dt = date.and_hms_opt(0, 0, 0).unwrap();
-                Ok(TypedValue {
-                    sync_type: schema_type.clone(),
-                    value: UniversalValue::DateTime(Utc.from_utc_datetime(&dt)),
-                })
+                Ok(TypedValue::date(Utc.from_utc_datetime(&dt)))
             }
             Err(_) => Err(CsvParseError {
                 message: "Invalid date format (expected YYYY-MM-DD)".to_string(),
@@ -186,7 +198,7 @@ pub fn csv_string_to_typed_value(
             }),
         },
 
-        // Time - HH:MM:SS format
+        // Time - strict 1:1 matching
         UniversalType::Time => {
             match NaiveTime::parse_from_str(value, "%H:%M:%S") {
                 Ok(time) => {
@@ -194,10 +206,7 @@ pub fn csv_string_to_typed_value(
                     let dt = chrono::NaiveDate::from_ymd_opt(1970, 1, 1)
                         .unwrap()
                         .and_time(time);
-                    Ok(TypedValue {
-                        sync_type: schema_type.clone(),
-                        value: UniversalValue::DateTime(Utc.from_utc_datetime(&dt)),
-                    })
+                    Ok(TypedValue::time(Utc.from_utc_datetime(&dt)))
                 }
                 Err(_) => Err(CsvParseError {
                     message: "Invalid time format (expected HH:MM:SS)".to_string(),
@@ -207,33 +216,56 @@ pub fn csv_string_to_typed_value(
             }
         }
 
-        // DateTime types - RFC3339 format with fallback
-        UniversalType::DateTime | UniversalType::DateTimeNano | UniversalType::TimestampTz => {
+        // DateTime types - strict 1:1 matching
+        UniversalType::DateTime => {
             // Try RFC3339 first
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
-                return Ok(TypedValue {
-                    sync_type: schema_type.clone(),
-                    value: UniversalValue::DateTime(dt.with_timezone(&Utc)),
-                });
+                return Ok(TypedValue::datetime(dt.with_timezone(&Utc)));
             }
             // Fallback: try parsing without timezone
             if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
-                return Ok(TypedValue {
-                    sync_type: schema_type.clone(),
-                    value: UniversalValue::DateTime(ndt.and_utc()),
-                });
+                return Ok(TypedValue::datetime(ndt.and_utc()));
             }
             // Fallback: try parsing with space instead of T
             if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
-                return Ok(TypedValue {
-                    sync_type: schema_type.clone(),
-                    value: UniversalValue::DateTime(ndt.and_utc()),
-                });
+                return Ok(TypedValue::datetime(ndt.and_utc()));
             }
             Err(CsvParseError {
                 message: "Invalid datetime format".to_string(),
                 value: value.to_string(),
                 expected_type: "DateTime".to_string(),
+            })
+        }
+        UniversalType::DateTimeNano => {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
+                return Ok(TypedValue::datetime_nano(dt.with_timezone(&Utc)));
+            }
+            if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
+                return Ok(TypedValue::datetime_nano(ndt.and_utc()));
+            }
+            if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+                return Ok(TypedValue::datetime_nano(ndt.and_utc()));
+            }
+            Err(CsvParseError {
+                message: "Invalid datetime format".to_string(),
+                value: value.to_string(),
+                expected_type: "DateTimeNano".to_string(),
+            })
+        }
+        UniversalType::TimestampTz => {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
+                return Ok(TypedValue::timestamptz(dt.with_timezone(&Utc)));
+            }
+            if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
+                return Ok(TypedValue::timestamptz(ndt.and_utc()));
+            }
+            if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+                return Ok(TypedValue::timestamptz(ndt.and_utc()));
+            }
+            Err(CsvParseError {
+                message: "Invalid datetime format".to_string(),
+                value: value.to_string(),
+                expected_type: "TimestampTz".to_string(),
             })
         }
 
@@ -281,7 +313,10 @@ pub fn csv_string_to_typed_value(
                         .collect();
                     Ok(TypedValue {
                         sync_type: schema_type.clone(),
-                        value: UniversalValue::Array(items?),
+                        value: UniversalValue::Array {
+                            elements: items?,
+                            element_type: element_type.clone(),
+                        },
                     })
                 }
                 Ok(_) => Err(CsvParseError {
@@ -297,46 +332,21 @@ pub fn csv_string_to_typed_value(
             }
         }
 
-        // Set type - parse comma-separated values
-        UniversalType::Set { values: _ } => {
-            let items: Vec<UniversalValue> = value
-                .split(',')
-                .map(|s| UniversalValue::String(s.trim().to_string()))
-                .collect();
-            Ok(TypedValue {
-                sync_type: schema_type.clone(),
-                value: UniversalValue::Array(items),
-            })
+        // Set type - strict 1:1 matching
+        UniversalType::Set {
+            values: allowed_values,
+        } => {
+            let items: Vec<String> = value.split(',').map(|s| s.trim().to_string()).collect();
+            Ok(TypedValue::set(items, allowed_values.clone()))
         }
 
-        // Enum - validate against allowed values (or just pass through)
-        UniversalType::Enum { values } => {
-            if values.contains(&value.to_string()) {
-                Ok(TypedValue {
-                    sync_type: schema_type.clone(),
-                    value: UniversalValue::String(value.to_string()),
-                })
-            } else {
-                // Be lenient - allow any string value
-                Ok(TypedValue {
-                    sync_type: schema_type.clone(),
-                    value: UniversalValue::String(value.to_string()),
-                })
-            }
-        }
+        // Enum - strict 1:1 matching
+        UniversalType::Enum { values } => Ok(TypedValue::enum_type(value, values.clone())),
 
-        // Geometry types - parse GeoJSON
+        // Geometry types - strict 1:1 matching
         UniversalType::Geometry { geometry_type } => {
             match serde_json::from_str::<serde_json::Value>(value) {
-                Ok(json) => {
-                    let gen_value = json_to_generated_value(&json);
-                    Ok(TypedValue {
-                        sync_type: UniversalType::Geometry {
-                            geometry_type: geometry_type.clone(),
-                        },
-                        value: gen_value,
-                    })
-                }
+                Ok(json) => Ok(TypedValue::geometry_geojson(json, geometry_type.clone())),
                 Err(_) => Err(CsvParseError {
                     message: "Invalid GeoJSON".to_string(),
                     value: value.to_string(),
@@ -354,23 +364,20 @@ fn json_to_generated_value(json: &serde_json::Value) -> UniversalValue {
         serde_json::Value::Bool(b) => UniversalValue::Bool(*b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                UniversalValue::Int64(i)
+                UniversalValue::BigInt(i)
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Float64(f)
+                UniversalValue::Double(f)
             } else {
-                UniversalValue::String(n.to_string())
+                UniversalValue::Text(n.to_string())
             }
         }
-        serde_json::Value::String(s) => UniversalValue::String(s.clone()),
-        serde_json::Value::Array(arr) => {
-            UniversalValue::Array(arr.iter().map(json_to_generated_value).collect())
-        }
+        serde_json::Value::String(s) => UniversalValue::Text(s.clone()),
+        serde_json::Value::Array(arr) => UniversalValue::Array {
+            elements: arr.iter().map(json_to_generated_value).collect(),
+            element_type: Box::new(UniversalType::Text),
+        },
         serde_json::Value::Object(obj) => {
-            let mut map = HashMap::new();
-            for (k, v) in obj {
-                map.insert(k.clone(), json_to_generated_value(v));
-            }
-            UniversalValue::Object(map)
+            UniversalValue::Json(Box::new(serde_json::Value::Object(obj.clone())))
         }
     }
 }
@@ -500,15 +507,21 @@ mod tests {
     #[test]
     fn test_reverse_date() {
         let result = csv_string_to_typed_value("2024-06-15", &UniversalType::Date).unwrap();
-        let dt = result.value.as_datetime().unwrap();
-        assert_eq!(dt.format("%Y-%m-%d").to_string(), "2024-06-15");
+        if let UniversalValue::Date(dt) = result.value {
+            assert_eq!(dt.format("%Y-%m-%d").to_string(), "2024-06-15");
+        } else {
+            panic!("Expected Date, got {:?}", result.value);
+        }
     }
 
     #[test]
     fn test_reverse_time() {
         let result = csv_string_to_typed_value("14:30:45", &UniversalType::Time).unwrap();
-        let dt = result.value.as_datetime().unwrap();
-        assert_eq!(dt.format("%H:%M:%S").to_string(), "14:30:45");
+        if let UniversalValue::Time(dt) = result.value {
+            assert_eq!(dt.format("%H:%M:%S").to_string(), "14:30:45");
+        } else {
+            panic!("Expected Time, got {:?}", result.value);
+        }
     }
 
     #[test]
@@ -540,14 +553,21 @@ mod tests {
             csv_string_to_typed_value(r#"{"key": "value", "count": 42}"#, &UniversalType::Json)
                 .unwrap();
         match &result.value {
-            UniversalValue::Object(map) => {
-                assert_eq!(
-                    map.get("key"),
-                    Some(&UniversalValue::String("value".to_string()))
-                );
-                assert_eq!(map.get("count"), Some(&UniversalValue::Int64(42)));
+            UniversalValue::Json(json_val) => {
+                if let serde_json::Value::Object(map) = json_val.as_ref() {
+                    assert_eq!(
+                        map.get("key"),
+                        Some(&serde_json::Value::String("value".to_string()))
+                    );
+                    assert_eq!(
+                        map.get("count"),
+                        Some(&serde_json::Value::Number(serde_json::Number::from(42)))
+                    );
+                } else {
+                    panic!("Expected Object");
+                }
             }
-            _ => panic!("Expected Object"),
+            _ => panic!("Expected Json"),
         }
     }
 
@@ -561,11 +581,11 @@ mod tests {
         )
         .unwrap();
         match &result.value {
-            UniversalValue::Array(arr) => {
-                assert_eq!(arr.len(), 3);
-                assert_eq!(arr[0].as_i32(), Some(1));
-                assert_eq!(arr[1].as_i32(), Some(2));
-                assert_eq!(arr[2].as_i32(), Some(3));
+            UniversalValue::Array { elements, .. } => {
+                assert_eq!(elements.len(), 3);
+                assert_eq!(elements[0].as_i32(), Some(1));
+                assert_eq!(elements[1].as_i32(), Some(2));
+                assert_eq!(elements[2].as_i32(), Some(3));
             }
             _ => panic!("Expected Array"),
         }
@@ -581,13 +601,13 @@ mod tests {
         )
         .unwrap();
         match &result.value {
-            UniversalValue::Array(arr) => {
-                assert_eq!(arr.len(), 3);
-                assert_eq!(arr[0].as_str(), Some("a"));
-                assert_eq!(arr[1].as_str(), Some("b"));
-                assert_eq!(arr[2].as_str(), Some("c"));
+            UniversalValue::Set { elements, .. } => {
+                assert_eq!(elements.len(), 3);
+                assert_eq!(elements[0], "a");
+                assert_eq!(elements[1], "b");
+                assert_eq!(elements[2], "c");
             }
-            _ => panic!("Expected Array"),
+            _ => panic!("Expected Set, got {:?}", result.value),
         }
     }
 
@@ -600,11 +620,16 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(result.value.as_str(), Some("active"));
+        if let UniversalValue::Enum { value, .. } = result.value {
+            assert_eq!(value, "active");
+        } else {
+            panic!("Expected Enum, got {:?}", result.value);
+        }
     }
 
     #[test]
     fn test_reverse_geometry() {
+        use sync_core::values::GeometryData;
         let result = csv_string_to_typed_value(
             r#"{"type": "Point", "coordinates": [-73.97, 40.77]}"#,
             &UniversalType::Geometry {
@@ -613,11 +638,19 @@ mod tests {
         )
         .unwrap();
         match &result.value {
-            UniversalValue::Object(map) => {
-                assert!(map.contains_key("type"));
-                assert!(map.contains_key("coordinates"));
+            UniversalValue::Geometry { data, .. } => {
+                if let GeometryData::GeoJson(geo_json) = data {
+                    if let serde_json::Value::Object(map) = geo_json {
+                        assert!(map.contains_key("type"));
+                        assert!(map.contains_key("coordinates"));
+                    } else {
+                        panic!("Expected Object inside GeoJson");
+                    }
+                } else {
+                    panic!("Expected GeoJson geometry data");
+                }
             }
-            _ => panic!("Expected Object"),
+            _ => panic!("Expected Geometry, got {:?}", result.value),
         }
     }
 

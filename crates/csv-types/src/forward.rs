@@ -34,32 +34,34 @@ impl From<TypedValue> for CsvValue {
                 "false".to_string()
             }),
 
-            // Integer types - handle both Int32 and Int64 since generators may produce either
-            (UniversalType::TinyInt { .. }, UniversalValue::Int32(i)) => CsvValue(i.to_string()),
-            (UniversalType::TinyInt { .. }, UniversalValue::Int64(i)) => CsvValue(i.to_string()),
-            (UniversalType::SmallInt, UniversalValue::Int32(i)) => CsvValue(i.to_string()),
-            (UniversalType::SmallInt, UniversalValue::Int64(i)) => CsvValue(i.to_string()),
-            (UniversalType::Int, UniversalValue::Int32(i)) => CsvValue(i.to_string()),
-            (UniversalType::Int, UniversalValue::Int64(i)) => CsvValue(i.to_string()),
-            (UniversalType::BigInt, UniversalValue::Int64(i)) => CsvValue(i.to_string()),
-            (UniversalType::BigInt, UniversalValue::Int32(i)) => CsvValue(i.to_string()),
+            // Integer types - strict 1:1 matching
+            (UniversalType::TinyInt { .. }, UniversalValue::TinyInt { value, .. }) => {
+                CsvValue(value.to_string())
+            }
+            (UniversalType::SmallInt, UniversalValue::SmallInt(i)) => CsvValue(i.to_string()),
+            (UniversalType::Int, UniversalValue::Int(i)) => CsvValue(i.to_string()),
+            (UniversalType::BigInt, UniversalValue::BigInt(i)) => CsvValue(i.to_string()),
 
-            // Floating point
-            (UniversalType::Float, UniversalValue::Float64(f)) => CsvValue(f.to_string()),
-            (UniversalType::Double, UniversalValue::Float64(f)) => CsvValue(f.to_string()),
+            // Floating point - strict 1:1 matching
+            (UniversalType::Float, UniversalValue::Float(f)) => CsvValue(f.to_string()),
+            (UniversalType::Double, UniversalValue::Double(f)) => CsvValue(f.to_string()),
 
             // Decimal - preserve as-is
             (UniversalType::Decimal { .. }, UniversalValue::Decimal { value, .. }) => {
                 CsvValue(value.clone())
             }
 
-            // String types - may need escaping for CSV
-            (UniversalType::Char { .. }, UniversalValue::String(s)) => CsvValue(s.clone()),
-            (UniversalType::VarChar { .. }, UniversalValue::String(s)) => CsvValue(s.clone()),
-            (UniversalType::Text, UniversalValue::String(s)) => CsvValue(s.clone()),
+            // String types - strict 1:1 matching
+            (UniversalType::Char { .. }, UniversalValue::Char { value, .. }) => {
+                CsvValue(value.clone())
+            }
+            (UniversalType::VarChar { .. }, UniversalValue::VarChar { value, .. }) => {
+                CsvValue(value.clone())
+            }
+            (UniversalType::Text, UniversalValue::Text(s)) => CsvValue(s.clone()),
 
             // Binary types - base64 encode
-            (UniversalType::Blob, UniversalValue::Bytes(b)) => {
+            (UniversalType::Blob, UniversalValue::Blob(b)) => {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(b);
                 CsvValue(encoded)
             }
@@ -68,58 +70,61 @@ impl From<TypedValue> for CsvValue {
                 CsvValue(encoded)
             }
 
-            // Date/time types - ISO 8601 format
-            (UniversalType::Date, UniversalValue::DateTime(dt)) => {
+            // Date/time types - strict 1:1 matching with ISO 8601 format
+            (UniversalType::Date, UniversalValue::Date(dt)) => {
                 CsvValue(dt.format("%Y-%m-%d").to_string())
             }
-            (UniversalType::Time, UniversalValue::DateTime(dt)) => {
+            (UniversalType::Time, UniversalValue::Time(dt)) => {
                 CsvValue(dt.format("%H:%M:%S").to_string())
             }
             (UniversalType::DateTime, UniversalValue::DateTime(dt)) => CsvValue(dt.to_rfc3339()),
-            (UniversalType::DateTimeNano, UniversalValue::DateTime(dt)) => CsvValue(dt.to_rfc3339()),
-            (UniversalType::TimestampTz, UniversalValue::DateTime(dt)) => CsvValue(dt.to_rfc3339()),
+            (UniversalType::DateTimeNano, UniversalValue::DateTimeNano(dt)) => {
+                CsvValue(dt.to_rfc3339())
+            }
+            (UniversalType::TimestampTz, UniversalValue::TimestampTz(dt)) => {
+                CsvValue(dt.to_rfc3339())
+            }
 
             // UUID
             (UniversalType::Uuid, UniversalValue::Uuid(u)) => CsvValue(u.to_string()),
 
-            // JSON types - serialize as JSON string
-            (UniversalType::Json, UniversalValue::Object(map)) => {
-                let json = hashmap_to_json(map);
-                CsvValue(serde_json::to_string(&json).unwrap_or_default())
+            // JSON types - serialize as JSON string (already serde_json::Value)
+            (UniversalType::Json, UniversalValue::Json(payload)) => {
+                CsvValue(serde_json::to_string(&**payload).unwrap_or_default())
             }
-            (UniversalType::Jsonb, UniversalValue::Object(map)) => {
-                let json = hashmap_to_json(map);
-                CsvValue(serde_json::to_string(&json).unwrap_or_default())
+            (UniversalType::Jsonb, UniversalValue::Jsonb(payload)) => {
+                CsvValue(serde_json::to_string(&**payload).unwrap_or_default())
             }
-            (UniversalType::Json, UniversalValue::String(s)) => CsvValue(s.clone()),
-            (UniversalType::Jsonb, UniversalValue::String(s)) => CsvValue(s.clone()),
 
             // Array types - serialize as JSON array
-            (UniversalType::Array { .. }, UniversalValue::Array(arr)) => {
+            (UniversalType::Array { .. }, UniversalValue::Array { elements, .. }) => {
                 let json_arr: Vec<serde_json::Value> =
-                    arr.iter().map(generated_value_to_json).collect();
+                    elements.iter().map(generated_value_to_json).collect();
                 CsvValue(serde_json::to_string(&json_arr).unwrap_or_default())
             }
 
             // Set - comma-separated values
-            (UniversalType::Set { .. }, UniversalValue::Array(arr)) => {
-                let values: Vec<String> = arr
-                    .iter()
-                    .filter_map(|v| match v {
-                        UniversalValue::String(s) => Some(s.clone()),
-                        _ => None,
-                    })
-                    .collect();
-                CsvValue(values.join(","))
+            (UniversalType::Set { .. }, UniversalValue::Set { elements, .. }) => {
+                CsvValue(elements.join(","))
             }
 
             // Enum - string value
-            (UniversalType::Enum { .. }, UniversalValue::String(s)) => CsvValue(s.clone()),
+            (UniversalType::Enum { .. }, UniversalValue::Enum { value, .. }) => {
+                CsvValue(value.clone())
+            }
 
-            // Geometry types - serialize as GeoJSON
-            (UniversalType::Geometry { .. }, UniversalValue::Object(map)) => {
-                let json = hashmap_to_json(map);
-                CsvValue(serde_json::to_string(&json).unwrap_or_default())
+            // Geometry types - serialize as GeoJSON or WKB
+            (UniversalType::Geometry { .. }, UniversalValue::Geometry { data, .. }) => {
+                use sync_core::values::GeometryData;
+                match data {
+                    GeometryData::GeoJson(value) => {
+                        CsvValue(serde_json::to_string(value).unwrap_or_default())
+                    }
+                    GeometryData::Wkb(bytes) => {
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                        CsvValue(encoded)
+                    }
+                }
             }
 
             // Fallback - panic instead of silently returning empty string
@@ -130,35 +135,50 @@ impl From<TypedValue> for CsvValue {
     }
 }
 
-/// Convert a HashMap of UniversalValue to JSON.
-fn hashmap_to_json(map: &std::collections::HashMap<String, UniversalValue>) -> serde_json::Value {
-    let mut obj = serde_json::Map::new();
-    for (key, value) in map {
-        obj.insert(key.clone(), generated_value_to_json(value));
-    }
-    serde_json::Value::Object(obj)
-}
-
 /// Convert a UniversalValue to JSON.
 fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
     match value {
         UniversalValue::Null => serde_json::Value::Null,
         UniversalValue::Bool(b) => serde_json::json!(*b),
-        UniversalValue::Int32(i) => serde_json::json!(*i),
-        UniversalValue::Int64(i) => serde_json::json!(*i),
-        UniversalValue::Float64(f) => serde_json::json!(*f),
-        UniversalValue::String(s) => serde_json::json!(s),
-        UniversalValue::Bytes(b) => {
+        UniversalValue::TinyInt { value, .. } => serde_json::json!(*value),
+        UniversalValue::SmallInt(i) => serde_json::json!(*i),
+        UniversalValue::Int(i) => serde_json::json!(*i),
+        UniversalValue::BigInt(i) => serde_json::json!(*i),
+        UniversalValue::Float(f) => serde_json::json!(*f),
+        UniversalValue::Double(f) => serde_json::json!(*f),
+        UniversalValue::Char { value, .. } => serde_json::json!(value),
+        UniversalValue::VarChar { value, .. } => serde_json::json!(value),
+        UniversalValue::Text(s) => serde_json::json!(s),
+        UniversalValue::Blob(b) | UniversalValue::Bytes(b) => {
             let encoded = base64::engine::general_purpose::STANDARD.encode(b);
             serde_json::json!(encoded)
         }
         UniversalValue::Uuid(u) => serde_json::json!(u.to_string()),
-        UniversalValue::DateTime(dt) => serde_json::json!(dt.to_rfc3339()),
+        UniversalValue::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
+        UniversalValue::Time(dt) => serde_json::json!(dt.format("%H:%M:%S").to_string()),
+        UniversalValue::DateTime(dt)
+        | UniversalValue::DateTimeNano(dt)
+        | UniversalValue::TimestampTz(dt) => serde_json::json!(dt.to_rfc3339()),
         UniversalValue::Decimal { value, .. } => serde_json::json!(value),
-        UniversalValue::Array(arr) => {
-            serde_json::json!(arr.iter().map(generated_value_to_json).collect::<Vec<_>>())
+        UniversalValue::Array { elements, .. } => {
+            serde_json::json!(elements
+                .iter()
+                .map(generated_value_to_json)
+                .collect::<Vec<_>>())
         }
-        UniversalValue::Object(map) => hashmap_to_json(map),
+        UniversalValue::Set { elements, .. } => serde_json::json!(elements),
+        UniversalValue::Enum { value, .. } => serde_json::json!(value),
+        UniversalValue::Json(payload) | UniversalValue::Jsonb(payload) => (**payload).clone(),
+        UniversalValue::Geometry { data, .. } => {
+            use sync_core::values::GeometryData;
+            match data {
+                GeometryData::GeoJson(value) => value.clone(),
+                GeometryData::Wkb(bytes) => {
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                    serde_json::json!({"wkb": encoded})
+                }
+            }
+        }
     }
 }
 
@@ -291,10 +311,7 @@ mod tests {
     #[test]
     fn test_date_conversion() {
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 0, 0, 0).unwrap();
-        let tv = TypedValue {
-            sync_type: UniversalType::Date,
-            value: UniversalValue::DateTime(dt),
-        };
+        let tv = TypedValue::date(dt);
         let csv_val: CsvValue = tv.into();
         assert_eq!(csv_val.0, "2024-06-15");
     }
@@ -302,37 +319,25 @@ mod tests {
     #[test]
     fn test_time_conversion() {
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 14, 30, 45).unwrap();
-        let tv = TypedValue {
-            sync_type: UniversalType::Time,
-            value: UniversalValue::DateTime(dt),
-        };
+        let tv = TypedValue::time(dt);
         let csv_val: CsvValue = tv.into();
         assert_eq!(csv_val.0, "14:30:45");
     }
 
     #[test]
     fn test_set_conversion() {
-        let tv = TypedValue {
-            sync_type: UniversalType::Set {
-                values: vec!["a".to_string(), "b".to_string(), "c".to_string()],
-            },
-            value: UniversalValue::Array(vec![
-                UniversalValue::String("a".to_string()),
-                UniversalValue::String("b".to_string()),
-            ]),
-        };
+        let tv = TypedValue::set(
+            vec!["a".to_string(), "b".to_string()],
+            vec!["a".to_string(), "b".to_string(), "c".to_string()],
+        );
         let csv_val: CsvValue = tv.into();
         assert_eq!(csv_val.0, "a,b");
     }
 
     #[test]
     fn test_enum_conversion() {
-        let tv = TypedValue {
-            sync_type: UniversalType::Enum {
-                values: vec!["active".to_string(), "inactive".to_string()],
-            },
-            value: UniversalValue::String("active".to_string()),
-        };
+        let tv =
+            TypedValue::enum_type("active", vec!["active".to_string(), "inactive".to_string()]);
         let csv_val: CsvValue = tv.into();
         assert_eq!(csv_val.0, "active");
     }

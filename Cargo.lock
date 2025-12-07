@@ -3178,6 +3178,7 @@ name = "kafka-types"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "json-types",
  "protobuf",
@@ -6358,6 +6359,7 @@ dependencies = [
 name = "surrealdb-types"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "geo-types",
  "rust_decimal",
@@ -6417,6 +6419,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "serde",
+ "serde_json",
  "serde_yaml",
  "thiserror 1.0.69",
  "tokio-test",

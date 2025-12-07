@@ -46,9 +46,13 @@ fn build_create_node_query(
     // Add the id field - always as string since Neo4j full sync expects string IDs
     // The Neo4j full sync uses the 'id' property to create SurrealDB record IDs
     let id_string = match &row.id {
-        UniversalValue::Int32(i) => i.to_string(),
-        UniversalValue::Int64(i) => i.to_string(),
-        UniversalValue::String(s) => s.clone(),
+        UniversalValue::TinyInt { value, .. } => value.to_string(),
+        UniversalValue::SmallInt(i) => i.to_string(),
+        UniversalValue::Int(i) => i.to_string(),
+        UniversalValue::BigInt(i) => i.to_string(),
+        UniversalValue::Text(s) => s.clone(),
+        UniversalValue::Char { value, .. } => value.clone(),
+        UniversalValue::VarChar { value, .. } => value.clone(),
         UniversalValue::Uuid(u) => u.to_string(),
         other => format!("{other:?}"),
     };
@@ -81,49 +85,114 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
     match &typed.value {
         UniversalValue::Null => "null".to_string(),
         UniversalValue::Bool(b) => b.to_string(),
-        UniversalValue::Int32(i) => i.to_string(),
-        UniversalValue::Int64(i) => i.to_string(),
-        UniversalValue::Float64(f) => {
+
+        // Integer types - strict 1:1 matching
+        UniversalValue::TinyInt { value, .. } => value.to_string(),
+        UniversalValue::SmallInt(i) => i.to_string(),
+        UniversalValue::Int(i) => i.to_string(),
+        UniversalValue::BigInt(i) => i.to_string(),
+
+        // Float types - strict 1:1 matching
+        UniversalValue::Float(f) => {
+            if f.is_nan() {
+                "null".to_string()
+            } else {
+                f.to_string()
+            }
+        }
+        UniversalValue::Double(f) => {
             if f.is_nan() {
                 "null".to_string() // Neo4j doesn't support NaN
             } else {
                 f.to_string()
             }
         }
-        UniversalValue::Decimal {
-            value,
-            precision: _,
-            scale: _,
-        } => {
+        UniversalValue::Decimal { value, .. } => {
             // Store decimal as numeric string in Neo4j
             value.to_string()
         }
-        UniversalValue::String(s) => escape_neo4j_string(s),
+
+        // String types - strict 1:1 matching
+        UniversalValue::Text(s) => escape_neo4j_string(s),
+        UniversalValue::Char { value, .. } => escape_neo4j_string(value),
+        UniversalValue::VarChar { value, .. } => escape_neo4j_string(value),
+
         UniversalValue::Uuid(u) => escape_neo4j_string(&u.to_string()),
+
+        // DateTime types - strict 1:1 matching
         UniversalValue::DateTime(dt) => {
-            // Neo4j datetime format
             format!("datetime('{}')", dt.format("%Y-%m-%dT%H:%M:%S%.fZ"))
         }
+        UniversalValue::DateTimeNano(dt) => {
+            format!("datetime('{}')", dt.format("%Y-%m-%dT%H:%M:%S%.fZ"))
+        }
+        UniversalValue::TimestampTz(dt) => {
+            format!("datetime('{}')", dt.format("%Y-%m-%dT%H:%M:%S%.fZ"))
+        }
+        UniversalValue::Date(dt) => {
+            format!("date('{}')", dt.format("%Y-%m-%d"))
+        }
+        UniversalValue::Time(dt) => {
+            format!("time('{}')", dt.format("%H:%M:%S"))
+        }
+
+        // Binary types - strict 1:1 matching
         UniversalValue::Bytes(b) => {
             // Neo4j doesn't have native bytes, store as hex string
             let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
             escape_neo4j_string(&hex)
         }
-        UniversalValue::Object(obj) => {
-            // Store JSON object as a string in Neo4j
-            let json_str = serde_json::to_string(obj).unwrap_or_else(|_| "{}".to_string());
+        UniversalValue::Blob(b) => {
+            let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
+            escape_neo4j_string(&hex)
+        }
+
+        // JSON types - strict 1:1 matching
+        UniversalValue::Json(json_val) => {
+            let json_str = serde_json::to_string(&json_val).unwrap_or_else(|_| "{}".to_string());
             escape_neo4j_string(&json_str)
         }
-        UniversalValue::Array(arr) => {
+        UniversalValue::Jsonb(json_val) => {
+            let json_str = serde_json::to_string(&json_val).unwrap_or_else(|_| "{}".to_string());
+            escape_neo4j_string(&json_str)
+        }
+
+        // Enum type - strict 1:1 matching
+        UniversalValue::Enum { value, .. } => escape_neo4j_string(value),
+
+        // Set type - strict 1:1 matching
+        UniversalValue::Set { elements, .. } => {
+            let element_strs: Vec<String> =
+                elements.iter().map(|s| escape_neo4j_string(s)).collect();
+            format!("[{}]", element_strs.join(", "))
+        }
+
+        // Geometry type - store as GeoJSON string
+        UniversalValue::Geometry { data, .. } => {
+            use sync_core::GeometryData;
+            let json_str = match data {
+                GeometryData::GeoJson(json) => {
+                    serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string())
+                }
+                GeometryData::Wkb(bytes) => {
+                    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+                    format!("{{\"wkb\":\"{hex}\"}}")
+                }
+            };
+            escape_neo4j_string(&json_str)
+        }
+
+        // Array type - recursive handling
+        UniversalValue::Array { elements, .. } => {
             // Neo4j lists
-            let elements: Vec<String> = arr
+            let element_strs: Vec<String> = elements
                 .iter()
                 .map(|v| {
                     // For arrays, we need to handle each element
                     generated_to_neo4j_literal(v, &typed.sync_type)
                 })
                 .collect();
-            format!("[{}]", elements.join(", "))
+            format!("[{}]", element_strs.join(", "))
         }
     }
 }

@@ -25,39 +25,51 @@ pub struct TypedValueError {
     pub actual_value: String,
 }
 
-/// Raw generated value before type conversion.
+/// Universal value representation with 1:1 correspondence to `UniversalType`.
 ///
-/// `UniversalValue` represents the raw, type-agnostic value produced by
-/// the data generator. It holds the actual data that will be converted
-/// to database-specific formats via the `TypedValue` wrapper.
+/// Each variant of `UniversalValue` corresponds exactly to one variant of `UniversalType`,
+/// enabling deterministic conversion via `to_typed_value()` without inference or fallback.
+///
+/// # Design Principles
+///
+/// 1. **Exact correspondence**: Every `UniversalType` variant has exactly one matching `UniversalValue` variant
+/// 2. **No inference**: `to_typed_value()` is deterministic - no guessing or fallback
+/// 3. **Type metadata included**: Variants like `Char`, `VarChar`, `Decimal` include their type parameters
+/// 4. **Self-describing**: Each value knows its exact type without external context
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "type", content = "value")]
 pub enum UniversalValue {
-    /// Boolean value
+    // === Boolean ===
+    /// Boolean value → `UniversalType::Bool`
     Bool(bool),
 
-    /// 32-bit signed integer
-    Int32(i32),
+    // === Integer types ===
+    /// Tiny integer with display width → `UniversalType::TinyInt { width }`
+    TinyInt {
+        /// The integer value
+        value: i8,
+        /// Display width
+        width: u8,
+    },
 
-    /// 64-bit signed integer
-    Int64(i64),
+    /// 16-bit signed integer → `UniversalType::SmallInt`
+    SmallInt(i16),
 
-    /// 64-bit floating point
-    Float64(f64),
+    /// 32-bit signed integer → `UniversalType::Int`
+    Int(i32),
 
-    /// String value
-    String(String),
+    /// 64-bit signed integer → `UniversalType::BigInt`
+    BigInt(i64),
 
-    /// Binary data
-    Bytes(Vec<u8>),
+    // === Floating point types ===
+    /// 32-bit IEEE 754 floating point → `UniversalType::Float`
+    Float(f32),
 
-    /// UUID value
-    Uuid(Uuid),
+    /// 64-bit IEEE 754 floating point → `UniversalType::Double`
+    Double(f64),
 
-    /// Date/time with timezone
-    DateTime(DateTime<Utc>),
-
-    /// Decimal value stored as string with precision info
+    // === Exact numeric ===
+    /// Decimal value with precision/scale → `UniversalType::Decimal { precision, scale }`
     Decimal {
         /// String representation of the decimal value
         value: String,
@@ -67,18 +79,116 @@ pub enum UniversalValue {
         scale: u8,
     },
 
-    /// Array of values
-    Array(Vec<UniversalValue>),
+    // === String types ===
+    /// Fixed-length character string → `UniversalType::Char { length }`
+    Char {
+        /// The string value
+        value: String,
+        /// Maximum length
+        length: u16,
+    },
 
-    /// Object/map of values
-    Object(HashMap<String, UniversalValue>),
+    /// Variable-length character string → `UniversalType::VarChar { length }`
+    VarChar {
+        /// The string value
+        value: String,
+        /// Maximum length
+        length: u16,
+    },
 
-    /// Null value
+    /// Unlimited text → `UniversalType::Text`
+    Text(String),
+
+    // === Binary types ===
+    /// Binary large object → `UniversalType::Blob`
+    Blob(Vec<u8>),
+
+    /// Binary data → `UniversalType::Bytes`
+    Bytes(Vec<u8>),
+
+    // === Temporal types ===
+    /// Date only (YYYY-MM-DD) → `UniversalType::Date`
+    Date(DateTime<Utc>),
+
+    /// Time only (HH:MM:SS) → `UniversalType::Time`
+    Time(DateTime<Utc>),
+
+    /// Timestamp without timezone (microsecond precision) → `UniversalType::DateTime`
+    DateTime(DateTime<Utc>),
+
+    /// Timestamp with nanosecond precision → `UniversalType::DateTimeNano`
+    DateTimeNano(DateTime<Utc>),
+
+    /// Timestamp with timezone → `UniversalType::TimestampTz`
+    TimestampTz(DateTime<Utc>),
+
+    // === Special types ===
+    /// UUID (128-bit) → `UniversalType::Uuid`
+    Uuid(Uuid),
+
+    /// JSON document → `UniversalType::Json`
+    Json(Box<serde_json::Value>),
+
+    /// Binary JSON (PostgreSQL JSONB) → `UniversalType::Jsonb`
+    Jsonb(Box<serde_json::Value>),
+
+    // === Collection types ===
+    /// Array of a specific type → `UniversalType::Array { element_type }`
+    Array {
+        /// The array elements
+        elements: Vec<UniversalValue>,
+        /// Element type
+        element_type: Box<UniversalType>,
+    },
+
+    /// MySQL SET type → `UniversalType::Set { values }`
+    Set {
+        /// Selected values from the set
+        elements: Vec<String>,
+        /// Allowed values in the set definition
+        allowed_values: Vec<String>,
+    },
+
+    // === Enumeration ===
+    /// Enumeration type → `UniversalType::Enum { values }`
+    Enum {
+        /// The selected enum value
+        value: String,
+        /// Allowed enum values
+        allowed_values: Vec<String>,
+    },
+
+    // === Spatial ===
+    /// Spatial/geometry type → `UniversalType::Geometry { geometry_type }`
+    Geometry {
+        /// Geometry data (WKB bytes or GeoJSON object)
+        data: GeometryData,
+        /// Specific geometry variant
+        geometry_type: crate::types::GeometryType,
+    },
+
+    /// Null value (can be any nullable type)
     Null,
 }
 
+/// Geometry data representation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum GeometryData {
+    /// Well-Known Binary (WKB) format
+    Wkb(Vec<u8>),
+    /// GeoJSON object format
+    GeoJson(serde_json::Value),
+}
+
 impl UniversalValue {
-    /// Create a new decimal value.
+    // === Factory methods ===
+
+    /// Create a TinyInt value.
+    pub fn tinyint(value: i8, width: u8) -> Self {
+        Self::TinyInt { value, width }
+    }
+
+    /// Create a Decimal value.
     pub fn decimal(value: impl Into<String>, precision: u8, scale: u8) -> Self {
         Self::Decimal {
             value: value.into(),
@@ -87,10 +197,83 @@ impl UniversalValue {
         }
     }
 
+    /// Create a Char value.
+    pub fn char(value: impl Into<String>, length: u16) -> Self {
+        Self::Char {
+            value: value.into(),
+            length,
+        }
+    }
+
+    /// Create a VarChar value.
+    pub fn varchar(value: impl Into<String>, length: u16) -> Self {
+        Self::VarChar {
+            value: value.into(),
+            length,
+        }
+    }
+
+    /// Create an Array value.
+    pub fn array(elements: Vec<UniversalValue>, element_type: UniversalType) -> Self {
+        Self::Array {
+            elements,
+            element_type: Box::new(element_type),
+        }
+    }
+
+    /// Create a Set value.
+    pub fn set(elements: Vec<String>, allowed_values: Vec<String>) -> Self {
+        Self::Set {
+            elements,
+            allowed_values,
+        }
+    }
+
+    /// Create an Enum value.
+    pub fn enum_value(value: impl Into<String>, allowed_values: Vec<String>) -> Self {
+        Self::Enum {
+            value: value.into(),
+            allowed_values,
+        }
+    }
+
+    /// Create a Geometry value from WKB bytes.
+    pub fn geometry_wkb(data: Vec<u8>, geometry_type: crate::types::GeometryType) -> Self {
+        Self::Geometry {
+            data: GeometryData::Wkb(data),
+            geometry_type,
+        }
+    }
+
+    /// Create a Geometry value from GeoJSON.
+    pub fn geometry_geojson(
+        data: serde_json::Value,
+        geometry_type: crate::types::GeometryType,
+    ) -> Self {
+        Self::Geometry {
+            data: GeometryData::GeoJson(data),
+            geometry_type,
+        }
+    }
+
+    /// Create a JSON value.
+    pub fn json(value: serde_json::Value) -> Self {
+        Self::Json(Box::new(value))
+    }
+
+    /// Create a JSONB value.
+    pub fn jsonb(value: serde_json::Value) -> Self {
+        Self::Jsonb(Box::new(value))
+    }
+
+    // === Predicates ===
+
     /// Check if this value is null.
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Null)
     }
+
+    // === Accessors ===
 
     /// Try to get this value as a boolean.
     pub fn as_bool(&self) -> Option<bool> {
@@ -103,7 +286,9 @@ impl UniversalValue {
     /// Try to get this value as an i32.
     pub fn as_i32(&self) -> Option<i32> {
         match self {
-            Self::Int32(i) => Some(*i),
+            Self::Int(i) => Some(*i),
+            Self::TinyInt { value, .. } => Some(*value as i32),
+            Self::SmallInt(i) => Some(*i as i32),
             _ => None,
         }
     }
@@ -111,8 +296,10 @@ impl UniversalValue {
     /// Try to get this value as an i64.
     pub fn as_i64(&self) -> Option<i64> {
         match self {
-            Self::Int64(i) => Some(*i),
-            Self::Int32(i) => Some(*i as i64),
+            Self::BigInt(i) => Some(*i),
+            Self::Int(i) => Some(*i as i64),
+            Self::SmallInt(i) => Some(*i as i64),
+            Self::TinyInt { value, .. } => Some(*value as i64),
             _ => None,
         }
     }
@@ -120,7 +307,8 @@ impl UniversalValue {
     /// Try to get this value as an f64.
     pub fn as_f64(&self) -> Option<f64> {
         match self {
-            Self::Float64(f) => Some(*f),
+            Self::Double(f) => Some(*f),
+            Self::Float(f) => Some(*f as f64),
             _ => None,
         }
     }
@@ -128,7 +316,10 @@ impl UniversalValue {
     /// Try to get this value as a string reference.
     pub fn as_str(&self) -> Option<&str> {
         match self {
-            Self::String(s) => Some(s),
+            Self::Text(s) => Some(s),
+            Self::Char { value, .. } => Some(value),
+            Self::VarChar { value, .. } => Some(value),
+            Self::Enum { value, .. } => Some(value),
             _ => None,
         }
     }
@@ -137,6 +328,7 @@ impl UniversalValue {
     pub fn as_bytes(&self) -> Option<&[u8]> {
         match self {
             Self::Bytes(b) => Some(b),
+            Self::Blob(b) => Some(b),
             _ => None,
         }
     }
@@ -153,22 +345,18 @@ impl UniversalValue {
     pub fn as_datetime(&self) -> Option<&DateTime<Utc>> {
         match self {
             Self::DateTime(dt) => Some(dt),
+            Self::Date(dt) => Some(dt),
+            Self::Time(dt) => Some(dt),
+            Self::DateTimeNano(dt) => Some(dt),
+            Self::TimestampTz(dt) => Some(dt),
             _ => None,
         }
     }
 
-    /// Try to get this value as an array.
+    /// Try to get this value as an array of elements.
     pub fn as_array(&self) -> Option<&Vec<UniversalValue>> {
         match self {
-            Self::Array(arr) => Some(arr),
-            _ => None,
-        }
-    }
-
-    /// Try to get this value as an object.
-    pub fn as_object(&self) -> Option<&HashMap<String, UniversalValue>> {
-        match self {
-            Self::Object(obj) => Some(obj),
+            Self::Array { elements, .. } => Some(elements),
             _ => None,
         }
     }
@@ -177,17 +365,104 @@ impl UniversalValue {
     pub fn variant_name(&self) -> &'static str {
         match self {
             Self::Bool(_) => "Bool",
-            Self::Int32(_) => "Int32",
-            Self::Int64(_) => "Int64",
-            Self::Float64(_) => "Float64",
-            Self::String(_) => "String",
-            Self::Bytes(_) => "Bytes",
-            Self::Uuid(_) => "Uuid",
-            Self::DateTime(_) => "DateTime",
+            Self::TinyInt { .. } => "TinyInt",
+            Self::SmallInt(_) => "SmallInt",
+            Self::Int(_) => "Int",
+            Self::BigInt(_) => "BigInt",
+            Self::Float(_) => "Float",
+            Self::Double(_) => "Double",
             Self::Decimal { .. } => "Decimal",
-            Self::Array(_) => "Array",
-            Self::Object(_) => "Object",
+            Self::Char { .. } => "Char",
+            Self::VarChar { .. } => "VarChar",
+            Self::Text(_) => "Text",
+            Self::Blob(_) => "Blob",
+            Self::Bytes(_) => "Bytes",
+            Self::Date(_) => "Date",
+            Self::Time(_) => "Time",
+            Self::DateTime(_) => "DateTime",
+            Self::DateTimeNano(_) => "DateTimeNano",
+            Self::TimestampTz(_) => "TimestampTz",
+            Self::Uuid(_) => "Uuid",
+            Self::Json(_) => "Json",
+            Self::Jsonb(_) => "Jsonb",
+            Self::Array { .. } => "Array",
+            Self::Set { .. } => "Set",
+            Self::Enum { .. } => "Enum",
+            Self::Geometry { .. } => "Geometry",
             Self::Null => "Null",
+        }
+    }
+
+    /// Convert this value to a TypedValue deterministically.
+    ///
+    /// Each `UniversalValue` variant maps to exactly one `UniversalType` variant,
+    /// so there is no inference or fallback - the mapping is deterministic.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use sync_core::{UniversalValue, UniversalType};
+    ///
+    /// let value = UniversalValue::Int(42);
+    /// let typed = value.to_typed_value();
+    /// assert!(matches!(typed.sync_type, UniversalType::Int));
+    ///
+    /// let value = UniversalValue::Text("hello".to_string());
+    /// let typed = value.to_typed_value();
+    /// assert!(matches!(typed.sync_type, UniversalType::Text));
+    /// ```
+    pub fn to_typed_value(self) -> TypedValue {
+        let sync_type = self.to_type();
+        // Safe to use new() since we're deriving type from the value itself
+        TypedValue::new(sync_type, self)
+    }
+
+    /// Get the corresponding UniversalType for this value.
+    ///
+    /// This is a deterministic 1:1 mapping - no inference or fallback.
+    pub fn to_type(&self) -> UniversalType {
+        match self {
+            Self::Bool(_) => UniversalType::Bool,
+            Self::TinyInt { width, .. } => UniversalType::TinyInt { width: *width },
+            Self::SmallInt(_) => UniversalType::SmallInt,
+            Self::Int(_) => UniversalType::Int,
+            Self::BigInt(_) => UniversalType::BigInt,
+            Self::Float(_) => UniversalType::Float,
+            Self::Double(_) => UniversalType::Double,
+            Self::Decimal {
+                precision, scale, ..
+            } => UniversalType::Decimal {
+                precision: *precision,
+                scale: *scale,
+            },
+            Self::Char { length, .. } => UniversalType::Char { length: *length },
+            Self::VarChar { length, .. } => UniversalType::VarChar { length: *length },
+            Self::Text(_) => UniversalType::Text,
+            Self::Blob(_) => UniversalType::Blob,
+            Self::Bytes(_) => UniversalType::Bytes,
+            Self::Date(_) => UniversalType::Date,
+            Self::Time(_) => UniversalType::Time,
+            Self::DateTime(_) => UniversalType::DateTime,
+            Self::DateTimeNano(_) => UniversalType::DateTimeNano,
+            Self::TimestampTz(_) => UniversalType::TimestampTz,
+            Self::Uuid(_) => UniversalType::Uuid,
+            Self::Json(_) => UniversalType::Json,
+            Self::Jsonb(_) => UniversalType::Jsonb,
+            Self::Array { element_type, .. } => UniversalType::Array {
+                element_type: element_type.clone(),
+            },
+            Self::Set { allowed_values, .. } => UniversalType::Set {
+                values: allowed_values.clone(),
+            },
+            Self::Enum { allowed_values, .. } => UniversalType::Enum {
+                values: allowed_values.clone(),
+            },
+            Self::Geometry { geometry_type, .. } => UniversalType::Geometry {
+                geometry_type: geometry_type.clone(),
+            },
+            // Null doesn't have a single type - this is a special case
+            // We use Text as a placeholder, but callers should handle Null explicitly
+            Self::Null => UniversalType::Text,
         }
     }
 }
@@ -214,27 +489,40 @@ impl TypedValue {
 
     /// Create a typed value with a dynamically specified type, validating the combination.
     ///
-    /// This validates that the type and value are compatible. Returns an error if the
-    /// combination is invalid (e.g., passing a String value for a Bool type).
+    /// This validates that the type and value are compatible using strict 1:1 matching.
+    /// Returns an error if the combination is invalid (e.g., passing a Text value for a Bool type).
     ///
     /// This is useful when the type is determined at runtime (e.g., from schema).
     /// For known types, prefer the specific factory methods like `bool()`, `int()`, etc.
     ///
-    /// # Valid combinations
+    /// # Strict 1:1 Valid Combinations
     ///
     /// - `Null` is valid for any type
     /// - `Bool` type requires `Bool` value
-    /// - Integer types (`TinyInt`, `SmallInt`, `Int`) require `Int32` value
-    /// - `BigInt` type requires `Int64` value
-    /// - Floating point types (`Float`, `Double`) require `Float64` value
-    /// - String types (`Char`, `VarChar`, `Text`, `Enum`) require `String` value
-    /// - Binary types (`Bytes`, `Blob`) require `Bytes` value
+    /// - `TinyInt` type requires `TinyInt` value
+    /// - `SmallInt` type requires `SmallInt` value
+    /// - `Int` type requires `Int` value
+    /// - `BigInt` type requires `BigInt` value
+    /// - `Float` type requires `Float` value
+    /// - `Double` type requires `Double` value
+    /// - `Decimal` type requires `Decimal` value
+    /// - `Char` type requires `Char` value
+    /// - `VarChar` type requires `VarChar` value
+    /// - `Text` type requires `Text` value
+    /// - `Blob` type requires `Blob` value
+    /// - `Bytes` type requires `Bytes` value
+    /// - `Date` type requires `Date` value
+    /// - `Time` type requires `Time` value
+    /// - `DateTime` type requires `DateTime` value
+    /// - `DateTimeNano` type requires `DateTimeNano` value
+    /// - `TimestampTz` type requires `TimestampTz` value
     /// - `Uuid` type requires `Uuid` value
-    /// - Date/time types require `DateTime` or `String` value
-    /// - `Decimal` type requires `Decimal` or `String` value
-    /// - `Array`/`Set` types require `Array` value
-    /// - `Json`/`Jsonb` types accept any value (they're flexible containers)
-    /// - `Geometry` type requires `Bytes` or `Object` value
+    /// - `Json` type requires `Json` value
+    /// - `Jsonb` type requires `Jsonb` value
+    /// - `Array` type requires `Array` value
+    /// - `Set` type requires `Set` value
+    /// - `Enum` type requires `Enum` value
+    /// - `Geometry` type requires `Geometry` value
     pub fn try_with_type(
         sync_type: UniversalType,
         value: UniversalValue,
@@ -244,68 +532,59 @@ impl TypedValue {
             return Ok(Self::new(sync_type, value));
         }
 
-        let is_valid = match &sync_type {
-            // Boolean type
-            UniversalType::Bool => matches!(value, UniversalValue::Bool(_)),
+        // Strict 1:1 validation - each type requires its exact corresponding value variant
+        let is_valid = match (&sync_type, &value) {
+            // Boolean
+            (UniversalType::Bool, UniversalValue::Bool(_)) => true,
 
-            // Integer types - accept both Int32 and Int64 for flexibility
-            // Generators may produce Int64 even for smaller integer types
-            UniversalType::TinyInt { .. }
-            | UniversalType::SmallInt
-            | UniversalType::Int
-            | UniversalType::BigInt => {
-                matches!(value, UniversalValue::Int32(_) | UniversalValue::Int64(_))
-            }
+            // Integer types - strict matching
+            (UniversalType::TinyInt { .. }, UniversalValue::TinyInt { .. }) => true,
+            (UniversalType::SmallInt, UniversalValue::SmallInt(_)) => true,
+            (UniversalType::Int, UniversalValue::Int(_)) => true,
+            (UniversalType::BigInt, UniversalValue::BigInt(_)) => true,
 
-            // Floating point types
-            UniversalType::Float | UniversalType::Double => {
-                matches!(value, UniversalValue::Float64(_))
-            }
+            // Floating point types - strict matching
+            (UniversalType::Float, UniversalValue::Float(_)) => true,
+            (UniversalType::Double, UniversalValue::Double(_)) => true,
 
-            // String types
-            UniversalType::Char { .. }
-            | UniversalType::VarChar { .. }
-            | UniversalType::Text
-            | UniversalType::Enum { .. } => matches!(value, UniversalValue::String(_)),
+            // Decimal
+            (UniversalType::Decimal { .. }, UniversalValue::Decimal { .. }) => true,
 
-            // Binary types
-            UniversalType::Bytes | UniversalType::Blob => matches!(value, UniversalValue::Bytes(_)),
+            // String types - strict matching
+            (UniversalType::Char { .. }, UniversalValue::Char { .. }) => true,
+            (UniversalType::VarChar { .. }, UniversalValue::VarChar { .. }) => true,
+            (UniversalType::Text, UniversalValue::Text(_)) => true,
 
-            // UUID type
-            UniversalType::Uuid => matches!(value, UniversalValue::Uuid(_)),
+            // Binary types - strict matching
+            (UniversalType::Blob, UniversalValue::Blob(_)) => true,
+            (UniversalType::Bytes, UniversalValue::Bytes(_)) => true,
 
-            // Date/time types - accept DateTime or String (for formatted dates)
-            UniversalType::DateTime
-            | UniversalType::DateTimeNano
-            | UniversalType::TimestampTz
-            | UniversalType::Date
-            | UniversalType::Time => {
-                matches!(
-                    value,
-                    UniversalValue::DateTime(_) | UniversalValue::String(_)
-                )
-            }
+            // Temporal types - strict matching
+            (UniversalType::Date, UniversalValue::Date(_)) => true,
+            (UniversalType::Time, UniversalValue::Time(_)) => true,
+            (UniversalType::DateTime, UniversalValue::DateTime(_)) => true,
+            (UniversalType::DateTimeNano, UniversalValue::DateTimeNano(_)) => true,
+            (UniversalType::TimestampTz, UniversalValue::TimestampTz(_)) => true,
 
-            // Decimal type - accept Decimal or String
-            UniversalType::Decimal { .. } => {
-                matches!(
-                    value,
-                    UniversalValue::Decimal { .. } | UniversalValue::String(_)
-                )
-            }
+            // UUID
+            (UniversalType::Uuid, UniversalValue::Uuid(_)) => true,
 
-            // Array and Set types
-            UniversalType::Array { .. } | UniversalType::Set { .. } => {
-                matches!(value, UniversalValue::Array(_))
-            }
+            // JSON types - strict matching
+            (UniversalType::Json, UniversalValue::Json(_)) => true,
+            (UniversalType::Jsonb, UniversalValue::Jsonb(_)) => true,
 
-            // JSON types are flexible - accept any value
-            UniversalType::Json | UniversalType::Jsonb => true,
+            // Collection types - strict matching
+            (UniversalType::Array { .. }, UniversalValue::Array { .. }) => true,
+            (UniversalType::Set { .. }, UniversalValue::Set { .. }) => true,
 
-            // Geometry can be bytes (WKB) or object (GeoJSON)
-            UniversalType::Geometry { .. } => {
-                matches!(value, UniversalValue::Bytes(_) | UniversalValue::Object(_))
-            }
+            // Enumeration
+            (UniversalType::Enum { .. }, UniversalValue::Enum { .. }) => true,
+
+            // Geometry
+            (UniversalType::Geometry { .. }, UniversalValue::Geometry { .. }) => true,
+
+            // All other combinations are invalid
+            _ => false,
         };
 
         if is_valid {
@@ -323,26 +602,30 @@ impl TypedValue {
     fn expected_value_description(sync_type: &UniversalType) -> String {
         match sync_type {
             UniversalType::Bool => "Bool".to_string(),
-            UniversalType::TinyInt { .. }
-            | UniversalType::SmallInt
-            | UniversalType::Int
-            | UniversalType::BigInt => "Int32 or Int64".to_string(),
-            UniversalType::Float | UniversalType::Double => "Float64".to_string(),
-            UniversalType::Char { .. }
-            | UniversalType::VarChar { .. }
-            | UniversalType::Text
-            | UniversalType::Enum { .. } => "String".to_string(),
-            UniversalType::Bytes | UniversalType::Blob => "Bytes".to_string(),
+            UniversalType::TinyInt { .. } => "TinyInt".to_string(),
+            UniversalType::SmallInt => "SmallInt".to_string(),
+            UniversalType::Int => "Int".to_string(),
+            UniversalType::BigInt => "BigInt".to_string(),
+            UniversalType::Float => "Float".to_string(),
+            UniversalType::Double => "Double".to_string(),
+            UniversalType::Decimal { .. } => "Decimal".to_string(),
+            UniversalType::Char { .. } => "Char".to_string(),
+            UniversalType::VarChar { .. } => "VarChar".to_string(),
+            UniversalType::Text => "Text".to_string(),
+            UniversalType::Blob => "Blob".to_string(),
+            UniversalType::Bytes => "Bytes".to_string(),
+            UniversalType::Date => "Date".to_string(),
+            UniversalType::Time => "Time".to_string(),
+            UniversalType::DateTime => "DateTime".to_string(),
+            UniversalType::DateTimeNano => "DateTimeNano".to_string(),
+            UniversalType::TimestampTz => "TimestampTz".to_string(),
             UniversalType::Uuid => "Uuid".to_string(),
-            UniversalType::DateTime
-            | UniversalType::DateTimeNano
-            | UniversalType::TimestampTz
-            | UniversalType::Date
-            | UniversalType::Time => "DateTime or String".to_string(),
-            UniversalType::Decimal { .. } => "Decimal or String".to_string(),
-            UniversalType::Array { .. } | UniversalType::Set { .. } => "Array".to_string(),
-            UniversalType::Json | UniversalType::Jsonb => "any value".to_string(),
-            UniversalType::Geometry { .. } => "Bytes or Object".to_string(),
+            UniversalType::Json => "Json".to_string(),
+            UniversalType::Jsonb => "Jsonb".to_string(),
+            UniversalType::Array { .. } => "Array".to_string(),
+            UniversalType::Set { .. } => "Set".to_string(),
+            UniversalType::Enum { .. } => "Enum".to_string(),
+            UniversalType::Geometry { .. } => "Geometry".to_string(),
         }
     }
 
@@ -364,28 +647,28 @@ impl TypedValue {
     }
 
     /// Create a smallint typed value.
-    pub fn smallint(value: i32) -> Self {
-        Self::new(UniversalType::SmallInt, UniversalValue::Int32(value))
+    pub fn smallint(value: i16) -> Self {
+        Self::new(UniversalType::SmallInt, UniversalValue::SmallInt(value))
     }
 
     /// Create an integer typed value.
     pub fn int(value: i32) -> Self {
-        Self::new(UniversalType::Int, UniversalValue::Int32(value))
+        Self::new(UniversalType::Int, UniversalValue::Int(value))
     }
 
     /// Create a bigint typed value.
     pub fn bigint(value: i64) -> Self {
-        Self::new(UniversalType::BigInt, UniversalValue::Int64(value))
+        Self::new(UniversalType::BigInt, UniversalValue::BigInt(value))
     }
 
     /// Create a double typed value.
     pub fn double(value: f64) -> Self {
-        Self::new(UniversalType::Double, UniversalValue::Float64(value))
+        Self::new(UniversalType::Double, UniversalValue::Double(value))
     }
 
     /// Create a text typed value.
     pub fn text(value: impl Into<String>) -> Self {
-        Self::new(UniversalType::Text, UniversalValue::String(value.into()))
+        Self::new(UniversalType::Text, UniversalValue::Text(value.into()))
     }
 
     /// Create a bytes typed value.
@@ -404,8 +687,8 @@ impl TypedValue {
     }
 
     /// Create a float typed value.
-    pub fn float(value: f64) -> Self {
-        Self::new(UniversalType::Float, UniversalValue::Float64(value))
+    pub fn float(value: f32) -> Self {
+        Self::new(UniversalType::Float, UniversalValue::Float(value))
     }
 
     /// Create a null typed value with a specified type.
@@ -426,35 +709,33 @@ impl TypedValue {
     }
 
     /// Create an array typed value.
-    pub fn array(values: Vec<UniversalValue>, element_type: UniversalType) -> Self {
+    pub fn array(elements: Vec<UniversalValue>, element_type: UniversalType) -> Self {
         Self::new(
             UniversalType::Array {
+                element_type: Box::new(element_type.clone()),
+            },
+            UniversalValue::Array {
+                elements,
                 element_type: Box::new(element_type),
             },
-            UniversalValue::Array(values),
         )
     }
 
-    /// Create a JSON object typed value.
-    pub fn json_object(obj: std::collections::HashMap<String, UniversalValue>) -> Self {
-        Self::new(UniversalType::Json, UniversalValue::Object(obj))
+    /// Create a JSON typed value from a serde_json::Value.
+    pub fn json(value: serde_json::Value) -> Self {
+        Self::new(UniversalType::Json, UniversalValue::Json(Box::new(value)))
     }
 
-    /// Create a JSON typed value with any UniversalValue.
-    pub fn json(value: UniversalValue) -> Self {
-        Self::new(UniversalType::Json, value)
-    }
-
-    /// Create a JSONB typed value with any UniversalValue.
-    pub fn jsonb(value: UniversalValue) -> Self {
-        Self::new(UniversalType::Jsonb, value)
+    /// Create a JSONB typed value from a serde_json::Value.
+    pub fn jsonb(value: serde_json::Value) -> Self {
+        Self::new(UniversalType::Jsonb, UniversalValue::Jsonb(Box::new(value)))
     }
 
     /// Create a TINYINT typed value with optional width.
-    pub fn tinyint(value: i32, width: u8) -> Self {
+    pub fn tinyint(value: i8, width: u8) -> Self {
         Self::new(
             UniversalType::TinyInt { width },
-            UniversalValue::Int32(value),
+            UniversalValue::TinyInt { value, width },
         )
     }
 
@@ -462,7 +743,10 @@ impl TypedValue {
     pub fn char_type(value: impl Into<String>, length: u16) -> Self {
         Self::new(
             UniversalType::Char { length },
-            UniversalValue::String(value.into()),
+            UniversalValue::Char {
+                value: value.into(),
+                length,
+            },
         )
     }
 
@@ -470,77 +754,96 @@ impl TypedValue {
     pub fn varchar(value: impl Into<String>, length: u16) -> Self {
         Self::new(
             UniversalType::VarChar { length },
-            UniversalValue::String(value.into()),
+            UniversalValue::VarChar {
+                value: value.into(),
+                length,
+            },
         )
     }
 
     /// Create a BLOB typed value.
     pub fn blob(value: Vec<u8>) -> Self {
-        Self::new(UniversalType::Blob, UniversalValue::Bytes(value))
+        Self::new(UniversalType::Blob, UniversalValue::Blob(value))
     }
 
     /// Create a DATE typed value from a DateTime.
     pub fn date(value: DateTime<Utc>) -> Self {
-        Self::new(UniversalType::Date, UniversalValue::DateTime(value))
-    }
-
-    /// Create a DATE typed value from a string.
-    pub fn date_string(value: impl Into<String>) -> Self {
-        Self::new(UniversalType::Date, UniversalValue::String(value.into()))
+        Self::new(UniversalType::Date, UniversalValue::Date(value))
     }
 
     /// Create a TIME typed value from a DateTime.
     pub fn time(value: DateTime<Utc>) -> Self {
-        Self::new(UniversalType::Time, UniversalValue::DateTime(value))
-    }
-
-    /// Create a TIME typed value from a string.
-    pub fn time_string(value: impl Into<String>) -> Self {
-        Self::new(UniversalType::Time, UniversalValue::String(value.into()))
+        Self::new(UniversalType::Time, UniversalValue::Time(value))
     }
 
     /// Create a TIMESTAMPTZ typed value.
     pub fn timestamptz(value: DateTime<Utc>) -> Self {
-        Self::new(UniversalType::TimestampTz, UniversalValue::DateTime(value))
+        Self::new(
+            UniversalType::TimestampTz,
+            UniversalValue::TimestampTz(value),
+        )
     }
 
     /// Create a DATETIME with nanosecond precision typed value.
     pub fn datetime_nano(value: DateTime<Utc>) -> Self {
-        Self::new(UniversalType::DateTimeNano, UniversalValue::DateTime(value))
+        Self::new(
+            UniversalType::DateTimeNano,
+            UniversalValue::DateTimeNano(value),
+        )
     }
 
     /// Create an ENUM typed value.
     pub fn enum_type(value: impl Into<String>, variants: Vec<String>) -> Self {
         Self::new(
-            UniversalType::Enum { values: variants },
-            UniversalValue::String(value.into()),
+            UniversalType::Enum {
+                values: variants.clone(),
+            },
+            UniversalValue::Enum {
+                value: value.into(),
+                allowed_values: variants,
+            },
         )
     }
 
     /// Create a SET typed value.
-    pub fn set(values: Vec<UniversalValue>, variants: Vec<String>) -> Self {
+    pub fn set(elements: Vec<String>, variants: Vec<String>) -> Self {
         Self::new(
-            UniversalType::Set { values: variants },
-            UniversalValue::Array(values),
+            UniversalType::Set {
+                values: variants.clone(),
+            },
+            UniversalValue::Set {
+                elements,
+                allowed_values: variants,
+            },
         )
     }
 
-    /// Create a GEOMETRY typed value from bytes.
-    pub fn geometry_bytes(value: Vec<u8>, geometry_type: crate::types::GeometryType) -> Self {
+    /// Create a GEOMETRY typed value from WKB bytes.
+    pub fn geometry_wkb(value: Vec<u8>, geometry_type: crate::types::GeometryType) -> Self {
         Self::new(
-            UniversalType::Geometry { geometry_type },
-            UniversalValue::Bytes(value),
+            UniversalType::Geometry {
+                geometry_type: geometry_type.clone(),
+            },
+            UniversalValue::Geometry {
+                data: GeometryData::Wkb(value),
+                geometry_type,
+            },
         )
     }
 
-    /// Create a GEOMETRY typed value from an object (GeoJSON).
-    pub fn geometry_object(
-        value: std::collections::HashMap<String, UniversalValue>,
+    /// Create a GEOMETRY typed value from a GeoJSON object.
+    pub fn geometry_geojson(
+        value: serde_json::Value,
         geometry_type: crate::types::GeometryType,
     ) -> Self {
         Self::new(
-            UniversalType::Geometry { geometry_type },
-            UniversalValue::Object(value),
+            UniversalType::Geometry {
+                geometry_type: geometry_type.clone(),
+            },
+            UniversalValue::Geometry {
+                data: GeometryData::GeoJson(value),
+                geometry_type,
+            },
         )
     }
 
@@ -664,16 +967,16 @@ mod tests {
     #[test]
     fn test_generated_value_accessors() {
         assert_eq!(UniversalValue::Bool(true).as_bool(), Some(true));
-        assert_eq!(UniversalValue::Int32(42).as_i32(), Some(42));
-        assert_eq!(UniversalValue::Int64(100).as_i64(), Some(100));
-        assert_eq!(UniversalValue::Float64(3.15).as_f64(), Some(3.15));
+        assert_eq!(UniversalValue::Int(42).as_i32(), Some(42));
+        assert_eq!(UniversalValue::BigInt(100).as_i64(), Some(100));
+        assert_eq!(UniversalValue::Double(3.15).as_f64(), Some(3.15));
         assert_eq!(
-            UniversalValue::String("test".to_string()).as_str(),
+            UniversalValue::Text("test".to_string()).as_str(),
             Some("test")
         );
 
         // Cross-type conversions
-        assert_eq!(UniversalValue::Int32(42).as_i64(), Some(42));
+        assert_eq!(UniversalValue::Int(42).as_i64(), Some(42));
         assert_eq!(UniversalValue::Bool(true).as_i32(), None);
     }
 
@@ -685,25 +988,25 @@ mod tests {
 
         let tv = TypedValue::int(42);
         assert_eq!(tv.sync_type, UniversalType::Int);
-        assert_eq!(tv.value, UniversalValue::Int32(42));
+        assert_eq!(tv.value, UniversalValue::Int(42));
     }
 
     #[test]
     fn test_internal_row_builder() {
-        let row = UniversalRow::builder("users", 0, UniversalValue::Int64(1))
-            .field("name", UniversalValue::String("Alice".to_string()))
-            .field("age", UniversalValue::Int32(30))
+        let row = UniversalRow::builder("users", 0, UniversalValue::BigInt(1))
+            .field("name", UniversalValue::Text("Alice".to_string()))
+            .field("age", UniversalValue::Int(30))
             .build();
 
         assert_eq!(row.table, "users");
         assert_eq!(row.index, 0);
-        assert_eq!(row.id, UniversalValue::Int64(1));
+        assert_eq!(row.id, UniversalValue::BigInt(1));
         assert_eq!(row.field_count(), 2);
         assert_eq!(
             row.get_field("name"),
-            Some(&UniversalValue::String("Alice".to_string()))
+            Some(&UniversalValue::Text("Alice".to_string()))
         );
-        assert_eq!(row.get_field("age"), Some(&UniversalValue::Int32(30)));
+        assert_eq!(row.get_field("age"), Some(&UniversalValue::Int(30)));
     }
 
     #[test]
@@ -711,26 +1014,18 @@ mod tests {
         // Bool type with Bool value
         assert!(TypedValue::try_with_type(UniversalType::Bool, UniversalValue::Bool(true)).is_ok());
 
-        // Int type with Int32 value
-        assert!(TypedValue::try_with_type(UniversalType::Int, UniversalValue::Int32(42)).is_ok());
+        // Int type with Int value (strict 1:1)
+        assert!(TypedValue::try_with_type(UniversalType::Int, UniversalValue::Int(42)).is_ok());
 
-        // Int type with Int64 value (flexible for generators)
-        assert!(TypedValue::try_with_type(UniversalType::Int, UniversalValue::Int64(42)).is_ok());
-
-        // BigInt type with Int64 value
+        // BigInt type with BigInt value (strict 1:1)
         assert!(
-            TypedValue::try_with_type(UniversalType::BigInt, UniversalValue::Int64(100)).is_ok()
+            TypedValue::try_with_type(UniversalType::BigInt, UniversalValue::BigInt(100)).is_ok()
         );
 
-        // BigInt type with Int32 value (also allowed)
-        assert!(
-            TypedValue::try_with_type(UniversalType::BigInt, UniversalValue::Int32(100)).is_ok()
-        );
-
-        // Text type with String value
+        // Text type with Text value (strict 1:1)
         assert!(TypedValue::try_with_type(
             UniversalType::Text,
-            UniversalValue::String("hello".to_string())
+            UniversalValue::Text("hello".to_string())
         )
         .is_ok());
 
@@ -741,10 +1036,10 @@ mod tests {
         )
         .is_ok());
 
-        // DateTime type with String value (formatted date)
+        // Date type with Date value (strict 1:1)
         assert!(TypedValue::try_with_type(
             UniversalType::Date,
-            UniversalValue::String("2024-01-01".to_string())
+            UniversalValue::Date(chrono::Utc::now())
         )
         .is_ok());
 
@@ -753,12 +1048,10 @@ mod tests {
         assert!(TypedValue::try_with_type(UniversalType::Int, UniversalValue::Null).is_ok());
         assert!(TypedValue::try_with_type(UniversalType::Text, UniversalValue::Null).is_ok());
 
-        // JSON accepts any value
-        assert!(TypedValue::try_with_type(UniversalType::Json, UniversalValue::Bool(true)).is_ok());
-        assert!(TypedValue::try_with_type(UniversalType::Json, UniversalValue::Int32(42)).is_ok());
+        // JSON type with Json value (strict 1:1)
         assert!(TypedValue::try_with_type(
             UniversalType::Json,
-            UniversalValue::String("test".to_string())
+            UniversalValue::Json(Box::new(serde_json::Value::Bool(true)))
         )
         .is_ok());
     }
@@ -767,71 +1060,105 @@ mod tests {
     fn test_try_with_type_invalid_combinations() {
         // Bool type with wrong value types
         let err =
-            TypedValue::try_with_type(UniversalType::Bool, UniversalValue::Int32(1)).unwrap_err();
+            TypedValue::try_with_type(UniversalType::Bool, UniversalValue::Int(1)).unwrap_err();
         assert_eq!(err.expected_value, "Bool");
-        assert_eq!(err.actual_value, "Int32");
+        assert_eq!(err.actual_value, "Int");
 
-        // Int type with wrong value types
+        // Int type with wrong value types (strict 1:1 now)
         let err =
-            TypedValue::try_with_type(UniversalType::Int, UniversalValue::String("42".to_string()))
+            TypedValue::try_with_type(UniversalType::Int, UniversalValue::Text("42".to_string()))
                 .unwrap_err();
-        assert_eq!(err.expected_value, "Int32 or Int64");
-        assert_eq!(err.actual_value, "String");
+        assert_eq!(err.expected_value, "Int");
+        assert_eq!(err.actual_value, "Text");
 
-        // BigInt type with wrong value types (but Int32 is allowed now)
-        assert!(
-            TypedValue::try_with_type(UniversalType::BigInt, UniversalValue::Int32(42)).is_ok()
-        );
-        // Test with wrong type
-        let err = TypedValue::try_with_type(
-            UniversalType::BigInt,
-            UniversalValue::String("42".to_string()),
-        )
-        .unwrap_err();
-        assert_eq!(err.expected_value, "Int32 or Int64");
-        assert_eq!(err.actual_value, "String");
+        // Int type no longer accepts BigInt (strict 1:1)
+        let err =
+            TypedValue::try_with_type(UniversalType::Int, UniversalValue::BigInt(42)).unwrap_err();
+        assert_eq!(err.expected_value, "Int");
+        assert_eq!(err.actual_value, "BigInt");
+
+        // BigInt type no longer accepts Int (strict 1:1)
+        let err =
+            TypedValue::try_with_type(UniversalType::BigInt, UniversalValue::Int(42)).unwrap_err();
+        assert_eq!(err.expected_value, "BigInt");
+        assert_eq!(err.actual_value, "Int");
 
         // Text type with wrong value types
         let err =
-            TypedValue::try_with_type(UniversalType::Text, UniversalValue::Int32(42)).unwrap_err();
-        assert_eq!(err.expected_value, "String");
-        assert_eq!(err.actual_value, "Int32");
+            TypedValue::try_with_type(UniversalType::Text, UniversalValue::Int(42)).unwrap_err();
+        assert_eq!(err.expected_value, "Text");
+        assert_eq!(err.actual_value, "Int");
 
-        // Uuid type with String value
+        // Uuid type with Text value (strict 1:1)
         let err = TypedValue::try_with_type(
             UniversalType::Uuid,
-            UniversalValue::String("not-a-uuid".to_string()),
+            UniversalValue::Text("not-a-uuid".to_string()),
         )
         .unwrap_err();
         assert_eq!(err.expected_value, "Uuid");
-        assert_eq!(err.actual_value, "String");
+        assert_eq!(err.actual_value, "Text");
     }
 
     #[test]
     fn test_try_with_type_error_message() {
         let err = TypedValue::try_with_type(
             UniversalType::Bool,
-            UniversalValue::String("true".to_string()),
+            UniversalValue::Text("true".to_string()),
         )
         .unwrap_err();
 
         let msg = err.to_string();
         assert!(msg.contains("Type-value mismatch"));
         assert!(msg.contains("Bool"));
-        assert!(msg.contains("String"));
+        assert!(msg.contains("Text"));
     }
 
     #[test]
     fn test_variant_name() {
         assert_eq!(UniversalValue::Bool(true).variant_name(), "Bool");
-        assert_eq!(UniversalValue::Int32(42).variant_name(), "Int32");
-        assert_eq!(UniversalValue::Int64(100).variant_name(), "Int64");
-        assert_eq!(UniversalValue::Float64(1.5).variant_name(), "Float64");
+        assert_eq!(UniversalValue::Int(42).variant_name(), "Int");
+        assert_eq!(UniversalValue::BigInt(100).variant_name(), "BigInt");
+        assert_eq!(UniversalValue::Double(1.5).variant_name(), "Double");
         assert_eq!(
-            UniversalValue::String("test".to_string()).variant_name(),
-            "String"
+            UniversalValue::Text("test".to_string()).variant_name(),
+            "Text"
         );
         assert_eq!(UniversalValue::Bytes(vec![1, 2, 3]).variant_name(), "Bytes");
         assert_eq!(UniversalValue::Null.variant_name(), "Null");
+    }
+
+    #[test]
+    fn test_to_typed_value_deterministic() {
+        // Each UniversalValue variant should map to exactly one UniversalType
+        let value = UniversalValue::Int(42);
+        let typed = value.to_typed_value();
+        assert_eq!(typed.sync_type, UniversalType::Int);
+
+        let value = UniversalValue::Text("hello".to_string());
+        let typed = value.to_typed_value();
+        assert_eq!(typed.sync_type, UniversalType::Text);
+
+        let value = UniversalValue::BigInt(100);
+        let typed = value.to_typed_value();
+        assert_eq!(typed.sync_type, UniversalType::BigInt);
+
+        let value = UniversalValue::Double(3.15);
+        let typed = value.to_typed_value();
+        assert_eq!(typed.sync_type, UniversalType::Double);
+
+        let value = UniversalValue::Float(1.5);
+        let typed = value.to_typed_value();
+        assert_eq!(typed.sync_type, UniversalType::Float);
+
+        let value = UniversalValue::SmallInt(100);
+        let typed = value.to_typed_value();
+        assert_eq!(typed.sync_type, UniversalType::SmallInt);
+
+        let value = UniversalValue::TinyInt { value: 1, width: 1 };
+        let typed = value.to_typed_value();
+        assert!(matches!(
+            typed.sync_type,
+            UniversalType::TinyInt { width: 1 }
+        ));
     }
 }

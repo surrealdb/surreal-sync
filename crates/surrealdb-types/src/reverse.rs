@@ -40,16 +40,16 @@ impl From<SurrealValueWithSchema> for TypedValue {
             // Integer types
             (UniversalType::TinyInt { width }, Value::Number(Number::Int(i))) => TypedValue {
                 sync_type: UniversalType::TinyInt { width: *width },
-                value: UniversalValue::Int32(*i as i32),
+                value: UniversalValue::Int(*i as i32),
             },
             (UniversalType::SmallInt, Value::Number(Number::Int(i))) => {
-                TypedValue::smallint(*i as i32)
+                TypedValue::smallint(*i as i16)
             }
             (UniversalType::Int, Value::Number(Number::Int(i))) => TypedValue::int(*i as i32),
             (UniversalType::BigInt, Value::Number(Number::Int(i))) => TypedValue::bigint(*i),
 
             // Floating point
-            (UniversalType::Float, Value::Number(Number::Float(f))) => TypedValue::float(*f),
+            (UniversalType::Float, Value::Number(Number::Float(f))) => TypedValue::float(*f as f32),
             (UniversalType::Double, Value::Number(Number::Float(f))) => TypedValue::double(*f),
 
             // Decimal
@@ -63,11 +63,11 @@ impl From<SurrealValueWithSchema> for TypedValue {
             // String types - use as_str() to get raw string, not to_string() which may add quotes
             (UniversalType::Char { length }, Value::Strand(s)) => TypedValue {
                 sync_type: UniversalType::Char { length: *length },
-                value: UniversalValue::String(s.as_str().to_string()),
+                value: UniversalValue::Text(s.as_str().to_string()),
             },
             (UniversalType::VarChar { length }, Value::Strand(s)) => TypedValue {
                 sync_type: UniversalType::VarChar { length: *length },
-                value: UniversalValue::String(s.as_str().to_string()),
+                value: UniversalValue::Text(s.as_str().to_string()),
             },
             (UniversalType::Text, Value::Strand(s)) => TypedValue::text(s.as_str().to_string()),
 
@@ -132,17 +132,17 @@ impl From<SurrealValueWithSchema> for TypedValue {
 
             // JSON types
             (UniversalType::Json, Value::Object(obj)) => {
-                let map = object_to_hashmap(obj);
+                let json_val = object_to_serde_json(obj);
                 TypedValue {
                     sync_type: UniversalType::Json,
-                    value: UniversalValue::Object(map),
+                    value: UniversalValue::Json(Box::new(json_val)),
                 }
             }
             (UniversalType::Jsonb, Value::Object(obj)) => {
-                let map = object_to_hashmap(obj);
+                let json_val = object_to_serde_json(obj);
                 TypedValue {
                     sync_type: UniversalType::Jsonb,
-                    value: UniversalValue::Object(map),
+                    value: UniversalValue::Json(Box::new(json_val)),
                 }
             }
 
@@ -164,7 +164,7 @@ impl From<SurrealValueWithSchema> for TypedValue {
                     .iter()
                     .filter_map(|v| {
                         if let Value::Strand(s) = v {
-                            Some(UniversalValue::String(s.as_str().to_string()))
+                            Some(UniversalValue::Text(s.as_str().to_string()))
                         } else {
                             None
                         }
@@ -174,7 +174,10 @@ impl From<SurrealValueWithSchema> for TypedValue {
                     sync_type: UniversalType::Set {
                         values: set_values.clone(),
                     },
-                    value: UniversalValue::Array(values),
+                    value: UniversalValue::Array {
+                        elements: values,
+                        element_type: Box::new(UniversalType::Text),
+                    },
                 }
             }
 
@@ -188,17 +191,17 @@ impl From<SurrealValueWithSchema> for TypedValue {
                 sync_type: UniversalType::Enum {
                     values: enum_values.clone(),
                 },
-                value: UniversalValue::String(s.as_str().to_string()),
+                value: UniversalValue::Text(s.as_str().to_string()),
             },
 
             // Geometry types - stored as SurrealDB Geometry
             (UniversalType::Geometry { geometry_type }, Value::Geometry(geo)) => {
-                let map = geometry_to_hashmap(geo);
+                let json_val = geometry_to_serde_json(geo);
                 TypedValue {
                     sync_type: UniversalType::Geometry {
                         geometry_type: geometry_type.clone(),
                     },
-                    value: UniversalValue::Object(map),
+                    value: UniversalValue::Json(Box::new(json_val)),
                 }
             }
 
@@ -209,6 +212,7 @@ impl From<SurrealValueWithSchema> for TypedValue {
 }
 
 /// Convert a SurrealDB Object to a HashMap of UniversalValue.
+#[allow(dead_code)]
 fn object_to_hashmap(obj: &Object) -> HashMap<String, UniversalValue> {
     let mut map = HashMap::new();
     for (key, value) in obj.iter() {
@@ -218,116 +222,122 @@ fn object_to_hashmap(obj: &Object) -> HashMap<String, UniversalValue> {
 }
 
 /// Convert a SurrealDB Value to UniversalValue (without type context).
+#[allow(dead_code)]
 fn surreal_value_to_generated(value: &Value) -> UniversalValue {
     match value {
         Value::None => UniversalValue::Null,
         Value::Bool(b) => UniversalValue::Bool(*b),
-        Value::Number(Number::Int(i)) => UniversalValue::Int64(*i),
-        Value::Number(Number::Float(f)) => UniversalValue::Float64(*f),
+        Value::Number(Number::Int(i)) => UniversalValue::BigInt(*i),
+        Value::Number(Number::Float(f)) => UniversalValue::Double(*f),
         Value::Number(Number::Decimal(d)) => UniversalValue::Decimal {
             value: d.to_string(),
             precision: 38,
             scale: 10,
         },
-        Value::Strand(s) => UniversalValue::String(s.as_str().to_string()),
+        Value::Strand(s) => UniversalValue::Text(s.as_str().to_string()),
         Value::Bytes(b) => UniversalValue::Bytes(b.clone().into_inner()),
         Value::Uuid(u) => UniversalValue::Uuid(u.0),
         Value::Datetime(dt) => UniversalValue::DateTime(dt.0),
         Value::Array(arr) => {
-            UniversalValue::Array(arr.iter().map(surreal_value_to_generated).collect())
+            let elements: Vec<UniversalValue> =
+                arr.iter().map(surreal_value_to_generated).collect();
+            UniversalValue::Array {
+                elements,
+                element_type: Box::new(UniversalType::Json),
+            }
         }
-        Value::Object(obj) => UniversalValue::Object(object_to_hashmap(obj)),
+        Value::Object(obj) => {
+            let json_val = object_to_serde_json(obj);
+            UniversalValue::Json(Box::new(json_val))
+        }
         // Thing (record ID) - convert to string
-        Value::Thing(thing) => UniversalValue::String(thing.to_string()),
+        Value::Thing(thing) => UniversalValue::Text(thing.to_string()),
         // Duration - convert to string
-        Value::Duration(dur) => UniversalValue::String(dur.to_string()),
+        Value::Duration(dur) => UniversalValue::Text(dur.to_string()),
         // Geometry - convert to object
-        Value::Geometry(geo) => UniversalValue::Object(geometry_to_hashmap(geo)),
+        Value::Geometry(geo) => {
+            let json_val = geometry_to_serde_json(geo);
+            UniversalValue::Json(Box::new(json_val))
+        }
         // Other types - convert to null
         _ => UniversalValue::Null,
     }
 }
 
-/// Convert a SurrealDB Geometry to a GeoJSON-like HashMap.
-fn geometry_to_hashmap(geo: &surrealdb::sql::Geometry) -> HashMap<String, UniversalValue> {
-    let mut map = HashMap::new();
-
+/// Convert a SurrealDB Geometry to a GeoJSON-like serde_json::Value.
+fn geometry_to_serde_json(geo: &surrealdb::sql::Geometry) -> serde_json::Value {
     match geo {
         surrealdb::sql::Geometry::Point(p) => {
-            map.insert(
-                "type".to_string(),
-                UniversalValue::String("Point".to_string()),
-            );
-            map.insert(
-                "coordinates".to_string(),
-                UniversalValue::Array(vec![
-                    UniversalValue::Float64(p.x()),
-                    UniversalValue::Float64(p.y()),
-                ]),
-            );
+            serde_json::json!({
+                "type": "Point",
+                "coordinates": [p.x(), p.y()]
+            })
         }
         surrealdb::sql::Geometry::Line(line) => {
-            map.insert(
-                "type".to_string(),
-                UniversalValue::String("LineString".to_string()),
-            );
-            let coords: Vec<UniversalValue> = line
-                .points()
-                .map(|p| {
-                    UniversalValue::Array(vec![
-                        UniversalValue::Float64(p.x()),
-                        UniversalValue::Float64(p.y()),
-                    ])
-                })
-                .collect();
-            map.insert("coordinates".to_string(), UniversalValue::Array(coords));
+            let coords: Vec<Vec<f64>> = line.points().map(|p| vec![p.x(), p.y()]).collect();
+            serde_json::json!({
+                "type": "LineString",
+                "coordinates": coords
+            })
         }
         surrealdb::sql::Geometry::Polygon(poly) => {
-            map.insert(
-                "type".to_string(),
-                UniversalValue::String("Polygon".to_string()),
-            );
-            let exterior: Vec<UniversalValue> = poly
+            let exterior: Vec<Vec<f64>> = poly
                 .exterior()
                 .points()
-                .map(|p| {
-                    UniversalValue::Array(vec![
-                        UniversalValue::Float64(p.x()),
-                        UniversalValue::Float64(p.y()),
-                    ])
-                })
+                .map(|p| vec![p.x(), p.y()])
                 .collect();
-            map.insert(
-                "coordinates".to_string(),
-                UniversalValue::Array(vec![UniversalValue::Array(exterior)]),
-            );
+            serde_json::json!({
+                "type": "Polygon",
+                "coordinates": [exterior]
+            })
         }
         surrealdb::sql::Geometry::MultiPoint(mp) => {
-            map.insert(
-                "type".to_string(),
-                UniversalValue::String("MultiPoint".to_string()),
-            );
-            let coords: Vec<UniversalValue> = mp
-                .iter()
-                .map(|p| {
-                    UniversalValue::Array(vec![
-                        UniversalValue::Float64(p.x()),
-                        UniversalValue::Float64(p.y()),
-                    ])
-                })
-                .collect();
-            map.insert("coordinates".to_string(), UniversalValue::Array(coords));
+            let coords: Vec<Vec<f64>> = mp.iter().map(|p| vec![p.x(), p.y()]).collect();
+            serde_json::json!({
+                "type": "MultiPoint",
+                "coordinates": coords
+            })
         }
         _ => {
             // For other geometry types, store type as string
-            map.insert(
-                "type".to_string(),
-                UniversalValue::String("Geometry".to_string()),
-            );
+            serde_json::json!({
+                "type": "Geometry"
+            })
         }
     }
+}
 
-    map
+/// Convert a SurrealDB Object to serde_json::Value.
+fn object_to_serde_json(obj: &Object) -> serde_json::Value {
+    let map: serde_json::Map<String, serde_json::Value> = obj
+        .iter()
+        .map(|(k, v)| (k.clone(), surreal_value_to_json(v)))
+        .collect();
+    serde_json::Value::Object(map)
+}
+
+/// Convert a SurrealDB Value to serde_json::Value.
+fn surreal_value_to_json(value: &Value) -> serde_json::Value {
+    match value {
+        Value::None | Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Number(n) => match n {
+            Number::Int(i) => serde_json::json!(i),
+            Number::Float(f) => serde_json::json!(f),
+            Number::Decimal(d) => serde_json::json!(d.to_string()),
+            _ => serde_json::Value::Null,
+        },
+        Value::Strand(s) => serde_json::Value::String(s.as_str().to_string()),
+        Value::Datetime(dt) => serde_json::Value::String(dt.0.to_rfc3339()),
+        Value::Uuid(u) => serde_json::Value::String(u.0.to_string()),
+        Value::Array(arr) => {
+            let values: Vec<serde_json::Value> = arr.iter().map(surreal_value_to_json).collect();
+            serde_json::Value::Array(values)
+        }
+        Value::Object(obj) => object_to_serde_json(obj),
+        Value::Geometry(geo) => geometry_to_serde_json(geo),
+        _ => serde_json::Value::Null,
+    }
 }
 
 /// Extract a typed value from a SurrealDB Object field.
@@ -378,7 +388,7 @@ mod tests {
     fn test_int_conversion() {
         let sv = SurrealValueWithSchema::new(Value::Number(Number::Int(42)), UniversalType::Int);
         let tv = TypedValue::from(sv);
-        assert!(matches!(tv.value, UniversalValue::Int32(42)));
+        assert!(matches!(tv.value, UniversalValue::Int(42)));
     }
 
     #[test]
@@ -388,7 +398,7 @@ mod tests {
             UniversalType::BigInt,
         );
         let tv = TypedValue::from(sv);
-        assert!(matches!(tv.value, UniversalValue::Int64(9876543210)));
+        assert!(matches!(tv.value, UniversalValue::BigInt(9876543210)));
     }
 
     #[test]
@@ -398,7 +408,7 @@ mod tests {
             UniversalType::Double,
         );
         let tv = TypedValue::from(sv);
-        if let UniversalValue::Float64(f) = tv.value {
+        if let UniversalValue::Double(f) = tv.value {
             assert!((f - 1.23456).abs() < 0.00001);
         } else {
             panic!("Expected Float64");
@@ -437,7 +447,7 @@ mod tests {
             UniversalType::Text,
         );
         let tv = TypedValue::from(sv);
-        assert!(matches!(tv.value, UniversalValue::String(ref s) if s == "hello world"));
+        assert!(matches!(tv.value, UniversalValue::Text(ref s) if s == "hello world"));
     }
 
     #[test]
@@ -451,7 +461,7 @@ mod tests {
             tv.sync_type,
             UniversalType::VarChar { length: 100 }
         ));
-        assert!(matches!(tv.value, UniversalValue::String(ref s) if s == "test"));
+        assert!(matches!(tv.value, UniversalValue::Text(ref s) if s == "test"));
     }
 
     #[test]
@@ -545,11 +555,19 @@ mod tests {
 
         let sv = SurrealValueWithSchema::new(Value::Object(obj), UniversalType::Json);
         let tv = TypedValue::from(sv);
-        if let UniversalValue::Object(map) = tv.value {
-            assert!(matches!(map.get("name"), Some(UniversalValue::String(s)) if s == "test"));
-            assert!(matches!(map.get("count"), Some(UniversalValue::Int64(42))));
+        if let UniversalValue::Json(json_val) = tv.value {
+            if let serde_json::Value::Object(map) = json_val.as_ref() {
+                assert!(
+                    matches!(map.get("name"), Some(serde_json::Value::String(s)) if s == "test")
+                );
+                assert!(
+                    matches!(map.get("count"), Some(serde_json::Value::Number(n)) if n.as_i64() == Some(42))
+                );
+            } else {
+                panic!("Expected JSON Object");
+            }
         } else {
-            panic!("Expected Object");
+            panic!("Expected Json value");
         }
     }
 
@@ -567,10 +585,10 @@ mod tests {
             },
         );
         let tv = TypedValue::from(sv);
-        if let UniversalValue::Array(values) = tv.value {
-            assert_eq!(values.len(), 3);
+        if let UniversalValue::Array { elements, .. } = tv.value {
+            assert_eq!(elements.len(), 3);
             // Values are converted as Int32
-            assert!(matches!(values[0], UniversalValue::Int32(1)));
+            assert!(matches!(elements[0], UniversalValue::Int(1)));
         } else {
             panic!("Expected Array");
         }
@@ -589,8 +607,8 @@ mod tests {
             },
         );
         let tv = TypedValue::from(sv);
-        if let UniversalValue::Array(values) = tv.value {
-            assert_eq!(values.len(), 2);
+        if let UniversalValue::Array { elements, .. } = tv.value {
+            assert_eq!(elements.len(), 2);
         } else {
             panic!("Expected Array");
         }
@@ -605,7 +623,7 @@ mod tests {
             },
         );
         let tv = TypedValue::from(sv);
-        assert!(matches!(tv.value, UniversalValue::String(ref s) if s == "active"));
+        assert!(matches!(tv.value, UniversalValue::Text(ref s) if s == "active"));
     }
 
     #[test]
@@ -616,10 +634,10 @@ mod tests {
         let obj = Object::from(obj_map);
 
         let name = extract_field(&obj, "name", &UniversalType::Text);
-        assert!(matches!(name.value, UniversalValue::String(ref s) if s == "Alice"));
+        assert!(matches!(name.value, UniversalValue::Text(ref s) if s == "Alice"));
 
         let age = extract_field(&obj, "age", &UniversalType::Int);
-        assert!(matches!(age.value, UniversalValue::Int32(30)));
+        assert!(matches!(age.value, UniversalValue::Int(30)));
 
         let missing = extract_field(&obj, "missing", &UniversalType::Text);
         assert!(matches!(missing.value, UniversalValue::Null));
@@ -642,13 +660,13 @@ mod tests {
         let values = object_to_typed_values(&obj, &schema);
         assert!(matches!(
             values.get("name").unwrap().value,
-            UniversalValue::String(ref s) if s == "Bob"
+            UniversalValue::Text(ref s) if s == "Bob"
         ));
         assert!(matches!(
             values.get("active").unwrap().value,
             UniversalValue::Bool(true)
         ));
-        if let UniversalValue::Float64(f) = values.get("score").unwrap().value {
+        if let UniversalValue::Double(f) = values.get("score").unwrap().value {
             assert!((f - 95.5).abs() < 0.001);
         } else {
             panic!("Expected Float64");

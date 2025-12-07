@@ -131,9 +131,13 @@ tables:
             [
                 (
                     "email".to_string(),
-                    UniversalValue::String("test@example.com".to_string()),
+                    // Use VarChar to match schema (strict 1:1 type-value matching)
+                    UniversalValue::VarChar {
+                        value: "test@example.com".to_string(),
+                        length: 255,
+                    },
                 ),
-                ("age".to_string(), UniversalValue::Int32(25)),
+                ("age".to_string(), UniversalValue::Int(25)),
             ]
             .into_iter()
             .collect(),

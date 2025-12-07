@@ -93,7 +93,7 @@ pub fn proto_to_typed_value(value: ProtoFieldValue) -> Result<TypedValue> {
         ProtoFieldValue::Int64(i) => Ok(TypedValue::bigint(i)),
         ProtoFieldValue::Uint32(u) => Ok(TypedValue::bigint(u as i64)),
         ProtoFieldValue::Uint64(u) => Ok(TypedValue::bigint(u as i64)),
-        ProtoFieldValue::Float(f) => Ok(TypedValue::float(f as f64)),
+        ProtoFieldValue::Float(f) => Ok(TypedValue::float(f)),
         ProtoFieldValue::Double(d) => Ok(TypedValue::double(d)),
         ProtoFieldValue::Bool(b) => Ok(TypedValue::bool(b)),
         ProtoFieldValue::String(s) => Ok(TypedValue::text(&s)),
@@ -124,7 +124,7 @@ pub fn proto_to_typed_value(value: ProtoFieldValue) -> Result<TypedValue> {
                 t => {
                     debug!("Converting nested message of type {t} to generic object");
                     // Convert nested message to Object (JSON-like structure)
-                    let mut map = HashMap::new();
+                    let mut map = serde_json::Map::new();
                     for k in m.descriptor.field_order.iter() {
                         let f = m.descriptor.fields.get(k).ok_or_else(|| {
                             KafkaTypesError::MissingField(format!(
@@ -149,12 +149,10 @@ pub fn proto_to_typed_value(value: ProtoFieldValue) -> Result<TypedValue> {
                         };
                         debug!("Converting nested field {k}={v:?} to TypedValue");
                         let typed_value = proto_to_typed_value(v.to_owned())?;
-                        map.insert(k.to_owned(), typed_value.value);
+                        let json_value = universal_value_to_json(&typed_value.value);
+                        map.insert(k.to_owned(), json_value);
                     }
-                    Ok(TypedValue {
-                        sync_type: UniversalType::Json,
-                        value: UniversalValue::Object(map),
-                    })
+                    Ok(TypedValue::json(serde_json::Value::Object(map)))
                 }
             }
         }
@@ -180,6 +178,54 @@ pub fn proto_to_typed_value(value: ProtoFieldValue) -> Result<TypedValue> {
     }
 }
 
+/// Convert a UniversalValue to serde_json::Value.
+fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
+    use base64::Engine;
+    match value {
+        UniversalValue::Null => serde_json::Value::Null,
+        UniversalValue::Bool(b) => serde_json::json!(*b),
+        UniversalValue::TinyInt { value, .. } => serde_json::json!(*value),
+        UniversalValue::SmallInt(i) => serde_json::json!(*i),
+        UniversalValue::Int(i) => serde_json::json!(*i),
+        UniversalValue::BigInt(i) => serde_json::json!(*i),
+        UniversalValue::Float(f) => serde_json::json!(*f),
+        UniversalValue::Double(f) => serde_json::json!(*f),
+        UniversalValue::Char { value, .. } => serde_json::json!(value),
+        UniversalValue::VarChar { value, .. } => serde_json::json!(value),
+        UniversalValue::Text(s) => serde_json::json!(s),
+        UniversalValue::Blob(b) | UniversalValue::Bytes(b) => {
+            let encoded = base64::engine::general_purpose::STANDARD.encode(b);
+            serde_json::json!(encoded)
+        }
+        UniversalValue::Uuid(u) => serde_json::json!(u.to_string()),
+        UniversalValue::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
+        UniversalValue::Time(dt) => serde_json::json!(dt.format("%H:%M:%S").to_string()),
+        UniversalValue::DateTime(dt)
+        | UniversalValue::DateTimeNano(dt)
+        | UniversalValue::TimestampTz(dt) => serde_json::json!(dt.to_rfc3339()),
+        UniversalValue::Decimal { value, .. } => serde_json::json!(value),
+        UniversalValue::Array { elements, .. } => {
+            serde_json::json!(elements
+                .iter()
+                .map(universal_value_to_json)
+                .collect::<Vec<_>>())
+        }
+        UniversalValue::Set { elements, .. } => serde_json::json!(elements),
+        UniversalValue::Enum { value, .. } => serde_json::json!(value),
+        UniversalValue::Json(payload) | UniversalValue::Jsonb(payload) => (**payload).clone(),
+        UniversalValue::Geometry { data, .. } => {
+            use sync_core::values::GeometryData;
+            match data {
+                GeometryData::GeoJson(value) => value.clone(),
+                GeometryData::Wkb(bytes) => {
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                    serde_json::json!({"wkb": encoded})
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,7 +244,7 @@ mod tests {
         let value = ProtoFieldValue::Int32(42);
         let result = proto_to_typed_value(value).unwrap();
         assert_eq!(result.sync_type, UniversalType::Int);
-        assert!(matches!(result.value, UniversalValue::Int32(42)));
+        assert!(matches!(result.value, UniversalValue::Int(42)));
     }
 
     #[test]
@@ -206,7 +252,7 @@ mod tests {
         let value = ProtoFieldValue::Int64(123456789);
         let result = proto_to_typed_value(value).unwrap();
         assert_eq!(result.sync_type, UniversalType::BigInt);
-        assert!(matches!(result.value, UniversalValue::Int64(123456789)));
+        assert!(matches!(result.value, UniversalValue::BigInt(123456789)));
     }
 
     #[test]
@@ -214,7 +260,7 @@ mod tests {
         let value = ProtoFieldValue::String("hello".to_string());
         let result = proto_to_typed_value(value).unwrap();
         assert_eq!(result.sync_type, UniversalType::Text);
-        assert!(matches!(result.value, UniversalValue::String(s) if s == "hello"));
+        assert!(matches!(result.value, UniversalValue::Text(s) if s == "hello"));
     }
 
     #[test]
@@ -251,7 +297,9 @@ mod tests {
         ]);
         let result = proto_to_typed_value(value).unwrap();
         assert!(matches!(result.sync_type, UniversalType::Array { .. }));
-        assert!(matches!(result.value, UniversalValue::Array(arr) if arr.len() == 2));
+        assert!(
+            matches!(result.value, UniversalValue::Array { ref elements, .. } if elements.len() == 2)
+        );
     }
 
     #[test]
@@ -275,6 +323,6 @@ mod tests {
         let value = ProtoFieldValue::String(r#"{"key": "value"}"#.to_string());
         let result = proto_to_typed_value_with_schema(value, Some(&field_schema)).unwrap();
         assert_eq!(result.sync_type, UniversalType::Json);
-        assert!(matches!(result.value, UniversalValue::Object(_)));
+        assert!(matches!(result.value, UniversalValue::Json(_)));
     }
 }

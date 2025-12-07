@@ -22,7 +22,7 @@
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
 use mysql_async::consts::{ColumnFlags, ColumnType};
 use mysql_async::Value;
-use sync_core::{TypedValue, UniversalType, UniversalValue};
+use sync_core::{TypedValue, UniversalType};
 use thiserror::Error;
 
 // Re-export from json-types for convenience
@@ -156,14 +156,14 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                 }
 
                 Ok(TypedValue::tinyint(
-                    i as i32,
+                    i as i8,
                     mv.column_length.unwrap_or(4) as u8,
                 ))
             }
 
             MYSQL_TYPE_SHORT => {
                 let i = extract_int(&mv.value)?;
-                Ok(TypedValue::smallint(i as i32))
+                Ok(TypedValue::smallint(i as i16))
             }
 
             MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => {
@@ -179,7 +179,7 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             // Floating point
             MYSQL_TYPE_FLOAT => {
                 let f = extract_float(&mv.value)?;
-                Ok(TypedValue::float(f))
+                Ok(TypedValue::float(f as f32))
             }
 
             MYSQL_TYPE_DOUBLE => {
@@ -233,12 +233,15 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             // Date/time types
             MYSQL_TYPE_DATE => {
                 let dt = extract_date(&mv.value)?;
-                Ok(TypedValue::date_string(dt.format("%Y-%m-%d").to_string()))
+                let datetime = dt.and_hms_opt(0, 0, 0).unwrap().and_utc();
+                Ok(TypedValue::date(datetime))
             }
 
             MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => {
                 let time = extract_time(&mv.value)?;
-                Ok(TypedValue::time_string(time.format("%H:%M:%S").to_string()))
+                let today = chrono::Utc::now().date_naive();
+                let datetime = chrono::NaiveDateTime::new(today, time).and_utc();
+                Ok(TypedValue::time(datetime))
             }
 
             MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => {
@@ -253,7 +256,7 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
 
             MYSQL_TYPE_YEAR => {
                 let i = extract_int(&mv.value)?;
-                Ok(TypedValue::smallint(i as i32))
+                Ok(TypedValue::smallint(i as i16))
             }
 
             // JSON
@@ -266,7 +269,7 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                         &JsonConversionConfig::default(),
                     ))
                 } else {
-                    Ok(TypedValue::json(UniversalValue::String(s)))
+                    Ok(TypedValue::json(serde_json::Value::String(s)))
                 }
             }
 
@@ -278,17 +281,14 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
 
             MYSQL_TYPE_SET => {
                 let s = extract_string(&mv.value)?;
-                let values: Vec<UniversalValue> = s
-                    .split(',')
-                    .map(|v| UniversalValue::String(v.to_string()))
-                    .collect();
+                let values: Vec<String> = s.split(',').map(|v| v.to_string()).collect();
                 Ok(TypedValue::set(values, vec![]))
             }
 
             // Geometry
             MYSQL_TYPE_GEOMETRY => {
                 let bytes = extract_bytes(&mv.value)?;
-                Ok(TypedValue::geometry_bytes(
+                Ok(TypedValue::geometry_wkb(
                     bytes,
                     sync_core::GeometryType::Point,
                 ))
@@ -612,12 +612,10 @@ pub fn row_to_typed_values_with_config(
         // Handle SET columns - split comma-separated string into array
         if is_set {
             if let Ok(s) = extract_string(&raw_value) {
-                let values: Vec<UniversalValue> = if s.is_empty() {
+                let values: Vec<String> = if s.is_empty() {
                     Vec::new()
                 } else {
-                    s.split(',')
-                        .map(|v| UniversalValue::String(v.to_string()))
-                        .collect()
+                    s.split(',').map(|v| v.to_string()).collect()
                 };
                 let typed_value = TypedValue::set(values, vec![]);
                 result.insert(column_name, typed_value);
@@ -656,6 +654,7 @@ pub fn row_to_typed_values_with_config(
 mod tests {
     use super::*;
     use chrono::Datelike;
+    use sync_core::UniversalValue;
 
     #[test]
     fn test_int_conversion() {
@@ -666,7 +665,7 @@ mod tests {
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::Int));
-        assert!(matches!(tv.value, UniversalValue::Int32(42)));
+        assert!(matches!(tv.value, UniversalValue::Int(42)));
     }
 
     #[test]
@@ -680,7 +679,7 @@ mod tests {
         assert!(matches!(tv.sync_type, UniversalType::BigInt));
         assert!(matches!(
             tv.value,
-            UniversalValue::Int64(9_223_372_036_854_775_807)
+            UniversalValue::BigInt(9_223_372_036_854_775_807)
         ));
     }
 
@@ -693,10 +692,10 @@ mod tests {
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::VarChar { .. }));
-        if let UniversalValue::String(s) = tv.value {
-            assert_eq!(s, "hello world");
+        if let UniversalValue::VarChar { value, .. } = tv.value {
+            assert_eq!(value, "hello world");
         } else {
-            panic!("Expected String value");
+            panic!("Expected VarChar value, got {:?}", tv.value);
         }
     }
 
@@ -757,11 +756,15 @@ mod tests {
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::Json));
-        if let UniversalValue::Object(obj) = tv.value {
-            assert!(obj.contains_key("name"));
-            assert!(obj.contains_key("age"));
+        if let UniversalValue::Json(obj) = tv.value {
+            if let serde_json::Value::Object(map) = obj.as_ref() {
+                assert!(map.contains_key("name"));
+                assert!(map.contains_key("age"));
+            } else {
+                panic!("Expected JSON Object");
+            }
         } else {
-            panic!("Expected Object value");
+            panic!("Expected Json value");
         }
     }
 
@@ -797,10 +800,10 @@ mod tests {
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::Blob));
-        if let UniversalValue::Bytes(b) = tv.value {
+        if let UniversalValue::Blob(b) = tv.value {
             assert_eq!(b, binary_data);
         } else {
-            panic!("Expected Bytes value");
+            panic!("Expected Blob value, got {:?}", tv.value);
         }
     }
 
@@ -813,7 +816,7 @@ mod tests {
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::Text));
-        if let UniversalValue::String(s) = tv.value {
+        if let UniversalValue::Text(s) = tv.value {
             assert_eq!(s, "long text content");
         } else {
             panic!("Expected String value");
@@ -858,7 +861,7 @@ mod tests {
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::TinyInt { .. }));
-        assert!(matches!(tv.value, UniversalValue::Int32(1)));
+        assert!(matches!(tv.value, UniversalValue::TinyInt { value: 1, .. }));
     }
 
     #[test]
@@ -901,7 +904,7 @@ mod tests {
         let tv = mv.to_typed_value().unwrap();
         // The type still says TinyInt, but value is 5
         assert!(matches!(tv.sync_type, UniversalType::TinyInt { .. }));
-        assert!(matches!(tv.value, UniversalValue::Int32(5)));
+        assert!(matches!(tv.value, UniversalValue::TinyInt { value: 5, .. }));
     }
 
     #[test]
@@ -937,33 +940,37 @@ mod tests {
 
         let tv = json_to_typed_value_with_config(json, "", &config);
 
-        if let UniversalValue::Object(root) = tv.value {
-            // Check settings.enabled is now boolean true
-            if let Some(UniversalValue::Object(settings)) = root.get("settings") {
-                assert!(matches!(
-                    settings.get("enabled"),
-                    Some(UniversalValue::Bool(true))
-                ));
-                // count should still be an integer
-                assert!(matches!(
-                    settings.get("count"),
-                    Some(UniversalValue::Int64(5))
-                ));
-            } else {
-                panic!("Expected settings object");
-            }
+        if let UniversalValue::Json(root) = tv.value {
+            if let serde_json::Value::Object(root_obj) = root.as_ref() {
+                // Check settings.enabled is now boolean true
+                if let Some(serde_json::Value::Object(settings)) = root_obj.get("settings") {
+                    assert!(matches!(
+                        settings.get("enabled"),
+                        Some(serde_json::Value::Bool(true))
+                    ));
+                    // count should still be an integer
+                    assert!(matches!(
+                        settings.get("count"),
+                        Some(serde_json::Value::Number(n)) if n.as_i64() == Some(5)
+                    ));
+                } else {
+                    panic!("Expected settings object");
+                }
 
-            // Check flags.is_active is now boolean false
-            if let Some(UniversalValue::Object(flags)) = root.get("flags") {
-                assert!(matches!(
-                    flags.get("is_active"),
-                    Some(UniversalValue::Bool(false))
-                ));
+                // Check flags.is_active is now boolean false
+                if let Some(serde_json::Value::Object(flags)) = root_obj.get("flags") {
+                    assert!(matches!(
+                        flags.get("is_active"),
+                        Some(serde_json::Value::Bool(false))
+                    ));
+                } else {
+                    panic!("Expected flags object");
+                }
             } else {
-                panic!("Expected flags object");
+                panic!("Expected root to be an object");
             }
         } else {
-            panic!("Expected Object value");
+            panic!("Expected Json value");
         }
     }
 
@@ -979,21 +986,27 @@ mod tests {
 
         let tv = json_to_typed_value_with_config(json, "", &config);
 
-        if let UniversalValue::Object(root) = tv.value {
-            // Check permissions is now an array
-            if let Some(UniversalValue::Array(perms)) = root.get("permissions") {
-                assert_eq!(perms.len(), 3);
-                assert!(matches!(&perms[0], UniversalValue::String(s) if s == "read"));
-                assert!(matches!(&perms[1], UniversalValue::String(s) if s == "write"));
-                assert!(matches!(&perms[2], UniversalValue::String(s) if s == "execute"));
-            } else {
-                panic!("Expected Array value for permissions");
-            }
+        if let UniversalValue::Json(root) = tv.value {
+            if let serde_json::Value::Object(root_obj) = root.as_ref() {
+                // Check permissions is now an array
+                if let Some(serde_json::Value::Array(perms)) = root_obj.get("permissions") {
+                    assert_eq!(perms.len(), 3);
+                    assert!(matches!(&perms[0], serde_json::Value::String(s) if s == "read"));
+                    assert!(matches!(&perms[1], serde_json::Value::String(s) if s == "write"));
+                    assert!(matches!(&perms[2], serde_json::Value::String(s) if s == "execute"));
+                } else {
+                    panic!("Expected Array value for permissions");
+                }
 
-            // name should still be a string
-            assert!(matches!(root.get("name"), Some(UniversalValue::String(s)) if s == "admin"));
+                // name should still be a string
+                assert!(
+                    matches!(root_obj.get("name"), Some(serde_json::Value::String(s)) if s == "admin")
+                );
+            } else {
+                panic!("Expected Object value");
+            }
         } else {
-            panic!("Expected Object value");
+            panic!("Expected Json value");
         }
     }
 
@@ -1009,17 +1022,21 @@ mod tests {
 
         let tv = json_to_typed_value_with_config(json, "", &config);
 
-        if let UniversalValue::Object(root) = tv.value {
-            assert!(matches!(
-                root.get("enabled"),
-                Some(UniversalValue::Int64(1))
-            ));
-            assert!(matches!(
-                root.get("disabled"),
-                Some(UniversalValue::Int64(0))
-            ));
+        if let UniversalValue::Json(root) = tv.value {
+            if let serde_json::Value::Object(root_obj) = root.as_ref() {
+                assert!(matches!(
+                    root_obj.get("enabled"),
+                    Some(serde_json::Value::Number(n)) if n.as_i64() == Some(1)
+                ));
+                assert!(matches!(
+                    root_obj.get("disabled"),
+                    Some(serde_json::Value::Number(n)) if n.as_i64() == Some(0)
+                ));
+            } else {
+                panic!("Expected Object value");
+            }
         } else {
-            panic!("Expected Object value");
+            panic!("Expected Json value");
         }
     }
 
@@ -1210,15 +1227,13 @@ mod tests {
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::Set { .. }));
-        if let UniversalValue::Array(arr) = tv.value {
+        if let UniversalValue::Set { elements, .. } = tv.value {
             // Empty string produces one empty element after split
             // This is expected MySQL behavior
-            assert_eq!(arr.len(), 1);
-            if let UniversalValue::String(s) = &arr[0] {
-                assert_eq!(s, "");
-            }
+            assert_eq!(elements.len(), 1);
+            assert_eq!(elements[0], "");
         } else {
-            panic!("Expected Array value");
+            panic!("Expected Set value");
         }
     }
 
@@ -1231,13 +1246,13 @@ mod tests {
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::Set { .. }));
-        if let UniversalValue::Array(arr) = tv.value {
-            assert_eq!(arr.len(), 3);
-            assert!(matches!(&arr[0], UniversalValue::String(s) if s == "read"));
-            assert!(matches!(&arr[1], UniversalValue::String(s) if s == "write"));
-            assert!(matches!(&arr[2], UniversalValue::String(s) if s == "execute"));
+        if let UniversalValue::Set { elements, .. } = tv.value {
+            assert_eq!(elements.len(), 3);
+            assert_eq!(elements[0], "read");
+            assert_eq!(elements[1], "write");
+            assert_eq!(elements[2], "execute");
         } else {
-            panic!("Expected Array value");
+            panic!("Expected Set value");
         }
     }
 
@@ -1250,7 +1265,11 @@ mod tests {
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::Enum { .. }));
-        assert!(matches!(tv.value, UniversalValue::String(s) if s == "active"));
+        if let UniversalValue::Enum { value, .. } = tv.value {
+            assert_eq!(value, "active");
+        } else {
+            panic!("Expected Enum value, got {:?}", tv.value);
+        }
     }
 
     #[test]
@@ -1295,6 +1314,7 @@ mod tests {
 
     #[test]
     fn test_geometry_column() {
+        use sync_core::values::GeometryData;
         let wkb_point = vec![0x01, 0x01, 0x00, 0x00, 0x00]; // Minimal WKB point prefix
         let mv = MySQLValueWithSchema::new(
             Value::Bytes(wkb_point.clone()),
@@ -1303,10 +1323,14 @@ mod tests {
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::Geometry { .. }));
-        if let UniversalValue::Bytes(b) = tv.value {
-            assert_eq!(b, wkb_point);
+        if let UniversalValue::Geometry { data, .. } = tv.value {
+            if let GeometryData::Wkb(b) = data {
+                assert_eq!(b, wkb_point);
+            } else {
+                panic!("Expected WKB geometry data");
+            }
         } else {
-            panic!("Expected Bytes value");
+            panic!("Expected Geometry value, got {:?}", tv.value);
         }
     }
 
@@ -1319,6 +1343,6 @@ mod tests {
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(tv.sync_type, UniversalType::SmallInt));
-        assert!(matches!(tv.value, UniversalValue::Int32(2024)));
+        assert!(matches!(tv.value, UniversalValue::SmallInt(2024)));
     }
 }

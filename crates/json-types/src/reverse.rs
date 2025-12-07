@@ -4,6 +4,7 @@
 
 use base64::Engine;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
+use serde_json;
 use std::collections::HashMap;
 use sync_core::{TypedValue, UniversalType, UniversalValue};
 
@@ -78,14 +79,14 @@ impl From<JsonValueWithSchema> for TypedValue {
             // Integer types
             (UniversalType::TinyInt { width }, serde_json::Value::Number(n)) => {
                 if let Some(i) = n.as_i64() {
-                    TypedValue::tinyint(i as i32, *width)
+                    TypedValue::tinyint(i as i8, *width)
                 } else {
                     TypedValue::null(UniversalType::TinyInt { width: *width })
                 }
             }
             (UniversalType::SmallInt, serde_json::Value::Number(n)) => {
                 if let Some(i) = n.as_i64() {
-                    TypedValue::smallint(i as i32)
+                    TypedValue::smallint(i as i16)
                 } else {
                     TypedValue::null(UniversalType::SmallInt)
                 }
@@ -108,7 +109,7 @@ impl From<JsonValueWithSchema> for TypedValue {
             // Floating point
             (UniversalType::Float, serde_json::Value::Number(n)) => {
                 if let Some(f) = n.as_f64() {
-                    TypedValue::float(f)
+                    TypedValue::float(f as f32)
                 } else {
                     TypedValue::null(UniversalType::Float)
                 }
@@ -210,20 +211,20 @@ impl From<JsonValueWithSchema> for TypedValue {
 
             // JSON types - can be objects or arrays
             (UniversalType::Json, serde_json::Value::Object(obj)) => {
-                let map = json_object_to_hashmap(obj);
-                TypedValue::json(UniversalValue::Object(map))
+                let value = json_object_to_universal(obj);
+                TypedValue::json(value)
             }
             (UniversalType::Json, serde_json::Value::Array(arr)) => {
-                let values: Vec<UniversalValue> = arr.iter().map(json_value_to_generated).collect();
-                TypedValue::json(UniversalValue::Array(values))
+                let value = json_array_to_universal(arr);
+                TypedValue::json(value)
             }
             (UniversalType::Jsonb, serde_json::Value::Object(obj)) => {
-                let map = json_object_to_hashmap(obj);
-                TypedValue::jsonb(UniversalValue::Object(map))
+                let value = json_object_to_universal(obj);
+                TypedValue::jsonb(value)
             }
             (UniversalType::Jsonb, serde_json::Value::Array(arr)) => {
-                let values: Vec<UniversalValue> = arr.iter().map(json_value_to_generated).collect();
-                TypedValue::jsonb(UniversalValue::Array(values))
+                let value = json_array_to_universal(arr);
+                TypedValue::jsonb(value)
             }
 
             // Array types
@@ -240,17 +241,17 @@ impl From<JsonValueWithSchema> for TypedValue {
 
             // Set - stored as array
             (UniversalType::Set { values: set_values }, serde_json::Value::Array(arr)) => {
-                let values: Vec<UniversalValue> = arr
+                let elements: Vec<String> = arr
                     .iter()
                     .filter_map(|v| {
                         if let serde_json::Value::String(s) = v {
-                            Some(UniversalValue::String(s.clone()))
+                            Some(s.clone())
                         } else {
                             None
                         }
                     })
                     .collect();
-                TypedValue::set(values, set_values.clone())
+                TypedValue::set(elements, set_values.clone())
             }
 
             // Enum - stored as string
@@ -263,8 +264,10 @@ impl From<JsonValueWithSchema> for TypedValue {
 
             // Geometry types - GeoJSON format
             (UniversalType::Geometry { geometry_type }, serde_json::Value::Object(obj)) => {
-                let map = json_object_to_hashmap(obj);
-                TypedValue::geometry_object(map, geometry_type.clone())
+                TypedValue::geometry_geojson(
+                    serde_json::Value::Object(obj.clone()),
+                    geometry_type.clone(),
+                )
             }
 
             // Fallback
@@ -273,36 +276,81 @@ impl From<JsonValueWithSchema> for TypedValue {
     }
 }
 
-/// Convert a JSON object to a HashMap of UniversalValue.
-fn json_object_to_hashmap(
+/// Convert a JSON object to a UniversalValue.
+#[allow(dead_code)]
+fn json_object_to_universal(obj: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+    serde_json::Value::Object(obj.clone())
+}
+
+/// Convert a JSON array to a UniversalValue.
+#[allow(dead_code)]
+fn json_array_to_universal(arr: &[serde_json::Value]) -> serde_json::Value {
+    serde_json::Value::Array(arr.to_vec())
+}
+
+/// Convert a JSON object to a HashMap of UniversalValue (for GeoJSON geometry).
+#[allow(dead_code)]
+fn json_object_to_geojson_hashmap(
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> HashMap<String, UniversalValue> {
     let mut map = HashMap::new();
     for (key, value) in obj {
-        map.insert(key.clone(), json_value_to_generated(value));
+        map.insert(key.clone(), json_value_to_universal(value));
     }
     map
 }
 
+/// Convert a JSON value to UniversalValue.
+#[allow(dead_code)]
+fn json_value_to_universal(value: &serde_json::Value) -> UniversalValue {
+    match value {
+        serde_json::Value::Null => UniversalValue::Null,
+        serde_json::Value::Bool(b) => UniversalValue::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                UniversalValue::BigInt(i)
+            } else if let Some(f) = n.as_f64() {
+                UniversalValue::Double(f)
+            } else {
+                UniversalValue::Text(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => UniversalValue::Text(s.clone()),
+        serde_json::Value::Array(arr) => UniversalValue::Array {
+            elements: arr.iter().map(json_value_to_universal).collect(),
+            element_type: Box::new(UniversalType::Text),
+        },
+        serde_json::Value::Object(obj) => {
+            let mut map = HashMap::new();
+            for (key, val) in obj {
+                map.insert(key.clone(), json_value_to_universal(val));
+            }
+            UniversalValue::Json(Box::new(serde_json::Value::Object(obj.clone())))
+        }
+    }
+}
+
 /// Convert a JSON value to UniversalValue (without type context).
+#[allow(dead_code)]
 fn json_value_to_generated(value: &serde_json::Value) -> UniversalValue {
     match value {
         serde_json::Value::Null => UniversalValue::Null,
         serde_json::Value::Bool(b) => UniversalValue::Bool(*b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                UniversalValue::Int64(i)
+                UniversalValue::BigInt(i)
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Float64(f)
+                UniversalValue::Double(f)
             } else {
                 UniversalValue::Null
             }
         }
-        serde_json::Value::String(s) => UniversalValue::String(s.clone()),
-        serde_json::Value::Array(arr) => {
-            UniversalValue::Array(arr.iter().map(json_value_to_generated).collect())
-        }
-        serde_json::Value::Object(obj) => UniversalValue::Object(json_object_to_hashmap(obj)),
+        serde_json::Value::String(s) => UniversalValue::Text(s.clone()),
+        serde_json::Value::Array(arr) => UniversalValue::Array {
+            elements: arr.iter().map(json_value_to_generated).collect(),
+            element_type: Box::new(sync_core::UniversalType::Text),
+        },
+        serde_json::Value::Object(_obj) => UniversalValue::Json(Box::new(value.clone())),
     }
 }
 
@@ -391,7 +439,14 @@ pub fn json_to_typed_value_with_config(
     config: &JsonConversionConfig,
 ) -> TypedValue {
     let gv = json_to_generated_value_with_config(value, current_path, config);
-    TypedValue::json(gv)
+    // Convert UniversalValue back to serde_json::Value for TypedValue::json
+    let json_value = if let UniversalValue::Json(json_val) = gv {
+        *json_val
+    } else {
+        // For other types, convert to JSON
+        universal_value_to_json(&gv)
+    };
+    TypedValue::json(json_value)
 }
 
 /// Convert JSON to UniversalValue with path-based configuration.
@@ -414,12 +469,12 @@ pub fn json_to_generated_value_with_config(
                     // Convert 0/1 to boolean for specified paths
                     UniversalValue::Bool(i == 1)
                 } else {
-                    UniversalValue::Int64(i)
+                    UniversalValue::BigInt(i)
                 }
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Float64(f)
+                UniversalValue::Double(f)
             } else {
-                UniversalValue::String(n.to_string())
+                UniversalValue::Text(n.to_string())
             }
         }
         serde_json::Value::String(s) => {
@@ -429,16 +484,22 @@ pub fn json_to_generated_value_with_config(
             if is_set_path {
                 // Convert comma-separated SET values to array
                 if s.is_empty() {
-                    UniversalValue::Array(Vec::new())
+                    UniversalValue::Array {
+                        elements: Vec::new(),
+                        element_type: Box::new(sync_core::UniversalType::Text),
+                    }
                 } else {
                     let values: Vec<UniversalValue> = s
                         .split(',')
-                        .map(|v| UniversalValue::String(v.to_string()))
+                        .map(|v| UniversalValue::Text(v.to_string()))
                         .collect();
-                    UniversalValue::Array(values)
+                    UniversalValue::Array {
+                        elements: values,
+                        element_type: Box::new(sync_core::UniversalType::Text),
+                    }
                 }
             } else {
-                UniversalValue::String(s)
+                UniversalValue::Text(s)
             }
         }
         serde_json::Value::Array(arr) => {
@@ -450,7 +511,10 @@ pub fn json_to_generated_value_with_config(
                     json_to_generated_value_with_config(item, &item_path, config)
                 })
                 .collect();
-            UniversalValue::Array(values)
+            UniversalValue::Array {
+                elements: values,
+                element_type: Box::new(sync_core::UniversalType::Text),
+            }
         }
         serde_json::Value::Object(obj) => {
             let map: HashMap<String, UniversalValue> = obj
@@ -462,14 +526,34 @@ pub fn json_to_generated_value_with_config(
                     } else {
                         format!("{current_path}.{key}")
                     };
-                    (
-                        key,
-                        json_to_generated_value_with_config(val, &nested_path, config),
-                    )
+                    // Convert using the config
+                    let converted = json_to_generated_value_with_config(val, &nested_path, config);
+                    (key, converted)
                 })
                 .collect();
-            UniversalValue::Object(map)
+            // Convert the HashMap back to a JSON object
+            let json_obj: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), universal_value_to_json(v)))
+                .collect();
+            UniversalValue::Json(Box::new(serde_json::Value::Object(json_obj)))
         }
+    }
+}
+
+/// Convert an UniversalValue to serde_json::Value (helper for config-based conversion).
+fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
+    match value {
+        UniversalValue::Null => serde_json::Value::Null,
+        UniversalValue::Bool(b) => serde_json::Value::Bool(*b),
+        UniversalValue::BigInt(i) => serde_json::json!(*i),
+        UniversalValue::Double(f) => serde_json::json!(*f),
+        UniversalValue::Text(s) => serde_json::Value::String(s.clone()),
+        UniversalValue::Array { elements, .. } => {
+            serde_json::Value::Array(elements.iter().map(universal_value_to_json).collect())
+        }
+        UniversalValue::Json(json_val) => (**json_val).clone(),
+        _ => serde_json::Value::Null,
     }
 }
 
@@ -556,21 +640,21 @@ mod tests {
     fn test_int_conversion() {
         let jv = JsonValueWithSchema::new(json!(42), UniversalType::Int);
         let tv = TypedValue::from(jv);
-        assert!(matches!(tv.value, UniversalValue::Int32(42)));
+        assert!(matches!(tv.value, UniversalValue::Int(42)));
     }
 
     #[test]
     fn test_bigint_conversion() {
         let jv = JsonValueWithSchema::new(json!(9876543210i64), UniversalType::BigInt);
         let tv = TypedValue::from(jv);
-        assert!(matches!(tv.value, UniversalValue::Int64(9876543210)));
+        assert!(matches!(tv.value, UniversalValue::BigInt(9876543210)));
     }
 
     #[test]
     fn test_float_conversion() {
         let jv = JsonValueWithSchema::new(json!(1.23456), UniversalType::Double);
         let tv = TypedValue::from(jv);
-        if let UniversalValue::Float64(f) = tv.value {
+        if let UniversalValue::Double(f) = tv.value {
             assert!((f - 1.23456).abs() < 0.00001);
         } else {
             panic!("Expected Float64");
@@ -605,7 +689,7 @@ mod tests {
     fn test_string_conversion() {
         let jv = JsonValueWithSchema::new(json!("hello world"), UniversalType::Text);
         let tv = TypedValue::from(jv);
-        assert!(matches!(tv.value, UniversalValue::String(ref s) if s == "hello world"));
+        assert!(matches!(tv.value, UniversalValue::Text(ref s) if s == "hello world"));
     }
 
     #[test]
@@ -616,7 +700,12 @@ mod tests {
             tv.sync_type,
             UniversalType::VarChar { length: 100 }
         ));
-        assert!(matches!(tv.value, UniversalValue::String(ref s) if s == "test"));
+        if let UniversalValue::VarChar { value, length } = tv.value {
+            assert_eq!(value, "test");
+            assert_eq!(length, 100);
+        } else {
+            panic!("Expected VarChar, got {:?}", tv.value);
+        }
     }
 
     #[test]
@@ -659,10 +748,10 @@ mod tests {
     fn test_date_from_string() {
         let jv = JsonValueWithSchema::new(json!("2024-06-15"), UniversalType::Date);
         let tv = TypedValue::from(jv);
-        if let UniversalValue::DateTime(dt) = tv.value {
+        if let UniversalValue::Date(dt) = tv.value {
             assert_eq!(dt.format("%Y-%m-%d").to_string(), "2024-06-15");
         } else {
-            panic!("Expected DateTime");
+            panic!("Expected Date, got {:?}", tv.value);
         }
     }
 
@@ -670,10 +759,10 @@ mod tests {
     fn test_time_from_string() {
         let jv = JsonValueWithSchema::new(json!("14:30:45"), UniversalType::Time);
         let tv = TypedValue::from(jv);
-        if let UniversalValue::DateTime(dt) = tv.value {
+        if let UniversalValue::Time(dt) = tv.value {
             assert_eq!(dt.format("%H:%M:%S").to_string(), "14:30:45");
         } else {
-            panic!("Expected DateTime");
+            panic!("Expected Time, got {:?}", tv.value);
         }
     }
 
@@ -682,54 +771,82 @@ mod tests {
         let jv =
             JsonValueWithSchema::new(json!({"name": "test", "count": 42}), UniversalType::Json);
         let tv = TypedValue::from(jv);
-        if let UniversalValue::Object(map) = tv.value {
-            assert!(matches!(map.get("name"), Some(UniversalValue::String(s)) if s == "test"));
-            assert!(matches!(map.get("count"), Some(UniversalValue::Int64(42))));
+        if let UniversalValue::Json(json_val) = tv.value {
+            if let serde_json::Value::Object(map) = json_val.as_ref() {
+                assert!(
+                    matches!(map.get("name"), Some(serde_json::Value::String(s)) if s == "test")
+                );
+                assert!(
+                    matches!(map.get("count"), Some(serde_json::Value::Number(n)) if n.as_i64() == Some(42))
+                );
+            } else {
+                panic!("Expected Object");
+            }
         } else {
-            panic!("Expected Object");
+            panic!("Expected Json");
         }
     }
 
     #[test]
     fn test_json_array_conversion() {
-        // JSON columns in MySQL can contain arrays - this should work
+        // JSON columns in MySQL can contain arrays - stored as Json with array content
         let jv = JsonValueWithSchema::new(json!([1, 2, 3]), UniversalType::Json);
         let tv = TypedValue::from(jv);
-        if let UniversalValue::Array(values) = tv.value {
-            assert_eq!(values.len(), 3);
-            assert!(matches!(values[0], UniversalValue::Int64(1)));
-            assert!(matches!(values[1], UniversalValue::Int64(2)));
-            assert!(matches!(values[2], UniversalValue::Int64(3)));
+        if let UniversalValue::Json(json_val) = tv.value {
+            if let serde_json::Value::Array(arr) = json_val.as_ref() {
+                assert_eq!(arr.len(), 3);
+                assert!(
+                    matches!(arr[0], serde_json::Value::Number(ref n) if n.as_i64() == Some(1))
+                );
+                assert!(
+                    matches!(arr[1], serde_json::Value::Number(ref n) if n.as_i64() == Some(2))
+                );
+                assert!(
+                    matches!(arr[2], serde_json::Value::Number(ref n) if n.as_i64() == Some(3))
+                );
+            } else {
+                panic!("Expected Array inside Json");
+            }
         } else {
-            panic!("Expected Array, got {:?}", tv.value);
+            panic!("Expected Json, got {:?}", tv.value);
         }
     }
 
     #[test]
     fn test_json_array_of_strings_conversion() {
-        // JSON columns can contain arrays of strings (e.g., tags field)
+        // JSON columns can contain arrays of strings (e.g., tags field) - stored as Json
         let jv = JsonValueWithSchema::new(json!(["tag1", "tag2", "tag3"]), UniversalType::Json);
         let tv = TypedValue::from(jv);
-        if let UniversalValue::Array(values) = tv.value {
-            assert_eq!(values.len(), 3);
-            assert!(matches!(values[0], UniversalValue::String(ref s) if s == "tag1"));
-            assert!(matches!(values[1], UniversalValue::String(ref s) if s == "tag2"));
-            assert!(matches!(values[2], UniversalValue::String(ref s) if s == "tag3"));
+        if let UniversalValue::Json(json_val) = tv.value {
+            if let serde_json::Value::Array(arr) = json_val.as_ref() {
+                assert_eq!(arr.len(), 3);
+                assert!(matches!(arr[0], serde_json::Value::String(ref s) if s == "tag1"));
+                assert!(matches!(arr[1], serde_json::Value::String(ref s) if s == "tag2"));
+                assert!(matches!(arr[2], serde_json::Value::String(ref s) if s == "tag3"));
+            } else {
+                panic!("Expected Array inside Json");
+            }
         } else {
-            panic!("Expected Array, got {:?}", tv.value);
+            panic!("Expected Json, got {:?}", tv.value);
         }
     }
 
     #[test]
     fn test_jsonb_array_conversion() {
-        // JSONB columns can also contain arrays
+        // JSONB columns can also contain arrays - stored as Jsonb
         let jv = JsonValueWithSchema::new(json!([1, 2, 3]), UniversalType::Jsonb);
         let tv = TypedValue::from(jv);
-        if let UniversalValue::Array(values) = tv.value {
-            assert_eq!(values.len(), 3);
-            assert!(matches!(values[0], UniversalValue::Int64(1)));
+        if let UniversalValue::Jsonb(json_val) = tv.value {
+            if let serde_json::Value::Array(arr) = json_val.as_ref() {
+                assert_eq!(arr.len(), 3);
+                assert!(
+                    matches!(arr[0], serde_json::Value::Number(ref n) if n.as_i64() == Some(1))
+                );
+            } else {
+                panic!("Expected Array inside Jsonb");
+            }
         } else {
-            panic!("Expected Array, got {:?}", tv.value);
+            panic!("Expected Jsonb, got {:?}", tv.value);
         }
     }
 
@@ -742,9 +859,9 @@ mod tests {
             },
         );
         let tv = TypedValue::from(jv);
-        if let UniversalValue::Array(values) = tv.value {
-            assert_eq!(values.len(), 3);
-            assert!(matches!(values[0], UniversalValue::Int32(1)));
+        if let UniversalValue::Array { elements, .. } = tv.value {
+            assert_eq!(elements.len(), 3);
+            assert!(matches!(elements[0], UniversalValue::Int(1)));
         } else {
             panic!("Expected Array");
         }
@@ -759,10 +876,12 @@ mod tests {
             },
         );
         let tv = TypedValue::from(jv);
-        if let UniversalValue::Array(values) = tv.value {
-            assert_eq!(values.len(), 2);
+        if let UniversalValue::Set { elements, .. } = tv.value {
+            assert_eq!(elements.len(), 2);
+            assert!(elements.contains(&"a".to_string()));
+            assert!(elements.contains(&"b".to_string()));
         } else {
-            panic!("Expected Array");
+            panic!("Expected Set, got {:?}", tv.value);
         }
     }
 
@@ -775,7 +894,11 @@ mod tests {
             },
         );
         let tv = TypedValue::from(jv);
-        assert!(matches!(tv.value, UniversalValue::String(ref s) if s == "active"));
+        if let UniversalValue::Enum { value, .. } = tv.value {
+            assert_eq!(value, "active");
+        } else {
+            panic!("Expected Enum, got {:?}", tv.value);
+        }
     }
 
     #[test]
@@ -787,10 +910,21 @@ mod tests {
             },
         );
         let tv = TypedValue::from(jv);
-        if let UniversalValue::Object(map) = tv.value {
-            assert!(matches!(map.get("type"), Some(UniversalValue::String(s)) if s == "Point"));
+        if let UniversalValue::Geometry { data, .. } = tv.value {
+            use sync_core::values::GeometryData;
+            if let GeometryData::GeoJson(ref geo_json) = data {
+                if let serde_json::Value::Object(map) = geo_json {
+                    assert!(
+                        matches!(map.get("type"), Some(serde_json::Value::String(s)) if s == "Point")
+                    );
+                } else {
+                    panic!("Expected Object inside GeoJson");
+                }
+            } else {
+                panic!("Expected GeoJson geometry data");
+            }
         } else {
-            panic!("Expected Object");
+            panic!("Expected Geometry, got {:?}", tv.value);
         }
     }
 
@@ -802,10 +936,10 @@ mod tests {
             .clone();
 
         let name = extract_field(&obj, "name", &UniversalType::Text);
-        assert!(matches!(name.value, UniversalValue::String(ref s) if s == "Alice"));
+        assert!(matches!(name.value, UniversalValue::Text(ref s) if s == "Alice"));
 
         let age = extract_field(&obj, "age", &UniversalType::Int);
-        assert!(matches!(age.value, UniversalValue::Int32(30)));
+        assert!(matches!(age.value, UniversalValue::Int(30)));
 
         let missing = extract_field(&obj, "missing", &UniversalType::Text);
         assert!(matches!(missing.value, UniversalValue::Null));
@@ -823,7 +957,7 @@ mod tests {
         let values = parse_jsonl_line(line, &schema).unwrap();
         assert!(matches!(
             values.get("name").unwrap().value,
-            UniversalValue::String(ref s) if s == "Bob"
+            UniversalValue::Text(ref s) if s == "Bob"
         ));
         assert!(matches!(
             values.get("active").unwrap().value,

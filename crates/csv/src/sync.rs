@@ -208,9 +208,9 @@ async fn process_csv_reader(
                 // Use specified field as ID
                 if let Some(id_value) = data.get(id_field) {
                     match &id_value.value {
-                        sync_core::UniversalValue::String(s) => Id::String(s.clone()),
-                        sync_core::UniversalValue::Int32(n) => Id::Number(*n as i64),
-                        sync_core::UniversalValue::Int64(n) => Id::Number(*n),
+                        sync_core::UniversalValue::Text(s) => Id::String(s.clone()),
+                        sync_core::UniversalValue::Int(n) => Id::Number(*n as i64),
+                        sync_core::UniversalValue::BigInt(n) => Id::Number(*n),
                         _ => Id::ulid(), // Fallback to ULID
                     }
                 } else {
@@ -323,9 +323,9 @@ async fn process_csv_reader(
             // Use specified field as ID
             if let Some(id_value) = data.get(id_field) {
                 match &id_value.value {
-                    sync_core::UniversalValue::String(s) => Id::String(s.clone()),
-                    sync_core::UniversalValue::Int32(n) => Id::Number(*n as i64),
-                    sync_core::UniversalValue::Int64(n) => Id::Number(*n),
+                    sync_core::UniversalValue::Text(s) => Id::String(s.clone()),
+                    sync_core::UniversalValue::Int(n) => Id::Number(*n as i64),
+                    sync_core::UniversalValue::BigInt(n) => Id::Number(*n),
                     _ => Id::ulid(), // Fallback to ULID
                 }
             } else {

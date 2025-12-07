@@ -482,13 +482,9 @@ fn convert_value_inferred(value: &Value) -> TypedValue {
         }
         Value::Object(obj) => {
             // Convert as regular object (Thing rules already checked in convert_value_with_schema)
-            let mut map = HashMap::new();
-            for (key, val) in obj {
-                map.insert(key.clone(), convert_value_inferred(val).value);
-            }
             TypedValue {
                 sync_type: UniversalType::Json,
-                value: UniversalValue::Object(map),
+                value: UniversalValue::Json(Box::new(serde_json::Value::Object(obj.clone()))),
             }
         }
     }
