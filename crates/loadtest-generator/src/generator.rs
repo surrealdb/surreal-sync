@@ -4,7 +4,7 @@ use crate::generators::generate_value_typed;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::collections::HashMap;
-use sync_core::{UniversalRow, Schema, UniversalValue};
+use sync_core::{Schema, UniversalRow, UniversalValue};
 
 /// Error type for generator operations.
 #[derive(Debug, thiserror::Error)]

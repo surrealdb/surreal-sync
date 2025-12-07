@@ -5,7 +5,7 @@ use crate::insert::{generate_create_table, generate_drop_table, insert_batch, DE
 use loadtest_generator::DataGenerator;
 use mysql_async::{prelude::*, Pool};
 use std::time::{Duration, Instant};
-use sync_core::{UniversalRow, Schema};
+use sync_core::{Schema, UniversalRow};
 use tracing::{debug, info};
 
 /// Metrics from a populate operation.

@@ -114,7 +114,7 @@ impl PostgreSQLValueWithSchema {
         // Handle NULL first
         if matches!(self.value, PostgreSQLRawValue::Null) {
             let sync_type = pg_type_to_sync_type(&self.pg_type);
-            return Ok(TypedValue::new(sync_type, UniversalValue::Null));
+            return Ok(TypedValue::null(sync_type));
         }
 
         match &self.pg_type {
@@ -133,10 +133,7 @@ impl PostgreSQLValueWithSchema {
             // Integer types
             t if *t == Type::INT2 => {
                 if let PostgreSQLRawValue::Int16(i) = self.value {
-                    Ok(TypedValue::new(
-                        UniversalType::SmallInt,
-                        UniversalValue::Int32(i as i32),
-                    ))
+                    Ok(TypedValue::smallint(i as i32))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "int16".to_string(),
@@ -223,10 +220,7 @@ impl PostgreSQLValueWithSchema {
             // Binary
             t if *t == Type::BYTEA => {
                 if let PostgreSQLRawValue::Bytes(b) = &self.value {
-                    Ok(TypedValue::new(
-                        UniversalType::Bytes,
-                        UniversalValue::Bytes(b.clone()),
-                    ))
+                    Ok(TypedValue::bytes(b.clone()))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "bytes".to_string(),
@@ -251,10 +245,7 @@ impl PostgreSQLValueWithSchema {
             t if *t == Type::DATE => {
                 if let PostgreSQLRawValue::Date(d) = &self.value {
                     let dt = d.and_hms_opt(0, 0, 0).unwrap().and_utc();
-                    Ok(TypedValue::new(
-                        UniversalType::Date,
-                        UniversalValue::DateTime(dt),
-                    ))
+                    Ok(TypedValue::date(dt))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "date".to_string(),
@@ -268,10 +259,7 @@ impl PostgreSQLValueWithSchema {
                 if let PostgreSQLRawValue::Time(t) = &self.value {
                     let today = chrono::Utc::now().date_naive();
                     let dt = NaiveDateTime::new(today, *t).and_utc();
-                    Ok(TypedValue::new(
-                        UniversalType::Time,
-                        UniversalValue::DateTime(dt),
-                    ))
+                    Ok(TypedValue::time(dt))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "time".to_string(),
@@ -295,10 +283,7 @@ impl PostgreSQLValueWithSchema {
             // Timestamp with timezone
             t if *t == Type::TIMESTAMPTZ => {
                 if let PostgreSQLRawValue::TimestampTz(ts) = &self.value {
-                    Ok(TypedValue::new(
-                        UniversalType::TimestampTz,
-                        UniversalValue::DateTime(*ts),
-                    ))
+                    Ok(TypedValue::timestamptz(*ts))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "timestamptz".to_string(),
@@ -311,12 +296,11 @@ impl PostgreSQLValueWithSchema {
             t if *t == Type::JSON || *t == Type::JSONB => {
                 if let PostgreSQLRawValue::Json(j) = &self.value {
                     let gv = json_to_generated_value(j.clone());
-                    let sync_type = if *t == Type::JSONB {
-                        UniversalType::Jsonb
+                    if *t == Type::JSONB {
+                        Ok(TypedValue::jsonb(gv))
                     } else {
-                        UniversalType::Json
-                    };
-                    Ok(TypedValue::new(sync_type, gv))
+                        Ok(TypedValue::json(gv))
+                    }
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "json".to_string(),
@@ -400,12 +384,7 @@ impl PostgreSQLValueWithSchema {
                     let mut bytes = Vec::with_capacity(16);
                     bytes.extend_from_slice(&x.to_le_bytes());
                     bytes.extend_from_slice(&y.to_le_bytes());
-                    Ok(TypedValue::new(
-                        UniversalType::Geometry {
-                            geometry_type: GeometryType::Point,
-                        },
-                        UniversalValue::Bytes(bytes),
-                    ))
+                    Ok(TypedValue::geometry_bytes(bytes, GeometryType::Point))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "point".to_string(),

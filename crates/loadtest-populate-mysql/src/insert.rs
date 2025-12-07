@@ -3,7 +3,7 @@
 use crate::error::MySQLPopulatorError;
 use mysql_async::{prelude::*, Params, Pool, Value};
 use mysql_types::forward::MySQLValue;
-use sync_core::{UniversalRow, Schema, TableDefinition, TypedValue};
+use sync_core::{Schema, TableDefinition, TypedValue, UniversalRow};
 
 /// Default batch size for INSERT operations.
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -45,7 +45,7 @@ pub async fn insert_batch(
 
     for row in rows {
         // Add the ID
-        let id_typed = TypedValue::new(table_schema.id.id_type.clone(), row.id.clone());
+        let id_typed = TypedValue::with_type(table_schema.id.id_type.clone(), row.id.clone());
         let id_mysql: MySQLValue = id_typed.into();
         params.push(id_mysql.into_inner());
 
@@ -53,7 +53,9 @@ pub async fn insert_batch(
         for field_schema in &table_schema.fields {
             let field_value = row.get_field(&field_schema.name);
             let typed_value = match field_value {
-                Some(value) => TypedValue::new(field_schema.field_type.clone(), value.clone()),
+                Some(value) => {
+                    TypedValue::with_type(field_schema.field_type.clone(), value.clone())
+                }
                 None => TypedValue::null(field_schema.field_type.clone()),
             };
             let mysql_value: MySQLValue = typed_value.into();
@@ -97,7 +99,7 @@ pub async fn insert_single(
     let mut params: Vec<Value> = Vec::with_capacity(columns.len());
 
     // Add the ID
-    let id_typed = TypedValue::new(table_schema.id.id_type.clone(), row.id.clone());
+    let id_typed = TypedValue::with_type(table_schema.id.id_type.clone(), row.id.clone());
     let id_mysql: MySQLValue = id_typed.into();
     params.push(id_mysql.into_inner());
 
@@ -105,7 +107,7 @@ pub async fn insert_single(
     for field_schema in &table_schema.fields {
         let field_value = row.get_field(&field_schema.name);
         let typed_value = match field_value {
-            Some(value) => TypedValue::new(field_schema.field_type.clone(), value.clone()),
+            Some(value) => TypedValue::with_type(field_schema.field_type.clone(), value.clone()),
             None => TypedValue::null(field_schema.field_type.clone()),
         };
         let mysql_value: MySQLValue = typed_value.into();

@@ -78,10 +78,7 @@ impl From<JsonValueWithSchema> for TypedValue {
             // Integer types
             (UniversalType::TinyInt { width }, serde_json::Value::Number(n)) => {
                 if let Some(i) = n.as_i64() {
-                    TypedValue {
-                        sync_type: UniversalType::TinyInt { width: *width },
-                        value: UniversalValue::Int32(i as i32),
-                    }
+                    TypedValue::tinyint(i as i32, *width)
                 } else {
                     TypedValue::null(UniversalType::TinyInt { width: *width })
                 }
@@ -133,23 +130,18 @@ impl From<JsonValueWithSchema> for TypedValue {
             }
 
             // String types
-            (UniversalType::Char { length }, serde_json::Value::String(s)) => TypedValue {
-                sync_type: UniversalType::Char { length: *length },
-                value: UniversalValue::String(s.clone()),
-            },
-            (UniversalType::VarChar { length }, serde_json::Value::String(s)) => TypedValue {
-                sync_type: UniversalType::VarChar { length: *length },
-                value: UniversalValue::String(s.clone()),
-            },
+            (UniversalType::Char { length }, serde_json::Value::String(s)) => {
+                TypedValue::char_type(s, *length)
+            }
+            (UniversalType::VarChar { length }, serde_json::Value::String(s)) => {
+                TypedValue::varchar(s, *length)
+            }
             (UniversalType::Text, serde_json::Value::String(s)) => TypedValue::text(s),
 
             // Binary types - base64 encoded in JSON
             (UniversalType::Blob, serde_json::Value::String(s)) => {
                 match base64::engine::general_purpose::STANDARD.decode(s) {
-                    Ok(bytes) => TypedValue {
-                        sync_type: UniversalType::Blob,
-                        value: UniversalValue::Bytes(bytes),
-                    },
+                    Ok(bytes) => TypedValue::blob(bytes),
                     Err(_) => TypedValue::null(UniversalType::Blob),
                 }
             }
@@ -179,20 +171,14 @@ impl From<JsonValueWithSchema> for TypedValue {
             }
             (UniversalType::DateTimeNano, serde_json::Value::String(s)) => {
                 if let Some(dt) = parse_datetime_string(s) {
-                    TypedValue {
-                        sync_type: UniversalType::DateTimeNano,
-                        value: UniversalValue::DateTime(dt),
-                    }
+                    TypedValue::datetime_nano(dt)
                 } else {
                     TypedValue::null(UniversalType::DateTimeNano)
                 }
             }
             (UniversalType::TimestampTz, serde_json::Value::String(s)) => {
                 if let Some(dt) = parse_datetime_string(s) {
-                    TypedValue {
-                        sync_type: UniversalType::TimestampTz,
-                        value: UniversalValue::DateTime(dt),
-                    }
+                    TypedValue::timestamptz(dt)
                 } else {
                     TypedValue::null(UniversalType::TimestampTz)
                 }
@@ -203,10 +189,7 @@ impl From<JsonValueWithSchema> for TypedValue {
                 if let Ok(dt) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
                     let datetime = dt.and_hms_opt(0, 0, 0).unwrap();
                     let utc_dt = DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc);
-                    TypedValue {
-                        sync_type: UniversalType::Date,
-                        value: UniversalValue::DateTime(utc_dt),
-                    }
+                    TypedValue::date(utc_dt)
                 } else {
                     TypedValue::null(UniversalType::Date)
                 }
@@ -219,10 +202,7 @@ impl From<JsonValueWithSchema> for TypedValue {
                         .unwrap()
                         .and_time(time);
                     let utc_dt = DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc);
-                    TypedValue {
-                        sync_type: UniversalType::Time,
-                        value: UniversalValue::DateTime(utc_dt),
-                    }
+                    TypedValue::time(utc_dt)
                 } else {
                     TypedValue::null(UniversalType::Time)
                 }
@@ -231,31 +211,19 @@ impl From<JsonValueWithSchema> for TypedValue {
             // JSON types - can be objects or arrays
             (UniversalType::Json, serde_json::Value::Object(obj)) => {
                 let map = json_object_to_hashmap(obj);
-                TypedValue {
-                    sync_type: UniversalType::Json,
-                    value: UniversalValue::Object(map),
-                }
+                TypedValue::json(UniversalValue::Object(map))
             }
             (UniversalType::Json, serde_json::Value::Array(arr)) => {
                 let values: Vec<UniversalValue> = arr.iter().map(json_value_to_generated).collect();
-                TypedValue {
-                    sync_type: UniversalType::Json,
-                    value: UniversalValue::Array(values),
-                }
+                TypedValue::json(UniversalValue::Array(values))
             }
             (UniversalType::Jsonb, serde_json::Value::Object(obj)) => {
                 let map = json_object_to_hashmap(obj);
-                TypedValue {
-                    sync_type: UniversalType::Jsonb,
-                    value: UniversalValue::Object(map),
-                }
+                TypedValue::jsonb(UniversalValue::Object(map))
             }
             (UniversalType::Jsonb, serde_json::Value::Array(arr)) => {
                 let values: Vec<UniversalValue> = arr.iter().map(json_value_to_generated).collect();
-                TypedValue {
-                    sync_type: UniversalType::Jsonb,
-                    value: UniversalValue::Array(values),
-                }
+                TypedValue::jsonb(UniversalValue::Array(values))
             }
 
             // Array types
@@ -282,12 +250,7 @@ impl From<JsonValueWithSchema> for TypedValue {
                         }
                     })
                     .collect();
-                TypedValue {
-                    sync_type: UniversalType::Set {
-                        values: set_values.clone(),
-                    },
-                    value: UniversalValue::Array(values),
-                }
+                TypedValue::set(values, set_values.clone())
             }
 
             // Enum - stored as string
@@ -296,22 +259,12 @@ impl From<JsonValueWithSchema> for TypedValue {
                     values: enum_values,
                 },
                 serde_json::Value::String(s),
-            ) => TypedValue {
-                sync_type: UniversalType::Enum {
-                    values: enum_values.clone(),
-                },
-                value: UniversalValue::String(s.clone()),
-            },
+            ) => TypedValue::enum_type(s.clone(), enum_values.clone()),
 
             // Geometry types - GeoJSON format
             (UniversalType::Geometry { geometry_type }, serde_json::Value::Object(obj)) => {
                 let map = json_object_to_hashmap(obj);
-                TypedValue {
-                    sync_type: UniversalType::Geometry {
-                        geometry_type: geometry_type.clone(),
-                    },
-                    value: UniversalValue::Object(map),
-                }
+                TypedValue::geometry_object(map, geometry_type.clone())
             }
 
             // Fallback
@@ -438,7 +391,7 @@ pub fn json_to_typed_value_with_config(
     config: &JsonConversionConfig,
 ) -> TypedValue {
     let gv = json_to_generated_value_with_config(value, current_path, config);
-    TypedValue::new(UniversalType::Json, gv)
+    TypedValue::json(gv)
 }
 
 /// Convert JSON to UniversalValue with path-based configuration.

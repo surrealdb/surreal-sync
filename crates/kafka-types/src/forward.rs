@@ -6,15 +6,15 @@
 use crate::error::{KafkaTypesError, Result};
 use protobuf::CodedOutputStream;
 use std::collections::HashMap;
-use sync_core::{InternalRow, TableDefinition, TypedValue, UniversalType, UniversalValue};
+use sync_core::{TableDefinition, TypedValue, UniversalRow, UniversalType, UniversalValue};
 
-/// Encode an InternalRow to protobuf binary format.
+/// Encode an UniversalRow to protobuf binary format.
 ///
 /// The encoding follows proto3 wire format:
 /// - Each field is encoded as (tag, value) pairs
 /// - Tag = (field_number << 3) | wire_type
 /// - Wire types: 0=varint, 1=64-bit, 2=length-delimited, 5=32-bit
-pub fn encode_row(row: &InternalRow, table_schema: &TableDefinition) -> Result<Vec<u8>> {
+pub fn encode_row(row: &UniversalRow, table_schema: &TableDefinition) -> Result<Vec<u8>> {
     let mut buffer = Vec::new();
     {
         let mut stream = CodedOutputStream::vec(&mut buffer);
@@ -186,10 +186,10 @@ pub fn encode_generated_value(
     Ok(())
 }
 
-/// Get the Kafka message key from an InternalRow.
+/// Get the Kafka message key from an UniversalRow.
 ///
 /// Uses the id field value as the message key.
-pub fn get_message_key(row: &InternalRow) -> Vec<u8> {
+pub fn get_message_key(row: &UniversalRow) -> Vec<u8> {
     generated_value_to_key(&row.id)
 }
 
@@ -297,7 +297,7 @@ mod tests {
         fields.insert("age".to_string(), UniversalValue::Int32(25));
         fields.insert("is_active".to_string(), UniversalValue::Bool(true));
 
-        let row = InternalRow::new("users", 0, UniversalValue::Int64(1), fields);
+        let row = UniversalRow::new("users", 0, UniversalValue::Int64(1), fields);
 
         let encoded = encode_row(&row, &schema).unwrap();
         assert!(!encoded.is_empty());
@@ -335,7 +335,7 @@ mod tests {
         let mut fields = HashMap::new();
         fields.insert("created_at".to_string(), UniversalValue::DateTime(dt));
 
-        let row = InternalRow::new("events", 0, UniversalValue::Int64(1), fields);
+        let row = UniversalRow::new("events", 0, UniversalValue::Int64(1), fields);
         let encoded = encode_row(&row, &schema).unwrap();
         assert!(!encoded.is_empty());
     }
@@ -371,14 +371,14 @@ mod tests {
             ]),
         );
 
-        let row = InternalRow::new("products", 0, UniversalValue::Int64(1), fields);
+        let row = UniversalRow::new("products", 0, UniversalValue::Int64(1), fields);
         let encoded = encode_row(&row, &schema).unwrap();
         assert!(!encoded.is_empty());
     }
 
     #[test]
     fn test_get_message_key_int() {
-        let row = InternalRow::new("test", 0, UniversalValue::Int64(42), HashMap::new());
+        let row = UniversalRow::new("test", 0, UniversalValue::Int64(42), HashMap::new());
         let key = get_message_key(&row);
         assert_eq!(key, b"42");
     }
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn test_get_message_key_uuid() {
         let uuid = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let row = InternalRow::new("test", 0, UniversalValue::Uuid(uuid), HashMap::new());
+        let row = UniversalRow::new("test", 0, UniversalValue::Uuid(uuid), HashMap::new());
         let key = get_message_key(&row);
         assert_eq!(
             String::from_utf8(key).unwrap(),
@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn test_get_message_key_string() {
-        let row = InternalRow::new(
+        let row = UniversalRow::new(
             "test",
             0,
             UniversalValue::String("my-key".to_string()),

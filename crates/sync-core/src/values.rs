@@ -174,9 +174,17 @@ pub struct TypedValue {
 }
 
 impl TypedValue {
-    /// Create a new typed value.
-    pub fn new(sync_type: UniversalType, value: UniversalValue) -> Self {
+    /// Create a new typed value (internal use - prefer factory methods).
+    fn new(sync_type: UniversalType, value: UniversalValue) -> Self {
         Self { sync_type, value }
+    }
+
+    /// Create a typed value with a dynamically specified type.
+    ///
+    /// This is useful when the type is determined at runtime (e.g., from schema).
+    /// For known types, prefer the specific factory methods like `bool()`, `int()`, etc.
+    pub fn with_type(sync_type: UniversalType, value: UniversalValue) -> Self {
+        Self::new(sync_type, value)
     }
 
     /// Create a boolean typed value.
@@ -261,6 +269,110 @@ impl TypedValue {
         Self::new(UniversalType::Json, UniversalValue::Object(obj))
     }
 
+    /// Create a JSON typed value with any UniversalValue.
+    pub fn json(value: UniversalValue) -> Self {
+        Self::new(UniversalType::Json, value)
+    }
+
+    /// Create a JSONB typed value with any UniversalValue.
+    pub fn jsonb(value: UniversalValue) -> Self {
+        Self::new(UniversalType::Jsonb, value)
+    }
+
+    /// Create a TINYINT typed value with optional width.
+    pub fn tinyint(value: i32, width: u8) -> Self {
+        Self::new(
+            UniversalType::TinyInt { width },
+            UniversalValue::Int32(value),
+        )
+    }
+
+    /// Create a CHAR typed value with specified length.
+    pub fn char_type(value: impl Into<String>, length: u16) -> Self {
+        Self::new(
+            UniversalType::Char { length },
+            UniversalValue::String(value.into()),
+        )
+    }
+
+    /// Create a VARCHAR typed value with specified length.
+    pub fn varchar(value: impl Into<String>, length: u16) -> Self {
+        Self::new(
+            UniversalType::VarChar { length },
+            UniversalValue::String(value.into()),
+        )
+    }
+
+    /// Create a BLOB typed value.
+    pub fn blob(value: Vec<u8>) -> Self {
+        Self::new(UniversalType::Blob, UniversalValue::Bytes(value))
+    }
+
+    /// Create a DATE typed value from a DateTime.
+    pub fn date(value: DateTime<Utc>) -> Self {
+        Self::new(UniversalType::Date, UniversalValue::DateTime(value))
+    }
+
+    /// Create a DATE typed value from a string.
+    pub fn date_string(value: impl Into<String>) -> Self {
+        Self::new(UniversalType::Date, UniversalValue::String(value.into()))
+    }
+
+    /// Create a TIME typed value from a DateTime.
+    pub fn time(value: DateTime<Utc>) -> Self {
+        Self::new(UniversalType::Time, UniversalValue::DateTime(value))
+    }
+
+    /// Create a TIME typed value from a string.
+    pub fn time_string(value: impl Into<String>) -> Self {
+        Self::new(UniversalType::Time, UniversalValue::String(value.into()))
+    }
+
+    /// Create a TIMESTAMPTZ typed value.
+    pub fn timestamptz(value: DateTime<Utc>) -> Self {
+        Self::new(UniversalType::TimestampTz, UniversalValue::DateTime(value))
+    }
+
+    /// Create a DATETIME with nanosecond precision typed value.
+    pub fn datetime_nano(value: DateTime<Utc>) -> Self {
+        Self::new(UniversalType::DateTimeNano, UniversalValue::DateTime(value))
+    }
+
+    /// Create an ENUM typed value.
+    pub fn enum_type(value: impl Into<String>, variants: Vec<String>) -> Self {
+        Self::new(
+            UniversalType::Enum { values: variants },
+            UniversalValue::String(value.into()),
+        )
+    }
+
+    /// Create a SET typed value.
+    pub fn set(values: Vec<UniversalValue>, variants: Vec<String>) -> Self {
+        Self::new(
+            UniversalType::Set { values: variants },
+            UniversalValue::Array(values),
+        )
+    }
+
+    /// Create a GEOMETRY typed value from bytes.
+    pub fn geometry_bytes(value: Vec<u8>, geometry_type: crate::types::GeometryType) -> Self {
+        Self::new(
+            UniversalType::Geometry { geometry_type },
+            UniversalValue::Bytes(value),
+        )
+    }
+
+    /// Create a GEOMETRY typed value from an object (GeoJSON).
+    pub fn geometry_object(
+        value: std::collections::HashMap<String, UniversalValue>,
+        geometry_type: crate::types::GeometryType,
+    ) -> Self {
+        Self::new(
+            UniversalType::Geometry { geometry_type },
+            UniversalValue::Object(value),
+        )
+    }
+
     /// Check if this typed value is null.
     pub fn is_null(&self) -> bool {
         self.value.is_null()
@@ -304,7 +416,11 @@ impl UniversalRow {
     }
 
     /// Create a new internal row with a builder pattern.
-    pub fn builder(table: impl Into<String>, index: u64, id: UniversalValue) -> UniversalRowBuilder {
+    pub fn builder(
+        table: impl Into<String>,
+        index: u64,
+        id: UniversalValue,
+    ) -> UniversalRowBuilder {
         UniversalRowBuilder {
             table: table.into(),
             index,

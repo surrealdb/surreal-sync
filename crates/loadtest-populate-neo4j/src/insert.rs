@@ -2,7 +2,7 @@
 
 use crate::error::Neo4jPopulatorError;
 use neo4rs::{query, Graph, Query};
-use sync_core::{UniversalRow, TableDefinition, TypedValue, UniversalType, UniversalValue};
+use sync_core::{TableDefinition, TypedValue, UniversalRow, UniversalType, UniversalValue};
 use tracing::debug;
 
 /// Default batch size for INSERT operations.
@@ -58,7 +58,7 @@ fn build_create_node_query(
     for field_schema in &table_schema.fields {
         let field_value = row.get_field(&field_schema.name);
         let typed_value = match field_value {
-            Some(value) => TypedValue::new(field_schema.field_type.clone(), value.clone()),
+            Some(value) => TypedValue::with_type(field_schema.field_type.clone(), value.clone()),
             None => TypedValue::null(field_schema.field_type.clone()),
         };
         let neo4j_literal = typed_to_neo4j_literal(&typed_value);
@@ -133,7 +133,7 @@ fn generated_to_neo4j_literal(value: &UniversalValue, parent_type: &UniversalTyp
         _ => UniversalType::Text, // Fallback
     };
 
-    let typed = TypedValue::new(element_type, value.clone());
+    let typed = TypedValue::with_type(element_type, value.clone());
     typed_to_neo4j_literal(&typed)
 }
 
@@ -174,7 +174,6 @@ pub async fn count_nodes(graph: &Graph, label: &str) -> Result<u64, Neo4jPopulat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::UniversalValue;
 
     #[test]
     fn test_escape_neo4j_string() {
@@ -185,16 +184,13 @@ mod tests {
 
     #[test]
     fn test_typed_to_neo4j_literal() {
-        let int_val = TypedValue::new(UniversalType::Int, UniversalValue::Int32(42));
+        let int_val = TypedValue::int(42);
         assert_eq!(typed_to_neo4j_literal(&int_val), "42");
 
-        let str_val = TypedValue::new(
-            UniversalType::Text,
-            UniversalValue::String("hello".to_string()),
-        );
+        let str_val = TypedValue::text("hello");
         assert_eq!(typed_to_neo4j_literal(&str_val), "'hello'");
 
-        let bool_val = TypedValue::new(UniversalType::Bool, UniversalValue::Bool(true));
+        let bool_val = TypedValue::bool(true);
         assert_eq!(typed_to_neo4j_literal(&bool_val), "true");
 
         let null_val = TypedValue::null(UniversalType::Text);

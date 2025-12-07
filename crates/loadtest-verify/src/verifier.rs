@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use surrealdb::engine::any::Any;
 use surrealdb::sql::Value as SurrealValue;
 use surrealdb::Surreal;
-use sync_core::{UniversalRow, Schema, TableDefinition};
+use sync_core::{Schema, TableDefinition, UniversalRow};
 use tracing::{debug, info, warn};
 
 /// Streaming verifier that generates expected data and compares with SurrealDB.

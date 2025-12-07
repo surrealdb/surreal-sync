@@ -13,7 +13,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use sync_core::{UniversalRow, Schema};
+use sync_core::{Schema, UniversalRow};
 use tempfile::TempDir;
 use tracing::{debug, info};
 

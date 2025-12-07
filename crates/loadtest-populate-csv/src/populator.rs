@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use sync_core::{UniversalRow, Schema, TableDefinition, TypedValue};
+use sync_core::{Schema, TableDefinition, TypedValue, UniversalRow};
 use tracing::{debug, info};
 
 /// Default buffer size for CSV writing.
@@ -287,7 +287,7 @@ fn internal_row_to_csv_record(row: &UniversalRow, table_schema: &TableDefinition
     let mut record = Vec::new();
 
     // Add the ID
-    let id_typed = TypedValue::new(table_schema.id.id_type.clone(), row.id.clone());
+    let id_typed = TypedValue::with_type(table_schema.id.id_type.clone(), row.id.clone());
     let id_csv: CsvValue = id_typed.into();
     record.push(id_csv.into_inner());
 
@@ -295,7 +295,7 @@ fn internal_row_to_csv_record(row: &UniversalRow, table_schema: &TableDefinition
     for field_schema in &table_schema.fields {
         let field_value = row.get_field(&field_schema.name);
         let typed_value = match field_value {
-            Some(value) => TypedValue::new(field_schema.field_type.clone(), value.clone()),
+            Some(value) => TypedValue::with_type(field_schema.field_type.clone(), value.clone()),
             None => TypedValue::null(field_schema.field_type.clone()),
         };
         let csv_value: CsvValue = typed_value.into();

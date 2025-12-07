@@ -5,7 +5,7 @@ use crate::insert::{count_nodes, delete_all_nodes, insert_batch, DEFAULT_BATCH_S
 use loadtest_generator::DataGenerator;
 use neo4rs::{ConfigBuilder, Graph};
 use std::time::{Duration, Instant};
-use sync_core::{UniversalRow, Schema};
+use sync_core::{Schema, UniversalRow};
 use tracing::{debug, info};
 
 /// Metrics from a populate operation.

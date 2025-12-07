@@ -155,53 +155,36 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                     // Values other than 0/1 stay as integer even for boolean columns
                 }
 
-                Ok(TypedValue::new(
-                    UniversalType::TinyInt {
-                        width: mv.column_length.unwrap_or(4) as u8,
-                    },
-                    UniversalValue::Int32(i as i32),
+                Ok(TypedValue::tinyint(
+                    i as i32,
+                    mv.column_length.unwrap_or(4) as u8,
                 ))
             }
 
             MYSQL_TYPE_SHORT => {
                 let i = extract_int(&mv.value)?;
-                Ok(TypedValue::new(
-                    UniversalType::SmallInt,
-                    UniversalValue::Int32(i as i32),
-                ))
+                Ok(TypedValue::smallint(i as i32))
             }
 
             MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => {
                 let i = extract_int(&mv.value)?;
-                Ok(TypedValue::new(
-                    UniversalType::Int,
-                    UniversalValue::Int32(i as i32),
-                ))
+                Ok(TypedValue::int(i as i32))
             }
 
             MYSQL_TYPE_LONGLONG => {
                 let i = extract_int(&mv.value)?;
-                Ok(TypedValue::new(
-                    UniversalType::BigInt,
-                    UniversalValue::Int64(i),
-                ))
+                Ok(TypedValue::bigint(i))
             }
 
             // Floating point
             MYSQL_TYPE_FLOAT => {
                 let f = extract_float(&mv.value)?;
-                Ok(TypedValue::new(
-                    UniversalType::Float,
-                    UniversalValue::Float64(f),
-                ))
+                Ok(TypedValue::float(f))
             }
 
             MYSQL_TYPE_DOUBLE => {
                 let f = extract_float(&mv.value)?;
-                Ok(TypedValue::new(
-                    UniversalType::Double,
-                    UniversalValue::Float64(f),
-                ))
+                Ok(TypedValue::double(f))
             }
 
             // Decimal
@@ -216,10 +199,7 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             MYSQL_TYPE_STRING => {
                 let s = extract_string(&mv.value)?;
                 let length = mv.column_length.unwrap_or(255) as u16;
-                Ok(TypedValue::new(
-                    UniversalType::Char { length },
-                    UniversalValue::String(s),
-                ))
+                Ok(TypedValue::char_type(s, length))
             }
 
             MYSQL_TYPE_VAR_STRING | MYSQL_TYPE_VARCHAR => {
@@ -233,10 +213,7 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                     }
                 }
 
-                Ok(TypedValue::new(
-                    UniversalType::VarChar { length },
-                    UniversalValue::String(s),
-                ))
+                Ok(TypedValue::varchar(s, length))
             }
 
             MYSQL_TYPE_TINY_BLOB
@@ -245,35 +222,23 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             | MYSQL_TYPE_LONG_BLOB => {
                 if mv.column_flags.contains(ColumnFlags::BINARY_FLAG) {
                     let bytes = extract_bytes(&mv.value)?;
-                    Ok(TypedValue::new(
-                        UniversalType::Blob,
-                        UniversalValue::Bytes(bytes),
-                    ))
+                    Ok(TypedValue::blob(bytes))
                 } else {
                     // TEXT types
                     let s = extract_string(&mv.value)?;
-                    Ok(TypedValue::new(
-                        UniversalType::Text,
-                        UniversalValue::String(s),
-                    ))
+                    Ok(TypedValue::text(s))
                 }
             }
 
             // Date/time types
             MYSQL_TYPE_DATE => {
                 let dt = extract_date(&mv.value)?;
-                Ok(TypedValue::new(
-                    UniversalType::Date,
-                    UniversalValue::String(dt.format("%Y-%m-%d").to_string()),
-                ))
+                Ok(TypedValue::date_string(dt.format("%Y-%m-%d").to_string()))
             }
 
             MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => {
                 let time = extract_time(&mv.value)?;
-                Ok(TypedValue::new(
-                    UniversalType::Time,
-                    UniversalValue::String(time.format("%H:%M:%S").to_string()),
-                ))
+                Ok(TypedValue::time_string(time.format("%H:%M:%S").to_string()))
             }
 
             MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => {
@@ -283,18 +248,12 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
 
             MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => {
                 let dt = extract_datetime(&mv.value)?;
-                Ok(TypedValue::new(
-                    UniversalType::TimestampTz,
-                    UniversalValue::DateTime(dt),
-                ))
+                Ok(TypedValue::timestamptz(dt))
             }
 
             MYSQL_TYPE_YEAR => {
                 let i = extract_int(&mv.value)?;
-                Ok(TypedValue::new(
-                    UniversalType::SmallInt,
-                    UniversalValue::Int32(i as i32),
-                ))
+                Ok(TypedValue::smallint(i as i32))
             }
 
             // JSON
@@ -307,20 +266,14 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                         &JsonConversionConfig::default(),
                     ))
                 } else {
-                    Ok(TypedValue::new(
-                        UniversalType::Json,
-                        UniversalValue::String(s),
-                    ))
+                    Ok(TypedValue::json(UniversalValue::String(s)))
                 }
             }
 
             // Enum and Set
             MYSQL_TYPE_ENUM => {
                 let s = extract_string(&mv.value)?;
-                Ok(TypedValue::new(
-                    UniversalType::Enum { values: vec![] },
-                    UniversalValue::String(s),
-                ))
+                Ok(TypedValue::enum_type(s, vec![]))
             }
 
             MYSQL_TYPE_SET => {
@@ -329,20 +282,15 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                     .split(',')
                     .map(|v| UniversalValue::String(v.to_string()))
                     .collect();
-                Ok(TypedValue::new(
-                    UniversalType::Set { values: vec![] },
-                    UniversalValue::Array(values),
-                ))
+                Ok(TypedValue::set(values, vec![]))
             }
 
             // Geometry
             MYSQL_TYPE_GEOMETRY => {
                 let bytes = extract_bytes(&mv.value)?;
-                Ok(TypedValue::new(
-                    UniversalType::Geometry {
-                        geometry_type: sync_core::GeometryType::Point,
-                    },
-                    UniversalValue::Bytes(bytes),
+                Ok(TypedValue::geometry_bytes(
+                    bytes,
+                    sync_core::GeometryType::Point,
                 ))
             }
 
@@ -353,10 +301,7 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                 if bytes.len() == 1 && bytes[0] <= 1 {
                     Ok(TypedValue::bool(bytes[0] == 1))
                 } else {
-                    Ok(TypedValue::new(
-                        UniversalType::Bytes,
-                        UniversalValue::Bytes(bytes),
-                    ))
+                    Ok(TypedValue::bytes(bytes))
                 }
             }
 
@@ -674,10 +619,7 @@ pub fn row_to_typed_values_with_config(
                         .map(|v| UniversalValue::String(v.to_string()))
                         .collect()
                 };
-                let typed_value = TypedValue::new(
-                    UniversalType::Set { values: vec![] },
-                    UniversalValue::Array(values),
-                );
+                let typed_value = TypedValue::set(values, vec![]);
                 result.insert(column_name, typed_value);
                 continue;
             }

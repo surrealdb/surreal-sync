@@ -4,7 +4,7 @@ use crate::error::MongoDBPopulatorError;
 use bson::{doc, Document};
 use mongodb::Collection;
 use mongodb_types::forward::BsonValue;
-use sync_core::{UniversalRow, TableDefinition, TypedValue};
+use sync_core::{TableDefinition, TypedValue, UniversalRow};
 
 /// Default batch size for INSERT operations.
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -36,7 +36,7 @@ fn internal_row_to_document(row: &UniversalRow, table_schema: &TableDefinition) 
     let mut doc = Document::new();
 
     // Add the _id field
-    let id_typed = TypedValue::new(table_schema.id.id_type.clone(), row.id.clone());
+    let id_typed = TypedValue::with_type(table_schema.id.id_type.clone(), row.id.clone());
     let id_bson: BsonValue = id_typed.into();
     doc.insert("_id", id_bson.into_inner());
 
@@ -44,7 +44,7 @@ fn internal_row_to_document(row: &UniversalRow, table_schema: &TableDefinition) 
     for field_schema in &table_schema.fields {
         let field_value = row.get_field(&field_schema.name);
         let typed_value = match field_value {
-            Some(value) => TypedValue::new(field_schema.field_type.clone(), value.clone()),
+            Some(value) => TypedValue::with_type(field_schema.field_type.clone(), value.clone()),
             None => TypedValue::null(field_schema.field_type.clone()),
         };
         let bson_value: BsonValue = typed_value.into();

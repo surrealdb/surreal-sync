@@ -6,7 +6,7 @@ use bson::Document;
 use loadtest_generator::DataGenerator;
 use mongodb::{Client, Collection, Database};
 use std::time::{Duration, Instant};
-use sync_core::{UniversalRow, Schema};
+use sync_core::{Schema, UniversalRow};
 use tracing::{debug, info};
 
 /// Metrics from a populate operation.

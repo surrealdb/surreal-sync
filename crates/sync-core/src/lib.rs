@@ -31,8 +31,11 @@
 //! use sync_core::types::UniversalType;
 //! use sync_core::values::{UniversalValue, TypedValue};
 //!
-//! // Create a typed value
-//! let value = TypedValue::new(
+//! // Create a typed value using factory methods
+//! let value = TypedValue::int(42);
+//!
+//! // For dynamic types (e.g., from schema), use with_type:
+//! let dynamic_value = TypedValue::with_type(
 //!     UniversalType::Int,
 //!     UniversalValue::Int32(42)
 //! );
@@ -53,4 +56,4 @@ pub use schema::{
 #[deprecated(since = "1.0.0", note = "Use Schema instead")]
 pub type LoadTestSchema = Schema;
 pub use types::{GeometryType, ToDdl, UniversalType};
-pub use values::{UniversalRow, UniversalRowBuilder, RowConverter, TypedValue, UniversalValue};
+pub use values::{RowConverter, TypedValue, UniversalRow, UniversalRowBuilder, UniversalValue};

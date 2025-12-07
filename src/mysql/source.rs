@@ -159,10 +159,7 @@ impl MySQLChangeStream {
                             .map(|v| sync_core::UniversalValue::String(v.to_string()))
                             .collect()
                     };
-                    return Ok(sync_core::TypedValue::new(
-                        sync_core::UniversalType::Set { values: vec![] },
-                        sync_core::UniversalValue::Array(values),
-                    ));
+                    return Ok(sync_core::TypedValue::set(values, vec![]));
                 }
             }
         }
