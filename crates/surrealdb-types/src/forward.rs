@@ -291,6 +291,30 @@ pub fn typed_values_to_surreal_map(
         .collect()
 }
 
+/// Record type that uses native surrealdb::sql::Value instead of SurrealValue wrapper.
+/// This is used by sync sources for direct SurrealDB insertion.
+#[derive(Debug, Clone)]
+pub struct RecordWithSurrealValues {
+    pub id: Thing,
+    pub data: std::collections::HashMap<String, Value>,
+}
+
+impl RecordWithSurrealValues {
+    /// Create a new record with the given ID and data.
+    pub fn new(id: Thing, data: std::collections::HashMap<String, Value>) -> Self {
+        Self { id, data }
+    }
+
+    /// Get the upsert content as a SurrealDB Object.
+    pub fn get_upsert_content(&self) -> Value {
+        let mut m = BTreeMap::new();
+        for (k, v) in &self.data {
+            m.insert(k.clone(), v.clone());
+        }
+        Value::Object(Object::from(m))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
