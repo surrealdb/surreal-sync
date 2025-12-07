@@ -355,10 +355,12 @@ pub async fn compare_sync_results_in_surrealdb(
                             }
                         }
                         SurrealDBValue::Decimal { value, .. } => {
-                            // Decimal fields are stored as numbers in SurrealDB - validate as float
-                            let actual: Option<f64> =
-                                field_response.take((0, field_name.as_str()))?;
-                            if let Some(actual_float) = actual {
+                            // Decimal fields may be stored as Number::Decimal or Number::Float
+                            // First try reading as f64 (for float storage)
+                            let actual_float_result: Result<Option<f64>, _> =
+                                field_response.take((0, field_name.as_str()));
+
+                            if let Ok(Some(actual_float)) = actual_float_result {
                                 let expected_float: f64 = value
                                     .parse()
                                     .map_err(|_| format!("Invalid decimal value: {value}"))?;
@@ -371,6 +373,39 @@ pub async fn compare_sync_results_in_surrealdb(
                                     expected_float,
                                     actual_float
                                 );
+                            } else {
+                                // Decimal stored as native Decimal type - query with cast to float
+                                let cast_query = format!(
+                                    "SELECT <float> {field_name} as decimal_value FROM $record_id"
+                                );
+                                let mut cast_response = surreal
+                                    .query(&cast_query)
+                                    .bind(("record_id", record_id.clone()))
+                                    .await?;
+                                let actual_float: Option<f64> =
+                                    cast_response.take((0, "decimal_value"))?;
+
+                                if let Some(actual_float) = actual_float {
+                                    let expected_float: f64 = value
+                                        .parse()
+                                        .map_err(|_| format!("Invalid decimal value: {value}"))?;
+                                    assert!(
+                                        (actual_float - expected_float).abs() < 0.0001,
+                                        "{}: Document {}, Field '{}' decimal mismatch - expected {}, found {}",
+                                        test_description,
+                                        doc_idx + 1,
+                                        field_name,
+                                        expected_float,
+                                        actual_float
+                                    );
+                                } else {
+                                    panic!(
+                                        "{}: Document {}, Field '{}' decimal value not found",
+                                        test_description,
+                                        doc_idx + 1,
+                                        field_name
+                                    );
+                                }
                             }
                         }
                         SurrealDBValue::Object(expected_obj) => {

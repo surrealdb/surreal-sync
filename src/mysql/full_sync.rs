@@ -1,9 +1,16 @@
-use crate::surreal::{SurrealTableSchema, SurrealType};
-use crate::{SourceOpts, SurrealOpts, SurrealValue};
+//! MySQL full sync implementation using TypedValue conversion path.
+//!
+//! This module uses the unified type conversion flow:
+//! MySQL Row → TypedValue (mysql-types) → surrealdb::sql::Value (surrealdb-types)
+
+use crate::surreal::RecordWithSurrealValues;
+use crate::{SourceOpts, SurrealOpts};
 use anyhow::Result;
-use chrono::{DateTime, NaiveDate, Utc};
-use mysql_async::{prelude::*, Pool, Row, Value};
+use mysql_async::{prelude::*, Pool, Row};
+use mysql_types::{row_to_typed_values_with_config, JsonConversionConfig, RowConversionConfig};
 use std::collections::HashMap;
+use surrealdb_types::typed_values_to_surreal_map;
+use sync_core::{GeneratedValue, TypedValue};
 use tracing::{debug, info};
 
 /// Main entry point for MySQL to SurrealDB migration with checkpoint support
@@ -52,9 +59,9 @@ pub async fn run_full_sync(
         );
     }
 
-    // Collect database schema for type-aware conversion
-    let database_schema = super::schema::collect_mysql_schema(&mut conn, &database_name).await?;
-    info!("Collected MySQL database schema for type-aware conversion");
+    // Collect schema information for boolean column detection
+    let schema_info = collect_schema_info(&mut conn).await?;
+    info!("Collected MySQL schema information");
 
     // Get list of tables to migrate (excluding system tables)
     let tables = get_user_tables(&mut conn, &database_name).await?;
@@ -73,7 +80,7 @@ pub async fn run_full_sync(
             table_name,
             to_opts,
             &from_opts.mysql_boolean_paths,
-            database_schema.tables.get(table_name).unwrap(),
+            schema_info.get(table_name),
         )
         .await?;
 
@@ -109,6 +116,89 @@ pub async fn run_full_sync(
     Ok(())
 }
 
+/// Schema information for a table, used for type-aware conversion
+#[derive(Debug, Clone)]
+struct TableSchemaInfo {
+    /// Columns that should be treated as boolean (TINYINT(1))
+    boolean_columns: Vec<String>,
+    /// Columns that are SET type
+    set_columns: Vec<String>,
+    /// Primary key columns
+    pk_columns: Vec<String>,
+}
+
+/// Collect schema information for all tables
+async fn collect_schema_info(
+    conn: &mut mysql_async::Conn,
+) -> Result<HashMap<String, TableSchemaInfo>> {
+    let query = "
+        SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_TYPE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+        ORDER BY TABLE_NAME, ORDINAL_POSITION";
+
+    let rows: Vec<Row> = conn.query(query).await?;
+    let mut tables: HashMap<String, TableSchemaInfo> = HashMap::new();
+
+    for row in rows {
+        let table_name: String = row
+            .get(0)
+            .ok_or_else(|| anyhow::anyhow!("Missing table name"))?;
+        let column_name: String = row
+            .get(1)
+            .ok_or_else(|| anyhow::anyhow!("Missing column name"))?;
+        let data_type: String = row
+            .get(2)
+            .ok_or_else(|| anyhow::anyhow!("Missing data type"))?;
+        let column_type: String = row
+            .get(3)
+            .ok_or_else(|| anyhow::anyhow!("Missing column type"))?;
+
+        let info = tables.entry(table_name).or_insert_with(|| TableSchemaInfo {
+            boolean_columns: Vec::new(),
+            set_columns: Vec::new(),
+            pk_columns: Vec::new(),
+        });
+
+        // Detect boolean columns (TINYINT(1))
+        if data_type.to_uppercase() == "TINYINT"
+            && column_type.to_lowercase().starts_with("tinyint(1)")
+        {
+            info.boolean_columns.push(column_name.clone());
+        }
+
+        // Detect SET columns
+        if data_type.to_uppercase() == "SET" {
+            info.set_columns.push(column_name);
+        }
+    }
+
+    // Collect primary key information for each table
+    let pk_query = "
+        SELECT TABLE_NAME, COLUMN_NAME
+        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE()
+        AND CONSTRAINT_NAME = 'PRIMARY'
+        ORDER BY TABLE_NAME, ORDINAL_POSITION";
+
+    let pk_rows: Vec<Row> = conn.query(pk_query).await?;
+
+    for row in pk_rows {
+        let table_name: String = row
+            .get(0)
+            .ok_or_else(|| anyhow::anyhow!("Missing table name"))?;
+        let column_name: String = row
+            .get(1)
+            .ok_or_else(|| anyhow::anyhow!("Missing column name"))?;
+
+        if let Some(info) = tables.get_mut(&table_name) {
+            info.pk_columns.push(column_name);
+        }
+    }
+
+    Ok(tables)
+}
+
 /// Get list of user tables from MySQL
 async fn get_user_tables(conn: &mut mysql_async::Conn, database: &str) -> Result<Vec<String>> {
     let query = "
@@ -130,11 +220,8 @@ async fn migrate_table(
     table_name: &str,
     to_opts: &SurrealOpts,
     boolean_paths: &Option<Vec<String>>,
-    table_schema: &SurrealTableSchema,
+    schema_info: Option<&TableSchemaInfo>,
 ) -> Result<usize> {
-    // Get primary key column(s)
-    let pk_columns = super::schema::get_primary_key_columns(conn, table_name).await?;
-
     // Query all data from the table
     let query = format!("SELECT * FROM {table_name}");
     let rows: Vec<Row> = conn.query(query).await?;
@@ -143,12 +230,19 @@ async fn migrate_table(
         return Ok(0);
     }
 
+    // Build row conversion config with boolean, SET, and JSON configuration
+    let row_config = build_row_conversion_config(boolean_paths, table_name, schema_info);
+
+    // Get primary key columns
+    let pk_columns: Vec<String> = schema_info
+        .map(|s| s.pk_columns.clone())
+        .unwrap_or_else(|| vec!["id".to_string()]);
+
     let mut batch = Vec::new();
     let mut total_processed = 0;
 
     for row in rows {
-        let record =
-            convert_row_to_record(row, &pk_columns, table_name, boolean_paths, table_schema)?;
+        let record = convert_row_to_record(&row, &pk_columns, table_name, &row_config)?;
         batch.push(record);
 
         // Process batch when it reaches the configured size
@@ -156,7 +250,7 @@ async fn migrate_table(
             let batch_size = batch.len();
 
             if !to_opts.dry_run {
-                crate::surreal::write_records(surreal, table_name, &batch).await?;
+                write_records_with_surreal_values(surreal, table_name, &batch).await?;
             } else {
                 debug!(
                     "Dry-run: Would insert {} records into {}",
@@ -174,7 +268,7 @@ async fn migrate_table(
         let batch_size = batch.len();
 
         if !to_opts.dry_run {
-            crate::surreal::write_records(surreal, table_name, &batch).await?;
+            write_records_with_surreal_values(surreal, table_name, &batch).await?;
         } else {
             debug!(
                 "Dry-run: Would insert {} records into {}",
@@ -188,490 +282,165 @@ async fn migrate_table(
     Ok(total_processed)
 }
 
-// Convert a MySQL row to a surreal record, ensuring 'id' is a Thing
-fn convert_row_to_record(
-    row: Row,
-    pk_columns: &[String],
-    table_name: &str,
+/// Build row conversion config from boolean paths and schema
+fn build_row_conversion_config(
     boolean_paths: &Option<Vec<String>>,
-    table_schema: &SurrealTableSchema,
-) -> Result<crate::Record> {
-    let mut data = _convert_row_to_keys_and_surreal_values(
-        row,
-        pk_columns,
-        table_name,
-        boolean_paths,
-        table_schema,
-    )?;
-
-    // Extract original MySQL ID to ensure deterministic SurrealDB record IDs
-    // NEVER use random UUIDs as fallback - this breaks UPSERT functionality!
-    let v = match data.remove("id") {
-        Some(v) => v,
-        None => {
-            return Err(anyhow::anyhow!(
-                "MySQL record must have an 'id' field - deterministic IDs required"
-            ))
-        }
-    };
-
-    let id = match v {
-        SurrealValue::String(s) => {
-            // Try to parse as integer first for numeric IDs
-            if let Ok(n) = s.parse::<i64>() {
-                surrealdb::sql::Id::from(n)
-            } else {
-                surrealdb::sql::Id::from(s)
-            }
-        }
-        SurrealValue::Int(i) => surrealdb::sql::Id::from(i),
-        _ => {
-            anyhow::bail!("MySQL record ID field has unsupported type - deterministic IDs required")
-        }
-    };
-
-    // Create proper SurrealDB Thing for the record
-    let id = surrealdb::sql::Thing::from((table_name.to_string(), id));
-
-    Ok(crate::Record { id, data })
-}
-
-/// Convert a MySQL row to a map of surreal values
-fn _convert_row_to_keys_and_surreal_values(
-    row: Row,
-    pk_columns: &[String],
     table_name: &str,
-    boolean_paths: &Option<Vec<String>>,
-    table_schema: &SurrealTableSchema,
-) -> Result<HashMap<String, SurrealValue>> {
-    let mut record = HashMap::new();
+    schema_info: Option<&TableSchemaInfo>,
+) -> RowConversionConfig {
+    let mut config = RowConversionConfig::default();
 
-    // Parse JSON boolean paths for this table
-    let json_boolean_paths = parse_json_boolean_paths(boolean_paths, table_name);
-
-    // Build json_set_paths from table schema
-    let json_set_paths = build_json_set_paths(table_schema);
-
-    // Get column information
-    let columns = row.columns();
-
-    // Generate ID from primary key columns
-    let id = if pk_columns.is_empty() || (pk_columns.len() == 1 && pk_columns[0] == "id") {
-        // Try to find 'id' column index
-        if let Some(id_index) = columns.iter().position(|col| col.name_str() == "id") {
-            match row.as_ref(id_index) {
-                Some(Value::Int(i)) => i.to_string(),
-                Some(Value::UInt(u)) => u.to_string(),
-                Some(Value::Bytes(b)) => String::from_utf8_lossy(b).to_string(),
-                _ => panic!(
-                    "MySQL record ID field has unsupported type - deterministic IDs required"
-                ),
-            }
-        } else {
-            // Always require an id column for deterministic record IDs
-            panic!("MySQL table must have an 'id' column - deterministic IDs required")
-        }
-    } else {
-        // Composite primary key - concatenate values
-        pk_columns
-            .iter()
-            .filter_map(|col_name| {
-                columns
-                    .iter()
-                    .position(|col| col.name_str() == col_name.as_str())
-                    .and_then(|idx| row.as_ref(idx))
-                    .map(|val| match val {
-                        Value::Int(i) => i.to_string(),
-                        Value::UInt(u) => u.to_string(),
-                        Value::Bytes(b) => String::from_utf8_lossy(b).to_string(),
-                        _ => "null".to_string(),
-                    })
-            })
-            .collect::<Vec<_>>()
-            .join("_")
-    };
-
-    record.insert("id".to_string(), SurrealValue::String(id));
-
-    // Convert all columns
-    for (index, column) in columns.iter().enumerate() {
-        let column_name = column.name_str();
-
-        // Skip if it's the id column and we already added it
-        if column_name == "id" && pk_columns.len() == 1 && pk_columns[0] == "id" {
-            continue;
-        }
-
-        let value = convert_mysql_value(
-            &row,
-            index,
-            &column_name,
-            json_boolean_paths.get(&column_name.to_string()),
-            &json_set_paths,
-            table_schema.columns.get(&column_name.to_string()).unwrap(),
-        )?;
-        record.insert(column_name.to_string(), value);
+    // Add boolean columns from schema
+    if let Some(info) = schema_info {
+        config.boolean_columns = info.boolean_columns.clone();
+        config.set_columns = info.set_columns.clone();
     }
 
-    Ok(record)
-}
+    // Build JSON config for nested boolean paths
+    let mut json_config = JsonConversionConfig::default();
+    let mut has_json_config = false;
 
-/// Parse boolean paths for JSON fields in the given table
-/// Format: "table.column=json.path.to.bool"
-fn parse_json_boolean_paths(
-    boolean_paths: &Option<Vec<String>>,
-    table_name: &str,
-) -> HashMap<String, Vec<String>> {
-    let mut column_paths: HashMap<String, Vec<String>> = HashMap::new();
-
+    // Add boolean paths for this table (for JSON fields)
     if let Some(paths) = boolean_paths {
         for path in paths {
             if let Some((table_col, json_path)) = path.split_once('=') {
-                // Format: table.column=json.path
-                if let Some((table, col)) = table_col.split_once('.') {
+                if let Some((table, _col)) = table_col.split_once('.') {
                     if table == table_name {
-                        // Add this JSON path for the column
-                        column_paths
-                            .entry(col.to_string())
-                            .or_default()
-                            .push(json_path.to_string());
+                        json_config.boolean_paths.push(json_path.to_string());
+                        has_json_config = true;
                     }
                 }
             }
         }
     }
 
-    column_paths
-}
-
-/// Build json_set_paths from table schema - identifies columns with SET type
-fn build_json_set_paths(table_schema: &SurrealTableSchema) -> Vec<String> {
-    let mut set_paths = Vec::new();
-
-    for (column_name, column_type) in &table_schema.columns {
-        // Check if this column is a SET type (represented as Array of String)
-        if matches!(column_type, SurrealType::Array(inner)
-            if matches!(inner.as_ref(), SurrealType::String))
-        {
-            set_paths.push(column_name.clone());
-        }
+    if has_json_config {
+        config.json_config = Some(json_config);
     }
 
-    set_paths
+    config
 }
 
-/// Convert a MySQL value to a SurrealValue
-fn convert_mysql_value(
+/// Convert a MySQL row to a RecordWithSurrealValues using the unified type conversion path
+fn convert_row_to_record(
     row: &Row,
-    index: usize,
-    _column_name: &str,
-    json_boolean_paths: Option<&Vec<String>>,
-    json_set_paths: &[String],
-    column_type: &SurrealType,
-) -> Result<SurrealValue> {
-    let columns = row.columns();
-    let column = &columns[index];
-    let _column_name = column.name_str();
+    pk_columns: &[String],
+    table_name: &str,
+    row_config: &RowConversionConfig,
+) -> Result<RecordWithSurrealValues> {
+    // Step 1: Convert MySQL Row → HashMap<String, TypedValue>
+    let typed_values = row_to_typed_values_with_config(row, row_config)
+        .map_err(|e| anyhow::anyhow!("MySQL conversion error: {e}"))?;
 
-    // Get the raw value
-    let raw_value = row
-        .as_ref(index)
-        .ok_or_else(|| anyhow::anyhow!("Failed to get value at index {index}"))?;
+    // Step 2: Extract the ID from typed values
+    let id = extract_record_id(&typed_values, pk_columns, table_name)?;
 
-    if std::env::var("MYSQL_DEBUG").is_ok() {
-        eprintln!(
-            "DEBUG: Column '{}' type: {:?}, raw value type: {:?}",
-            column.name_str(),
-            column.column_type(),
-            std::mem::discriminant(raw_value)
-        );
+    // Step 3: Remove the ID column from data (it's used as record ID)
+    let mut data_values = typed_values;
+    if pk_columns.len() == 1 {
+        data_values.remove(&pk_columns[0]);
     }
 
-    // Add detailed value debugging
-    if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-        match raw_value {
-            Value::Bytes(bytes) => {
-                eprintln!(
-                    "DEBUG: Bytes content for {}: {:?} (len={})",
-                    column.name_str(),
-                    bytes,
-                    bytes.len()
-                );
-                if bytes.len() <= 8 {
-                    eprintln!(
-                        "DEBUG: Bytes as base64: {}",
-                        base64::Engine::encode(&base64::engine::general_purpose::STANDARD, bytes)
-                    );
-                }
-            }
-            _ => eprintln!(
-                "DEBUG: Non-bytes value for {}: {:?}",
-                column.name_str(),
-                raw_value
-            ),
-        }
-    }
+    // Step 4: Convert HashMap<String, TypedValue> → HashMap<String, surrealdb::sql::Value>
+    let surreal_data = typed_values_to_surreal_map(data_values);
 
-    let result = match raw_value {
-        Value::NULL => Ok(SurrealValue::Null),
-        Value::Bytes(bytes) => {
-            use mysql_async::consts::ColumnType;
-
-            // Check column type to determine how to interpret bytes
-            let col_type = column.column_type();
-
-            match col_type {
-                // Character types
-                col_type if col_type.is_character_type() => {
-                    // Text types - convert to string
-                    let s = String::from_utf8_lossy(bytes).to_string();
-
-                    // Check if this is a SET column from schema
-                    if let SurrealType::Array(_) = column_type {
-                        // SET type - split comma-separated values into array
-                        if s.is_empty() {
-                            Ok(SurrealValue::Array(Vec::new()))
-                        } else {
-                            let values: Vec<SurrealValue> = s
-                                .split(',')
-                                .map(|v| SurrealValue::String(v.to_string()))
-                                .collect();
-                            Ok(SurrealValue::Array(values))
-                        }
-                    } else {
-                        Ok(SurrealValue::String(s))
-                    }
-                }
-                ColumnType::MYSQL_TYPE_JSON => {
-                    // JSON type - parse and convert to SurrealValue
-                    let s = String::from_utf8_lossy(bytes).to_string();
-                    // Parse JSON and convert to SurrealValue recursively
-                    match serde_json::from_str::<serde_json::Value>(&s) {
-                        Ok(json_value) => {
-                            // MySQL can store boolean as 0/1 in JSON, so we need to handle this
-                            convert_mysql_json_to_surreal_value(
-                                json_value,
-                                "",
-                                json_boolean_paths.unwrap_or(&Vec::new()),
-                                json_set_paths,
-                            )
-                        }
-                        Err(e) => {
-                            eprintln!("Failed to parse JSON column {}: {}", column.name_str(), e);
-                            // Fall back to string if JSON parsing fails
-                            Ok(SurrealValue::String(s))
-                        }
-                    }
-                }
-                ColumnType::MYSQL_TYPE_NEWDECIMAL => {
-                    // DECIMAL type - MySQL returns as string bytes
-                    let s = String::from_utf8_lossy(bytes).to_string();
-                    eprintln!(
-                        "Converting DECIMAL value '{}' from bytes for column {}",
-                        s,
-                        column.name_str()
-                    );
-                    s.parse::<f64>()
-                        .map(SurrealValue::Float)
-                        .or_else(|_| Ok(SurrealValue::String(s)))
-                }
-                ColumnType::MYSQL_TYPE_DOUBLE | ColumnType::MYSQL_TYPE_FLOAT => {
-                    // FLOAT/DOUBLE types - MySQL returns as string bytes
-                    let s = String::from_utf8_lossy(bytes).to_string();
-                    eprintln!(
-                        "Converting FLOAT/DOUBLE value '{}' from bytes for column {}",
-                        s,
-                        column.name_str()
-                    );
-                    s.parse::<f64>()
-                        .map(SurrealValue::Float)
-                        .or_else(|_| Ok(SurrealValue::String(s)))
-                }
-                ColumnType::MYSQL_TYPE_TIMESTAMP | ColumnType::MYSQL_TYPE_DATETIME => {
-                    // TIMESTAMP/DATETIME types - MySQL might return as string bytes
-                    let s = String::from_utf8_lossy(bytes).to_string();
-                    eprintln!(
-                        "Converting TIMESTAMP value '{}' from bytes for column {}",
-                        s,
-                        column.name_str()
-                    );
-
-                    // Parse MySQL datetime format: "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DD HH:MM:SS.ffffff"
-                    use chrono::NaiveDateTime;
-                    NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f")
-                        .or_else(|_| NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S"))
-                        .map(|ndt| {
-                            SurrealValue::DateTime(DateTime::<Utc>::from_naive_utc_and_offset(
-                                ndt, Utc,
-                            ))
-                        })
-                        .or_else(|_| Ok(SurrealValue::String(s)))
-                }
-                ColumnType::MYSQL_TYPE_TINY => {
-                    // TINYINT - check if it's TINYINT(1) which is boolean
-                    let s = String::from_utf8_lossy(bytes).to_string();
-                    // Check the column flags to determine if this is TINYINT(1)
-                    // In MySQL, TINYINT(1) is conventionally used as boolean
-                    // We can check column length or just convert 0/1 to boolean
-                    match s.parse::<i64>() {
-                        Ok(0) => Ok(SurrealValue::Bool(false)),
-                        Ok(1) => Ok(SurrealValue::Bool(true)),
-                        Ok(n) => Ok(SurrealValue::Int(n)), // Other values stay as int
-                        Err(_) => Ok(SurrealValue::String(s)),
-                    }
-                }
-                ColumnType::MYSQL_TYPE_SHORT
-                | ColumnType::MYSQL_TYPE_LONG
-                | ColumnType::MYSQL_TYPE_LONGLONG => {
-                    // Other INTEGER types returned as ASCII string bytes
-                    let s = String::from_utf8_lossy(bytes).to_string();
-                    s.parse::<i64>()
-                        .map(SurrealValue::Int)
-                        .or_else(|_| Ok(SurrealValue::String(s)))
-                }
-                _ => {
-                    // Unsupported column type - return error instead of silent base64 conversion
-                    Err(anyhow::anyhow!(
-                        "Unsupported MySQL column type '{:?}' for column '{}'. \
-                        Please implement proper conversion for this type.",
-                        col_type,
-                        column.name_str()
-                    ))
-                }
-            }
-        }
-        Value::Int(i) => {
-            // For TINYINT values, MySQL may return them as Value::Int
-            // Convert 0/1 to boolean for consistency
-            if *i == 0 {
-                Ok(SurrealValue::Bool(false))
-            } else if *i == 1 {
-                Ok(SurrealValue::Bool(true))
-            } else {
-                Ok(SurrealValue::Int(*i))
-            }
-        }
-        Value::UInt(u) => {
-            // Convert unsigned to signed, capping at i64::MAX
-            if *u > i64::MAX as u64 {
-                Ok(SurrealValue::String(u.to_string()))
-            } else {
-                Ok(SurrealValue::Int(*u as i64))
-            }
-        }
-        Value::Float(f) => Ok(SurrealValue::Float(*f as f64)),
-        Value::Double(d) => Ok(SurrealValue::Float(*d)),
-        Value::Date(year, month, day, hour, minute, second, microsecond) => {
-            // Convert MySQL date/datetime to chrono DateTime
-            let date = NaiveDate::from_ymd_opt(*year as i32, *month as u32, *day as u32)
-                .ok_or_else(|| anyhow::anyhow!("Invalid date"))?;
-            let time = date
-                .and_hms_micro_opt(*hour as u32, *minute as u32, *second as u32, *microsecond)
-                .ok_or_else(|| anyhow::anyhow!("Invalid datetime"))?;
-            let dt = DateTime::<Utc>::from_naive_utc_and_offset(time, Utc);
-            Ok(SurrealValue::DateTime(dt))
-        }
-        Value::Time(negative, days, hours, minutes, seconds, microseconds) => {
-            // Convert MySQL time to string since SurrealDB doesn't have a pure time type
-            let sign = if *negative { "-" } else { "" };
-            let total_hours = *days * 24 + (*hours as u32);
-            let time_str =
-                format!("{sign}{total_hours}:{minutes:02}:{seconds:02}.{microseconds:06}");
-            Ok(SurrealValue::String(time_str))
-        }
-    };
-
-    // Log the final conversion result
-    if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-        match &result {
-            Ok(value) => eprintln!("DEBUG: Converted {} to: {:?}", column.name_str(), value),
-            Err(e) => eprintln!("DEBUG: Conversion failed for {}: {}", column.name_str(), e),
-        }
-    }
-
-    result
+    Ok(RecordWithSurrealValues {
+        id,
+        data: surreal_data,
+    })
 }
 
-/// Convert MySQL JSON to SurrealValue, handling MySQL-specific quirks
-pub fn convert_mysql_json_to_surreal_value(
-    value: serde_json::Value,
-    current_path: &str,
-    json_boolean_paths: &[String],
-    json_set_paths: &[String],
-) -> Result<SurrealValue> {
-    match value {
-        serde_json::Value::Null => Ok(SurrealValue::Null),
-        serde_json::Value::Bool(b) => Ok(SurrealValue::Bool(b)),
-        serde_json::Value::Number(n) => {
-            // Check if this path should be treated as boolean
-            let should_convert_to_bool = json_boolean_paths.iter().any(|path| path == current_path);
+/// Extract record ID from typed values based on primary key columns
+fn extract_record_id(
+    typed_values: &HashMap<String, TypedValue>,
+    pk_columns: &[String],
+    table_name: &str,
+) -> Result<surrealdb::sql::Thing> {
+    if pk_columns.is_empty() || (pk_columns.len() == 1 && pk_columns[0] == "id") {
+        // Single primary key named 'id'
+        let id_value = typed_values
+            .get("id")
+            .ok_or_else(|| anyhow::anyhow!("MySQL record must have an 'id' field"))?;
 
-            if let Some(i) = n.as_i64() {
-                if should_convert_to_bool && (i == 0 || i == 1) {
-                    // Convert 0/1 to boolean for specified paths
-                    Ok(SurrealValue::Bool(i == 1))
-                } else {
-                    Ok(SurrealValue::Int(i))
-                }
-            } else if let Some(f) = n.as_f64() {
-                Ok(SurrealValue::Float(f))
-            } else {
-                Ok(SurrealValue::String(n.to_string()))
-            }
-        }
-        serde_json::Value::String(s) => {
-            // Check if this path should be treated as a SET column
-            let should_convert_to_array = json_set_paths.iter().any(|path| path == current_path);
+        let id = typed_value_to_id(id_value)?;
+        Ok(surrealdb::sql::Thing::from((table_name.to_string(), id)))
+    } else if pk_columns.len() == 1 {
+        // Single primary key with different name
+        let pk_col = &pk_columns[0];
+        let id_value = typed_values
+            .get(pk_col)
+            .ok_or_else(|| anyhow::anyhow!("Primary key column '{pk_col}' not found"))?;
 
-            if should_convert_to_array {
-                // Convert comma-separated SET values to array
-                if s.is_empty() {
-                    Ok(SurrealValue::Array(Vec::new()))
-                } else {
-                    let values: Vec<SurrealValue> = s
-                        .split(',')
-                        .map(|v| SurrealValue::String(v.to_string()))
-                        .collect();
-                    Ok(SurrealValue::Array(values))
-                }
-            } else {
-                Ok(SurrealValue::String(s))
-            }
-        }
-        serde_json::Value::Array(arr) => {
-            let mut vs = Vec::new();
-            for (idx, item) in arr.into_iter().enumerate() {
-                // Arrays don't typically have boolean conversion, but pass path for completeness
-                let item_path = format!("{current_path}[{idx}]");
-                vs.push(convert_mysql_json_to_surreal_value(
-                    item,
-                    &item_path,
-                    json_boolean_paths,
-                    json_set_paths,
-                )?);
-            }
-            Ok(SurrealValue::Array(vs))
-        }
-        serde_json::Value::Object(map) => {
-            let mut kvs = std::collections::HashMap::new();
-            for (key, val) in map {
-                // Build the nested path for this field
-                let nested_path = if current_path.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{current_path}.{key}")
-                };
-                kvs.insert(
-                    key,
-                    convert_mysql_json_to_surreal_value(
-                        val,
-                        &nested_path,
-                        json_boolean_paths,
-                        json_set_paths,
-                    )?,
-                );
-            }
-            Ok(SurrealValue::Object(kvs))
-        }
+        let id = typed_value_to_id(id_value)?;
+        Ok(surrealdb::sql::Thing::from((table_name.to_string(), id)))
+    } else {
+        // Composite primary key - concatenate values
+        let parts: Vec<String> = pk_columns
+            .iter()
+            .filter_map(|col| typed_values.get(col))
+            .map(typed_value_to_string)
+            .collect();
+
+        let composite_id = parts.join("_");
+        Ok(surrealdb::sql::Thing::from((
+            table_name.to_string(),
+            surrealdb::sql::Id::from(composite_id),
+        )))
     }
+}
+
+/// Convert a TypedValue to a SurrealDB ID
+fn typed_value_to_id(tv: &TypedValue) -> Result<surrealdb::sql::Id> {
+    match &tv.value {
+        GeneratedValue::Int32(i) => Ok(surrealdb::sql::Id::from(*i as i64)),
+        GeneratedValue::Int64(i) => Ok(surrealdb::sql::Id::from(*i)),
+        GeneratedValue::String(s) => {
+            // Try to parse as integer first for numeric IDs stored as strings
+            if let Ok(n) = s.parse::<i64>() {
+                Ok(surrealdb::sql::Id::from(n))
+            } else {
+                Ok(surrealdb::sql::Id::from(s.clone()))
+            }
+        }
+        GeneratedValue::Uuid(u) => Ok(surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u))),
+        _ => Err(anyhow::anyhow!("Unsupported ID type: {:?}", tv.sync_type)),
+    }
+}
+
+/// Convert a TypedValue to a string (for composite keys)
+fn typed_value_to_string(tv: &TypedValue) -> String {
+    match &tv.value {
+        GeneratedValue::Int32(i) => i.to_string(),
+        GeneratedValue::Int64(i) => i.to_string(),
+        GeneratedValue::String(s) => s.clone(),
+        GeneratedValue::Uuid(u) => u.to_string(),
+        GeneratedValue::Bool(b) => b.to_string(),
+        GeneratedValue::Float64(f) => f.to_string(),
+        _ => "null".to_string(),
+    }
+}
+
+/// Write a batch of records to SurrealDB using RecordWithSurrealValues
+async fn write_records_with_surreal_values(
+    surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
+    table_name: &str,
+    batch: &[RecordWithSurrealValues],
+) -> Result<()> {
+    tracing::debug!(
+        "Starting migration batch for table '{}' with {} records",
+        table_name,
+        batch.len()
+    );
+
+    for (i, record) in batch.iter().enumerate() {
+        tracing::trace!("Processing record {}/{}", i + 1, batch.len());
+        crate::surreal::write_record_with_surreal_values(surreal, record).await?;
+    }
+
+    tracing::debug!(
+        "Completed migration batch for table '{}' with {} records",
+        table_name,
+        batch.len()
+    );
+    Ok(())
 }

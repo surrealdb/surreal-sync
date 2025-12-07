@@ -3,9 +3,19 @@
 //! This module provides generic data type representation and schema-aware conversion
 //! that enables consistent type handling across different database sources and
 //! sync modes (full vs incremental).
+//!
+//! ## Type System Bridge
+//!
+//! This module provides a bridge between the existing `SurrealType` enum and the new
+//! `SyncDataType` from sync-core. The `surreal_type_to_sync_type` function converts
+//! between these representations, enabling the unified TypedValue conversion path.
+//!
+//! In future, `SurrealType` and `SurrealValue` will be removed, and schema collection
+//! will directly produce `SyncDataType` values.
 
 use crate::SurrealValue;
 use std::collections::HashMap;
+use sync_core::SyncDataType;
 
 /// Generic data type representation for schema-aware conversion
 ///
@@ -62,6 +72,46 @@ pub struct SurrealTableSchema {
 #[derive(Debug, Clone)]
 pub struct SurrealDatabaseSchema {
     pub tables: HashMap<String, SurrealTableSchema>,
+}
+
+/// Convert SurrealType to SyncDataType for use with TypedValue conversions.
+///
+/// This function bridges the existing `SurrealType` enum (used for schema representation)
+/// with `SyncDataType` from sync-core (used for TypedValue conversions). This enables
+/// the unified conversion path:
+/// `JSON → TypedValue (json-types) → surrealdb::sql::Value (surrealdb-types)`
+///
+/// # Note
+/// This is a transitional function. In Phase 24, when `SurrealType` is removed,
+/// schema collection will directly produce `SyncDataType` values.
+pub fn surreal_type_to_sync_type(surreal_type: &SurrealType) -> SyncDataType {
+    match surreal_type {
+        SurrealType::Boolean => SyncDataType::Bool,
+        SurrealType::Integer => SyncDataType::BigInt, // Use BigInt as safest default
+        SurrealType::Float => SyncDataType::Double,
+        SurrealType::String => SyncDataType::Text,
+        SurrealType::Bytes => SyncDataType::Bytes,
+        SurrealType::Decimal { precision, scale } => SyncDataType::Decimal {
+            // precision/scale are u32 but SyncDataType expects u8, cap at 38
+            precision: precision.map(|p| p.min(38) as u8).unwrap_or(38),
+            scale: scale.map(|s| s.min(38) as u8).unwrap_or(10),
+        },
+        SurrealType::Date => SyncDataType::Date,
+        SurrealType::Time => SyncDataType::Time,
+        SurrealType::Timestamp => SyncDataType::DateTime,
+        SurrealType::TimestampWithTimezone => SyncDataType::TimestampTz,
+        SurrealType::Duration => SyncDataType::Text, // Duration stored as text
+        SurrealType::Json => SyncDataType::Json,
+        SurrealType::Array(inner) => SyncDataType::Array {
+            element_type: Box::new(surreal_type_to_sync_type(inner)),
+        },
+        SurrealType::Uuid => SyncDataType::Uuid,
+        SurrealType::Geometry => SyncDataType::Geometry {
+            // Use Point as a generic fallback - actual geometry type is in the data
+            geometry_type: sync_core::GeometryType::Point,
+        },
+        SurrealType::SourceSpecific(_) => SyncDataType::Text, // Fallback to text
+    }
 }
 
 /// Convert JSON value to SurrealValue using schema information for type precision

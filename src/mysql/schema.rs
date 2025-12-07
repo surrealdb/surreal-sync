@@ -4,7 +4,6 @@
 //! and mapping MySQL column types to generic data types for schema-aware conversion.
 
 use crate::surreal::{SurrealDatabaseSchema, SurrealTableSchema, SurrealType};
-use mysql_async::prelude::*;
 use std::collections::HashMap;
 
 /// Convert MySQL column type information to SurrealType
@@ -86,28 +85,4 @@ pub async fn collect_mysql_schema(
     }
 
     Ok(SurrealDatabaseSchema { tables })
-}
-
-/// Get primary key columns for a table
-pub async fn get_primary_key_columns(
-    conn: &mut mysql_async::Conn,
-    table_name: &str,
-) -> anyhow::Result<Vec<String>> {
-    let query = "
-        SELECT COLUMN_NAME
-        FROM information_schema.KEY_COLUMN_USAGE
-        WHERE TABLE_SCHEMA = DATABASE()
-        AND TABLE_NAME = ?
-        AND CONSTRAINT_NAME = 'PRIMARY'
-        ORDER BY ORDINAL_POSITION
-    ";
-
-    let columns: Vec<String> = conn.exec(query, (table_name,)).await?;
-
-    if columns.is_empty() {
-        // If no primary key, use 'id' column if it exists
-        Ok(vec!["id".to_string()])
-    } else {
-        Ok(columns)
-    }
 }

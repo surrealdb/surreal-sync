@@ -88,6 +88,7 @@ sync-core = { path = "crates/sync-core" }
 
 # Type conversion crates
 json-types = { path = "crates/json-types" }
+mysql-types = { path = "crates/mysql-types" }
 surrealdb-types = { path = "crates/surrealdb-types" }
 kafka-types = { path = "crates/kafka-types" }
 

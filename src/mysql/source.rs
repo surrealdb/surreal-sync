@@ -1,67 +1,40 @@
+//! MySQL incremental sync implementation using audit table-based change tracking
+//!
+//! This module provides reliable incremental synchronization from MySQL to SurrealDB
+//! using a trigger-based approach that works across all MySQL versions and deployment environments.
+//!
+//! ## Conversion Flow
+//!
+//! This implementation uses the unified TypedValue conversion path:
+//! ```text
+//! JSON (from audit table) → TypedValue (json-types) → surrealdb::sql::Value (surrealdb-types)
+//! ```
+//!
+//! ## Implementation Approach
+//!
+//! The implementation uses database triggers and audit tables to capture data changes.
+//! The implementation works with all MySQL versions (5.6+)
+//! and requires only standard SQL operations, avoiding binlog parsing.
+//!
+//! Changes are captured by creating audit tables that track INSERT, UPDATE, and DELETE operations.
+//! Database triggers automatically populate these tables when data changes occur.
+
 use std::collections::HashMap;
 
 use crate::surreal::{
-    convert_id_with_schema, json_to_surreal_with_schema, Change, ChangeOp, SurrealDatabaseSchema,
+    convert_id_with_schema, surreal_type_to_sync_type, Change, ChangeOp, SurrealDatabaseSchema,
 };
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::Utc;
+use json_types::JsonValueWithSchema;
 use log::info;
 use mysql_async::{prelude::*, Conn, Pool, Row, Value};
+use surrealdb_types::typed_values_to_surreal_map;
+use sync_core::TypedValue;
 
 /// MySQL incremental sync implementation using audit table-based change tracking
-///
-/// This implementation provides reliable incremental synchronization from MySQL to SurrealDB
-/// using a trigger-based approach that works across all MySQL versions and deployment environments.
-///
-/// ## Implementation Approach
-///
-/// The implementation uses database triggers and audit tables to capture data changes.
-/// The implementation works with all MySQL versions (5.6+)
-/// and requires only standard SQL operations, avoiding binlog parsing.
-///
-/// Changes are captured by creating audit tables that track INSERT, UPDATE, and DELETE operations.
-/// Database triggers automatically populate these tables when data changes occur.
-///
-/// The approach uses only the [`mysql_async`] driver, minimizing external dependencies while
-/// providing reliable change data capture suitable for most production workloads.
-///
-/// ## Alternative Approaches
-///
-/// MySQL's native binary log replication could potentially provide higher throughput, and several
-/// Rust crates support binlog parsing including `mysql_cdc`, `mysql-binlog-connector-rust`, and
-/// `rust-mysql-binlog`. These libraries can parse binlog events over network connections:
-///
-/// ```ignore
-/// // Example of what native binlog replication would require
-/// use mysql_cdc::{BinlogClient, BinlogOpts};
-///
-/// // Would need specialized binlog parsing libraries
-/// // Parse binary binlog events over network
-/// ```
-///
-/// This approach was not implemented because it would require additional dependencies for specialized
-/// binlog parsing, handling different MySQL versions with varying binlog formats, managing replication
-/// client privileges, and dealing with complex network connection lifecycles including failover scenarios.
-/// The implementation would also need to handle the intricacies of MySQL's replication protocol and
-/// maintain state across connection interruptions.
-///
-/// The performance difference between approaches is typically not significant for most use cases.
-/// The current audit table approach handles 1,000-10,000 changes per second, while native binlog
-/// replication might achieve 10,000-50,000 changes per second at the cost of substantially higher
-/// implementation complexity.
-///
-/// ## Configuration
-///
-/// The audit table approach works with default MySQL settings and requires no special configuration.
-/// In contrast, native binlog replication would require `binlog_format = 'ROW'`, `gtid_mode = ON`,
-/// and `REPLICATION CLIENT` privileges.
-///
-/// ## See Also
-/// - [`crate::sync::IncrementalSource`] - The trait this implements
-/// - [`crate::sync::SyncCheckpoint::MySQL`] - GTID-based checkpoint format
-/// - [`crate::postgresql_incremental::PostgresIncrementalSource`] - Similar approach for PostgreSQL
 pub struct MySQLIncrementalSource {
     pool: Pool,
     server_id: u32,
@@ -160,6 +133,96 @@ impl MySQLChangeStream {
         })
     }
 
+    /// Convert JSON value to TypedValue using schema information
+    fn json_to_typed_value(
+        &self,
+        value: serde_json::Value,
+        field_name: &str,
+        table_name: &str,
+    ) -> Result<TypedValue> {
+        // Get the SurrealType from schema to check for SET columns
+        let surreal_type = self
+            .database_schema
+            .as_ref()
+            .and_then(|s| s.tables.get(table_name))
+            .and_then(|ts| ts.columns.get(field_name));
+
+        // Handle SET columns specially - MySQL JSON_OBJECT stores SET as comma-separated string
+        if let Some(crate::surreal::SurrealType::Array(inner)) = surreal_type {
+            if matches!(inner.as_ref(), crate::surreal::SurrealType::String) {
+                // This is a SET column - parse comma-separated string to array
+                if let serde_json::Value::String(s) = &value {
+                    let values: Vec<sync_core::GeneratedValue> = if s.is_empty() {
+                        Vec::new()
+                    } else {
+                        s.split(',')
+                            .map(|v| sync_core::GeneratedValue::String(v.to_string()))
+                            .collect()
+                    };
+                    return Ok(sync_core::TypedValue::new(
+                        sync_core::SyncDataType::Set { values: vec![] },
+                        sync_core::GeneratedValue::Array(values),
+                    ));
+                }
+            }
+        }
+
+        // Get the sync type from schema for standard conversion
+        let sync_type = surreal_type
+            .map(surreal_type_to_sync_type)
+            .unwrap_or(sync_core::SyncDataType::Text); // Default to text if not found
+
+        // Use json-types for conversion
+        let jvs = JsonValueWithSchema::new(value, sync_type);
+        Ok(jvs.to_typed_value())
+    }
+
+    /// Convert JSON object to HashMap of TypedValue
+    fn json_object_to_typed_values(
+        &self,
+        obj: serde_json::Map<String, serde_json::Value>,
+        table_name: &str,
+        exclude_id: bool,
+        row_id: &str,
+    ) -> Result<HashMap<String, TypedValue>> {
+        let mut result = HashMap::new();
+
+        for (key, val) in obj {
+            // Skip the 'id' field as it's used as the record ID (row_id)
+            // SurrealDB doesn't allow 'id' in content when using UPSERT $record_id
+            //
+            // LIMITATION: MySQL incremental sync assumes the primary key column
+            // is always named 'id'. Tables with different primary key column names
+            // (e.g., 'user_id') won't sync correctly. Additionally, if a table has
+            // an 'id' column that is NOT the primary key, this check will incorrectly
+            // skip it, causing data loss for that column.
+            //
+            // The row_id comes from NEW.id/OLD.id in the trigger (see change_tracking.rs)
+            // and the JSON 'id' field also contains the same value.
+            if exclude_id && key == "id" {
+                // Verify they match - row_id should equal the JSON id value
+                let json_id_str = match &val {
+                    serde_json::Value::Number(n) => n.to_string(),
+                    serde_json::Value::String(s) => s.clone(),
+                    other => format!("{other}"),
+                };
+                if row_id != json_id_str {
+                    anyhow::bail!(
+                        "row_id and JSON id field mismatch in table '{table_name}': \
+                        row_id={row_id}, json_id={json_id_str}. \
+                        This may indicate the 'id' column is not the primary key."
+                    );
+                }
+                continue;
+            }
+
+            let tv = self.json_to_typed_value(val, &key, table_name)?;
+            result.insert(key, tv);
+        }
+
+        Ok(result)
+    }
+
     async fn fetch_changes(&mut self) -> Result<Vec<Change>> {
         let conn = self
             .connection
@@ -206,70 +269,44 @@ impl MySQLChangeStream {
                 }
             };
 
-            // Convert JSON data to SurrealValue map using schema-aware conversion
+            // Convert JSON data to surrealdb::sql::Value map using TypedValue conversion flow
             let surreal_data = match operation.as_str() {
                 "INSERT" | "UPDATE" => {
                     if let Some(Value::Bytes(json_data)) = new_data {
                         if let Ok(json_value) =
                             serde_json::from_slice::<serde_json::Value>(&json_data)
                         {
-                            // Use schema-aware conversion if available
-                            if let (Some(_schema), Some(table_schema)) = (
-                                &self.database_schema,
-                                self.database_schema
+                            // Ensure we have schema
+                            if self.database_schema.is_none()
+                                || self
+                                    .database_schema
                                     .as_ref()
-                                    .and_then(|s| s.tables.get(&table_name)),
-                            ) {
-                                match json_value {
-                                    serde_json::Value::Object(map) => {
-                                        let mut kvs = std::collections::HashMap::new();
-                                        for (key, val) in map {
-                                            // Skip the 'id' field as it's used as the record ID (row_id)
-                                            // SurrealDB doesn't allow 'id' in content when using UPSERT $record_id
-                                            //
-                                            // LIMITATION: MySQL incremental sync assumes the primary key column
-                                            // is always named 'id'. Tables with different primary key column names
-                                            // (e.g., 'user_id') won't sync correctly. Additionally, if a table has
-                                            // an 'id' column that is NOT the primary key, this check will incorrectly
-                                            // skip it, causing data loss for that column.
-                                            //
-                                            // The row_id comes from NEW.id/OLD.id in the trigger (see change_tracking.rs)
-                                            // and the JSON 'id' field also contains the same value.
-                                            if key == "id" {
-                                                // Verify they match - row_id should equal the JSON id value
-                                                let json_id_str = match &val {
-                                                    serde_json::Value::Number(n) => n.to_string(),
-                                                    serde_json::Value::String(s) => s.clone(),
-                                                    other => format!("{other}"),
-                                                };
-                                                if row_id != json_id_str {
-                                                    anyhow::bail!(
-                                                        "row_id and JSON id field mismatch in table '{table_name}': \
-                                                        row_id={row_id}, json_id={json_id_str}. \
-                                                        This may indicate the 'id' column is not the primary key."
-                                                    );
-                                                }
-                                                continue;
-                                            }
-                                            let v = json_to_surreal_with_schema(
-                                                val,
-                                                &key,
-                                                table_schema,
-                                            )?;
-                                            kvs.insert(key, v);
-                                        }
-                                        kvs
-                                    }
-                                    _ => {
-                                        anyhow::bail!(
-                                            "Expected JSON object for row data in table '{table_name}'",
-                                        );
-                                    }
-                                }
-                            } else {
+                                    .and_then(|s| s.tables.get(&table_name))
+                                    .is_none()
+                            {
                                 anyhow::bail!(
                                     "No schema information available for table '{table_name}'. Cannot convert data.",
                                 );
+                            }
+
+                            match json_value {
+                                serde_json::Value::Object(map) => {
+                                    // Step 1: JSON → HashMap<String, TypedValue>
+                                    let typed_values = self.json_object_to_typed_values(
+                                        map,
+                                        &table_name,
+                                        true, // exclude 'id' field
+                                        &row_id,
+                                    )?;
+
+                                    // Step 2: HashMap<String, TypedValue> → HashMap<String, surrealdb::sql::Value>
+                                    typed_values_to_surreal_map(typed_values)
+                                }
+                                _ => {
+                                    anyhow::bail!(
+                                        "Expected JSON object for row data in table '{table_name}'",
+                                    );
+                                }
                             }
                         } else {
                             anyhow::bail!("Invalid JSON data in new_data for table '{table_name}'");
@@ -293,7 +330,12 @@ impl MySQLChangeStream {
                 surrealdb::sql::Thing::from((table_name.clone(), row_id))
             };
 
-            changes.push(Change::record(op, record_id, surreal_data));
+            // Use the new Change::record_with_surreal_values method for unified path
+            changes.push(Change::record_with_surreal_values(
+                op,
+                record_id,
+                surreal_data,
+            ));
 
             self.last_sequence_id = sequence_id;
         }

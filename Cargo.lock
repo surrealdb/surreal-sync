@@ -6081,6 +6081,7 @@ dependencies = [
  "loadtest-verify",
  "log",
  "mongodb",
+ "mysql-types",
  "mysql_async",
  "neo4rs",
  "rand 0.8.5",

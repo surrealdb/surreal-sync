@@ -61,10 +61,16 @@ pub enum ConversionError {
     TypeMismatch { expected: String, actual: Value },
     #[error("Invalid UTF-8 in string: {0}")]
     InvalidUtf8(#[from] std::string::FromUtf8Error),
-    #[error("Invalid date/time value")]
-    InvalidDateTime,
+    #[error("Invalid date/time value: {0}")]
+    InvalidDateTime(String),
     #[error("Invalid UUID: {0}")]
     InvalidUuid(String),
+    #[error("Invalid JSON number: cannot represent {value} as i64 or f64")]
+    InvalidJsonNumber { value: String },
+    #[error("Invalid JSON: {0}")]
+    InvalidJson(String),
+    #[error("Missing column value at index {index} for column '{column_name}'")]
+    MissingColumnValue { index: usize, column_name: String },
 }
 
 impl MySQLValueWithSchema {
@@ -478,12 +484,19 @@ fn extract_bytes(value: &Value) -> Result<Vec<u8>, ConversionError> {
 fn extract_date(value: &Value) -> Result<NaiveDate, ConversionError> {
     match value {
         Value::Date(year, month, day, _, _, _, _) => {
-            NaiveDate::from_ymd_opt(*year as i32, *month as u32, *day as u32)
-                .ok_or(ConversionError::InvalidDateTime)
+            NaiveDate::from_ymd_opt(*year as i32, *month as u32, *day as u32).ok_or_else(|| {
+                ConversionError::InvalidDateTime(format!(
+                    "invalid date components: year={year}, month={month}, day={day}"
+                ))
+            })
         }
         Value::Bytes(b) => {
             let s = String::from_utf8(b.clone())?;
-            NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|_| ConversionError::InvalidDateTime)
+            NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|e| {
+                ConversionError::InvalidDateTime(format!(
+                    "cannot parse date from string '{s}': {e}"
+                ))
+            })
         }
         _ => Err(ConversionError::TypeMismatch {
             expected: "date".to_string(),
@@ -497,11 +510,19 @@ fn extract_time(value: &Value) -> Result<NaiveTime, ConversionError> {
     match value {
         Value::Time(_, _, hour, min, sec, micro) => {
             NaiveTime::from_hms_micro_opt(*hour as u32, *min as u32, *sec as u32, *micro)
-                .ok_or(ConversionError::InvalidDateTime)
+                .ok_or_else(|| {
+                    ConversionError::InvalidDateTime(format!(
+                        "invalid time components: hour={hour}, min={min}, sec={sec}, micro={micro}"
+                    ))
+                })
         }
         Value::Bytes(b) => {
             let s = String::from_utf8(b.clone())?;
-            NaiveTime::parse_from_str(&s, "%H:%M:%S").map_err(|_| ConversionError::InvalidDateTime)
+            NaiveTime::parse_from_str(&s, "%H:%M:%S").map_err(|e| {
+                ConversionError::InvalidDateTime(format!(
+                    "cannot parse time from string '{s}': {e}"
+                ))
+            })
         }
         _ => Err(ConversionError::TypeMismatch {
             expected: "time".to_string(),
@@ -514,12 +535,20 @@ fn extract_time(value: &Value) -> Result<NaiveTime, ConversionError> {
 fn extract_datetime(value: &Value) -> Result<chrono::DateTime<Utc>, ConversionError> {
     match value {
         Value::Date(year, month, day, hour, min, sec, micro) => {
-            let naive = chrono::NaiveDateTime::new(
-                NaiveDate::from_ymd_opt(*year as i32, *month as u32, *day as u32)
-                    .ok_or(ConversionError::InvalidDateTime)?,
+            let date = NaiveDate::from_ymd_opt(*year as i32, *month as u32, *day as u32)
+                .ok_or_else(|| {
+                    ConversionError::InvalidDateTime(format!(
+                        "invalid date components: year={year}, month={month}, day={day}"
+                    ))
+                })?;
+            let time =
                 NaiveTime::from_hms_micro_opt(*hour as u32, *min as u32, *sec as u32, *micro)
-                    .ok_or(ConversionError::InvalidDateTime)?,
-            );
+                    .ok_or_else(|| {
+                        ConversionError::InvalidDateTime(format!(
+                    "invalid time components: hour={hour}, min={min}, sec={sec}, micro={micro}"
+                ))
+                    })?;
+            let naive = chrono::NaiveDateTime::new(date, time);
             Ok(Utc.from_utc_datetime(&naive))
         }
         Value::Bytes(b) => {
@@ -534,7 +563,9 @@ fn extract_datetime(value: &Value) -> Result<chrono::DateTime<Utc>, ConversionEr
             if let Ok(naive) = chrono::NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f") {
                 return Ok(Utc.from_utc_datetime(&naive));
             }
-            Err(ConversionError::InvalidDateTime)
+            Err(ConversionError::InvalidDateTime(format!(
+                "cannot parse datetime from string '{s}': expected RFC3339 or '%Y-%m-%d %H:%M:%S' format"
+            )))
         }
         _ => Err(ConversionError::TypeMismatch {
             expected: "datetime".to_string(),
@@ -553,16 +584,25 @@ fn is_uuid_format(s: &str) -> bool {
 }
 
 /// Convert serde_json::Value to GeneratedValue.
+///
+/// This function does NOT fail because JSON values from MySQL are always valid.
+/// The only case where a number can't be represented as i64 or f64 is if it's
+/// extremely large, which is already stored as a string by serde_json.
 fn json_to_generated_value(json: serde_json::Value) -> GeneratedValue {
     match json {
         serde_json::Value::Null => GeneratedValue::Null,
         serde_json::Value::Bool(b) => GeneratedValue::Bool(b),
         serde_json::Value::Number(n) => {
+            // Try i64 first, then f64
+            // Note: serde_json can represent numbers that don't fit in i64 or f64,
+            // but in practice MySQL JSON doesn't produce such values.
             if let Some(i) = n.as_i64() {
                 GeneratedValue::Int64(i)
             } else if let Some(f) = n.as_f64() {
                 GeneratedValue::Float64(f)
             } else {
+                // Fallback to string for very large numbers that can't be represented
+                // as i64 or f64 (e.g., u64 values > i64::MAX that also lose precision as f64)
                 GeneratedValue::String(n.to_string())
             }
         }
@@ -576,6 +616,17 @@ fn json_to_generated_value(json: serde_json::Value) -> GeneratedValue {
                 .collect(),
         ),
     }
+}
+
+/// Configuration for row-level type conversion.
+#[derive(Debug, Clone, Default)]
+pub struct RowConversionConfig {
+    /// Column names that should be treated as boolean (for TINYINT columns)
+    pub boolean_columns: Vec<String>,
+    /// Column names that are SET type (comma-separated values -> array)
+    pub set_columns: Vec<String>,
+    /// JSON field configuration (for nested paths within JSON columns)
+    pub json_config: Option<JsonConversionConfig>,
 }
 
 /// Convert a MySQL row to a HashMap of TypedValues.
@@ -596,6 +647,32 @@ pub fn row_to_typed_values(
     boolean_columns: Option<&[&str]>,
     json_config: Option<&JsonConversionConfig>,
 ) -> Result<std::collections::HashMap<String, TypedValue>, ConversionError> {
+    row_to_typed_values_with_config(
+        row,
+        &RowConversionConfig {
+            boolean_columns: boolean_columns
+                .map(|cols| cols.iter().map(|s| s.to_string()).collect())
+                .unwrap_or_default(),
+            set_columns: Vec::new(),
+            json_config: json_config.cloned(),
+        },
+    )
+}
+
+/// Convert a MySQL row to a HashMap of TypedValues with full configuration.
+///
+/// This function provides more control over type conversion including SET columns.
+///
+/// # Arguments
+/// * `row` - The MySQL row to convert
+/// * `config` - Configuration for boolean, SET, and JSON conversions
+///
+/// # Returns
+/// A HashMap mapping column names to TypedValues
+pub fn row_to_typed_values_with_config(
+    row: &mysql_async::Row,
+    config: &RowConversionConfig,
+) -> Result<std::collections::HashMap<String, TypedValue>, ConversionError> {
     let columns = row.columns();
     let mut result = std::collections::HashMap::new();
 
@@ -607,25 +684,45 @@ pub fn row_to_typed_values(
         // Get the raw value
         let raw_value = row
             .as_ref(index)
-            .ok_or_else(|| ConversionError::TypeMismatch {
-                expected: "any value".to_string(),
-                actual: Value::NULL,
+            .ok_or_else(|| ConversionError::MissingColumnValue {
+                index,
+                column_name: column_name.clone(),
             })?
             .clone();
 
         // Check if this column should be treated as boolean
-        let is_boolean = boolean_columns
-            .map(|cols| cols.contains(&column_name.as_str()))
-            .unwrap_or(false);
+        let is_boolean = config.boolean_columns.contains(&column_name);
+
+        // Check if this column is a SET column
+        let is_set = config.set_columns.contains(&column_name);
+
+        // Handle SET columns - split comma-separated string into array
+        if is_set {
+            if let Ok(s) = extract_string(&raw_value) {
+                let values: Vec<GeneratedValue> = if s.is_empty() {
+                    Vec::new()
+                } else {
+                    s.split(',')
+                        .map(|v| GeneratedValue::String(v.to_string()))
+                        .collect()
+                };
+                let typed_value = TypedValue::new(
+                    SyncDataType::Set { values: vec![] },
+                    GeneratedValue::Array(values),
+                );
+                result.insert(column_name, typed_value);
+                continue;
+            }
+        }
 
         // For JSON columns with config, use special conversion
         if column_type == ColumnType::MYSQL_TYPE_JSON {
-            if let Some(config) = json_config {
+            if let Some(ref json_config) = config.json_config {
                 if let Value::Bytes(bytes) = &raw_value {
                     if let Ok(s) = String::from_utf8(bytes.clone()) {
                         if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&s) {
                             let typed_value =
-                                json_to_typed_value_with_config(json_value, "", config);
+                                json_to_typed_value_with_config(json_value, "", json_config);
                             result.insert(column_name, typed_value);
                             continue;
                         }
@@ -1014,5 +1111,304 @@ mod tests {
         } else {
             panic!("Expected Object value");
         }
+    }
+
+    // ==================== ERROR HANDLING TESTS ====================
+
+    #[test]
+    fn test_unsupported_type_error() {
+        // MYSQL_TYPE_NULL is an internal MySQL type that shouldn't be used for columns
+        let mv = MySQLValueWithSchema::new(
+            Value::Int(42),
+            ColumnType::MYSQL_TYPE_NULL,
+            ColumnFlags::empty(),
+        );
+        let result = mv.to_typed_value();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConversionError::UnsupportedType(_)));
+        assert!(err.to_string().contains("MYSQL_TYPE_NULL"));
+    }
+
+    #[test]
+    fn test_type_mismatch_int_expects_int() {
+        // Pass a string value when an integer is expected
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(b"not a number".to_vec()),
+            ColumnType::MYSQL_TYPE_LONG,
+            ColumnFlags::empty(),
+        );
+        let result = mv.to_typed_value();
+        // Note: extract_int tries to parse bytes as string, which fails
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConversionError::TypeMismatch { .. }));
+        assert!(err.to_string().contains("expected"));
+        assert!(err.to_string().contains("integer"));
+    }
+
+    #[test]
+    fn test_type_mismatch_float_expects_float() {
+        // Pass an invalid float string
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(b"not_a_float".to_vec()),
+            ColumnType::MYSQL_TYPE_DOUBLE,
+            ColumnFlags::empty(),
+        );
+        let result = mv.to_typed_value();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConversionError::TypeMismatch { .. }));
+        assert!(err.to_string().contains("float"));
+    }
+
+    #[test]
+    fn test_invalid_date_error() {
+        // Invalid date components (month 13)
+        let mv = MySQLValueWithSchema::new(
+            Value::Date(2024, 13, 1, 0, 0, 0, 0),
+            ColumnType::MYSQL_TYPE_DATE,
+            ColumnFlags::empty(),
+        );
+        let result = mv.to_typed_value();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConversionError::InvalidDateTime(_)));
+        assert!(err.to_string().contains("month=13"));
+    }
+
+    #[test]
+    fn test_invalid_date_string_error() {
+        // Invalid date string format
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(b"not-a-date".to_vec()),
+            ColumnType::MYSQL_TYPE_DATE,
+            ColumnFlags::empty(),
+        );
+        let result = mv.to_typed_value();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConversionError::InvalidDateTime(_)));
+        assert!(err.to_string().contains("not-a-date"));
+    }
+
+    #[test]
+    fn test_invalid_time_error() {
+        // Invalid time components (hour 25)
+        let mv = MySQLValueWithSchema::new(
+            Value::Time(false, 0, 25, 0, 0, 0),
+            ColumnType::MYSQL_TYPE_TIME,
+            ColumnFlags::empty(),
+        );
+        let result = mv.to_typed_value();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConversionError::InvalidDateTime(_)));
+        assert!(err.to_string().contains("hour=25"));
+    }
+
+    #[test]
+    fn test_invalid_datetime_string_error() {
+        // Invalid datetime string format
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(b"invalid-datetime".to_vec()),
+            ColumnType::MYSQL_TYPE_DATETIME,
+            ColumnFlags::empty(),
+        );
+        let result = mv.to_typed_value();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConversionError::InvalidDateTime(_)));
+        assert!(err.to_string().contains("invalid-datetime"));
+    }
+
+    #[test]
+    fn test_invalid_utf8_error() {
+        // Invalid UTF-8 bytes for a string column
+        let invalid_utf8 = vec![0xff, 0xfe, 0xfd];
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(invalid_utf8),
+            ColumnType::MYSQL_TYPE_VAR_STRING,
+            ColumnFlags::empty(),
+        );
+        let result = mv.to_typed_value();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConversionError::InvalidUtf8(_)));
+    }
+
+    #[test]
+    fn test_bytes_type_mismatch() {
+        // Pass an Int value when bytes are expected (for BLOB)
+        let mv = MySQLValueWithSchema::new(
+            Value::Int(42),
+            ColumnType::MYSQL_TYPE_BLOB,
+            ColumnFlags::BINARY_FLAG,
+        );
+        let result = mv.to_typed_value();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConversionError::TypeMismatch { .. }));
+        assert!(err.to_string().contains("bytes"));
+    }
+
+    #[test]
+    fn test_date_type_mismatch() {
+        // Pass a Time value when a Date is expected
+        let mv = MySQLValueWithSchema::new(
+            Value::Time(false, 0, 10, 30, 0, 0),
+            ColumnType::MYSQL_TYPE_DATE,
+            ColumnFlags::empty(),
+        );
+        let result = mv.to_typed_value();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, ConversionError::TypeMismatch { .. }));
+        assert!(err.to_string().contains("date"));
+    }
+
+    #[test]
+    fn test_error_display_is_descriptive() {
+        // Test that error messages are descriptive enough
+        let err = ConversionError::TypeMismatch {
+            expected: "integer".to_string(),
+            actual: Value::Bytes(b"hello".to_vec()),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("expected integer"));
+        assert!(msg.contains("hello") || msg.contains("Bytes")); // Should include what we got
+
+        let err2 = ConversionError::InvalidDateTime(
+            "invalid date: year=2024, month=13, day=1".to_string(),
+        );
+        let msg2 = err2.to_string();
+        assert!(msg2.contains("year=2024"));
+        assert!(msg2.contains("month=13"));
+
+        let err3 = ConversionError::UnsupportedType(ColumnType::MYSQL_TYPE_NULL);
+        let msg3 = err3.to_string();
+        assert!(msg3.contains("MYSQL_TYPE_NULL"));
+    }
+
+    #[test]
+    fn test_set_column_empty_string() {
+        // SET column with empty string should produce empty array
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(b"".to_vec()),
+            ColumnType::MYSQL_TYPE_SET,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::Set { .. }));
+        if let GeneratedValue::Array(arr) = tv.value {
+            // Empty string produces one empty element after split
+            // This is expected MySQL behavior
+            assert_eq!(arr.len(), 1);
+            if let GeneratedValue::String(s) = &arr[0] {
+                assert_eq!(s, "");
+            }
+        } else {
+            panic!("Expected Array value");
+        }
+    }
+
+    #[test]
+    fn test_set_column_multiple_values() {
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(b"read,write,execute".to_vec()),
+            ColumnType::MYSQL_TYPE_SET,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::Set { .. }));
+        if let GeneratedValue::Array(arr) = tv.value {
+            assert_eq!(arr.len(), 3);
+            assert!(matches!(&arr[0], GeneratedValue::String(s) if s == "read"));
+            assert!(matches!(&arr[1], GeneratedValue::String(s) if s == "write"));
+            assert!(matches!(&arr[2], GeneratedValue::String(s) if s == "execute"));
+        } else {
+            panic!("Expected Array value");
+        }
+    }
+
+    #[test]
+    fn test_enum_column() {
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(b"active".to_vec()),
+            ColumnType::MYSQL_TYPE_ENUM,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::Enum { .. }));
+        assert!(matches!(tv.value, GeneratedValue::String(s) if s == "active"));
+    }
+
+    #[test]
+    fn test_bit_as_boolean() {
+        // BIT(1) with value 0 should be boolean false
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(vec![0]),
+            ColumnType::MYSQL_TYPE_BIT,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::Bool));
+        assert!(matches!(tv.value, GeneratedValue::Bool(false)));
+
+        // BIT(1) with value 1 should be boolean true
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(vec![1]),
+            ColumnType::MYSQL_TYPE_BIT,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::Bool));
+        assert!(matches!(tv.value, GeneratedValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_bit_as_bytes() {
+        // BIT(8) should be bytes
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(vec![0xff]),
+            ColumnType::MYSQL_TYPE_BIT,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::Bytes));
+        if let GeneratedValue::Bytes(b) = tv.value {
+            assert_eq!(b, vec![0xff]);
+        } else {
+            panic!("Expected Bytes value");
+        }
+    }
+
+    #[test]
+    fn test_geometry_column() {
+        let wkb_point = vec![0x01, 0x01, 0x00, 0x00, 0x00]; // Minimal WKB point prefix
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(wkb_point.clone()),
+            ColumnType::MYSQL_TYPE_GEOMETRY,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::Geometry { .. }));
+        if let GeneratedValue::Bytes(b) = tv.value {
+            assert_eq!(b, wkb_point);
+        } else {
+            panic!("Expected Bytes value");
+        }
+    }
+
+    #[test]
+    fn test_year_column() {
+        let mv = MySQLValueWithSchema::new(
+            Value::Int(2024),
+            ColumnType::MYSQL_TYPE_YEAR,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::SmallInt));
+        assert!(matches!(tv.value, GeneratedValue::Int32(2024)));
     }
 }

@@ -3,9 +3,39 @@
 //! This module provides conversion from JSON values to sync-core's `TypedValue`.
 
 use base64::Engine;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use std::collections::HashMap;
 use sync_core::{GeneratedValue, SyncDataType, TypedValue};
+
+/// Parse a datetime string in various formats.
+///
+/// Supports:
+/// - RFC 3339: "2024-01-01T12:00:00Z"
+/// - MySQL timestamp: "2024-01-01 12:00:00"
+/// - MySQL timestamp with microseconds: "2024-01-01 12:00:00.123456"
+fn parse_datetime_string(s: &str) -> Option<DateTime<Utc>> {
+    // Try RFC 3339 first (ISO 8601 with timezone)
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    // Try MySQL timestamp format without microseconds
+    if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
+        return Some(Utc.from_utc_datetime(&naive));
+    }
+
+    // Try MySQL timestamp format with microseconds
+    if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f") {
+        return Some(Utc.from_utc_datetime(&naive));
+    }
+
+    // Try PostgreSQL timestamp format with timezone offset
+    if let Ok(dt) = DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%#z") {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    None
+}
 
 /// JSON value paired with schema information for type-aware conversion.
 #[derive(Debug, Clone)]
@@ -36,6 +66,14 @@ impl From<JsonValueWithSchema> for TypedValue {
 
             // Boolean
             (SyncDataType::Bool, serde_json::Value::Bool(b)) => TypedValue::bool(*b),
+            // MySQL stores TINYINT(1) booleans as 0/1 in JSON_OBJECT
+            (SyncDataType::Bool, serde_json::Value::Number(n)) => {
+                if let Some(i) = n.as_i64() {
+                    TypedValue::bool(i != 0)
+                } else {
+                    TypedValue::null(SyncDataType::Bool)
+                }
+            }
 
             // Integer types
             (SyncDataType::TinyInt { width }, serde_json::Value::Number(n)) => {
@@ -131,29 +169,29 @@ impl From<JsonValueWithSchema> for TypedValue {
                 }
             }
 
-            // Date/time types - ISO 8601 format
+            // Date/time types - multiple formats supported
             (SyncDataType::DateTime, serde_json::Value::String(s)) => {
-                if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
-                    TypedValue::datetime(dt.with_timezone(&Utc))
+                if let Some(dt) = parse_datetime_string(s) {
+                    TypedValue::datetime(dt)
                 } else {
                     TypedValue::null(SyncDataType::DateTime)
                 }
             }
             (SyncDataType::DateTimeNano, serde_json::Value::String(s)) => {
-                if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+                if let Some(dt) = parse_datetime_string(s) {
                     TypedValue {
                         sync_type: SyncDataType::DateTimeNano,
-                        value: GeneratedValue::DateTime(dt.with_timezone(&Utc)),
+                        value: GeneratedValue::DateTime(dt),
                     }
                 } else {
                     TypedValue::null(SyncDataType::DateTimeNano)
                 }
             }
             (SyncDataType::TimestampTz, serde_json::Value::String(s)) => {
-                if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+                if let Some(dt) = parse_datetime_string(s) {
                     TypedValue {
                         sync_type: SyncDataType::TimestampTz,
-                        value: GeneratedValue::DateTime(dt.with_timezone(&Utc)),
+                        value: GeneratedValue::DateTime(dt),
                     }
                 } else {
                     TypedValue::null(SyncDataType::TimestampTz)
@@ -190,7 +228,7 @@ impl From<JsonValueWithSchema> for TypedValue {
                 }
             }
 
-            // JSON types
+            // JSON types - can be objects or arrays
             (SyncDataType::Json, serde_json::Value::Object(obj)) => {
                 let map = json_object_to_hashmap(obj);
                 TypedValue {
@@ -198,11 +236,25 @@ impl From<JsonValueWithSchema> for TypedValue {
                     value: GeneratedValue::Object(map),
                 }
             }
+            (SyncDataType::Json, serde_json::Value::Array(arr)) => {
+                let values: Vec<GeneratedValue> = arr.iter().map(json_value_to_generated).collect();
+                TypedValue {
+                    sync_type: SyncDataType::Json,
+                    value: GeneratedValue::Array(values),
+                }
+            }
             (SyncDataType::Jsonb, serde_json::Value::Object(obj)) => {
                 let map = json_object_to_hashmap(obj);
                 TypedValue {
                     sync_type: SyncDataType::Jsonb,
                     value: GeneratedValue::Object(map),
+                }
+            }
+            (SyncDataType::Jsonb, serde_json::Value::Array(arr)) => {
+                let values: Vec<GeneratedValue> = arr.iter().map(json_value_to_generated).collect();
+                TypedValue {
+                    sync_type: SyncDataType::Jsonb,
+                    value: GeneratedValue::Array(values),
                 }
             }
 
@@ -524,6 +576,30 @@ mod tests {
     }
 
     #[test]
+    fn test_bool_from_number_zero() {
+        // MySQL stores TINYINT(1) booleans as 0/1 in JSON_OBJECT
+        let jv = JsonValueWithSchema::new(json!(0), SyncDataType::Bool);
+        let tv = TypedValue::from(jv);
+        assert!(matches!(tv.value, GeneratedValue::Bool(false)));
+    }
+
+    #[test]
+    fn test_bool_from_number_one() {
+        // MySQL stores TINYINT(1) booleans as 0/1 in JSON_OBJECT
+        let jv = JsonValueWithSchema::new(json!(1), SyncDataType::Bool);
+        let tv = TypedValue::from(jv);
+        assert!(matches!(tv.value, GeneratedValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_bool_from_nonzero_number() {
+        // Non-zero numbers should be true (like MySQL's boolean semantics)
+        let jv = JsonValueWithSchema::new(json!(42), SyncDataType::Bool);
+        let tv = TypedValue::from(jv);
+        assert!(matches!(tv.value, GeneratedValue::Bool(true)));
+    }
+
+    #[test]
     fn test_int_conversion() {
         let jv = JsonValueWithSchema::new(json!(42), SyncDataType::Int);
         let tv = TypedValue::from(jv);
@@ -657,6 +733,49 @@ mod tests {
             assert!(matches!(map.get("count"), Some(GeneratedValue::Int64(42))));
         } else {
             panic!("Expected Object");
+        }
+    }
+
+    #[test]
+    fn test_json_array_conversion() {
+        // JSON columns in MySQL can contain arrays - this should work
+        let jv = JsonValueWithSchema::new(json!([1, 2, 3]), SyncDataType::Json);
+        let tv = TypedValue::from(jv);
+        if let GeneratedValue::Array(values) = tv.value {
+            assert_eq!(values.len(), 3);
+            assert!(matches!(values[0], GeneratedValue::Int64(1)));
+            assert!(matches!(values[1], GeneratedValue::Int64(2)));
+            assert!(matches!(values[2], GeneratedValue::Int64(3)));
+        } else {
+            panic!("Expected Array, got {:?}", tv.value);
+        }
+    }
+
+    #[test]
+    fn test_json_array_of_strings_conversion() {
+        // JSON columns can contain arrays of strings (e.g., tags field)
+        let jv = JsonValueWithSchema::new(json!(["tag1", "tag2", "tag3"]), SyncDataType::Json);
+        let tv = TypedValue::from(jv);
+        if let GeneratedValue::Array(values) = tv.value {
+            assert_eq!(values.len(), 3);
+            assert!(matches!(values[0], GeneratedValue::String(ref s) if s == "tag1"));
+            assert!(matches!(values[1], GeneratedValue::String(ref s) if s == "tag2"));
+            assert!(matches!(values[2], GeneratedValue::String(ref s) if s == "tag3"));
+        } else {
+            panic!("Expected Array, got {:?}", tv.value);
+        }
+    }
+
+    #[test]
+    fn test_jsonb_array_conversion() {
+        // JSONB columns can also contain arrays
+        let jv = JsonValueWithSchema::new(json!([1, 2, 3]), SyncDataType::Jsonb);
+        let tv = TypedValue::from(jv);
+        if let GeneratedValue::Array(values) = tv.value {
+            assert_eq!(values.len(), 3);
+            assert!(matches!(values[0], GeneratedValue::Int64(1)));
+        } else {
+            panic!("Expected Array, got {:?}", tv.value);
         }
     }
 

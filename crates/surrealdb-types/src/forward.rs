@@ -138,6 +138,15 @@ impl From<TypedValue> for SurrealValue {
                     Err(_) => SurrealValue(Value::Strand(Strand::from(s.clone()))),
                 }
             }
+            // JSON can also be an array (e.g., from MySQL SET columns or JSON arrays)
+            (SyncDataType::Json, GeneratedValue::Array(arr)) => {
+                let surreal_arr: Vec<Value> = arr.iter().map(generated_value_to_surreal).collect();
+                SurrealValue(Value::Array(surrealdb::sql::Array::from(surreal_arr)))
+            }
+            (SyncDataType::Jsonb, GeneratedValue::Array(arr)) => {
+                let surreal_arr: Vec<Value> = arr.iter().map(generated_value_to_surreal).collect();
+                SurrealValue(Value::Array(surrealdb::sql::Array::from(surreal_arr)))
+            }
 
             // Array types
             (SyncDataType::Array { element_type }, GeneratedValue::Array(arr)) => {

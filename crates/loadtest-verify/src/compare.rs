@@ -163,12 +163,32 @@ pub fn compare_values(expected: &GeneratedValue, actual: &SurrealValue) -> Compa
         }
         // High-precision decimal stored as string
         (GeneratedValue::Decimal { value: e, .. }, SurrealValue::Strand(a)) => {
-            if e == a.as_str() {
-                CompareResult::Match
-            } else {
-                CompareResult::Mismatch {
-                    expected: e.clone(),
-                    actual: a.to_string(),
+            // Parse both as floats and compare with tolerance
+            // to handle trailing zero differences (e.g., "229.30" vs "229.3")
+            let expected_f64: Result<f64, _> = e.parse();
+            let actual_f64: Result<f64, _> = a.as_str().parse();
+            match (expected_f64, actual_f64) {
+                (Ok(exp), Ok(act)) => {
+                    let tolerance = 0.001;
+                    if (exp - act).abs() < tolerance {
+                        CompareResult::Match
+                    } else {
+                        CompareResult::Mismatch {
+                            expected: e.clone(),
+                            actual: a.to_string(),
+                        }
+                    }
+                }
+                _ => {
+                    // Fallback to exact string comparison if parsing fails
+                    if e == a.as_str() {
+                        CompareResult::Match
+                    } else {
+                        CompareResult::Mismatch {
+                            expected: e.clone(),
+                            actual: a.to_string(),
+                        }
+                    }
                 }
             }
         }

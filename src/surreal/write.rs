@@ -12,6 +12,11 @@ pub async fn apply_change(
 
             tracing::trace!("Successfully upserted record: {record:?}");
         }
+        Change::UpsertRecordWithSurrealValues(record) => {
+            write_record_with_surreal_values(surreal, record).await?;
+
+            tracing::trace!("Successfully upserted record: {record:?}");
+        }
         Change::DeleteRecord(thing) => {
             let query = "DELETE $record_id".to_string();
             tracing::trace!("Executing SurrealDB query: {}", query);
