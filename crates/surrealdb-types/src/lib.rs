@@ -22,5 +22,6 @@
 pub mod forward;
 pub mod reverse;
 
+pub use forward::typed_values_to_surreal_map;
 pub use forward::SurrealValue;
 pub use reverse::SurrealValueWithSchema;

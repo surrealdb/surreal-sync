@@ -215,8 +215,14 @@ impl From<TypedValue> for SurrealValue {
                 SurrealValue(Value::Geometry(geometry))
             }
 
-            // Fallback
-            _ => SurrealValue(Value::None),
+            // Explicit failure for unexpected type combinations
+            (sync_type, value) => {
+                panic!(
+                    "Unsupported type combination in SurrealValue::from(TypedValue): \
+                    sync_type={sync_type:?}, value={value:?}. \
+                    This is a bug - please add handling for this type combination."
+                )
+            }
         }
     }
 }
@@ -455,6 +461,19 @@ where
         obj.insert(name, SurrealValue::from(tv).into_inner());
     }
     Object::from(obj)
+}
+
+/// Convert a HashMap of TypedValue to a HashMap of surrealdb::sql::Value.
+///
+/// This is useful for sources that need to build record data as a HashMap
+/// before creating SurrealDB records.
+pub fn typed_values_to_surreal_map(
+    typed_values: std::collections::HashMap<String, TypedValue>,
+) -> std::collections::HashMap<String, Value> {
+    typed_values
+        .into_iter()
+        .map(|(k, v)| (k, SurrealValue::from(v).into_inner()))
+        .collect()
 }
 
 #[cfg(test)]

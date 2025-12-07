@@ -7,7 +7,6 @@ use crate::error::{KafkaTypesError, Result};
 use json_types::JsonValueWithSchema;
 use std::collections::HashMap;
 use surreal_sync_kafka::ProtoFieldValue;
-use surrealdb_types::SurrealValue as SurrealDbTypesValue;
 use sync_core::{GeneratedValue, SyncDataType, TableSchema, TypedValue};
 use tracing::debug;
 
@@ -160,27 +159,25 @@ pub fn proto_to_typed_value(value: ProtoFieldValue) -> Result<TypedValue> {
             }
         }
         ProtoFieldValue::Repeated(reps) => {
-            let mut arr = Vec::new();
+            // Convert all elements and collect both values and TypedValues
+            let mut typed_values: Vec<TypedValue> = Vec::new();
             for v in reps {
-                arr.push(proto_to_typed_value(v)?.value);
+                typed_values.push(proto_to_typed_value(v)?);
             }
-            // Use Text as default element type since we don't have schema context
-            Ok(TypedValue::array(arr, SyncDataType::Text))
+
+            // Infer element type from the first element, default to Text if empty
+            let element_type = typed_values
+                .first()
+                .map(|tv| tv.sync_type.clone())
+                .unwrap_or(SyncDataType::Text);
+
+            // Extract just the GeneratedValues for the array
+            let arr: Vec<GeneratedValue> = typed_values.into_iter().map(|tv| tv.value).collect();
+
+            Ok(TypedValue::array(arr, element_type))
         }
         ProtoFieldValue::Null => Ok(TypedValue::null(SyncDataType::Text)),
     }
-}
-
-/// Convert TypedValue HashMap to surrealdb::sql::Value HashMap for database insertion.
-///
-/// This uses surrealdb-types for the final conversion to SurrealDB values.
-pub fn typed_values_to_surreal(
-    typed_values: HashMap<String, TypedValue>,
-) -> HashMap<String, surrealdb::sql::Value> {
-    typed_values
-        .into_iter()
-        .map(|(k, v)| (k, SurrealDbTypesValue::from(v).into_inner()))
-        .collect()
 }
 
 #[cfg(test)]

@@ -1,4 +1,4 @@
-use super::{Change, Record, Relation};
+use super::{Change, Record, RecordWithSurrealValues, Relation};
 use surrealdb::Surreal;
 
 // Apply a single change event to SurrealDB
@@ -50,6 +50,74 @@ pub async fn apply_change(
 pub async fn write_record(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     document: &Record,
+) -> anyhow::Result<()> {
+    let upsert_content = document.get_upsert_content();
+    let record_id = &document.id;
+
+    // Build parameterized query using proper variable binding to prevent injection
+    let query = "UPSERT $record_id CONTENT $content".to_string();
+
+    tracing::trace!("Executing SurrealDB query with flattened fields: {}", query);
+
+    log::info!("🔧 migrate_batch executing: {query} for record: {record_id:?}");
+
+    // Add debug logging to see the document being bound
+    if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+        tracing::debug!("Binding document to SurrealDB query for record {document:?}",);
+    }
+
+    // Build query with proper parameter binding
+    let mut q = surreal.query(query);
+    q = q.bind(("record_id", record_id.clone()));
+    q = q.bind(("content", upsert_content.clone()));
+
+    let mut response: surrealdb::Response = q.await.map_err(|e| {
+        tracing::error!(
+            "SurrealDB query execution failed for record {:?}: {}",
+            record_id,
+            e
+        );
+        if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+            tracing::error!("Failed query content: {upsert_content:?}");
+        }
+        e
+    })?;
+
+    let result: Result<Vec<surrealdb::sql::Thing>, surrealdb::Error> =
+        response.take("id").map_err(|e| {
+            tracing::error!(
+                "SurrealDB response.take() failed for record {:?}: {}",
+                record_id,
+                e
+            );
+            e
+        });
+
+    match result {
+        Ok(res) => {
+            if res.is_empty() {
+                tracing::warn!("Failed to create record: {:?}", record_id);
+            } else {
+                tracing::trace!("Successfully created record: {:?}", record_id);
+            }
+        }
+        Err(e) => {
+            tracing::error!("Error creating record {:?}: {}", record_id, e);
+            if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                tracing::error!("Problematic document: {:?}", document);
+            }
+            return Err(e.into());
+        }
+    }
+
+    Ok(())
+}
+
+/// Write a single record to SurrealDB using UPSERT.
+/// This variant uses RecordWithSurrealValues which contains native surrealdb::sql::Value.
+pub async fn write_record_with_surreal_values(
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+    document: &RecordWithSurrealValues,
 ) -> anyhow::Result<()> {
     let upsert_content = document.get_upsert_content();
     let record_id = &document.id;

@@ -10,10 +10,6 @@ authors = ["surreal-sync contributors"]
 sync-core = { path = "../sync-core" }
 surreal-sync-kafka = { path = "../kafka" }
 json-types = { path = "../json-types" }
-surrealdb-types = { path = "../surrealdb-types" }
-
-# SurrealDB client for Value type
-surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
 
 # Protobuf encoding
 protobuf = "3.5"

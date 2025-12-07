@@ -31,10 +31,11 @@
 //! ## Reverse Conversion (Source)
 //!
 //! ```ignore
-//! use kafka_types::reverse::{message_to_typed_values, typed_values_to_surreal};
+//! use kafka_types::reverse::message_to_typed_values;
+//! use surrealdb_types::typed_values_to_surreal_map;
 //!
 //! let typed_values = message_to_typed_values(message, Some(&table_schema))?;
-//! let surreal_values = typed_values_to_surreal(typed_values);
+//! let surreal_values = typed_values_to_surreal_map(typed_values);
 //! ```
 
 pub mod error;
@@ -49,5 +50,4 @@ pub use forward::{
 };
 pub use reverse::{
     message_to_typed_values, proto_to_typed_value, proto_to_typed_value_with_schema,
-    typed_values_to_surreal,
 };
