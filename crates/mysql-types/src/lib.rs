@@ -30,4 +30,7 @@ pub mod reverse;
 
 pub use ddl::{MySQLDdl, ToDdl};
 pub use forward::MySQLValue;
-pub use reverse::MySQLValueWithSchema;
+pub use reverse::{
+    json_to_generated_value_with_config, json_to_typed_value_with_config, row_to_typed_values,
+    ConversionError, JsonConversionConfig, MySQLValueWithSchema,
+};

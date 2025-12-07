@@ -301,6 +301,173 @@ fn json_value_to_generated(value: &serde_json::Value) -> GeneratedValue {
     }
 }
 
+/// Configuration for JSON field conversions.
+///
+/// Some databases (MySQL, PostgreSQL) store boolean values as 0/1 in JSON fields.
+/// This struct allows specifying which JSON paths should be converted to boolean values
+/// or treated as SET columns (comma-separated arrays).
+///
+/// # Example
+///
+/// ```
+/// use json_types::JsonConversionConfig;
+///
+/// let config = JsonConversionConfig::new()
+///     .with_boolean_path("settings.enabled")
+///     .with_boolean_path("flags.is_active")
+///     .with_set_path("permissions");
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct JsonConversionConfig {
+    /// JSON paths that should convert 0/1 to boolean.
+    /// Paths use dot notation, e.g., "settings.enabled" or "flags.is_active".
+    pub boolean_paths: Vec<String>,
+    /// JSON paths that should be treated as SET columns (comma-separated arrays).
+    pub set_paths: Vec<String>,
+}
+
+impl JsonConversionConfig {
+    /// Create a new empty configuration.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add a boolean path.
+    pub fn with_boolean_path(mut self, path: &str) -> Self {
+        self.boolean_paths.push(path.to_string());
+        self
+    }
+
+    /// Add multiple boolean paths.
+    pub fn with_boolean_paths(mut self, paths: &[&str]) -> Self {
+        self.boolean_paths
+            .extend(paths.iter().map(|s| s.to_string()));
+        self
+    }
+
+    /// Add a SET path.
+    pub fn with_set_path(mut self, path: &str) -> Self {
+        self.set_paths.push(path.to_string());
+        self
+    }
+
+    /// Add multiple SET paths.
+    pub fn with_set_paths(mut self, paths: &[&str]) -> Self {
+        self.set_paths.extend(paths.iter().map(|s| s.to_string()));
+        self
+    }
+}
+
+/// Convert a JSON value to TypedValue with path-based configuration.
+///
+/// This handles database-specific quirks like storing booleans as 0/1 in JSON fields.
+///
+/// # Arguments
+/// * `value` - The JSON value to convert
+/// * `current_path` - The current path in the JSON tree (for nested objects), typically ""
+/// * `config` - Configuration specifying which paths should be treated specially
+///
+/// # Example
+/// ```
+/// use json_types::{JsonConversionConfig, json_to_typed_value_with_config};
+/// use sync_core::GeneratedValue;
+///
+/// let config = JsonConversionConfig::new()
+///     .with_boolean_path("settings.enabled")
+///     .with_boolean_path("flags.is_active");
+///
+/// let json = serde_json::json!({"settings": {"enabled": 1}});
+/// let tv = json_to_typed_value_with_config(json, "", &config);
+/// // tv.value will have {"settings": {"enabled": true}}
+/// ```
+pub fn json_to_typed_value_with_config(
+    value: serde_json::Value,
+    current_path: &str,
+    config: &JsonConversionConfig,
+) -> TypedValue {
+    let gv = json_to_generated_value_with_config(value, current_path, config);
+    TypedValue::new(SyncDataType::Json, gv)
+}
+
+/// Convert JSON to GeneratedValue with path-based configuration.
+///
+/// This is the internal implementation that handles the recursive conversion.
+pub fn json_to_generated_value_with_config(
+    value: serde_json::Value,
+    current_path: &str,
+    config: &JsonConversionConfig,
+) -> GeneratedValue {
+    match value {
+        serde_json::Value::Null => GeneratedValue::Null,
+        serde_json::Value::Bool(b) => GeneratedValue::Bool(b),
+        serde_json::Value::Number(n) => {
+            // Check if this path should be treated as boolean
+            let is_boolean_path = config.boolean_paths.iter().any(|p| p == current_path);
+
+            if let Some(i) = n.as_i64() {
+                if is_boolean_path && (i == 0 || i == 1) {
+                    // Convert 0/1 to boolean for specified paths
+                    GeneratedValue::Bool(i == 1)
+                } else {
+                    GeneratedValue::Int64(i)
+                }
+            } else if let Some(f) = n.as_f64() {
+                GeneratedValue::Float64(f)
+            } else {
+                GeneratedValue::String(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => {
+            // Check if this path should be treated as a SET column
+            let is_set_path = config.set_paths.iter().any(|p| p == current_path);
+
+            if is_set_path {
+                // Convert comma-separated SET values to array
+                if s.is_empty() {
+                    GeneratedValue::Array(Vec::new())
+                } else {
+                    let values: Vec<GeneratedValue> = s
+                        .split(',')
+                        .map(|v| GeneratedValue::String(v.to_string()))
+                        .collect();
+                    GeneratedValue::Array(values)
+                }
+            } else {
+                GeneratedValue::String(s)
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            let values: Vec<GeneratedValue> = arr
+                .into_iter()
+                .enumerate()
+                .map(|(idx, item)| {
+                    let item_path = format!("{current_path}[{idx}]");
+                    json_to_generated_value_with_config(item, &item_path, config)
+                })
+                .collect();
+            GeneratedValue::Array(values)
+        }
+        serde_json::Value::Object(obj) => {
+            let map: HashMap<String, GeneratedValue> = obj
+                .into_iter()
+                .map(|(key, val)| {
+                    // Build the nested path for this field
+                    let nested_path = if current_path.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{current_path}.{key}")
+                    };
+                    (
+                        key,
+                        json_to_generated_value_with_config(val, &nested_path, config),
+                    )
+                })
+                .collect();
+            GeneratedValue::Object(map)
+        }
+    }
+}
+
 /// Extract a typed value from a JSON object field.
 pub fn extract_field(
     obj: &serde_json::Map<String, serde_json::Value>,

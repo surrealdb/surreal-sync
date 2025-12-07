@@ -2,12 +2,33 @@
 //!
 //! This module implements conversion from MySQL's native values back to
 //! sync-core's `TypedValue` for reading data from MySQL.
+//!
+//! # Boolean Detection
+//!
+//! MySQL uses `TINYINT(1)` to represent boolean values. This module detects
+//! boolean columns in two ways:
+//!
+//! 1. **Column width detection**: When `column_length` is set to 1 for TINYINT,
+//!    values 0 and 1 are converted to boolean.
+//!
+//! 2. **Value-based detection**: Even without column metadata, `TINYINT` values
+//!    of exactly 0 or 1 can be converted to boolean using `with_boolean_hint(true)`.
+//!
+//! # Schema-Aware Conversion
+//!
+//! For more complex conversions (JSON boolean paths, SET columns), use the
+//! schema-aware conversion functions that accept `TableSchema` information.
 
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
 use mysql_async::consts::{ColumnFlags, ColumnType};
 use mysql_async::Value;
 use sync_core::{GeneratedValue, SyncDataType, TypedValue};
 use thiserror::Error;
+
+// Re-export from json-types for convenience
+pub use json_types::{
+    json_to_generated_value_with_config, json_to_typed_value_with_config, JsonConversionConfig,
+};
 
 /// MySQL value with schema information for type-aware conversion.
 #[derive(Debug, Clone)]
@@ -24,6 +45,11 @@ pub struct MySQLValueWithSchema {
     pub precision: Option<u8>,
     /// For DECIMAL: scale.
     pub scale: Option<u8>,
+    /// Hint that this TINYINT should be treated as boolean.
+    /// When true, TINYINT values 0 and 1 are converted to boolean.
+    /// This is useful when column_length is not available but the schema
+    /// indicates this is a boolean column.
+    pub boolean_hint: bool,
 }
 
 /// Error during MySQL value conversion.
@@ -51,6 +77,7 @@ impl MySQLValueWithSchema {
             column_length: None,
             precision: None,
             scale: None,
+            boolean_hint: false,
         }
     }
 
@@ -65,6 +92,27 @@ impl MySQLValueWithSchema {
         self.precision = Some(precision);
         self.scale = Some(scale);
         self
+    }
+
+    /// Set boolean hint for TINYINT columns.
+    ///
+    /// When set to true, TINYINT values of 0 and 1 will be converted to boolean
+    /// even if the column length is not 1.
+    pub fn with_boolean_hint(mut self, hint: bool) -> Self {
+        self.boolean_hint = hint;
+        self
+    }
+
+    /// Check if this column should be treated as boolean.
+    ///
+    /// Returns true if:
+    /// - The column type is TINYINT and column_length is 1 (MySQL convention), or
+    /// - The boolean_hint is set to true
+    fn is_boolean_column(&self) -> bool {
+        if self.column_type != ColumnType::MYSQL_TYPE_TINY {
+            return false;
+        }
+        self.boolean_hint || self.column_length == Some(1)
     }
 
     /// Convert to TypedValue.
@@ -89,8 +137,22 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             // Integer types
             MYSQL_TYPE_TINY => {
                 let i = extract_int(&mv.value)?;
+
+                // Check if this is a boolean column (TINYINT(1) or boolean_hint)
+                if mv.is_boolean_column() {
+                    // Convert 0/1 to boolean
+                    if i == 0 {
+                        return Ok(TypedValue::bool(false));
+                    } else if i == 1 {
+                        return Ok(TypedValue::bool(true));
+                    }
+                    // Values other than 0/1 stay as integer even for boolean columns
+                }
+
                 Ok(TypedValue::new(
-                    SyncDataType::TinyInt { width: 1 },
+                    SyncDataType::TinyInt {
+                        width: mv.column_length.unwrap_or(4) as u8,
+                    },
                     GeneratedValue::Int32(i as i32),
                 ))
             }
@@ -298,7 +360,16 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
 fn column_type_to_sync_type(col_type: ColumnType, mv: &MySQLValueWithSchema) -> SyncDataType {
     use ColumnType::*;
     match col_type {
-        MYSQL_TYPE_TINY => SyncDataType::TinyInt { width: 1 },
+        MYSQL_TYPE_TINY => {
+            // Check if this is a boolean column
+            if mv.is_boolean_column() {
+                SyncDataType::Bool
+            } else {
+                SyncDataType::TinyInt {
+                    width: mv.column_length.unwrap_or(4) as u8,
+                }
+            }
+        }
         MYSQL_TYPE_SHORT => SyncDataType::SmallInt,
         MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => SyncDataType::Int,
         MYSQL_TYPE_LONGLONG => SyncDataType::BigInt,
@@ -507,6 +578,73 @@ fn json_to_generated_value(json: serde_json::Value) -> GeneratedValue {
     }
 }
 
+/// Convert a MySQL row to a HashMap of TypedValues.
+///
+/// This function converts all columns in a MySQL row to TypedValues,
+/// handling boolean detection and JSON conversion with optional configuration.
+///
+/// # Arguments
+/// * `row` - The MySQL row to convert
+/// * `boolean_columns` - Optional list of column names that should be treated as booleans
+///   (for TINYINT columns that don't have width=1 metadata)
+/// * `json_config` - Optional configuration for JSON field conversions
+///
+/// # Returns
+/// A HashMap mapping column names to TypedValues
+pub fn row_to_typed_values(
+    row: &mysql_async::Row,
+    boolean_columns: Option<&[&str]>,
+    json_config: Option<&JsonConversionConfig>,
+) -> Result<std::collections::HashMap<String, TypedValue>, ConversionError> {
+    let columns = row.columns();
+    let mut result = std::collections::HashMap::new();
+
+    for (index, column) in columns.iter().enumerate() {
+        let column_name = column.name_str().to_string();
+        let column_type = column.column_type();
+        let column_flags = column.flags();
+
+        // Get the raw value
+        let raw_value = row
+            .as_ref(index)
+            .ok_or_else(|| ConversionError::TypeMismatch {
+                expected: "any value".to_string(),
+                actual: Value::NULL,
+            })?
+            .clone();
+
+        // Check if this column should be treated as boolean
+        let is_boolean = boolean_columns
+            .map(|cols| cols.contains(&column_name.as_str()))
+            .unwrap_or(false);
+
+        // For JSON columns with config, use special conversion
+        if column_type == ColumnType::MYSQL_TYPE_JSON {
+            if let Some(config) = json_config {
+                if let Value::Bytes(bytes) = &raw_value {
+                    if let Ok(s) = String::from_utf8(bytes.clone()) {
+                        if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&s) {
+                            let typed_value =
+                                json_to_typed_value_with_config(json_value, "", config);
+                            result.insert(column_name, typed_value);
+                            continue;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Standard conversion with optional boolean hint
+        let mv = MySQLValueWithSchema::new(raw_value, column_type, column_flags)
+            .with_boolean_hint(is_boolean);
+
+        let typed_value = mv.to_typed_value()?;
+        result.insert(column_name, typed_value);
+    }
+
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -672,6 +810,209 @@ mod tests {
             assert_eq!(s, "long text content");
         } else {
             panic!("Expected String value");
+        }
+    }
+
+    #[test]
+    fn test_tinyint1_boolean_true() {
+        // TINYINT(1) with value 1 should be boolean true
+        let mv = MySQLValueWithSchema::new(
+            Value::Int(1),
+            ColumnType::MYSQL_TYPE_TINY,
+            ColumnFlags::empty(),
+        )
+        .with_length(1);
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::Bool));
+        assert!(matches!(tv.value, GeneratedValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_tinyint1_boolean_false() {
+        // TINYINT(1) with value 0 should be boolean false
+        let mv = MySQLValueWithSchema::new(
+            Value::Int(0),
+            ColumnType::MYSQL_TYPE_TINY,
+            ColumnFlags::empty(),
+        )
+        .with_length(1);
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::Bool));
+        assert!(matches!(tv.value, GeneratedValue::Bool(false)));
+    }
+
+    #[test]
+    fn test_tinyint_without_boolean_hint() {
+        // TINYINT without length=1 or hint should stay as integer
+        let mv = MySQLValueWithSchema::new(
+            Value::Int(1),
+            ColumnType::MYSQL_TYPE_TINY,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::TinyInt { .. }));
+        assert!(matches!(tv.value, GeneratedValue::Int32(1)));
+    }
+
+    #[test]
+    fn test_tinyint_with_boolean_hint_true() {
+        // TINYINT with boolean_hint=true should convert 0/1 to boolean
+        let mv = MySQLValueWithSchema::new(
+            Value::Int(1),
+            ColumnType::MYSQL_TYPE_TINY,
+            ColumnFlags::empty(),
+        )
+        .with_boolean_hint(true);
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::Bool));
+        assert!(matches!(tv.value, GeneratedValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_tinyint_with_boolean_hint_false() {
+        // TINYINT with boolean_hint=true should convert 0/1 to boolean
+        let mv = MySQLValueWithSchema::new(
+            Value::Int(0),
+            ColumnType::MYSQL_TYPE_TINY,
+            ColumnFlags::empty(),
+        )
+        .with_boolean_hint(true);
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::Bool));
+        assert!(matches!(tv.value, GeneratedValue::Bool(false)));
+    }
+
+    #[test]
+    fn test_tinyint_non_boolean_value() {
+        // Even with TINYINT(1), values other than 0/1 should stay as int
+        let mv = MySQLValueWithSchema::new(
+            Value::Int(5),
+            ColumnType::MYSQL_TYPE_TINY,
+            ColumnFlags::empty(),
+        )
+        .with_length(1);
+        let tv = mv.to_typed_value().unwrap();
+        // The type still says TinyInt, but value is 5
+        assert!(matches!(tv.sync_type, SyncDataType::TinyInt { .. }));
+        assert!(matches!(tv.value, GeneratedValue::Int32(5)));
+    }
+
+    #[test]
+    fn test_null_boolean_column() {
+        // NULL in a boolean column should preserve the Bool type
+        let mv = MySQLValueWithSchema::new(
+            Value::NULL,
+            ColumnType::MYSQL_TYPE_TINY,
+            ColumnFlags::empty(),
+        )
+        .with_length(1);
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.sync_type, SyncDataType::Bool));
+        assert!(matches!(tv.value, GeneratedValue::Null));
+    }
+
+    #[test]
+    fn test_json_boolean_path_conversion() {
+        // Test that 0/1 in JSON are converted to boolean when path is specified
+        let config = JsonConversionConfig::new()
+            .with_boolean_path("settings.enabled")
+            .with_boolean_path("flags.is_active");
+
+        let json = serde_json::json!({
+            "settings": {
+                "enabled": 1,
+                "count": 5
+            },
+            "flags": {
+                "is_active": 0
+            }
+        });
+
+        let tv = json_to_typed_value_with_config(json, "", &config);
+
+        if let GeneratedValue::Object(root) = tv.value {
+            // Check settings.enabled is now boolean true
+            if let Some(GeneratedValue::Object(settings)) = root.get("settings") {
+                assert!(matches!(
+                    settings.get("enabled"),
+                    Some(GeneratedValue::Bool(true))
+                ));
+                // count should still be an integer
+                assert!(matches!(
+                    settings.get("count"),
+                    Some(GeneratedValue::Int64(5))
+                ));
+            } else {
+                panic!("Expected settings object");
+            }
+
+            // Check flags.is_active is now boolean false
+            if let Some(GeneratedValue::Object(flags)) = root.get("flags") {
+                assert!(matches!(
+                    flags.get("is_active"),
+                    Some(GeneratedValue::Bool(false))
+                ));
+            } else {
+                panic!("Expected flags object");
+            }
+        } else {
+            panic!("Expected Object value");
+        }
+    }
+
+    #[test]
+    fn test_json_set_path_conversion() {
+        // Test that comma-separated strings are converted to arrays when path is specified
+        let config = JsonConversionConfig::new().with_set_path("permissions");
+
+        let json = serde_json::json!({
+            "permissions": "read,write,execute",
+            "name": "admin"
+        });
+
+        let tv = json_to_typed_value_with_config(json, "", &config);
+
+        if let GeneratedValue::Object(root) = tv.value {
+            // Check permissions is now an array
+            if let Some(GeneratedValue::Array(perms)) = root.get("permissions") {
+                assert_eq!(perms.len(), 3);
+                assert!(matches!(&perms[0], GeneratedValue::String(s) if s == "read"));
+                assert!(matches!(&perms[1], GeneratedValue::String(s) if s == "write"));
+                assert!(matches!(&perms[2], GeneratedValue::String(s) if s == "execute"));
+            } else {
+                panic!("Expected Array value for permissions");
+            }
+
+            // name should still be a string
+            assert!(matches!(root.get("name"), Some(GeneratedValue::String(s)) if s == "admin"));
+        } else {
+            panic!("Expected Object value");
+        }
+    }
+
+    #[test]
+    fn test_json_empty_config() {
+        // Test that without config, 0/1 stay as integers
+        let config = JsonConversionConfig::new();
+
+        let json = serde_json::json!({
+            "enabled": 1,
+            "disabled": 0
+        });
+
+        let tv = json_to_typed_value_with_config(json, "", &config);
+
+        if let GeneratedValue::Object(root) = tv.value {
+            assert!(matches!(
+                root.get("enabled"),
+                Some(GeneratedValue::Int64(1))
+            ));
+            assert!(matches!(
+                root.get("disabled"),
+                Some(GeneratedValue::Int64(0))
+            ));
+        } else {
+            panic!("Expected Object value");
         }
     }
 }

@@ -28,4 +28,7 @@ pub mod forward;
 pub mod reverse;
 
 pub use forward::JsonValue;
-pub use reverse::JsonValueWithSchema;
+pub use reverse::{
+    json_to_generated_value_with_config, json_to_typed_value_with_config, JsonConversionConfig,
+    JsonValueWithSchema,
+};

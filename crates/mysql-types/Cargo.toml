@@ -7,6 +7,7 @@ license = "MIT"
 
 [dependencies]
 sync-core = { path = "../sync-core" }
+json-types = { path = "../json-types" }
 mysql_async = { version = "0.34" }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
