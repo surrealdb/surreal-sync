@@ -1,7 +1,7 @@
 //! Field comparison logic.
 
 use surrealdb::sql::Value as SurrealValue;
-use sync_core::UniversalValue;
+use sync_core::{GeometryData, UniversalValue};
 
 /// Result of comparing two values.
 #[derive(Debug, Clone, PartialEq)]
@@ -335,16 +335,9 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
             CompareResult::Match
         }
 
-        // Object comparison (for JSON)
-        (UniversalValue::Json(_e), SurrealValue::Object(_a)) => {
-            // Simplified JSON comparison - just check if both are objects
-            // TODO: Implement proper recursive JSON comparison if needed
-            CompareResult::Match
-        }
-        (UniversalValue::Jsonb(_e), SurrealValue::Object(_a)) => {
-            // Simplified JSONB comparison
-            CompareResult::Match
-        }
+        // JSON/JSONB comparison - always stored as SurrealDB Object
+        (UniversalValue::Json(e), SurrealValue::Object(a)) => compare_json_to_surreal_object(e, a),
+        (UniversalValue::Jsonb(e), SurrealValue::Object(a)) => compare_json_to_surreal_object(e, a),
 
         // Enum comparison (strict 1:1) - stored as string in SurrealDB
         (UniversalValue::Enum { value: e, .. }, SurrealValue::Strand(a)) => {
@@ -386,16 +379,171 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         }
 
         // Geometry comparison (strict 1:1) - stored as JSON object in SurrealDB
-        (UniversalValue::Geometry { .. }, SurrealValue::Object(_a)) => {
-            // Simplified geometry comparison - just check if both are objects
-            CompareResult::Match
+        (UniversalValue::Geometry { data, .. }, SurrealValue::Object(a)) => {
+            match data {
+                GeometryData::GeoJson(expected_json) => {
+                    // Convert SurrealDB Object to JSON and compare
+                    let actual_json = surreal_object_to_json(a);
+                    if json_values_equal(expected_json, &actual_json) {
+                        CompareResult::Match
+                    } else {
+                        CompareResult::Mismatch {
+                            expected: serde_json::to_string(expected_json)
+                                .unwrap_or_else(|_| format!("{expected_json:?}")),
+                            actual: serde_json::to_string(&actual_json)
+                                .unwrap_or_else(|_| format!("{actual_json:?}")),
+                        }
+                    }
+                }
+                GeometryData::Wkb(expected_bytes) => {
+                    // For WKB, check if object has a "wkb" field with matching hex string
+                    if let Some(SurrealValue::Strand(wkb_str)) = a.get("wkb") {
+                        let expected_hex: String =
+                            expected_bytes.iter().map(|b| format!("{b:02x}")).collect();
+                        if expected_hex == wkb_str.as_str() {
+                            CompareResult::Match
+                        } else {
+                            CompareResult::Mismatch {
+                                expected: expected_hex,
+                                actual: wkb_str.to_string(),
+                            }
+                        }
+                    } else {
+                        CompareResult::Mismatch {
+                            expected: format!("WKB geometry with {} bytes", expected_bytes.len()),
+                            actual: format!("{a:?}"),
+                        }
+                    }
+                }
+            }
         }
+        // WKB geometry stored as base64-encoded string in SurrealDB
+        // Note: GeoJSON geometry is stored as Object, not Strand
+        (UniversalValue::Geometry { data, .. }, SurrealValue::Strand(a)) => match data {
+            GeometryData::GeoJson(_) => {
+                // GeoJSON should be stored as Object, not Strand - this is a type mismatch
+                CompareResult::Mismatch {
+                    expected: "Geometry as Object (GeoJSON)".to_string(),
+                    actual: format!("Strand: {}", a.as_str()),
+                }
+            }
+            GeometryData::Wkb(expected_bytes) => {
+                // surrealdb-types stores WKB as base64-encoded string
+                use base64::Engine;
+                let expected_base64 =
+                    base64::engine::general_purpose::STANDARD.encode(expected_bytes);
+                if expected_base64 == a.as_str() {
+                    CompareResult::Match
+                } else {
+                    CompareResult::Mismatch {
+                        expected: expected_base64,
+                        actual: a.to_string(),
+                    }
+                }
+            }
+        },
 
         // Type mismatch
         (expected, actual) => CompareResult::Mismatch {
             expected: format!("{expected:?}"),
             actual: format!("{actual:?}"),
         },
+    }
+}
+
+/// Compare a serde_json::Value to a SurrealDB Object.
+fn compare_json_to_surreal_object(
+    expected: &serde_json::Value,
+    actual: &surrealdb::sql::Object,
+) -> CompareResult {
+    // Convert SurrealDB Object to serde_json::Value for comparison
+    let actual_json = surreal_object_to_json(actual);
+
+    if json_values_equal(expected, &actual_json) {
+        CompareResult::Match
+    } else {
+        CompareResult::Mismatch {
+            expected: serde_json::to_string(expected).unwrap_or_else(|_| format!("{expected:?}")),
+            actual: serde_json::to_string(&actual_json)
+                .unwrap_or_else(|_| format!("{actual_json:?}")),
+        }
+    }
+}
+
+/// Convert a SurrealDB Object to serde_json::Value.
+fn surreal_object_to_json(obj: &surrealdb::sql::Object) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for (key, value) in obj.iter() {
+        map.insert(key.clone(), surreal_value_to_json(value));
+    }
+    serde_json::Value::Object(map)
+}
+
+/// Convert a SurrealDB Value to serde_json::Value.
+fn surreal_value_to_json(value: &SurrealValue) -> serde_json::Value {
+    match value {
+        SurrealValue::None | SurrealValue::Null => serde_json::Value::Null,
+        SurrealValue::Bool(b) => serde_json::json!(*b),
+        SurrealValue::Number(n) => {
+            // Try as integer first, then fall back to float
+            let int_val = n.as_int();
+            if n.as_float() == int_val as f64 {
+                serde_json::json!(int_val)
+            } else {
+                serde_json::json!(n.as_float())
+            }
+        }
+        SurrealValue::Strand(s) => serde_json::json!(s.as_str()),
+        SurrealValue::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(surreal_value_to_json).collect())
+        }
+        SurrealValue::Object(obj) => surreal_object_to_json(obj),
+        SurrealValue::Uuid(u) => {
+            let uuid: uuid::Uuid = (*u).into();
+            serde_json::json!(uuid.to_string())
+        }
+        SurrealValue::Datetime(dt) => serde_json::json!(dt.to_string()),
+        SurrealValue::Bytes(b) => {
+            use base64::Engine;
+            serde_json::json!(base64::engine::general_purpose::STANDARD.encode(b.as_slice()))
+        }
+        // Fallback for other types - use debug format
+        other => serde_json::json!(format!("{other:?}")),
+    }
+}
+
+/// Compare two serde_json::Value instances for equality.
+/// Uses semantic comparison (handles numeric type differences, etc.)
+fn json_values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    match (a, b) {
+        (serde_json::Value::Null, serde_json::Value::Null) => true,
+        (serde_json::Value::Bool(a), serde_json::Value::Bool(b)) => a == b,
+        (serde_json::Value::Number(a), serde_json::Value::Number(b)) => {
+            // Compare as f64 to handle integer vs float differences
+            let a_f64 = a.as_f64().unwrap_or(f64::NAN);
+            let b_f64 = b.as_f64().unwrap_or(f64::NAN);
+            if a_f64.is_nan() && b_f64.is_nan() {
+                true
+            } else {
+                (a_f64 - b_f64).abs() < 1e-10
+            }
+        }
+        (serde_json::Value::String(a), serde_json::Value::String(b)) => a == b,
+        (serde_json::Value::Array(a), serde_json::Value::Array(b)) => {
+            if a.len() != b.len() {
+                return false;
+            }
+            a.iter().zip(b.iter()).all(|(a, b)| json_values_equal(a, b))
+        }
+        (serde_json::Value::Object(a), serde_json::Value::Object(b)) => {
+            if a.len() != b.len() {
+                return false;
+            }
+            a.iter()
+                .all(|(key, val)| b.get(key).is_some_and(|bval| json_values_equal(val, bval)))
+        }
+        // Different types
+        _ => false,
     }
 }
 
@@ -522,5 +670,126 @@ mod tests {
             compare_values(&expected, &actual),
             CompareResult::Mismatch { .. }
         ));
+    }
+
+    #[test]
+    fn test_compare_json_object_match() {
+        use surrealdb::sql::Object;
+
+        let expected_json = serde_json::json!({
+            "name": "test",
+            "value": 42,
+            "active": true
+        });
+        let expected = UniversalValue::Json(Box::new(expected_json));
+
+        let mut actual_obj = Object::default();
+        actual_obj.insert("name".to_string(), SurrealValue::Strand("test".into()));
+        actual_obj.insert("value".to_string(), SurrealValue::Number(Number::Int(42)));
+        actual_obj.insert("active".to_string(), SurrealValue::Bool(true));
+        let actual = SurrealValue::Object(actual_obj);
+
+        assert_eq!(compare_values(&expected, &actual), CompareResult::Match);
+    }
+
+    #[test]
+    fn test_compare_json_object_mismatch() {
+        use surrealdb::sql::Object;
+
+        let expected_json = serde_json::json!({
+            "name": "test",
+            "value": 42
+        });
+        let expected = UniversalValue::Json(Box::new(expected_json));
+
+        let mut actual_obj = Object::default();
+        actual_obj.insert("name".to_string(), SurrealValue::Strand("different".into()));
+        actual_obj.insert("value".to_string(), SurrealValue::Number(Number::Int(42)));
+        let actual = SurrealValue::Object(actual_obj);
+
+        assert!(matches!(
+            compare_values(&expected, &actual),
+            CompareResult::Mismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn test_compare_json_nested() {
+        use surrealdb::sql::{Array, Object};
+
+        let expected_json = serde_json::json!({
+            "items": [1, 2, 3],
+            "nested": {
+                "key": "value"
+            }
+        });
+        let expected = UniversalValue::Json(Box::new(expected_json));
+
+        let mut nested_obj = Object::default();
+        nested_obj.insert("key".to_string(), SurrealValue::Strand("value".into()));
+
+        let mut actual_obj = Object::default();
+        actual_obj.insert(
+            "items".to_string(),
+            SurrealValue::Array(Array::from(vec![
+                SurrealValue::Number(Number::Int(1)),
+                SurrealValue::Number(Number::Int(2)),
+                SurrealValue::Number(Number::Int(3)),
+            ])),
+        );
+        actual_obj.insert("nested".to_string(), SurrealValue::Object(nested_obj));
+        let actual = SurrealValue::Object(actual_obj);
+
+        assert_eq!(compare_values(&expected, &actual), CompareResult::Match);
+    }
+
+    #[test]
+    fn test_compare_geometry_geojson() {
+        use surrealdb::sql::Object;
+        use sync_core::GeometryType;
+
+        let geojson = serde_json::json!({
+            "type": "Point",
+            "coordinates": [-73.97, 40.77]
+        });
+        let expected = UniversalValue::Geometry {
+            data: GeometryData::GeoJson(geojson),
+            geometry_type: GeometryType::Point,
+        };
+
+        let mut coords = surrealdb::sql::Array::default();
+        coords.push(SurrealValue::Number(Number::Float(-73.97)));
+        coords.push(SurrealValue::Number(Number::Float(40.77)));
+
+        let mut actual_obj = Object::default();
+        actual_obj.insert("type".to_string(), SurrealValue::Strand("Point".into()));
+        actual_obj.insert("coordinates".to_string(), SurrealValue::Array(coords));
+        let actual = SurrealValue::Object(actual_obj);
+
+        assert_eq!(compare_values(&expected, &actual), CompareResult::Match);
+    }
+
+    #[test]
+    fn test_json_values_equal_numbers() {
+        // Integer vs float that are numerically equal
+        assert!(json_values_equal(
+            &serde_json::json!(42),
+            &serde_json::json!(42.0)
+        ));
+        // Different numbers
+        assert!(!json_values_equal(
+            &serde_json::json!(42),
+            &serde_json::json!(43)
+        ));
+    }
+
+    #[test]
+    fn test_json_values_equal_objects() {
+        let a = serde_json::json!({"a": 1, "b": 2});
+        let b = serde_json::json!({"b": 2, "a": 1}); // Same but different order
+        assert!(json_values_equal(&a, &b));
+
+        let c = serde_json::json!({"a": 1, "b": 3}); // Different value
+        assert!(!json_values_equal(&a, &c));
     }
 }
