@@ -3,8 +3,8 @@
 //! This module defines the intermediate value types used for data generation
 //! and type conversion between different database systems.
 
-use crate::schema::SyncSchema;
-use crate::types::SyncDataType;
+use crate::schema::Schema;
+use crate::types::UniversalType;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -12,12 +12,12 @@ use uuid::Uuid;
 
 /// Raw generated value before type conversion.
 ///
-/// `GeneratedValue` represents the raw, type-agnostic value produced by
+/// `UniversalValue` represents the raw, type-agnostic value produced by
 /// the data generator. It holds the actual data that will be converted
 /// to database-specific formats via the `TypedValue` wrapper.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum GeneratedValue {
+pub enum UniversalValue {
     /// Boolean value
     Bool(bool),
 
@@ -53,16 +53,16 @@ pub enum GeneratedValue {
     },
 
     /// Array of values
-    Array(Vec<GeneratedValue>),
+    Array(Vec<UniversalValue>),
 
     /// Object/map of values
-    Object(HashMap<String, GeneratedValue>),
+    Object(HashMap<String, UniversalValue>),
 
     /// Null value
     Null,
 }
 
-impl GeneratedValue {
+impl UniversalValue {
     /// Create a new decimal value.
     pub fn decimal(value: impl Into<String>, precision: u8, scale: u8) -> Self {
         Self::Decimal {
@@ -143,7 +143,7 @@ impl GeneratedValue {
     }
 
     /// Try to get this value as an array.
-    pub fn as_array(&self) -> Option<&Vec<GeneratedValue>> {
+    pub fn as_array(&self) -> Option<&Vec<UniversalValue>> {
         match self {
             Self::Array(arr) => Some(arr),
             _ => None,
@@ -151,7 +151,7 @@ impl GeneratedValue {
     }
 
     /// Try to get this value as an object.
-    pub fn as_object(&self) -> Option<&HashMap<String, GeneratedValue>> {
+    pub fn as_object(&self) -> Option<&HashMap<String, UniversalValue>> {
         match self {
             Self::Object(obj) => Some(obj),
             _ => None,
@@ -159,86 +159,86 @@ impl GeneratedValue {
     }
 }
 
-/// Typed value with its SyncDataType for conversion.
+/// Typed value with its UniversalType for conversion.
 ///
-/// `TypedValue` combines a `GeneratedValue` with its corresponding `SyncDataType`,
+/// `TypedValue` combines a `UniversalValue` with its corresponding `UniversalType`,
 /// providing the type context needed for `From`/`Into` trait implementations
 /// in the database-specific type crates.
 #[derive(Debug, Clone)]
 pub struct TypedValue {
     /// The extended type information
-    pub sync_type: SyncDataType,
+    pub sync_type: UniversalType,
 
     /// The raw generated value
-    pub value: GeneratedValue,
+    pub value: UniversalValue,
 }
 
 impl TypedValue {
     /// Create a new typed value.
-    pub fn new(sync_type: SyncDataType, value: GeneratedValue) -> Self {
+    pub fn new(sync_type: UniversalType, value: UniversalValue) -> Self {
         Self { sync_type, value }
     }
 
     /// Create a boolean typed value.
     pub fn bool(value: bool) -> Self {
-        Self::new(SyncDataType::Bool, GeneratedValue::Bool(value))
+        Self::new(UniversalType::Bool, UniversalValue::Bool(value))
     }
 
     /// Create a smallint typed value.
     pub fn smallint(value: i32) -> Self {
-        Self::new(SyncDataType::SmallInt, GeneratedValue::Int32(value))
+        Self::new(UniversalType::SmallInt, UniversalValue::Int32(value))
     }
 
     /// Create an integer typed value.
     pub fn int(value: i32) -> Self {
-        Self::new(SyncDataType::Int, GeneratedValue::Int32(value))
+        Self::new(UniversalType::Int, UniversalValue::Int32(value))
     }
 
     /// Create a bigint typed value.
     pub fn bigint(value: i64) -> Self {
-        Self::new(SyncDataType::BigInt, GeneratedValue::Int64(value))
+        Self::new(UniversalType::BigInt, UniversalValue::Int64(value))
     }
 
     /// Create a double typed value.
     pub fn double(value: f64) -> Self {
-        Self::new(SyncDataType::Double, GeneratedValue::Float64(value))
+        Self::new(UniversalType::Double, UniversalValue::Float64(value))
     }
 
     /// Create a text typed value.
     pub fn text(value: impl Into<String>) -> Self {
-        Self::new(SyncDataType::Text, GeneratedValue::String(value.into()))
+        Self::new(UniversalType::Text, UniversalValue::String(value.into()))
     }
 
     /// Create a bytes typed value.
     pub fn bytes(value: Vec<u8>) -> Self {
-        Self::new(SyncDataType::Bytes, GeneratedValue::Bytes(value))
+        Self::new(UniversalType::Bytes, UniversalValue::Bytes(value))
     }
 
     /// Create a UUID typed value.
     pub fn uuid(value: Uuid) -> Self {
-        Self::new(SyncDataType::Uuid, GeneratedValue::Uuid(value))
+        Self::new(UniversalType::Uuid, UniversalValue::Uuid(value))
     }
 
     /// Create a datetime typed value.
     pub fn datetime(value: DateTime<Utc>) -> Self {
-        Self::new(SyncDataType::DateTime, GeneratedValue::DateTime(value))
+        Self::new(UniversalType::DateTime, UniversalValue::DateTime(value))
     }
 
     /// Create a float typed value.
     pub fn float(value: f64) -> Self {
-        Self::new(SyncDataType::Float, GeneratedValue::Float64(value))
+        Self::new(UniversalType::Float, UniversalValue::Float64(value))
     }
 
     /// Create a null typed value with a specified type.
-    pub fn null(sync_type: SyncDataType) -> Self {
-        Self::new(sync_type, GeneratedValue::Null)
+    pub fn null(sync_type: UniversalType) -> Self {
+        Self::new(sync_type, UniversalValue::Null)
     }
 
     /// Create a decimal typed value.
     pub fn decimal(value: impl Into<String>, precision: u8, scale: u8) -> Self {
         Self::new(
-            SyncDataType::Decimal { precision, scale },
-            GeneratedValue::Decimal {
+            UniversalType::Decimal { precision, scale },
+            UniversalValue::Decimal {
                 value: value.into(),
                 precision,
                 scale,
@@ -247,18 +247,18 @@ impl TypedValue {
     }
 
     /// Create an array typed value.
-    pub fn array(values: Vec<GeneratedValue>, element_type: SyncDataType) -> Self {
+    pub fn array(values: Vec<UniversalValue>, element_type: UniversalType) -> Self {
         Self::new(
-            SyncDataType::Array {
+            UniversalType::Array {
                 element_type: Box::new(element_type),
             },
-            GeneratedValue::Array(values),
+            UniversalValue::Array(values),
         )
     }
 
     /// Create a JSON object typed value.
-    pub fn json_object(obj: std::collections::HashMap<String, GeneratedValue>) -> Self {
-        Self::new(SyncDataType::Json, GeneratedValue::Object(obj))
+    pub fn json_object(obj: std::collections::HashMap<String, UniversalValue>) -> Self {
+        Self::new(UniversalType::Json, UniversalValue::Object(obj))
     }
 
     /// Check if this typed value is null.
@@ -269,11 +269,11 @@ impl TypedValue {
 
 /// Internal row representation - the intermediate format.
 ///
-/// `InternalRow` represents a single row of data in the intermediate format,
+/// `UniversalRow` represents a single row of data in the intermediate format,
 /// produced by the data generator and consumed by both source populators
 /// and the streaming verifier.
 #[derive(Debug, Clone)]
-pub struct InternalRow {
+pub struct UniversalRow {
     /// Table name
     pub table: String,
 
@@ -281,19 +281,19 @@ pub struct InternalRow {
     pub index: u64,
 
     /// Primary key value
-    pub id: GeneratedValue,
+    pub id: UniversalValue,
 
     /// Field values (column name -> value)
-    pub fields: HashMap<String, GeneratedValue>,
+    pub fields: HashMap<String, UniversalValue>,
 }
 
-impl InternalRow {
+impl UniversalRow {
     /// Create a new internal row.
     pub fn new(
         table: impl Into<String>,
         index: u64,
-        id: GeneratedValue,
-        fields: HashMap<String, GeneratedValue>,
+        id: UniversalValue,
+        fields: HashMap<String, UniversalValue>,
     ) -> Self {
         Self {
             table: table.into(),
@@ -304,8 +304,8 @@ impl InternalRow {
     }
 
     /// Create a new internal row with a builder pattern.
-    pub fn builder(table: impl Into<String>, index: u64, id: GeneratedValue) -> InternalRowBuilder {
-        InternalRowBuilder {
+    pub fn builder(table: impl Into<String>, index: u64, id: UniversalValue) -> UniversalRowBuilder {
+        UniversalRowBuilder {
             table: table.into(),
             index,
             id,
@@ -314,7 +314,7 @@ impl InternalRow {
     }
 
     /// Get a field value by name.
-    pub fn get_field(&self, name: &str) -> Option<&GeneratedValue> {
+    pub fn get_field(&self, name: &str) -> Option<&UniversalValue> {
         self.fields.get(name)
     }
 
@@ -324,24 +324,24 @@ impl InternalRow {
     }
 }
 
-/// Builder for `InternalRow`.
-pub struct InternalRowBuilder {
+/// Builder for `UniversalRow`.
+pub struct UniversalRowBuilder {
     table: String,
     index: u64,
-    id: GeneratedValue,
-    fields: HashMap<String, GeneratedValue>,
+    id: UniversalValue,
+    fields: HashMap<String, UniversalValue>,
 }
 
-impl InternalRowBuilder {
+impl UniversalRowBuilder {
     /// Add a field to the row.
-    pub fn field(mut self, name: impl Into<String>, value: GeneratedValue) -> Self {
+    pub fn field(mut self, name: impl Into<String>, value: UniversalValue) -> Self {
         self.fields.insert(name.into(), value);
         self
     }
 
     /// Build the internal row.
-    pub fn build(self) -> InternalRow {
-        InternalRow {
+    pub fn build(self) -> UniversalRow {
+        UniversalRow {
             table: self.table,
             index: self.index,
             id: self.id,
@@ -352,20 +352,20 @@ impl InternalRowBuilder {
 
 /// Converter that holds schema context for From implementations.
 ///
-/// `RowConverter` wraps an `InternalRow` along with the schema context,
+/// `RowConverter` wraps an `UniversalRow` along with the schema context,
 /// enabling database-specific `From` implementations to look up type
 /// information for each field.
 pub struct RowConverter<'a> {
     /// The internal row to convert
-    pub row: InternalRow,
+    pub row: UniversalRow,
 
     /// Schema providing type information for fields
-    pub schema: &'a SyncSchema,
+    pub schema: &'a Schema,
 }
 
 impl<'a> RowConverter<'a> {
     /// Create a new row converter.
-    pub fn new(row: InternalRow, schema: &'a SyncSchema) -> Self {
+    pub fn new(row: UniversalRow, schema: &'a Schema) -> Self {
         Self { row, schema }
     }
 }
@@ -376,46 +376,46 @@ mod tests {
 
     #[test]
     fn test_generated_value_accessors() {
-        assert_eq!(GeneratedValue::Bool(true).as_bool(), Some(true));
-        assert_eq!(GeneratedValue::Int32(42).as_i32(), Some(42));
-        assert_eq!(GeneratedValue::Int64(100).as_i64(), Some(100));
-        assert_eq!(GeneratedValue::Float64(3.15).as_f64(), Some(3.15));
+        assert_eq!(UniversalValue::Bool(true).as_bool(), Some(true));
+        assert_eq!(UniversalValue::Int32(42).as_i32(), Some(42));
+        assert_eq!(UniversalValue::Int64(100).as_i64(), Some(100));
+        assert_eq!(UniversalValue::Float64(3.15).as_f64(), Some(3.15));
         assert_eq!(
-            GeneratedValue::String("test".to_string()).as_str(),
+            UniversalValue::String("test".to_string()).as_str(),
             Some("test")
         );
 
         // Cross-type conversions
-        assert_eq!(GeneratedValue::Int32(42).as_i64(), Some(42));
-        assert_eq!(GeneratedValue::Bool(true).as_i32(), None);
+        assert_eq!(UniversalValue::Int32(42).as_i64(), Some(42));
+        assert_eq!(UniversalValue::Bool(true).as_i32(), None);
     }
 
     #[test]
     fn test_typed_value_constructors() {
         let tv = TypedValue::bool(true);
-        assert_eq!(tv.sync_type, SyncDataType::Bool);
-        assert_eq!(tv.value, GeneratedValue::Bool(true));
+        assert_eq!(tv.sync_type, UniversalType::Bool);
+        assert_eq!(tv.value, UniversalValue::Bool(true));
 
         let tv = TypedValue::int(42);
-        assert_eq!(tv.sync_type, SyncDataType::Int);
-        assert_eq!(tv.value, GeneratedValue::Int32(42));
+        assert_eq!(tv.sync_type, UniversalType::Int);
+        assert_eq!(tv.value, UniversalValue::Int32(42));
     }
 
     #[test]
     fn test_internal_row_builder() {
-        let row = InternalRow::builder("users", 0, GeneratedValue::Int64(1))
-            .field("name", GeneratedValue::String("Alice".to_string()))
-            .field("age", GeneratedValue::Int32(30))
+        let row = UniversalRow::builder("users", 0, UniversalValue::Int64(1))
+            .field("name", UniversalValue::String("Alice".to_string()))
+            .field("age", UniversalValue::Int32(30))
             .build();
 
         assert_eq!(row.table, "users");
         assert_eq!(row.index, 0);
-        assert_eq!(row.id, GeneratedValue::Int64(1));
+        assert_eq!(row.id, UniversalValue::Int64(1));
         assert_eq!(row.field_count(), 2);
         assert_eq!(
             row.get_field("name"),
-            Some(&GeneratedValue::String("Alice".to_string()))
+            Some(&UniversalValue::String("Alice".to_string()))
         );
-        assert_eq!(row.get_field("age"), Some(&GeneratedValue::Int32(30)));
+        assert_eq!(row.get_field("age"), Some(&UniversalValue::Int32(30)));
     }
 }

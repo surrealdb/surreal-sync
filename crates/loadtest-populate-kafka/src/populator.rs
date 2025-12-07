@@ -1,7 +1,7 @@
 //! Kafka populator for load testing.
 //!
 //! This module provides the KafkaPopulator which generates test data based on
-//! a SyncSchema, encodes it as protobuf messages, and publishes to Kafka topics.
+//! a Schema, encodes it as protobuf messages, and publishes to Kafka topics.
 
 use crate::encoder::{encode_row, get_message_key};
 use crate::error::KafkaPopulatorError;
@@ -13,7 +13,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use sync_core::{InternalRow, SyncSchema};
+use sync_core::{UniversalRow, Schema};
 use tempfile::TempDir;
 use tracing::{debug, info};
 
@@ -48,14 +48,14 @@ impl PopulateMetrics {
 
 /// Kafka populator that generates and publishes test data.
 ///
-/// The populator generates test data based on a SyncSchema, encodes it as
+/// The populator generates test data based on a Schema, encodes it as
 /// protobuf messages, and publishes to Kafka topics. Each table in the schema
 /// maps to a Kafka topic with the same name (or a configured name).
 ///
 /// # Example
 ///
 /// ```ignore
-/// let schema = SyncSchema::from_yaml(schema_yaml)?;
+/// let schema = Schema::from_yaml(schema_yaml)?;
 /// let mut populator = KafkaPopulator::new("localhost:9092", schema, 42).await?;
 ///
 /// // Prepare and populate the users table
@@ -66,7 +66,7 @@ impl PopulateMetrics {
 pub struct KafkaPopulator {
     producer: FutureProducer,
     brokers: String,
-    schema: SyncSchema,
+    schema: Schema,
     generator: DataGenerator,
     batch_size: usize,
     proto_dir: TempDir,
@@ -82,7 +82,7 @@ impl KafkaPopulator {
     /// * `seed` - Random seed for deterministic generation
     pub async fn new(
         brokers: &str,
-        schema: SyncSchema,
+        schema: Schema,
         seed: u64,
     ) -> Result<Self, KafkaPopulatorError> {
         let producer: FutureProducer = ClientConfig::new()
@@ -131,7 +131,7 @@ impl KafkaPopulator {
     }
 
     /// Get a reference to the schema.
-    pub fn schema(&self) -> &SyncSchema {
+    pub fn schema(&self) -> &Schema {
         &self.schema
     }
 
@@ -281,7 +281,7 @@ impl KafkaPopulator {
 
             // Generate rows
             let gen_start = Instant::now();
-            let rows: Vec<InternalRow> = self
+            let rows: Vec<UniversalRow> = self
                 .generator
                 .internal_rows(table_name, batch_count)
                 .map_err(|e| KafkaPopulatorError::Generator(e.to_string()))?
@@ -321,8 +321,8 @@ impl KafkaPopulator {
     async fn publish_batch(
         &self,
         topic: &str,
-        table_schema: &sync_core::TableSchema,
-        rows: &[InternalRow],
+        table_schema: &sync_core::TableDefinition,
+        rows: &[UniversalRow],
     ) -> Result<u64, KafkaPopulatorError> {
         // First, encode all messages (key + payload pairs)
         let encoded_messages: Vec<(Vec<u8>, Vec<u8>)> = rows
@@ -389,7 +389,7 @@ impl KafkaPopulator {
 mod tests {
     use super::*;
 
-    fn test_schema() -> SyncSchema {
+    fn test_schema() -> Schema {
         let yaml = r#"
 version: 1
 seed: 42
@@ -415,7 +415,7 @@ tables:
           min: 18
           max: 80
 "#;
-        SyncSchema::from_yaml(yaml).unwrap()
+        Schema::from_yaml(yaml).unwrap()
     }
 
     #[test]

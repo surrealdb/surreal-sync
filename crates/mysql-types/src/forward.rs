@@ -6,7 +6,7 @@
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{Datelike, Timelike};
 use mysql_async::Value;
-use sync_core::{GeneratedValue, SyncDataType, TypedValue};
+use sync_core::{TypedValue, UniversalType, UniversalValue};
 
 /// MySQL value wrapper for type-safe conversions.
 #[derive(Debug, Clone)]
@@ -28,56 +28,58 @@ impl From<TypedValue> for MySQLValue {
     fn from(tv: TypedValue) -> Self {
         match (&tv.sync_type, tv.value) {
             // Boolean - MySQL uses TINYINT(1)
-            (SyncDataType::Bool, GeneratedValue::Bool(b)) => {
+            (UniversalType::Bool, UniversalValue::Bool(b)) => {
                 MySQLValue(Value::Int(if b { 1 } else { 0 }))
             }
 
             // Integer types
-            (SyncDataType::TinyInt { .. }, GeneratedValue::Int32(i)) => {
+            (UniversalType::TinyInt { .. }, UniversalValue::Int32(i)) => {
                 MySQLValue(Value::Int(i as i64))
             }
-            (SyncDataType::SmallInt, GeneratedValue::Int32(i)) => MySQLValue(Value::Int(i as i64)),
-            (SyncDataType::Int, GeneratedValue::Int32(i)) => MySQLValue(Value::Int(i as i64)),
-            (SyncDataType::Int, GeneratedValue::Int64(i)) => MySQLValue(Value::Int(i)),
-            (SyncDataType::BigInt, GeneratedValue::Int64(i)) => MySQLValue(Value::Int(i)),
+            (UniversalType::SmallInt, UniversalValue::Int32(i)) => MySQLValue(Value::Int(i as i64)),
+            (UniversalType::Int, UniversalValue::Int32(i)) => MySQLValue(Value::Int(i as i64)),
+            (UniversalType::Int, UniversalValue::Int64(i)) => MySQLValue(Value::Int(i)),
+            (UniversalType::BigInt, UniversalValue::Int64(i)) => MySQLValue(Value::Int(i)),
 
             // Floating point
-            (SyncDataType::Float, GeneratedValue::Float64(f)) => MySQLValue(Value::Float(f as f32)),
-            (SyncDataType::Double, GeneratedValue::Float64(f)) => MySQLValue(Value::Double(f)),
+            (UniversalType::Float, UniversalValue::Float64(f)) => {
+                MySQLValue(Value::Float(f as f32))
+            }
+            (UniversalType::Double, UniversalValue::Float64(f)) => MySQLValue(Value::Double(f)),
 
             // Decimal - stored as string in MySQL for precision
-            (SyncDataType::Decimal { .. }, GeneratedValue::Decimal { value, .. }) => {
+            (UniversalType::Decimal { .. }, UniversalValue::Decimal { value, .. }) => {
                 MySQLValue(Value::Bytes(value.into_bytes()))
             }
-            (SyncDataType::Decimal { .. }, GeneratedValue::String(s)) => {
+            (UniversalType::Decimal { .. }, UniversalValue::String(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // String types
-            (SyncDataType::Char { .. }, GeneratedValue::String(s)) => {
+            (UniversalType::Char { .. }, UniversalValue::String(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
-            (SyncDataType::VarChar { .. }, GeneratedValue::String(s)) => {
+            (UniversalType::VarChar { .. }, UniversalValue::String(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
-            (SyncDataType::Text, GeneratedValue::String(s)) => {
+            (UniversalType::Text, UniversalValue::String(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // Binary types
-            (SyncDataType::Blob, GeneratedValue::Bytes(b)) => MySQLValue(Value::Bytes(b)),
-            (SyncDataType::Bytes, GeneratedValue::Bytes(b)) => MySQLValue(Value::Bytes(b)),
+            (UniversalType::Blob, UniversalValue::Bytes(b)) => MySQLValue(Value::Bytes(b)),
+            (UniversalType::Bytes, UniversalValue::Bytes(b)) => MySQLValue(Value::Bytes(b)),
 
             // UUID - MySQL stores as CHAR(36)
-            (SyncDataType::Uuid, GeneratedValue::Uuid(u)) => {
+            (UniversalType::Uuid, UniversalValue::Uuid(u)) => {
                 MySQLValue(Value::Bytes(u.to_string().into_bytes()))
             }
-            (SyncDataType::Uuid, GeneratedValue::String(s)) => {
+            (UniversalType::Uuid, UniversalValue::String(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // DateTime - MySQL DATETIME(6)
-            (SyncDataType::DateTime, GeneratedValue::DateTime(dt)) => MySQLValue(Value::Date(
+            (UniversalType::DateTime, UniversalValue::DateTime(dt)) => MySQLValue(Value::Date(
                 dt.year() as u16,
                 dt.month() as u8,
                 dt.day() as u8,
@@ -89,7 +91,7 @@ impl From<TypedValue> for MySQLValue {
 
             // DateTimeNano - Same as DateTime but with full nanosecond precision
             // MySQL only supports microseconds, so we truncate
-            (SyncDataType::DateTimeNano, GeneratedValue::DateTime(dt)) => MySQLValue(Value::Date(
+            (UniversalType::DateTimeNano, UniversalValue::DateTime(dt)) => MySQLValue(Value::Date(
                 dt.year() as u16,
                 dt.month() as u8,
                 dt.day() as u8,
@@ -100,7 +102,7 @@ impl From<TypedValue> for MySQLValue {
             )),
 
             // TimestampTz - MySQL TIMESTAMP
-            (SyncDataType::TimestampTz, GeneratedValue::DateTime(dt)) => MySQLValue(Value::Date(
+            (UniversalType::TimestampTz, UniversalValue::DateTime(dt)) => MySQLValue(Value::Date(
                 dt.year() as u16,
                 dt.month() as u8,
                 dt.day() as u8,
@@ -111,7 +113,7 @@ impl From<TypedValue> for MySQLValue {
             )),
 
             // Date - MySQL DATE
-            (SyncDataType::Date, GeneratedValue::DateTime(dt)) => MySQLValue(Value::Date(
+            (UniversalType::Date, UniversalValue::DateTime(dt)) => MySQLValue(Value::Date(
                 dt.year() as u16,
                 dt.month() as u8,
                 dt.day() as u8,
@@ -120,12 +122,12 @@ impl From<TypedValue> for MySQLValue {
                 0,
                 0,
             )),
-            (SyncDataType::Date, GeneratedValue::String(s)) => {
+            (UniversalType::Date, UniversalValue::String(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // Time - MySQL TIME
-            (SyncDataType::Time, GeneratedValue::DateTime(dt)) => MySQLValue(Value::Time(
+            (UniversalType::Time, UniversalValue::DateTime(dt)) => MySQLValue(Value::Time(
                 false, // not negative
                 0,     // days
                 dt.hour() as u8,
@@ -133,38 +135,38 @@ impl From<TypedValue> for MySQLValue {
                 dt.second() as u8,
                 dt.nanosecond() / 1000,
             )),
-            (SyncDataType::Time, GeneratedValue::String(s)) => {
+            (UniversalType::Time, UniversalValue::String(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // JSON - MySQL JSON type
-            (SyncDataType::Json, GeneratedValue::Object(obj)) => {
+            (UniversalType::Json, UniversalValue::Object(obj)) => {
                 let json = generated_object_to_json(obj);
                 MySQLValue(Value::Bytes(json.to_string().into_bytes()))
             }
-            (SyncDataType::Json, GeneratedValue::String(s)) => {
+            (UniversalType::Json, UniversalValue::String(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
-            (SyncDataType::Jsonb, GeneratedValue::Object(obj)) => {
+            (UniversalType::Jsonb, UniversalValue::Object(obj)) => {
                 let json = generated_object_to_json(obj);
                 MySQLValue(Value::Bytes(json.to_string().into_bytes()))
             }
-            (SyncDataType::Jsonb, GeneratedValue::String(s)) => {
+            (UniversalType::Jsonb, UniversalValue::String(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // Array - MySQL stores as JSON
-            (SyncDataType::Array { .. }, GeneratedValue::Array(arr)) => {
+            (UniversalType::Array { .. }, UniversalValue::Array(arr)) => {
                 let json = generated_array_to_json(arr);
                 MySQLValue(Value::Bytes(json.to_string().into_bytes()))
             }
 
             // Set - MySQL SET type
-            (SyncDataType::Set { .. }, GeneratedValue::Array(arr)) => {
+            (UniversalType::Set { .. }, UniversalValue::Array(arr)) => {
                 let values: Vec<String> = arr
                     .into_iter()
                     .filter_map(|v| {
-                        if let GeneratedValue::String(s) = v {
+                        if let UniversalValue::String(s) = v {
                             Some(s)
                         } else {
                             None
@@ -175,30 +177,30 @@ impl From<TypedValue> for MySQLValue {
             }
 
             // Enum - MySQL ENUM
-            (SyncDataType::Enum { .. }, GeneratedValue::String(s)) => {
+            (UniversalType::Enum { .. }, UniversalValue::String(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // Geometry - stored as WKB (Well-Known Binary)
-            (SyncDataType::Geometry { .. }, GeneratedValue::Bytes(b)) => {
+            (UniversalType::Geometry { .. }, UniversalValue::Bytes(b)) => {
                 MySQLValue(Value::Bytes(b))
             }
-            (SyncDataType::Geometry { .. }, GeneratedValue::String(s)) => {
+            (UniversalType::Geometry { .. }, UniversalValue::String(s)) => {
                 MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // Null
-            (_, GeneratedValue::Null) => MySQLValue(Value::NULL),
+            (_, UniversalValue::Null) => MySQLValue(Value::NULL),
 
             // Fallback for type mismatches - try to do reasonable conversion
-            (_, GeneratedValue::Bool(b)) => MySQLValue(Value::Int(if b { 1 } else { 0 })),
-            (_, GeneratedValue::Int32(i)) => MySQLValue(Value::Int(i as i64)),
-            (_, GeneratedValue::Int64(i)) => MySQLValue(Value::Int(i)),
-            (_, GeneratedValue::Float64(f)) => MySQLValue(Value::Double(f)),
-            (_, GeneratedValue::String(s)) => MySQLValue(Value::Bytes(s.into_bytes())),
-            (_, GeneratedValue::Bytes(b)) => MySQLValue(Value::Bytes(b)),
-            (_, GeneratedValue::Uuid(u)) => MySQLValue(Value::Bytes(u.to_string().into_bytes())),
-            (_, GeneratedValue::DateTime(dt)) => MySQLValue(Value::Date(
+            (_, UniversalValue::Bool(b)) => MySQLValue(Value::Int(if b { 1 } else { 0 })),
+            (_, UniversalValue::Int32(i)) => MySQLValue(Value::Int(i as i64)),
+            (_, UniversalValue::Int64(i)) => MySQLValue(Value::Int(i)),
+            (_, UniversalValue::Float64(f)) => MySQLValue(Value::Double(f)),
+            (_, UniversalValue::String(s)) => MySQLValue(Value::Bytes(s.into_bytes())),
+            (_, UniversalValue::Bytes(b)) => MySQLValue(Value::Bytes(b)),
+            (_, UniversalValue::Uuid(u)) => MySQLValue(Value::Bytes(u.to_string().into_bytes())),
+            (_, UniversalValue::DateTime(dt)) => MySQLValue(Value::Date(
                 dt.year() as u16,
                 dt.month() as u8,
                 dt.day() as u8,
@@ -207,14 +209,14 @@ impl From<TypedValue> for MySQLValue {
                 dt.second() as u8,
                 dt.nanosecond() / 1000,
             )),
-            (_, GeneratedValue::Decimal { value, .. }) => {
+            (_, UniversalValue::Decimal { value, .. }) => {
                 MySQLValue(Value::Bytes(value.into_bytes()))
             }
-            (_, GeneratedValue::Array(arr)) => {
+            (_, UniversalValue::Array(arr)) => {
                 let json = generated_array_to_json(arr);
                 MySQLValue(Value::Bytes(json.to_string().into_bytes()))
             }
-            (_, GeneratedValue::Object(obj)) => {
+            (_, UniversalValue::Object(obj)) => {
                 let json = generated_object_to_json(obj);
                 MySQLValue(Value::Bytes(json.to_string().into_bytes()))
             }
@@ -222,15 +224,15 @@ impl From<TypedValue> for MySQLValue {
     }
 }
 
-/// Convert a GeneratedValue array to a serde_json::Value array.
-fn generated_array_to_json(arr: Vec<GeneratedValue>) -> serde_json::Value {
+/// Convert a UniversalValue array to a serde_json::Value array.
+fn generated_array_to_json(arr: Vec<UniversalValue>) -> serde_json::Value {
     let values: Vec<serde_json::Value> = arr.into_iter().map(generated_to_json).collect();
     serde_json::Value::Array(values)
 }
 
-/// Convert a GeneratedValue object to a serde_json::Value object.
+/// Convert a UniversalValue object to a serde_json::Value object.
 fn generated_object_to_json(
-    obj: std::collections::HashMap<String, GeneratedValue>,
+    obj: std::collections::HashMap<String, UniversalValue>,
 ) -> serde_json::Value {
     let map: serde_json::Map<String, serde_json::Value> = obj
         .into_iter()
@@ -239,23 +241,23 @@ fn generated_object_to_json(
     serde_json::Value::Object(map)
 }
 
-/// Convert any GeneratedValue to serde_json::Value.
-fn generated_to_json(gv: GeneratedValue) -> serde_json::Value {
+/// Convert any UniversalValue to serde_json::Value.
+fn generated_to_json(gv: UniversalValue) -> serde_json::Value {
     match gv {
-        GeneratedValue::Null => serde_json::Value::Null,
-        GeneratedValue::Bool(b) => serde_json::Value::Bool(b),
-        GeneratedValue::Int32(i) => serde_json::Value::Number(serde_json::Number::from(i)),
-        GeneratedValue::Int64(i) => serde_json::Value::Number(serde_json::Number::from(i)),
-        GeneratedValue::Float64(f) => serde_json::Number::from_f64(f)
+        UniversalValue::Null => serde_json::Value::Null,
+        UniversalValue::Bool(b) => serde_json::Value::Bool(b),
+        UniversalValue::Int32(i) => serde_json::Value::Number(serde_json::Number::from(i)),
+        UniversalValue::Int64(i) => serde_json::Value::Number(serde_json::Number::from(i)),
+        UniversalValue::Float64(f) => serde_json::Number::from_f64(f)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        GeneratedValue::String(s) => serde_json::Value::String(s),
-        GeneratedValue::Bytes(b) => serde_json::Value::String(BASE64.encode(&b)),
-        GeneratedValue::Uuid(u) => serde_json::Value::String(u.to_string()),
-        GeneratedValue::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
-        GeneratedValue::Decimal { value, .. } => serde_json::Value::String(value),
-        GeneratedValue::Array(arr) => generated_array_to_json(arr),
-        GeneratedValue::Object(obj) => generated_object_to_json(obj),
+        UniversalValue::String(s) => serde_json::Value::String(s),
+        UniversalValue::Bytes(b) => serde_json::Value::String(BASE64.encode(&b)),
+        UniversalValue::Uuid(u) => serde_json::Value::String(u.to_string()),
+        UniversalValue::DateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
+        UniversalValue::Decimal { value, .. } => serde_json::Value::String(value),
+        UniversalValue::Array(arr) => generated_array_to_json(arr),
+        UniversalValue::Object(obj) => generated_object_to_json(obj),
     }
 }
 
@@ -357,7 +359,7 @@ mod tests {
 
     #[test]
     fn test_null_conversion() {
-        let tv = TypedValue::null(SyncDataType::Text);
+        let tv = TypedValue::null(UniversalType::Text);
         let mysql_val: MySQLValue = tv.into();
         assert!(matches!(mysql_val.0, Value::NULL));
     }
@@ -376,11 +378,11 @@ mod tests {
     #[test]
     fn test_array_conversion() {
         let arr = vec![
-            GeneratedValue::Int64(1),
-            GeneratedValue::Int64(2),
-            GeneratedValue::Int64(3),
+            UniversalValue::Int64(1),
+            UniversalValue::Int64(2),
+            UniversalValue::Int64(3),
         ];
-        let tv = TypedValue::array(arr, SyncDataType::BigInt);
+        let tv = TypedValue::array(arr, UniversalType::BigInt);
         let mysql_val: MySQLValue = tv.into();
         if let Value::Bytes(b) = mysql_val.0 {
             let json: serde_json::Value = serde_json::from_slice(&b).unwrap();
@@ -395,9 +397,9 @@ mod tests {
         let mut obj = std::collections::HashMap::new();
         obj.insert(
             "name".to_string(),
-            GeneratedValue::String("Alice".to_string()),
+            UniversalValue::String("Alice".to_string()),
         );
-        obj.insert("age".to_string(), GeneratedValue::Int64(30));
+        obj.insert("age".to_string(), UniversalValue::Int64(30));
         let tv = TypedValue::json_object(obj);
         let mysql_val: MySQLValue = tv.into();
         if let Value::Bytes(b) = mysql_val.0 {

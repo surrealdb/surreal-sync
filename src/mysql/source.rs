@@ -152,16 +152,16 @@ impl MySQLChangeStream {
             if matches!(inner.as_ref(), crate::surreal::SurrealType::String) {
                 // This is a SET column - parse comma-separated string to array
                 if let serde_json::Value::String(s) = &value {
-                    let values: Vec<sync_core::GeneratedValue> = if s.is_empty() {
+                    let values: Vec<sync_core::UniversalValue> = if s.is_empty() {
                         Vec::new()
                     } else {
                         s.split(',')
-                            .map(|v| sync_core::GeneratedValue::String(v.to_string()))
+                            .map(|v| sync_core::UniversalValue::String(v.to_string()))
                             .collect()
                     };
                     return Ok(sync_core::TypedValue::new(
-                        sync_core::SyncDataType::Set { values: vec![] },
-                        sync_core::GeneratedValue::Array(values),
+                        sync_core::UniversalType::Set { values: vec![] },
+                        sync_core::UniversalValue::Array(values),
                     ));
                 }
             }
@@ -170,7 +170,7 @@ impl MySQLChangeStream {
         // Get the sync type from schema for standard conversion
         let sync_type = surreal_type
             .map(surreal_type_to_sync_type)
-            .unwrap_or(sync_core::SyncDataType::Text); // Default to text if not found
+            .unwrap_or(sync_core::UniversalType::Text); // Default to text if not found
 
         // Use json-types for conversion
         let jvs = JsonValueWithSchema::new(value, sync_type);

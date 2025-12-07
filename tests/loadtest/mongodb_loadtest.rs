@@ -11,7 +11,7 @@ use loadtest_populate_mongodb::MongoDBPopulator;
 use loadtest_verify::StreamingVerifier;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
 use surreal_sync::{SourceOpts, SurrealOpts};
-use sync_core::SyncSchema;
+use sync_core::Schema;
 
 const SEED: u64 = 42;
 const ROW_COUNT: u64 = 50; // Small scale for integration tests
@@ -33,7 +33,7 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
         .ok();
 
     // Load schema from fixture file
-    let schema = SyncSchema::from_file("tests/fixtures/loadtest_schema.yaml")
+    let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
         .expect("Failed to load test schema");
 
     let test_id = generate_test_id();

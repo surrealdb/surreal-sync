@@ -4,7 +4,7 @@ use crate::error::MongoDBPopulatorError;
 use bson::{doc, Document};
 use mongodb::Collection;
 use mongodb_types::forward::BsonValue;
-use sync_core::{InternalRow, TableSchema, TypedValue};
+use sync_core::{UniversalRow, TableDefinition, TypedValue};
 
 /// Default batch size for INSERT operations.
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -12,14 +12,14 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 /// Insert a batch of documents into a MongoDB collection.
 pub async fn insert_batch(
     collection: &Collection<Document>,
-    table_schema: &TableSchema,
-    rows: &[InternalRow],
+    table_schema: &TableDefinition,
+    rows: &[UniversalRow],
 ) -> Result<u64, MongoDBPopulatorError> {
     if rows.is_empty() {
         return Ok(0);
     }
 
-    // Convert InternalRows to BSON documents
+    // Convert UniversalRows to BSON documents
     let documents: Vec<Document> = rows
         .iter()
         .map(|row| internal_row_to_document(row, table_schema))
@@ -31,8 +31,8 @@ pub async fn insert_batch(
     Ok(result.inserted_ids.len() as u64)
 }
 
-/// Convert an InternalRow to a BSON Document.
-fn internal_row_to_document(row: &InternalRow, table_schema: &TableSchema) -> Document {
+/// Convert an UniversalRow to a BSON Document.
+fn internal_row_to_document(row: &UniversalRow, table_schema: &TableDefinition) -> Document {
     let mut doc = Document::new();
 
     // Add the _id field
@@ -58,8 +58,8 @@ fn internal_row_to_document(row: &InternalRow, table_schema: &TableSchema) -> Do
 #[allow(dead_code)]
 pub async fn insert_single(
     collection: &Collection<Document>,
-    table_schema: &TableSchema,
-    row: &InternalRow,
+    table_schema: &TableDefinition,
+    row: &UniversalRow,
 ) -> Result<u64, MongoDBPopulatorError> {
     let doc = internal_row_to_document(row, table_schema);
     collection.insert_one(doc).await?;
@@ -85,9 +85,9 @@ pub async fn count_documents(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::{GeneratedValue, SyncSchema};
+    use sync_core::{Schema, UniversalValue};
 
-    fn test_schema() -> SyncSchema {
+    fn test_schema() -> Schema {
         let yaml = r#"
 version: 1
 seed: 42
@@ -112,7 +112,7 @@ tables:
           min: 18
           max: 80
 "#;
-        SyncSchema::from_yaml(yaml).unwrap()
+        Schema::from_yaml(yaml).unwrap()
     }
 
     #[test]
@@ -120,16 +120,16 @@ tables:
         let schema = test_schema();
         let table_schema = schema.get_table("users").unwrap();
 
-        let row = InternalRow::new(
+        let row = UniversalRow::new(
             "users".to_string(),
             0,
-            GeneratedValue::Uuid(uuid::Uuid::new_v4()),
+            UniversalValue::Uuid(uuid::Uuid::new_v4()),
             [
                 (
                     "email".to_string(),
-                    GeneratedValue::String("test@example.com".to_string()),
+                    UniversalValue::String("test@example.com".to_string()),
                 ),
-                ("age".to_string(), GeneratedValue::Int32(25)),
+                ("age".to_string(), UniversalValue::Int32(25)),
             ]
             .into_iter()
             .collect(),

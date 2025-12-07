@@ -12,7 +12,7 @@
 //!
 //! ```ignore
 //! use json_types::{JsonValue, JsonValueWithSchema};
-//! use sync_core::{TypedValue, SyncDataType};
+//! use sync_core::{TypedValue, UniversalType};
 //!
 //! // Forward: TypedValue → JSON value
 //! let tv = TypedValue::text("hello");
@@ -20,7 +20,7 @@
 //!
 //! // Reverse: JSON value → TypedValue
 //! let json = serde_json::json!(42);
-//! let json_with_schema = JsonValueWithSchema::new(json, &SyncDataType::Int);
+//! let json_with_schema = JsonValueWithSchema::new(json, &UniversalType::Int);
 //! let tv = json_with_schema.to_typed_value().unwrap();
 //! ```
 

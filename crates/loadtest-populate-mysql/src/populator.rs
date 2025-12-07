@@ -5,7 +5,7 @@ use crate::insert::{generate_create_table, generate_drop_table, insert_batch, DE
 use loadtest_generator::DataGenerator;
 use mysql_async::{prelude::*, Pool};
 use std::time::{Duration, Instant};
-use sync_core::{InternalRow, SyncSchema};
+use sync_core::{UniversalRow, Schema};
 use tracing::{debug, info};
 
 /// Metrics from a populate operation.
@@ -37,7 +37,7 @@ impl PopulateMetrics {
 /// MySQL populator that generates and inserts test data.
 pub struct MySQLPopulator {
     pool: Pool,
-    schema: SyncSchema,
+    schema: Schema,
     generator: DataGenerator,
     batch_size: usize,
 }
@@ -60,11 +60,7 @@ impl MySQLPopulator {
     ///     42,
     /// ).await?;
     /// ```
-    pub async fn new(
-        uri: &str,
-        schema: SyncSchema,
-        seed: u64,
-    ) -> Result<Self, MySQLPopulatorError> {
+    pub async fn new(uri: &str, schema: Schema, seed: u64) -> Result<Self, MySQLPopulatorError> {
         let pool = Pool::new(uri);
 
         // Test connection
@@ -82,7 +78,7 @@ impl MySQLPopulator {
     }
 
     /// Create a new MySQL populator with an existing pool.
-    pub fn with_pool(pool: Pool, schema: SyncSchema, seed: u64) -> Self {
+    pub fn with_pool(pool: Pool, schema: Schema, seed: u64) -> Self {
         let generator = DataGenerator::new(schema.clone(), seed);
         Self {
             pool,
@@ -114,7 +110,7 @@ impl MySQLPopulator {
     }
 
     /// Get a reference to the schema.
-    pub fn schema(&self) -> &SyncSchema {
+    pub fn schema(&self) -> &Schema {
         &self.schema
     }
 
@@ -184,7 +180,7 @@ impl MySQLPopulator {
 
             // Generate rows
             let gen_start = Instant::now();
-            let rows: Vec<InternalRow> = self
+            let rows: Vec<UniversalRow> = self
                 .generator
                 .internal_rows(table_name, batch_count)
                 .map_err(|e| MySQLPopulatorError::Generator(e.to_string()))?
@@ -263,7 +259,7 @@ impl MySQLPopulator {
 mod tests {
     use super::*;
 
-    fn test_schema() -> SyncSchema {
+    fn test_schema() -> Schema {
         let yaml = r#"
 version: 1
 seed: 42
@@ -288,7 +284,7 @@ tables:
           min: 18
           max: 80
 "#;
-        SyncSchema::from_yaml(yaml).unwrap()
+        Schema::from_yaml(yaml).unwrap()
     }
 
     #[test]

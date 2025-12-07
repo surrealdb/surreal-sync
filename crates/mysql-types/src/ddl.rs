@@ -1,68 +1,71 @@
-//! MySQL DDL generation from SyncDataType.
+//! MySQL DDL generation from UniversalType.
 //!
 //! This module provides DDL (Data Definition Language) generation for MySQL,
-//! converting sync-core's `SyncDataType` to MySQL column type definitions.
+//! converting sync-core's `UniversalType` to MySQL column type definitions.
 
-use sync_core::{GeometryType, SyncDataType};
+use sync_core::{GeometryType, UniversalType};
 
 /// Trait for generating DDL type strings.
 pub trait ToDdl {
-    /// Convert a SyncDataType to a DDL type string.
-    fn to_ddl(&self, ext_type: &SyncDataType) -> String;
+    /// Convert a UniversalType to a DDL type string.
+    fn to_ddl(&self, ext_type: &UniversalType) -> String;
 
     /// Generate a complete CREATE TABLE statement.
-    fn to_create_table(&self, table_name: &str, columns: &[(String, SyncDataType, bool)])
-        -> String;
+    fn to_create_table(
+        &self,
+        table_name: &str,
+        columns: &[(String, UniversalType, bool)],
+    ) -> String;
 }
 
 /// MySQL DDL generator.
 pub struct MySQLDdl;
 
 impl ToDdl for MySQLDdl {
-    fn to_ddl(&self, ext_type: &SyncDataType) -> String {
+    fn to_ddl(&self, ext_type: &UniversalType) -> String {
         match ext_type {
             // Boolean - MySQL uses TINYINT(1)
-            SyncDataType::Bool => "TINYINT(1)".to_string(),
+            UniversalType::Bool => "TINYINT(1)".to_string(),
 
             // Integer types
-            SyncDataType::TinyInt { width } => format!("TINYINT({width})"),
-            SyncDataType::SmallInt => "SMALLINT".to_string(),
-            SyncDataType::Int => "INT".to_string(),
-            SyncDataType::BigInt => "BIGINT".to_string(),
+            UniversalType::TinyInt { width } => format!("TINYINT({width})"),
+            UniversalType::SmallInt => "SMALLINT".to_string(),
+            UniversalType::Int => "INT".to_string(),
+            UniversalType::BigInt => "BIGINT".to_string(),
 
             // Floating point
-            SyncDataType::Float => "FLOAT".to_string(),
-            SyncDataType::Double => "DOUBLE".to_string(),
+            UniversalType::Float => "FLOAT".to_string(),
+            UniversalType::Double => "DOUBLE".to_string(),
 
             // Exact numeric
-            SyncDataType::Decimal { precision, scale } => {
+            UniversalType::Decimal { precision, scale } => {
                 format!("DECIMAL({precision},{scale})")
             }
 
             // String types
-            SyncDataType::Char { length } => format!("CHAR({length})"),
-            SyncDataType::VarChar { length } => format!("VARCHAR({length})"),
-            SyncDataType::Text => "TEXT".to_string(),
+            UniversalType::Char { length } => format!("CHAR({length})"),
+            UniversalType::VarChar { length } => format!("VARCHAR({length})"),
+            UniversalType::Text => "TEXT".to_string(),
 
             // Binary types
-            SyncDataType::Blob => "BLOB".to_string(),
-            SyncDataType::Bytes => "VARBINARY(65535)".to_string(),
+            UniversalType::Blob => "BLOB".to_string(),
+            UniversalType::Bytes => "VARBINARY(65535)".to_string(),
 
             // Date/time types
-            SyncDataType::Date => "DATE".to_string(),
-            SyncDataType::Time => "TIME".to_string(),
-            SyncDataType::DateTime => "DATETIME(6)".to_string(),
-            SyncDataType::DateTimeNano => "DATETIME(6)".to_string(), // MySQL max precision is 6
-            SyncDataType::TimestampTz => "TIMESTAMP(6)".to_string(),
+            UniversalType::Date => "DATE".to_string(),
+            UniversalType::Time => "TIME".to_string(),
+            UniversalType::DateTime => "DATETIME(6)".to_string(),
+            UniversalType::DateTimeNano => "DATETIME(6)".to_string(), // MySQL max precision is 6
+            UniversalType::TimestampTz => "TIMESTAMP(6)".to_string(),
 
             // Special types
-            SyncDataType::Uuid => "CHAR(36)".to_string(),
-            SyncDataType::Json => "JSON".to_string(),
-            SyncDataType::Jsonb => "JSON".to_string(), // MySQL doesn't have binary JSON
+            UniversalType::Uuid => "CHAR(36)".to_string(),
+            UniversalType::Json => "JSON".to_string(),
+            UniversalType::Jsonb => "JSON".to_string(), // MySQL doesn't have binary JSON
 
             // Collection types - stored as JSON in MySQL
-            SyncDataType::Array { .. } => "JSON".to_string(),
-            SyncDataType::Set { values } => {
+            UniversalType::Array { .. } => "JSON".to_string(),
+            UniversalType::Set { values } => {
                 let escaped: Vec<String> = values
                     .iter()
                     .map(|v| format!("'{}'", v.replace('\'', "''")))
@@ -71,7 +74,7 @@ impl ToDdl for MySQLDdl {
             }
 
             // Enumeration
-            SyncDataType::Enum { values } => {
+            UniversalType::Enum { values } => {
                 let escaped: Vec<String> = values
                     .iter()
                     .map(|v| format!("'{}'", v.replace('\'', "''")))
@@ -80,7 +83,7 @@ impl ToDdl for MySQLDdl {
             }
 
             // Spatial types
-            SyncDataType::Geometry { geometry_type } => match geometry_type {
+            UniversalType::Geometry { geometry_type } => match geometry_type {
                 GeometryType::Point => "POINT".to_string(),
                 GeometryType::LineString => "LINESTRING".to_string(),
                 GeometryType::Polygon => "POLYGON".to_string(),
@@ -95,7 +98,7 @@ impl ToDdl for MySQLDdl {
     fn to_create_table(
         &self,
         table_name: &str,
-        columns: &[(String, SyncDataType, bool)],
+        columns: &[(String, UniversalType, bool)],
     ) -> String {
         let column_defs: Vec<String> = columns
             .iter()
@@ -119,8 +122,8 @@ impl MySQLDdl {
         &self,
         table_name: &str,
         pk_column: &str,
-        pk_type: &SyncDataType,
-        columns: &[(String, SyncDataType, bool)],
+        pk_type: &UniversalType,
+        columns: &[(String, UniversalType, bool)],
     ) -> String {
         let mut all_columns = vec![(pk_column.to_string(), pk_type.clone(), false)];
         all_columns.extend(columns.iter().cloned());
@@ -146,7 +149,7 @@ impl MySQLDdl {
         &self,
         table_name: &str,
         pk_column: &str,
-        columns: &[(String, SyncDataType, bool)],
+        columns: &[(String, UniversalType, bool)],
     ) -> String {
         let column_defs: Vec<String> = columns
             .iter()
@@ -211,33 +214,33 @@ mod tests {
     #[test]
     fn test_bool_ddl() {
         let ddl = MySQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Bool), "TINYINT(1)");
+        assert_eq!(ddl.to_ddl(&UniversalType::Bool), "TINYINT(1)");
     }
 
     #[test]
     fn test_integer_ddl() {
         let ddl = MySQLDdl;
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::TinyInt { width: 4 }),
+            ddl.to_ddl(&UniversalType::TinyInt { width: 4 }),
             "TINYINT(4)"
         );
-        assert_eq!(ddl.to_ddl(&SyncDataType::SmallInt), "SMALLINT");
-        assert_eq!(ddl.to_ddl(&SyncDataType::Int), "INT");
-        assert_eq!(ddl.to_ddl(&SyncDataType::BigInt), "BIGINT");
+        assert_eq!(ddl.to_ddl(&UniversalType::SmallInt), "SMALLINT");
+        assert_eq!(ddl.to_ddl(&UniversalType::Int), "INT");
+        assert_eq!(ddl.to_ddl(&UniversalType::BigInt), "BIGINT");
     }
 
     #[test]
     fn test_float_ddl() {
         let ddl = MySQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Float), "FLOAT");
-        assert_eq!(ddl.to_ddl(&SyncDataType::Double), "DOUBLE");
+        assert_eq!(ddl.to_ddl(&UniversalType::Float), "FLOAT");
+        assert_eq!(ddl.to_ddl(&UniversalType::Double), "DOUBLE");
     }
 
     #[test]
     fn test_decimal_ddl() {
         let ddl = MySQLDdl;
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Decimal {
+            ddl.to_ddl(&UniversalType::Decimal {
                 precision: 10,
                 scale: 2
             }),
@@ -248,49 +251,49 @@ mod tests {
     #[test]
     fn test_string_ddl() {
         let ddl = MySQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Char { length: 10 }), "CHAR(10)");
+        assert_eq!(ddl.to_ddl(&UniversalType::Char { length: 10 }), "CHAR(10)");
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::VarChar { length: 255 }),
+            ddl.to_ddl(&UniversalType::VarChar { length: 255 }),
             "VARCHAR(255)"
         );
-        assert_eq!(ddl.to_ddl(&SyncDataType::Text), "TEXT");
+        assert_eq!(ddl.to_ddl(&UniversalType::Text), "TEXT");
     }
 
     #[test]
     fn test_binary_ddl() {
         let ddl = MySQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Blob), "BLOB");
-        assert_eq!(ddl.to_ddl(&SyncDataType::Bytes), "VARBINARY(65535)");
+        assert_eq!(ddl.to_ddl(&UniversalType::Blob), "BLOB");
+        assert_eq!(ddl.to_ddl(&UniversalType::Bytes), "VARBINARY(65535)");
     }
 
     #[test]
     fn test_datetime_ddl() {
         let ddl = MySQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Date), "DATE");
-        assert_eq!(ddl.to_ddl(&SyncDataType::Time), "TIME");
-        assert_eq!(ddl.to_ddl(&SyncDataType::DateTime), "DATETIME(6)");
-        assert_eq!(ddl.to_ddl(&SyncDataType::TimestampTz), "TIMESTAMP(6)");
+        assert_eq!(ddl.to_ddl(&UniversalType::Date), "DATE");
+        assert_eq!(ddl.to_ddl(&UniversalType::Time), "TIME");
+        assert_eq!(ddl.to_ddl(&UniversalType::DateTime), "DATETIME(6)");
+        assert_eq!(ddl.to_ddl(&UniversalType::TimestampTz), "TIMESTAMP(6)");
     }
 
     #[test]
     fn test_uuid_ddl() {
         let ddl = MySQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Uuid), "CHAR(36)");
+        assert_eq!(ddl.to_ddl(&UniversalType::Uuid), "CHAR(36)");
     }
 
     #[test]
     fn test_json_ddl() {
         let ddl = MySQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Json), "JSON");
-        assert_eq!(ddl.to_ddl(&SyncDataType::Jsonb), "JSON");
+        assert_eq!(ddl.to_ddl(&UniversalType::Json), "JSON");
+        assert_eq!(ddl.to_ddl(&UniversalType::Jsonb), "JSON");
     }
 
     #[test]
     fn test_array_ddl() {
         let ddl = MySQLDdl;
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Array {
-                element_type: Box::new(SyncDataType::Int)
+            ddl.to_ddl(&UniversalType::Array {
+                element_type: Box::new(UniversalType::Int)
             }),
             "JSON"
         );
@@ -300,7 +303,7 @@ mod tests {
     fn test_enum_ddl() {
         let ddl = MySQLDdl;
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Enum {
+            ddl.to_ddl(&UniversalType::Enum {
                 values: vec![
                     "active".to_string(),
                     "inactive".to_string(),
@@ -315,7 +318,7 @@ mod tests {
     fn test_set_ddl() {
         let ddl = MySQLDdl;
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Set {
+            ddl.to_ddl(&UniversalType::Set {
                 values: vec![
                     "read".to_string(),
                     "write".to_string(),
@@ -330,13 +333,13 @@ mod tests {
     fn test_geometry_ddl() {
         let ddl = MySQLDdl;
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Geometry {
+            ddl.to_ddl(&UniversalType::Geometry {
                 geometry_type: GeometryType::Point
             }),
             "POINT"
         );
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Geometry {
+            ddl.to_ddl(&UniversalType::Geometry {
                 geometry_type: GeometryType::Polygon
             }),
             "POLYGON"
@@ -349,15 +352,15 @@ mod tests {
         let columns = vec![
             (
                 "name".to_string(),
-                SyncDataType::VarChar { length: 100 },
+                UniversalType::VarChar { length: 100 },
                 false,
             ),
             (
                 "email".to_string(),
-                SyncDataType::VarChar { length: 255 },
+                UniversalType::VarChar { length: 255 },
                 false,
             ),
-            ("age".to_string(), SyncDataType::Int, true),
+            ("age".to_string(), UniversalType::Int, true),
         ];
 
         let sql = ddl.to_create_table("users", &columns);
@@ -373,17 +376,17 @@ mod tests {
         let columns = vec![
             (
                 "name".to_string(),
-                SyncDataType::VarChar { length: 100 },
+                UniversalType::VarChar { length: 100 },
                 false,
             ),
             (
                 "email".to_string(),
-                SyncDataType::VarChar { length: 255 },
+                UniversalType::VarChar { length: 255 },
                 false,
             ),
         ];
 
-        let sql = ddl.to_create_table_with_pk("users", "id", &SyncDataType::Uuid, &columns);
+        let sql = ddl.to_create_table_with_pk("users", "id", &UniversalType::Uuid, &columns);
         assert!(sql.contains("CREATE TABLE `users`"));
         assert!(sql.contains("`id` CHAR(36) NOT NULL"));
         assert!(sql.contains("PRIMARY KEY (`id`)"));
@@ -395,12 +398,12 @@ mod tests {
         let columns = vec![
             (
                 "name".to_string(),
-                SyncDataType::VarChar { length: 100 },
+                UniversalType::VarChar { length: 100 },
                 false,
             ),
             (
                 "email".to_string(),
-                SyncDataType::VarChar { length: 255 },
+                UniversalType::VarChar { length: 255 },
                 false,
             ),
         ];

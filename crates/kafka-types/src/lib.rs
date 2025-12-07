@@ -22,7 +22,7 @@
 //!
 //! ```ignore
 //! use kafka_types::forward::{encode_row, get_message_key};
-//! use sync_core::InternalRow;
+//! use sync_core::UniversalRow;
 //!
 //! let encoded = encode_row(&row, &table_schema)?;
 //! let key = get_message_key(&row);

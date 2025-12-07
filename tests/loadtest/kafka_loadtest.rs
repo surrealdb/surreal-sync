@@ -19,7 +19,7 @@ use loadtest_verify::StreamingVerifier;
 use std::time::Duration;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
 use surreal_sync::SurrealOpts;
-use sync_core::SyncSchema;
+use sync_core::Schema;
 use tokio::time::sleep;
 
 /// Kafka broker address for testing
@@ -43,7 +43,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .ok();
 
     // Load schema from fixture file
-    let schema = SyncSchema::from_file("tests/fixtures/loadtest_schema.yaml")
+    let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
         .expect("Failed to load test schema");
 
     let test_id = generate_test_id();

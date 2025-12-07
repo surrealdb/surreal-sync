@@ -3,11 +3,11 @@
 //! This crate provides the foundational types used across the sync
 //! framework, including:
 //!
-//! - [`SyncDataType`] - Universal type representation for all supported databases
-//! - [`GeneratedValue`] - Raw generated values before type conversion
+//! - [`UniversalType`] - Universal type representation for all supported databases
+//! - [`UniversalValue`] - Raw generated values before type conversion
 //! - [`TypedValue`] - Values with type information for conversion
-//! - [`InternalRow`] - Intermediate row representation
-//! - [`SyncSchema`] - Schema definitions loaded from YAML
+//! - [`UniversalRow`] - Intermediate row representation
+//! - [`Schema`] - Schema definitions loaded from YAML
 //!
 //! # Architecture
 //!
@@ -28,13 +28,13 @@
 //! # Example
 //!
 //! ```rust
-//! use sync_core::types::SyncDataType;
-//! use sync_core::values::{GeneratedValue, TypedValue};
+//! use sync_core::types::UniversalType;
+//! use sync_core::values::{UniversalValue, TypedValue};
 //!
 //! // Create a typed value
 //! let value = TypedValue::new(
-//!     SyncDataType::Int,
-//!     GeneratedValue::Int32(42)
+//!     UniversalType::Int,
+//!     UniversalValue::Int32(42)
 //! );
 //!
 //! // Type-specific crates implement From<TypedValue> for their native types:
@@ -46,9 +46,11 @@ pub mod types;
 pub mod values;
 
 // Re-exports for convenience
-pub use schema::{FieldSchema, GeneratorConfig, IdField, SchemaError, SyncSchema, TableSchema};
+pub use schema::{
+    FieldDefinition, GeneratorConfig, IDDefinition, Schema, SchemaError, TableDefinition,
+};
 // Legacy alias for backwards compatibility
-#[deprecated(since = "1.0.0", note = "Use SyncSchema instead")]
-pub type LoadTestSchema = SyncSchema;
-pub use types::{GeometryType, SyncDataType, ToDdl};
-pub use values::{GeneratedValue, InternalRow, InternalRowBuilder, RowConverter, TypedValue};
+#[deprecated(since = "1.0.0", note = "Use Schema instead")]
+pub type LoadTestSchema = Schema;
+pub use types::{GeometryType, ToDdl, UniversalType};
+pub use values::{UniversalRow, UniversalRowBuilder, RowConverter, TypedValue, UniversalValue};

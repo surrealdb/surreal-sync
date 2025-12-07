@@ -1,4 +1,4 @@
-//! Protobuf encoder for InternalRow to wire format.
+//! Protobuf encoder for UniversalRow to wire format.
 //!
 //! This module re-exports encoding functions from kafka-types crate.
 

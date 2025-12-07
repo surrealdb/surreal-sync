@@ -72,7 +72,7 @@ use loadtest_populate_mongodb::MongoDBPopulateArgs;
 use loadtest_populate_mysql::MySQLPopulateArgs;
 use loadtest_populate_postgresql::PostgreSQLPopulateArgs;
 use loadtest_verify::VerifyArgs;
-use sync_core::SyncSchema;
+use sync_core::Schema;
 
 #[derive(Parser)]
 #[command(name = "surreal-sync")]
@@ -409,7 +409,7 @@ async fn run() -> anyhow::Result<()> {
             // Load sync schema if provided (for future use in type-aware conversion)
             let _schema =
                 if let Some(schema_path) = schema_file {
-                    Some(SyncSchema::from_file(&schema_path).with_context(|| {
+                    Some(Schema::from_file(&schema_path).with_context(|| {
                         format!("Failed to load sync schema from {schema_path:?}")
                     })?)
                 } else {
@@ -445,7 +445,7 @@ async fn run() -> anyhow::Result<()> {
             // Load sync schema if provided (for future use in type-aware conversion)
             let _schema =
                 if let Some(schema_path) = schema_file {
-                    Some(SyncSchema::from_file(&schema_path).with_context(|| {
+                    Some(Schema::from_file(&schema_path).with_context(|| {
                         format!("Failed to load sync schema from {schema_path:?}")
                     })?)
                 } else {
@@ -473,7 +473,7 @@ async fn run() -> anyhow::Result<()> {
         } => {
             // Load schema if provided for type-aware conversion
             let table_schema = if let Some(schema_path) = schema_file {
-                let schema = SyncSchema::from_file(&schema_path)
+                let schema = Schema::from_file(&schema_path)
                     .with_context(|| format!("Failed to load sync schema from {schema_path:?}"))?;
                 // Get the table schema using the configured table name or topic name
                 let table_name = config.table_name.as_ref().unwrap_or(&config.topic);
@@ -505,7 +505,7 @@ async fn run() -> anyhow::Result<()> {
             // Load sync schema if provided (for future use in type-aware conversion)
             let _schema = if let Some(schema_path) = schema_file {
                 Some(
-                    SyncSchema::from_file(&schema_path)
+                    Schema::from_file(&schema_path)
                         .with_context(|| format!("Failed to load schema from {schema_path:?}"))?,
                 )
             } else {
@@ -541,7 +541,7 @@ async fn run() -> anyhow::Result<()> {
             // Load sync schema if provided for type-aware conversion
             let schema =
                 if let Some(schema_path) = schema_file {
-                    Some(SyncSchema::from_file(&schema_path).with_context(|| {
+                    Some(Schema::from_file(&schema_path).with_context(|| {
                         format!("Failed to load sync schema from {schema_path:?}")
                     })?)
                 } else {
@@ -833,7 +833,7 @@ async fn run_incremental_sync(
 async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
     match source {
         PopulateSource::MySQL { args } => {
-            let schema = SyncSchema::from_file(&args.common.schema)
+            let schema = Schema::from_file(&args.common.schema)
                 .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
 
             tracing::info!(
@@ -877,7 +877,7 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             }
         }
         PopulateSource::PostgreSQL { args } => {
-            let schema = SyncSchema::from_file(&args.common.schema)
+            let schema = Schema::from_file(&args.common.schema)
                 .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
 
             tracing::info!(
@@ -921,7 +921,7 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             }
         }
         PopulateSource::MongoDB { args } => {
-            let schema = SyncSchema::from_file(&args.common.schema)
+            let schema = Schema::from_file(&args.common.schema)
                 .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
 
             tracing::info!(
@@ -961,7 +961,7 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             }
         }
         PopulateSource::Csv { args } => {
-            let schema = SyncSchema::from_file(&args.common.schema)
+            let schema = Schema::from_file(&args.common.schema)
                 .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
 
             tracing::info!(
@@ -998,7 +998,7 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             }
         }
         PopulateSource::Jsonl { args } => {
-            let schema = SyncSchema::from_file(&args.common.schema)
+            let schema = Schema::from_file(&args.common.schema)
                 .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
 
             tracing::info!(
@@ -1035,7 +1035,7 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             }
         }
         PopulateSource::Kafka { args } => {
-            let schema = SyncSchema::from_file(&args.common.schema)
+            let schema = Schema::from_file(&args.common.schema)
                 .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
 
             tracing::info!(
@@ -1097,7 +1097,7 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
 
 /// Run verify command to check synced data in SurrealDB
 async fn run_verify(args: VerifyArgs) -> anyhow::Result<()> {
-    let schema = SyncSchema::from_file(&args.schema)
+    let schema = Schema::from_file(&args.schema)
         .with_context(|| format!("Failed to load schema from {:?}", args.schema))?;
 
     tracing::info!(

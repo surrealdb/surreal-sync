@@ -22,7 +22,7 @@
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
 use mysql_async::consts::{ColumnFlags, ColumnType};
 use mysql_async::Value;
-use sync_core::{GeneratedValue, SyncDataType, TypedValue};
+use sync_core::{TypedValue, UniversalType, UniversalValue};
 use thiserror::Error;
 
 // Re-export from json-types for convenience
@@ -156,34 +156,34 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                 }
 
                 Ok(TypedValue::new(
-                    SyncDataType::TinyInt {
+                    UniversalType::TinyInt {
                         width: mv.column_length.unwrap_or(4) as u8,
                     },
-                    GeneratedValue::Int32(i as i32),
+                    UniversalValue::Int32(i as i32),
                 ))
             }
 
             MYSQL_TYPE_SHORT => {
                 let i = extract_int(&mv.value)?;
                 Ok(TypedValue::new(
-                    SyncDataType::SmallInt,
-                    GeneratedValue::Int32(i as i32),
+                    UniversalType::SmallInt,
+                    UniversalValue::Int32(i as i32),
                 ))
             }
 
             MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => {
                 let i = extract_int(&mv.value)?;
                 Ok(TypedValue::new(
-                    SyncDataType::Int,
-                    GeneratedValue::Int32(i as i32),
+                    UniversalType::Int,
+                    UniversalValue::Int32(i as i32),
                 ))
             }
 
             MYSQL_TYPE_LONGLONG => {
                 let i = extract_int(&mv.value)?;
                 Ok(TypedValue::new(
-                    SyncDataType::BigInt,
-                    GeneratedValue::Int64(i),
+                    UniversalType::BigInt,
+                    UniversalValue::Int64(i),
                 ))
             }
 
@@ -191,16 +191,16 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             MYSQL_TYPE_FLOAT => {
                 let f = extract_float(&mv.value)?;
                 Ok(TypedValue::new(
-                    SyncDataType::Float,
-                    GeneratedValue::Float64(f),
+                    UniversalType::Float,
+                    UniversalValue::Float64(f),
                 ))
             }
 
             MYSQL_TYPE_DOUBLE => {
                 let f = extract_float(&mv.value)?;
                 Ok(TypedValue::new(
-                    SyncDataType::Double,
-                    GeneratedValue::Float64(f),
+                    UniversalType::Double,
+                    UniversalValue::Float64(f),
                 ))
             }
 
@@ -217,8 +217,8 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                 let s = extract_string(&mv.value)?;
                 let length = mv.column_length.unwrap_or(255) as u16;
                 Ok(TypedValue::new(
-                    SyncDataType::Char { length },
-                    GeneratedValue::String(s),
+                    UniversalType::Char { length },
+                    UniversalValue::String(s),
                 ))
             }
 
@@ -234,8 +234,8 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                 }
 
                 Ok(TypedValue::new(
-                    SyncDataType::VarChar { length },
-                    GeneratedValue::String(s),
+                    UniversalType::VarChar { length },
+                    UniversalValue::String(s),
                 ))
             }
 
@@ -246,15 +246,15 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                 if mv.column_flags.contains(ColumnFlags::BINARY_FLAG) {
                     let bytes = extract_bytes(&mv.value)?;
                     Ok(TypedValue::new(
-                        SyncDataType::Blob,
-                        GeneratedValue::Bytes(bytes),
+                        UniversalType::Blob,
+                        UniversalValue::Bytes(bytes),
                     ))
                 } else {
                     // TEXT types
                     let s = extract_string(&mv.value)?;
                     Ok(TypedValue::new(
-                        SyncDataType::Text,
-                        GeneratedValue::String(s),
+                        UniversalType::Text,
+                        UniversalValue::String(s),
                     ))
                 }
             }
@@ -263,16 +263,16 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             MYSQL_TYPE_DATE => {
                 let dt = extract_date(&mv.value)?;
                 Ok(TypedValue::new(
-                    SyncDataType::Date,
-                    GeneratedValue::String(dt.format("%Y-%m-%d").to_string()),
+                    UniversalType::Date,
+                    UniversalValue::String(dt.format("%Y-%m-%d").to_string()),
                 ))
             }
 
             MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => {
                 let time = extract_time(&mv.value)?;
                 Ok(TypedValue::new(
-                    SyncDataType::Time,
-                    GeneratedValue::String(time.format("%H:%M:%S").to_string()),
+                    UniversalType::Time,
+                    UniversalValue::String(time.format("%H:%M:%S").to_string()),
                 ))
             }
 
@@ -284,16 +284,16 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => {
                 let dt = extract_datetime(&mv.value)?;
                 Ok(TypedValue::new(
-                    SyncDataType::TimestampTz,
-                    GeneratedValue::DateTime(dt),
+                    UniversalType::TimestampTz,
+                    UniversalValue::DateTime(dt),
                 ))
             }
 
             MYSQL_TYPE_YEAR => {
                 let i = extract_int(&mv.value)?;
                 Ok(TypedValue::new(
-                    SyncDataType::SmallInt,
-                    GeneratedValue::Int32(i as i32),
+                    UniversalType::SmallInt,
+                    UniversalValue::Int32(i as i32),
                 ))
             }
 
@@ -308,8 +308,8 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                     ))
                 } else {
                     Ok(TypedValue::new(
-                        SyncDataType::Json,
-                        GeneratedValue::String(s),
+                        UniversalType::Json,
+                        UniversalValue::String(s),
                     ))
                 }
             }
@@ -318,20 +318,20 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             MYSQL_TYPE_ENUM => {
                 let s = extract_string(&mv.value)?;
                 Ok(TypedValue::new(
-                    SyncDataType::Enum { values: vec![] },
-                    GeneratedValue::String(s),
+                    UniversalType::Enum { values: vec![] },
+                    UniversalValue::String(s),
                 ))
             }
 
             MYSQL_TYPE_SET => {
                 let s = extract_string(&mv.value)?;
-                let values: Vec<GeneratedValue> = s
+                let values: Vec<UniversalValue> = s
                     .split(',')
-                    .map(|v| GeneratedValue::String(v.to_string()))
+                    .map(|v| UniversalValue::String(v.to_string()))
                     .collect();
                 Ok(TypedValue::new(
-                    SyncDataType::Set { values: vec![] },
-                    GeneratedValue::Array(values),
+                    UniversalType::Set { values: vec![] },
+                    UniversalValue::Array(values),
                 ))
             }
 
@@ -339,10 +339,10 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             MYSQL_TYPE_GEOMETRY => {
                 let bytes = extract_bytes(&mv.value)?;
                 Ok(TypedValue::new(
-                    SyncDataType::Geometry {
+                    UniversalType::Geometry {
                         geometry_type: sync_core::GeometryType::Point,
                     },
-                    GeneratedValue::Bytes(bytes),
+                    UniversalValue::Bytes(bytes),
                 ))
             }
 
@@ -354,8 +354,8 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                     Ok(TypedValue::bool(bytes[0] == 1))
                 } else {
                     Ok(TypedValue::new(
-                        SyncDataType::Bytes,
-                        GeneratedValue::Bytes(bytes),
+                        UniversalType::Bytes,
+                        UniversalValue::Bytes(bytes),
                     ))
                 }
             }
@@ -365,55 +365,55 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
     }
 }
 
-/// Convert MySQL column type to SyncDataType.
-fn column_type_to_sync_type(col_type: ColumnType, mv: &MySQLValueWithSchema) -> SyncDataType {
+/// Convert MySQL column type to UniversalType.
+fn column_type_to_sync_type(col_type: ColumnType, mv: &MySQLValueWithSchema) -> UniversalType {
     use ColumnType::*;
     match col_type {
         MYSQL_TYPE_TINY => {
             // Check if this is a boolean column
             if mv.is_boolean_column() {
-                SyncDataType::Bool
+                UniversalType::Bool
             } else {
-                SyncDataType::TinyInt {
+                UniversalType::TinyInt {
                     width: mv.column_length.unwrap_or(4) as u8,
                 }
             }
         }
-        MYSQL_TYPE_SHORT => SyncDataType::SmallInt,
-        MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => SyncDataType::Int,
-        MYSQL_TYPE_LONGLONG => SyncDataType::BigInt,
-        MYSQL_TYPE_FLOAT => SyncDataType::Float,
-        MYSQL_TYPE_DOUBLE => SyncDataType::Double,
-        MYSQL_TYPE_DECIMAL | MYSQL_TYPE_NEWDECIMAL => SyncDataType::Decimal {
+        MYSQL_TYPE_SHORT => UniversalType::SmallInt,
+        MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => UniversalType::Int,
+        MYSQL_TYPE_LONGLONG => UniversalType::BigInt,
+        MYSQL_TYPE_FLOAT => UniversalType::Float,
+        MYSQL_TYPE_DOUBLE => UniversalType::Double,
+        MYSQL_TYPE_DECIMAL | MYSQL_TYPE_NEWDECIMAL => UniversalType::Decimal {
             precision: mv.precision.unwrap_or(10),
             scale: mv.scale.unwrap_or(0),
         },
-        MYSQL_TYPE_STRING => SyncDataType::Char {
+        MYSQL_TYPE_STRING => UniversalType::Char {
             length: mv.column_length.unwrap_or(255) as u16,
         },
-        MYSQL_TYPE_VAR_STRING | MYSQL_TYPE_VARCHAR => SyncDataType::VarChar {
+        MYSQL_TYPE_VAR_STRING | MYSQL_TYPE_VARCHAR => UniversalType::VarChar {
             length: mv.column_length.unwrap_or(255) as u16,
         },
         MYSQL_TYPE_TINY_BLOB | MYSQL_TYPE_MEDIUM_BLOB | MYSQL_TYPE_BLOB | MYSQL_TYPE_LONG_BLOB => {
             if mv.column_flags.contains(ColumnFlags::BINARY_FLAG) {
-                SyncDataType::Blob
+                UniversalType::Blob
             } else {
-                SyncDataType::Text
+                UniversalType::Text
             }
         }
-        MYSQL_TYPE_DATE => SyncDataType::Date,
-        MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => SyncDataType::Time,
-        MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => SyncDataType::DateTime,
-        MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => SyncDataType::TimestampTz,
-        MYSQL_TYPE_YEAR => SyncDataType::SmallInt,
-        MYSQL_TYPE_JSON => SyncDataType::Json,
-        MYSQL_TYPE_ENUM => SyncDataType::Enum { values: vec![] },
-        MYSQL_TYPE_SET => SyncDataType::Set { values: vec![] },
-        MYSQL_TYPE_GEOMETRY => SyncDataType::Geometry {
+        MYSQL_TYPE_DATE => UniversalType::Date,
+        MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => UniversalType::Time,
+        MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => UniversalType::DateTime,
+        MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => UniversalType::TimestampTz,
+        MYSQL_TYPE_YEAR => UniversalType::SmallInt,
+        MYSQL_TYPE_JSON => UniversalType::Json,
+        MYSQL_TYPE_ENUM => UniversalType::Enum { values: vec![] },
+        MYSQL_TYPE_SET => UniversalType::Set { values: vec![] },
+        MYSQL_TYPE_GEOMETRY => UniversalType::Geometry {
             geometry_type: sync_core::GeometryType::Point,
         },
-        MYSQL_TYPE_BIT => SyncDataType::Bytes,
-        _ => SyncDataType::Text,
+        MYSQL_TYPE_BIT => UniversalType::Bytes,
+        _ => UniversalType::Text,
     }
 }
 
@@ -667,16 +667,16 @@ pub fn row_to_typed_values_with_config(
         // Handle SET columns - split comma-separated string into array
         if is_set {
             if let Ok(s) = extract_string(&raw_value) {
-                let values: Vec<GeneratedValue> = if s.is_empty() {
+                let values: Vec<UniversalValue> = if s.is_empty() {
                     Vec::new()
                 } else {
                     s.split(',')
-                        .map(|v| GeneratedValue::String(v.to_string()))
+                        .map(|v| UniversalValue::String(v.to_string()))
                         .collect()
                 };
                 let typed_value = TypedValue::new(
-                    SyncDataType::Set { values: vec![] },
-                    GeneratedValue::Array(values),
+                    UniversalType::Set { values: vec![] },
+                    UniversalValue::Array(values),
                 );
                 result.insert(column_name, typed_value);
                 continue;
@@ -723,8 +723,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Int));
-        assert!(matches!(tv.value, GeneratedValue::Int32(42)));
+        assert!(matches!(tv.sync_type, UniversalType::Int));
+        assert!(matches!(tv.value, UniversalValue::Int32(42)));
     }
 
     #[test]
@@ -735,10 +735,10 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::BigInt));
+        assert!(matches!(tv.sync_type, UniversalType::BigInt));
         assert!(matches!(
             tv.value,
-            GeneratedValue::Int64(9_223_372_036_854_775_807)
+            UniversalValue::Int64(9_223_372_036_854_775_807)
         ));
     }
 
@@ -750,8 +750,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::VarChar { .. }));
-        if let GeneratedValue::String(s) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::VarChar { .. }));
+        if let UniversalValue::String(s) = tv.value {
             assert_eq!(s, "hello world");
         } else {
             panic!("Expected String value");
@@ -767,8 +767,8 @@ mod tests {
         )
         .with_length(36);
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Uuid));
-        if let GeneratedValue::Uuid(u) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::Uuid));
+        if let UniversalValue::Uuid(u) = tv.value {
             assert_eq!(u.to_string(), "550e8400-e29b-41d4-a716-446655440000");
         } else {
             panic!("Expected Uuid value");
@@ -783,8 +783,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::DateTime));
-        if let GeneratedValue::DateTime(dt) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::DateTime));
+        if let UniversalValue::DateTime(dt) = tv.value {
             assert_eq!(dt.year(), 2024);
             assert_eq!(dt.month(), 6);
             assert_eq!(dt.day(), 15);
@@ -801,8 +801,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Int));
-        assert!(matches!(tv.value, GeneratedValue::Null));
+        assert!(matches!(tv.sync_type, UniversalType::Int));
+        assert!(matches!(tv.value, UniversalValue::Null));
     }
 
     #[test]
@@ -814,8 +814,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Json));
-        if let GeneratedValue::Object(obj) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::Json));
+        if let UniversalValue::Object(obj) = tv.value {
             assert!(obj.contains_key("name"));
             assert!(obj.contains_key("age"));
         } else {
@@ -832,13 +832,13 @@ mod tests {
         )
         .with_precision(10, 3);
         let tv = mv.to_typed_value().unwrap();
-        if let SyncDataType::Decimal { precision, scale } = tv.sync_type {
+        if let UniversalType::Decimal { precision, scale } = tv.sync_type {
             assert_eq!(precision, 10);
             assert_eq!(scale, 3);
         } else {
             panic!("Expected Decimal type");
         }
-        if let GeneratedValue::Decimal { value, .. } = tv.value {
+        if let UniversalValue::Decimal { value, .. } = tv.value {
             assert_eq!(value, "123.456");
         } else {
             panic!("Expected Decimal value");
@@ -854,8 +854,8 @@ mod tests {
             ColumnFlags::BINARY_FLAG,
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Blob));
-        if let GeneratedValue::Bytes(b) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::Blob));
+        if let UniversalValue::Bytes(b) = tv.value {
             assert_eq!(b, binary_data);
         } else {
             panic!("Expected Bytes value");
@@ -870,8 +870,8 @@ mod tests {
             ColumnFlags::empty(), // No BINARY flag = TEXT
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Text));
-        if let GeneratedValue::String(s) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::Text));
+        if let UniversalValue::String(s) = tv.value {
             assert_eq!(s, "long text content");
         } else {
             panic!("Expected String value");
@@ -888,8 +888,8 @@ mod tests {
         )
         .with_length(1);
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Bool));
-        assert!(matches!(tv.value, GeneratedValue::Bool(true)));
+        assert!(matches!(tv.sync_type, UniversalType::Bool));
+        assert!(matches!(tv.value, UniversalValue::Bool(true)));
     }
 
     #[test]
@@ -902,8 +902,8 @@ mod tests {
         )
         .with_length(1);
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Bool));
-        assert!(matches!(tv.value, GeneratedValue::Bool(false)));
+        assert!(matches!(tv.sync_type, UniversalType::Bool));
+        assert!(matches!(tv.value, UniversalValue::Bool(false)));
     }
 
     #[test]
@@ -915,8 +915,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::TinyInt { .. }));
-        assert!(matches!(tv.value, GeneratedValue::Int32(1)));
+        assert!(matches!(tv.sync_type, UniversalType::TinyInt { .. }));
+        assert!(matches!(tv.value, UniversalValue::Int32(1)));
     }
 
     #[test]
@@ -929,8 +929,8 @@ mod tests {
         )
         .with_boolean_hint(true);
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Bool));
-        assert!(matches!(tv.value, GeneratedValue::Bool(true)));
+        assert!(matches!(tv.sync_type, UniversalType::Bool));
+        assert!(matches!(tv.value, UniversalValue::Bool(true)));
     }
 
     #[test]
@@ -943,8 +943,8 @@ mod tests {
         )
         .with_boolean_hint(true);
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Bool));
-        assert!(matches!(tv.value, GeneratedValue::Bool(false)));
+        assert!(matches!(tv.sync_type, UniversalType::Bool));
+        assert!(matches!(tv.value, UniversalValue::Bool(false)));
     }
 
     #[test]
@@ -958,8 +958,8 @@ mod tests {
         .with_length(1);
         let tv = mv.to_typed_value().unwrap();
         // The type still says TinyInt, but value is 5
-        assert!(matches!(tv.sync_type, SyncDataType::TinyInt { .. }));
-        assert!(matches!(tv.value, GeneratedValue::Int32(5)));
+        assert!(matches!(tv.sync_type, UniversalType::TinyInt { .. }));
+        assert!(matches!(tv.value, UniversalValue::Int32(5)));
     }
 
     #[test]
@@ -972,8 +972,8 @@ mod tests {
         )
         .with_length(1);
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Bool));
-        assert!(matches!(tv.value, GeneratedValue::Null));
+        assert!(matches!(tv.sync_type, UniversalType::Bool));
+        assert!(matches!(tv.value, UniversalValue::Null));
     }
 
     #[test]
@@ -995,27 +995,27 @@ mod tests {
 
         let tv = json_to_typed_value_with_config(json, "", &config);
 
-        if let GeneratedValue::Object(root) = tv.value {
+        if let UniversalValue::Object(root) = tv.value {
             // Check settings.enabled is now boolean true
-            if let Some(GeneratedValue::Object(settings)) = root.get("settings") {
+            if let Some(UniversalValue::Object(settings)) = root.get("settings") {
                 assert!(matches!(
                     settings.get("enabled"),
-                    Some(GeneratedValue::Bool(true))
+                    Some(UniversalValue::Bool(true))
                 ));
                 // count should still be an integer
                 assert!(matches!(
                     settings.get("count"),
-                    Some(GeneratedValue::Int64(5))
+                    Some(UniversalValue::Int64(5))
                 ));
             } else {
                 panic!("Expected settings object");
             }
 
             // Check flags.is_active is now boolean false
-            if let Some(GeneratedValue::Object(flags)) = root.get("flags") {
+            if let Some(UniversalValue::Object(flags)) = root.get("flags") {
                 assert!(matches!(
                     flags.get("is_active"),
-                    Some(GeneratedValue::Bool(false))
+                    Some(UniversalValue::Bool(false))
                 ));
             } else {
                 panic!("Expected flags object");
@@ -1037,19 +1037,19 @@ mod tests {
 
         let tv = json_to_typed_value_with_config(json, "", &config);
 
-        if let GeneratedValue::Object(root) = tv.value {
+        if let UniversalValue::Object(root) = tv.value {
             // Check permissions is now an array
-            if let Some(GeneratedValue::Array(perms)) = root.get("permissions") {
+            if let Some(UniversalValue::Array(perms)) = root.get("permissions") {
                 assert_eq!(perms.len(), 3);
-                assert!(matches!(&perms[0], GeneratedValue::String(s) if s == "read"));
-                assert!(matches!(&perms[1], GeneratedValue::String(s) if s == "write"));
-                assert!(matches!(&perms[2], GeneratedValue::String(s) if s == "execute"));
+                assert!(matches!(&perms[0], UniversalValue::String(s) if s == "read"));
+                assert!(matches!(&perms[1], UniversalValue::String(s) if s == "write"));
+                assert!(matches!(&perms[2], UniversalValue::String(s) if s == "execute"));
             } else {
                 panic!("Expected Array value for permissions");
             }
 
             // name should still be a string
-            assert!(matches!(root.get("name"), Some(GeneratedValue::String(s)) if s == "admin"));
+            assert!(matches!(root.get("name"), Some(UniversalValue::String(s)) if s == "admin"));
         } else {
             panic!("Expected Object value");
         }
@@ -1067,14 +1067,14 @@ mod tests {
 
         let tv = json_to_typed_value_with_config(json, "", &config);
 
-        if let GeneratedValue::Object(root) = tv.value {
+        if let UniversalValue::Object(root) = tv.value {
             assert!(matches!(
                 root.get("enabled"),
-                Some(GeneratedValue::Int64(1))
+                Some(UniversalValue::Int64(1))
             ));
             assert!(matches!(
                 root.get("disabled"),
-                Some(GeneratedValue::Int64(0))
+                Some(UniversalValue::Int64(0))
             ));
         } else {
             panic!("Expected Object value");
@@ -1267,12 +1267,12 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Set { .. }));
-        if let GeneratedValue::Array(arr) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::Set { .. }));
+        if let UniversalValue::Array(arr) = tv.value {
             // Empty string produces one empty element after split
             // This is expected MySQL behavior
             assert_eq!(arr.len(), 1);
-            if let GeneratedValue::String(s) = &arr[0] {
+            if let UniversalValue::String(s) = &arr[0] {
                 assert_eq!(s, "");
             }
         } else {
@@ -1288,12 +1288,12 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Set { .. }));
-        if let GeneratedValue::Array(arr) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::Set { .. }));
+        if let UniversalValue::Array(arr) = tv.value {
             assert_eq!(arr.len(), 3);
-            assert!(matches!(&arr[0], GeneratedValue::String(s) if s == "read"));
-            assert!(matches!(&arr[1], GeneratedValue::String(s) if s == "write"));
-            assert!(matches!(&arr[2], GeneratedValue::String(s) if s == "execute"));
+            assert!(matches!(&arr[0], UniversalValue::String(s) if s == "read"));
+            assert!(matches!(&arr[1], UniversalValue::String(s) if s == "write"));
+            assert!(matches!(&arr[2], UniversalValue::String(s) if s == "execute"));
         } else {
             panic!("Expected Array value");
         }
@@ -1307,8 +1307,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Enum { .. }));
-        assert!(matches!(tv.value, GeneratedValue::String(s) if s == "active"));
+        assert!(matches!(tv.sync_type, UniversalType::Enum { .. }));
+        assert!(matches!(tv.value, UniversalValue::String(s) if s == "active"));
     }
 
     #[test]
@@ -1320,8 +1320,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Bool));
-        assert!(matches!(tv.value, GeneratedValue::Bool(false)));
+        assert!(matches!(tv.sync_type, UniversalType::Bool));
+        assert!(matches!(tv.value, UniversalValue::Bool(false)));
 
         // BIT(1) with value 1 should be boolean true
         let mv = MySQLValueWithSchema::new(
@@ -1330,8 +1330,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Bool));
-        assert!(matches!(tv.value, GeneratedValue::Bool(true)));
+        assert!(matches!(tv.sync_type, UniversalType::Bool));
+        assert!(matches!(tv.value, UniversalValue::Bool(true)));
     }
 
     #[test]
@@ -1343,8 +1343,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Bytes));
-        if let GeneratedValue::Bytes(b) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::Bytes));
+        if let UniversalValue::Bytes(b) = tv.value {
             assert_eq!(b, vec![0xff]);
         } else {
             panic!("Expected Bytes value");
@@ -1360,8 +1360,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Geometry { .. }));
-        if let GeneratedValue::Bytes(b) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::Geometry { .. }));
+        if let UniversalValue::Bytes(b) = tv.value {
             assert_eq!(b, wkb_point);
         } else {
             panic!("Expected Bytes value");
@@ -1376,7 +1376,7 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::SmallInt));
-        assert!(matches!(tv.value, GeneratedValue::Int32(2024)));
+        assert!(matches!(tv.sync_type, UniversalType::SmallInt));
+        assert!(matches!(tv.value, UniversalValue::Int32(2024)));
     }
 }

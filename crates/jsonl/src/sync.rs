@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use surreal_sync_file::{FileSource, DEFAULT_BUFFER_SIZE};
 use surrealdb::sql::Thing;
-use sync_core::{GeneratedValue, SyncDataType, SyncSchema, TableSchema, TypedValue};
+use sync_core::{Schema, TableDefinition, TypedValue, UniversalType, UniversalValue};
 
 /// Configuration for JSONL import
 #[derive(Clone)]
@@ -50,7 +50,7 @@ pub struct Config {
     pub dry_run: bool,
 
     /// Optional schema for type-aware conversion (e.g., UUID, DateTime parsing)
-    pub schema: Option<SyncSchema>,
+    pub schema: Option<Schema>,
 }
 
 impl Default for Config {
@@ -368,7 +368,7 @@ fn convert_json_to_record(
     table_name: &str,
     id_field: &str,
     rules: &[ConversionRule],
-    table_schema: Option<&TableSchema>,
+    table_schema: Option<&TableDefinition>,
 ) -> Result<Record> {
     let mut id: Option<surrealdb::sql::Id> = None;
 
@@ -417,7 +417,7 @@ fn convert_json_to_record(
 fn convert_value_with_schema(
     value: &Value,
     rules: &[ConversionRule],
-    data_type: Option<&SyncDataType>,
+    data_type: Option<&UniversalType>,
 ) -> FieldValue {
     // First check if this is an object that matches a conversion rule (Thing reference)
     if let Value::Object(obj) = value {
@@ -451,7 +451,7 @@ fn convert_value_with_schema(
 /// Thing conversion is handled in convert_value_with_schema before calling this.
 fn convert_value_inferred(value: &Value) -> TypedValue {
     match value {
-        Value::Null => TypedValue::null(SyncDataType::Text),
+        Value::Null => TypedValue::null(UniversalType::Text),
         Value::Bool(b) => TypedValue::bool(*b),
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
@@ -459,7 +459,7 @@ fn convert_value_inferred(value: &Value) -> TypedValue {
             } else if let Some(f) = n.as_f64() {
                 TypedValue::double(f)
             } else {
-                TypedValue::null(SyncDataType::BigInt)
+                TypedValue::null(UniversalType::BigInt)
             }
         }
         Value::String(s) => {
@@ -474,11 +474,11 @@ fn convert_value_inferred(value: &Value) -> TypedValue {
             TypedValue::text(s)
         }
         Value::Array(arr) => {
-            let values: Vec<GeneratedValue> = arr
+            let values: Vec<UniversalValue> = arr
                 .iter()
                 .map(|item| convert_value_inferred(item).value)
                 .collect();
-            TypedValue::array(values, SyncDataType::Text)
+            TypedValue::array(values, UniversalType::Text)
         }
         Value::Object(obj) => {
             // Convert as regular object (Thing rules already checked in convert_value_with_schema)
@@ -487,8 +487,8 @@ fn convert_value_inferred(value: &Value) -> TypedValue {
                 map.insert(key.clone(), convert_value_inferred(val).value);
             }
             TypedValue {
-                sync_type: SyncDataType::Json,
-                value: GeneratedValue::Object(map),
+                sync_type: UniversalType::Json,
+                value: UniversalValue::Object(map),
             }
         }
     }

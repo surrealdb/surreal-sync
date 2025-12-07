@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use sync_core::{InternalRow, SyncSchema, TableSchema, TypedValue};
+use sync_core::{UniversalRow, Schema, TableDefinition, TypedValue};
 use tracing::{debug, info};
 
 /// Default buffer size for JSONL writing.
@@ -50,7 +50,7 @@ impl PopulateMetrics {
 
 /// JSONL populator that generates test data files.
 pub struct JsonlPopulator {
-    schema: SyncSchema,
+    schema: Schema,
     generator: DataGenerator,
 }
 
@@ -67,7 +67,7 @@ impl JsonlPopulator {
     /// ```ignore
     /// let populator = JsonlPopulator::new(schema, 42);
     /// ```
-    pub fn new(schema: SyncSchema, seed: u64) -> Self {
+    pub fn new(schema: Schema, seed: u64) -> Self {
         let generator = DataGenerator::new(schema.clone(), seed);
         Self { schema, generator }
     }
@@ -88,7 +88,7 @@ impl JsonlPopulator {
     }
 
     /// Get a reference to the schema.
-    pub fn schema(&self) -> &SyncSchema {
+    pub fn schema(&self) -> &Schema {
         &self.schema
     }
 
@@ -259,10 +259,10 @@ impl JsonlPopulator {
     }
 }
 
-/// Convert an InternalRow to a JSON object.
+/// Convert an UniversalRow to a JSON object.
 fn internal_row_to_json(
-    row: &InternalRow,
-    table_schema: &TableSchema,
+    row: &UniversalRow,
+    table_schema: &TableDefinition,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut obj = serde_json::Map::new();
 
@@ -288,10 +288,10 @@ fn internal_row_to_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::GeneratedValue;
+    use sync_core::UniversalValue;
     use tempfile::TempDir;
 
-    fn test_schema() -> SyncSchema {
+    fn test_schema() -> Schema {
         let yaml = r#"
 version: 1
 seed: 42
@@ -316,7 +316,7 @@ tables:
           min: 18
           max: 80
 "#;
-        SyncSchema::from_yaml(yaml).unwrap()
+        Schema::from_yaml(yaml).unwrap()
     }
 
     #[test]
@@ -338,18 +338,18 @@ tables:
         let schema = test_schema();
         let table_schema = schema.get_table("users").unwrap();
 
-        let row = InternalRow::new(
+        let row = UniversalRow::new(
             "users".to_string(),
             0,
-            GeneratedValue::Uuid(
+            UniversalValue::Uuid(
                 uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
             ),
             [
                 (
                     "email".to_string(),
-                    GeneratedValue::String("test@example.com".to_string()),
+                    UniversalValue::String("test@example.com".to_string()),
                 ),
-                ("age".to_string(), GeneratedValue::Int32(25)),
+                ("age".to_string(), UniversalValue::Int32(25)),
             ]
             .into_iter()
             .collect(),

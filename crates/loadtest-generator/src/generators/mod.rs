@@ -11,17 +11,17 @@ pub mod timestamp;
 pub mod uuid;
 
 use rand::Rng;
-use sync_core::{GeneratedValue, GeneratorConfig, SyncDataType};
+use sync_core::{GeneratorConfig, UniversalType, UniversalValue};
 
 /// Trait for generating values.
 pub trait ValueGenerator {
     /// Generate a value using the given RNG and row index.
-    fn generate<R: Rng>(&self, rng: &mut R, index: u64) -> GeneratedValue;
+    fn generate<R: Rng>(&self, rng: &mut R, index: u64) -> UniversalValue;
 }
 
 /// Generate a value based on the generator configuration.
 /// Uses default string type for arrays.
-pub fn generate_value<R: Rng>(config: &GeneratorConfig, rng: &mut R, index: u64) -> GeneratedValue {
+pub fn generate_value<R: Rng>(config: &GeneratorConfig, rng: &mut R, index: u64) -> UniversalValue {
     generate_value_typed(config, rng, index, None)
 }
 
@@ -31,12 +31,12 @@ pub fn generate_value_typed<R: Rng>(
     config: &GeneratorConfig,
     rng: &mut R,
     index: u64,
-    target_type: Option<&SyncDataType>,
-) -> GeneratedValue {
+    target_type: Option<&UniversalType>,
+) -> UniversalValue {
     match config {
         GeneratorConfig::UuidV4 => uuid::generate_uuid_v4(rng),
 
-        GeneratorConfig::Sequential { start } => GeneratedValue::Int64(start + index as i64),
+        GeneratorConfig::Sequential { start } => UniversalValue::Int64(start + index as i64),
 
         GeneratorConfig::Pattern { pattern } => pattern::generate_pattern(pattern, rng, index),
 
@@ -55,12 +55,12 @@ pub fn generate_value_typed<R: Rng>(
         GeneratorConfig::TimestampNow => timestamp::generate_timestamp_now(),
 
         GeneratorConfig::WeightedBool { true_weight } => {
-            GeneratedValue::Bool(rng.gen_bool(*true_weight))
+            UniversalValue::Bool(rng.gen_bool(*true_weight))
         }
 
         GeneratorConfig::OneOf { values } => {
             if values.is_empty() {
-                GeneratedValue::Null
+                UniversalValue::Null
             } else {
                 let idx = rng.gen_range(0..values.len());
                 static_value::yaml_to_generated_value(&values[idx])
@@ -74,14 +74,14 @@ pub fn generate_value_typed<R: Rng>(
         } => {
             // Extract element type from target type if available
             let element_type = match target_type {
-                Some(SyncDataType::Array { element_type }) => element_type.as_ref(),
-                _ => &SyncDataType::Text,
+                Some(UniversalType::Array { element_type }) => element_type.as_ref(),
+                _ => &UniversalType::Text,
             };
             array::generate_sample_array_typed(rng, pool, *min_length, *max_length, element_type)
         }
 
         GeneratorConfig::Static { value } => static_value::yaml_to_generated_value(value),
 
-        GeneratorConfig::Null => GeneratedValue::Null,
+        GeneratorConfig::Null => UniversalValue::Null,
     }
 }

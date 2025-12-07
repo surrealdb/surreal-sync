@@ -2,20 +2,20 @@
 
 use chrono::{DateTime, Utc};
 use rand::Rng;
-use sync_core::GeneratedValue;
+use sync_core::UniversalValue;
 
 /// Generate the current UTC timestamp.
 ///
 /// This is NOT deterministic - each call returns the current time.
 /// Useful for `updated_at` fields in incremental sync scenarios.
-pub fn generate_timestamp_now() -> GeneratedValue {
-    GeneratedValue::DateTime(Utc::now())
+pub fn generate_timestamp_now() -> UniversalValue {
+    UniversalValue::DateTime(Utc::now())
 }
 
 /// Generate a random timestamp in the given range.
 ///
 /// The start and end should be ISO 8601 formatted timestamps.
-pub fn generate_timestamp_range<R: Rng>(rng: &mut R, start: &str, end: &str) -> GeneratedValue {
+pub fn generate_timestamp_range<R: Rng>(rng: &mut R, start: &str, end: &str) -> UniversalValue {
     let start_dt = parse_timestamp(start);
     let end_dt = parse_timestamp(end);
 
@@ -25,15 +25,15 @@ pub fn generate_timestamp_range<R: Rng>(rng: &mut R, start: &str, end: &str) -> 
             let end_ts = end.timestamp();
 
             if start_ts >= end_ts {
-                GeneratedValue::DateTime(start)
+                UniversalValue::DateTime(start)
             } else {
                 let random_ts = rng.gen_range(start_ts..=end_ts);
                 let dt = DateTime::from_timestamp(random_ts, 0).unwrap_or(start);
-                GeneratedValue::DateTime(dt)
+                UniversalValue::DateTime(dt)
             }
         }
-        (Some(dt), None) | (None, Some(dt)) => GeneratedValue::DateTime(dt),
-        (None, None) => GeneratedValue::DateTime(Utc::now()),
+        (Some(dt), None) | (None, Some(dt)) => UniversalValue::DateTime(dt),
+        (None, None) => UniversalValue::DateTime(Utc::now()),
     }
 }
 
@@ -66,7 +66,7 @@ mod tests {
         let value =
             generate_timestamp_range(&mut rng, "2020-01-01T00:00:00Z", "2024-12-31T23:59:59Z");
 
-        if let GeneratedValue::DateTime(dt) = value {
+        if let UniversalValue::DateTime(dt) = value {
             assert!(dt.year() >= 2020 && dt.year() <= 2024);
         } else {
             panic!("Expected DateTime value");
@@ -79,7 +79,7 @@ mod tests {
 
         let value = generate_timestamp_range(&mut rng, "2020-01-01", "2024-12-31");
 
-        if let GeneratedValue::DateTime(dt) = value {
+        if let UniversalValue::DateTime(dt) = value {
             assert!(dt.year() >= 2020 && dt.year() <= 2024);
         } else {
             panic!("Expected DateTime value");

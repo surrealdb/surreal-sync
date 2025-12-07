@@ -7,7 +7,7 @@ use crate::error::{KafkaTypesError, Result};
 use json_types::JsonValueWithSchema;
 use std::collections::HashMap;
 use surreal_sync_kafka::ProtoFieldValue;
-use sync_core::{GeneratedValue, SyncDataType, TableSchema, TypedValue};
+use sync_core::{TableDefinition, TypedValue, UniversalType, UniversalValue};
 use tracing::debug;
 
 /// Convert a Kafka message to TypedValue key-value pairs.
@@ -21,7 +21,7 @@ use tracing::debug;
 /// - Type information is preserved from the schema
 pub fn message_to_typed_values(
     message: surreal_sync_kafka::Message,
-    table_schema: Option<&TableSchema>,
+    table_schema: Option<&TableDefinition>,
 ) -> Result<HashMap<String, TypedValue>> {
     let mut kvs = HashMap::new();
 
@@ -39,7 +39,7 @@ pub fn message_to_typed_values(
                 for field in &schema.fields {
                     if !kvs.contains_key(&field.name) {
                         // Check if this is an array field
-                        if let SyncDataType::Array { element_type } = &field.field_type {
+                        if let UniversalType::Array { element_type } = &field.field_type {
                             debug!(
                                 "Adding empty array for missing field '{}' based on schema",
                                 field.name
@@ -61,13 +61,13 @@ pub fn message_to_typed_values(
 /// Convert protobuf field value to TypedValue with optional schema information.
 pub fn proto_to_typed_value_with_schema(
     value: ProtoFieldValue,
-    field_schema: Option<&sync_core::FieldSchema>,
+    field_schema: Option<&sync_core::FieldDefinition>,
 ) -> Result<TypedValue> {
     match value {
         ProtoFieldValue::String(s) => {
             // Check if this is actually a JSON/Object field encoded as string
             if let Some(fs) = field_schema {
-                if matches!(fs.field_type, SyncDataType::Json | SyncDataType::Jsonb) {
+                if matches!(fs.field_type, UniversalType::Json | UniversalType::Jsonb) {
                     debug!("Parsing string field '{}' as JSON based on schema", fs.name);
                     // Parse the JSON string and convert to TypedValue using json-types
                     let json_value: serde_json::Value =
@@ -152,8 +152,8 @@ pub fn proto_to_typed_value(value: ProtoFieldValue) -> Result<TypedValue> {
                         map.insert(k.to_owned(), typed_value.value);
                     }
                     Ok(TypedValue {
-                        sync_type: SyncDataType::Json,
-                        value: GeneratedValue::Object(map),
+                        sync_type: UniversalType::Json,
+                        value: UniversalValue::Object(map),
                     })
                 }
             }
@@ -169,14 +169,14 @@ pub fn proto_to_typed_value(value: ProtoFieldValue) -> Result<TypedValue> {
             let element_type = typed_values
                 .first()
                 .map(|tv| tv.sync_type.clone())
-                .unwrap_or(SyncDataType::Text);
+                .unwrap_or(UniversalType::Text);
 
-            // Extract just the GeneratedValues for the array
-            let arr: Vec<GeneratedValue> = typed_values.into_iter().map(|tv| tv.value).collect();
+            // Extract just the UniversalValues for the array
+            let arr: Vec<UniversalValue> = typed_values.into_iter().map(|tv| tv.value).collect();
 
             Ok(TypedValue::array(arr, element_type))
         }
-        ProtoFieldValue::Null => Ok(TypedValue::null(SyncDataType::Text)),
+        ProtoFieldValue::Null => Ok(TypedValue::null(UniversalType::Text)),
     }
 }
 
@@ -197,32 +197,32 @@ mod tests {
     fn test_proto_to_typed_value_int32() {
         let value = ProtoFieldValue::Int32(42);
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, SyncDataType::Int);
-        assert!(matches!(result.value, GeneratedValue::Int32(42)));
+        assert_eq!(result.sync_type, UniversalType::Int);
+        assert!(matches!(result.value, UniversalValue::Int32(42)));
     }
 
     #[test]
     fn test_proto_to_typed_value_int64() {
         let value = ProtoFieldValue::Int64(123456789);
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, SyncDataType::BigInt);
-        assert!(matches!(result.value, GeneratedValue::Int64(123456789)));
+        assert_eq!(result.sync_type, UniversalType::BigInt);
+        assert!(matches!(result.value, UniversalValue::Int64(123456789)));
     }
 
     #[test]
     fn test_proto_to_typed_value_string() {
         let value = ProtoFieldValue::String("hello".to_string());
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, SyncDataType::Text);
-        assert!(matches!(result.value, GeneratedValue::String(s) if s == "hello"));
+        assert_eq!(result.sync_type, UniversalType::Text);
+        assert!(matches!(result.value, UniversalValue::String(s) if s == "hello"));
     }
 
     #[test]
     fn test_proto_to_typed_value_bool() {
         let value = ProtoFieldValue::Bool(true);
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, SyncDataType::Bool);
-        assert!(matches!(result.value, GeneratedValue::Bool(true)));
+        assert_eq!(result.sync_type, UniversalType::Bool);
+        assert!(matches!(result.value, UniversalValue::Bool(true)));
     }
 
     #[test]
@@ -239,8 +239,8 @@ mod tests {
 
         let value = ProtoFieldValue::Message(Box::new(msg));
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, SyncDataType::DateTime);
-        assert!(matches!(result.value, GeneratedValue::DateTime(_)));
+        assert_eq!(result.sync_type, UniversalType::DateTime);
+        assert!(matches!(result.value, UniversalValue::DateTime(_)));
     }
 
     #[test]
@@ -250,22 +250,22 @@ mod tests {
             ProtoFieldValue::String("b".to_string()),
         ]);
         let result = proto_to_typed_value(value).unwrap();
-        assert!(matches!(result.sync_type, SyncDataType::Array { .. }));
-        assert!(matches!(result.value, GeneratedValue::Array(arr) if arr.len() == 2));
+        assert!(matches!(result.sync_type, UniversalType::Array { .. }));
+        assert!(matches!(result.value, UniversalValue::Array(arr) if arr.len() == 2));
     }
 
     #[test]
     fn test_proto_to_typed_value_null() {
         let value = ProtoFieldValue::Null;
         let result = proto_to_typed_value(value).unwrap();
-        assert!(matches!(result.value, GeneratedValue::Null));
+        assert!(matches!(result.value, UniversalValue::Null));
     }
 
     #[test]
     fn test_proto_to_typed_value_with_schema_json() {
-        let field_schema = sync_core::FieldSchema {
+        let field_schema = sync_core::FieldDefinition {
             name: "metadata".to_string(),
-            field_type: SyncDataType::Json,
+            field_type: UniversalType::Json,
             generator: sync_core::GeneratorConfig::Pattern {
                 pattern: "{}".to_string(),
             },
@@ -274,7 +274,7 @@ mod tests {
 
         let value = ProtoFieldValue::String(r#"{"key": "value"}"#.to_string());
         let result = proto_to_typed_value_with_schema(value, Some(&field_schema)).unwrap();
-        assert_eq!(result.sync_type, SyncDataType::Json);
-        assert!(matches!(result.value, GeneratedValue::Object(_)));
+        assert_eq!(result.sync_type, UniversalType::Json);
+        assert!(matches!(result.value, UniversalValue::Object(_)));
     }
 }

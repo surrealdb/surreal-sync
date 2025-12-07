@@ -1,6 +1,6 @@
 //! Core data types for the surreal-sync load testing framework.
 //!
-//! This module defines `SyncDataType`, the universal type universe that represents
+//! This module defines `UniversalType`, the universal type universe that represents
 //! all supported data types across different database sources and SurrealDB.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 /// Universal data type representation for surreal-sync.
 ///
-/// `SyncDataType` represents the complete type universe across ALL supported data sources.
-/// Each database (including SurrealDB) defines its own mapping FROM SyncDataType TO its
+/// `UniversalType` represents the complete type universe across ALL supported data sources.
+/// Each database (including SurrealDB) defines its own mapping FROM UniversalType TO its
 /// native type via `From`/`Into` trait implementations in the respective type crates.
 ///
 /// # Design Principles
@@ -17,7 +17,7 @@ use std::collections::HashMap;
 /// 1. **Source-agnostic**: Represents the conceptual type, not any database's specific type
 /// 2. **Type-safe conversions**: All databases implement mapping via `From`/`Into` traits
 /// 3. **Precision preservation**: High-precision decimals exceeding SurrealDB's 128-bit are stored as strings
-/// 4. **DDL derivation**: Each database derives its DDL from SyncDataType via the `ToDdl` trait
+/// 4. **DDL derivation**: Each database derives its DDL from UniversalType via the `ToDdl` trait
 ///
 /// # YAML Format
 ///
@@ -39,7 +39,7 @@ use std::collections::HashMap;
 ///   scale: 2
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-pub enum SyncDataType {
+pub enum UniversalType {
     // Boolean
     /// Boolean value
     Bool,
@@ -129,7 +129,7 @@ pub enum SyncDataType {
     /// Array of a specific type
     Array {
         /// Element type
-        element_type: Box<SyncDataType>,
+        element_type: Box<UniversalType>,
     },
 
     /// MySQL SET type
@@ -173,10 +173,10 @@ pub enum GeometryType {
     GeometryCollection,
 }
 
-// Custom serialization/deserialization for SyncDataType
+// Custom serialization/deserialization for UniversalType
 // Supports both simple string format ("uuid", "int") and object format ({"type": "var_char", "length": 255})
 
-impl Serialize for SyncDataType {
+impl Serialize for UniversalType {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -257,20 +257,20 @@ impl Serialize for SyncDataType {
     }
 }
 
-impl<'de> Deserialize<'de> for SyncDataType {
+impl<'de> Deserialize<'de> for UniversalType {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         use serde::de::{Error, MapAccess, Visitor};
 
-        struct SyncDataTypeVisitor;
+        struct UniversalTypeVisitor;
 
-        impl<'de> Visitor<'de> for SyncDataTypeVisitor {
-            type Value = SyncDataType;
+        impl<'de> Visitor<'de> for UniversalTypeVisitor {
+            type Value = UniversalType;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a string or map representing a SyncDataType")
+                formatter.write_str("a string or map representing a UniversalType")
             }
 
             // Handle string format: "uuid", "int", etc.
@@ -279,23 +279,23 @@ impl<'de> Deserialize<'de> for SyncDataType {
                 E: Error,
             {
                 match value {
-                    "bool" => Ok(SyncDataType::Bool),
-                    "small_int" | "smallint" => Ok(SyncDataType::SmallInt),
-                    "int" => Ok(SyncDataType::Int),
-                    "big_int" | "bigint" => Ok(SyncDataType::BigInt),
-                    "float" => Ok(SyncDataType::Float),
-                    "double" => Ok(SyncDataType::Double),
-                    "text" => Ok(SyncDataType::Text),
-                    "blob" => Ok(SyncDataType::Blob),
-                    "bytes" => Ok(SyncDataType::Bytes),
-                    "date" => Ok(SyncDataType::Date),
-                    "time" => Ok(SyncDataType::Time),
-                    "date_time" | "datetime" => Ok(SyncDataType::DateTime),
-                    "date_time_nano" | "datetime_nano" => Ok(SyncDataType::DateTimeNano),
-                    "timestamp_tz" | "timestamptz" => Ok(SyncDataType::TimestampTz),
-                    "uuid" => Ok(SyncDataType::Uuid),
-                    "json" => Ok(SyncDataType::Json),
-                    "jsonb" => Ok(SyncDataType::Jsonb),
+                    "bool" => Ok(UniversalType::Bool),
+                    "small_int" | "smallint" => Ok(UniversalType::SmallInt),
+                    "int" => Ok(UniversalType::Int),
+                    "big_int" | "bigint" => Ok(UniversalType::BigInt),
+                    "float" => Ok(UniversalType::Float),
+                    "double" => Ok(UniversalType::Double),
+                    "text" => Ok(UniversalType::Text),
+                    "blob" => Ok(UniversalType::Blob),
+                    "bytes" => Ok(UniversalType::Bytes),
+                    "date" => Ok(UniversalType::Date),
+                    "time" => Ok(UniversalType::Time),
+                    "date_time" | "datetime" => Ok(UniversalType::DateTime),
+                    "date_time_nano" | "datetime_nano" => Ok(UniversalType::DateTimeNano),
+                    "timestamp_tz" | "timestamptz" => Ok(UniversalType::TimestampTz),
+                    "uuid" => Ok(UniversalType::Uuid),
+                    "json" => Ok(UniversalType::Json),
+                    "jsonb" => Ok(UniversalType::Jsonb),
                     _ => Err(E::custom(format!("unknown simple type: {value}"))),
                 }
             }
@@ -320,67 +320,67 @@ impl<'de> Deserialize<'de> for SyncDataType {
 
                 match type_name.as_str() {
                     // Simple types that might appear in map format
-                    "bool" => Ok(SyncDataType::Bool),
-                    "small_int" | "smallint" => Ok(SyncDataType::SmallInt),
-                    "int" => Ok(SyncDataType::Int),
-                    "big_int" | "bigint" => Ok(SyncDataType::BigInt),
-                    "float" => Ok(SyncDataType::Float),
-                    "double" => Ok(SyncDataType::Double),
-                    "text" => Ok(SyncDataType::Text),
-                    "blob" => Ok(SyncDataType::Blob),
-                    "bytes" => Ok(SyncDataType::Bytes),
-                    "date" => Ok(SyncDataType::Date),
-                    "time" => Ok(SyncDataType::Time),
-                    "date_time" | "datetime" => Ok(SyncDataType::DateTime),
-                    "date_time_nano" | "datetime_nano" => Ok(SyncDataType::DateTimeNano),
-                    "timestamp_tz" | "timestamptz" => Ok(SyncDataType::TimestampTz),
-                    "uuid" => Ok(SyncDataType::Uuid),
-                    "json" => Ok(SyncDataType::Json),
-                    "jsonb" => Ok(SyncDataType::Jsonb),
+                    "bool" => Ok(UniversalType::Bool),
+                    "small_int" | "smallint" => Ok(UniversalType::SmallInt),
+                    "int" => Ok(UniversalType::Int),
+                    "big_int" | "bigint" => Ok(UniversalType::BigInt),
+                    "float" => Ok(UniversalType::Float),
+                    "double" => Ok(UniversalType::Double),
+                    "text" => Ok(UniversalType::Text),
+                    "blob" => Ok(UniversalType::Blob),
+                    "bytes" => Ok(UniversalType::Bytes),
+                    "date" => Ok(UniversalType::Date),
+                    "time" => Ok(UniversalType::Time),
+                    "date_time" | "datetime" => Ok(UniversalType::DateTime),
+                    "date_time_nano" | "datetime_nano" => Ok(UniversalType::DateTimeNano),
+                    "timestamp_tz" | "timestamptz" => Ok(UniversalType::TimestampTz),
+                    "uuid" => Ok(UniversalType::Uuid),
+                    "json" => Ok(UniversalType::Json),
+                    "jsonb" => Ok(UniversalType::Jsonb),
 
                     // Complex types
                     "tiny_int" | "tinyint" => {
                         let width = get_field(&fields, "width").unwrap_or(1);
-                        Ok(SyncDataType::TinyInt { width })
+                        Ok(UniversalType::TinyInt { width })
                     }
                     "decimal" => {
                         let precision = get_field_required(&fields, "precision")?;
                         let scale = get_field_required(&fields, "scale")?;
-                        Ok(SyncDataType::Decimal { precision, scale })
+                        Ok(UniversalType::Decimal { precision, scale })
                     }
                     "char" => {
                         let length = get_field_required(&fields, "length")?;
-                        Ok(SyncDataType::Char { length })
+                        Ok(UniversalType::Char { length })
                     }
                     "var_char" | "varchar" => {
                         let length = get_field_required(&fields, "length")?;
-                        Ok(SyncDataType::VarChar { length })
+                        Ok(UniversalType::VarChar { length })
                     }
                     "array" => {
-                        let element_type: SyncDataType =
+                        let element_type: UniversalType =
                             get_field_required(&fields, "element_type")?;
-                        Ok(SyncDataType::Array {
+                        Ok(UniversalType::Array {
                             element_type: Box::new(element_type),
                         })
                     }
                     "set" => {
                         let values = get_field_required(&fields, "values")?;
-                        Ok(SyncDataType::Set { values })
+                        Ok(UniversalType::Set { values })
                     }
                     "enum" => {
                         let values = get_field_required(&fields, "values")?;
-                        Ok(SyncDataType::Enum { values })
+                        Ok(UniversalType::Enum { values })
                     }
                     "geometry" => {
                         let geometry_type = get_field_required(&fields, "geometry_type")?;
-                        Ok(SyncDataType::Geometry { geometry_type })
+                        Ok(UniversalType::Geometry { geometry_type })
                     }
                     _ => Err(M::Error::custom(format!("unknown type: {type_name}"))),
                 }
             }
         }
 
-        deserializer.deserialize_any(SyncDataTypeVisitor)
+        deserializer.deserialize_any(UniversalTypeVisitor)
     }
 }
 
@@ -403,16 +403,16 @@ fn get_field_required<T: for<'de> Deserialize<'de>, E: serde::de::Error>(
         .map_err(|e| E::custom(format!("invalid field '{key}': {e}")))
 }
 
-/// Trait for generating DDL statements from `SyncDataType`.
+/// Trait for generating DDL statements from `UniversalType`.
 ///
 /// Each database-specific type crate implements this trait to generate
 /// appropriate DDL for creating tables with the correct column types.
 pub trait ToDdl {
-    /// Generate DDL type definition for the given `SyncDataType`.
-    fn to_ddl(&self, sync_type: &SyncDataType) -> String;
+    /// Generate DDL type definition for the given `UniversalType`.
+    fn to_ddl(&self, sync_type: &UniversalType) -> String;
 }
 
-impl SyncDataType {
+impl UniversalType {
     /// Create a new TinyInt type with the given display width.
     pub fn tiny_int(width: u8) -> Self {
         Self::TinyInt { width }
@@ -434,7 +434,7 @@ impl SyncDataType {
     }
 
     /// Create a new Array type with the given element type.
-    pub fn array(element_type: SyncDataType) -> Self {
+    pub fn array(element_type: UniversalType) -> Self {
         Self::Array {
             element_type: Box::new(element_type),
         }
@@ -495,54 +495,54 @@ mod tests {
     #[test]
     fn test_sync_data_type_constructors() {
         assert_eq!(
-            SyncDataType::tiny_int(1),
-            SyncDataType::TinyInt { width: 1 }
+            UniversalType::tiny_int(1),
+            UniversalType::TinyInt { width: 1 }
         );
         assert_eq!(
-            SyncDataType::decimal(10, 2),
-            SyncDataType::Decimal {
+            UniversalType::decimal(10, 2),
+            UniversalType::Decimal {
                 precision: 10,
                 scale: 2
             }
         );
         assert_eq!(
-            SyncDataType::varchar(255),
-            SyncDataType::VarChar { length: 255 }
+            UniversalType::varchar(255),
+            UniversalType::VarChar { length: 255 }
         );
     }
 
     #[test]
     fn test_type_categories() {
-        assert!(SyncDataType::Int.is_numeric());
-        assert!(SyncDataType::decimal(10, 2).is_numeric());
-        assert!(!SyncDataType::Text.is_numeric());
+        assert!(UniversalType::Int.is_numeric());
+        assert!(UniversalType::decimal(10, 2).is_numeric());
+        assert!(!UniversalType::Text.is_numeric());
 
-        assert!(SyncDataType::Text.is_string());
-        assert!(SyncDataType::varchar(255).is_string());
-        assert!(!SyncDataType::Int.is_string());
+        assert!(UniversalType::Text.is_string());
+        assert!(UniversalType::varchar(255).is_string());
+        assert!(!UniversalType::Int.is_string());
 
-        assert!(SyncDataType::DateTime.is_temporal());
-        assert!(SyncDataType::Date.is_temporal());
-        assert!(!SyncDataType::Int.is_temporal());
+        assert!(UniversalType::DateTime.is_temporal());
+        assert!(UniversalType::Date.is_temporal());
+        assert!(!UniversalType::Int.is_temporal());
 
-        assert!(SyncDataType::Blob.is_binary());
-        assert!(SyncDataType::Bytes.is_binary());
-        assert!(!SyncDataType::Text.is_binary());
+        assert!(UniversalType::Blob.is_binary());
+        assert!(UniversalType::Bytes.is_binary());
+        assert!(!UniversalType::Text.is_binary());
     }
 
     #[test]
     fn test_deserialize_simple_string() {
         let yaml = "uuid";
-        let parsed: SyncDataType = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, SyncDataType::Uuid);
+        let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed, UniversalType::Uuid);
 
         let yaml = "int";
-        let parsed: SyncDataType = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, SyncDataType::Int);
+        let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed, UniversalType::Int);
 
         let yaml = "text";
-        let parsed: SyncDataType = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, SyncDataType::Text);
+        let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed, UniversalType::Text);
     }
 
     #[test]
@@ -551,18 +551,18 @@ mod tests {
 type: var_char
 length: 255
 "#;
-        let parsed: SyncDataType = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, SyncDataType::VarChar { length: 255 });
+        let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed, UniversalType::VarChar { length: 255 });
 
         let yaml = r#"
 type: decimal
 precision: 10
 scale: 2
 "#;
-        let parsed: SyncDataType = serde_yaml::from_str(yaml).unwrap();
+        let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(
             parsed,
-            SyncDataType::Decimal {
+            UniversalType::Decimal {
                 precision: 10,
                 scale: 2
             }
@@ -572,25 +572,25 @@ scale: 2
 type: tiny_int
 width: 1
 "#;
-        let parsed: SyncDataType = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, SyncDataType::TinyInt { width: 1 });
+        let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed, UniversalType::TinyInt { width: 1 });
     }
 
     #[test]
     fn test_serialize_deserialize_roundtrip() {
         let types = vec![
-            SyncDataType::Bool,
-            SyncDataType::tiny_int(1),
-            SyncDataType::Int,
-            SyncDataType::decimal(10, 2),
-            SyncDataType::varchar(255),
-            SyncDataType::array(SyncDataType::Int),
-            SyncDataType::enumeration(vec!["a".to_string(), "b".to_string()]),
+            UniversalType::Bool,
+            UniversalType::tiny_int(1),
+            UniversalType::Int,
+            UniversalType::decimal(10, 2),
+            UniversalType::varchar(255),
+            UniversalType::array(UniversalType::Int),
+            UniversalType::enumeration(vec!["a".to_string(), "b".to_string()]),
         ];
 
         for ty in types {
             let yaml = serde_yaml::to_string(&ty).unwrap();
-            let parsed: SyncDataType = serde_yaml::from_str(&yaml).unwrap();
+            let parsed: UniversalType = serde_yaml::from_str(&yaml).unwrap();
             assert_eq!(ty, parsed);
         }
     }

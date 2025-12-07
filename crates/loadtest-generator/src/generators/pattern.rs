@@ -6,11 +6,11 @@
 //! - `{rand:N}` - random N-digit number
 
 use rand::Rng;
-use sync_core::GeneratedValue;
+use sync_core::UniversalValue;
 use uuid::Uuid;
 
 /// Generate a string based on a pattern with placeholders.
-pub fn generate_pattern<R: Rng>(pattern: &str, rng: &mut R, index: u64) -> GeneratedValue {
+pub fn generate_pattern<R: Rng>(pattern: &str, rng: &mut R, index: u64) -> UniversalValue {
     let mut result = pattern.to_string();
 
     // Replace {index}
@@ -38,7 +38,7 @@ pub fn generate_pattern<R: Rng>(pattern: &str, rng: &mut R, index: u64) -> Gener
         }
     }
 
-    GeneratedValue::String(result)
+    UniversalValue::String(result)
 }
 
 /// Generate a random number with exactly N digits.
@@ -73,7 +73,7 @@ mod tests {
 
         assert_eq!(
             value,
-            GeneratedValue::String("user_123@example.com".to_string())
+            UniversalValue::String("user_123@example.com".to_string())
         );
     }
 
@@ -82,7 +82,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let value = generate_pattern("id-{uuid}", &mut rng, 0);
 
-        if let GeneratedValue::String(s) = value {
+        if let UniversalValue::String(s) = value {
             assert!(s.starts_with("id-"));
             assert_eq!(s.len(), 3 + 36); // "id-" + UUID
         } else {
@@ -95,7 +95,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let value = generate_pattern("code-{rand:6}", &mut rng, 0);
 
-        if let GeneratedValue::String(s) = value {
+        if let UniversalValue::String(s) = value {
             assert!(s.starts_with("code-"));
             assert_eq!(s.len(), 5 + 6); // "code-" + 6 digits
                                         // Check that the random part is all digits
@@ -111,7 +111,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let value = generate_pattern("user_{index}_code_{rand:4}", &mut rng, 42);
 
-        if let GeneratedValue::String(s) = value {
+        if let UniversalValue::String(s) = value {
             assert!(s.starts_with("user_42_code_"));
             // Total length: "user_42_code_" (13) + 4 digits
             assert_eq!(s.len(), 13 + 4);

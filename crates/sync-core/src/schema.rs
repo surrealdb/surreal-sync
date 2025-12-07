@@ -3,7 +3,7 @@
 //! This module defines the YAML schema structure used to specify
 //! data generation parameters and table definitions for sync operations.
 
-use crate::types::SyncDataType;
+use crate::types::UniversalType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -35,7 +35,7 @@ pub enum SchemaError {
 /// It is loaded from a YAML file and provides the source of truth for
 /// both data generation and verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SyncSchema {
+pub struct Schema {
     /// Schema version
     #[serde(default = "default_version")]
     pub version: u32,
@@ -45,7 +45,7 @@ pub struct SyncSchema {
     pub seed: Option<u64>,
 
     /// Table definitions
-    pub tables: Vec<TableSchema>,
+    pub tables: Vec<TableDefinition>,
 
     /// Cached table lookup (not serialized)
     #[serde(skip)]
@@ -56,7 +56,7 @@ fn default_version() -> u32 {
     1
 }
 
-impl SyncSchema {
+impl Schema {
     /// Load schema from a YAML file.
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, SchemaError> {
         let content = fs::read_to_string(path)?;
@@ -65,7 +65,7 @@ impl SyncSchema {
 
     /// Parse schema from YAML string.
     pub fn from_yaml(yaml: &str) -> Result<Self, SchemaError> {
-        let mut schema: SyncSchema = serde_yaml::from_str(yaml)?;
+        let mut schema: Schema = serde_yaml::from_str(yaml)?;
         schema.build_table_map();
         Ok(schema)
     }
@@ -81,14 +81,14 @@ impl SyncSchema {
     }
 
     /// Get a table schema by name.
-    pub fn get_table(&self, name: &str) -> Option<&TableSchema> {
+    pub fn get_table(&self, name: &str) -> Option<&TableDefinition> {
         self.table_map
             .get(name)
             .and_then(|&idx| self.tables.get(idx))
     }
 
     /// Get the type of a field in a specific table.
-    pub fn get_field_type(&self, table: &str, field: &str) -> Result<&SyncDataType, SchemaError> {
+    pub fn get_field_type(&self, table: &str, field: &str) -> Result<&UniversalType, SchemaError> {
         let table_schema = self
             .get_table(table)
             .ok_or_else(|| SchemaError::TableNotFound(table.to_string()))?;
@@ -110,25 +110,25 @@ impl SyncSchema {
 
 /// Schema definition for a single table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TableSchema {
+pub struct TableDefinition {
     /// Table name
     pub name: String,
 
     /// Primary key definition
-    pub id: IdField,
+    pub id: IDDefinition,
 
     /// Field definitions
-    pub fields: Vec<FieldSchema>,
+    pub fields: Vec<FieldDefinition>,
 }
 
-impl TableSchema {
+impl TableDefinition {
     /// Get a field schema by name.
-    pub fn get_field(&self, name: &str) -> Option<&FieldSchema> {
+    pub fn get_field(&self, name: &str) -> Option<&FieldDefinition> {
         self.fields.iter().find(|f| f.name == name)
     }
 
     /// Get the type of a field by name.
-    pub fn get_field_type(&self, name: &str) -> Option<&SyncDataType> {
+    pub fn get_field_type(&self, name: &str) -> Option<&UniversalType> {
         self.get_field(name).map(|f| &f.field_type)
     }
 
@@ -140,10 +140,10 @@ impl TableSchema {
 
 /// Primary key field definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IdField {
+pub struct IDDefinition {
     /// Type of the primary key
     #[serde(rename = "type")]
-    pub id_type: SyncDataType,
+    pub id_type: UniversalType,
 
     /// Generator configuration for the primary key
     pub generator: GeneratorConfig,
@@ -151,13 +151,13 @@ pub struct IdField {
 
 /// Field schema definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FieldSchema {
+pub struct FieldDefinition {
     /// Field name
     pub name: String,
 
     /// Field type
     #[serde(rename = "type")]
-    pub field_type: SyncDataType,
+    pub field_type: UniversalType,
 
     /// Generator configuration for this field
     pub generator: GeneratorConfig,
@@ -306,7 +306,7 @@ tables:
 
     #[test]
     fn test_parse_schema() {
-        let schema = SyncSchema::from_yaml(SAMPLE_SCHEMA).unwrap();
+        let schema = Schema::from_yaml(SAMPLE_SCHEMA).unwrap();
 
         assert_eq!(schema.version, 1);
         assert_eq!(schema.seed, Some(12345));
@@ -314,24 +314,24 @@ tables:
 
         let users = schema.get_table("users").unwrap();
         assert_eq!(users.name, "users");
-        assert_eq!(users.id.id_type, SyncDataType::Uuid);
+        assert_eq!(users.id.id_type, UniversalType::Uuid);
         assert_eq!(users.fields.len(), 3);
     }
 
     #[test]
     fn test_get_field_type() {
-        let schema = SyncSchema::from_yaml(SAMPLE_SCHEMA).unwrap();
+        let schema = Schema::from_yaml(SAMPLE_SCHEMA).unwrap();
 
         let email_type = schema.get_field_type("users", "email").unwrap();
-        assert_eq!(email_type, &SyncDataType::VarChar { length: 255 });
+        assert_eq!(email_type, &UniversalType::VarChar { length: 255 });
 
         let age_type = schema.get_field_type("users", "age").unwrap();
-        assert_eq!(age_type, &SyncDataType::Int);
+        assert_eq!(age_type, &UniversalType::Int);
     }
 
     #[test]
     fn test_table_not_found() {
-        let schema = SyncSchema::from_yaml(SAMPLE_SCHEMA).unwrap();
+        let schema = Schema::from_yaml(SAMPLE_SCHEMA).unwrap();
 
         let result = schema.get_field_type("nonexistent", "field");
         assert!(matches!(result, Err(SchemaError::TableNotFound(_))));
@@ -339,7 +339,7 @@ tables:
 
     #[test]
     fn test_field_not_found() {
-        let schema = SyncSchema::from_yaml(SAMPLE_SCHEMA).unwrap();
+        let schema = Schema::from_yaml(SAMPLE_SCHEMA).unwrap();
 
         let result = schema.get_field_type("users", "nonexistent");
         assert!(matches!(result, Err(SchemaError::FieldNotFound { .. })));
@@ -375,7 +375,7 @@ tables:
           value: { "version": 1 }
 "#;
 
-        let schema = SyncSchema::from_yaml(yaml).unwrap();
+        let schema = Schema::from_yaml(yaml).unwrap();
         let table = schema.get_table("test").unwrap();
 
         // Check sequential generator

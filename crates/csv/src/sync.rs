@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};
 use surrealdb::sql::{Id, Thing};
-use sync_core::{SyncDataType, SyncSchema, TypedValue};
+use sync_core::{Schema, TypedValue, UniversalType};
 use tracing::{debug, info, warn};
 
 /// Configuration for CSV import
@@ -64,7 +64,7 @@ pub struct Config {
     /// Optional schema for type-aware conversion
     /// When provided, CSV string values will be parsed according to the schema's
     /// type definitions (e.g., JSON strings will be parsed to objects/arrays)
-    pub schema: Option<SyncSchema>,
+    pub schema: Option<Schema>,
 }
 
 impl Default for Config {
@@ -98,7 +98,7 @@ impl Default for Config {
 ///
 /// When a schema is provided, this function parses values based on their declared type.
 /// Uses the unified json-types crate for type conversion.
-fn parse_value_with_schema(value: &str, schema_type: Option<&SyncDataType>) -> TypedValue {
+fn parse_value_with_schema(value: &str, schema_type: Option<&UniversalType>) -> TypedValue {
     if let Some(data_type) = schema_type {
         // Use json-types for schema-aware conversion
         match csv_string_to_typed_value(value, data_type) {
@@ -208,9 +208,9 @@ async fn process_csv_reader(
                 // Use specified field as ID
                 if let Some(id_value) = data.get(id_field) {
                     match &id_value.value {
-                        sync_core::GeneratedValue::String(s) => Id::String(s.clone()),
-                        sync_core::GeneratedValue::Int32(n) => Id::Number(*n as i64),
-                        sync_core::GeneratedValue::Int64(n) => Id::Number(*n),
+                        sync_core::UniversalValue::String(s) => Id::String(s.clone()),
+                        sync_core::UniversalValue::Int32(n) => Id::Number(*n as i64),
+                        sync_core::UniversalValue::Int64(n) => Id::Number(*n),
                         _ => Id::ulid(), // Fallback to ULID
                     }
                 } else {
@@ -323,9 +323,9 @@ async fn process_csv_reader(
             // Use specified field as ID
             if let Some(id_value) = data.get(id_field) {
                 match &id_value.value {
-                    sync_core::GeneratedValue::String(s) => Id::String(s.clone()),
-                    sync_core::GeneratedValue::Int32(n) => Id::Number(*n as i64),
-                    sync_core::GeneratedValue::Int64(n) => Id::Number(*n),
+                    sync_core::UniversalValue::String(s) => Id::String(s.clone()),
+                    sync_core::UniversalValue::Int32(n) => Id::Number(*n as i64),
+                    sync_core::UniversalValue::Int64(n) => Id::Number(*n),
                     _ => Id::ulid(), // Fallback to ULID
                 }
             } else {
@@ -554,19 +554,19 @@ mod tests {
 
     #[test]
     fn test_parse_value_with_schema_int() {
-        let result = parse_value_with_schema("42", Some(&SyncDataType::Int));
+        let result = parse_value_with_schema("42", Some(&UniversalType::Int));
         assert_eq!(result.value.as_i32(), Some(42));
     }
 
     #[test]
     fn test_parse_value_with_schema_bool() {
-        let result = parse_value_with_schema("true", Some(&SyncDataType::Bool));
+        let result = parse_value_with_schema("true", Some(&UniversalType::Bool));
         assert_eq!(result.value.as_bool(), Some(true));
     }
 
     #[test]
     fn test_parse_value_with_schema_text() {
-        let result = parse_value_with_schema("hello", Some(&SyncDataType::Text));
+        let result = parse_value_with_schema("hello", Some(&UniversalType::Text));
         assert_eq!(result.value.as_str(), Some("hello"));
     }
 

@@ -13,10 +13,10 @@
 //!
 //! ```ignore
 //! use loadtest_populate_neo4j::Neo4jPopulator;
-//! use sync_core::SyncSchema;
+//! use sync_core::Schema;
 //!
 //! // Load schema from YAML
-//! let schema = SyncSchema::from_file("schema.yaml")?;
+//! let schema = Schema::from_file("schema.yaml")?;
 //!
 //! // Create populator with deterministic seed
 //! let mut populator = Neo4jPopulator::new(

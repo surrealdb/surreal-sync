@@ -1,9 +1,9 @@
-//! Proto schema generation from SyncSchema.
+//! Proto schema generation from Schema.
 //!
-//! This module generates .proto file content from a SyncSchema table definition,
+//! This module generates .proto file content from a Schema table definition,
 //! enabling dynamic protobuf schema generation for Kafka loadtesting.
 
-use sync_core::{SyncDataType, TableSchema};
+use sync_core::{TableDefinition, UniversalType};
 
 /// Information about a proto field type.
 struct ProtoTypeInfo {
@@ -16,7 +16,7 @@ struct ProtoTypeInfo {
 /// Generate a .proto file content from a table schema.
 ///
 /// The message name is the capitalized table name (e.g., "users" -> "Users").
-pub fn generate_proto_for_table(table_schema: &TableSchema, package_name: &str) -> String {
+pub fn generate_proto_for_table(table_schema: &TableDefinition, package_name: &str) -> String {
     let mut proto = String::new();
 
     // Syntax declaration
@@ -27,7 +27,7 @@ pub fn generate_proto_for_table(table_schema: &TableSchema, package_name: &str) 
     let needs_timestamp = table_schema.fields.iter().any(|f| {
         matches!(
             f.field_type,
-            SyncDataType::DateTime | SyncDataType::DateTimeNano | SyncDataType::TimestampTz
+            UniversalType::DateTime | UniversalType::DateTimeNano | UniversalType::TimestampTz
         )
     });
 
@@ -65,42 +65,42 @@ pub fn generate_proto_for_table(table_schema: &TableSchema, package_name: &str) 
     proto
 }
 
-/// Convert a SyncDataType to protobuf type information.
-fn sync_type_to_proto_type(sync_type: &SyncDataType) -> ProtoTypeInfo {
+/// Convert a UniversalType to protobuf type information.
+fn sync_type_to_proto_type(sync_type: &UniversalType) -> ProtoTypeInfo {
     match sync_type {
         // Boolean
-        SyncDataType::Bool => ProtoTypeInfo {
+        UniversalType::Bool => ProtoTypeInfo {
             type_name: "bool".to_string(),
             requires_timestamp_import: false,
         },
 
         // Integer types -> int64 (safest for all integer ranges)
-        SyncDataType::TinyInt { .. }
-        | SyncDataType::SmallInt
-        | SyncDataType::Int
-        | SyncDataType::BigInt => ProtoTypeInfo {
+        UniversalType::TinyInt { .. }
+        | UniversalType::SmallInt
+        | UniversalType::Int
+        | UniversalType::BigInt => ProtoTypeInfo {
             type_name: "int64".to_string(),
             requires_timestamp_import: false,
         },
 
         // Floating point
-        SyncDataType::Float => ProtoTypeInfo {
+        UniversalType::Float => ProtoTypeInfo {
             type_name: "float".to_string(),
             requires_timestamp_import: false,
         },
-        SyncDataType::Double => ProtoTypeInfo {
+        UniversalType::Double => ProtoTypeInfo {
             type_name: "double".to_string(),
             requires_timestamp_import: false,
         },
 
         // Decimal -> string (preserve precision)
-        SyncDataType::Decimal { .. } => ProtoTypeInfo {
+        UniversalType::Decimal { .. } => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // String types
-        SyncDataType::Char { .. } | SyncDataType::VarChar { .. } | SyncDataType::Text => {
+        UniversalType::Char { .. } | UniversalType::VarChar { .. } | UniversalType::Text => {
             ProtoTypeInfo {
                 type_name: "string".to_string(),
                 requires_timestamp_import: false,
@@ -108,13 +108,13 @@ fn sync_type_to_proto_type(sync_type: &SyncDataType) -> ProtoTypeInfo {
         }
 
         // Binary types
-        SyncDataType::Blob | SyncDataType::Bytes => ProtoTypeInfo {
+        UniversalType::Blob | UniversalType::Bytes => ProtoTypeInfo {
             type_name: "bytes".to_string(),
             requires_timestamp_import: false,
         },
 
         // Temporal types -> google.protobuf.Timestamp
-        SyncDataType::DateTime | SyncDataType::DateTimeNano | SyncDataType::TimestampTz => {
+        UniversalType::DateTime | UniversalType::DateTimeNano | UniversalType::TimestampTz => {
             ProtoTypeInfo {
                 type_name: "google.protobuf.Timestamp".to_string(),
                 requires_timestamp_import: true,
@@ -122,25 +122,25 @@ fn sync_type_to_proto_type(sync_type: &SyncDataType) -> ProtoTypeInfo {
         }
 
         // Date and Time -> string (ISO format)
-        SyncDataType::Date | SyncDataType::Time => ProtoTypeInfo {
+        UniversalType::Date | UniversalType::Time => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // UUID -> string
-        SyncDataType::Uuid => ProtoTypeInfo {
+        UniversalType::Uuid => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // JSON types -> string (serialized JSON)
-        SyncDataType::Json | SyncDataType::Jsonb => ProtoTypeInfo {
+        UniversalType::Json | UniversalType::Jsonb => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // Array -> repeated
-        SyncDataType::Array { element_type } => {
+        UniversalType::Array { element_type } => {
             let inner = sync_type_to_proto_type(element_type);
             ProtoTypeInfo {
                 type_name: format!("repeated {}", inner.type_name),
@@ -149,13 +149,13 @@ fn sync_type_to_proto_type(sync_type: &SyncDataType) -> ProtoTypeInfo {
         }
 
         // Set and Enum -> string
-        SyncDataType::Set { .. } | SyncDataType::Enum { .. } => ProtoTypeInfo {
+        UniversalType::Set { .. } | UniversalType::Enum { .. } => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // Geometry -> string (GeoJSON or WKT)
-        SyncDataType::Geometry { .. } => ProtoTypeInfo {
+        UniversalType::Geometry { .. } => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
@@ -174,9 +174,9 @@ fn capitalize(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::SyncSchema;
+    use sync_core::Schema;
 
-    fn test_schema() -> SyncSchema {
+    fn test_schema() -> Schema {
         let yaml = r#"
 version: 1
 tables:
@@ -212,7 +212,7 @@ tables:
           min: 0.0
           max: 100.0
 "#;
-        SyncSchema::from_yaml(yaml).unwrap()
+        Schema::from_yaml(yaml).unwrap()
     }
 
     #[test]
@@ -242,26 +242,26 @@ tables:
     #[test]
     fn test_proto_type_mapping() {
         // Boolean
-        let info = sync_type_to_proto_type(&SyncDataType::Bool);
+        let info = sync_type_to_proto_type(&UniversalType::Bool);
         assert_eq!(info.type_name, "bool");
         assert!(!info.requires_timestamp_import);
 
         // Integer types
-        let info = sync_type_to_proto_type(&SyncDataType::BigInt);
+        let info = sync_type_to_proto_type(&UniversalType::BigInt);
         assert_eq!(info.type_name, "int64");
 
         // Float
-        let info = sync_type_to_proto_type(&SyncDataType::Float);
+        let info = sync_type_to_proto_type(&UniversalType::Float);
         assert_eq!(info.type_name, "float");
 
         // DateTime
-        let info = sync_type_to_proto_type(&SyncDataType::DateTime);
+        let info = sync_type_to_proto_type(&UniversalType::DateTime);
         assert_eq!(info.type_name, "google.protobuf.Timestamp");
         assert!(info.requires_timestamp_import);
 
         // Array<Int>
-        let info = sync_type_to_proto_type(&SyncDataType::Array {
-            element_type: Box::new(SyncDataType::Int),
+        let info = sync_type_to_proto_type(&UniversalType::Array {
+            element_type: Box::new(UniversalType::Int),
         });
         assert_eq!(info.type_name, "repeated int64");
     }

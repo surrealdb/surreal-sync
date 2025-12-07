@@ -6,7 +6,7 @@ use bson::Document;
 use loadtest_generator::DataGenerator;
 use mongodb::{Client, Collection, Database};
 use std::time::{Duration, Instant};
-use sync_core::{InternalRow, SyncSchema};
+use sync_core::{UniversalRow, Schema};
 use tracing::{debug, info};
 
 /// Metrics from a populate operation.
@@ -38,7 +38,7 @@ impl PopulateMetrics {
 /// MongoDB populator that generates and inserts test data.
 pub struct MongoDBPopulator {
     database: Database,
-    schema: SyncSchema,
+    schema: Schema,
     generator: DataGenerator,
     batch_size: usize,
 }
@@ -66,7 +66,7 @@ impl MongoDBPopulator {
     pub async fn new(
         connection_string: &str,
         database_name: &str,
-        schema: SyncSchema,
+        schema: Schema,
         seed: u64,
     ) -> Result<Self, MongoDBPopulatorError> {
         let client = Client::with_uri_str(connection_string).await?;
@@ -86,7 +86,7 @@ impl MongoDBPopulator {
     }
 
     /// Create a new MongoDB populator with an existing database handle.
-    pub fn with_database(database: Database, schema: SyncSchema, seed: u64) -> Self {
+    pub fn with_database(database: Database, schema: Schema, seed: u64) -> Self {
         let generator = DataGenerator::new(schema.clone(), seed);
         Self {
             database,
@@ -118,7 +118,7 @@ impl MongoDBPopulator {
     }
 
     /// Get a reference to the schema.
-    pub fn schema(&self) -> &SyncSchema {
+    pub fn schema(&self) -> &Schema {
         &self.schema
     }
 
@@ -177,7 +177,7 @@ impl MongoDBPopulator {
 
             // Generate rows
             let gen_start = Instant::now();
-            let rows: Vec<InternalRow> = self
+            let rows: Vec<UniversalRow> = self
                 .generator
                 .internal_rows(collection_name, batch_count)
                 .map_err(|e| MongoDBPopulatorError::Generator(e.to_string()))?
@@ -243,7 +243,7 @@ impl MongoDBPopulator {
 mod tests {
     use super::*;
 
-    fn test_schema() -> SyncSchema {
+    fn test_schema() -> Schema {
         let yaml = r#"
 version: 1
 seed: 42
@@ -268,7 +268,7 @@ tables:
           min: 18
           max: 80
 "#;
-        SyncSchema::from_yaml(yaml).unwrap()
+        Schema::from_yaml(yaml).unwrap()
     }
 
     #[test]

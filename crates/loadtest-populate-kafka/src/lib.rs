@@ -1,14 +1,14 @@
 //! Kafka populator for the surreal-sync load testing framework.
 //!
 //! This crate provides the `KafkaPopulator` which generates test data based on
-//! a SyncSchema YAML definition, encodes it as protobuf messages, and publishes
+//! a Schema YAML definition, encodes it as protobuf messages, and publishes
 //! to Kafka topics. The protobuf schema is generated dynamically from the YAML
 //! schema, enabling schema-driven testing without maintaining separate .proto files.
 //!
 //! # Architecture
 //!
 //! ```text
-//! SyncSchema (YAML)
+//! Schema (YAML)
 //!        │
 //!        ├──────────────────────────┐
 //!        ▼                          ▼
@@ -16,7 +16,7 @@
 //! │  DataGenerator  │     │  proto_gen.rs   │
 //! │                 │     │                 │
 //! │ - generates     │     │ - generates     │
-//! │   InternalRow   │     │   .proto files  │
+//! │   UniversalRow   │     │   .proto files  │
 //! └────────┬────────┘     └────────┬────────┘
 //!          │                       │
 //!          │                       ▼
@@ -41,12 +41,12 @@
 //!
 //! ```rust,ignore
 //! use loadtest_populate_kafka::KafkaPopulator;
-//! use sync_core::SyncSchema;
+//! use sync_core::Schema;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     // Load schema from YAML
-//!     let schema = SyncSchema::from_file("schema.yaml")?;
+//!     let schema = Schema::from_file("schema.yaml")?;
 //!
 //!     // Create populator
 //!     let mut populator = KafkaPopulator::new("localhost:9092", schema, 42).await?;

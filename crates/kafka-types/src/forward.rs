@@ -1,12 +1,12 @@
 //! Forward conversion: TypedValue → Protobuf encoding.
 //!
-//! This module encodes TypedValue/GeneratedValue to protobuf binary format
+//! This module encodes TypedValue/UniversalValue to protobuf binary format
 //! using the schema information from TableSchema.
 
 use crate::error::{KafkaTypesError, Result};
 use protobuf::CodedOutputStream;
 use std::collections::HashMap;
-use sync_core::{GeneratedValue, InternalRow, SyncDataType, TableSchema, TypedValue};
+use sync_core::{InternalRow, TableDefinition, TypedValue, UniversalType, UniversalValue};
 
 /// Encode an InternalRow to protobuf binary format.
 ///
@@ -14,7 +14,7 @@ use sync_core::{GeneratedValue, InternalRow, SyncDataType, TableSchema, TypedVal
 /// - Each field is encoded as (tag, value) pairs
 /// - Tag = (field_number << 3) | wire_type
 /// - Wire types: 0=varint, 1=64-bit, 2=length-delimited, 5=32-bit
-pub fn encode_row(row: &InternalRow, table_schema: &TableSchema) -> Result<Vec<u8>> {
+pub fn encode_row(row: &InternalRow, table_schema: &TableDefinition) -> Result<Vec<u8>> {
     let mut buffer = Vec::new();
     {
         let mut stream = CodedOutputStream::vec(&mut buffer);
@@ -45,7 +45,7 @@ pub fn encode_row(row: &InternalRow, table_schema: &TableSchema) -> Result<Vec<u
 /// rather than InternalRow.
 pub fn encode_typed_values(
     values: &HashMap<String, TypedValue>,
-    table_schema: &TableSchema,
+    table_schema: &TableDefinition,
 ) -> Result<Vec<u8>> {
     let mut buffer = Vec::new();
     {
@@ -76,7 +76,7 @@ pub fn encode_typed_values(
 }
 
 /// Get the primary key field name based on the type.
-fn get_pk_field_name(_pk_type: &SyncDataType) -> String {
+fn get_pk_field_name(_pk_type: &UniversalType) -> String {
     "id".to_string()
 }
 
@@ -89,56 +89,56 @@ pub fn encode_typed_value(
     encode_generated_value(stream, field_number, &value.value)
 }
 
-/// Encode a single GeneratedValue with its field number.
+/// Encode a single UniversalValue with its field number.
 pub fn encode_generated_value(
     stream: &mut CodedOutputStream,
     field_number: u32,
-    value: &GeneratedValue,
+    value: &UniversalValue,
 ) -> Result<()> {
     match value {
-        GeneratedValue::Bool(b) => {
+        UniversalValue::Bool(b) => {
             // Wire type 0 (varint)
             stream
                 .write_bool(field_number, *b)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        GeneratedValue::Int32(i) => {
+        UniversalValue::Int32(i) => {
             // Wire type 0 (varint) - encode as int64 for proto3 compatibility
             stream
                 .write_int64(field_number, *i as i64)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        GeneratedValue::Int64(i) => {
+        UniversalValue::Int64(i) => {
             // Wire type 0 (varint)
             stream
                 .write_int64(field_number, *i)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        GeneratedValue::Float64(f) => {
+        UniversalValue::Float64(f) => {
             // Wire type 1 (64-bit)
             stream
                 .write_double(field_number, *f)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        GeneratedValue::String(s) => {
+        UniversalValue::String(s) => {
             // Wire type 2 (length-delimited)
             stream
                 .write_string(field_number, s)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        GeneratedValue::Bytes(b) => {
+        UniversalValue::Bytes(b) => {
             // Wire type 2 (length-delimited)
             stream
                 .write_bytes(field_number, b)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        GeneratedValue::Uuid(u) => {
+        UniversalValue::Uuid(u) => {
             // Encode UUID as string
             stream
                 .write_string(field_number, &u.to_string())
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        GeneratedValue::DateTime(dt) => {
+        UniversalValue::DateTime(dt) => {
             // Encode as google.protobuf.Timestamp (nested message)
             // Timestamp has: int64 seconds = 1, int32 nanos = 2
             let mut timestamp_bytes = Vec::new();
@@ -159,19 +159,19 @@ pub fn encode_generated_value(
                 .write_bytes(field_number, &timestamp_bytes)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        GeneratedValue::Decimal { value, .. } => {
+        UniversalValue::Decimal { value, .. } => {
             // Encode decimal as string to preserve precision
             stream
                 .write_string(field_number, value)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        GeneratedValue::Array(arr) => {
+        UniversalValue::Array(arr) => {
             // Encode as repeated field - each element is written separately
             for element in arr {
                 encode_generated_value(stream, field_number, element)?;
             }
         }
-        GeneratedValue::Object(obj) => {
+        UniversalValue::Object(obj) => {
             // Encode object as JSON string
             let json = serde_json::to_string(obj)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
@@ -179,7 +179,7 @@ pub fn encode_generated_value(
                 .write_string(field_number, &json)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        GeneratedValue::Null => {
+        UniversalValue::Null => {
             // Skip null values (proto3 default behavior)
         }
     }
@@ -207,43 +207,43 @@ pub fn get_message_key_from_typed_values(
     }
 }
 
-/// Convert a GeneratedValue to message key bytes.
-fn generated_value_to_key(value: &GeneratedValue) -> Vec<u8> {
+/// Convert a UniversalValue to message key bytes.
+fn generated_value_to_key(value: &UniversalValue) -> Vec<u8> {
     match value {
-        GeneratedValue::Int64(i) => i.to_string().into_bytes(),
-        GeneratedValue::Int32(i) => i.to_string().into_bytes(),
-        GeneratedValue::String(s) => s.as_bytes().to_vec(),
-        GeneratedValue::Uuid(u) => u.to_string().into_bytes(),
+        UniversalValue::Int64(i) => i.to_string().into_bytes(),
+        UniversalValue::Int32(i) => i.to_string().into_bytes(),
+        UniversalValue::String(s) => s.as_bytes().to_vec(),
+        UniversalValue::Uuid(u) => u.to_string().into_bytes(),
         _ => format!("{value:?}").into_bytes(),
     }
 }
 
-/// Map SyncDataType to protobuf type string.
+/// Map UniversalType to protobuf type string.
 ///
 /// Used for generating .proto schema files.
-pub fn get_proto_type(sync_type: &SyncDataType) -> &'static str {
+pub fn get_proto_type(sync_type: &UniversalType) -> &'static str {
     match sync_type {
-        SyncDataType::Bool => "bool",
-        SyncDataType::TinyInt { .. } | SyncDataType::SmallInt | SyncDataType::Int => "int32",
-        SyncDataType::BigInt => "int64",
-        SyncDataType::Float => "float",
-        SyncDataType::Double => "double",
-        SyncDataType::Decimal { .. } => "string",
-        SyncDataType::Char { .. }
-        | SyncDataType::VarChar { .. }
-        | SyncDataType::Text
-        | SyncDataType::Uuid
-        | SyncDataType::Enum { .. } => "string",
-        SyncDataType::Bytes | SyncDataType::Blob => "bytes",
-        SyncDataType::DateTime
-        | SyncDataType::DateTimeNano
-        | SyncDataType::TimestampTz
-        | SyncDataType::Date
-        | SyncDataType::Time => "google.protobuf.Timestamp",
-        SyncDataType::Json | SyncDataType::Jsonb => "string", // JSON encoded as string
-        SyncDataType::Array { .. } => "repeated",             // Caller handles element type
-        SyncDataType::Set { .. } => "repeated",               // Encode as repeated
-        SyncDataType::Geometry { .. } => "string",            // GeoJSON string
+        UniversalType::Bool => "bool",
+        UniversalType::TinyInt { .. } | UniversalType::SmallInt | UniversalType::Int => "int32",
+        UniversalType::BigInt => "int64",
+        UniversalType::Float => "float",
+        UniversalType::Double => "double",
+        UniversalType::Decimal { .. } => "string",
+        UniversalType::Char { .. }
+        | UniversalType::VarChar { .. }
+        | UniversalType::Text
+        | UniversalType::Uuid
+        | UniversalType::Enum { .. } => "string",
+        UniversalType::Bytes | UniversalType::Blob => "bytes",
+        UniversalType::DateTime
+        | UniversalType::DateTimeNano
+        | UniversalType::TimestampTz
+        | UniversalType::Date
+        | UniversalType::Time => "google.protobuf.Timestamp",
+        UniversalType::Json | UniversalType::Jsonb => "string", // JSON encoded as string
+        UniversalType::Array { .. } => "repeated",              // Caller handles element type
+        UniversalType::Set { .. } => "repeated",                // Encode as repeated
+        UniversalType::Geometry { .. } => "string",             // GeoJSON string
     }
 }
 
@@ -252,33 +252,33 @@ mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
     use protobuf::CodedInputStream;
-    use sync_core::{FieldSchema, GeneratorConfig, IdField};
+    use sync_core::{FieldDefinition, GeneratorConfig, IDDefinition};
 
-    fn test_table_schema() -> TableSchema {
-        TableSchema {
+    fn test_table_schema() -> TableDefinition {
+        TableDefinition {
             name: "users".to_string(),
-            id: IdField {
-                id_type: SyncDataType::BigInt,
+            id: IDDefinition {
+                id_type: UniversalType::BigInt,
                 generator: GeneratorConfig::Sequential { start: 1 },
             },
             fields: vec![
-                FieldSchema {
+                FieldDefinition {
                     name: "email".to_string(),
-                    field_type: SyncDataType::VarChar { length: 255 },
+                    field_type: UniversalType::VarChar { length: 255 },
                     generator: GeneratorConfig::Pattern {
                         pattern: "user_{index}@test.com".to_string(),
                     },
                     nullable: false,
                 },
-                FieldSchema {
+                FieldDefinition {
                     name: "age".to_string(),
-                    field_type: SyncDataType::Int,
+                    field_type: UniversalType::Int,
                     generator: GeneratorConfig::IntRange { min: 18, max: 80 },
                     nullable: false,
                 },
-                FieldSchema {
+                FieldDefinition {
                     name: "is_active".to_string(),
-                    field_type: SyncDataType::Bool,
+                    field_type: UniversalType::Bool,
                     generator: GeneratorConfig::WeightedBool { true_weight: 0.8 },
                     nullable: false,
                 },
@@ -292,12 +292,12 @@ mod tests {
         let mut fields = HashMap::new();
         fields.insert(
             "email".to_string(),
-            GeneratedValue::String("test@example.com".to_string()),
+            UniversalValue::String("test@example.com".to_string()),
         );
-        fields.insert("age".to_string(), GeneratedValue::Int32(25));
-        fields.insert("is_active".to_string(), GeneratedValue::Bool(true));
+        fields.insert("age".to_string(), UniversalValue::Int32(25));
+        fields.insert("is_active".to_string(), UniversalValue::Bool(true));
 
-        let row = InternalRow::new("users", 0, GeneratedValue::Int64(1), fields);
+        let row = InternalRow::new("users", 0, UniversalValue::Int64(1), fields);
 
         let encoded = encode_row(&row, &schema).unwrap();
         assert!(!encoded.is_empty());
@@ -314,15 +314,15 @@ mod tests {
 
     #[test]
     fn test_encode_datetime() {
-        let schema = TableSchema {
+        let schema = TableDefinition {
             name: "events".to_string(),
-            id: IdField {
-                id_type: SyncDataType::BigInt,
+            id: IDDefinition {
+                id_type: UniversalType::BigInt,
                 generator: GeneratorConfig::Sequential { start: 1 },
             },
-            fields: vec![FieldSchema {
+            fields: vec![FieldDefinition {
                 name: "created_at".to_string(),
-                field_type: SyncDataType::DateTime,
+                field_type: UniversalType::DateTime,
                 generator: GeneratorConfig::TimestampRange {
                     start: "2024-01-01T00:00:00Z".to_string(),
                     end: "2024-12-31T23:59:59Z".to_string(),
@@ -333,25 +333,25 @@ mod tests {
 
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 12, 30, 45).unwrap();
         let mut fields = HashMap::new();
-        fields.insert("created_at".to_string(), GeneratedValue::DateTime(dt));
+        fields.insert("created_at".to_string(), UniversalValue::DateTime(dt));
 
-        let row = InternalRow::new("events", 0, GeneratedValue::Int64(1), fields);
+        let row = InternalRow::new("events", 0, UniversalValue::Int64(1), fields);
         let encoded = encode_row(&row, &schema).unwrap();
         assert!(!encoded.is_empty());
     }
 
     #[test]
     fn test_encode_array() {
-        let schema = TableSchema {
+        let schema = TableDefinition {
             name: "products".to_string(),
-            id: IdField {
-                id_type: SyncDataType::BigInt,
+            id: IDDefinition {
+                id_type: UniversalType::BigInt,
                 generator: GeneratorConfig::Sequential { start: 1 },
             },
-            fields: vec![FieldSchema {
+            fields: vec![FieldDefinition {
                 name: "tags".to_string(),
-                field_type: SyncDataType::Array {
-                    element_type: Box::new(SyncDataType::Text),
+                field_type: UniversalType::Array {
+                    element_type: Box::new(UniversalType::Text),
                 },
                 generator: GeneratorConfig::SampleArray {
                     pool: vec!["a".to_string(), "b".to_string()],
@@ -365,20 +365,20 @@ mod tests {
         let mut fields = HashMap::new();
         fields.insert(
             "tags".to_string(),
-            GeneratedValue::Array(vec![
-                GeneratedValue::String("tag1".to_string()),
-                GeneratedValue::String("tag2".to_string()),
+            UniversalValue::Array(vec![
+                UniversalValue::String("tag1".to_string()),
+                UniversalValue::String("tag2".to_string()),
             ]),
         );
 
-        let row = InternalRow::new("products", 0, GeneratedValue::Int64(1), fields);
+        let row = InternalRow::new("products", 0, UniversalValue::Int64(1), fields);
         let encoded = encode_row(&row, &schema).unwrap();
         assert!(!encoded.is_empty());
     }
 
     #[test]
     fn test_get_message_key_int() {
-        let row = InternalRow::new("test", 0, GeneratedValue::Int64(42), HashMap::new());
+        let row = InternalRow::new("test", 0, UniversalValue::Int64(42), HashMap::new());
         let key = get_message_key(&row);
         assert_eq!(key, b"42");
     }
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn test_get_message_key_uuid() {
         let uuid = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let row = InternalRow::new("test", 0, GeneratedValue::Uuid(uuid), HashMap::new());
+        let row = InternalRow::new("test", 0, UniversalValue::Uuid(uuid), HashMap::new());
         let key = get_message_key(&row);
         assert_eq!(
             String::from_utf8(key).unwrap(),
@@ -399,7 +399,7 @@ mod tests {
         let row = InternalRow::new(
             "test",
             0,
-            GeneratedValue::String("my-key".to_string()),
+            UniversalValue::String("my-key".to_string()),
             HashMap::new(),
         );
         let key = get_message_key(&row);

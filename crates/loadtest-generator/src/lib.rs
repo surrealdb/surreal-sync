@@ -7,7 +7,7 @@
 //! # Architecture
 //!
 //! ```text
-//! SyncSchema (YAML)
+//! Schema (YAML)
 //!        │
 //!        ▼
 //! ┌─────────────────┐
@@ -19,16 +19,16 @@
 //! └────────┬────────┘
 //!          │
 //!          ▼
-//!    InternalRow { table, index, id, fields }
+//!    UniversalRow { table, index, id, fields }
 //! ```
 //!
 //! # Example
 //!
 //! ```rust
 //! use loadtest_generator::DataGenerator;
-//! use sync_core::SyncSchema;
+//! use sync_core::Schema;
 //!
-//! let schema = SyncSchema::from_yaml(r#"
+//! let schema = Schema::from_yaml(r#"
 //! version: 1
 //! seed: 42
 //! tables:
@@ -71,4 +71,4 @@ pub mod generator;
 pub mod generators;
 
 // Re-exports for convenience
-pub use generator::{DataGenerator, GeneratorError, InternalRowIterator};
+pub use generator::{DataGenerator, GeneratorError, UniversalRowIterator};

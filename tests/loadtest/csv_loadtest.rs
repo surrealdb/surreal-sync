@@ -11,7 +11,7 @@ use loadtest_populate_csv::CSVPopulator;
 use loadtest_verify::StreamingVerifier;
 use surreal_sync::csv::{sync, Config, FileSource};
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
-use sync_core::SyncSchema;
+use sync_core::Schema;
 use tempfile::TempDir;
 
 const SEED: u64 = 42;
@@ -32,7 +32,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
         .ok();
 
     // Load schema from fixture file
-    let schema = SyncSchema::from_file("tests/fixtures/loadtest_schema.yaml")
+    let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
         .expect("Failed to load test schema");
 
     let test_id = generate_test_id();
@@ -186,7 +186,7 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
         .ok();
 
     // Load schema from fixture file
-    let schema = SyncSchema::from_file("tests/fixtures/loadtest_schema.yaml")
+    let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
         .expect("Failed to load test schema");
 
     // Test 1: Check what the generator produces

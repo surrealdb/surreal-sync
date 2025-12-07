@@ -7,9 +7,9 @@
 //!
 //! ```ignore
 //! use loadtest_jsonl::JsonlPopulator;
-//! use sync_core::SyncSchema;
+//! use sync_core::Schema;
 //!
-//! let schema = SyncSchema::from_file("schema.yaml")?;
+//! let schema = Schema::from_file("schema.yaml")?;
 //! let mut populator = JsonlPopulator::new(schema, 42);
 //!
 //! let metrics = populator.populate("users", "output.jsonl", 1000)?;

@@ -1,78 +1,81 @@
-//! PostgreSQL DDL generation from SyncDataType.
+//! PostgreSQL DDL generation from UniversalType.
 //!
 //! This module provides DDL (Data Definition Language) generation for PostgreSQL,
-//! converting sync-core's `SyncDataType` to PostgreSQL column type definitions.
+//! converting sync-core's `UniversalType` to PostgreSQL column type definitions.
 
-use sync_core::{GeometryType, SyncDataType};
+use sync_core::{GeometryType, UniversalType};
 
 /// Trait for generating DDL type strings.
 pub trait ToDdl {
-    /// Convert a SyncDataType to a DDL type string.
-    fn to_ddl(&self, sync_type: &SyncDataType) -> String;
+    /// Convert a UniversalType to a DDL type string.
+    fn to_ddl(&self, sync_type: &UniversalType) -> String;
 
     /// Generate a complete CREATE TABLE statement.
-    fn to_create_table(&self, table_name: &str, columns: &[(String, SyncDataType, bool)])
-        -> String;
+    fn to_create_table(
+        &self,
+        table_name: &str,
+        columns: &[(String, UniversalType, bool)],
+    ) -> String;
 }
 
 /// PostgreSQL DDL generator.
 pub struct PostgreSQLDdl;
 
 impl ToDdl for PostgreSQLDdl {
-    fn to_ddl(&self, sync_type: &SyncDataType) -> String {
+    fn to_ddl(&self, sync_type: &UniversalType) -> String {
         match sync_type {
             // Boolean
-            SyncDataType::Bool => "BOOLEAN".to_string(),
+            UniversalType::Bool => "BOOLEAN".to_string(),
 
             // Integer types
-            SyncDataType::TinyInt { .. } => "SMALLINT".to_string(), // PostgreSQL doesn't have TINYINT
-            SyncDataType::SmallInt => "SMALLINT".to_string(),
-            SyncDataType::Int => "INTEGER".to_string(),
-            SyncDataType::BigInt => "BIGINT".to_string(),
+            UniversalType::TinyInt { .. } => "SMALLINT".to_string(), // PostgreSQL doesn't have TINYINT
+            UniversalType::SmallInt => "SMALLINT".to_string(),
+            UniversalType::Int => "INTEGER".to_string(),
+            UniversalType::BigInt => "BIGINT".to_string(),
 
             // Floating point
-            SyncDataType::Float => "REAL".to_string(),
-            SyncDataType::Double => "DOUBLE PRECISION".to_string(),
+            UniversalType::Float => "REAL".to_string(),
+            UniversalType::Double => "DOUBLE PRECISION".to_string(),
 
             // Exact numeric
-            SyncDataType::Decimal { precision, scale } => {
+            UniversalType::Decimal { precision, scale } => {
                 format!("NUMERIC({precision},{scale})")
             }
 
             // String types
-            SyncDataType::Char { length } => format!("CHAR({length})"),
-            SyncDataType::VarChar { length } => format!("VARCHAR({length})"),
-            SyncDataType::Text => "TEXT".to_string(),
+            UniversalType::Char { length } => format!("CHAR({length})"),
+            UniversalType::VarChar { length } => format!("VARCHAR({length})"),
+            UniversalType::Text => "TEXT".to_string(),
 
             // Binary types
-            SyncDataType::Blob => "BYTEA".to_string(),
-            SyncDataType::Bytes => "BYTEA".to_string(),
+            UniversalType::Blob => "BYTEA".to_string(),
+            UniversalType::Bytes => "BYTEA".to_string(),
 
             // Date/time types
-            SyncDataType::Date => "DATE".to_string(),
-            SyncDataType::Time => "TIME".to_string(),
-            SyncDataType::DateTime => "TIMESTAMP".to_string(),
-            SyncDataType::DateTimeNano => "TIMESTAMP".to_string(), // PostgreSQL TIMESTAMP has microsecond precision
-            SyncDataType::TimestampTz => "TIMESTAMPTZ".to_string(),
+            UniversalType::Date => "DATE".to_string(),
+            UniversalType::Time => "TIME".to_string(),
+            UniversalType::DateTime => "TIMESTAMP".to_string(),
+            UniversalType::DateTimeNano => "TIMESTAMP".to_string(), // PostgreSQL TIMESTAMP has microsecond precision
+            UniversalType::TimestampTz => "TIMESTAMPTZ".to_string(),
 
             // Special types
-            SyncDataType::Uuid => "UUID".to_string(),
-            SyncDataType::Json => "JSON".to_string(),
-            SyncDataType::Jsonb => "JSONB".to_string(),
+            UniversalType::Uuid => "UUID".to_string(),
+            UniversalType::Json => "JSON".to_string(),
+            UniversalType::Jsonb => "JSONB".to_string(),
 
             // Array types
-            SyncDataType::Array { element_type } => {
+            UniversalType::Array { element_type } => {
                 format!("{}[]", self.to_ddl(element_type))
             }
 
             // Set - stored as TEXT[]
-            SyncDataType::Set { .. } => "TEXT[]".to_string(),
+            UniversalType::Set { .. } => "TEXT[]".to_string(),
 
             // Enumeration - stored as TEXT (PostgreSQL ENUM would need separate CREATE TYPE)
-            SyncDataType::Enum { .. } => "TEXT".to_string(),
+            UniversalType::Enum { .. } => "TEXT".to_string(),
 
             // Spatial types
-            SyncDataType::Geometry { geometry_type } => match geometry_type {
+            UniversalType::Geometry { geometry_type } => match geometry_type {
                 GeometryType::Point => "POINT".to_string(),
                 GeometryType::LineString => "PATH".to_string(), // PostgreSQL native path
                 GeometryType::Polygon => "POLYGON".to_string(),
@@ -87,7 +90,7 @@ impl ToDdl for PostgreSQLDdl {
     fn to_create_table(
         &self,
         table_name: &str,
-        columns: &[(String, SyncDataType, bool)],
+        columns: &[(String, UniversalType, bool)],
     ) -> String {
         let column_defs: Vec<String> = columns
             .iter()
@@ -111,8 +114,8 @@ impl PostgreSQLDdl {
         &self,
         table_name: &str,
         pk_column: &str,
-        pk_type: &SyncDataType,
-        columns: &[(String, SyncDataType, bool)],
+        pk_type: &UniversalType,
+        columns: &[(String, UniversalType, bool)],
     ) -> String {
         let mut all_columns = vec![(pk_column.to_string(), pk_type.clone(), false)];
         all_columns.extend(columns.iter().cloned());
@@ -138,7 +141,7 @@ impl PostgreSQLDdl {
         &self,
         table_name: &str,
         pk_column: &str,
-        columns: &[(String, SyncDataType, bool)],
+        columns: &[(String, UniversalType, bool)],
     ) -> String {
         let column_defs: Vec<String> = columns
             .iter()
@@ -179,7 +182,7 @@ impl PostgreSQLDdl {
     pub fn to_batch_insert_unnest(
         &self,
         table_name: &str,
-        columns: &[(String, SyncDataType)],
+        columns: &[(String, UniversalType)],
     ) -> String {
         let col_names: Vec<String> = columns
             .iter()
@@ -224,30 +227,30 @@ mod tests {
     #[test]
     fn test_bool_ddl() {
         let ddl = PostgreSQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Bool), "BOOLEAN");
+        assert_eq!(ddl.to_ddl(&UniversalType::Bool), "BOOLEAN");
     }
 
     #[test]
     fn test_integer_ddl() {
         let ddl = PostgreSQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::TinyInt { width: 4 }), "SMALLINT");
-        assert_eq!(ddl.to_ddl(&SyncDataType::SmallInt), "SMALLINT");
-        assert_eq!(ddl.to_ddl(&SyncDataType::Int), "INTEGER");
-        assert_eq!(ddl.to_ddl(&SyncDataType::BigInt), "BIGINT");
+        assert_eq!(ddl.to_ddl(&UniversalType::TinyInt { width: 4 }), "SMALLINT");
+        assert_eq!(ddl.to_ddl(&UniversalType::SmallInt), "SMALLINT");
+        assert_eq!(ddl.to_ddl(&UniversalType::Int), "INTEGER");
+        assert_eq!(ddl.to_ddl(&UniversalType::BigInt), "BIGINT");
     }
 
     #[test]
     fn test_float_ddl() {
         let ddl = PostgreSQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Float), "REAL");
-        assert_eq!(ddl.to_ddl(&SyncDataType::Double), "DOUBLE PRECISION");
+        assert_eq!(ddl.to_ddl(&UniversalType::Float), "REAL");
+        assert_eq!(ddl.to_ddl(&UniversalType::Double), "DOUBLE PRECISION");
     }
 
     #[test]
     fn test_decimal_ddl() {
         let ddl = PostgreSQLDdl;
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Decimal {
+            ddl.to_ddl(&UniversalType::Decimal {
                 precision: 10,
                 scale: 2
             }),
@@ -258,55 +261,55 @@ mod tests {
     #[test]
     fn test_string_ddl() {
         let ddl = PostgreSQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Char { length: 10 }), "CHAR(10)");
+        assert_eq!(ddl.to_ddl(&UniversalType::Char { length: 10 }), "CHAR(10)");
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::VarChar { length: 255 }),
+            ddl.to_ddl(&UniversalType::VarChar { length: 255 }),
             "VARCHAR(255)"
         );
-        assert_eq!(ddl.to_ddl(&SyncDataType::Text), "TEXT");
+        assert_eq!(ddl.to_ddl(&UniversalType::Text), "TEXT");
     }
 
     #[test]
     fn test_binary_ddl() {
         let ddl = PostgreSQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Blob), "BYTEA");
-        assert_eq!(ddl.to_ddl(&SyncDataType::Bytes), "BYTEA");
+        assert_eq!(ddl.to_ddl(&UniversalType::Blob), "BYTEA");
+        assert_eq!(ddl.to_ddl(&UniversalType::Bytes), "BYTEA");
     }
 
     #[test]
     fn test_datetime_ddl() {
         let ddl = PostgreSQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Date), "DATE");
-        assert_eq!(ddl.to_ddl(&SyncDataType::Time), "TIME");
-        assert_eq!(ddl.to_ddl(&SyncDataType::DateTime), "TIMESTAMP");
-        assert_eq!(ddl.to_ddl(&SyncDataType::TimestampTz), "TIMESTAMPTZ");
+        assert_eq!(ddl.to_ddl(&UniversalType::Date), "DATE");
+        assert_eq!(ddl.to_ddl(&UniversalType::Time), "TIME");
+        assert_eq!(ddl.to_ddl(&UniversalType::DateTime), "TIMESTAMP");
+        assert_eq!(ddl.to_ddl(&UniversalType::TimestampTz), "TIMESTAMPTZ");
     }
 
     #[test]
     fn test_uuid_ddl() {
         let ddl = PostgreSQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Uuid), "UUID");
+        assert_eq!(ddl.to_ddl(&UniversalType::Uuid), "UUID");
     }
 
     #[test]
     fn test_json_ddl() {
         let ddl = PostgreSQLDdl;
-        assert_eq!(ddl.to_ddl(&SyncDataType::Json), "JSON");
-        assert_eq!(ddl.to_ddl(&SyncDataType::Jsonb), "JSONB");
+        assert_eq!(ddl.to_ddl(&UniversalType::Json), "JSON");
+        assert_eq!(ddl.to_ddl(&UniversalType::Jsonb), "JSONB");
     }
 
     #[test]
     fn test_array_ddl() {
         let ddl = PostgreSQLDdl;
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Array {
-                element_type: Box::new(SyncDataType::Int)
+            ddl.to_ddl(&UniversalType::Array {
+                element_type: Box::new(UniversalType::Int)
             }),
             "INTEGER[]"
         );
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Array {
-                element_type: Box::new(SyncDataType::Text)
+            ddl.to_ddl(&UniversalType::Array {
+                element_type: Box::new(UniversalType::Text)
             }),
             "TEXT[]"
         );
@@ -316,9 +319,9 @@ mod tests {
     fn test_nested_array_ddl() {
         let ddl = PostgreSQLDdl;
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Array {
-                element_type: Box::new(SyncDataType::Array {
-                    element_type: Box::new(SyncDataType::Int)
+            ddl.to_ddl(&UniversalType::Array {
+                element_type: Box::new(UniversalType::Array {
+                    element_type: Box::new(UniversalType::Int)
                 })
             }),
             "INTEGER[][]"
@@ -329,7 +332,7 @@ mod tests {
     fn test_set_ddl() {
         let ddl = PostgreSQLDdl;
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Set {
+            ddl.to_ddl(&UniversalType::Set {
                 values: vec!["a".to_string(), "b".to_string()]
             }),
             "TEXT[]"
@@ -341,7 +344,7 @@ mod tests {
         let ddl = PostgreSQLDdl;
         // Enums in PostgreSQL need CREATE TYPE, so we store as TEXT
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Enum {
+            ddl.to_ddl(&UniversalType::Enum {
                 values: vec!["active".to_string(), "inactive".to_string()]
             }),
             "TEXT"
@@ -352,13 +355,13 @@ mod tests {
     fn test_geometry_ddl() {
         let ddl = PostgreSQLDdl;
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Geometry {
+            ddl.to_ddl(&UniversalType::Geometry {
                 geometry_type: GeometryType::Point
             }),
             "POINT"
         );
         assert_eq!(
-            ddl.to_ddl(&SyncDataType::Geometry {
+            ddl.to_ddl(&UniversalType::Geometry {
                 geometry_type: GeometryType::Polygon
             }),
             "POLYGON"
@@ -371,15 +374,15 @@ mod tests {
         let columns = vec![
             (
                 "name".to_string(),
-                SyncDataType::VarChar { length: 100 },
+                UniversalType::VarChar { length: 100 },
                 false,
             ),
             (
                 "email".to_string(),
-                SyncDataType::VarChar { length: 255 },
+                UniversalType::VarChar { length: 255 },
                 false,
             ),
-            ("age".to_string(), SyncDataType::Int, true),
+            ("age".to_string(), UniversalType::Int, true),
         ];
 
         let sql = ddl.to_create_table("users", &columns);
@@ -395,17 +398,17 @@ mod tests {
         let columns = vec![
             (
                 "name".to_string(),
-                SyncDataType::VarChar { length: 100 },
+                UniversalType::VarChar { length: 100 },
                 false,
             ),
             (
                 "email".to_string(),
-                SyncDataType::VarChar { length: 255 },
+                UniversalType::VarChar { length: 255 },
                 false,
             ),
         ];
 
-        let sql = ddl.to_create_table_with_pk("users", "id", &SyncDataType::Uuid, &columns);
+        let sql = ddl.to_create_table_with_pk("users", "id", &UniversalType::Uuid, &columns);
         assert!(sql.contains("CREATE TABLE \"users\""));
         assert!(sql.contains("\"id\" UUID NOT NULL"));
         assert!(sql.contains("PRIMARY KEY (\"id\")"));
@@ -417,12 +420,12 @@ mod tests {
         let columns = vec![
             (
                 "name".to_string(),
-                SyncDataType::VarChar { length: 100 },
+                UniversalType::VarChar { length: 100 },
                 false,
             ),
             (
                 "email".to_string(),
-                SyncDataType::VarChar { length: 255 },
+                UniversalType::VarChar { length: 255 },
                 false,
             ),
         ];
@@ -449,8 +452,8 @@ mod tests {
     fn test_batch_insert_unnest() {
         let ddl = PostgreSQLDdl;
         let columns = vec![
-            ("name".to_string(), SyncDataType::Text),
-            ("age".to_string(), SyncDataType::Int),
+            ("name".to_string(), UniversalType::Text),
+            ("age".to_string(), UniversalType::Int),
         ];
 
         let sql = ddl.to_batch_insert_unnest("users", &columns);

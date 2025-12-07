@@ -7,13 +7,13 @@
 //!
 //! - `forward`: Convert `TypedValue` → `MySQLValue` (for INSERT operations)
 //! - `reverse`: Convert MySQL values → `TypedValue` (for reading data)
-//! - `ddl`: Generate MySQL DDL from `SyncDataType`
+//! - `ddl`: Generate MySQL DDL from `UniversalType`
 //!
 //! # Example
 //!
 //! ```rust,ignore
 //! use mysql_types::{MySQLValue, MySQLDdl, ToDdl};
-//! use sync_core::{TypedValue, SyncDataType, GeneratedValue};
+//! use sync_core::{TypedValue, UniversalType, UniversalValue};
 //!
 //! // Forward conversion
 //! let typed_value = TypedValue::bool(true);
@@ -21,7 +21,7 @@
 //!
 //! // DDL generation
 //! let ddl = MySQLDdl;
-//! assert_eq!(ddl.to_ddl(&SyncDataType::Bool), "TINYINT(1)");
+//! assert_eq!(ddl.to_ddl(&UniversalType::Bool), "TINYINT(1)");
 //! ```
 
 pub mod ddl;

@@ -4,16 +4,16 @@ use clap::Parser;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use surreal_sync_kafka::{ConsumerConfig, Message};
-use sync_core::{GeneratedValue, TableSchema};
+use sync_core::{TableDefinition, UniversalValue};
 use tracing::{debug, error, info};
 
-/// Convert a GeneratedValue to a SurrealDB ID.
-fn typed_value_to_surreal_id(value: &GeneratedValue) -> Result<surrealdb::sql::Id> {
+/// Convert a UniversalValue to a SurrealDB ID.
+fn typed_value_to_surreal_id(value: &UniversalValue) -> Result<surrealdb::sql::Id> {
     match value {
-        GeneratedValue::Int32(i) => Ok(surrealdb::sql::Id::Number(*i as i64)),
-        GeneratedValue::Int64(i) => Ok(surrealdb::sql::Id::Number(*i)),
-        GeneratedValue::String(s) => Ok(surrealdb::sql::Id::String(s.clone())),
-        GeneratedValue::Uuid(u) => Ok(surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u))),
+        UniversalValue::Int32(i) => Ok(surrealdb::sql::Id::Number(*i as i64)),
+        UniversalValue::Int64(i) => Ok(surrealdb::sql::Id::Number(*i)),
+        UniversalValue::String(s) => Ok(surrealdb::sql::Id::String(s.clone())),
+        UniversalValue::Uuid(u) => Ok(surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u))),
         other => anyhow::bail!("Cannot convert {other:?} to SurrealDB ID"),
     }
 }
@@ -53,7 +53,7 @@ pub async fn run_incremental_sync(
     to_database: String,
     to_opts: SurrealOpts,
     _deadline: chrono::DateTime<chrono::Utc>,
-    table_schema: Option<TableSchema>,
+    table_schema: Option<TableDefinition>,
 ) -> Result<()> {
     info!(
         "Starting Kafka incremental sync for message {} from topic {}",

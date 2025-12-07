@@ -1,25 +1,25 @@
 //! Numeric value generators.
 
 use rand::Rng;
-use sync_core::GeneratedValue;
+use sync_core::UniversalValue;
 
 /// Generate a random integer in the given range (inclusive).
-pub fn generate_int_range<R: Rng>(rng: &mut R, min: i64, max: i64) -> GeneratedValue {
-    GeneratedValue::Int64(rng.gen_range(min..=max))
+pub fn generate_int_range<R: Rng>(rng: &mut R, min: i64, max: i64) -> UniversalValue {
+    UniversalValue::Int64(rng.gen_range(min..=max))
 }
 
 /// Generate a random float in the given range (inclusive).
-pub fn generate_float_range<R: Rng>(rng: &mut R, min: f64, max: f64) -> GeneratedValue {
-    GeneratedValue::Float64(rng.gen_range(min..=max))
+pub fn generate_float_range<R: Rng>(rng: &mut R, min: f64, max: f64) -> UniversalValue {
+    UniversalValue::Float64(rng.gen_range(min..=max))
 }
 
 /// Generate a random decimal in the given range.
 ///
 /// The decimal is stored as a string with 2 decimal places.
-pub fn generate_decimal_range<R: Rng>(rng: &mut R, min: f64, max: f64) -> GeneratedValue {
+pub fn generate_decimal_range<R: Rng>(rng: &mut R, min: f64, max: f64) -> UniversalValue {
     let value = rng.gen_range(min..=max);
     // Format with 2 decimal places by default
-    GeneratedValue::Decimal {
+    UniversalValue::Decimal {
         value: format!("{value:.2}"),
         precision: 10,
         scale: 2,
@@ -38,7 +38,7 @@ mod tests {
 
         for _ in 0..100 {
             let value = generate_int_range(&mut rng, 10, 20);
-            if let GeneratedValue::Int64(v) = value {
+            if let UniversalValue::Int64(v) = value {
                 assert!((10..=20).contains(&v));
             } else {
                 panic!("Expected Int64 value");
@@ -52,7 +52,7 @@ mod tests {
 
         for _ in 0..100 {
             let value = generate_float_range(&mut rng, 0.0, 100.0);
-            if let GeneratedValue::Float64(v) = value {
+            if let UniversalValue::Float64(v) = value {
                 assert!((0.0..=100.0).contains(&v));
             } else {
                 panic!("Expected Float64 value");
@@ -65,7 +65,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
 
         let value = generate_decimal_range(&mut rng, 0.0, 100.0);
-        if let GeneratedValue::Decimal {
+        if let UniversalValue::Decimal {
             value,
             precision,
             scale,

@@ -10,7 +10,7 @@ use mysql_async::{prelude::*, Pool, Row};
 use mysql_types::{row_to_typed_values_with_config, JsonConversionConfig, RowConversionConfig};
 use std::collections::HashMap;
 use surrealdb_types::typed_values_to_surreal_map;
-use sync_core::{GeneratedValue, TypedValue};
+use sync_core::{TypedValue, UniversalValue};
 use tracing::{debug, info};
 
 /// Main entry point for MySQL to SurrealDB migration with checkpoint support
@@ -392,9 +392,9 @@ fn extract_record_id(
 /// Convert a TypedValue to a SurrealDB ID
 fn typed_value_to_id(tv: &TypedValue) -> Result<surrealdb::sql::Id> {
     match &tv.value {
-        GeneratedValue::Int32(i) => Ok(surrealdb::sql::Id::from(*i as i64)),
-        GeneratedValue::Int64(i) => Ok(surrealdb::sql::Id::from(*i)),
-        GeneratedValue::String(s) => {
+        UniversalValue::Int32(i) => Ok(surrealdb::sql::Id::from(*i as i64)),
+        UniversalValue::Int64(i) => Ok(surrealdb::sql::Id::from(*i)),
+        UniversalValue::String(s) => {
             // Try to parse as integer first for numeric IDs stored as strings
             if let Ok(n) = s.parse::<i64>() {
                 Ok(surrealdb::sql::Id::from(n))
@@ -402,7 +402,7 @@ fn typed_value_to_id(tv: &TypedValue) -> Result<surrealdb::sql::Id> {
                 Ok(surrealdb::sql::Id::from(s.clone()))
             }
         }
-        GeneratedValue::Uuid(u) => Ok(surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u))),
+        UniversalValue::Uuid(u) => Ok(surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u))),
         _ => Err(anyhow::anyhow!("Unsupported ID type: {:?}", tv.sync_type)),
     }
 }
@@ -410,12 +410,12 @@ fn typed_value_to_id(tv: &TypedValue) -> Result<surrealdb::sql::Id> {
 /// Convert a TypedValue to a string (for composite keys)
 fn typed_value_to_string(tv: &TypedValue) -> String {
     match &tv.value {
-        GeneratedValue::Int32(i) => i.to_string(),
-        GeneratedValue::Int64(i) => i.to_string(),
-        GeneratedValue::String(s) => s.clone(),
-        GeneratedValue::Uuid(u) => u.to_string(),
-        GeneratedValue::Bool(b) => b.to_string(),
-        GeneratedValue::Float64(f) => f.to_string(),
+        UniversalValue::Int32(i) => i.to_string(),
+        UniversalValue::Int64(i) => i.to_string(),
+        UniversalValue::String(s) => s.clone(),
+        UniversalValue::Uuid(u) => u.to_string(),
+        UniversalValue::Bool(b) => b.to_string(),
+        UniversalValue::Float64(f) => f.to_string(),
         _ => "null".to_string(),
     }
 }

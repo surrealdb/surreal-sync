@@ -12,14 +12,14 @@
 //!
 //! ```ignore
 //! use csv_types::{CsvValue, CsvStringWithSchema};
-//! use sync_core::{TypedValue, SyncDataType};
+//! use sync_core::{TypedValue, UniversalType};
 //!
 //! // Forward: TypedValue → CSV string
 //! let tv = TypedValue::text("hello");
 //! let csv_val: CsvValue = tv.into();
 //!
 //! // Reverse: CSV string → TypedValue
-//! let csv_str = CsvStringWithSchema::new("42", &SyncDataType::Int);
+//! let csv_str = CsvStringWithSchema::new("42", &UniversalType::Int);
 //! let tv = csv_str.to_typed_value().unwrap();
 //! ```
 

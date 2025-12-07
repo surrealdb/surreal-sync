@@ -3,7 +3,7 @@
 use crate::error::MySQLPopulatorError;
 use mysql_async::{prelude::*, Params, Pool, Value};
 use mysql_types::forward::MySQLValue;
-use sync_core::{InternalRow, SyncSchema, TableSchema, TypedValue};
+use sync_core::{UniversalRow, Schema, TableDefinition, TypedValue};
 
 /// Default batch size for INSERT operations.
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -11,8 +11,8 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 /// Insert a batch of rows into a MySQL table.
 pub async fn insert_batch(
     pool: &Pool,
-    table_schema: &TableSchema,
-    rows: &[InternalRow],
+    table_schema: &TableDefinition,
+    rows: &[UniversalRow],
 ) -> Result<u64, MySQLPopulatorError> {
     if rows.is_empty() {
         return Ok(0);
@@ -71,8 +71,8 @@ pub async fn insert_batch(
 #[allow(dead_code)]
 pub async fn insert_single(
     pool: &Pool,
-    table_schema: &TableSchema,
-    row: &InternalRow,
+    table_schema: &TableDefinition,
+    row: &UniversalRow,
 ) -> Result<u64, MySQLPopulatorError> {
     let mut conn = pool.get_conn().await?;
 
@@ -119,11 +119,11 @@ pub async fn insert_single(
 }
 
 /// Generate CREATE TABLE statement from schema.
-pub fn generate_create_table(schema: &SyncSchema, table_name: &str) -> Option<String> {
+pub fn generate_create_table(schema: &Schema, table_name: &str) -> Option<String> {
     let table_schema = schema.get_table(table_name)?;
 
     // Build column definitions
-    let columns: Vec<(String, sync_core::SyncDataType, bool)> = table_schema
+    let columns: Vec<(String, sync_core::UniversalType, bool)> = table_schema
         .fields
         .iter()
         .map(|f| (f.name.clone(), f.field_type.clone(), f.nullable))
@@ -142,7 +142,7 @@ pub fn generate_drop_table(table_name: &str) -> String {
 mod tests {
     use super::*;
 
-    fn test_schema() -> SyncSchema {
+    fn test_schema() -> Schema {
         let yaml = r#"
 version: 1
 seed: 42
@@ -167,7 +167,7 @@ tables:
           min: 18
           max: 80
 "#;
-        SyncSchema::from_yaml(yaml).unwrap()
+        Schema::from_yaml(yaml).unwrap()
     }
 
     #[test]

@@ -5,7 +5,7 @@ use crate::insert::{count_nodes, delete_all_nodes, insert_batch, DEFAULT_BATCH_S
 use loadtest_generator::DataGenerator;
 use neo4rs::{ConfigBuilder, Graph};
 use std::time::{Duration, Instant};
-use sync_core::{InternalRow, SyncSchema};
+use sync_core::{UniversalRow, Schema};
 use tracing::{debug, info};
 
 /// Metrics from a populate operation.
@@ -39,7 +39,7 @@ impl PopulateMetrics {
 /// In Neo4j, "tables" become node labels. Each row is a node with properties.
 pub struct Neo4jPopulator {
     graph: Graph,
-    schema: SyncSchema,
+    schema: Schema,
     generator: DataGenerator,
     batch_size: usize,
 }
@@ -73,7 +73,7 @@ impl Neo4jPopulator {
         username: &str,
         password: &str,
         database: &str,
-        schema: SyncSchema,
+        schema: Schema,
         seed: u64,
     ) -> Result<Self, Neo4jPopulatorError> {
         let config = ConfigBuilder::default()
@@ -98,7 +98,7 @@ impl Neo4jPopulator {
     }
 
     /// Create a new Neo4j populator with an existing Graph connection.
-    pub fn with_graph(graph: Graph, schema: SyncSchema, seed: u64) -> Self {
+    pub fn with_graph(graph: Graph, schema: Schema, seed: u64) -> Self {
         let generator = DataGenerator::new(schema.clone(), seed);
         Self {
             graph,
@@ -130,7 +130,7 @@ impl Neo4jPopulator {
     }
 
     /// Get a reference to the schema.
-    pub fn schema(&self) -> &SyncSchema {
+    pub fn schema(&self) -> &Schema {
         &self.schema
     }
 
@@ -178,7 +178,7 @@ impl Neo4jPopulator {
 
             // Generate rows
             let gen_start = Instant::now();
-            let rows: Vec<InternalRow> = self
+            let rows: Vec<UniversalRow> = self
                 .generator
                 .internal_rows(label, batch_count)
                 .map_err(|e| Neo4jPopulatorError::Generator(e.to_string()))?
@@ -240,7 +240,7 @@ impl Neo4jPopulator {
 mod tests {
     use super::*;
 
-    fn test_schema() -> SyncSchema {
+    fn test_schema() -> Schema {
         let yaml = r#"
 version: 1
 seed: 42
@@ -266,7 +266,7 @@ tables:
           min: 18
           max: 80
 "#;
-        SyncSchema::from_yaml(yaml).unwrap()
+        Schema::from_yaml(yaml).unwrap()
     }
 
     #[test]

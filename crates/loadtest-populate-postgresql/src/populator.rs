@@ -5,7 +5,7 @@ use crate::insert::{generate_create_table, generate_drop_table, insert_batch, DE
 use loadtest_generator::DataGenerator;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use sync_core::{InternalRow, SyncSchema};
+use sync_core::{UniversalRow, Schema};
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls};
 use tracing::{debug, info};
@@ -39,7 +39,7 @@ impl PopulateMetrics {
 /// PostgreSQL populator that generates and inserts test data.
 pub struct PostgreSQLPopulator {
     client: Arc<Mutex<Client>>,
-    schema: SyncSchema,
+    schema: Schema,
     generator: DataGenerator,
     batch_size: usize,
 }
@@ -64,7 +64,7 @@ impl PostgreSQLPopulator {
     /// ```
     pub async fn new(
         connection_string: &str,
-        schema: SyncSchema,
+        schema: Schema,
         seed: u64,
     ) -> Result<Self, PostgreSQLPopulatorError> {
         let (client, connection) = tokio_postgres::connect(connection_string, NoTls).await?;
@@ -90,7 +90,7 @@ impl PostgreSQLPopulator {
     }
 
     /// Create a new PostgreSQL populator with an existing client.
-    pub fn with_client(client: Arc<Mutex<Client>>, schema: SyncSchema, seed: u64) -> Self {
+    pub fn with_client(client: Arc<Mutex<Client>>, schema: Schema, seed: u64) -> Self {
         let generator = DataGenerator::new(schema.clone(), seed);
         Self {
             client,
@@ -122,7 +122,7 @@ impl PostgreSQLPopulator {
     }
 
     /// Get a reference to the schema.
-    pub fn schema(&self) -> &SyncSchema {
+    pub fn schema(&self) -> &Schema {
         &self.schema
     }
 
@@ -192,7 +192,7 @@ impl PostgreSQLPopulator {
 
             // Generate rows
             let gen_start = Instant::now();
-            let rows: Vec<InternalRow> = self
+            let rows: Vec<UniversalRow> = self
                 .generator
                 .internal_rows(table_name, batch_count)
                 .map_err(|e| PostgreSQLPopulatorError::Generator(e.to_string()))?
@@ -269,7 +269,7 @@ impl PostgreSQLPopulator {
 mod tests {
     use super::*;
 
-    fn test_schema() -> SyncSchema {
+    fn test_schema() -> Schema {
         let yaml = r#"
 version: 1
 seed: 42
@@ -294,7 +294,7 @@ tables:
           min: 18
           max: 80
 "#;
-        SyncSchema::from_yaml(yaml).unwrap()
+        Schema::from_yaml(yaml).unwrap()
     }
 
     #[test]

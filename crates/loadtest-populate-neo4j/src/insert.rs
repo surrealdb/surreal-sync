@@ -2,7 +2,7 @@
 
 use crate::error::Neo4jPopulatorError;
 use neo4rs::{query, Graph, Query};
-use sync_core::{GeneratedValue, InternalRow, SyncDataType, TableSchema, TypedValue};
+use sync_core::{UniversalRow, TableDefinition, TypedValue, UniversalType, UniversalValue};
 use tracing::debug;
 
 /// Default batch size for INSERT operations.
@@ -13,8 +13,8 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 /// Neo4j uses labels instead of tables - each "table" becomes a node label.
 pub async fn insert_batch(
     graph: &Graph,
-    table_schema: &TableSchema,
-    rows: &[InternalRow],
+    table_schema: &TableDefinition,
+    rows: &[UniversalRow],
 ) -> Result<u64, Neo4jPopulatorError> {
     if rows.is_empty() {
         return Ok(0);
@@ -37,8 +37,8 @@ pub async fn insert_batch(
 /// Build a CREATE query for a single node.
 fn build_create_node_query(
     label: &str,
-    row: &InternalRow,
-    table_schema: &TableSchema,
+    row: &UniversalRow,
+    table_schema: &TableDefinition,
 ) -> Result<Query, Neo4jPopulatorError> {
     // Build property map for the node
     let mut props = Vec::new();
@@ -46,10 +46,10 @@ fn build_create_node_query(
     // Add the id field - always as string since Neo4j full sync expects string IDs
     // The Neo4j full sync uses the 'id' property to create SurrealDB record IDs
     let id_string = match &row.id {
-        GeneratedValue::Int32(i) => i.to_string(),
-        GeneratedValue::Int64(i) => i.to_string(),
-        GeneratedValue::String(s) => s.clone(),
-        GeneratedValue::Uuid(u) => u.to_string(),
+        UniversalValue::Int32(i) => i.to_string(),
+        UniversalValue::Int64(i) => i.to_string(),
+        UniversalValue::String(s) => s.clone(),
+        UniversalValue::Uuid(u) => u.to_string(),
         other => format!("{other:?}"),
     };
     props.push(format!("id: '{}'", id_string.replace('\'', "\\'")));
@@ -76,18 +76,18 @@ fn build_create_node_query(
 /// Convert a TypedValue to a Neo4j literal string for use in Cypher queries.
 fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
     match &typed.value {
-        GeneratedValue::Null => "null".to_string(),
-        GeneratedValue::Bool(b) => b.to_string(),
-        GeneratedValue::Int32(i) => i.to_string(),
-        GeneratedValue::Int64(i) => i.to_string(),
-        GeneratedValue::Float64(f) => {
+        UniversalValue::Null => "null".to_string(),
+        UniversalValue::Bool(b) => b.to_string(),
+        UniversalValue::Int32(i) => i.to_string(),
+        UniversalValue::Int64(i) => i.to_string(),
+        UniversalValue::Float64(f) => {
             if f.is_nan() {
                 "null".to_string() // Neo4j doesn't support NaN
             } else {
                 f.to_string()
             }
         }
-        GeneratedValue::Decimal {
+        UniversalValue::Decimal {
             value,
             precision: _,
             scale: _,
@@ -95,23 +95,23 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
             // Store decimal as numeric string in Neo4j
             value.to_string()
         }
-        GeneratedValue::String(s) => escape_neo4j_string(s),
-        GeneratedValue::Uuid(u) => escape_neo4j_string(&u.to_string()),
-        GeneratedValue::DateTime(dt) => {
+        UniversalValue::String(s) => escape_neo4j_string(s),
+        UniversalValue::Uuid(u) => escape_neo4j_string(&u.to_string()),
+        UniversalValue::DateTime(dt) => {
             // Neo4j datetime format
             format!("datetime('{}')", dt.format("%Y-%m-%dT%H:%M:%S%.fZ"))
         }
-        GeneratedValue::Bytes(b) => {
+        UniversalValue::Bytes(b) => {
             // Neo4j doesn't have native bytes, store as hex string
             let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
             escape_neo4j_string(&hex)
         }
-        GeneratedValue::Object(obj) => {
+        UniversalValue::Object(obj) => {
             // Store JSON object as a string in Neo4j
             let json_str = serde_json::to_string(obj).unwrap_or_else(|_| "{}".to_string());
             escape_neo4j_string(&json_str)
         }
-        GeneratedValue::Array(arr) => {
+        UniversalValue::Array(arr) => {
             // Neo4j lists
             let elements: Vec<String> = arr
                 .iter()
@@ -125,12 +125,12 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
     }
 }
 
-/// Convert a GeneratedValue to a Neo4j literal (for array elements).
-fn generated_to_neo4j_literal(value: &GeneratedValue, parent_type: &SyncDataType) -> String {
+/// Convert a UniversalValue to a Neo4j literal (for array elements).
+fn generated_to_neo4j_literal(value: &UniversalValue, parent_type: &UniversalType) -> String {
     // Get element type if this is an array
     let element_type = match parent_type {
-        SyncDataType::Array { element_type } => element_type.as_ref().clone(),
-        _ => SyncDataType::Text, // Fallback
+        UniversalType::Array { element_type } => element_type.as_ref().clone(),
+        _ => UniversalType::Text, // Fallback
     };
 
     let typed = TypedValue::new(element_type, value.clone());
@@ -174,7 +174,7 @@ pub async fn count_nodes(graph: &Graph, label: &str) -> Result<u64, Neo4jPopulat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::GeneratedValue;
+    use sync_core::UniversalValue;
 
     #[test]
     fn test_escape_neo4j_string() {
@@ -185,19 +185,19 @@ mod tests {
 
     #[test]
     fn test_typed_to_neo4j_literal() {
-        let int_val = TypedValue::new(SyncDataType::Int, GeneratedValue::Int32(42));
+        let int_val = TypedValue::new(UniversalType::Int, UniversalValue::Int32(42));
         assert_eq!(typed_to_neo4j_literal(&int_val), "42");
 
         let str_val = TypedValue::new(
-            SyncDataType::Text,
-            GeneratedValue::String("hello".to_string()),
+            UniversalType::Text,
+            UniversalValue::String("hello".to_string()),
         );
         assert_eq!(typed_to_neo4j_literal(&str_val), "'hello'");
 
-        let bool_val = TypedValue::new(SyncDataType::Bool, GeneratedValue::Bool(true));
+        let bool_val = TypedValue::new(UniversalType::Bool, UniversalValue::Bool(true));
         assert_eq!(typed_to_neo4j_literal(&bool_val), "true");
 
-        let null_val = TypedValue::null(SyncDataType::Text);
+        let null_val = TypedValue::null(UniversalType::Text);
         assert_eq!(typed_to_neo4j_literal(&null_val), "null");
     }
 }

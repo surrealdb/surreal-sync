@@ -2,7 +2,7 @@
 
 use crate::error::PostgreSQLPopulatorError;
 use postgresql_types::forward::PostgreSQLValue;
-use sync_core::{InternalRow, SyncSchema, TableSchema, TypedValue};
+use sync_core::{UniversalRow, Schema, TableDefinition, TypedValue};
 use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
 
@@ -12,8 +12,8 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 /// Insert a batch of rows into a PostgreSQL table.
 pub async fn insert_batch(
     client: &Client,
-    table_schema: &TableSchema,
-    rows: &[InternalRow],
+    table_schema: &TableDefinition,
+    rows: &[UniversalRow],
 ) -> Result<u64, PostgreSQLPopulatorError> {
     if rows.is_empty() {
         return Ok(0);
@@ -119,8 +119,8 @@ fn pg_value_to_boxed(value: PostgreSQLValue) -> Box<dyn ToSql + Sync + Send> {
 #[allow(dead_code)]
 pub async fn insert_single(
     client: &Client,
-    table_schema: &TableSchema,
-    row: &InternalRow,
+    table_schema: &TableDefinition,
+    row: &UniversalRow,
 ) -> Result<u64, PostgreSQLPopulatorError> {
     // Build column list: id + all fields
     let mut columns: Vec<String> = vec!["id".to_string()];
@@ -172,11 +172,11 @@ pub async fn insert_single(
 }
 
 /// Generate CREATE TABLE statement from schema.
-pub fn generate_create_table(schema: &SyncSchema, table_name: &str) -> Option<String> {
+pub fn generate_create_table(schema: &Schema, table_name: &str) -> Option<String> {
     let table_schema = schema.get_table(table_name)?;
 
     // Build column definitions
-    let columns: Vec<(String, sync_core::SyncDataType, bool)> = table_schema
+    let columns: Vec<(String, sync_core::UniversalType, bool)> = table_schema
         .fields
         .iter()
         .map(|f| (f.name.clone(), f.field_type.clone(), f.nullable))
@@ -195,7 +195,7 @@ pub fn generate_drop_table(table_name: &str) -> String {
 mod tests {
     use super::*;
 
-    fn test_schema() -> SyncSchema {
+    fn test_schema() -> Schema {
         let yaml = r#"
 version: 1
 seed: 42
@@ -220,7 +220,7 @@ tables:
           min: 18
           max: 80
 "#;
-        SyncSchema::from_yaml(yaml).unwrap()
+        Schema::from_yaml(yaml).unwrap()
     }
 
     #[test]

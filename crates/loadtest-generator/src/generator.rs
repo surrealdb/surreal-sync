@@ -4,7 +4,7 @@ use crate::generators::generate_value_typed;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::collections::HashMap;
-use sync_core::{GeneratedValue, InternalRow, SyncSchema};
+use sync_core::{UniversalRow, Schema, UniversalValue};
 
 /// Error type for generator operations.
 #[derive(Debug, thiserror::Error)]
@@ -24,7 +24,7 @@ pub enum GeneratorError {
 /// reproducible results across runs with the same seed and schema.
 pub struct DataGenerator {
     /// Schema defining the tables and field generators
-    schema: SyncSchema,
+    schema: Schema,
     /// Seeded random number generator for reproducibility
     rng: StdRng,
     /// Current row index (for incremental generation)
@@ -33,7 +33,7 @@ pub struct DataGenerator {
 
 impl DataGenerator {
     /// Create a new data generator with the given schema and seed.
-    pub fn new(schema: SyncSchema, seed: u64) -> Self {
+    pub fn new(schema: Schema, seed: u64) -> Self {
         Self {
             schema,
             rng: StdRng::seed_from_u64(seed),
@@ -70,7 +70,7 @@ impl DataGenerator {
     }
 
     /// Generate the next internal row for the given table.
-    pub fn next_internal_row(&mut self, table: &str) -> Result<InternalRow, GeneratorError> {
+    pub fn next_internal_row(&mut self, table: &str) -> Result<UniversalRow, GeneratorError> {
         // Verify table exists
         let table_schema = self
             .schema
@@ -89,7 +89,7 @@ impl DataGenerator {
         );
 
         // Generate all fields with type-aware generation
-        let fields: HashMap<String, GeneratedValue> = table_schema
+        let fields: HashMap<String, UniversalValue> = table_schema
             .fields
             .iter()
             .map(|field| {
@@ -105,7 +105,7 @@ impl DataGenerator {
 
         self.index += 1;
 
-        Ok(InternalRow::new(table_name, index, id, fields))
+        Ok(UniversalRow::new(table_name, index, id, fields))
     }
 
     /// Generate multiple internal rows for the given table.
@@ -115,13 +115,13 @@ impl DataGenerator {
         &mut self,
         table: &str,
         count: u64,
-    ) -> Result<InternalRowIterator<'_>, GeneratorError> {
+    ) -> Result<UniversalRowIterator<'_>, GeneratorError> {
         // Verify the table exists
         if self.schema.get_table(table).is_none() {
             return Err(GeneratorError::TableNotFound(table.to_string()));
         }
 
-        Ok(InternalRowIterator {
+        Ok(UniversalRowIterator {
             generator: self,
             table: table.to_string(),
             remaining: count,
@@ -129,20 +129,20 @@ impl DataGenerator {
     }
 
     /// Get a reference to the schema.
-    pub fn schema(&self) -> &SyncSchema {
+    pub fn schema(&self) -> &Schema {
         &self.schema
     }
 }
 
 /// Iterator that lazily generates internal rows.
-pub struct InternalRowIterator<'a> {
+pub struct UniversalRowIterator<'a> {
     generator: &'a mut DataGenerator,
     table: String,
     remaining: u64,
 }
 
-impl Iterator for InternalRowIterator<'_> {
-    type Item = InternalRow;
+impl Iterator for UniversalRowIterator<'_> {
+    type Item = UniversalRow;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
@@ -161,14 +161,14 @@ impl Iterator for InternalRowIterator<'_> {
     }
 }
 
-impl ExactSizeIterator for InternalRowIterator<'_> {}
+impl ExactSizeIterator for UniversalRowIterator<'_> {}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::SyncSchema;
+    use sync_core::Schema;
 
-    fn test_schema() -> SyncSchema {
+    fn test_schema() -> Schema {
         let yaml = r#"
 version: 1
 seed: 42
@@ -202,7 +202,7 @@ tables:
           type: weighted_bool
           true_weight: 0.8
 "#;
-        SyncSchema::from_yaml(yaml).unwrap()
+        Schema::from_yaml(yaml).unwrap()
     }
 
     #[test]
@@ -214,14 +214,14 @@ tables:
 
         assert_eq!(row.table, "users");
         assert_eq!(row.index, 0);
-        assert!(matches!(row.id, GeneratedValue::Uuid(_)));
+        assert!(matches!(row.id, UniversalValue::Uuid(_)));
         assert_eq!(
             row.get_field("email"),
-            Some(&GeneratedValue::String("user_0@example.com".to_string()))
+            Some(&UniversalValue::String("user_0@example.com".to_string()))
         );
 
         // Age should be in range
-        if let Some(GeneratedValue::Int64(age)) = row.get_field("age") {
+        if let Some(UniversalValue::Int64(age)) = row.get_field("age") {
             assert!(*age >= 18 && *age <= 80);
         } else {
             panic!("Expected Int64 for age");
@@ -260,7 +260,7 @@ tables:
 
         // Verify emails contain correct indices
         for (i, row) in rows.iter().enumerate() {
-            if let Some(GeneratedValue::String(email)) = row.get_field("email") {
+            if let Some(UniversalValue::String(email)) = row.get_field("email") {
                 assert!(email.contains(&format!("user_{i}")));
             }
         }
@@ -285,7 +285,7 @@ tables:
         assert_eq!(row1.index, 5);
 
         // Email should use index 5
-        if let Some(GeneratedValue::String(email)) = row1.get_field("email") {
+        if let Some(UniversalValue::String(email)) = row1.get_field("email") {
             assert!(email.contains("user_5"));
         } else {
             panic!("Expected String for email");

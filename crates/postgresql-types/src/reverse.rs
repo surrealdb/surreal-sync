@@ -6,7 +6,7 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use postgres_types::Type;
 use rust_decimal::Decimal;
-use sync_core::{GeneratedValue, GeometryType, SyncDataType, TypedValue};
+use sync_core::{GeometryType, TypedValue, UniversalType, UniversalValue};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -114,7 +114,7 @@ impl PostgreSQLValueWithSchema {
         // Handle NULL first
         if matches!(self.value, PostgreSQLRawValue::Null) {
             let sync_type = pg_type_to_sync_type(&self.pg_type);
-            return Ok(TypedValue::new(sync_type, GeneratedValue::Null));
+            return Ok(TypedValue::new(sync_type, UniversalValue::Null));
         }
 
         match &self.pg_type {
@@ -134,8 +134,8 @@ impl PostgreSQLValueWithSchema {
             t if *t == Type::INT2 => {
                 if let PostgreSQLRawValue::Int16(i) = self.value {
                     Ok(TypedValue::new(
-                        SyncDataType::SmallInt,
-                        GeneratedValue::Int32(i as i32),
+                        UniversalType::SmallInt,
+                        UniversalValue::Int32(i as i32),
                     ))
                 } else {
                     Err(ConversionError::TypeMismatch {
@@ -224,8 +224,8 @@ impl PostgreSQLValueWithSchema {
             t if *t == Type::BYTEA => {
                 if let PostgreSQLRawValue::Bytes(b) = &self.value {
                     Ok(TypedValue::new(
-                        SyncDataType::Bytes,
-                        GeneratedValue::Bytes(b.clone()),
+                        UniversalType::Bytes,
+                        UniversalValue::Bytes(b.clone()),
                     ))
                 } else {
                     Err(ConversionError::TypeMismatch {
@@ -252,8 +252,8 @@ impl PostgreSQLValueWithSchema {
                 if let PostgreSQLRawValue::Date(d) = &self.value {
                     let dt = d.and_hms_opt(0, 0, 0).unwrap().and_utc();
                     Ok(TypedValue::new(
-                        SyncDataType::Date,
-                        GeneratedValue::DateTime(dt),
+                        UniversalType::Date,
+                        UniversalValue::DateTime(dt),
                     ))
                 } else {
                     Err(ConversionError::TypeMismatch {
@@ -269,8 +269,8 @@ impl PostgreSQLValueWithSchema {
                     let today = chrono::Utc::now().date_naive();
                     let dt = NaiveDateTime::new(today, *t).and_utc();
                     Ok(TypedValue::new(
-                        SyncDataType::Time,
-                        GeneratedValue::DateTime(dt),
+                        UniversalType::Time,
+                        UniversalValue::DateTime(dt),
                     ))
                 } else {
                     Err(ConversionError::TypeMismatch {
@@ -296,8 +296,8 @@ impl PostgreSQLValueWithSchema {
             t if *t == Type::TIMESTAMPTZ => {
                 if let PostgreSQLRawValue::TimestampTz(ts) = &self.value {
                     Ok(TypedValue::new(
-                        SyncDataType::TimestampTz,
-                        GeneratedValue::DateTime(*ts),
+                        UniversalType::TimestampTz,
+                        UniversalValue::DateTime(*ts),
                     ))
                 } else {
                     Err(ConversionError::TypeMismatch {
@@ -312,9 +312,9 @@ impl PostgreSQLValueWithSchema {
                 if let PostgreSQLRawValue::Json(j) = &self.value {
                     let gv = json_to_generated_value(j.clone());
                     let sync_type = if *t == Type::JSONB {
-                        SyncDataType::Jsonb
+                        UniversalType::Jsonb
                     } else {
-                        SyncDataType::Json
+                        UniversalType::Json
                     };
                     Ok(TypedValue::new(sync_type, gv))
                 } else {
@@ -328,11 +328,11 @@ impl PostgreSQLValueWithSchema {
             // Arrays
             t if *t == Type::TEXT_ARRAY => {
                 if let PostgreSQLRawValue::TextArray(arr) = &self.value {
-                    let values: Vec<GeneratedValue> = arr
+                    let values: Vec<UniversalValue> = arr
                         .iter()
-                        .map(|s| GeneratedValue::String(s.clone()))
+                        .map(|s| UniversalValue::String(s.clone()))
                         .collect();
-                    Ok(TypedValue::array(values, SyncDataType::Text))
+                    Ok(TypedValue::array(values, UniversalType::Text))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "text[]".to_string(),
@@ -343,9 +343,9 @@ impl PostgreSQLValueWithSchema {
 
             t if *t == Type::INT4_ARRAY => {
                 if let PostgreSQLRawValue::Int32Array(arr) = &self.value {
-                    let values: Vec<GeneratedValue> =
-                        arr.iter().map(|i| GeneratedValue::Int32(*i)).collect();
-                    Ok(TypedValue::array(values, SyncDataType::Int))
+                    let values: Vec<UniversalValue> =
+                        arr.iter().map(|i| UniversalValue::Int32(*i)).collect();
+                    Ok(TypedValue::array(values, UniversalType::Int))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "int4[]".to_string(),
@@ -356,9 +356,9 @@ impl PostgreSQLValueWithSchema {
 
             t if *t == Type::INT8_ARRAY => {
                 if let PostgreSQLRawValue::Int64Array(arr) = &self.value {
-                    let values: Vec<GeneratedValue> =
-                        arr.iter().map(|i| GeneratedValue::Int64(*i)).collect();
-                    Ok(TypedValue::array(values, SyncDataType::BigInt))
+                    let values: Vec<UniversalValue> =
+                        arr.iter().map(|i| UniversalValue::Int64(*i)).collect();
+                    Ok(TypedValue::array(values, UniversalType::BigInt))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "int8[]".to_string(),
@@ -369,9 +369,9 @@ impl PostgreSQLValueWithSchema {
 
             t if *t == Type::FLOAT8_ARRAY => {
                 if let PostgreSQLRawValue::Float64Array(arr) = &self.value {
-                    let values: Vec<GeneratedValue> =
-                        arr.iter().map(|f| GeneratedValue::Float64(*f)).collect();
-                    Ok(TypedValue::array(values, SyncDataType::Double))
+                    let values: Vec<UniversalValue> =
+                        arr.iter().map(|f| UniversalValue::Float64(*f)).collect();
+                    Ok(TypedValue::array(values, UniversalType::Double))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "float8[]".to_string(),
@@ -382,9 +382,9 @@ impl PostgreSQLValueWithSchema {
 
             t if *t == Type::BOOL_ARRAY => {
                 if let PostgreSQLRawValue::BoolArray(arr) = &self.value {
-                    let values: Vec<GeneratedValue> =
-                        arr.iter().map(|b| GeneratedValue::Bool(*b)).collect();
-                    Ok(TypedValue::array(values, SyncDataType::Bool))
+                    let values: Vec<UniversalValue> =
+                        arr.iter().map(|b| UniversalValue::Bool(*b)).collect();
+                    Ok(TypedValue::array(values, UniversalType::Bool))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "bool[]".to_string(),
@@ -401,10 +401,10 @@ impl PostgreSQLValueWithSchema {
                     bytes.extend_from_slice(&x.to_le_bytes());
                     bytes.extend_from_slice(&y.to_le_bytes());
                     Ok(TypedValue::new(
-                        SyncDataType::Geometry {
+                        UniversalType::Geometry {
                             geometry_type: GeometryType::Point,
                         },
-                        GeneratedValue::Bytes(bytes),
+                        UniversalValue::Bytes(bytes),
                     ))
                 } else {
                     Err(ConversionError::TypeMismatch {
@@ -426,71 +426,71 @@ impl PostgreSQLValueWithSchema {
     }
 }
 
-/// Convert PostgreSQL type to SyncDataType.
-fn pg_type_to_sync_type(pg_type: &Type) -> SyncDataType {
+/// Convert PostgreSQL type to UniversalType.
+fn pg_type_to_sync_type(pg_type: &Type) -> UniversalType {
     match pg_type {
-        t if *t == Type::BOOL => SyncDataType::Bool,
-        t if *t == Type::INT2 => SyncDataType::SmallInt,
-        t if *t == Type::INT4 => SyncDataType::Int,
-        t if *t == Type::INT8 => SyncDataType::BigInt,
-        t if *t == Type::FLOAT4 => SyncDataType::Float,
-        t if *t == Type::FLOAT8 => SyncDataType::Double,
-        t if *t == Type::NUMERIC => SyncDataType::Decimal {
+        t if *t == Type::BOOL => UniversalType::Bool,
+        t if *t == Type::INT2 => UniversalType::SmallInt,
+        t if *t == Type::INT4 => UniversalType::Int,
+        t if *t == Type::INT8 => UniversalType::BigInt,
+        t if *t == Type::FLOAT4 => UniversalType::Float,
+        t if *t == Type::FLOAT8 => UniversalType::Double,
+        t if *t == Type::NUMERIC => UniversalType::Decimal {
             precision: 38,
             scale: 10,
         },
-        t if *t == Type::TEXT => SyncDataType::Text,
-        t if *t == Type::VARCHAR => SyncDataType::VarChar { length: 255 },
-        t if *t == Type::BPCHAR => SyncDataType::Char { length: 1 },
-        t if *t == Type::BYTEA => SyncDataType::Bytes,
-        t if *t == Type::UUID => SyncDataType::Uuid,
-        t if *t == Type::DATE => SyncDataType::Date,
-        t if *t == Type::TIME => SyncDataType::Time,
-        t if *t == Type::TIMESTAMP => SyncDataType::DateTime,
-        t if *t == Type::TIMESTAMPTZ => SyncDataType::TimestampTz,
-        t if *t == Type::JSON => SyncDataType::Json,
-        t if *t == Type::JSONB => SyncDataType::Jsonb,
-        t if *t == Type::TEXT_ARRAY => SyncDataType::Array {
-            element_type: Box::new(SyncDataType::Text),
+        t if *t == Type::TEXT => UniversalType::Text,
+        t if *t == Type::VARCHAR => UniversalType::VarChar { length: 255 },
+        t if *t == Type::BPCHAR => UniversalType::Char { length: 1 },
+        t if *t == Type::BYTEA => UniversalType::Bytes,
+        t if *t == Type::UUID => UniversalType::Uuid,
+        t if *t == Type::DATE => UniversalType::Date,
+        t if *t == Type::TIME => UniversalType::Time,
+        t if *t == Type::TIMESTAMP => UniversalType::DateTime,
+        t if *t == Type::TIMESTAMPTZ => UniversalType::TimestampTz,
+        t if *t == Type::JSON => UniversalType::Json,
+        t if *t == Type::JSONB => UniversalType::Jsonb,
+        t if *t == Type::TEXT_ARRAY => UniversalType::Array {
+            element_type: Box::new(UniversalType::Text),
         },
-        t if *t == Type::INT4_ARRAY => SyncDataType::Array {
-            element_type: Box::new(SyncDataType::Int),
+        t if *t == Type::INT4_ARRAY => UniversalType::Array {
+            element_type: Box::new(UniversalType::Int),
         },
-        t if *t == Type::INT8_ARRAY => SyncDataType::Array {
-            element_type: Box::new(SyncDataType::BigInt),
+        t if *t == Type::INT8_ARRAY => UniversalType::Array {
+            element_type: Box::new(UniversalType::BigInt),
         },
-        t if *t == Type::FLOAT8_ARRAY => SyncDataType::Array {
-            element_type: Box::new(SyncDataType::Double),
+        t if *t == Type::FLOAT8_ARRAY => UniversalType::Array {
+            element_type: Box::new(UniversalType::Double),
         },
-        t if *t == Type::BOOL_ARRAY => SyncDataType::Array {
-            element_type: Box::new(SyncDataType::Bool),
+        t if *t == Type::BOOL_ARRAY => UniversalType::Array {
+            element_type: Box::new(UniversalType::Bool),
         },
-        t if *t == Type::POINT => SyncDataType::Geometry {
+        t if *t == Type::POINT => UniversalType::Geometry {
             geometry_type: GeometryType::Point,
         },
-        _ => SyncDataType::Text,
+        _ => UniversalType::Text,
     }
 }
 
-/// Convert serde_json::Value to GeneratedValue.
-fn json_to_generated_value(json: serde_json::Value) -> GeneratedValue {
+/// Convert serde_json::Value to UniversalValue.
+fn json_to_generated_value(json: serde_json::Value) -> UniversalValue {
     match json {
-        serde_json::Value::Null => GeneratedValue::Null,
-        serde_json::Value::Bool(b) => GeneratedValue::Bool(b),
+        serde_json::Value::Null => UniversalValue::Null,
+        serde_json::Value::Bool(b) => UniversalValue::Bool(b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                GeneratedValue::Int64(i)
+                UniversalValue::Int64(i)
             } else if let Some(f) = n.as_f64() {
-                GeneratedValue::Float64(f)
+                UniversalValue::Float64(f)
             } else {
-                GeneratedValue::String(n.to_string())
+                UniversalValue::String(n.to_string())
             }
         }
-        serde_json::Value::String(s) => GeneratedValue::String(s),
+        serde_json::Value::String(s) => UniversalValue::String(s),
         serde_json::Value::Array(arr) => {
-            GeneratedValue::Array(arr.into_iter().map(json_to_generated_value).collect())
+            UniversalValue::Array(arr.into_iter().map(json_to_generated_value).collect())
         }
-        serde_json::Value::Object(obj) => GeneratedValue::Object(
+        serde_json::Value::Object(obj) => UniversalValue::Object(
             obj.into_iter()
                 .map(|(k, v)| (k, json_to_generated_value(v)))
                 .collect(),
@@ -507,16 +507,16 @@ mod tests {
     fn test_bool_conversion() {
         let pv = PostgreSQLValueWithSchema::new(Type::BOOL, PostgreSQLRawValue::Bool(true));
         let tv = pv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Bool));
-        assert!(matches!(tv.value, GeneratedValue::Bool(true)));
+        assert!(matches!(tv.sync_type, UniversalType::Bool));
+        assert!(matches!(tv.value, UniversalValue::Bool(true)));
     }
 
     #[test]
     fn test_int_conversion() {
         let pv = PostgreSQLValueWithSchema::new(Type::INT4, PostgreSQLRawValue::Int32(42));
         let tv = pv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Int));
-        assert!(matches!(tv.value, GeneratedValue::Int32(42)));
+        assert!(matches!(tv.sync_type, UniversalType::Int));
+        assert!(matches!(tv.value, UniversalValue::Int32(42)));
     }
 
     #[test]
@@ -526,10 +526,10 @@ mod tests {
             PostgreSQLRawValue::Int64(9_223_372_036_854_775_807),
         );
         let tv = pv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::BigInt));
+        assert!(matches!(tv.sync_type, UniversalType::BigInt));
         assert!(matches!(
             tv.value,
-            GeneratedValue::Int64(9_223_372_036_854_775_807)
+            UniversalValue::Int64(9_223_372_036_854_775_807)
         ));
     }
 
@@ -540,8 +540,8 @@ mod tests {
             PostgreSQLRawValue::Text("hello world".to_string()),
         );
         let tv = pv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Text));
-        if let GeneratedValue::String(s) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::Text));
+        if let UniversalValue::String(s) = tv.value {
             assert_eq!(s, "hello world");
         } else {
             panic!("Expected String value");
@@ -553,8 +553,8 @@ mod tests {
         let uuid = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let pv = PostgreSQLValueWithSchema::new(Type::UUID, PostgreSQLRawValue::Uuid(uuid));
         let tv = pv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Uuid));
-        if let GeneratedValue::Uuid(u) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::Uuid));
+        if let UniversalValue::Uuid(u) = tv.value {
             assert_eq!(u.to_string(), "550e8400-e29b-41d4-a716-446655440000");
         } else {
             panic!("Expected Uuid value");
@@ -566,8 +566,8 @@ mod tests {
         let ts = NaiveDateTime::parse_from_str("2024-06-15 10:30:45", "%Y-%m-%d %H:%M:%S").unwrap();
         let pv = PostgreSQLValueWithSchema::new(Type::TIMESTAMP, PostgreSQLRawValue::Timestamp(ts));
         let tv = pv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::DateTime));
-        if let GeneratedValue::DateTime(dt) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::DateTime));
+        if let UniversalValue::DateTime(dt) = tv.value {
             assert_eq!(dt.year(), 2024);
         } else {
             panic!("Expected DateTime value");
@@ -578,8 +578,8 @@ mod tests {
     fn test_null_conversion() {
         let pv = PostgreSQLValueWithSchema::new(Type::INT4, PostgreSQLRawValue::Null);
         let tv = pv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Int));
-        assert!(matches!(tv.value, GeneratedValue::Null));
+        assert!(matches!(tv.sync_type, UniversalType::Int));
+        assert!(matches!(tv.value, UniversalValue::Null));
     }
 
     #[test]
@@ -587,8 +587,8 @@ mod tests {
         let json = serde_json::json!({"name": "Alice", "age": 30});
         let pv = PostgreSQLValueWithSchema::new(Type::JSON, PostgreSQLRawValue::Json(json));
         let tv = pv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, SyncDataType::Json));
-        if let GeneratedValue::Object(obj) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::Json));
+        if let UniversalValue::Object(obj) = tv.value {
             assert!(obj.contains_key("name"));
             assert!(obj.contains_key("age"));
         } else {
@@ -602,12 +602,12 @@ mod tests {
         let pv =
             PostgreSQLValueWithSchema::new(Type::NUMERIC, PostgreSQLRawValue::Decimal(decimal));
         let tv = pv.to_typed_value().unwrap();
-        if let SyncDataType::Decimal { scale, .. } = tv.sync_type {
+        if let UniversalType::Decimal { scale, .. } = tv.sync_type {
             assert_eq!(scale, 3);
         } else {
             panic!("Expected Decimal type");
         }
-        if let GeneratedValue::Decimal { value, .. } = tv.value {
+        if let UniversalValue::Decimal { value, .. } = tv.value {
             assert_eq!(value, "123.456");
         } else {
             panic!("Expected Decimal value");
@@ -620,12 +620,12 @@ mod tests {
         let pv =
             PostgreSQLValueWithSchema::new(Type::TEXT_ARRAY, PostgreSQLRawValue::TextArray(arr));
         let tv = pv.to_typed_value().unwrap();
-        if let SyncDataType::Array { element_type } = &tv.sync_type {
-            assert!(matches!(**element_type, SyncDataType::Text));
+        if let UniversalType::Array { element_type } = &tv.sync_type {
+            assert!(matches!(**element_type, UniversalType::Text));
         } else {
             panic!("Expected Array type");
         }
-        if let GeneratedValue::Array(values) = tv.value {
+        if let UniversalValue::Array(values) = tv.value {
             assert_eq!(values.len(), 3);
         } else {
             panic!("Expected Array value");
@@ -638,9 +638,9 @@ mod tests {
         let pv =
             PostgreSQLValueWithSchema::new(Type::INT4_ARRAY, PostgreSQLRawValue::Int32Array(arr));
         let tv = pv.to_typed_value().unwrap();
-        if let GeneratedValue::Array(values) = tv.value {
+        if let UniversalValue::Array(values) = tv.value {
             assert_eq!(values.len(), 3);
-            assert!(matches!(values[0], GeneratedValue::Int32(1)));
+            assert!(matches!(values[0], UniversalValue::Int32(1)));
         } else {
             panic!("Expected Array value");
         }

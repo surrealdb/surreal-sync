@@ -6,7 +6,7 @@ use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 use std::str::FromStr;
 use surrealdb::sql::{Array, Datetime, Geometry, Number, Object, Strand, Thing, Value};
-use sync_core::{GeneratedValue, GeometryType, SyncDataType, TypedValue};
+use sync_core::{GeometryType, TypedValue, UniversalType, UniversalValue};
 
 /// Wrapper for SurrealDB values.
 #[derive(Debug, Clone)]
@@ -28,35 +28,35 @@ impl From<TypedValue> for SurrealValue {
     fn from(tv: TypedValue) -> Self {
         match (&tv.sync_type, &tv.value) {
             // Null
-            (_, GeneratedValue::Null) => SurrealValue(Value::None),
+            (_, UniversalValue::Null) => SurrealValue(Value::None),
 
             // Boolean
-            (SyncDataType::Bool, GeneratedValue::Bool(b)) => SurrealValue(Value::Bool(*b)),
+            (UniversalType::Bool, UniversalValue::Bool(b)) => SurrealValue(Value::Bool(*b)),
 
             // Integer types - SurrealDB uses Number
-            (SyncDataType::TinyInt { .. }, GeneratedValue::Int32(i)) => {
+            (UniversalType::TinyInt { .. }, UniversalValue::Int32(i)) => {
                 SurrealValue(Value::Number(Number::Int(*i as i64)))
             }
-            (SyncDataType::SmallInt, GeneratedValue::Int32(i)) => {
+            (UniversalType::SmallInt, UniversalValue::Int32(i)) => {
                 SurrealValue(Value::Number(Number::Int(*i as i64)))
             }
-            (SyncDataType::Int, GeneratedValue::Int32(i)) => {
+            (UniversalType::Int, UniversalValue::Int32(i)) => {
                 SurrealValue(Value::Number(Number::Int(*i as i64)))
             }
-            (SyncDataType::BigInt, GeneratedValue::Int64(i)) => {
+            (UniversalType::BigInt, UniversalValue::Int64(i)) => {
                 SurrealValue(Value::Number(Number::Int(*i)))
             }
 
             // Floating point
-            (SyncDataType::Float, GeneratedValue::Float64(f)) => {
+            (UniversalType::Float, UniversalValue::Float64(f)) => {
                 SurrealValue(Value::Number(Number::Float(*f)))
             }
-            (SyncDataType::Double, GeneratedValue::Float64(f)) => {
+            (UniversalType::Double, UniversalValue::Float64(f)) => {
                 SurrealValue(Value::Number(Number::Float(*f)))
             }
 
             // Decimal - SurrealDB supports decimal with up to 128-bit precision
-            (SyncDataType::Decimal { precision, .. }, GeneratedValue::Decimal { value, .. }) => {
+            (UniversalType::Decimal { precision, .. }, UniversalValue::Decimal { value, .. }) => {
                 if *precision <= 38 {
                     // Fits in Decimal128
                     match Decimal::from_str(value) {
@@ -70,86 +70,86 @@ impl From<TypedValue> for SurrealValue {
             }
 
             // String types
-            (SyncDataType::Char { .. }, GeneratedValue::String(s)) => {
+            (UniversalType::Char { .. }, UniversalValue::String(s)) => {
                 SurrealValue(Value::Strand(Strand::from(s.clone())))
             }
-            (SyncDataType::VarChar { .. }, GeneratedValue::String(s)) => {
+            (UniversalType::VarChar { .. }, UniversalValue::String(s)) => {
                 SurrealValue(Value::Strand(Strand::from(s.clone())))
             }
-            (SyncDataType::Text, GeneratedValue::String(s)) => {
+            (UniversalType::Text, UniversalValue::String(s)) => {
                 SurrealValue(Value::Strand(Strand::from(s.clone())))
             }
 
             // Binary types - SurrealDB uses Bytes
-            (SyncDataType::Blob, GeneratedValue::Bytes(b)) => {
+            (UniversalType::Blob, UniversalValue::Bytes(b)) => {
                 SurrealValue(Value::Bytes(surrealdb::sql::Bytes::from(b.clone())))
             }
-            (SyncDataType::Bytes, GeneratedValue::Bytes(b)) => {
+            (UniversalType::Bytes, UniversalValue::Bytes(b)) => {
                 SurrealValue(Value::Bytes(surrealdb::sql::Bytes::from(b.clone())))
             }
 
             // Date/time types - SurrealDB uses Datetime
-            (SyncDataType::Date, GeneratedValue::DateTime(dt)) => {
+            (UniversalType::Date, UniversalValue::DateTime(dt)) => {
                 // Store date as string in YYYY-MM-DD format
                 SurrealValue(Value::Strand(Strand::from(
                     dt.format("%Y-%m-%d").to_string(),
                 )))
             }
-            (SyncDataType::Time, GeneratedValue::DateTime(dt)) => {
+            (UniversalType::Time, UniversalValue::DateTime(dt)) => {
                 // Store time as string in HH:MM:SS format
                 SurrealValue(Value::Strand(Strand::from(
                     dt.format("%H:%M:%S").to_string(),
                 )))
             }
-            (SyncDataType::DateTime, GeneratedValue::DateTime(dt)) => {
+            (UniversalType::DateTime, UniversalValue::DateTime(dt)) => {
                 SurrealValue(Value::Datetime(Datetime::from(*dt)))
             }
-            (SyncDataType::DateTimeNano, GeneratedValue::DateTime(dt)) => {
+            (UniversalType::DateTimeNano, UniversalValue::DateTime(dt)) => {
                 SurrealValue(Value::Datetime(Datetime::from(*dt)))
             }
-            (SyncDataType::TimestampTz, GeneratedValue::DateTime(dt)) => {
+            (UniversalType::TimestampTz, UniversalValue::DateTime(dt)) => {
                 SurrealValue(Value::Datetime(Datetime::from(*dt)))
             }
 
             // UUID - SurrealDB has native UUID support
-            (SyncDataType::Uuid, GeneratedValue::Uuid(u)) => {
+            (UniversalType::Uuid, UniversalValue::Uuid(u)) => {
                 SurrealValue(Value::Uuid(surrealdb::sql::Uuid::from(*u)))
             }
 
             // JSON types - convert to SurrealDB Object
-            (SyncDataType::Json, GeneratedValue::Object(map)) => {
+            (UniversalType::Json, UniversalValue::Object(map)) => {
                 let obj = hashmap_to_object(map);
                 SurrealValue(Value::Object(obj))
             }
-            (SyncDataType::Jsonb, GeneratedValue::Object(map)) => {
+            (UniversalType::Jsonb, UniversalValue::Object(map)) => {
                 let obj = hashmap_to_object(map);
                 SurrealValue(Value::Object(obj))
             }
             // JSON can also be a string
-            (SyncDataType::Json, GeneratedValue::String(s)) => {
+            (UniversalType::Json, UniversalValue::String(s)) => {
                 match serde_json::from_str::<serde_json::Value>(s) {
                     Ok(v) => SurrealValue(json_to_surreal(&v)),
                     Err(_) => SurrealValue(Value::Strand(Strand::from(s.clone()))),
                 }
             }
-            (SyncDataType::Jsonb, GeneratedValue::String(s)) => {
+            (UniversalType::Jsonb, UniversalValue::String(s)) => {
                 match serde_json::from_str::<serde_json::Value>(s) {
                     Ok(v) => SurrealValue(json_to_surreal(&v)),
                     Err(_) => SurrealValue(Value::Strand(Strand::from(s.clone()))),
                 }
             }
             // JSON can also be an array (e.g., from MySQL SET columns or JSON arrays)
-            (SyncDataType::Json, GeneratedValue::Array(arr)) => {
+            (UniversalType::Json, UniversalValue::Array(arr)) => {
                 let surreal_arr: Vec<Value> = arr.iter().map(generated_value_to_surreal).collect();
                 SurrealValue(Value::Array(surrealdb::sql::Array::from(surreal_arr)))
             }
-            (SyncDataType::Jsonb, GeneratedValue::Array(arr)) => {
+            (UniversalType::Jsonb, UniversalValue::Array(arr)) => {
                 let surreal_arr: Vec<Value> = arr.iter().map(generated_value_to_surreal).collect();
                 SurrealValue(Value::Array(surrealdb::sql::Array::from(surreal_arr)))
             }
 
             // Array types
-            (SyncDataType::Array { element_type }, GeneratedValue::Array(arr)) => {
+            (UniversalType::Array { element_type }, UniversalValue::Array(arr)) => {
                 let surreal_arr: Vec<Value> = arr
                     .iter()
                     .map(|v| {
@@ -164,11 +164,11 @@ impl From<TypedValue> for SurrealValue {
             }
 
             // Set - stored as array of strings
-            (SyncDataType::Set { .. }, GeneratedValue::Array(arr)) => {
+            (UniversalType::Set { .. }, UniversalValue::Array(arr)) => {
                 let surreal_arr: Vec<Value> = arr
                     .iter()
                     .map(|v| match v {
-                        GeneratedValue::String(s) => Value::Strand(Strand::from(s.clone())),
+                        UniversalValue::String(s) => Value::Strand(Strand::from(s.clone())),
                         _ => Value::None,
                     })
                     .collect();
@@ -176,12 +176,12 @@ impl From<TypedValue> for SurrealValue {
             }
 
             // Enum - stored as string
-            (SyncDataType::Enum { .. }, GeneratedValue::String(s)) => {
+            (UniversalType::Enum { .. }, UniversalValue::String(s)) => {
                 SurrealValue(Value::Strand(Strand::from(s.clone())))
             }
 
             // Geometry types - use SurrealDB's native Geometry
-            (SyncDataType::Geometry { geometry_type }, GeneratedValue::Object(map)) => {
+            (UniversalType::Geometry { geometry_type }, UniversalValue::Object(map)) => {
                 let geometry = match geometry_type {
                     GeometryType::Point => {
                         if let Some(coords) = extract_coordinates(map) {
@@ -236,8 +236,8 @@ impl From<TypedValue> for SurrealValue {
     }
 }
 
-/// Convert a HashMap of GeneratedValue to a SurrealDB Object.
-fn hashmap_to_object(map: &std::collections::HashMap<String, GeneratedValue>) -> Object {
+/// Convert a HashMap of UniversalValue to a SurrealDB Object.
+fn hashmap_to_object(map: &std::collections::HashMap<String, UniversalValue>) -> Object {
     let mut obj = BTreeMap::new();
     for (key, value) in map {
         obj.insert(key.clone(), generated_value_to_surreal(value));
@@ -245,28 +245,28 @@ fn hashmap_to_object(map: &std::collections::HashMap<String, GeneratedValue>) ->
     Object::from(obj)
 }
 
-/// Convert a GeneratedValue to a SurrealDB Value (without type context).
-fn generated_value_to_surreal(value: &GeneratedValue) -> Value {
+/// Convert a UniversalValue to a SurrealDB Value (without type context).
+fn generated_value_to_surreal(value: &UniversalValue) -> Value {
     match value {
-        GeneratedValue::Null => Value::None,
-        GeneratedValue::Bool(b) => Value::Bool(*b),
-        GeneratedValue::Int32(i) => Value::Number(Number::Int(*i as i64)),
-        GeneratedValue::Int64(i) => Value::Number(Number::Int(*i)),
-        GeneratedValue::Float64(f) => Value::Number(Number::Float(*f)),
-        GeneratedValue::String(s) => Value::Strand(Strand::from(s.clone())),
-        GeneratedValue::Bytes(b) => Value::Bytes(surrealdb::sql::Bytes::from(b.clone())),
-        GeneratedValue::Uuid(u) => Value::Uuid(surrealdb::sql::Uuid::from(*u)),
-        GeneratedValue::DateTime(dt) => Value::Datetime(Datetime::from(*dt)),
-        GeneratedValue::Decimal { value, .. } => match Decimal::from_str(value) {
+        UniversalValue::Null => Value::None,
+        UniversalValue::Bool(b) => Value::Bool(*b),
+        UniversalValue::Int32(i) => Value::Number(Number::Int(*i as i64)),
+        UniversalValue::Int64(i) => Value::Number(Number::Int(*i)),
+        UniversalValue::Float64(f) => Value::Number(Number::Float(*f)),
+        UniversalValue::String(s) => Value::Strand(Strand::from(s.clone())),
+        UniversalValue::Bytes(b) => Value::Bytes(surrealdb::sql::Bytes::from(b.clone())),
+        UniversalValue::Uuid(u) => Value::Uuid(surrealdb::sql::Uuid::from(*u)),
+        UniversalValue::DateTime(dt) => Value::Datetime(Datetime::from(*dt)),
+        UniversalValue::Decimal { value, .. } => match Decimal::from_str(value) {
             Ok(dec) => Value::Number(Number::Decimal(dec)),
             Err(_) => Value::Strand(Strand::from(value.clone())),
         },
-        GeneratedValue::Array(arr) => Value::Array(Array::from(
+        UniversalValue::Array(arr) => Value::Array(Array::from(
             arr.iter()
                 .map(generated_value_to_surreal)
                 .collect::<Vec<_>>(),
         )),
-        GeneratedValue::Object(map) => Value::Object(hashmap_to_object(map)),
+        UniversalValue::Object(map) => Value::Object(hashmap_to_object(map)),
     }
 }
 
@@ -300,16 +300,16 @@ fn json_to_surreal(value: &serde_json::Value) -> Value {
 
 /// Extract coordinates from a GeoJSON-like object.
 fn extract_coordinates(
-    map: &std::collections::HashMap<String, GeneratedValue>,
+    map: &std::collections::HashMap<String, UniversalValue>,
 ) -> Option<Vec<f64>> {
     match map.get("coordinates") {
-        Some(GeneratedValue::Array(arr)) => {
+        Some(UniversalValue::Array(arr)) => {
             let coords: Vec<f64> = arr
                 .iter()
                 .filter_map(|v| match v {
-                    GeneratedValue::Float64(f) => Some(*f),
-                    GeneratedValue::Int32(i) => Some(*i as f64),
-                    GeneratedValue::Int64(i) => Some(*i as f64),
+                    UniversalValue::Float64(f) => Some(*f),
+                    UniversalValue::Int32(i) => Some(*i as f64),
+                    UniversalValue::Int64(i) => Some(*i as f64),
                     _ => None,
                 })
                 .collect();
@@ -325,23 +325,23 @@ fn extract_coordinates(
 
 /// Extract line coordinates from a GeoJSON-like object.
 fn extract_line_coordinates(
-    map: &std::collections::HashMap<String, GeneratedValue>,
+    map: &std::collections::HashMap<String, UniversalValue>,
 ) -> Option<Vec<geo_types::Coord<f64>>> {
     match map.get("coordinates") {
-        Some(GeneratedValue::Array(arr)) => {
+        Some(UniversalValue::Array(arr)) => {
             let coords: Vec<geo_types::Coord<f64>> = arr
                 .iter()
                 .filter_map(|v| {
-                    if let GeneratedValue::Array(point) = v {
+                    if let UniversalValue::Array(point) = v {
                         if point.len() >= 2 {
                             let x = match &point[0] {
-                                GeneratedValue::Float64(f) => *f,
-                                GeneratedValue::Int64(i) => *i as f64,
+                                UniversalValue::Float64(f) => *f,
+                                UniversalValue::Int64(i) => *i as f64,
                                 _ => return None,
                             };
                             let y = match &point[1] {
-                                GeneratedValue::Float64(f) => *f,
-                                GeneratedValue::Int64(i) => *i as f64,
+                                UniversalValue::Float64(f) => *f,
+                                UniversalValue::Int64(i) => *i as f64,
                                 _ => return None,
                             };
                             Some(geo_types::Coord { x, y })
@@ -365,25 +365,25 @@ fn extract_line_coordinates(
 
 /// Extract polygon exterior ring coordinates.
 fn extract_polygon_coordinates(
-    map: &std::collections::HashMap<String, GeneratedValue>,
+    map: &std::collections::HashMap<String, UniversalValue>,
 ) -> Option<geo_types::LineString<f64>> {
     match map.get("coordinates") {
-        Some(GeneratedValue::Array(rings)) => {
+        Some(UniversalValue::Array(rings)) => {
             // First ring is the exterior ring
-            if let Some(GeneratedValue::Array(ring)) = rings.first() {
+            if let Some(UniversalValue::Array(ring)) = rings.first() {
                 let coords: Vec<geo_types::Coord<f64>> = ring
                     .iter()
                     .filter_map(|v| {
-                        if let GeneratedValue::Array(point) = v {
+                        if let UniversalValue::Array(point) = v {
                             if point.len() >= 2 {
                                 let x = match &point[0] {
-                                    GeneratedValue::Float64(f) => *f,
-                                    GeneratedValue::Int64(i) => *i as f64,
+                                    UniversalValue::Float64(f) => *f,
+                                    UniversalValue::Int64(i) => *i as f64,
                                     _ => return None,
                                 };
                                 let y = match &point[1] {
-                                    GeneratedValue::Float64(f) => *f,
-                                    GeneratedValue::Int64(i) => *i as f64,
+                                    UniversalValue::Float64(f) => *f,
+                                    UniversalValue::Int64(i) => *i as f64,
                                     _ => return None,
                                 };
                                 Some(geo_types::Coord { x, y })
@@ -410,23 +410,23 @@ fn extract_polygon_coordinates(
 
 /// Extract multi-point coordinates.
 fn extract_multi_point_coordinates(
-    map: &std::collections::HashMap<String, GeneratedValue>,
+    map: &std::collections::HashMap<String, UniversalValue>,
 ) -> Option<Vec<geo_types::Point<f64>>> {
     match map.get("coordinates") {
-        Some(GeneratedValue::Array(arr)) => {
+        Some(UniversalValue::Array(arr)) => {
             let points: Vec<geo_types::Point<f64>> = arr
                 .iter()
                 .filter_map(|v| {
-                    if let GeneratedValue::Array(point) = v {
+                    if let UniversalValue::Array(point) = v {
                         if point.len() >= 2 {
                             let x = match &point[0] {
-                                GeneratedValue::Float64(f) => *f,
-                                GeneratedValue::Int64(i) => *i as f64,
+                                UniversalValue::Float64(f) => *f,
+                                UniversalValue::Int64(i) => *i as f64,
                                 _ => return None,
                             };
                             let y = match &point[1] {
-                                GeneratedValue::Float64(f) => *f,
-                                GeneratedValue::Int64(i) => *i as f64,
+                                UniversalValue::Float64(f) => *f,
+                                UniversalValue::Int64(i) => *i as f64,
                                 _ => return None,
                             };
                             Some(geo_types::Point::new(x, y))
@@ -449,12 +449,12 @@ fn extract_multi_point_coordinates(
 }
 
 /// Create a SurrealDB Thing (record ID).
-pub fn create_thing(table: &str, id: &GeneratedValue) -> Option<Thing> {
+pub fn create_thing(table: &str, id: &UniversalValue) -> Option<Thing> {
     let id_part = match id {
-        GeneratedValue::String(s) => surrealdb::sql::Id::String(s.clone()),
-        GeneratedValue::Int32(i) => surrealdb::sql::Id::Number(*i as i64),
-        GeneratedValue::Int64(i) => surrealdb::sql::Id::Number(*i),
-        GeneratedValue::Uuid(u) => surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u)),
+        UniversalValue::String(s) => surrealdb::sql::Id::String(s.clone()),
+        UniversalValue::Int32(i) => surrealdb::sql::Id::Number(*i as i64),
+        UniversalValue::Int64(i) => surrealdb::sql::Id::Number(*i),
+        UniversalValue::Uuid(u) => surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u)),
         _ => return None,
     };
     Some(Thing::from((table, id_part)))
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn test_null_conversion() {
-        let tv = TypedValue::null(SyncDataType::Text);
+        let tv = TypedValue::null(UniversalType::Text);
         let surreal_val: SurrealValue = tv.into();
         assert!(matches!(surreal_val.0, Value::None));
     }
@@ -512,8 +512,8 @@ mod tests {
     #[test]
     fn test_tinyint_conversion() {
         let tv = TypedValue {
-            sync_type: SyncDataType::TinyInt { width: 4 },
-            value: GeneratedValue::Int32(127),
+            sync_type: UniversalType::TinyInt { width: 4 },
+            value: UniversalValue::Int32(127),
         };
         let surreal_val: SurrealValue = tv.into();
         assert!(matches!(surreal_val.0, Value::Number(Number::Int(127))));
@@ -594,8 +594,8 @@ mod tests {
     #[test]
     fn test_char_conversion() {
         let tv = TypedValue {
-            sync_type: SyncDataType::Char { length: 10 },
-            value: GeneratedValue::String("test".to_string()),
+            sync_type: UniversalType::Char { length: 10 },
+            value: UniversalValue::String("test".to_string()),
         };
         let surreal_val: SurrealValue = tv.into();
         if let Value::Strand(s) = surreal_val.0 {
@@ -657,8 +657,8 @@ mod tests {
     fn test_date_conversion() {
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 0, 0, 0).unwrap();
         let tv = TypedValue {
-            sync_type: SyncDataType::Date,
-            value: GeneratedValue::DateTime(dt),
+            sync_type: UniversalType::Date,
+            value: UniversalValue::DateTime(dt),
         };
         let surreal_val: SurrealValue = tv.into();
         if let Value::Strand(s) = surreal_val.0 {
@@ -672,8 +672,8 @@ mod tests {
     fn test_time_conversion() {
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 14, 30, 45).unwrap();
         let tv = TypedValue {
-            sync_type: SyncDataType::Time,
-            value: GeneratedValue::DateTime(dt),
+            sync_type: UniversalType::Time,
+            value: UniversalValue::DateTime(dt),
         };
         let surreal_val: SurrealValue = tv.into();
         if let Value::Strand(s) = surreal_val.0 {
@@ -688,13 +688,13 @@ mod tests {
         let mut map = HashMap::new();
         map.insert(
             "name".to_string(),
-            GeneratedValue::String("test".to_string()),
+            UniversalValue::String("test".to_string()),
         );
-        map.insert("count".to_string(), GeneratedValue::Int32(42));
+        map.insert("count".to_string(), UniversalValue::Int32(42));
 
         let tv = TypedValue {
-            sync_type: SyncDataType::Json,
-            value: GeneratedValue::Object(map),
+            sync_type: UniversalType::Json,
+            value: UniversalValue::Object(map),
         };
         let surreal_val: SurrealValue = tv.into();
         if let Value::Object(obj) = surreal_val.0 {
@@ -708,8 +708,8 @@ mod tests {
     #[test]
     fn test_json_string_conversion() {
         let tv = TypedValue {
-            sync_type: SyncDataType::Json,
-            value: GeneratedValue::String(r#"{"key": "value"}"#.to_string()),
+            sync_type: UniversalType::Json,
+            value: UniversalValue::String(r#"{"key": "value"}"#.to_string()),
         };
         let surreal_val: SurrealValue = tv.into();
         if let Value::Object(obj) = surreal_val.0 {
@@ -723,11 +723,11 @@ mod tests {
     fn test_array_int_conversion() {
         let tv = TypedValue::array(
             vec![
-                GeneratedValue::Int32(1),
-                GeneratedValue::Int32(2),
-                GeneratedValue::Int32(3),
+                UniversalValue::Int32(1),
+                UniversalValue::Int32(2),
+                UniversalValue::Int32(3),
             ],
-            SyncDataType::Int,
+            UniversalType::Int,
         );
         let surreal_val: SurrealValue = tv.into();
         if let Value::Array(arr) = surreal_val.0 {
@@ -741,10 +741,10 @@ mod tests {
     fn test_array_text_conversion() {
         let tv = TypedValue::array(
             vec![
-                GeneratedValue::String("a".to_string()),
-                GeneratedValue::String("b".to_string()),
+                UniversalValue::String("a".to_string()),
+                UniversalValue::String("b".to_string()),
             ],
-            SyncDataType::Text,
+            UniversalType::Text,
         );
         let surreal_val: SurrealValue = tv.into();
         if let Value::Array(arr) = surreal_val.0 {
@@ -757,12 +757,12 @@ mod tests {
     #[test]
     fn test_set_conversion() {
         let tv = TypedValue {
-            sync_type: SyncDataType::Set {
+            sync_type: UniversalType::Set {
                 values: vec!["a".to_string(), "b".to_string(), "c".to_string()],
             },
-            value: GeneratedValue::Array(vec![
-                GeneratedValue::String("a".to_string()),
-                GeneratedValue::String("b".to_string()),
+            value: UniversalValue::Array(vec![
+                UniversalValue::String("a".to_string()),
+                UniversalValue::String("b".to_string()),
             ]),
         };
         let surreal_val: SurrealValue = tv.into();
@@ -776,10 +776,10 @@ mod tests {
     #[test]
     fn test_enum_conversion() {
         let tv = TypedValue {
-            sync_type: SyncDataType::Enum {
+            sync_type: UniversalType::Enum {
                 values: vec!["active".to_string(), "inactive".to_string()],
             },
-            value: GeneratedValue::String("active".to_string()),
+            value: UniversalValue::String("active".to_string()),
         };
         let surreal_val: SurrealValue = tv.into();
         if let Value::Strand(s) = surreal_val.0 {
@@ -794,17 +794,17 @@ mod tests {
         let mut coords = HashMap::new();
         coords.insert(
             "coordinates".to_string(),
-            GeneratedValue::Array(vec![
-                GeneratedValue::Float64(-73.97),
-                GeneratedValue::Float64(40.77),
+            UniversalValue::Array(vec![
+                UniversalValue::Float64(-73.97),
+                UniversalValue::Float64(40.77),
             ]),
         );
 
         let tv = TypedValue {
-            sync_type: SyncDataType::Geometry {
+            sync_type: UniversalType::Geometry {
                 geometry_type: GeometryType::Point,
             },
-            value: GeneratedValue::Object(coords),
+            value: UniversalValue::Object(coords),
         };
         let surreal_val: SurrealValue = tv.into();
         assert!(matches!(surreal_val.0, Value::Geometry(_)));
@@ -812,7 +812,7 @@ mod tests {
 
     #[test]
     fn test_create_thing_string() {
-        let id = GeneratedValue::String("user123".to_string());
+        let id = UniversalValue::String("user123".to_string());
         let thing = create_thing("users", &id);
         assert!(thing.is_some());
         let t = thing.unwrap();
@@ -821,7 +821,7 @@ mod tests {
 
     #[test]
     fn test_create_thing_int() {
-        let id = GeneratedValue::Int64(42);
+        let id = UniversalValue::Int64(42);
         let thing = create_thing("users", &id);
         assert!(thing.is_some());
         let t = thing.unwrap();
@@ -831,7 +831,7 @@ mod tests {
     #[test]
     fn test_create_thing_uuid() {
         let u = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let id = GeneratedValue::Uuid(u);
+        let id = UniversalValue::Uuid(u);
         let thing = create_thing("users", &id);
         assert!(thing.is_some());
         let t = thing.unwrap();

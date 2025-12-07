@@ -7,13 +7,13 @@
 //!
 //! - [`forward`] - TypedValue → PostgreSQL value conversion
 //! - [`reverse`] - PostgreSQL value → TypedValue conversion
-//! - [`ddl`] - PostgreSQL DDL generation from SyncDataType
+//! - [`ddl`] - PostgreSQL DDL generation from UniversalType
 //!
 //! # Example
 //!
 //! ```ignore
 //! use postgresql_types::{PostgreSQLValue, PostgreSQLDdl, ToDdl};
-//! use sync_core::{TypedValue, SyncDataType};
+//! use sync_core::{TypedValue, UniversalType};
 //!
 //! // Convert TypedValue to PostgreSQL value
 //! let tv = TypedValue::text("hello");
@@ -21,7 +21,7 @@
 //!
 //! // Generate DDL
 //! let ddl = PostgreSQLDdl;
-//! let type_str = ddl.to_ddl(&SyncDataType::Text);
+//! let type_str = ddl.to_ddl(&UniversalType::Text);
 //! assert_eq!(type_str, "TEXT");
 //! ```
 

@@ -7,9 +7,9 @@
 //!
 //! ```ignore
 //! use loadtest_mongodb::MongoDBPopulator;
-//! use sync_core::SyncSchema;
+//! use sync_core::Schema;
 //!
-//! let schema = SyncSchema::from_yaml("path/to/schema.yaml")?;
+//! let schema = Schema::from_yaml("path/to/schema.yaml")?;
 //! let mut populator = MongoDBPopulator::new(
 //!     "mongodb://root:root@localhost:27017",
 //!     "testdb",
