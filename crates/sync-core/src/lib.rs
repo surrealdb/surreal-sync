@@ -34,11 +34,11 @@
 //! // Create a typed value using factory methods
 //! let value = TypedValue::int(42);
 //!
-//! // For dynamic types (e.g., from schema), use with_type:
-//! let dynamic_value = TypedValue::with_type(
+//! // For dynamic types (e.g., from schema), use try_with_type for validation:
+//! let dynamic_value = TypedValue::try_with_type(
 //!     UniversalType::Int,
 //!     UniversalValue::Int32(42)
-//! );
+//! ).expect("valid type-value combination");
 //!
 //! // Type-specific crates implement From<TypedValue> for their native types:
 //! // let mysql_value: MySQLValue = value.into();
@@ -56,4 +56,6 @@ pub use schema::{
 #[deprecated(since = "1.0.0", note = "Use Schema instead")]
 pub type LoadTestSchema = Schema;
 pub use types::{GeometryType, ToDdl, UniversalType};
-pub use values::{RowConverter, TypedValue, UniversalRow, UniversalRowBuilder, UniversalValue};
+pub use values::{
+    RowConverter, TypedValue, TypedValueError, UniversalRow, UniversalRowBuilder, UniversalValue,
+};

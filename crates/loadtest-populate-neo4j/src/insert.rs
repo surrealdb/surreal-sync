@@ -58,7 +58,10 @@ fn build_create_node_query(
     for field_schema in &table_schema.fields {
         let field_value = row.get_field(&field_schema.name);
         let typed_value = match field_value {
-            Some(value) => TypedValue::with_type(field_schema.field_type.clone(), value.clone()),
+            Some(value) => {
+                TypedValue::try_with_type(field_schema.field_type.clone(), value.clone())
+                    .expect("generator produced invalid type-value combination for field")
+            }
             None => TypedValue::null(field_schema.field_type.clone()),
         };
         let neo4j_literal = typed_to_neo4j_literal(&typed_value);
@@ -133,7 +136,8 @@ fn generated_to_neo4j_literal(value: &UniversalValue, parent_type: &UniversalTyp
         _ => UniversalType::Text, // Fallback
     };
 
-    let typed = TypedValue::with_type(element_type, value.clone());
+    let typed = TypedValue::try_with_type(element_type, value.clone())
+        .expect("generator produced invalid type-value combination for array element");
     typed_to_neo4j_literal(&typed)
 }
 

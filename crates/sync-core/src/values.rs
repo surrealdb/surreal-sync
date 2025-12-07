@@ -8,7 +8,22 @@ use crate::types::UniversalType;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use thiserror::Error;
 use uuid::Uuid;
+
+/// Error when creating a TypedValue with mismatched type and value.
+#[derive(Debug, Error, Clone)]
+#[error(
+    "Type-value mismatch: expected {expected_value} for type {sync_type:?}, got {actual_value}"
+)]
+pub struct TypedValueError {
+    /// The UniversalType that was specified
+    pub sync_type: UniversalType,
+    /// Description of the expected value kind
+    pub expected_value: String,
+    /// Description of the actual value kind
+    pub actual_value: String,
+}
 
 /// Raw generated value before type conversion.
 ///
@@ -157,6 +172,24 @@ impl UniversalValue {
             _ => None,
         }
     }
+
+    /// Get a human-readable description of this value's variant.
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            Self::Bool(_) => "Bool",
+            Self::Int32(_) => "Int32",
+            Self::Int64(_) => "Int64",
+            Self::Float64(_) => "Float64",
+            Self::String(_) => "String",
+            Self::Bytes(_) => "Bytes",
+            Self::Uuid(_) => "Uuid",
+            Self::DateTime(_) => "DateTime",
+            Self::Decimal { .. } => "Decimal",
+            Self::Array(_) => "Array",
+            Self::Object(_) => "Object",
+            Self::Null => "Null",
+        }
+    }
 }
 
 /// Typed value with its UniversalType for conversion.
@@ -179,11 +212,149 @@ impl TypedValue {
         Self { sync_type, value }
     }
 
-    /// Create a typed value with a dynamically specified type.
+    /// Create a typed value with a dynamically specified type, validating the combination.
+    ///
+    /// This validates that the type and value are compatible. Returns an error if the
+    /// combination is invalid (e.g., passing a String value for a Bool type).
     ///
     /// This is useful when the type is determined at runtime (e.g., from schema).
     /// For known types, prefer the specific factory methods like `bool()`, `int()`, etc.
-    pub fn with_type(sync_type: UniversalType, value: UniversalValue) -> Self {
+    ///
+    /// # Valid combinations
+    ///
+    /// - `Null` is valid for any type
+    /// - `Bool` type requires `Bool` value
+    /// - Integer types (`TinyInt`, `SmallInt`, `Int`) require `Int32` value
+    /// - `BigInt` type requires `Int64` value
+    /// - Floating point types (`Float`, `Double`) require `Float64` value
+    /// - String types (`Char`, `VarChar`, `Text`, `Enum`) require `String` value
+    /// - Binary types (`Bytes`, `Blob`) require `Bytes` value
+    /// - `Uuid` type requires `Uuid` value
+    /// - Date/time types require `DateTime` or `String` value
+    /// - `Decimal` type requires `Decimal` or `String` value
+    /// - `Array`/`Set` types require `Array` value
+    /// - `Json`/`Jsonb` types accept any value (they're flexible containers)
+    /// - `Geometry` type requires `Bytes` or `Object` value
+    pub fn try_with_type(
+        sync_type: UniversalType,
+        value: UniversalValue,
+    ) -> Result<Self, TypedValueError> {
+        // Null is always valid for any type
+        if matches!(value, UniversalValue::Null) {
+            return Ok(Self::new(sync_type, value));
+        }
+
+        let is_valid = match &sync_type {
+            // Boolean type
+            UniversalType::Bool => matches!(value, UniversalValue::Bool(_)),
+
+            // Integer types - accept both Int32 and Int64 for flexibility
+            // Generators may produce Int64 even for smaller integer types
+            UniversalType::TinyInt { .. }
+            | UniversalType::SmallInt
+            | UniversalType::Int
+            | UniversalType::BigInt => {
+                matches!(value, UniversalValue::Int32(_) | UniversalValue::Int64(_))
+            }
+
+            // Floating point types
+            UniversalType::Float | UniversalType::Double => {
+                matches!(value, UniversalValue::Float64(_))
+            }
+
+            // String types
+            UniversalType::Char { .. }
+            | UniversalType::VarChar { .. }
+            | UniversalType::Text
+            | UniversalType::Enum { .. } => matches!(value, UniversalValue::String(_)),
+
+            // Binary types
+            UniversalType::Bytes | UniversalType::Blob => matches!(value, UniversalValue::Bytes(_)),
+
+            // UUID type
+            UniversalType::Uuid => matches!(value, UniversalValue::Uuid(_)),
+
+            // Date/time types - accept DateTime or String (for formatted dates)
+            UniversalType::DateTime
+            | UniversalType::DateTimeNano
+            | UniversalType::TimestampTz
+            | UniversalType::Date
+            | UniversalType::Time => {
+                matches!(
+                    value,
+                    UniversalValue::DateTime(_) | UniversalValue::String(_)
+                )
+            }
+
+            // Decimal type - accept Decimal or String
+            UniversalType::Decimal { .. } => {
+                matches!(
+                    value,
+                    UniversalValue::Decimal { .. } | UniversalValue::String(_)
+                )
+            }
+
+            // Array and Set types
+            UniversalType::Array { .. } | UniversalType::Set { .. } => {
+                matches!(value, UniversalValue::Array(_))
+            }
+
+            // JSON types are flexible - accept any value
+            UniversalType::Json | UniversalType::Jsonb => true,
+
+            // Geometry can be bytes (WKB) or object (GeoJSON)
+            UniversalType::Geometry { .. } => {
+                matches!(value, UniversalValue::Bytes(_) | UniversalValue::Object(_))
+            }
+        };
+
+        if is_valid {
+            Ok(Self::new(sync_type, value))
+        } else {
+            Err(TypedValueError {
+                expected_value: Self::expected_value_description(&sync_type),
+                actual_value: value.variant_name().to_string(),
+                sync_type,
+            })
+        }
+    }
+
+    /// Get the expected value description for a given type.
+    fn expected_value_description(sync_type: &UniversalType) -> String {
+        match sync_type {
+            UniversalType::Bool => "Bool".to_string(),
+            UniversalType::TinyInt { .. }
+            | UniversalType::SmallInt
+            | UniversalType::Int
+            | UniversalType::BigInt => "Int32 or Int64".to_string(),
+            UniversalType::Float | UniversalType::Double => "Float64".to_string(),
+            UniversalType::Char { .. }
+            | UniversalType::VarChar { .. }
+            | UniversalType::Text
+            | UniversalType::Enum { .. } => "String".to_string(),
+            UniversalType::Bytes | UniversalType::Blob => "Bytes".to_string(),
+            UniversalType::Uuid => "Uuid".to_string(),
+            UniversalType::DateTime
+            | UniversalType::DateTimeNano
+            | UniversalType::TimestampTz
+            | UniversalType::Date
+            | UniversalType::Time => "DateTime or String".to_string(),
+            UniversalType::Decimal { .. } => "Decimal or String".to_string(),
+            UniversalType::Array { .. } | UniversalType::Set { .. } => "Array".to_string(),
+            UniversalType::Json | UniversalType::Jsonb => "any value".to_string(),
+            UniversalType::Geometry { .. } => "Bytes or Object".to_string(),
+        }
+    }
+
+    /// Create a typed value with a dynamically specified type (unchecked).
+    ///
+    /// **Warning**: This does not validate the type-value combination.
+    /// Prefer `try_with_type` when possible to catch mismatches early.
+    ///
+    /// This is useful when you're certain the combination is valid or when
+    /// performance is critical and validation overhead is unacceptable.
+    #[inline]
+    pub fn with_type_unchecked(sync_type: UniversalType, value: UniversalValue) -> Self {
         Self::new(sync_type, value)
     }
 
@@ -533,5 +704,134 @@ mod tests {
             Some(&UniversalValue::String("Alice".to_string()))
         );
         assert_eq!(row.get_field("age"), Some(&UniversalValue::Int32(30)));
+    }
+
+    #[test]
+    fn test_try_with_type_valid_combinations() {
+        // Bool type with Bool value
+        assert!(TypedValue::try_with_type(UniversalType::Bool, UniversalValue::Bool(true)).is_ok());
+
+        // Int type with Int32 value
+        assert!(TypedValue::try_with_type(UniversalType::Int, UniversalValue::Int32(42)).is_ok());
+
+        // Int type with Int64 value (flexible for generators)
+        assert!(TypedValue::try_with_type(UniversalType::Int, UniversalValue::Int64(42)).is_ok());
+
+        // BigInt type with Int64 value
+        assert!(
+            TypedValue::try_with_type(UniversalType::BigInt, UniversalValue::Int64(100)).is_ok()
+        );
+
+        // BigInt type with Int32 value (also allowed)
+        assert!(
+            TypedValue::try_with_type(UniversalType::BigInt, UniversalValue::Int32(100)).is_ok()
+        );
+
+        // Text type with String value
+        assert!(TypedValue::try_with_type(
+            UniversalType::Text,
+            UniversalValue::String("hello".to_string())
+        )
+        .is_ok());
+
+        // DateTime type with DateTime value
+        assert!(TypedValue::try_with_type(
+            UniversalType::DateTime,
+            UniversalValue::DateTime(chrono::Utc::now())
+        )
+        .is_ok());
+
+        // DateTime type with String value (formatted date)
+        assert!(TypedValue::try_with_type(
+            UniversalType::Date,
+            UniversalValue::String("2024-01-01".to_string())
+        )
+        .is_ok());
+
+        // Null is always valid
+        assert!(TypedValue::try_with_type(UniversalType::Bool, UniversalValue::Null).is_ok());
+        assert!(TypedValue::try_with_type(UniversalType::Int, UniversalValue::Null).is_ok());
+        assert!(TypedValue::try_with_type(UniversalType::Text, UniversalValue::Null).is_ok());
+
+        // JSON accepts any value
+        assert!(TypedValue::try_with_type(UniversalType::Json, UniversalValue::Bool(true)).is_ok());
+        assert!(TypedValue::try_with_type(UniversalType::Json, UniversalValue::Int32(42)).is_ok());
+        assert!(TypedValue::try_with_type(
+            UniversalType::Json,
+            UniversalValue::String("test".to_string())
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_try_with_type_invalid_combinations() {
+        // Bool type with wrong value types
+        let err =
+            TypedValue::try_with_type(UniversalType::Bool, UniversalValue::Int32(1)).unwrap_err();
+        assert_eq!(err.expected_value, "Bool");
+        assert_eq!(err.actual_value, "Int32");
+
+        // Int type with wrong value types
+        let err =
+            TypedValue::try_with_type(UniversalType::Int, UniversalValue::String("42".to_string()))
+                .unwrap_err();
+        assert_eq!(err.expected_value, "Int32 or Int64");
+        assert_eq!(err.actual_value, "String");
+
+        // BigInt type with wrong value types (but Int32 is allowed now)
+        assert!(
+            TypedValue::try_with_type(UniversalType::BigInt, UniversalValue::Int32(42)).is_ok()
+        );
+        // Test with wrong type
+        let err = TypedValue::try_with_type(
+            UniversalType::BigInt,
+            UniversalValue::String("42".to_string()),
+        )
+        .unwrap_err();
+        assert_eq!(err.expected_value, "Int32 or Int64");
+        assert_eq!(err.actual_value, "String");
+
+        // Text type with wrong value types
+        let err =
+            TypedValue::try_with_type(UniversalType::Text, UniversalValue::Int32(42)).unwrap_err();
+        assert_eq!(err.expected_value, "String");
+        assert_eq!(err.actual_value, "Int32");
+
+        // Uuid type with String value
+        let err = TypedValue::try_with_type(
+            UniversalType::Uuid,
+            UniversalValue::String("not-a-uuid".to_string()),
+        )
+        .unwrap_err();
+        assert_eq!(err.expected_value, "Uuid");
+        assert_eq!(err.actual_value, "String");
+    }
+
+    #[test]
+    fn test_try_with_type_error_message() {
+        let err = TypedValue::try_with_type(
+            UniversalType::Bool,
+            UniversalValue::String("true".to_string()),
+        )
+        .unwrap_err();
+
+        let msg = err.to_string();
+        assert!(msg.contains("Type-value mismatch"));
+        assert!(msg.contains("Bool"));
+        assert!(msg.contains("String"));
+    }
+
+    #[test]
+    fn test_variant_name() {
+        assert_eq!(UniversalValue::Bool(true).variant_name(), "Bool");
+        assert_eq!(UniversalValue::Int32(42).variant_name(), "Int32");
+        assert_eq!(UniversalValue::Int64(100).variant_name(), "Int64");
+        assert_eq!(UniversalValue::Float64(1.5).variant_name(), "Float64");
+        assert_eq!(
+            UniversalValue::String("test".to_string()).variant_name(),
+            "String"
+        );
+        assert_eq!(UniversalValue::Bytes(vec![1, 2, 3]).variant_name(), "Bytes");
+        assert_eq!(UniversalValue::Null.variant_name(), "Null");
     }
 }

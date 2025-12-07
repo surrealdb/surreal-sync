@@ -287,7 +287,8 @@ fn internal_row_to_csv_record(row: &UniversalRow, table_schema: &TableDefinition
     let mut record = Vec::new();
 
     // Add the ID
-    let id_typed = TypedValue::with_type(table_schema.id.id_type.clone(), row.id.clone());
+    let id_typed = TypedValue::try_with_type(table_schema.id.id_type.clone(), row.id.clone())
+        .expect("generator produced invalid type-value combination for id");
     let id_csv: CsvValue = id_typed.into();
     record.push(id_csv.into_inner());
 
@@ -295,7 +296,10 @@ fn internal_row_to_csv_record(row: &UniversalRow, table_schema: &TableDefinition
     for field_schema in &table_schema.fields {
         let field_value = row.get_field(&field_schema.name);
         let typed_value = match field_value {
-            Some(value) => TypedValue::with_type(field_schema.field_type.clone(), value.clone()),
+            Some(value) => {
+                TypedValue::try_with_type(field_schema.field_type.clone(), value.clone())
+                    .expect("generator produced invalid type-value combination for field")
+            }
             None => TypedValue::null(field_schema.field_type.clone()),
         };
         let csv_value: CsvValue = typed_value.into();

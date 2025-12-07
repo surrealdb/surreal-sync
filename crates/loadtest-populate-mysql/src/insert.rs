@@ -45,7 +45,8 @@ pub async fn insert_batch(
 
     for row in rows {
         // Add the ID
-        let id_typed = TypedValue::with_type(table_schema.id.id_type.clone(), row.id.clone());
+        let id_typed = TypedValue::try_with_type(table_schema.id.id_type.clone(), row.id.clone())
+            .expect("generator produced invalid type-value combination for id");
         let id_mysql: MySQLValue = id_typed.into();
         params.push(id_mysql.into_inner());
 
@@ -54,7 +55,8 @@ pub async fn insert_batch(
             let field_value = row.get_field(&field_schema.name);
             let typed_value = match field_value {
                 Some(value) => {
-                    TypedValue::with_type(field_schema.field_type.clone(), value.clone())
+                    TypedValue::try_with_type(field_schema.field_type.clone(), value.clone())
+                        .expect("generator produced invalid type-value combination for field")
                 }
                 None => TypedValue::null(field_schema.field_type.clone()),
             };
@@ -99,7 +101,8 @@ pub async fn insert_single(
     let mut params: Vec<Value> = Vec::with_capacity(columns.len());
 
     // Add the ID
-    let id_typed = TypedValue::with_type(table_schema.id.id_type.clone(), row.id.clone());
+    let id_typed = TypedValue::try_with_type(table_schema.id.id_type.clone(), row.id.clone())
+        .expect("generator produced invalid type-value combination for id");
     let id_mysql: MySQLValue = id_typed.into();
     params.push(id_mysql.into_inner());
 
@@ -107,7 +110,10 @@ pub async fn insert_single(
     for field_schema in &table_schema.fields {
         let field_value = row.get_field(&field_schema.name);
         let typed_value = match field_value {
-            Some(value) => TypedValue::with_type(field_schema.field_type.clone(), value.clone()),
+            Some(value) => {
+                TypedValue::try_with_type(field_schema.field_type.clone(), value.clone())
+                    .expect("generator produced invalid type-value combination for field")
+            }
             None => TypedValue::null(field_schema.field_type.clone()),
         };
         let mysql_value: MySQLValue = typed_value.into();

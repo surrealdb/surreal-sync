@@ -267,7 +267,8 @@ fn internal_row_to_json(
     let mut obj = serde_json::Map::new();
 
     // Add the ID
-    let id_typed = TypedValue::with_type(table_schema.id.id_type.clone(), row.id.clone());
+    let id_typed = TypedValue::try_with_type(table_schema.id.id_type.clone(), row.id.clone())
+        .expect("generator produced invalid type-value combination for id");
     let id_json: JsonValue = id_typed.into();
     obj.insert("id".to_string(), id_json.into_inner());
 
@@ -275,7 +276,10 @@ fn internal_row_to_json(
     for field_schema in &table_schema.fields {
         let field_value = row.get_field(&field_schema.name);
         let typed_value = match field_value {
-            Some(value) => TypedValue::with_type(field_schema.field_type.clone(), value.clone()),
+            Some(value) => {
+                TypedValue::try_with_type(field_schema.field_type.clone(), value.clone())
+                    .expect("generator produced invalid type-value combination for field")
+            }
             None => TypedValue::null(field_schema.field_type.clone()),
         };
         let json_value: JsonValue = typed_value.into();
