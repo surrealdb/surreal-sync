@@ -20,6 +20,7 @@
 //! ```
 
 pub mod forward;
+pub mod record;
 pub mod reverse;
 
 pub use forward::typed_values_to_surreal_map;
