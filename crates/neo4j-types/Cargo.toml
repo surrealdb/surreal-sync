@@ -1,0 +1,32 @@
+[package]
+name = "neo4j-types"
+version = "0.1.0"
+edition = "2021"
+description = "Neo4j/Bolt type conversions for sync-core types"
+
+[dependencies]
+# Neo4j driver
+neo4rs = "0.9.0-rc.8"
+
+# Date/time handling
+chrono = "0.4.41"
+chrono-tz = "0.10"
+
+# JSON handling
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+
+# Sync-core types
+sync-core = { path = "../sync-core" }
+
+# Error handling
+thiserror = "1.0"
+
+# UUID support
+uuid = "1.17"
+
+# Hex encoding for bytes
+hex = "0.4"
+
+[dev-dependencies]
+tokio = { version = "1.47", features = ["full"] }
