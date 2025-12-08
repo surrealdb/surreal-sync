@@ -92,6 +92,9 @@ impl ToDdl for MySQLDdl {
                 GeometryType::MultiPolygon => "MULTIPOLYGON".to_string(),
                 GeometryType::GeometryCollection => "GEOMETRYCOLLECTION".to_string(),
             },
+
+            // Duration - store as VARCHAR for ISO 8601 duration string
+            UniversalType::Duration => "VARCHAR(64)".to_string(),
         }
     }
 

@@ -262,6 +262,14 @@ pub enum GeneratorConfig {
 
     /// Generate null values (for nullable fields)
     Null,
+
+    /// Generate random durations in a range (in seconds)
+    DurationRange {
+        /// Minimum duration in seconds (inclusive)
+        min_secs: u64,
+        /// Maximum duration in seconds (inclusive)
+        max_secs: u64,
+    },
 }
 
 #[cfg(test)]

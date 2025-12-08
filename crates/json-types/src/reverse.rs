@@ -8,6 +8,30 @@ use serde_json;
 use std::collections::HashMap;
 use sync_core::{TypedValue, UniversalType, UniversalValue};
 
+/// Parse an ISO 8601 duration string (PTxS or PTx.xxxxxxxxxS format).
+///
+/// Supports:
+/// - Simple seconds: "PT181S" (181 seconds)
+/// - Seconds with nanoseconds: "PT60.123456789S" (60 seconds + 123456789 nanoseconds)
+fn parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
+    let trimmed = s.trim();
+    // Only accept "PTxS" or "PTx.xxxxxxxxxS" format
+    if let Some(secs_str) = trimmed.strip_prefix("PT").and_then(|s| s.strip_suffix('S')) {
+        if let Some(dot_pos) = secs_str.find('.') {
+            // Has fractional seconds
+            let secs: u64 = secs_str[..dot_pos].parse().ok()?;
+            let nanos_str = &secs_str[dot_pos + 1..];
+            let nanos: u32 = nanos_str.parse().ok()?;
+            Some(std::time::Duration::new(secs, nanos))
+        } else {
+            let secs: u64 = secs_str.parse().ok()?;
+            Some(std::time::Duration::from_secs(secs))
+        }
+    } else {
+        None
+    }
+}
+
 /// Parse a datetime string in various formats.
 ///
 /// Supports:
@@ -268,6 +292,15 @@ impl From<JsonValueWithSchema> for TypedValue {
                     serde_json::Value::Object(obj.clone()),
                     geometry_type.clone(),
                 )
+            }
+
+            // Duration - parse ISO 8601 duration string (PTxS or PTx.xxxxxxxxxS format)
+            (UniversalType::Duration, serde_json::Value::String(s)) => {
+                if let Some(duration) = parse_iso8601_duration(s) {
+                    TypedValue::duration(duration)
+                } else {
+                    TypedValue::null(UniversalType::Duration)
+                }
             }
 
             // Fallback
@@ -960,5 +993,39 @@ mod tests {
             values.get("active").unwrap().value,
             UniversalValue::Bool(true)
         ));
+    }
+
+    #[test]
+    fn test_duration_conversion() {
+        // Test parsing ISO 8601 duration string "PT181S" (181 seconds)
+        let jv = JsonValueWithSchema::new(json!("PT181S"), UniversalType::Duration);
+        let tv = TypedValue::from(jv);
+        if let UniversalValue::Duration(d) = tv.value {
+            assert_eq!(d.as_secs(), 181);
+            assert_eq!(d.subsec_nanos(), 0);
+        } else {
+            panic!("Expected Duration, got {:?}", tv.value);
+        }
+    }
+
+    #[test]
+    fn test_duration_with_nanos_conversion() {
+        // Test parsing ISO 8601 duration string "PT60.123456789S" (60 seconds + 123456789 nanoseconds)
+        let jv = JsonValueWithSchema::new(json!("PT60.123456789S"), UniversalType::Duration);
+        let tv = TypedValue::from(jv);
+        if let UniversalValue::Duration(d) = tv.value {
+            assert_eq!(d.as_secs(), 60);
+            assert_eq!(d.subsec_nanos(), 123456789);
+        } else {
+            panic!("Expected Duration, got {:?}", tv.value);
+        }
+    }
+
+    #[test]
+    fn test_duration_invalid_format() {
+        // Test that invalid duration strings return null
+        let jv = JsonValueWithSchema::new(json!("not a duration"), UniversalType::Duration);
+        let tv = TypedValue::from(jv);
+        assert!(matches!(tv.value, UniversalValue::Null));
     }
 }

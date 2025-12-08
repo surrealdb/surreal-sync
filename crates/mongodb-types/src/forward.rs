@@ -173,6 +173,17 @@ impl From<UniversalValue> for BsonValue {
                 }
                 BsonValue(bson_val)
             }
+
+            // Duration - store as ISO 8601 duration string
+            UniversalValue::Duration(d) => {
+                let secs = d.as_secs();
+                let nanos = d.subsec_nanos();
+                if nanos == 0 {
+                    BsonValue(Bson::String(format!("PT{secs}S")))
+                } else {
+                    BsonValue(Bson::String(format!("PT{secs}.{nanos:09}S")))
+                }
+            }
         }
     }
 }
@@ -253,6 +264,15 @@ fn generated_value_to_bson(value: &UniversalValue) -> Bson {
             use sync_core::values::GeometryData;
             let GeometryData(json_val) = data;
             serde_json_to_bson(json_val)
+        }
+        UniversalValue::Duration(d) => {
+            let secs = d.as_secs();
+            let nanos = d.subsec_nanos();
+            if nanos == 0 {
+                Bson::String(format!("PT{secs}S"))
+            } else {
+                Bson::String(format!("PT{secs}.{nanos:09}S"))
+            }
         }
     }
 }

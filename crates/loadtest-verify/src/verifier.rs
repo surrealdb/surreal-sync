@@ -431,6 +431,11 @@ impl StreamingVerifier {
                 // Geometry - skip for now
                 Ok(None)
             }
+            UniversalType::Duration => {
+                // Duration - extract as SurrealDB duration
+                let val: Option<surrealdb::sql::Duration> = response.take((0, field_name))?;
+                Ok(val.map(SurrealValue::Duration))
+            }
         }
     }
 

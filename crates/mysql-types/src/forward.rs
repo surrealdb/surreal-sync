@@ -122,6 +122,18 @@ impl From<UniversalValue> for MySQLValue {
                 let GeometryData(json_val) = data;
                 MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
             }
+
+            // Duration - store as ISO 8601 duration string
+            UniversalValue::Duration(d) => {
+                let secs = d.as_secs();
+                let nanos = d.subsec_nanos();
+                let duration_str = if nanos == 0 {
+                    format!("PT{secs}S")
+                } else {
+                    format!("PT{secs}.{nanos:09}S")
+                };
+                MySQLValue(Value::Bytes(duration_str.into_bytes()))
+            }
         }
     }
 }
@@ -181,6 +193,15 @@ fn generated_to_json(gv: UniversalValue) -> serde_json::Value {
             use sync_core::values::GeometryData;
             let GeometryData(json_val) = data;
             json_val
+        }
+        UniversalValue::Duration(d) => {
+            let secs = d.as_secs();
+            let nanos = d.subsec_nanos();
+            if nanos == 0 {
+                serde_json::Value::String(format!("PT{secs}S"))
+            } else {
+                serde_json::Value::String(format!("PT{secs}.{nanos:09}S"))
+            }
         }
     }
 }

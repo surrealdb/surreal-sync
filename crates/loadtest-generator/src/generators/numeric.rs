@@ -26,6 +26,16 @@ pub fn generate_decimal_range<R: Rng>(rng: &mut R, min: f64, max: f64) -> Univer
     }
 }
 
+/// Generate a random duration in the given range (in seconds).
+pub fn generate_duration_range<R: Rng>(
+    rng: &mut R,
+    min_secs: u64,
+    max_secs: u64,
+) -> UniversalValue {
+    let secs = rng.gen_range(min_secs..=max_secs);
+    UniversalValue::Duration(std::time::Duration::from_secs(secs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +88,20 @@ mod tests {
             assert!((0.0..=100.0).contains(&parsed));
         } else {
             panic!("Expected Decimal value");
+        }
+    }
+
+    #[test]
+    fn test_generate_duration_range() {
+        let mut rng = StdRng::seed_from_u64(42);
+
+        for _ in 0..100 {
+            let value = generate_duration_range(&mut rng, 60, 3600);
+            if let UniversalValue::Duration(d) = value {
+                assert!(d.as_secs() >= 60 && d.as_secs() <= 3600);
+            } else {
+                panic!("Expected Duration value");
+            }
         }
     }
 }

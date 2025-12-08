@@ -75,6 +75,13 @@ tables:
           type: timestamp_range
           start: "2024-01-01T00:00:00Z"
           end: "2024-12-31T23:59:59Z"
+      # Duration field for testing time intervals
+      - name: processing_time
+        type: duration
+        generator:
+          type: duration_range
+          min_secs: 60
+          max_secs: 3600
       - name: updated_at
         type: date_time
         generator:

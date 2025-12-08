@@ -218,6 +218,15 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
             let GeometryData(json) = data;
             json.clone()
         }
+        UniversalValue::Duration(d) => {
+            let secs = d.as_secs();
+            let nanos = d.subsec_nanos();
+            if nanos == 0 {
+                serde_json::json!(format!("PT{secs}S"))
+            } else {
+                serde_json::json!(format!("PT{secs}.{nanos:09}S"))
+            }
+        }
     }
 }
 

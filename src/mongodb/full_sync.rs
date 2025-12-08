@@ -5,6 +5,24 @@ use crate::surreal::surreal_connect;
 use crate::sync::IncrementalSource;
 use crate::{SourceOpts, SurrealOpts, SurrealValue};
 
+/// Parse an ISO 8601 duration string (PTxS or PTx.xxxxxxxxxS format).
+fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
+    let trimmed = s.trim();
+    if let Some(secs_str) = trimmed.strip_prefix("PT").and_then(|s| s.strip_suffix('S')) {
+        if let Some(dot_pos) = secs_str.find('.') {
+            let secs: u64 = secs_str[..dot_pos].parse().ok()?;
+            let nanos_str = &secs_str[dot_pos + 1..];
+            let nanos: u32 = nanos_str.parse().ok()?;
+            Some(std::time::Duration::new(secs, nanos))
+        } else {
+            let secs: u64 = secs_str.parse().ok()?;
+            Some(std::time::Duration::from_secs(secs))
+        }
+    } else {
+        None
+    }
+}
+
 pub async fn migrate_from_mongodb(
     from_opts: SourceOpts,
     to_namespace: String,
@@ -285,7 +303,14 @@ pub fn convert_bson_to_surreal_value(
 
     match bson_value {
         Bson::Double(f) => Ok(SurrealValue::Float(f)),
-        Bson::String(s) => Ok(SurrealValue::String(s)),
+        Bson::String(s) => {
+            // Auto-detect ISO 8601 duration strings (PTxxxS format) and convert to Duration
+            if let Some(duration) = try_parse_iso8601_duration(&s) {
+                Ok(SurrealValue::Duration(duration))
+            } else {
+                Ok(SurrealValue::String(s))
+            }
+        }
         Bson::Array(arr) => {
             let mut vs = Vec::new();
             for item in arr {

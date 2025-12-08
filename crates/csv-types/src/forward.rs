@@ -105,6 +105,17 @@ impl From<UniversalValue> for CsvValue {
                 let GeometryData(value) = data;
                 CsvValue(serde_json::to_string(&value).unwrap_or_default())
             }
+
+            // Duration - format as ISO 8601 duration string
+            UniversalValue::Duration(d) => {
+                let secs = d.as_secs();
+                let nanos = d.subsec_nanos();
+                if nanos == 0 {
+                    CsvValue(format!("PT{secs}S"))
+                } else {
+                    CsvValue(format!("PT{secs}.{nanos:09}S"))
+                }
+            }
         }
     }
 }
@@ -147,6 +158,15 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
             use sync_core::values::GeometryData;
             let GeometryData(value) = data;
             value.clone()
+        }
+        UniversalValue::Duration(d) => {
+            let secs = d.as_secs();
+            let nanos = d.subsec_nanos();
+            if nanos == 0 {
+                serde_json::json!(format!("PT{secs}S"))
+            } else {
+                serde_json::json!(format!("PT{secs}.{nanos:09}S"))
+            }
         }
     }
 }

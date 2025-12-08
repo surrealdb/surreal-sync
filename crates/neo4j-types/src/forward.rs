@@ -173,6 +173,19 @@ pub fn universal_to_cypher_literal(
             }
             Ok(format!("[{}]", element_strs.join(", ")))
         }
+
+        // Duration type - use Neo4j duration() function
+        UniversalValue::Duration(d) => {
+            // Neo4j duration format: PT<seconds>S or PT<seconds>.<nanos>S
+            let secs = d.as_secs();
+            let nanos = d.subsec_nanos();
+            if nanos == 0 {
+                Ok(format!("duration('PT{secs}S')"))
+            } else {
+                // Format nanoseconds as fractional seconds
+                Ok(format!("duration('PT{secs}.{nanos:09}S')"))
+            }
+        }
     }
 }
 

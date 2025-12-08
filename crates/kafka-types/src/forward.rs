@@ -262,6 +262,20 @@ pub fn encode_generated_value(
                 encode_generated_value(stream, field_number, element)?;
             }
         }
+
+        // Duration type - encode as ISO 8601 duration string
+        UniversalValue::Duration(d) => {
+            let secs = d.as_secs();
+            let nanos = d.subsec_nanos();
+            let duration_str = if nanos == 0 {
+                format!("PT{secs}S")
+            } else {
+                format!("PT{secs}.{nanos:09}S")
+            };
+            stream
+                .write_string(field_number, &duration_str)
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
     }
     Ok(())
 }
@@ -332,6 +346,7 @@ pub fn get_proto_type(sync_type: &UniversalType) -> &'static str {
         UniversalType::Array { .. } => "repeated",              // Caller handles element type
         UniversalType::Set { .. } => "repeated",                // Encode as repeated
         UniversalType::Geometry { .. } => "string",             // GeoJSON string
+        UniversalType::Duration => "string",                    // ISO 8601 duration string
     }
 }
 

@@ -109,12 +109,29 @@ impl From<UniversalValue> for SurrealValue {
                 }
             }
 
-            // String types
-            UniversalValue::Char { value, .. } => SurrealValue(Value::Strand(Strand::from(value))),
-            UniversalValue::VarChar { value, .. } => {
-                SurrealValue(Value::Strand(Strand::from(value)))
+            // String types - auto-detect ISO 8601 duration strings
+            UniversalValue::Char { value, .. } => {
+                if let Some(duration) = try_parse_iso8601_duration(&value) {
+                    SurrealValue(Value::Duration(surrealdb::sql::Duration::from(duration)))
+                } else {
+                    SurrealValue(Value::Strand(Strand::from(value)))
+                }
             }
-            UniversalValue::Text(s) => SurrealValue(Value::Strand(Strand::from(s))),
+            UniversalValue::VarChar { value, .. } => {
+                if let Some(duration) = try_parse_iso8601_duration(&value) {
+                    SurrealValue(Value::Duration(surrealdb::sql::Duration::from(duration)))
+                } else {
+                    SurrealValue(Value::Strand(Strand::from(value)))
+                }
+            }
+            UniversalValue::Text(s) => {
+                // Auto-detect ISO 8601 duration strings (PTxxxS format) and convert to Duration
+                if let Some(duration) = try_parse_iso8601_duration(&s) {
+                    SurrealValue(Value::Duration(surrealdb::sql::Duration::from(duration)))
+                } else {
+                    SurrealValue(Value::Strand(Strand::from(s)))
+                }
+            }
 
             // Binary types
             UniversalValue::Blob(b) => SurrealValue(Value::Bytes(surrealdb::sql::Bytes::from(b))),
@@ -165,6 +182,11 @@ impl From<UniversalValue> for SurrealValue {
                 let GeometryData(json_val) = data;
                 SurrealValue(json_to_surreal(&json_val))
             }
+
+            // Duration - convert to SurrealDB Duration
+            UniversalValue::Duration(d) => {
+                SurrealValue(Value::Duration(surrealdb::sql::Duration::from(d)))
+            }
         }
     }
 }
@@ -200,6 +222,27 @@ fn json_to_surreal(value: &serde_json::Value) -> Value {
             }
             Value::Object(Object::from(obj))
         }
+    }
+}
+
+/// Try to parse an ISO 8601 duration string (e.g., "PT181S" or "PT181.000000000S").
+/// Returns Some(std::time::Duration) if the string matches the expected format.
+fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
+    let trimmed = s.trim();
+    // Only accept "PTxS" or "PTx.xxxxxxxxxS" format
+    if let Some(secs_str) = trimmed.strip_prefix("PT").and_then(|s| s.strip_suffix('S')) {
+        if let Some(dot_pos) = secs_str.find('.') {
+            // Has fractional seconds
+            let secs: u64 = secs_str[..dot_pos].parse().ok()?;
+            let nanos_str = &secs_str[dot_pos + 1..];
+            let nanos: u32 = nanos_str.parse().ok()?;
+            Some(std::time::Duration::new(secs, nanos))
+        } else {
+            let secs: u64 = secs_str.parse().ok()?;
+            Some(std::time::Duration::from_secs(secs))
+        }
+    } else {
+        None
     }
 }
 
@@ -596,5 +639,59 @@ mod tests {
         assert!(obj.get("name").is_some());
         assert!(obj.get("age").is_some());
         assert!(obj.get("active").is_some());
+    }
+
+    #[test]
+    fn test_text_with_iso8601_duration_converts_to_duration() {
+        // Test that a Text value containing an ISO 8601 duration string
+        // gets auto-detected and converted to a SurrealDB Duration
+        let tv = TypedValue::text("PT181S");
+        let surreal_val: SurrealValue = tv.into();
+        if let Value::Duration(d) = surreal_val.0 {
+            let std_duration: std::time::Duration = d.into();
+            assert_eq!(std_duration.as_secs(), 181);
+        } else {
+            panic!("Expected Duration, got {:?}", surreal_val.0);
+        }
+    }
+
+    #[test]
+    fn test_varchar_with_iso8601_duration_converts_to_duration() {
+        // Test that a VarChar value (like from MySQL) containing an ISO 8601 duration string
+        // gets auto-detected and converted to a SurrealDB Duration
+        let tv = TypedValue::varchar("PT181S", 64);
+        let surreal_val: SurrealValue = tv.into();
+        if let Value::Duration(d) = surreal_val.0 {
+            let std_duration: std::time::Duration = d.into();
+            assert_eq!(std_duration.as_secs(), 181);
+        } else {
+            panic!("Expected Duration, got {:?}", surreal_val.0);
+        }
+    }
+
+    #[test]
+    fn test_text_with_iso8601_duration_with_nanos() {
+        // Test duration with nanoseconds: PT60.123456789S
+        let tv = TypedValue::text("PT60.123456789S");
+        let surreal_val: SurrealValue = tv.into();
+        if let Value::Duration(d) = surreal_val.0 {
+            let std_duration: std::time::Duration = d.into();
+            assert_eq!(std_duration.as_secs(), 60);
+            assert_eq!(std_duration.subsec_nanos(), 123456789);
+        } else {
+            panic!("Expected Duration, got {:?}", surreal_val.0);
+        }
+    }
+
+    #[test]
+    fn test_text_without_duration_pattern_stays_as_string() {
+        // Regular text should remain as a string
+        let tv = TypedValue::text("hello world");
+        let surreal_val: SurrealValue = tv.into();
+        if let Value::Strand(s) = surreal_val.0 {
+            assert_eq!(s.as_str(), "hello world");
+        } else {
+            panic!("Expected Strand, got {:?}", surreal_val.0);
+        }
     }
 }

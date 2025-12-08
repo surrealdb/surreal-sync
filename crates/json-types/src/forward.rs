@@ -120,6 +120,17 @@ impl From<UniversalValue> for JsonValue {
                     JsonValue(json_obj.clone())
                 }
             }
+
+            // Duration - ISO 8601 format
+            UniversalValue::Duration(d) => {
+                let secs = d.as_secs();
+                let nanos = d.subsec_nanos();
+                if nanos == 0 {
+                    JsonValue(json!(format!("PT{secs}S")))
+                } else {
+                    JsonValue(json!(format!("PT{secs}.{nanos:09}S")))
+                }
+            }
         }
     }
 }
@@ -165,6 +176,15 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
             use sync_core::values::GeometryData;
             let GeometryData(value) = data;
             value.clone()
+        }
+        UniversalValue::Duration(d) => {
+            let secs = d.as_secs();
+            let nanos = d.subsec_nanos();
+            if nanos == 0 {
+                json!(format!("PT{secs}S"))
+            } else {
+                json!(format!("PT{secs}.{nanos:09}S"))
+            }
         }
     }
 }

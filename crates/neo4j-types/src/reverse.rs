@@ -321,17 +321,9 @@ fn convert_bolt_to_universal_value_with_type(
             // Neo4j Duration converts to std::time::Duration via Into
             let std_duration: std::time::Duration = duration.into();
 
-            // Store as a structured JSON object since Neo4j Duration has complex semantics
-            // (months, days, seconds, nanoseconds) that don't map cleanly to std::time::Duration
-            let json_obj = serde_json::json!({
-                "type": "$Neo4jDuration",
-                "total_seconds": std_duration.as_secs(),
-                "nanoseconds": std_duration.subsec_nanos()
-            });
-
             Ok((
-                UniversalValue::Json(Box::new(json_obj)),
-                UniversalType::Json,
+                UniversalValue::Duration(std_duration),
+                UniversalType::Duration,
             ))
         }
 
@@ -434,6 +426,7 @@ fn infer_element_type(value: &UniversalValue) -> UniversalType {
         UniversalValue::Geometry { geometry_type, .. } => UniversalType::Geometry {
             geometry_type: geometry_type.clone(),
         },
+        UniversalValue::Duration(_) => UniversalType::Duration,
     }
 }
 
@@ -480,6 +473,10 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
             let sync_core::values::GeometryData(json) = data;
             json.clone()
         }
+        UniversalValue::Duration(d) => serde_json::json!({
+            "secs": d.as_secs(),
+            "nanos": d.subsec_nanos()
+        }),
     }
 }
 

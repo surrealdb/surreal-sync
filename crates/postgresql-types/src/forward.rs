@@ -136,6 +136,17 @@ impl From<UniversalValue> for PostgreSQLValue {
                 let GeometryData(json_val) = data;
                 PostgreSQLValue::Json(json_val)
             }
+
+            // Duration - store as text in ISO 8601 format
+            UniversalValue::Duration(d) => {
+                let secs = d.as_secs();
+                let nanos = d.subsec_nanos();
+                if nanos == 0 {
+                    PostgreSQLValue::Text(format!("PT{secs}S"))
+                } else {
+                    PostgreSQLValue::Text(format!("PT{secs}.{nanos:09}S"))
+                }
+            }
         }
     }
 }

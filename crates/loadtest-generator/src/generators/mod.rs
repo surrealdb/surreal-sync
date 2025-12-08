@@ -83,6 +83,10 @@ pub fn generate_value_typed<R: Rng>(
         GeneratorConfig::Static { value } => static_value::yaml_to_generated_value(value),
 
         GeneratorConfig::Null => UniversalValue::Null,
+
+        GeneratorConfig::DurationRange { min_secs, max_secs } => {
+            numeric::generate_duration_range(rng, *min_secs, *max_secs)
+        }
     };
 
     // Convert to strict 1:1 type-value matching if target_type is specified

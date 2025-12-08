@@ -167,6 +167,9 @@ pub enum UniversalValue {
         geometry_type: crate::types::GeometryType,
     },
 
+    /// Duration type → `UniversalType::Duration`
+    Duration(std::time::Duration),
+
     /// Null value (can be any nullable type)
     Null,
 }
@@ -379,6 +382,7 @@ impl UniversalValue {
             Self::Set { .. } => "Set",
             Self::Enum { .. } => "Enum",
             Self::Geometry { .. } => "Geometry",
+            Self::Duration(_) => "Duration",
             Self::Null => "Null",
         }
     }
@@ -450,6 +454,7 @@ impl UniversalValue {
             Self::Geometry { geometry_type, .. } => UniversalType::Geometry {
                 geometry_type: geometry_type.clone(),
             },
+            Self::Duration(_) => UniversalType::Duration,
             // Null doesn't have a single type - this is a special case
             // We use Text as a placeholder, but callers should handle Null explicitly
             Self::Null => UniversalType::Text,
@@ -573,6 +578,9 @@ impl TypedValue {
             // Geometry
             (UniversalType::Geometry { .. }, UniversalValue::Geometry { .. }) => true,
 
+            // Duration
+            (UniversalType::Duration, UniversalValue::Duration(_)) => true,
+
             // All other combinations are invalid
             _ => false,
         };
@@ -616,6 +624,7 @@ impl TypedValue {
             UniversalType::Set { .. } => "Set".to_string(),
             UniversalType::Enum { .. } => "Enum".to_string(),
             UniversalType::Geometry { .. } => "Geometry".to_string(),
+            UniversalType::Duration => "Duration".to_string(),
         }
     }
 
@@ -827,6 +836,11 @@ impl TypedValue {
     /// Check if this typed value is null.
     pub fn is_null(&self) -> bool {
         self.value.is_null()
+    }
+
+    /// Create a DURATION typed value.
+    pub fn duration(value: std::time::Duration) -> Self {
+        Self::new(UniversalType::Duration, UniversalValue::Duration(value))
     }
 }
 

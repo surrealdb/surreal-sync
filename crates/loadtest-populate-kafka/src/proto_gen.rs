@@ -159,6 +159,12 @@ fn sync_type_to_proto_type(sync_type: &UniversalType) -> ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
+
+        // Duration -> string (ISO 8601 duration format)
+        UniversalType::Duration => ProtoTypeInfo {
+            type_name: "string".to_string(),
+            requires_timestamp_import: false,
+        },
     }
 }
 

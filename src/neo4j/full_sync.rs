@@ -1,4 +1,3 @@
-use chrono::{TimeZone, Utc};
 use neo4rs::{ConfigBuilder, Graph, Query};
 use std::collections::{HashMap, HashSet};
 use surrealdb::{engine::any::connect, Surreal};
@@ -565,248 +564,143 @@ pub fn row_to_relation(
 
 /// Convert Neo4j BoltType to SurrealValue
 ///
-/// Currently, this function supports only one of the possible modes of operation:
-/// 1. Assume each node has only one label- No dedicated SurrealDB table for all the Neo4j nodes, but rather a SurrealDB table for each Neo4j node label.
-/// 2. Assume each node may have two or more labels- A dedicated SurrealDB table for all the Neo4j nodes, plus additional SurrealDB tables for each Neo4j node label.
-///
-/// This function currently assumes the first mode.
-///
-/// Note: Support for unified table mode could be added by allowing caller to specify a single SurrealDB table name for all Neo4j nodes.
-///
 /// The timezone parameter specifies which timezone to use when converting Neo4j local datetime and time values.
 /// This should be an IANA timezone name (e.g., "America/New_York", "Europe/London", "UTC").
 ///
 /// If should_parse_json is true and the value is a String, attempt to parse it as JSON and convert to Object.
+///
+/// This function uses the `neo4j-types` crate for BoltType → UniversalValue conversion,
+/// then converts UniversalValue to the crate's SurrealValue.
 pub fn convert_neo4j_type_to_surreal_value(
     value: neo4rs::BoltType,
     timezone: &str,
     should_parse_json: bool,
 ) -> anyhow::Result<SurrealValue> {
+    use neo4j_types::reverse::ConversionConfig;
+
+    // Create conversion config
+    let config = ConversionConfig {
+        timezone: timezone.to_string(),
+        parse_json_strings: should_parse_json,
+    };
+
+    // Convert BoltType → UniversalValue using neo4j-types
+    let universal_value = neo4j_types::convert_bolt_to_universal_value(value, &config)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+    // Convert UniversalValue → SurrealValue (the crate's own enum)
+    universal_value_to_surreal_value(universal_value)
+}
+
+/// Convert UniversalValue to the crate's SurrealValue enum.
+///
+/// This bridges from sync-core's UniversalValue to the crate's internal SurrealValue type.
+fn universal_value_to_surreal_value(
+    value: sync_core::UniversalValue,
+) -> anyhow::Result<SurrealValue> {
+    use sync_core::UniversalValue;
+
     match value {
-        neo4rs::BoltType::String(s) => {
-            // If JSON parsing is requested, try to parse the string as JSON
-            if should_parse_json {
-                match serde_json::from_str::<serde_json::Value>(&s.value) {
-                    Ok(json_val) => {
-                        // Successfully parsed as JSON - convert to SurrealValue
-                        match crate::json_to_surreal_without_schema(json_val) {
-                            Ok(v) => {
-                                tracing::debug!(
-                                    "Successfully converted JSON string to object: {}",
-                                    &s.value[..s.value.len().min(100)]
-                                );
-                                return Ok(v);
-                            }
-                            Err(e) => {
-                                tracing::warn!(
-                                    "Failed to convert parsed JSON to SurrealValue: {}. Keeping as string.",
-                                    e
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            "Failed to parse string as JSON: {}. Keeping as string. Value: {}",
-                            e,
-                            &s.value[..s.value.len().min(100)]
-                        );
-                    }
-                }
-            }
-            // Either JSON parsing not requested or parsing failed - return as string
-            Ok(SurrealValue::String(s.value))
-        }
-        neo4rs::BoltType::Boolean(b) => Ok(SurrealValue::Bool(b.value)),
-        neo4rs::BoltType::Map(map) => {
-            let mut vs = HashMap::new();
-            for (key, val) in map.value {
-                // Recursive calls should not parse JSON (only top-level properties)
-                let v = convert_neo4j_type_to_surreal_value(val, timezone, false)?;
-                vs.insert(key.to_string(), v);
-            }
-            Ok(SurrealValue::Object(vs))
-        }
-        neo4rs::BoltType::Null(_) => Ok(SurrealValue::Null),
-        neo4rs::BoltType::Integer(i) => Ok(SurrealValue::Int(i.value)),
-        neo4rs::BoltType::Float(f) => Ok(SurrealValue::Float(f.value)),
-        neo4rs::BoltType::List(list) => {
-            let mut vs = Vec::new();
-            for item in list.value {
-                // Recursive calls should not parse JSON (only top-level properties)
-                let v = convert_neo4j_type_to_surreal_value(item, timezone, false)?;
-                vs.push(v);
-            }
-            Ok(SurrealValue::Array(vs))
-        }
-        neo4rs::BoltType::Node(node) => {
-            // We assume that nodes are not stored in Neo4j as node properties.
-            // In other words, nodes are processed and converted in more upper function,
-            // so we should never encounter a node here.
-            Err(anyhow::anyhow!(
-                "Node type is not supported for migration from Neo4j to SurrealDB: {node:?}",
-            ))
-        }
-        neo4rs::BoltType::Relation(relation) => {
-            // We assume that relations are not stored in Neo4j as node propertaies.
-            // In other words, nodes are processed and converted in more upper function,
-            // so we should never encounter a relation here.
-            Err(anyhow::anyhow!(
-                "Relation type is not supported for migration from Neo4j to SurrealDB: {relation:?}",
-            ))
-        }
-        // "A relationship without start or end node ID. It is used internally for Path serialization."
-        // https://neo4j.com/docs/bolt/current/bolt/structure-semantics/#structure-unbound
-        neo4rs::BoltType::UnboundedRelation(_unbounded_relation) => {
-            // We assume that unbounded relations are not stored in Neo4j, and therefore
-            // we never encounter them in the input to surreal-sync.
+        UniversalValue::Null => Ok(SurrealValue::Null),
+        UniversalValue::Bool(b) => Ok(SurrealValue::Bool(b)),
 
-            // Also note that SurrealDB relation needs in and out, which means we cannot convert
-            // unbounded relations to SurrealDB relations anyway.
-            // See https://surrealdb.com/docs/surrealql/statements/relate for more details on how SurrealDB's RELATE works.
-            Err(anyhow::anyhow!(
-                "UnboundedRelation type is not supported for migration from Neo4j to SurrealDB"
-            ))
-        }
-        neo4rs::BoltType::Point2D(point) => {
-            // Convert Neo4j Point2D to a custom object with GeoJSON-like structure
-            // This approach preserves the SRID and provides better compatibility
-            let mut kvs = HashMap::new();
-            kvs.insert(
-                "type".to_string(),
-                SurrealValue::String("Point".to_string()),
-            );
-            // Note: Neo4j Point2D uses SRID 4326 (WGS84) by default, compatible with SurrealDB geometry
-            kvs.insert("srid".to_string(), SurrealValue::Int(point.sr_id.value));
-            // GeoJSON coordinates format: [longitude, latitude]
-            let coordinates = vec![
-                SurrealValue::Float(point.x.value),
-                SurrealValue::Float(point.y.value),
-            ];
-            kvs.insert("coordinates".to_string(), SurrealValue::Array(coordinates));
-            Ok(SurrealValue::Object(kvs))
-        }
-        neo4rs::BoltType::Point3D(point) => {
-            // SurrealDB does not support 3-dimensional points yet, so we use a custom object
-            // to represent the 3D point with GeoJSON-like structure for future compatibility
-            let mut kvs = HashMap::new();
-            kvs.insert(
-                "type".to_string(),
-                SurrealValue::String("Point".to_string()),
-            );
-            // Note: Neo4j Point3D uses SRID 4979 (WGS84 3D) by default, compatible with SurrealDB geometry
-            kvs.insert("srid".to_string(), SurrealValue::Int(point.sr_id.value));
-            // GeoJSON coordinates format: [longitude, latitude, elevation]
-            let coordinates = vec![
-                SurrealValue::Float(point.x.value),
-                SurrealValue::Float(point.y.value),
-                SurrealValue::Float(point.z.value),
-            ];
-            kvs.insert("coordinates".to_string(), SurrealValue::Array(coordinates));
-            Ok(SurrealValue::Object(kvs))
-        }
-        neo4rs::BoltType::Bytes(bytes) => {
-            // Convert Neo4j bytes to SurrealDB bytes type
-            Ok(SurrealValue::Bytes(bytes.value.to_vec()))
-        }
-        neo4rs::BoltType::Path(_path) => {
-            // We assume Path to never appear in the input to surreal-sync, because it is not a stored data type in Neo4j,
-            // but rather a result of a query that traverses the graph.
-            // See https://neo4j.com/blog/developer/the-power-of-the-path-1/ for more details.
-            Err(anyhow::anyhow!(
-                "Path type is not supported for migration from Neo4j to SurrealDB"
-            ))
-        }
-        neo4rs::BoltType::Date(date) => {
-            let naive_d: chrono::NaiveDate = date.try_into()?;
-            // Parse the timezone
-            let tz: chrono_tz::Tz = timezone.parse()
-                .map_err(|_| anyhow::anyhow!("Invalid timezone: {timezone}. Use IANA timezone names like 'UTC', 'America/New_York', etc."))?;
-            // Create a naive datetime at midnight in the specified timezone
-            let naive_dt = chrono::NaiveDateTime::new(
-                naive_d,
-                chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap(),
-            );
-            // Convert to UTC datetime using the specified timezone
-            let dt_with_tz = tz.from_local_datetime(&naive_dt).single().ok_or_else(|| {
-                anyhow::anyhow!("Ambiguous or invalid datetime in timezone {timezone}")
-            })?;
-            let utc_dt = dt_with_tz.with_timezone(&Utc);
-            Ok(SurrealValue::DateTime(utc_dt))
-        }
-        // "An instant capturing the time of day, and the timezone offset in seconds, but not the date"
-        // https://neo4j.com/docs/bolt/current/bolt/structure-semantics/#structure-time
-        neo4rs::BoltType::Time(time) => {
-            let t: (chrono::NaiveTime, chrono::FixedOffset) = time.into();
-            let mut obj = HashMap::new();
-            // Maybe we should have options to make it internally tagged (as its externally tagged for now by a parallel `type` field)
-            // and make the type field value configurable for parsing convenience?
-            obj.insert(
-                "type".to_string(),
-                SurrealValue::String("$Neo4jTime".to_string()),
-            );
-            obj.insert(
-                "offset_seconds".to_string(),
-                SurrealValue::Int(t.1.local_minus_utc() as i64),
-            );
-            use chrono::Timelike;
-            obj.insert("hour".to_string(), SurrealValue::Int(t.0.hour() as i64));
-            obj.insert("minute".to_string(), SurrealValue::Int(t.0.minute() as i64));
-            obj.insert("second".to_string(), SurrealValue::Int(t.0.second() as i64));
-            obj.insert(
-                "nanosecond".to_string(),
-                SurrealValue::Int(t.0.nanosecond() as i64),
-            );
-            Ok(SurrealValue::Object(obj))
-        }
-        neo4rs::BoltType::LocalTime(local_time) => {
-            let cnt: chrono::NaiveTime = local_time.into();
-            let mut obj = HashMap::new();
-            // Maybe we should have options to make it internally tagged (as its externally tagged for now by a parallel `type` field)
-            // and make the type field value configurable for parsing convenience?
-            obj.insert(
-                "type".to_string(),
-                SurrealValue::String("$Neo4jLocalTime".to_string()),
-            );
-            use chrono::Timelike;
-            obj.insert("hour".to_string(), SurrealValue::Int(cnt.hour() as i64));
-            obj.insert("minute".to_string(), SurrealValue::Int(cnt.minute() as i64));
-            obj.insert("second".to_string(), SurrealValue::Int(cnt.second() as i64));
-            obj.insert(
-                "nanosecond".to_string(),
-                SurrealValue::Int(cnt.nanosecond() as i64),
-            );
-            Ok(SurrealValue::Object(obj))
-        }
-        neo4rs::BoltType::DateTime(datetime) => {
-            let dt: chrono::DateTime<chrono::FixedOffset> = datetime.try_into()?;
-            let utc_dt = dt.into();
-            Ok(SurrealValue::DateTime(utc_dt))
-        }
-        neo4rs::BoltType::LocalDateTime(local_datetime) => {
-            let dt: chrono::NaiveDateTime = local_datetime.try_into()?;
-            // Parse the timezone
-            let tz: chrono_tz::Tz = timezone.parse()
-                .map_err(|_| anyhow::anyhow!("Invalid timezone: {timezone}. Use IANA timezone names like 'UTC', 'America/New_York', etc."))?;
-            // Convert to UTC datetime using the specified timezone
-            let dt_with_tz = tz.from_local_datetime(&dt).single().ok_or_else(|| {
-                anyhow::anyhow!("Ambiguous or invalid datetime in timezone {timezone}")
-            })?;
-            let utc_dt = dt_with_tz.with_timezone(&Utc);
-            Ok(SurrealValue::DateTime(utc_dt))
-        }
-        neo4rs::BoltType::DateTimeZoneId(datetime_zone_id) => {
-            let dt_with_offset: chrono::DateTime<chrono::FixedOffset> =
-                (&datetime_zone_id).try_into().map_err(|e| {
-                    anyhow::anyhow!("Failed to convert DateTimeZoneId to DateTime: {e}")
-                })?;
+        // Integer types → Int
+        UniversalValue::TinyInt { value, .. } => Ok(SurrealValue::Int(value as i64)),
+        UniversalValue::SmallInt(i) => Ok(SurrealValue::Int(i as i64)),
+        UniversalValue::Int(i) => Ok(SurrealValue::Int(i as i64)),
+        UniversalValue::BigInt(i) => Ok(SurrealValue::Int(i)),
 
-            let utc_dt = dt_with_offset.with_timezone(&Utc);
-            Ok(SurrealValue::DateTime(utc_dt))
+        // Float types → Float
+        UniversalValue::Float(f) => Ok(SurrealValue::Float(f as f64)),
+        UniversalValue::Double(f) => Ok(SurrealValue::Float(f)),
+
+        // Decimal → Float (best effort)
+        UniversalValue::Decimal { value, .. } => match value.parse::<f64>() {
+            Ok(f) => Ok(SurrealValue::Float(f)),
+            Err(_) => Ok(SurrealValue::String(value)),
+        },
+
+        // String types → String
+        UniversalValue::Char { value, .. } => Ok(SurrealValue::String(value)),
+        UniversalValue::VarChar { value, .. } => Ok(SurrealValue::String(value)),
+        UniversalValue::Text(s) => Ok(SurrealValue::String(s)),
+
+        // Binary types → Bytes
+        UniversalValue::Blob(b) => Ok(SurrealValue::Bytes(b)),
+        UniversalValue::Bytes(b) => Ok(SurrealValue::Bytes(b)),
+
+        // UUID → String
+        UniversalValue::Uuid(u) => Ok(SurrealValue::String(u.to_string())),
+
+        // DateTime types → DateTime
+        UniversalValue::Date(dt) => Ok(SurrealValue::DateTime(dt)),
+        UniversalValue::Time(dt) => Ok(SurrealValue::DateTime(dt)),
+        UniversalValue::DateTime(dt) => Ok(SurrealValue::DateTime(dt)),
+        UniversalValue::DateTimeNano(dt) => Ok(SurrealValue::DateTime(dt)),
+        UniversalValue::TimestampTz(dt) => Ok(SurrealValue::DateTime(dt)),
+
+        // JSON types → Object (via helper function)
+        UniversalValue::Json(json_val) => json_value_to_surreal_value(&json_val),
+        UniversalValue::Jsonb(json_val) => json_value_to_surreal_value(&json_val),
+
+        // Array → Array
+        UniversalValue::Array { elements, .. } => {
+            let mut arr = Vec::new();
+            for elem in elements {
+                arr.push(universal_value_to_surreal_value(elem)?);
+            }
+            Ok(SurrealValue::Array(arr))
         }
-        neo4rs::BoltType::Duration(duration) => {
-            let std_duration: std::time::Duration = duration.into();
-            Ok(SurrealValue::Duration(std_duration))
+
+        // Set → Array of strings
+        UniversalValue::Set { elements, .. } => {
+            let arr: Vec<SurrealValue> = elements.into_iter().map(SurrealValue::String).collect();
+            Ok(SurrealValue::Array(arr))
+        }
+
+        // Enum → String
+        UniversalValue::Enum { value, .. } => Ok(SurrealValue::String(value)),
+
+        // Geometry → Object (via GeoJSON-like structure)
+        UniversalValue::Geometry { data, .. } => {
+            use sync_core::values::GeometryData;
+            let GeometryData(json_val) = data;
+            json_value_to_surreal_value(&json_val)
+        }
+
+        // Duration → Duration
+        UniversalValue::Duration(d) => Ok(SurrealValue::Duration(d)),
+    }
+}
+
+/// Convert a serde_json::Value to SurrealValue.
+fn json_value_to_surreal_value(value: &serde_json::Value) -> anyhow::Result<SurrealValue> {
+    match value {
+        serde_json::Value::Null => Ok(SurrealValue::Null),
+        serde_json::Value::Bool(b) => Ok(SurrealValue::Bool(*b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(SurrealValue::Int(i))
+            } else if let Some(f) = n.as_f64() {
+                Ok(SurrealValue::Float(f))
+            } else {
+                Ok(SurrealValue::Null)
+            }
+        }
+        serde_json::Value::String(s) => Ok(SurrealValue::String(s.clone())),
+        serde_json::Value::Array(arr) => {
+            let mut result = Vec::new();
+            for item in arr {
+                result.push(json_value_to_surreal_value(item)?);
+            }
+            Ok(SurrealValue::Array(result))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut result = HashMap::new();
+            for (key, val) in obj {
+                result.insert(key.clone(), json_value_to_surreal_value(val)?);
+            }
+            Ok(SurrealValue::Object(result))
         }
     }
 }

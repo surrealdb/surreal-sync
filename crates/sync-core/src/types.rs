@@ -151,6 +151,10 @@ pub enum UniversalType {
         /// Specific geometry variant
         geometry_type: GeometryType,
     },
+
+    // Duration
+    /// Time duration (seconds + nanoseconds)
+    Duration,
 }
 
 /// Geometry type variants for spatial data.
@@ -253,6 +257,7 @@ impl Serialize for UniversalType {
                 map.serialize_entry("geometry_type", geometry_type)?;
                 map.end()
             }
+            Self::Duration => serializer.serialize_str("duration"),
         }
     }
 }
@@ -296,6 +301,7 @@ impl<'de> Deserialize<'de> for UniversalType {
                     "uuid" => Ok(UniversalType::Uuid),
                     "json" => Ok(UniversalType::Json),
                     "jsonb" => Ok(UniversalType::Jsonb),
+                    "duration" => Ok(UniversalType::Duration),
                     _ => Err(E::custom(format!("unknown simple type: {value}"))),
                 }
             }
@@ -337,6 +343,7 @@ impl<'de> Deserialize<'de> for UniversalType {
                     "uuid" => Ok(UniversalType::Uuid),
                     "json" => Ok(UniversalType::Json),
                     "jsonb" => Ok(UniversalType::Jsonb),
+                    "duration" => Ok(UniversalType::Duration),
 
                     // Complex types
                     "tiny_int" | "tinyint" => {

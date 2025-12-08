@@ -395,6 +395,24 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
             }
         }
 
+        // Duration comparison - compare as seconds
+        (UniversalValue::Duration(e), SurrealValue::Duration(a)) => {
+            // Convert both to std::time::Duration for comparison
+            let expected_secs = e.as_secs();
+            let expected_nanos = e.subsec_nanos();
+            let actual_std: std::time::Duration = (*a).into();
+            let actual_secs = actual_std.as_secs();
+            let actual_nanos = actual_std.subsec_nanos();
+            if expected_secs == actual_secs && expected_nanos == actual_nanos {
+                CompareResult::Match
+            } else {
+                CompareResult::Mismatch {
+                    expected: format!("{expected_secs}s {expected_nanos}ns"),
+                    actual: format!("{actual_secs}s {actual_nanos}ns"),
+                }
+            }
+        }
+
         // Type mismatch
         (expected, actual) => CompareResult::Mismatch {
             expected: format!("{expected:?}"),

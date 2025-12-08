@@ -6100,6 +6100,7 @@ dependencies = [
  "mongodb",
  "mysql-types",
  "mysql_async",
+ "neo4j-types",
  "neo4rs",
  "rand 0.8.5",
  "rust_decimal",

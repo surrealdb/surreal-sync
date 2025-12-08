@@ -7,6 +7,24 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
+/// Parse an ISO 8601 duration string (PTxS or PTx.xxxxxxxxxS format).
+fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
+    let trimmed = s.trim();
+    if let Some(secs_str) = trimmed.strip_prefix("PT").and_then(|s| s.strip_suffix('S')) {
+        if let Some(dot_pos) = secs_str.find('.') {
+            let secs: u64 = secs_str[..dot_pos].parse().ok()?;
+            let nanos_str = &secs_str[dot_pos + 1..];
+            let nanos: u32 = nanos_str.parse().ok()?;
+            Some(std::time::Duration::new(secs, nanos))
+        } else {
+            let secs: u64 = secs_str.parse().ok()?;
+            Some(std::time::Duration::from_secs(secs))
+        }
+    } else {
+        None
+    }
+}
+
 /// Represents a value that can be bound to a SurrealDB query parameter
 ///
 /// This enum provides a type-safe way to represent data from various source databases
@@ -106,7 +124,14 @@ pub fn json_to_surreal_without_schema(value: serde_json::Value) -> anyhow::Resul
                 Ok(SurrealValue::String(n.to_string()))
             }
         }
-        serde_json::Value::String(s) => Ok(SurrealValue::String(s)),
+        serde_json::Value::String(s) => {
+            // Auto-detect ISO 8601 duration strings (PTxxxS format) and convert to Duration
+            if let Some(duration) = try_parse_iso8601_duration(&s) {
+                Ok(SurrealValue::Duration(duration))
+            } else {
+                Ok(SurrealValue::String(s))
+            }
+        }
         serde_json::Value::Array(arr) => {
             let mut vs = Vec::new();
             for item in arr {

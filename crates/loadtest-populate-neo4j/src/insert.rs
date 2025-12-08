@@ -187,6 +187,17 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
                 .collect();
             format!("[{}]", element_strs.join(", "))
         }
+
+        // Duration type - Neo4j duration
+        UniversalValue::Duration(d) => {
+            let secs = d.as_secs();
+            let nanos = d.subsec_nanos();
+            if nanos == 0 {
+                format!("duration('PT{secs}S')")
+            } else {
+                format!("duration('PT{secs}.{nanos:09}S')")
+            }
+        }
     }
 }
 

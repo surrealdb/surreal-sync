@@ -354,6 +354,41 @@ pub fn csv_string_to_typed_value(
                 }),
             }
         }
+
+        UniversalType::Duration => {
+            // Parse ISO 8601 duration format (e.g., "PT1H30M45S")
+            // For simplicity, we only support "PTxS" or "PTx.xxxxxxxxxS" format
+            let trimmed = value.trim();
+            if let Some(secs_str) = trimmed.strip_prefix("PT").and_then(|s| s.strip_suffix('S')) {
+                if let Some(dot_pos) = secs_str.find('.') {
+                    let secs: u64 = secs_str[..dot_pos].parse().map_err(|_| CsvParseError {
+                        message: "Invalid duration seconds".to_string(),
+                        value: value.to_string(),
+                        expected_type: "Duration".to_string(),
+                    })?;
+                    let nanos_str = &secs_str[dot_pos + 1..];
+                    let nanos: u32 = nanos_str.parse().map_err(|_| CsvParseError {
+                        message: "Invalid duration nanoseconds".to_string(),
+                        value: value.to_string(),
+                        expected_type: "Duration".to_string(),
+                    })?;
+                    Ok(TypedValue::duration(std::time::Duration::new(secs, nanos)))
+                } else {
+                    let secs: u64 = secs_str.parse().map_err(|_| CsvParseError {
+                        message: "Invalid duration seconds".to_string(),
+                        value: value.to_string(),
+                        expected_type: "Duration".to_string(),
+                    })?;
+                    Ok(TypedValue::duration(std::time::Duration::from_secs(secs)))
+                }
+            } else {
+                Err(CsvParseError {
+                    message: "Invalid duration format, expected PTxS".to_string(),
+                    value: value.to_string(),
+                    expected_type: "Duration".to_string(),
+                })
+            }
+        }
     }
 }
 

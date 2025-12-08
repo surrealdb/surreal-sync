@@ -363,7 +363,14 @@ fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
         }
         Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME => {
             match row.try_get::<_, Option<String>>(index)? {
-                Some(s) => Ok(SurrealValue::String(s)),
+                Some(s) => {
+                    // Auto-detect ISO 8601 duration strings (PTxxxS format) and convert to Duration
+                    if let Some(duration) = try_parse_iso8601_duration(&s) {
+                        Ok(SurrealValue::Duration(duration))
+                    } else {
+                        Ok(SurrealValue::String(s))
+                    }
+                }
                 None => Ok(SurrealValue::Null),
             }
         }
@@ -443,5 +450,26 @@ fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
                 Err(anyhow::anyhow!("Unsupported PostgreSQL type: {pg_type:?}",))
             }
         }
+    }
+}
+
+/// Try to parse an ISO 8601 duration string (e.g., "PT181S" or "PT181.000000000S").
+/// Returns Some(std::time::Duration) if the string matches the expected format.
+fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
+    let trimmed = s.trim();
+    // Only accept "PTxS" or "PTx.xxxxxxxxxS" format
+    if let Some(secs_str) = trimmed.strip_prefix("PT").and_then(|s| s.strip_suffix('S')) {
+        if let Some(dot_pos) = secs_str.find('.') {
+            // Has fractional seconds
+            let secs: u64 = secs_str[..dot_pos].parse().ok()?;
+            let nanos_str = &secs_str[dot_pos + 1..];
+            let nanos: u32 = nanos_str.parse().ok()?;
+            Some(std::time::Duration::new(secs, nanos))
+        } else {
+            let secs: u64 = secs_str.parse().ok()?;
+            Some(std::time::Duration::from_secs(secs))
+        }
+    } else {
+        None
     }
 }

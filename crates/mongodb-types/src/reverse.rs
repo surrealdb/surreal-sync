@@ -7,6 +7,30 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use sync_core::{TypedValue, UniversalType, UniversalValue};
 
+/// Parse an ISO 8601 duration string (PTxS or PTx.xxxxxxxxxS format).
+///
+/// Supports:
+/// - Simple seconds: "PT181S" (181 seconds)
+/// - Seconds with nanoseconds: "PT60.123456789S" (60 seconds + 123456789 nanoseconds)
+fn parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
+    let trimmed = s.trim();
+    // Only accept "PTxS" or "PTx.xxxxxxxxxS" format
+    if let Some(secs_str) = trimmed.strip_prefix("PT").and_then(|s| s.strip_suffix('S')) {
+        if let Some(dot_pos) = secs_str.find('.') {
+            // Has fractional seconds
+            let secs: u64 = secs_str[..dot_pos].parse().ok()?;
+            let nanos_str = &secs_str[dot_pos + 1..];
+            let nanos: u32 = nanos_str.parse().ok()?;
+            Some(std::time::Duration::new(secs, nanos))
+        } else {
+            let secs: u64 = secs_str.parse().ok()?;
+            Some(std::time::Duration::from_secs(secs))
+        }
+    } else {
+        None
+    }
+}
+
 /// BSON value paired with schema information for type-aware conversion.
 #[derive(Debug, Clone)]
 pub struct BsonValueWithSchema {
@@ -220,6 +244,15 @@ impl From<BsonValueWithSchema> for TypedValue {
                         geometry_type: geometry_type.clone(),
                     },
                     value: UniversalValue::Json(Box::new(json)),
+                }
+            }
+
+            // Duration - parse ISO 8601 duration string (PTxS or PTx.xxxxxxxxxS format)
+            (UniversalType::Duration, Bson::String(s)) => {
+                if let Some(duration) = parse_iso8601_duration(s) {
+                    TypedValue::duration(duration)
+                } else {
+                    TypedValue::null(UniversalType::Duration)
                 }
             }
 
