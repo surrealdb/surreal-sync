@@ -3,7 +3,7 @@
 //! This module provides conversion from sync-core's `TypedValue` to CSV string values.
 
 use base64::Engine;
-use sync_core::{TypedValue, UniversalType, UniversalValue};
+use sync_core::{TypedValue, UniversalValue};
 
 /// Wrapper for CSV string values.
 #[derive(Debug, Clone)]
@@ -23,107 +23,88 @@ impl CsvValue {
 
 impl From<TypedValue> for CsvValue {
     fn from(tv: TypedValue) -> Self {
-        match (&tv.sync_type, &tv.value) {
+        CsvValue::from(tv.value)
+    }
+}
+
+impl From<UniversalValue> for CsvValue {
+    fn from(value: UniversalValue) -> Self {
+        match value {
             // Null - empty string
-            (_, UniversalValue::Null) => CsvValue(String::new()),
+            UniversalValue::Null => CsvValue(String::new()),
 
             // Boolean
-            (UniversalType::Bool, UniversalValue::Bool(b)) => CsvValue(if *b {
+            UniversalValue::Bool(b) => CsvValue(if b {
                 "true".to_string()
             } else {
                 "false".to_string()
             }),
 
-            // Integer types - strict 1:1 matching
-            (UniversalType::TinyInt { .. }, UniversalValue::TinyInt { value, .. }) => {
-                CsvValue(value.to_string())
-            }
-            (UniversalType::SmallInt, UniversalValue::SmallInt(i)) => CsvValue(i.to_string()),
-            (UniversalType::Int, UniversalValue::Int(i)) => CsvValue(i.to_string()),
-            (UniversalType::BigInt, UniversalValue::BigInt(i)) => CsvValue(i.to_string()),
+            // Integer types
+            UniversalValue::TinyInt { value, .. } => CsvValue(value.to_string()),
+            UniversalValue::SmallInt(i) => CsvValue(i.to_string()),
+            UniversalValue::Int(i) => CsvValue(i.to_string()),
+            UniversalValue::BigInt(i) => CsvValue(i.to_string()),
 
-            // Floating point - strict 1:1 matching
-            (UniversalType::Float, UniversalValue::Float(f)) => CsvValue(f.to_string()),
-            (UniversalType::Double, UniversalValue::Double(f)) => CsvValue(f.to_string()),
+            // Floating point
+            UniversalValue::Float(f) => CsvValue(f.to_string()),
+            UniversalValue::Double(f) => CsvValue(f.to_string()),
 
-            // Decimal - preserve as-is
-            (UniversalType::Decimal { .. }, UniversalValue::Decimal { value, .. }) => {
-                CsvValue(value.clone())
-            }
+            // Decimal - preserve as-is (no precision check needed for CSV)
+            UniversalValue::Decimal { value, .. } => CsvValue(value),
 
-            // String types - strict 1:1 matching
-            (UniversalType::Char { .. }, UniversalValue::Char { value, .. }) => {
-                CsvValue(value.clone())
-            }
-            (UniversalType::VarChar { .. }, UniversalValue::VarChar { value, .. }) => {
-                CsvValue(value.clone())
-            }
-            (UniversalType::Text, UniversalValue::Text(s)) => CsvValue(s.clone()),
+            // String types
+            UniversalValue::Char { value, .. } => CsvValue(value),
+            UniversalValue::VarChar { value, .. } => CsvValue(value),
+            UniversalValue::Text(s) => CsvValue(s),
 
             // Binary types - base64 encode
-            (UniversalType::Blob, UniversalValue::Blob(b)) => {
+            UniversalValue::Blob(b) => {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(b);
                 CsvValue(encoded)
             }
-            (UniversalType::Bytes, UniversalValue::Bytes(b)) => {
+            UniversalValue::Bytes(b) => {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(b);
                 CsvValue(encoded)
             }
 
-            // Date/time types - strict 1:1 matching with ISO 8601 format
-            (UniversalType::Date, UniversalValue::Date(dt)) => {
-                CsvValue(dt.format("%Y-%m-%d").to_string())
-            }
-            (UniversalType::Time, UniversalValue::Time(dt)) => {
-                CsvValue(dt.format("%H:%M:%S").to_string())
-            }
-            (UniversalType::DateTime, UniversalValue::DateTime(dt)) => CsvValue(dt.to_rfc3339()),
-            (UniversalType::DateTimeNano, UniversalValue::DateTimeNano(dt)) => {
-                CsvValue(dt.to_rfc3339())
-            }
-            (UniversalType::TimestampTz, UniversalValue::TimestampTz(dt)) => {
-                CsvValue(dt.to_rfc3339())
-            }
+            // Date/time types - ISO 8601 format
+            UniversalValue::Date(dt) => CsvValue(dt.format("%Y-%m-%d").to_string()),
+            UniversalValue::Time(dt) => CsvValue(dt.format("%H:%M:%S").to_string()),
+            UniversalValue::DateTime(dt) => CsvValue(dt.to_rfc3339()),
+            UniversalValue::DateTimeNano(dt) => CsvValue(dt.to_rfc3339()),
+            UniversalValue::TimestampTz(dt) => CsvValue(dt.to_rfc3339()),
 
             // UUID
-            (UniversalType::Uuid, UniversalValue::Uuid(u)) => CsvValue(u.to_string()),
+            UniversalValue::Uuid(u) => CsvValue(u.to_string()),
 
-            // JSON types - serialize as JSON string (already serde_json::Value)
-            (UniversalType::Json, UniversalValue::Json(payload)) => {
-                CsvValue(serde_json::to_string(&**payload).unwrap_or_default())
+            // JSON types - serialize as JSON string
+            UniversalValue::Json(payload) => {
+                CsvValue(serde_json::to_string(&*payload).unwrap_or_default())
             }
-            (UniversalType::Jsonb, UniversalValue::Jsonb(payload)) => {
-                CsvValue(serde_json::to_string(&**payload).unwrap_or_default())
+            UniversalValue::Jsonb(payload) => {
+                CsvValue(serde_json::to_string(&*payload).unwrap_or_default())
             }
 
             // Array types - serialize as JSON array
-            (UniversalType::Array { .. }, UniversalValue::Array { elements, .. }) => {
+            UniversalValue::Array { elements, .. } => {
                 let json_arr: Vec<serde_json::Value> =
                     elements.iter().map(generated_value_to_json).collect();
                 CsvValue(serde_json::to_string(&json_arr).unwrap_or_default())
             }
 
             // Set - comma-separated values
-            (UniversalType::Set { .. }, UniversalValue::Set { elements, .. }) => {
-                CsvValue(elements.join(","))
-            }
+            UniversalValue::Set { elements, .. } => CsvValue(elements.join(",")),
 
             // Enum - string value
-            (UniversalType::Enum { .. }, UniversalValue::Enum { value, .. }) => {
-                CsvValue(value.clone())
-            }
+            UniversalValue::Enum { value, .. } => CsvValue(value),
 
-            // Geometry types - serialize as GeoJSON
-            (UniversalType::Geometry { .. }, UniversalValue::Geometry { data, .. }) => {
+            // Geometry types - serialize as GeoJSON (includes geometry_type from UniversalValue)
+            UniversalValue::Geometry { data, .. } => {
                 use sync_core::values::GeometryData;
                 let GeometryData(value) = data;
-                CsvValue(serde_json::to_string(value).unwrap_or_default())
+                CsvValue(serde_json::to_string(&value).unwrap_or_default())
             }
-
-            // Fallback - panic instead of silently returning empty string
-            (sync_type, value) => panic!(
-                "Unsupported type/value combination for CSV conversion: sync_type={sync_type:?}, value={value:?}"
-            ),
         }
     }
 }
@@ -217,6 +198,7 @@ where
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
+    use sync_core::UniversalType;
 
     #[test]
     fn test_null_conversion() {
