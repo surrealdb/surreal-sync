@@ -1,7 +1,9 @@
-//! Forward conversion: TypedValue → PostgreSQL value
+//! Forward conversion: UniversalValue/TypedValue → PostgreSQL value
 //!
-//! This module implements `From<TypedValue>` for `PostgreSQLValue`, converting
-//! sync-core's type-safe values into PostgreSQL-compatible values for INSERT operations.
+//! This module implements `From<UniversalValue>` and `From<TypedValue>` for `PostgreSQLValue`,
+//! converting sync-core's values into PostgreSQL-compatible values for INSERT operations.
+//! The TypedValue implementation delegates to UniversalValue for most cases, but keeps
+//! special handling for typed arrays and JSON text parsing where type info is needed.
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rust_decimal::Decimal;
@@ -62,144 +64,116 @@ pub enum PostgreSQLValue {
     Point(f64, f64),
 }
 
-impl From<TypedValue> for PostgreSQLValue {
-    fn from(tv: TypedValue) -> Self {
-        match (&tv.sync_type, tv.value) {
+impl From<UniversalValue> for PostgreSQLValue {
+    fn from(value: UniversalValue) -> Self {
+        match value {
             // Null
-            (_, UniversalValue::Null) => PostgreSQLValue::Null,
+            UniversalValue::Null => PostgreSQLValue::Null,
 
             // Boolean
-            (UniversalType::Bool, UniversalValue::Bool(b)) => PostgreSQLValue::Bool(b),
+            UniversalValue::Bool(b) => PostgreSQLValue::Bool(b),
 
-            // Integer types - strict 1:1 matching
-            (UniversalType::TinyInt { .. }, UniversalValue::TinyInt { value, .. }) => {
-                PostgreSQLValue::Int16(value as i16)
-            }
-            (UniversalType::SmallInt, UniversalValue::SmallInt(i)) => PostgreSQLValue::Int16(i),
-            (UniversalType::Int, UniversalValue::Int(i)) => PostgreSQLValue::Int32(i),
-            (UniversalType::BigInt, UniversalValue::BigInt(i)) => PostgreSQLValue::Int64(i),
+            // Integer types
+            UniversalValue::TinyInt { value, .. } => PostgreSQLValue::Int16(value as i16),
+            UniversalValue::SmallInt(i) => PostgreSQLValue::Int16(i),
+            UniversalValue::Int(i) => PostgreSQLValue::Int32(i),
+            UniversalValue::BigInt(i) => PostgreSQLValue::Int64(i),
 
-            // Floating point - strict 1:1 matching
-            (UniversalType::Float, UniversalValue::Float(f)) => PostgreSQLValue::Float32(f),
-            (UniversalType::Double, UniversalValue::Double(f)) => PostgreSQLValue::Float64(f),
+            // Floating point
+            UniversalValue::Float(f) => PostgreSQLValue::Float32(f),
+            UniversalValue::Double(f) => PostgreSQLValue::Float64(f),
 
-            // Decimal
-            (UniversalType::Decimal { .. }, UniversalValue::Decimal { value, .. }) => {
-                match Decimal::from_str(&value) {
-                    Ok(d) => PostgreSQLValue::Decimal(d),
-                    Err(_) => PostgreSQLValue::Text(value),
-                }
-            }
-            (UniversalType::Decimal { .. }, UniversalValue::Text(s)) => {
-                match Decimal::from_str(&s) {
-                    Ok(d) => PostgreSQLValue::Decimal(d),
-                    Err(_) => PostgreSQLValue::Text(s),
-                }
-            }
+            // Decimal - try to parse as Decimal, fallback to Text
+            UniversalValue::Decimal { value, .. } => match Decimal::from_str(&value) {
+                Ok(d) => PostgreSQLValue::Decimal(d),
+                Err(_) => PostgreSQLValue::Text(value),
+            },
 
-            // String types - strict 1:1 matching
-            (UniversalType::Char { .. }, UniversalValue::Char { value, .. }) => {
-                PostgreSQLValue::Text(value)
-            }
-            (UniversalType::VarChar { .. }, UniversalValue::VarChar { value, .. }) => {
-                PostgreSQLValue::Text(value)
-            }
-            (UniversalType::Text, UniversalValue::Text(s)) => PostgreSQLValue::Text(s),
+            // String types
+            UniversalValue::Char { value, .. } => PostgreSQLValue::Text(value),
+            UniversalValue::VarChar { value, .. } => PostgreSQLValue::Text(value),
+            UniversalValue::Text(s) => PostgreSQLValue::Text(s),
 
-            // Binary types - strict 1:1 matching
-            (UniversalType::Blob, UniversalValue::Blob(b)) => PostgreSQLValue::Bytes(b),
-            (UniversalType::Bytes, UniversalValue::Bytes(b)) => PostgreSQLValue::Bytes(b),
+            // Binary types
+            UniversalValue::Blob(b) => PostgreSQLValue::Bytes(b),
+            UniversalValue::Bytes(b) => PostgreSQLValue::Bytes(b),
 
             // UUID
-            (UniversalType::Uuid, UniversalValue::Uuid(u)) => PostgreSQLValue::Uuid(u),
-            (UniversalType::Uuid, UniversalValue::Text(s)) => match Uuid::parse_str(&s) {
-                Ok(u) => PostgreSQLValue::Uuid(u),
-                Err(_) => PostgreSQLValue::Text(s),
-            },
+            UniversalValue::Uuid(u) => PostgreSQLValue::Uuid(u),
 
-            // Date - strict 1:1 matching
-            (UniversalType::Date, UniversalValue::Date(dt)) => {
-                PostgreSQLValue::Date(dt.date_naive())
-            }
+            // Date
+            UniversalValue::Date(dt) => PostgreSQLValue::Date(dt.date_naive()),
 
-            // Time - strict 1:1 matching
-            (UniversalType::Time, UniversalValue::Time(dt)) => PostgreSQLValue::Time(dt.time()),
+            // Time
+            UniversalValue::Time(dt) => PostgreSQLValue::Time(dt.time()),
 
-            // DateTime (without timezone) - strict 1:1 matching
-            (UniversalType::DateTime, UniversalValue::DateTime(dt)) => {
-                PostgreSQLValue::Timestamp(dt.naive_utc())
-            }
-            (UniversalType::DateTimeNano, UniversalValue::DateTimeNano(dt)) => {
-                PostgreSQLValue::Timestamp(dt.naive_utc())
-            }
+            // DateTime (without timezone)
+            UniversalValue::DateTime(dt) => PostgreSQLValue::Timestamp(dt.naive_utc()),
+            UniversalValue::DateTimeNano(dt) => PostgreSQLValue::Timestamp(dt.naive_utc()),
 
-            // Timestamp with timezone - strict 1:1 matching
-            (UniversalType::TimestampTz, UniversalValue::TimestampTz(dt)) => {
-                PostgreSQLValue::TimestampTz(dt)
-            }
+            // Timestamp with timezone
+            UniversalValue::TimestampTz(dt) => PostgreSQLValue::TimestampTz(dt),
 
             // JSON
-            (UniversalType::Json, UniversalValue::Json(json_val)) => {
-                PostgreSQLValue::Json((*json_val).clone())
-            }
-            (UniversalType::Json, UniversalValue::Text(s)) => match serde_json::from_str(&s) {
-                Ok(v) => PostgreSQLValue::Json(v),
-                Err(_) => PostgreSQLValue::Text(s),
-            },
-            (UniversalType::Jsonb, UniversalValue::Json(json_val)) => {
-                PostgreSQLValue::Json((*json_val).clone())
-            }
-            (UniversalType::Jsonb, UniversalValue::Text(s)) => match serde_json::from_str(&s) {
-                Ok(v) => PostgreSQLValue::Json(v),
-                Err(_) => PostgreSQLValue::Text(s),
-            },
+            UniversalValue::Json(json_val) => PostgreSQLValue::Json((*json_val).clone()),
+            UniversalValue::Jsonb(json_val) => PostgreSQLValue::Json((*json_val).clone()),
 
-            // Arrays
-            (UniversalType::Array { element_type }, UniversalValue::Array { elements, .. }) => {
-                convert_array_to_postgresql(element_type, &elements)
+            // Array - default to text array without element_type info
+            UniversalValue::Array { elements, .. } => {
+                let values: Vec<String> = elements.into_iter().map(generated_to_string).collect();
+                PostgreSQLValue::TextArray(values)
             }
 
-            // Set - strict 1:1 matching - PostgreSQL stores as text[]
-            (UniversalType::Set { .. }, UniversalValue::Set { elements, .. }) => {
-                PostgreSQLValue::TextArray(elements)
-            }
+            // Set - PostgreSQL stores as text[]
+            UniversalValue::Set { elements, .. } => PostgreSQLValue::TextArray(elements),
 
-            // Enum - strict 1:1 matching - PostgreSQL stores as text
-            (UniversalType::Enum { .. }, UniversalValue::Enum { value, .. }) => {
-                PostgreSQLValue::Text(value)
-            }
+            // Enum - PostgreSQL stores as text
+            UniversalValue::Enum { value, .. } => PostgreSQLValue::Text(value),
 
-            // Geometry - strict 1:1 matching
-            (
-                UniversalType::Geometry { geometry_type: _ },
-                UniversalValue::Geometry { data, .. },
-            ) => {
+            // Geometry - store as GeoJSON
+            UniversalValue::Geometry { data, .. } => {
                 use sync_core::values::GeometryData;
                 let GeometryData(json_val) = data;
                 PostgreSQLValue::Json(json_val)
             }
+        }
+    }
+}
 
-            // Fallback conversions for type mismatches
-            (_, UniversalValue::Bool(b)) => PostgreSQLValue::Bool(b),
-            (_, UniversalValue::Int(i)) => PostgreSQLValue::Int32(i),
-            (_, UniversalValue::BigInt(i)) => PostgreSQLValue::Int64(i),
-            (_, UniversalValue::Double(f)) => PostgreSQLValue::Float64(f),
-            (_, UniversalValue::Text(s)) => PostgreSQLValue::Text(s),
-            (_, UniversalValue::Bytes(b)) => PostgreSQLValue::Bytes(b),
-            (_, UniversalValue::Uuid(u)) => PostgreSQLValue::Uuid(u),
-            (_, UniversalValue::DateTime(dt)) => PostgreSQLValue::TimestampTz(dt),
-            (_, UniversalValue::Decimal { value, .. }) => match Decimal::from_str(&value) {
-                Ok(d) => PostgreSQLValue::Decimal(d),
-                Err(_) => PostgreSQLValue::Text(value),
+impl From<TypedValue> for PostgreSQLValue {
+    fn from(tv: TypedValue) -> Self {
+        match (&tv.sync_type, &tv.value) {
+            // Special case: UUID type with text value - parse the UUID string
+            (UniversalType::Uuid, UniversalValue::Text(s)) => match Uuid::parse_str(s) {
+                Ok(u) => PostgreSQLValue::Uuid(u),
+                Err(_) => PostgreSQLValue::Text(s.clone()),
             },
-            (_, UniversalValue::Array { elements, .. }) => {
-                // Default to text array
-                let values: Vec<String> = elements.into_iter().map(generated_to_string).collect();
-                PostgreSQLValue::TextArray(values)
+
+            // Special case: Decimal type with text value - parse as decimal
+            (UniversalType::Decimal { .. }, UniversalValue::Text(s)) => {
+                match Decimal::from_str(s) {
+                    Ok(d) => PostgreSQLValue::Decimal(d),
+                    Err(_) => PostgreSQLValue::Text(s.clone()),
+                }
             }
-            (_, UniversalValue::Json(json_val)) => PostgreSQLValue::Json(*json_val),
-            // Catch-all for any remaining combinations
-            _ => PostgreSQLValue::Null,
+
+            // Special case: JSON/Jsonb type with text value - parse JSON string
+            (UniversalType::Json, UniversalValue::Text(s)) => match serde_json::from_str(s) {
+                Ok(v) => PostgreSQLValue::Json(v),
+                Err(_) => PostgreSQLValue::Text(s.clone()),
+            },
+            (UniversalType::Jsonb, UniversalValue::Text(s)) => match serde_json::from_str(s) {
+                Ok(v) => PostgreSQLValue::Json(v),
+                Err(_) => PostgreSQLValue::Text(s.clone()),
+            },
+
+            // Special case: Typed arrays - use element_type for proper array conversion
+            (UniversalType::Array { element_type }, UniversalValue::Array { elements, .. }) => {
+                convert_array_to_postgresql(element_type, elements)
+            }
+
+            // All other cases delegate to From<UniversalValue>
+            _ => PostgreSQLValue::from(tv.value),
         }
     }
 }
