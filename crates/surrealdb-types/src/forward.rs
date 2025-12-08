@@ -27,103 +27,7 @@ impl SurrealValue {
 impl From<TypedValue> for SurrealValue {
     fn from(tv: TypedValue) -> Self {
         match (&tv.sync_type, &tv.value) {
-            // Null
-            (_, UniversalValue::Null) => SurrealValue(Value::None),
-
-            // Boolean
-            (UniversalType::Bool, UniversalValue::Bool(b)) => SurrealValue(Value::Bool(*b)),
-
-            // Integer types - SurrealDB uses Number - strict 1:1 matching
-            (UniversalType::TinyInt { .. }, UniversalValue::TinyInt { value, .. }) => {
-                SurrealValue(Value::Number(Number::Int(*value as i64)))
-            }
-            (UniversalType::SmallInt, UniversalValue::SmallInt(i)) => {
-                SurrealValue(Value::Number(Number::Int(*i as i64)))
-            }
-            (UniversalType::Int, UniversalValue::Int(i)) => {
-                SurrealValue(Value::Number(Number::Int(*i as i64)))
-            }
-            (UniversalType::BigInt, UniversalValue::BigInt(i)) => {
-                SurrealValue(Value::Number(Number::Int(*i)))
-            }
-
-            // Floating point - strict 1:1 matching
-            (UniversalType::Float, UniversalValue::Float(f)) => {
-                SurrealValue(Value::Number(Number::Float(*f as f64)))
-            }
-            (UniversalType::Double, UniversalValue::Double(f)) => {
-                SurrealValue(Value::Number(Number::Float(*f)))
-            }
-
-            // Decimal - SurrealDB supports decimal with up to 128-bit precision
-            (UniversalType::Decimal { precision, .. }, UniversalValue::Decimal { value, .. }) => {
-                if *precision <= 38 {
-                    // Fits in Decimal128
-                    match Decimal::from_str(value) {
-                        Ok(dec) => SurrealValue(Value::Number(Number::Decimal(dec))),
-                        Err(_) => SurrealValue(Value::Strand(Strand::from(value.clone()))),
-                    }
-                } else {
-                    // Store high precision as string
-                    SurrealValue(Value::Strand(Strand::from(value.clone())))
-                }
-            }
-
-            // String types - strict 1:1 matching
-            (UniversalType::Char { .. }, UniversalValue::Char { value, .. }) => {
-                SurrealValue(Value::Strand(Strand::from(value.clone())))
-            }
-            (UniversalType::VarChar { .. }, UniversalValue::VarChar { value, .. }) => {
-                SurrealValue(Value::Strand(Strand::from(value.clone())))
-            }
-            (UniversalType::Text, UniversalValue::Text(s)) => {
-                SurrealValue(Value::Strand(Strand::from(s.clone())))
-            }
-
-            // Binary types - SurrealDB uses Bytes - strict 1:1 matching
-            (UniversalType::Blob, UniversalValue::Blob(b)) => {
-                SurrealValue(Value::Bytes(surrealdb::sql::Bytes::from(b.clone())))
-            }
-            (UniversalType::Bytes, UniversalValue::Bytes(b)) => {
-                SurrealValue(Value::Bytes(surrealdb::sql::Bytes::from(b.clone())))
-            }
-
-            // Date/time types - SurrealDB uses Datetime - strict 1:1 matching
-            (UniversalType::Date, UniversalValue::Date(dt)) => {
-                // Store date as string in YYYY-MM-DD format
-                SurrealValue(Value::Strand(Strand::from(
-                    dt.format("%Y-%m-%d").to_string(),
-                )))
-            }
-            (UniversalType::Time, UniversalValue::Time(dt)) => {
-                // Store time as string in HH:MM:SS format
-                SurrealValue(Value::Strand(Strand::from(
-                    dt.format("%H:%M:%S").to_string(),
-                )))
-            }
-            (UniversalType::DateTime, UniversalValue::DateTime(dt)) => {
-                SurrealValue(Value::Datetime(Datetime::from(*dt)))
-            }
-            (UniversalType::DateTimeNano, UniversalValue::DateTimeNano(dt)) => {
-                SurrealValue(Value::Datetime(Datetime::from(*dt)))
-            }
-            (UniversalType::TimestampTz, UniversalValue::TimestampTz(dt)) => {
-                SurrealValue(Value::Datetime(Datetime::from(*dt)))
-            }
-
-            // UUID - SurrealDB has native UUID support
-            (UniversalType::Uuid, UniversalValue::Uuid(u)) => {
-                SurrealValue(Value::Uuid(surrealdb::sql::Uuid::from(*u)))
-            }
-
-            // JSON types - convert to SurrealDB Object
-            (UniversalType::Json, UniversalValue::Json(json_val)) => {
-                SurrealValue(json_to_surreal(json_val))
-            }
-            (UniversalType::Jsonb, UniversalValue::Json(json_val)) => {
-                SurrealValue(json_to_surreal(json_val))
-            }
-            // JSON can also be a string
+            // JSON can be a string that needs parsing
             (UniversalType::Json, UniversalValue::Text(s)) => {
                 match serde_json::from_str::<serde_json::Value>(s) {
                     Ok(v) => SurrealValue(json_to_surreal(&v)),
@@ -148,7 +52,7 @@ impl From<TypedValue> for SurrealValue {
                 SurrealValue(Value::Array(surrealdb::sql::Array::from(surreal_arr)))
             }
 
-            // Array types
+            // Array types need recursive conversion with element type info
             (UniversalType::Array { element_type }, UniversalValue::Array { elements, .. }) => {
                 let surreal_arr: Vec<Value> = elements
                     .iter()
@@ -163,38 +67,8 @@ impl From<TypedValue> for SurrealValue {
                 SurrealValue(Value::Array(Array::from(surreal_arr)))
             }
 
-            // Set - stored as array of strings - strict 1:1 matching
-            (UniversalType::Set { .. }, UniversalValue::Set { elements, .. }) => {
-                let surreal_arr: Vec<Value> = elements
-                    .iter()
-                    .map(|s| Value::Strand(Strand::from(s.clone())))
-                    .collect();
-                SurrealValue(Value::Array(Array::from(surreal_arr)))
-            }
-
-            // Enum - stored as string - strict 1:1 matching
-            (UniversalType::Enum { .. }, UniversalValue::Enum { value, .. }) => {
-                SurrealValue(Value::Strand(Strand::from(value.clone())))
-            }
-
-            // Geometry types - use SurrealDB's native Geometry - strict 1:1 matching
-            (
-                UniversalType::Geometry { geometry_type: _ },
-                UniversalValue::Geometry { data, .. },
-            ) => {
-                use sync_core::values::GeometryData;
-                let GeometryData(json_val) = data;
-                SurrealValue(json_to_surreal(json_val))
-            }
-
-            // Explicit failure for unexpected type combinations
-            (sync_type, value) => {
-                panic!(
-                    "Unsupported type combination in SurrealValue::from(TypedValue): \
-                    sync_type={sync_type:?}, value={value:?}. \
-                    This is a bug - please add handling for this type combination."
-                )
-            }
+            // For all other cases, delegate to From<UniversalValue>
+            _ => SurrealValue::from(tv.value),
         }
     }
 }
@@ -221,10 +95,19 @@ impl From<UniversalValue> for SurrealValue {
             UniversalValue::Double(f) => SurrealValue(Value::Number(Number::Float(f))),
 
             // Decimal
-            UniversalValue::Decimal { value, .. } => match Decimal::from_str(&value) {
-                Ok(dec) => SurrealValue(Value::Number(Number::Decimal(dec))),
-                Err(_) => SurrealValue(Value::Strand(Strand::from(value))),
-            },
+            UniversalValue::Decimal {
+                value, precision, ..
+            } => {
+                if precision <= 38 {
+                    match Decimal::from_str(&value) {
+                        Ok(dec) => SurrealValue(Value::Number(Number::Decimal(dec))),
+                        Err(_) => SurrealValue(Value::Strand(Strand::from(value))),
+                    }
+                } else {
+                    // Store high precision as string
+                    SurrealValue(Value::Strand(Strand::from(value)))
+                }
+            }
 
             // String types
             UniversalValue::Char { value, .. } => SurrealValue(Value::Strand(Strand::from(value))),
