@@ -1,12 +1,17 @@
-//! Forward conversion: TypedValue → MySQLValue
+//! Forward conversion: UniversalValue/TypedValue → MySQLValue
 //!
-//! This module implements `From<TypedValue>` for `MySQLValue`, converting
-//! sync-core's type-safe values into MySQL-compatible values for INSERT operations.
+//! This module implements `From<UniversalValue>` and `From<TypedValue>` for `MySQLValue`,
+//! converting sync-core's values into MySQL-compatible values for INSERT operations.
+//! The TypedValue implementation delegates to UniversalValue since MySQL doesn't need
+//! type metadata for conversion.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use chrono::{Datelike, Timelike};
 use mysql_async::Value;
-use sync_core::{TypedValue, UniversalType, UniversalValue};
+use sync_core::{TypedValue, UniversalValue};
+
+#[cfg(test)]
+use sync_core::UniversalType;
 
 /// MySQL value wrapper for type-safe conversions.
 #[derive(Debug, Clone)]
@@ -24,61 +29,65 @@ impl MySQLValue {
     }
 }
 
-impl From<TypedValue> for MySQLValue {
-    fn from(tv: TypedValue) -> Self {
-        match (&tv.sync_type, tv.value) {
+impl From<UniversalValue> for MySQLValue {
+    fn from(value: UniversalValue) -> Self {
+        match value {
+            // Null
+            UniversalValue::Null => MySQLValue(Value::NULL),
+
             // Boolean - MySQL uses TINYINT(1)
-            (UniversalType::Bool, UniversalValue::Bool(b)) => {
-                MySQLValue(Value::Int(if b { 1 } else { 0 }))
-            }
+            UniversalValue::Bool(b) => MySQLValue(Value::Int(if b { 1 } else { 0 })),
 
             // Integer types
-            (UniversalType::TinyInt { .. }, UniversalValue::TinyInt { value, .. }) => {
-                MySQLValue(Value::Int(value as i64))
-            }
-            (UniversalType::SmallInt, UniversalValue::SmallInt(i)) => {
-                MySQLValue(Value::Int(i as i64))
-            }
-            (UniversalType::Int, UniversalValue::Int(i)) => MySQLValue(Value::Int(i as i64)),
-            (UniversalType::BigInt, UniversalValue::BigInt(i)) => MySQLValue(Value::Int(i)),
+            UniversalValue::TinyInt { value, .. } => MySQLValue(Value::Int(value as i64)),
+            UniversalValue::SmallInt(i) => MySQLValue(Value::Int(i as i64)),
+            UniversalValue::Int(i) => MySQLValue(Value::Int(i as i64)),
+            UniversalValue::BigInt(i) => MySQLValue(Value::Int(i)),
 
             // Floating point
-            (UniversalType::Float, UniversalValue::Float(f)) => MySQLValue(Value::Float(f)),
-            (UniversalType::Double, UniversalValue::Double(f)) => MySQLValue(Value::Double(f)),
+            UniversalValue::Float(f) => MySQLValue(Value::Float(f)),
+            UniversalValue::Double(f) => MySQLValue(Value::Double(f)),
 
             // Decimal - stored as string in MySQL for precision
-            (UniversalType::Decimal { .. }, UniversalValue::Decimal { value, .. }) => {
-                MySQLValue(Value::Bytes(value.into_bytes()))
-            }
-            (UniversalType::Decimal { .. }, UniversalValue::Text(s)) => {
-                MySQLValue(Value::Bytes(s.into_bytes()))
-            }
+            UniversalValue::Decimal { value, .. } => MySQLValue(Value::Bytes(value.into_bytes())),
 
             // String types
-            (UniversalType::Char { .. }, UniversalValue::Char { value, .. }) => {
-                MySQLValue(Value::Bytes(value.into_bytes()))
-            }
-            (UniversalType::VarChar { .. }, UniversalValue::VarChar { value, .. }) => {
-                MySQLValue(Value::Bytes(value.into_bytes()))
-            }
-            (UniversalType::Text, UniversalValue::Text(s)) => {
-                MySQLValue(Value::Bytes(s.into_bytes()))
-            }
+            UniversalValue::Char { value, .. } => MySQLValue(Value::Bytes(value.into_bytes())),
+            UniversalValue::VarChar { value, .. } => MySQLValue(Value::Bytes(value.into_bytes())),
+            UniversalValue::Text(s) => MySQLValue(Value::Bytes(s.into_bytes())),
 
             // Binary types
-            (UniversalType::Blob, UniversalValue::Bytes(b)) => MySQLValue(Value::Bytes(b)),
-            (UniversalType::Bytes, UniversalValue::Bytes(b)) => MySQLValue(Value::Bytes(b)),
+            UniversalValue::Blob(b) => MySQLValue(Value::Bytes(b)),
+            UniversalValue::Bytes(b) => MySQLValue(Value::Bytes(b)),
 
             // UUID - MySQL stores as CHAR(36)
-            (UniversalType::Uuid, UniversalValue::Uuid(u)) => {
-                MySQLValue(Value::Bytes(u.to_string().into_bytes()))
-            }
-            (UniversalType::Uuid, UniversalValue::Text(s)) => {
-                MySQLValue(Value::Bytes(s.into_bytes()))
-            }
+            UniversalValue::Uuid(u) => MySQLValue(Value::Bytes(u.to_string().into_bytes())),
 
-            // DateTime - MySQL DATETIME(6)
-            (UniversalType::DateTime, UniversalValue::DateTime(dt)) => MySQLValue(Value::Date(
+            // Date - MySQL DATE (only date part, no time)
+            UniversalValue::Date(dt) => MySQLValue(Value::Date(
+                dt.year() as u16,
+                dt.month() as u8,
+                dt.day() as u8,
+                0,
+                0,
+                0,
+                0,
+            )),
+
+            // Time - MySQL TIME
+            UniversalValue::Time(dt) => MySQLValue(Value::Time(
+                false, // not negative
+                0,     // days
+                dt.hour() as u8,
+                dt.minute() as u8,
+                dt.second() as u8,
+                dt.nanosecond() / 1000, // MySQL uses microseconds
+            )),
+
+            // DateTime variants - MySQL DATETIME(6) and TIMESTAMP
+            UniversalValue::DateTime(dt)
+            | UniversalValue::DateTimeNano(dt)
+            | UniversalValue::TimestampTz(dt) => MySQLValue(Value::Date(
                 dt.year() as u16,
                 dt.month() as u8,
                 dt.day() as u8,
@@ -88,154 +97,38 @@ impl From<TypedValue> for MySQLValue {
                 dt.nanosecond() / 1000, // MySQL uses microseconds
             )),
 
-            // DateTimeNano - Same as DateTime but with full nanosecond precision
-            // MySQL only supports microseconds, so we truncate
-            (UniversalType::DateTimeNano, UniversalValue::DateTime(dt)) => MySQLValue(Value::Date(
-                dt.year() as u16,
-                dt.month() as u8,
-                dt.day() as u8,
-                dt.hour() as u8,
-                dt.minute() as u8,
-                dt.second() as u8,
-                dt.nanosecond() / 1000,
-            )),
-
-            // TimestampTz - MySQL TIMESTAMP
-            (UniversalType::TimestampTz, UniversalValue::DateTime(dt)) => MySQLValue(Value::Date(
-                dt.year() as u16,
-                dt.month() as u8,
-                dt.day() as u8,
-                dt.hour() as u8,
-                dt.minute() as u8,
-                dt.second() as u8,
-                dt.nanosecond() / 1000,
-            )),
-
-            // Date - MySQL DATE
-            (UniversalType::Date, UniversalValue::DateTime(dt)) => MySQLValue(Value::Date(
-                dt.year() as u16,
-                dt.month() as u8,
-                dt.day() as u8,
-                0,
-                0,
-                0,
-                0,
-            )),
-            (UniversalType::Date, UniversalValue::Date(dt)) => MySQLValue(Value::Date(
-                dt.year() as u16,
-                dt.month() as u8,
-                dt.day() as u8,
-                0,
-                0,
-                0,
-                0,
-            )),
-            (UniversalType::Date, UniversalValue::Text(s)) => {
-                MySQLValue(Value::Bytes(s.into_bytes()))
-            }
-
-            // Time - MySQL TIME
-            (UniversalType::Time, UniversalValue::Time(dt)) => MySQLValue(Value::Time(
-                false, // not negative
-                0,     // days
-                dt.hour() as u8,
-                dt.minute() as u8,
-                dt.second() as u8,
-                dt.nanosecond() / 1000,
-            )),
-            (UniversalType::Time, UniversalValue::Text(s)) => {
-                MySQLValue(Value::Bytes(s.into_bytes()))
-            }
-
             // JSON - MySQL JSON type
-            (UniversalType::Json, UniversalValue::Json(json_val)) => {
+            UniversalValue::Json(json_val) | UniversalValue::Jsonb(json_val) => {
                 MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
-            }
-            (UniversalType::Json, UniversalValue::Text(s)) => {
-                MySQLValue(Value::Bytes(s.into_bytes()))
-            }
-            (UniversalType::Jsonb, UniversalValue::Jsonb(json_val)) => {
-                MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
-            }
-            (UniversalType::Jsonb, UniversalValue::Text(s)) => {
-                MySQLValue(Value::Bytes(s.into_bytes()))
             }
 
             // Array - MySQL stores as JSON
-            (UniversalType::Array { .. }, UniversalValue::Array { elements, .. }) => {
+            UniversalValue::Array { elements, .. } => {
                 let json = generated_array_to_json(elements);
                 MySQLValue(Value::Bytes(json.to_string().into_bytes()))
             }
 
-            // Set - MySQL SET type
-            (UniversalType::Set { .. }, UniversalValue::Set { elements, .. }) => {
+            // Set - MySQL SET type (comma-separated values)
+            UniversalValue::Set { elements, .. } => {
                 MySQLValue(Value::Bytes(elements.join(",").into_bytes()))
             }
 
             // Enum - MySQL ENUM
-            (UniversalType::Enum { .. }, UniversalValue::Enum { value, .. }) => {
-                MySQLValue(Value::Bytes(value.into_bytes()))
-            }
+            UniversalValue::Enum { value, .. } => MySQLValue(Value::Bytes(value.into_bytes())),
 
             // Geometry - stored as GeoJSON string
-            (UniversalType::Geometry { .. }, UniversalValue::Geometry { data, .. }) => {
-                use sync_core::values::GeometryData;
-                let GeometryData(json_val) = data;
-                MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
-            }
-
-            // Null
-            (_, UniversalValue::Null) => MySQLValue(Value::NULL),
-
-            // Fallback for type mismatches - try to do reasonable conversion
-            (_, UniversalValue::Bool(b)) => MySQLValue(Value::Int(if b { 1 } else { 0 })),
-            (_, UniversalValue::TinyInt { value, .. }) => MySQLValue(Value::Int(value as i64)),
-            (_, UniversalValue::SmallInt(i)) => MySQLValue(Value::Int(i as i64)),
-            (_, UniversalValue::Int(i)) => MySQLValue(Value::Int(i as i64)),
-            (_, UniversalValue::BigInt(i)) => MySQLValue(Value::Int(i)),
-            (_, UniversalValue::Float(f)) => MySQLValue(Value::Float(f)),
-            (_, UniversalValue::Double(f)) => MySQLValue(Value::Double(f)),
-            (_, UniversalValue::Char { value, .. }) => MySQLValue(Value::Bytes(value.into_bytes())),
-            (_, UniversalValue::VarChar { value, .. }) => {
-                MySQLValue(Value::Bytes(value.into_bytes()))
-            }
-            (_, UniversalValue::Text(s)) => MySQLValue(Value::Bytes(s.into_bytes())),
-            (_, UniversalValue::Blob(b)) => MySQLValue(Value::Bytes(b)),
-            (_, UniversalValue::Bytes(b)) => MySQLValue(Value::Bytes(b)),
-            (_, UniversalValue::Uuid(u)) => MySQLValue(Value::Bytes(u.to_string().into_bytes())),
-            (_, UniversalValue::Date(dt))
-            | (_, UniversalValue::Time(dt))
-            | (_, UniversalValue::DateTime(dt))
-            | (_, UniversalValue::DateTimeNano(dt))
-            | (_, UniversalValue::TimestampTz(dt)) => MySQLValue(Value::Date(
-                dt.year() as u16,
-                dt.month() as u8,
-                dt.day() as u8,
-                dt.hour() as u8,
-                dt.minute() as u8,
-                dt.second() as u8,
-                dt.nanosecond() / 1000,
-            )),
-            (_, UniversalValue::Decimal { value, .. }) => {
-                MySQLValue(Value::Bytes(value.into_bytes()))
-            }
-            (_, UniversalValue::Array { elements, .. }) => {
-                let json = generated_array_to_json(elements);
-                MySQLValue(Value::Bytes(json.to_string().into_bytes()))
-            }
-            (_, UniversalValue::Set { elements, .. }) => {
-                MySQLValue(Value::Bytes(elements.join(",").into_bytes()))
-            }
-            (_, UniversalValue::Enum { value, .. }) => MySQLValue(Value::Bytes(value.into_bytes())),
-            (_, UniversalValue::Json(json_val)) | (_, UniversalValue::Jsonb(json_val)) => {
-                MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
-            }
-            (_, UniversalValue::Geometry { data, .. }) => {
+            UniversalValue::Geometry { data, .. } => {
                 use sync_core::values::GeometryData;
                 let GeometryData(json_val) = data;
                 MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
             }
         }
+    }
+}
+
+impl From<TypedValue> for MySQLValue {
+    fn from(tv: TypedValue) -> Self {
+        MySQLValue::from(tv.value)
     }
 }
 
