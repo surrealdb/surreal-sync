@@ -27,9 +27,7 @@ pub fn typed_values_to_record_with_bytes_id(
 ) -> anyhow::Result<crate::RecordWithSurrealValues> {
     use base64::Engine;
     let base64_str = base64::engine::general_purpose::STANDARD.encode(bytes_data);
-    let surreal_id = surrealdb::sql::Id::String(
-        base64_str,
-    );
+    let surreal_id = surrealdb::sql::Id::String(base64_str);
 
     typed_values_to_record_with_id(typed_values, surreal_id, table_name)
 }

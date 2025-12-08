@@ -4,19 +4,8 @@ use clap::Parser;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use surreal_sync_kafka::{ConsumerConfig, Message};
-use sync_core::{TableDefinition, UniversalValue};
+use sync_core::TableDefinition;
 use tracing::{debug, error, info};
-
-/// Convert a UniversalValue to a SurrealDB ID.
-fn typed_value_to_surreal_id(value: &UniversalValue) -> Result<surrealdb::sql::Id> {
-    match value {
-        UniversalValue::Int(i) => Ok(surrealdb::sql::Id::Number(*i as i64)),
-        UniversalValue::BigInt(i) => Ok(surrealdb::sql::Id::Number(*i)),
-        UniversalValue::Text(s) => Ok(surrealdb::sql::Id::String(s.clone())),
-        UniversalValue::Uuid(u) => Ok(surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u))),
-        other => anyhow::bail!("Cannot convert {other:?} to SurrealDB ID"),
-    }
-}
 
 /// Configuration for Kafka source
 #[derive(Debug, Clone, Parser)]
@@ -44,6 +33,13 @@ pub struct Config {
     /// Optional table name to use in SurrealDB (defaults to topic name)
     #[clap(long)]
     pub table_name: Option<String>,
+    /// Use Kafka message key as SurrealDB record ID (base64 encoded).
+    /// If not set, the "id" field from the message payload is used.
+    #[clap(long)]
+    pub use_message_key_as_id: bool,
+    /// Field name to use as record ID when use_message_key_as_id is false (default: "id")
+    #[clap(long, default_value = "id")]
+    pub id_field: String,
 }
 
 /// Run incremental sync from Kafka to SurrealDB
@@ -91,6 +87,8 @@ pub async fn run_incremental_sync(
     let surreal = Arc::clone(&surreal);
 
     // Message processor function
+    let use_message_key_as_id = config.use_message_key_as_id;
+    let id_field = config.id_field.clone();
     let processor = {
         let counter = Arc::clone(&processed_count);
         let table_name = table_name.clone();
@@ -100,6 +98,7 @@ pub async fn run_incremental_sync(
             let surreal = Arc::clone(&surreal);
             let table_name = table_name.clone();
             let table_schema = table_schema.clone();
+            let id_field = id_field.clone();
             async move {
                 for message in messages {
                     debug!("Received message: {:?}", message);
@@ -107,34 +106,35 @@ pub async fn run_incremental_sync(
                     // Put the message as a record into SurrealDB.
                     // The table name is either configured explicitly or defaults to topic name.
                     // The message fields become the record fields.
-                    // Either the message key, or the "id" field in the message is used as the record ID.
                     let message_key = message.key.clone();
 
                     // Use kafka-types for the TypedValue conversion path
-                    let mut typed_values =
+                    let typed_values =
                         kafka_types::message_to_typed_values(message, table_schema.as_ref())?;
 
-                    // Extract ID from typed values
-                    let surreal_id = if let Some(id_value) = typed_values.remove("id") {
-                        typed_value_to_surreal_id(&id_value.value)?
-                    } else if let Some(surreal_key) = message_key {
-                        // Use message key as ID
-                        surrealdb::sql::Id::String(
-                            String::from_utf8_lossy(&surreal_key).to_string(),
-                        )
+                    // Create record using appropriate ID strategy
+                    let record = if use_message_key_as_id {
+                        // Use message key as ID (base64 encoded to handle arbitrary bytes)
+                        let key_bytes = message_key.ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "use_message_key_as_id is enabled but message has no key"
+                            )
+                        })?;
+                        surrealdb_types::typed_values_to_record_with_bytes_id(
+                            typed_values,
+                            &key_bytes,
+                            &table_name,
+                        )?
                     } else {
-                        anyhow::bail!("Message has no key and no 'id' field");
+                        // Use specified field as ID (default: "id")
+                        surrealdb_types::typed_values_to_record_using_field_as_id(
+                            typed_values,
+                            &id_field,
+                            &table_name,
+                        )?
                     };
 
-                    // Convert typed values to SurrealDB values
-                    let surreal_values = surrealdb_types::typed_values_to_surreal_map(typed_values);
-
-                    let r = crate::surreal::RecordWithSurrealValues {
-                        id: surrealdb::sql::Thing::from((table_name.as_str(), surreal_id)),
-                        data: surreal_values,
-                    };
-
-                    crate::surreal::write_record_with_surreal_values(&surreal, &r).await?;
+                    crate::surreal::write_record_with_surreal_values(&surreal, &record).await?;
 
                     let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
                     if count % 100 == 0 {

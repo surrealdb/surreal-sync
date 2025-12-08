@@ -26,4 +26,6 @@ pub mod reverse;
 pub use forward::typed_values_to_surreal_map;
 pub use forward::RecordWithSurrealValues;
 pub use forward::SurrealValue;
+pub use record::typed_values_to_record_using_field_as_id;
+pub use record::typed_values_to_record_with_bytes_id;
 pub use reverse::SurrealValueWithSchema;
