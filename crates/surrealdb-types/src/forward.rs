@@ -199,31 +199,97 @@ impl From<TypedValue> for SurrealValue {
     }
 }
 
-/// Convert a UniversalValue to a SurrealDB Value (without type context).
-fn generated_value_to_surreal(value: &UniversalValue) -> Value {
-    match value {
-        UniversalValue::Null => Value::None,
-        UniversalValue::Bool(b) => Value::Bool(*b),
-        UniversalValue::Int(i) => Value::Number(Number::Int(*i as i64)),
-        UniversalValue::BigInt(i) => Value::Number(Number::Int(*i)),
-        UniversalValue::Double(f) => Value::Number(Number::Float(*f)),
-        UniversalValue::Text(s) => Value::Strand(Strand::from(s.clone())),
-        UniversalValue::Bytes(b) => Value::Bytes(surrealdb::sql::Bytes::from(b.clone())),
-        UniversalValue::Uuid(u) => Value::Uuid(surrealdb::sql::Uuid::from(*u)),
-        UniversalValue::DateTime(dt) => Value::Datetime(Datetime::from(*dt)),
-        UniversalValue::Decimal { value, .. } => match Decimal::from_str(value) {
-            Ok(dec) => Value::Number(Number::Decimal(dec)),
-            Err(_) => Value::Strand(Strand::from(value.clone())),
-        },
-        UniversalValue::Array { elements, .. } => Value::Array(Array::from(
-            elements
-                .iter()
-                .map(generated_value_to_surreal)
-                .collect::<Vec<_>>(),
-        )),
-        UniversalValue::Json(json_val) => json_to_surreal(json_val),
-        _ => Value::None,
+impl From<UniversalValue> for SurrealValue {
+    fn from(value: UniversalValue) -> Self {
+        match value {
+            // Null
+            UniversalValue::Null => SurrealValue(Value::None),
+
+            // Boolean
+            UniversalValue::Bool(b) => SurrealValue(Value::Bool(b)),
+
+            // Integer types
+            UniversalValue::TinyInt { value, .. } => {
+                SurrealValue(Value::Number(Number::Int(value as i64)))
+            }
+            UniversalValue::SmallInt(i) => SurrealValue(Value::Number(Number::Int(i as i64))),
+            UniversalValue::Int(i) => SurrealValue(Value::Number(Number::Int(i as i64))),
+            UniversalValue::BigInt(i) => SurrealValue(Value::Number(Number::Int(i))),
+
+            // Floating point
+            UniversalValue::Float(f) => SurrealValue(Value::Number(Number::Float(f as f64))),
+            UniversalValue::Double(f) => SurrealValue(Value::Number(Number::Float(f))),
+
+            // Decimal
+            UniversalValue::Decimal { value, .. } => match Decimal::from_str(&value) {
+                Ok(dec) => SurrealValue(Value::Number(Number::Decimal(dec))),
+                Err(_) => SurrealValue(Value::Strand(Strand::from(value))),
+            },
+
+            // String types
+            UniversalValue::Char { value, .. } => SurrealValue(Value::Strand(Strand::from(value))),
+            UniversalValue::VarChar { value, .. } => {
+                SurrealValue(Value::Strand(Strand::from(value)))
+            }
+            UniversalValue::Text(s) => SurrealValue(Value::Strand(Strand::from(s))),
+
+            // Binary types
+            UniversalValue::Blob(b) => SurrealValue(Value::Bytes(surrealdb::sql::Bytes::from(b))),
+            UniversalValue::Bytes(b) => SurrealValue(Value::Bytes(surrealdb::sql::Bytes::from(b))),
+
+            // Date/time types
+            UniversalValue::Date(dt) => SurrealValue(Value::Strand(Strand::from(
+                dt.format("%Y-%m-%d").to_string(),
+            ))),
+            UniversalValue::Time(dt) => SurrealValue(Value::Strand(Strand::from(
+                dt.format("%H:%M:%S").to_string(),
+            ))),
+            UniversalValue::DateTime(dt) => SurrealValue(Value::Datetime(Datetime::from(dt))),
+            UniversalValue::DateTimeNano(dt) => SurrealValue(Value::Datetime(Datetime::from(dt))),
+            UniversalValue::TimestampTz(dt) => SurrealValue(Value::Datetime(Datetime::from(dt))),
+
+            // UUID
+            UniversalValue::Uuid(u) => SurrealValue(Value::Uuid(surrealdb::sql::Uuid::from(u))),
+
+            // JSON types
+            UniversalValue::Json(json_val) => SurrealValue(json_to_surreal(&json_val)),
+            UniversalValue::Jsonb(json_val) => SurrealValue(json_to_surreal(&json_val)),
+
+            // Array
+            UniversalValue::Array { elements, .. } => {
+                let surreal_arr: Vec<Value> = elements
+                    .into_iter()
+                    .map(|v| SurrealValue::from(v).into_inner())
+                    .collect();
+                SurrealValue(Value::Array(Array::from(surreal_arr)))
+            }
+
+            // Set - stored as array of strings
+            UniversalValue::Set { elements, .. } => {
+                let surreal_arr: Vec<Value> = elements
+                    .into_iter()
+                    .map(|s| Value::Strand(Strand::from(s)))
+                    .collect();
+                SurrealValue(Value::Array(Array::from(surreal_arr)))
+            }
+
+            // Enum - stored as string
+            UniversalValue::Enum { value, .. } => SurrealValue(Value::Strand(Strand::from(value))),
+
+            // Geometry - convert to JSON object
+            UniversalValue::Geometry { data, .. } => {
+                use sync_core::values::GeometryData;
+                let GeometryData(json_val) = data;
+                SurrealValue(json_to_surreal(&json_val))
+            }
+        }
     }
+}
+
+/// Convert a UniversalValue to a SurrealDB Value (without type context).
+/// This is a helper for internal use - prefer using `From<UniversalValue>` trait.
+fn generated_value_to_surreal(value: &UniversalValue) -> Value {
+    SurrealValue::from(value.clone()).into_inner()
 }
 
 /// Convert a serde_json::Value to SurrealDB Value.
