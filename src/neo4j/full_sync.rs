@@ -1,8 +1,9 @@
 use neo4rs::{ConfigBuilder, Graph, Query};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Value};
 use surrealdb::{engine::any::connect, Surreal};
 
-use crate::{Neo4jJsonProperty, SourceOpts, SurrealOpts, SurrealValue};
+use crate::{Neo4jJsonProperty, SourceOpts, SurrealOpts};
 
 /// Context for Neo4j type conversion with JSON-to-object configuration
 #[derive(Clone)]
@@ -389,16 +390,17 @@ fn convert_neo4j_row_to_record(
     // Neo4j stores all properties as bolt types - integers are preserved as Integer,
     // strings as String, etc. We convert each type to the appropriate SurrealDB ID type.
     let id = match data.remove(id_property) {
-        Some(SurrealValue::String(s)) => {
+        Some(Value::Strand(s)) => {
             // String ID - try to parse as integer first (common case: numeric strings)
-            if let Ok(n) = s.parse::<i64>() {
+            let s_str = s.as_str();
+            if let Ok(n) = s_str.parse::<i64>() {
                 surrealdb::sql::Thing::from((label.to_lowercase(), surrealdb::sql::Id::Number(n)))
             } else {
                 // Keep as string ID
-                surrealdb::sql::Thing::from((label.to_lowercase(), s))
+                surrealdb::sql::Thing::from((label.to_lowercase(), s_str.to_string()))
             }
         }
-        Some(SurrealValue::Int(n)) => {
+        Some(Value::Number(Number::Int(n))) => {
             // Integer ID - use Number ID type directly
             surrealdb::sql::Thing::from((label.to_lowercase(), surrealdb::sql::Id::Number(n)))
         }
@@ -415,7 +417,7 @@ fn convert_neo4j_row_to_record(
         }
     };
 
-    anyhow::Ok(crate::Record { id, data })
+    anyhow::Ok(crate::Record::new(id, data))
 }
 
 /// Convert Neo4j node to keys and surreal values
@@ -424,19 +426,21 @@ fn convert_neo4j_node_to_surreal_kvs(
     node_id: i64,
     label: &str,
     ctx: &Neo4jConversionContext,
-) -> anyhow::Result<std::collections::HashMap<String, SurrealValue>> {
+) -> anyhow::Result<std::collections::HashMap<String, Value>> {
     let mut kvs = std::collections::HashMap::new();
 
     // Add neo4j_id as a field (preserve original Neo4j ID)
-    kvs.insert("neo4j_id".to_string(), SurrealValue::Int(node_id));
+    kvs.insert("neo4j_id".to_string(), Value::Number(Number::Int(node_id)));
 
     // Add labels as an array
     let labels: Vec<String> = node.labels().into_iter().map(|s| s.to_string()).collect();
-    let labels_surreal_values: Vec<SurrealValue> =
-        labels.into_iter().map(SurrealValue::String).collect();
+    let labels_surreal_values: Vec<Value> = labels
+        .into_iter()
+        .map(|s| Value::Strand(Strand::from(s)))
+        .collect();
     kvs.insert(
         "labels".to_string(),
-        SurrealValue::Array(labels_surreal_values),
+        Value::Array(Array::from(labels_surreal_values)),
     );
 
     // Convert all properties
@@ -498,7 +502,8 @@ impl Relation {
             let value = self.relationship.get::<neo4rs::BoltType>(k)?;
             // Relationships don't have labels, so we can't use JSON-to-object for them
             let v = convert_neo4j_type_to_surreal_value(value, &ctx.timezone, false)?;
-            data.insert(k.to_string(), v);
+            // Wrap the Value in SurrealValue for the Relation struct
+            data.insert(k.to_string(), surrealdb_types::SurrealValue(v));
         }
 
         Ok(crate::Relation {
@@ -562,7 +567,7 @@ pub fn row_to_relation(
     })
 }
 
-/// Convert Neo4j BoltType to SurrealValue
+/// Convert Neo4j BoltType to surrealdb::sql::Value
 ///
 /// The timezone parameter specifies which timezone to use when converting Neo4j local datetime and time values.
 /// This should be an IANA timezone name (e.g., "America/New_York", "Europe/London", "UTC").
@@ -570,12 +575,12 @@ pub fn row_to_relation(
 /// If should_parse_json is true and the value is a String, attempt to parse it as JSON and convert to Object.
 ///
 /// This function uses the `neo4j-types` crate for BoltType → UniversalValue conversion,
-/// then converts UniversalValue to the crate's SurrealValue.
+/// then converts UniversalValue to surrealdb::sql::Value.
 pub fn convert_neo4j_type_to_surreal_value(
     value: neo4rs::BoltType,
     timezone: &str,
     should_parse_json: bool,
-) -> anyhow::Result<SurrealValue> {
+) -> anyhow::Result<Value> {
     use neo4j_types::reverse::ConversionConfig;
 
     // Create conversion config
@@ -588,56 +593,54 @@ pub fn convert_neo4j_type_to_surreal_value(
     let universal_value = neo4j_types::convert_bolt_to_universal_value(value, &config)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    // Convert UniversalValue → SurrealValue (the crate's own enum)
+    // Convert UniversalValue → surrealdb::sql::Value
     universal_value_to_surreal_value(universal_value)
 }
 
-/// Convert UniversalValue to the crate's SurrealValue enum.
+/// Convert UniversalValue to surrealdb::sql::Value.
 ///
-/// This bridges from sync-core's UniversalValue to the crate's internal SurrealValue type.
-fn universal_value_to_surreal_value(
-    value: sync_core::UniversalValue,
-) -> anyhow::Result<SurrealValue> {
+/// This bridges from sync-core's UniversalValue to surrealdb's native Value type.
+fn universal_value_to_surreal_value(value: sync_core::UniversalValue) -> anyhow::Result<Value> {
     use sync_core::UniversalValue;
 
     match value {
-        UniversalValue::Null => Ok(SurrealValue::Null),
-        UniversalValue::Bool(b) => Ok(SurrealValue::Bool(b)),
+        UniversalValue::Null => Ok(Value::None),
+        UniversalValue::Bool(b) => Ok(Value::Bool(b)),
 
-        // Integer types → Int
-        UniversalValue::TinyInt { value, .. } => Ok(SurrealValue::Int(value as i64)),
-        UniversalValue::SmallInt(i) => Ok(SurrealValue::Int(i as i64)),
-        UniversalValue::Int(i) => Ok(SurrealValue::Int(i as i64)),
-        UniversalValue::BigInt(i) => Ok(SurrealValue::Int(i)),
+        // Integer types → Number::Int
+        UniversalValue::TinyInt { value, .. } => Ok(Value::Number(Number::Int(value as i64))),
+        UniversalValue::SmallInt(i) => Ok(Value::Number(Number::Int(i as i64))),
+        UniversalValue::Int(i) => Ok(Value::Number(Number::Int(i as i64))),
+        UniversalValue::BigInt(i) => Ok(Value::Number(Number::Int(i))),
 
-        // Float types → Float
-        UniversalValue::Float(f) => Ok(SurrealValue::Float(f as f64)),
-        UniversalValue::Double(f) => Ok(SurrealValue::Float(f)),
+        // Float types → Number::Float
+        UniversalValue::Float(f) => Ok(Value::Number(Number::Float(f as f64))),
+        UniversalValue::Double(f) => Ok(Value::Number(Number::Float(f))),
 
-        // Decimal → Float (best effort)
+        // Decimal → Number::Float (best effort)
         UniversalValue::Decimal { value, .. } => match value.parse::<f64>() {
-            Ok(f) => Ok(SurrealValue::Float(f)),
-            Err(_) => Ok(SurrealValue::String(value)),
+            Ok(f) => Ok(Value::Number(Number::Float(f))),
+            Err(_) => Ok(Value::Strand(Strand::from(value))),
         },
 
-        // String types → String
-        UniversalValue::Char { value, .. } => Ok(SurrealValue::String(value)),
-        UniversalValue::VarChar { value, .. } => Ok(SurrealValue::String(value)),
-        UniversalValue::Text(s) => Ok(SurrealValue::String(s)),
+        // String types → Strand
+        UniversalValue::Char { value, .. } => Ok(Value::Strand(Strand::from(value))),
+        UniversalValue::VarChar { value, .. } => Ok(Value::Strand(Strand::from(value))),
+        UniversalValue::Text(s) => Ok(Value::Strand(Strand::from(s))),
 
         // Binary types → Bytes
-        UniversalValue::Blob(b) => Ok(SurrealValue::Bytes(b)),
-        UniversalValue::Bytes(b) => Ok(SurrealValue::Bytes(b)),
+        UniversalValue::Blob(b) => Ok(Value::Bytes(surrealdb::sql::Bytes::from(b))),
+        UniversalValue::Bytes(b) => Ok(Value::Bytes(surrealdb::sql::Bytes::from(b))),
 
-        // UUID → String
-        UniversalValue::Uuid(u) => Ok(SurrealValue::String(u.to_string())),
+        // UUID → Strand
+        UniversalValue::Uuid(u) => Ok(Value::Strand(Strand::from(u.to_string()))),
 
-        // DateTime types → DateTime
-        UniversalValue::Date(dt) => Ok(SurrealValue::DateTime(dt)),
-        UniversalValue::Time(dt) => Ok(SurrealValue::DateTime(dt)),
-        UniversalValue::DateTime(dt) => Ok(SurrealValue::DateTime(dt)),
-        UniversalValue::DateTimeNano(dt) => Ok(SurrealValue::DateTime(dt)),
-        UniversalValue::TimestampTz(dt) => Ok(SurrealValue::DateTime(dt)),
+        // DateTime types → Datetime
+        UniversalValue::Date(dt) => Ok(Value::Datetime(Datetime::from(dt))),
+        UniversalValue::Time(dt) => Ok(Value::Datetime(Datetime::from(dt))),
+        UniversalValue::DateTime(dt) => Ok(Value::Datetime(Datetime::from(dt))),
+        UniversalValue::DateTimeNano(dt) => Ok(Value::Datetime(Datetime::from(dt))),
+        UniversalValue::TimestampTz(dt) => Ok(Value::Datetime(Datetime::from(dt))),
 
         // JSON types → Object (via helper function)
         UniversalValue::Json(json_val) => json_value_to_surreal_value(&json_val),
@@ -649,17 +652,20 @@ fn universal_value_to_surreal_value(
             for elem in elements {
                 arr.push(universal_value_to_surreal_value(elem)?);
             }
-            Ok(SurrealValue::Array(arr))
+            Ok(Value::Array(Array::from(arr)))
         }
 
         // Set → Array of strings
         UniversalValue::Set { elements, .. } => {
-            let arr: Vec<SurrealValue> = elements.into_iter().map(SurrealValue::String).collect();
-            Ok(SurrealValue::Array(arr))
+            let arr: Vec<Value> = elements
+                .into_iter()
+                .map(|s| Value::Strand(Strand::from(s)))
+                .collect();
+            Ok(Value::Array(Array::from(arr)))
         }
 
-        // Enum → String
-        UniversalValue::Enum { value, .. } => Ok(SurrealValue::String(value)),
+        // Enum → Strand
+        UniversalValue::Enum { value, .. } => Ok(Value::Strand(Strand::from(value))),
 
         // Geometry → Object (via GeoJSON-like structure)
         UniversalValue::Geometry { data, .. } => {
@@ -669,38 +675,38 @@ fn universal_value_to_surreal_value(
         }
 
         // Duration → Duration
-        UniversalValue::Duration(d) => Ok(SurrealValue::Duration(d)),
+        UniversalValue::Duration(d) => Ok(Value::Duration(surrealdb::sql::Duration::from(d))),
     }
 }
 
-/// Convert a serde_json::Value to SurrealValue.
-fn json_value_to_surreal_value(value: &serde_json::Value) -> anyhow::Result<SurrealValue> {
+/// Convert a serde_json::Value to surrealdb::sql::Value.
+fn json_value_to_surreal_value(value: &serde_json::Value) -> anyhow::Result<Value> {
     match value {
-        serde_json::Value::Null => Ok(SurrealValue::Null),
-        serde_json::Value::Bool(b) => Ok(SurrealValue::Bool(*b)),
+        serde_json::Value::Null => Ok(Value::None),
+        serde_json::Value::Bool(b) => Ok(Value::Bool(*b)),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Ok(SurrealValue::Int(i))
+                Ok(Value::Number(Number::Int(i)))
             } else if let Some(f) = n.as_f64() {
-                Ok(SurrealValue::Float(f))
+                Ok(Value::Number(Number::Float(f)))
             } else {
-                Ok(SurrealValue::Null)
+                Ok(Value::None)
             }
         }
-        serde_json::Value::String(s) => Ok(SurrealValue::String(s.clone())),
+        serde_json::Value::String(s) => Ok(Value::Strand(Strand::from(s.clone()))),
         serde_json::Value::Array(arr) => {
             let mut result = Vec::new();
             for item in arr {
                 result.push(json_value_to_surreal_value(item)?);
             }
-            Ok(SurrealValue::Array(result))
+            Ok(Value::Array(Array::from(result)))
         }
         serde_json::Value::Object(obj) => {
-            let mut result = HashMap::new();
+            let mut result = std::collections::BTreeMap::new();
             for (key, val) in obj {
                 result.insert(key.clone(), json_value_to_surreal_value(val)?);
             }
-            Ok(SurrealValue::Object(result))
+            Ok(Value::Object(Object::from(result)))
         }
     }
 }
@@ -721,7 +727,7 @@ mod tests {
         let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            SurrealValue::DateTime(dt) => {
+            Value::Datetime(dt) => {
                 // Date should be at midnight UTC on 2024-01-15
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -730,7 +736,7 @@ mod tests {
                 assert_eq!(dt.minute(), 0);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected DateTime, got {result:?}"),
+            _ => panic!("Expected Datetime, got {result:?}"),
         }
     }
 
@@ -745,7 +751,7 @@ mod tests {
             convert_neo4j_type_to_surreal_value(bolt_type, "America/New_York", false).unwrap();
 
         match result {
-            SurrealValue::DateTime(dt) => {
+            Value::Datetime(dt) => {
                 // Date at midnight in New York (EST = UTC-5) should be 5 AM UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -754,7 +760,7 @@ mod tests {
                 assert_eq!(dt.minute(), 0);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected DateTime, got {result:?}"),
+            _ => panic!("Expected Datetime, got {result:?}"),
         }
     }
 
@@ -772,7 +778,7 @@ mod tests {
         let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            SurrealValue::DateTime(dt) => {
+            Value::Datetime(dt) => {
                 // Should be same time in UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -781,7 +787,7 @@ mod tests {
                 assert_eq!(dt.minute(), 30);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected DateTime, got {result:?}"),
+            _ => panic!("Expected Datetime, got {result:?}"),
         }
     }
 
@@ -799,7 +805,7 @@ mod tests {
         let result = convert_neo4j_type_to_surreal_value(bolt_type, "Asia/Tokyo", false).unwrap();
 
         match result {
-            SurrealValue::DateTime(dt) => {
+            Value::Datetime(dt) => {
                 // 14:30 in Tokyo (JST = UTC+9) should be 05:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -808,7 +814,7 @@ mod tests {
                 assert_eq!(dt.minute(), 30);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected DateTime, got {result:?}"),
+            _ => panic!("Expected Datetime, got {result:?}"),
         }
     }
 
@@ -841,7 +847,7 @@ mod tests {
         // The conversion should either succeed with an adjusted time or fail gracefully
         // depending on how chrono-tz handles DST gaps
         match result {
-            Ok(SurrealValue::DateTime(_)) => {
+            Ok(Value::Datetime(_)) => {
                 // If it succeeds, that's fine - chrono-tz adjusted the time
             }
             Err(e) => {
@@ -867,7 +873,7 @@ mod tests {
         let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            SurrealValue::DateTime(dt) => {
+            Value::Datetime(dt) => {
                 // Should be same time in UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -876,7 +882,7 @@ mod tests {
                 assert_eq!(dt.minute(), 30);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected DateTime, got {result:?}"),
+            _ => panic!("Expected Datetime, got {result:?}"),
         }
     }
 
@@ -895,7 +901,7 @@ mod tests {
         let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            SurrealValue::DateTime(dt) => {
+            Value::Datetime(dt) => {
                 // 14:30 EST (UTC-5) should be 19:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -904,7 +910,7 @@ mod tests {
                 assert_eq!(dt.minute(), 30);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected DateTime, got {result:?}"),
+            _ => panic!("Expected Datetime, got {result:?}"),
         }
     }
 
@@ -923,7 +929,7 @@ mod tests {
         let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            SurrealValue::DateTime(dt) => {
+            Value::Datetime(dt) => {
                 // 14:30 JST (UTC+9) should be 05:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -932,7 +938,7 @@ mod tests {
                 assert_eq!(dt.minute(), 30);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected DateTime, got {result:?}"),
+            _ => panic!("Expected Datetime, got {result:?}"),
         }
     }
 
@@ -951,7 +957,7 @@ mod tests {
         let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            SurrealValue::DateTime(dt) => {
+            Value::Datetime(dt) => {
                 // 14:30 BST (UTC+1) should be 13:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 7);
@@ -960,7 +966,7 @@ mod tests {
                 assert_eq!(dt.minute(), 30);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected DateTime, got {result:?}"),
+            _ => panic!("Expected Datetime, got {result:?}"),
         }
     }
 
@@ -979,7 +985,7 @@ mod tests {
         let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            SurrealValue::DateTime(dt) => {
+            Value::Datetime(dt) => {
                 // 08:15:30 HST (UTC-10) should be 18:15:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 6);
@@ -988,7 +994,7 @@ mod tests {
                 assert_eq!(dt.minute(), 15);
                 assert_eq!(dt.second(), 30);
             }
-            _ => panic!("Expected DateTime, got {result:?}"),
+            _ => panic!("Expected Datetime, got {result:?}"),
         }
     }
 
@@ -1002,22 +1008,22 @@ mod tests {
         let result = convert_neo4j_type_to_surreal_value(bolt_type.clone(), "UTC", true).unwrap();
 
         match result {
-            SurrealValue::Object(obj) => {
+            Value::Object(obj) => {
                 // Verify the JSON was parsed correctly
                 assert!(obj.contains_key("preferences"));
                 assert!(obj.contains_key("tags"));
                 assert!(obj.contains_key("settings"));
 
                 // Verify nested structure
-                if let Some(SurrealValue::Object(prefs)) = obj.get("preferences") {
+                if let Some(Value::Object(prefs)) = obj.get("preferences") {
                     assert_eq!(
                         prefs.get("theme"),
-                        Some(&SurrealValue::String("dark".to_string()))
+                        Some(&Value::Strand(Strand::from("dark".to_string())))
                     );
                 }
 
                 // Verify array
-                if let Some(SurrealValue::Array(tags)) = obj.get("tags") {
+                if let Some(Value::Array(tags)) = obj.get("tags") {
                     assert_eq!(tags.len(), 2);
                 }
             }
@@ -1027,10 +1033,10 @@ mod tests {
         // Test that without JSON parsing, it remains a string
         let result_no_parse = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
         match result_no_parse {
-            SurrealValue::String(s) => {
-                assert_eq!(s, json_string);
+            Value::Strand(s) => {
+                assert_eq!(s.as_str(), json_string);
             }
-            _ => panic!("Expected String, got {result_no_parse:?}"),
+            _ => panic!("Expected Strand, got {result_no_parse:?}"),
         }
     }
 

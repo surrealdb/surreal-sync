@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 use rust_decimal::prelude::ToPrimitive;
+use surrealdb::sql::{Number, Strand, Value};
 use tokio_postgres::NoTls;
 use tracing::{debug, error, info};
 
@@ -176,22 +177,18 @@ async fn upsert(
 
     for (i, (col, val)) in row.columns.iter().enumerate() {
         let field = format!("{col}{i}");
-        let surreal_value = match val {
+        let surreal_value: Value = match val {
             surreal_sync_postgresql_replication::Value::Integer(v) => {
-                crate::surreal::SurrealValue::Int(v.to_i64().unwrap()).to_surrealql_value()
+                Value::Number(Number::Int(v.to_i64().unwrap()))
             }
             surreal_sync_postgresql_replication::Value::Double(v) => {
-                crate::surreal::SurrealValue::Float(*v).to_surrealql_value()
+                Value::Number(Number::Float(*v))
             }
             surreal_sync_postgresql_replication::Value::Text(v) => {
-                crate::surreal::SurrealValue::String(v.to_owned()).to_surrealql_value()
+                Value::Strand(Strand::from(v.to_owned()))
             }
-            surreal_sync_postgresql_replication::Value::Boolean(v) => {
-                crate::surreal::SurrealValue::Bool(*v).to_surrealql_value()
-            }
-            surreal_sync_postgresql_replication::Value::Null => {
-                crate::surreal::SurrealValue::Null.to_surrealql_value()
-            }
+            surreal_sync_postgresql_replication::Value::Boolean(v) => Value::Bool(*v),
+            surreal_sync_postgresql_replication::Value::Null => Value::None,
             v => {
                 anyhow::bail!("Unsupported value type for upsert {v:?}");
             }
@@ -200,12 +197,12 @@ async fn upsert(
         query = query.bind((field.clone(), surreal_value));
     }
 
-    let id = match &row.primary_key {
+    let id: Value = match &row.primary_key {
         surreal_sync_postgresql_replication::Value::Integer(v) => {
-            crate::surreal::SurrealValue::Int(v.to_i64().unwrap()).to_surrealql_value()
+            Value::Number(Number::Int(v.to_i64().unwrap()))
         }
         surreal_sync_postgresql_replication::Value::Text(v) => {
-            crate::surreal::SurrealValue::String(v.to_owned()).to_surrealql_value()
+            Value::Strand(Strand::from(v.to_owned()))
         }
         _ => anyhow::bail!(
             "Unsupported primary key type for upsert: {:?}",
@@ -226,12 +223,12 @@ async fn delete(
     surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
     row: &surreal_sync_postgresql_replication::Row,
 ) -> Result<()> {
-    let id = match &row.primary_key {
+    let id: Value = match &row.primary_key {
         surreal_sync_postgresql_replication::Value::Integer(v) => {
-            crate::surreal::SurrealValue::Int(v.to_i64().unwrap()).to_surrealql_value()
+            Value::Number(Number::Int(v.to_i64().unwrap()))
         }
         surreal_sync_postgresql_replication::Value::Text(v) => {
-            crate::surreal::SurrealValue::String(v.to_owned()).to_surrealql_value()
+            Value::Strand(Strand::from(v.to_owned()))
         }
         _ => anyhow::bail!(
             "Unsupported primary key type for delete: {:?}",

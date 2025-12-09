@@ -17,11 +17,12 @@
 use crate::neo4j::Neo4jConversionContext;
 use crate::surreal::{surreal_connect, Change};
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
-use crate::{Record, SourceOpts, SurrealValue};
+use crate::{Record, SourceOpts};
 use async_trait::async_trait;
 use chrono::Utc;
 use neo4rs::{Graph, Query};
 use std::collections::HashMap;
+use surrealdb::sql::{Array, Number, Strand, Value};
 
 /// Neo4j implementation of incremental sync source
 pub struct Neo4jIncrementalSource {
@@ -163,16 +164,19 @@ impl Neo4jChangeStream {
             max_checkpoint = max_checkpoint.max(node_checkpoint);
 
             // Convert node to surreal data
-            let mut keys_and_surreal_values = HashMap::new();
-            keys_and_surreal_values.insert("neo4j_id".to_string(), SurrealValue::Int(node_id));
+            let mut keys_and_surreal_values: HashMap<String, Value> = HashMap::new();
+            keys_and_surreal_values
+                .insert("neo4j_id".to_string(), Value::Number(Number::Int(node_id)));
             record_id = surrealdb::sql::Id::from(node_id);
 
-            let surreal_labels: Vec<SurrealValue> = labels
+            let surreal_labels: Vec<Value> = labels
                 .iter()
-                .map(|s| SurrealValue::String(s.clone()))
+                .map(|s| Value::Strand(Strand::from(s.clone())))
                 .collect();
-            keys_and_surreal_values
-                .insert("labels".to_string(), SurrealValue::Array(surreal_labels));
+            keys_and_surreal_values.insert(
+                "labels".to_string(),
+                Value::Array(Array::from(surreal_labels)),
+            );
 
             // Add all node properties with field renaming
             for key in node.keys() {
@@ -187,7 +191,19 @@ impl Neo4jChangeStream {
                     ) {
                         // Rename 'id' field to 'neo4j_original_id' to avoid conflict with SurrealDB record ID
                         let field_name = if key == "id" {
-                            record_id = v.to_surrealql_id()?;
+                            // Extract ID from the Value
+                            record_id = match &v {
+                                Value::Number(Number::Int(n)) => surrealdb::sql::Id::Number(*n),
+                                Value::Strand(s) => {
+                                    // Try to parse as integer first (common case: numeric strings)
+                                    if let Ok(n) = s.as_str().parse::<i64>() {
+                                        surrealdb::sql::Id::Number(n)
+                                    } else {
+                                        surrealdb::sql::Id::String(s.as_str().to_string())
+                                    }
+                                }
+                                _ => surrealdb::sql::Id::from(node_id),
+                            };
                             "neo4j_original_id".to_string()
                         } else {
                             key.to_string()
@@ -202,10 +218,10 @@ impl Neo4jChangeStream {
                 .map(|s| s.to_lowercase())
                 .unwrap_or_else(|| "node".to_string());
 
-            batch_changes.push(Change::UpsertRecord(Record {
-                id: surrealdb::sql::Thing::from((table, record_id)),
-                data: keys_and_surreal_values,
-            }));
+            batch_changes.push(Change::UpsertRecord(Record::new(
+                surrealdb::sql::Thing::from((table, record_id)),
+                keys_and_surreal_values,
+            )));
         }
 
         // Also query for relationship changes

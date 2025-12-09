@@ -3,11 +3,12 @@
 //! This module provides functionality to perform full database migration from PostgreSQL
 //! to SurrealDB, including support for checkpoint emission for incremental sync coordination.
 
-use crate::{SourceOpts, SurrealOpts, SurrealValue};
+use crate::{SourceOpts, SurrealOpts};
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
+use surrealdb::sql::{Array, Datetime, Number, Strand, Value};
 use tokio_postgres::{Client, NoTls, Row};
 use tracing::{debug, info, warn};
 
@@ -231,14 +232,14 @@ fn convert_row_to_record(
     let (id, data) = convert_row_to_keys_and_surreal_values(row, pk_columns)?;
     let id = surrealdb::sql::Thing::from((table, id));
 
-    Ok(crate::Record { id, data })
+    Ok(crate::Record::new(id, data))
 }
 
 /// Convert a PostgreSQL row to a map of surreal values
 fn convert_row_to_keys_and_surreal_values(
     row: &Row,
     pk_columns: &[String],
-) -> Result<(surrealdb::sql::Id, HashMap<String, SurrealValue>)> {
+) -> Result<(surrealdb::sql::Id, HashMap<String, Value>)> {
     let mut record = HashMap::new();
 
     // Generate ID from primary key columns
@@ -302,8 +303,8 @@ fn convert_row_to_keys_and_surreal_values(
     Ok((id, record))
 }
 
-/// Convert a PostgreSQL value to a SurrealValue
-fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
+/// Convert a PostgreSQL value to a surrealdb::sql::Value
+fn convert_postgres_value(row: &Row, index: usize) -> Result<Value> {
     use tokio_postgres::types::Type;
 
     let column = &row.columns()[index];
@@ -311,37 +312,37 @@ fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
 
     match *pg_type {
         Type::BOOL => match row.try_get::<_, Option<bool>>(index)? {
-            Some(b) => Ok(SurrealValue::Bool(b)),
-            None => Ok(SurrealValue::Null),
+            Some(b) => Ok(Value::Bool(b)),
+            None => Ok(Value::Null),
         },
         Type::INT2 => match row.try_get::<_, Option<i16>>(index)? {
-            Some(i) => Ok(SurrealValue::Int(i as i64)),
-            None => Ok(SurrealValue::Null),
+            Some(i) => Ok(Value::Number(Number::Int(i as i64))),
+            None => Ok(Value::Null),
         },
         Type::INT4 => match row.try_get::<_, Option<i32>>(index)? {
-            Some(i) => Ok(SurrealValue::Int(i as i64)),
-            None => Ok(SurrealValue::Null),
+            Some(i) => Ok(Value::Number(Number::Int(i as i64))),
+            None => Ok(Value::Null),
         },
         Type::INT8 => match row.try_get::<_, Option<i64>>(index)? {
-            Some(i) => Ok(SurrealValue::Int(i)),
-            None => Ok(SurrealValue::Null),
+            Some(i) => Ok(Value::Number(Number::Int(i))),
+            None => Ok(Value::Null),
         },
         Type::FLOAT4 => match row.try_get::<_, Option<f32>>(index)? {
-            Some(f) => Ok(SurrealValue::Float(f as f64)),
-            None => Ok(SurrealValue::Null),
+            Some(f) => Ok(Value::Number(Number::Float(f as f64))),
+            None => Ok(Value::Null),
         },
         Type::FLOAT8 => match row.try_get::<_, Option<f64>>(index)? {
-            Some(f) => Ok(SurrealValue::Float(f)),
-            None => Ok(SurrealValue::Null),
+            Some(f) => Ok(Value::Number(Number::Float(f))),
+            None => Ok(Value::Null),
         },
         Type::NUMERIC => {
-            // PostgreSQL NUMERIC type - ALWAYS maps to SurrealValue::Decimal (deterministic)
+            // PostgreSQL NUMERIC type - maps to surrealdb::sql::Number
             match row.try_get::<_, Option<Decimal>>(index) {
                 Ok(Some(decimal)) => {
                     // Convert rust_decimal::Decimal to surrealdb::sql::Number (preserves precision)
                     let decimal_str = decimal.to_string();
-                    match surrealdb::sql::Number::try_from(decimal_str.as_str()) {
-                        Ok(surreal_num) => Ok(SurrealValue::Decimal(surreal_num)),
+                    match Number::try_from(decimal_str.as_str()) {
+                        Ok(surreal_num) => Ok(Value::Number(surreal_num)),
                         Err(e) => {
                             warn!(
                                 "Failed to convert NUMERIC decimal '{}' to SurrealDB Number: {:?}",
@@ -351,7 +352,7 @@ fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
                         }
                     }
                 }
-                Ok(None) => Ok(SurrealValue::Null),
+                Ok(None) => Ok(Value::Null),
                 Err(e) => {
                     warn!(
                         "Failed to get PostgreSQL NUMERIC as rust_decimal::Decimal: {}",
@@ -366,24 +367,24 @@ fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
                 Some(s) => {
                     // Auto-detect ISO 8601 duration strings (PTxxxS format) and convert to Duration
                     if let Some(duration) = try_parse_iso8601_duration(&s) {
-                        Ok(SurrealValue::Duration(duration))
+                        Ok(Value::Duration(surrealdb::sql::Duration::from(duration)))
                     } else {
-                        Ok(SurrealValue::String(s))
+                        Ok(Value::Strand(Strand::from(s)))
                     }
                 }
-                None => Ok(SurrealValue::Null),
+                None => Ok(Value::Null),
             }
         }
         Type::TIMESTAMP => match row.try_get::<_, Option<NaiveDateTime>>(index)? {
             Some(ts) => {
                 let dt = DateTime::<Utc>::from_naive_utc_and_offset(ts, Utc);
-                Ok(SurrealValue::DateTime(dt))
+                Ok(Value::Datetime(Datetime::from(dt)))
             }
-            None => Ok(SurrealValue::Null),
+            None => Ok(Value::Null),
         },
         Type::TIMESTAMPTZ => match row.try_get::<_, Option<DateTime<Utc>>>(index)? {
-            Some(dt) => Ok(SurrealValue::DateTime(dt)),
-            None => Ok(SurrealValue::Null),
+            Some(dt) => Ok(Value::Datetime(Datetime::from(dt))),
+            None => Ok(Value::Null),
         },
         Type::DATE => match row.try_get::<_, Option<NaiveDate>>(index)? {
             Some(date) => {
@@ -391,64 +392,99 @@ fn convert_postgres_value(row: &Row, index: usize) -> Result<SurrealValue> {
                     .and_hms_opt(0, 0, 0)
                     .ok_or_else(|| anyhow::anyhow!("Invalid date"))?;
                 let dt = DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc);
-                Ok(SurrealValue::DateTime(dt))
+                Ok(Value::Datetime(Datetime::from(dt)))
             }
-            None => Ok(SurrealValue::Null),
+            None => Ok(Value::Null),
         },
         Type::TIME => match row.try_get::<_, Option<NaiveTime>>(index)? {
-            Some(time) => Ok(SurrealValue::String(time.to_string())),
-            None => Ok(SurrealValue::Null),
+            Some(time) => Ok(Value::Strand(Strand::from(time.to_string()))),
+            None => Ok(Value::Null),
         },
         Type::JSON | Type::JSONB => match row.try_get::<_, Option<serde_json::Value>>(index)? {
-            Some(json) => crate::json_to_surreal_without_schema(json),
-            None => Ok(SurrealValue::Null),
+            Some(json) => Ok(json_to_value(json)),
+            None => Ok(Value::Null),
         },
         Type::UUID => match row.try_get::<_, Option<uuid::Uuid>>(index)? {
-            Some(uuid) => Ok(SurrealValue::String(uuid.to_string())),
-            None => Ok(SurrealValue::Null),
+            Some(uuid) => Ok(Value::Strand(Strand::from(uuid.to_string()))),
+            None => Ok(Value::Null),
         },
         Type::BYTEA => match row.try_get::<_, Option<Vec<u8>>>(index)? {
-            Some(bytes) => Ok(SurrealValue::String(base64::Engine::encode(
+            Some(bytes) => Ok(Value::Strand(Strand::from(base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
                 bytes,
-            ))),
-            None => Ok(SurrealValue::Null),
+            )))),
+            None => Ok(Value::Null),
         },
         Type::TEXT_ARRAY => match row.try_get::<_, Option<Vec<String>>>(index)? {
             Some(arr) => {
-                let vals = arr.into_iter().map(SurrealValue::String).collect();
-                Ok(SurrealValue::Array(vals))
+                let vals: Vec<Value> = arr
+                    .into_iter()
+                    .map(|s| Value::Strand(Strand::from(s)))
+                    .collect();
+                Ok(Value::Array(Array::from(vals)))
             }
-            None => Ok(SurrealValue::Null),
+            None => Ok(Value::Null),
         },
         Type::INT4_ARRAY => match row.try_get::<_, Option<Vec<i32>>>(index)? {
             Some(arr) => {
-                let vals = arr
+                let vals: Vec<Value> = arr
                     .into_iter()
-                    .map(|v| SurrealValue::Int(v as i64))
+                    .map(|v| Value::Number(Number::Int(v as i64)))
                     .collect();
-                Ok(SurrealValue::Array(vals))
+                Ok(Value::Array(Array::from(vals)))
             }
-            None => Ok(SurrealValue::Null),
+            None => Ok(Value::Null),
         },
         Type::INT8_ARRAY => match row.try_get::<_, Option<Vec<i64>>>(index)? {
             Some(arr) => {
-                let vals = arr.into_iter().map(SurrealValue::Int).collect();
-                Ok(SurrealValue::Array(vals))
+                let vals: Vec<Value> = arr
+                    .into_iter()
+                    .map(|v| Value::Number(Number::Int(v)))
+                    .collect();
+                Ok(Value::Array(Array::from(vals)))
             }
-            None => Ok(SurrealValue::Null),
+            None => Ok(Value::Null),
         },
         Type::POINT => match row.try_get::<_, Option<geo_types::Point<f64>>>(index)? {
-            Some(p) => Ok(SurrealValue::Geometry(surrealdb::sql::Geometry::Point(p))),
-            None => Ok(SurrealValue::Null),
+            Some(p) => Ok(Value::Geometry(surrealdb::sql::Geometry::Point(p))),
+            None => Ok(Value::Null),
         },
         _ => {
             // For unknown types, try to get as string
             if let Ok(val) = row.try_get::<_, String>(index) {
-                Ok(SurrealValue::String(val))
+                Ok(Value::Strand(Strand::from(val)))
             } else {
                 Err(anyhow::anyhow!("Unsupported PostgreSQL type: {pg_type:?}",))
             }
+        }
+    }
+}
+
+/// Convert JSON value to surrealdb::sql::Value
+fn json_to_value(value: serde_json::Value) -> Value {
+    match value {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Number(Number::Int(i))
+            } else if let Some(f) = n.as_f64() {
+                Value::Number(Number::Float(f))
+            } else {
+                Value::Strand(Strand::from(n.to_string()))
+            }
+        }
+        serde_json::Value::String(s) => Value::Strand(Strand::from(s)),
+        serde_json::Value::Array(arr) => {
+            let vals: Vec<Value> = arr.into_iter().map(json_to_value).collect();
+            Value::Array(Array::from(vals))
+        }
+        serde_json::Value::Object(map) => {
+            let mut obj = std::collections::BTreeMap::new();
+            for (k, v) in map {
+                obj.insert(k, json_to_value(v));
+            }
+            Value::Object(surrealdb::sql::Object::from(obj))
         }
     }
 }

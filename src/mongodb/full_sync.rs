@@ -1,9 +1,10 @@
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
+use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Thing, Value};
 
 use crate::surreal::surreal_connect;
 use crate::sync::IncrementalSource;
-use crate::{SourceOpts, SurrealOpts, SurrealValue};
+use crate::{SourceOpts, SurrealOpts};
 
 /// Parse an ISO 8601 duration string (PTxS or PTx.xxxxxxxxxS format).
 fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
@@ -295,20 +296,18 @@ pub async fn run_full_sync(
     Ok(())
 }
 
-/// Convert BSON values directly to surreal values
-pub fn convert_bson_to_surreal_value(
-    bson_value: mongodb::bson::Bson,
-) -> anyhow::Result<SurrealValue> {
+/// Convert BSON values directly to surrealdb::sql::Value
+pub fn convert_bson_to_surreal_value(bson_value: mongodb::bson::Bson) -> anyhow::Result<Value> {
     use mongodb::bson::Bson;
 
     match bson_value {
-        Bson::Double(f) => Ok(SurrealValue::Float(f)),
+        Bson::Double(f) => Ok(Value::Number(Number::Float(f))),
         Bson::String(s) => {
             // Auto-detect ISO 8601 duration strings (PTxxxS format) and convert to Duration
             if let Some(duration) = try_parse_iso8601_duration(&s) {
-                Ok(SurrealValue::Duration(duration))
+                Ok(Value::Duration(surrealdb::sql::Duration::from(duration)))
             } else {
-                Ok(SurrealValue::String(s))
+                Ok(Value::Strand(Strand::from(s)))
             }
         }
         Bson::Array(arr) => {
@@ -317,7 +316,7 @@ pub fn convert_bson_to_surreal_value(
                 let v = convert_bson_to_surreal_value(item)?;
                 vs.push(v);
             }
-            Ok(SurrealValue::Array(vs))
+            Ok(Value::Array(Array::from(vs)))
         }
         Bson::Document(doc) => {
             // Check if this document is a DBRef
@@ -338,88 +337,88 @@ pub fn convert_bson_to_surreal_value(
                     }
                     _ => ref_id.to_string(),
                 };
-                let thing = surrealdb::sql::Thing::from((ref_collection.clone(), id_string));
-                Ok(SurrealValue::Thing(thing))
+                let thing = Thing::from((ref_collection.clone(), id_string));
+                Ok(Value::Thing(thing))
             } else {
                 // Regular document - convert recursively
-                let mut vs = HashMap::new();
+                let mut obj = std::collections::BTreeMap::new();
                 for (key, val) in doc {
                     let v = convert_bson_to_surreal_value(val)?;
-                    vs.insert(key, v);
+                    obj.insert(key, v);
                 }
-                Ok(SurrealValue::Object(vs))
+                Ok(Value::Object(Object::from(obj)))
             }
         }
-        Bson::Boolean(b) => Ok(SurrealValue::Bool(b)),
-        Bson::Null => Ok(SurrealValue::Null),
+        Bson::Boolean(b) => Ok(Value::Bool(b)),
+        Bson::Null => Ok(Value::Null),
         Bson::RegularExpression(regex) => {
             // We assume SurrealDB's regex always use Rust's regex crate under the hood,
             // so we can say (?OPTIONS)PATTERN in SurrealDB whereas it is /PATTERN/OPTIONS in MongoDB.
-            // Note that teh regex crate does not support the /PATTERN/OPTIONS style.
+            // Note that the regex crate does not support the /PATTERN/OPTIONS style.
             // See https://docs.rs/regex/latest/regex/#grouping-and-flags
-            Ok(SurrealValue::String(format!(
+            Ok(Value::Strand(Strand::from(format!(
                 "(?{}){}",
                 regex.options, regex.pattern
-            )))
+            ))))
         }
-        Bson::JavaScriptCode(code) => Ok(SurrealValue::String(code)),
+        Bson::JavaScriptCode(code) => Ok(Value::Strand(Strand::from(code))),
         Bson::JavaScriptCodeWithScope(code_with_scope) => {
-            let mut scope = HashMap::new();
+            let mut scope_obj = std::collections::BTreeMap::new();
             for (key, val) in code_with_scope.scope {
                 let v = convert_bson_to_surreal_value(val)?;
-                scope.insert(key, v);
+                scope_obj.insert(key, v);
             }
-            let scope = SurrealValue::Object(scope);
-            let code = SurrealValue::String(code_with_scope.code);
-            let mut code_with_scope = HashMap::new();
-            code_with_scope.insert("$code".to_string(), code);
-            code_with_scope.insert("$scope".to_string(), scope);
-            Ok(SurrealValue::Object(code_with_scope))
+            let scope = Value::Object(Object::from(scope_obj));
+            let code = Value::Strand(Strand::from(code_with_scope.code));
+            let mut result_obj = std::collections::BTreeMap::new();
+            result_obj.insert("$code".to_string(), code);
+            result_obj.insert("$scope".to_string(), scope);
+            Ok(Value::Object(Object::from(result_obj)))
         }
-        Bson::Int32(i) => Ok(SurrealValue::Int(i as i64)),
-        Bson::Int64(i) => Ok(SurrealValue::Int(i)),
+        Bson::Int32(i) => Ok(Value::Number(Number::Int(i as i64))),
+        Bson::Int64(i) => Ok(Value::Number(Number::Int(i))),
         Bson::Timestamp(ts) => {
             // MongoDB Timestamp.time is seconds since Unix epoch
             let seconds = ts.time as i64;
             // To keep the ordering across timestamps, we exploit the increment component as the nanoseconds.
             let assumed_ns = ts.increment;
             if let Some(datetime) = chrono::DateTime::from_timestamp(seconds, assumed_ns) {
-                Ok(SurrealValue::DateTime(datetime))
+                Ok(Value::Datetime(Datetime::from(datetime)))
             } else {
                 Err(anyhow::anyhow!(
                     "Failed to convert MongoDB timestamp to datetime"
                 ))
             }
         }
-        Bson::Binary(binary) => Ok(SurrealValue::Bytes(binary.bytes)),
-        Bson::ObjectId(oid) => Ok(SurrealValue::String(oid.to_string())),
-        Bson::DateTime(dt) => Ok(SurrealValue::DateTime(dt.to_chrono())),
-        Bson::Symbol(s) => Ok(SurrealValue::String(s)),
+        Bson::Binary(binary) => Ok(Value::Bytes(surrealdb::sql::Bytes::from(binary.bytes))),
+        Bson::ObjectId(oid) => Ok(Value::Strand(Strand::from(oid.to_string()))),
+        Bson::DateTime(dt) => Ok(Value::Datetime(Datetime::from(dt.to_chrono()))),
+        Bson::Symbol(s) => Ok(Value::Strand(Strand::from(s))),
         Bson::Decimal128(d) => {
             let decimal_str = d.to_string();
-            match surrealdb::sql::Number::try_from(decimal_str.as_str()) {
-                Ok(decimal_num) => Ok(SurrealValue::Decimal(decimal_num)),
+            match Number::try_from(decimal_str.as_str()) {
+                Ok(decimal_num) => Ok(Value::Number(decimal_num)),
                 Err(e) => {
                     tracing::warn!("Failed to parse BSON Decimal128 '{}': {:?}", decimal_str, e);
                     Err(anyhow::anyhow!("Failed to parse BSON Decimal128"))
                 }
             }
         }
-        Bson::Undefined => Ok(SurrealValue::None), // Map undefined to null
+        Bson::Undefined => Ok(Value::None), // Map undefined to null
         Bson::MaxKey => {
-            let mut mk = HashMap::new();
-            mk.insert("$maxKey".to_string(), SurrealValue::Int(1));
-            Ok(SurrealValue::Object(mk))
+            let mut mk = std::collections::BTreeMap::new();
+            mk.insert("$maxKey".to_string(), Value::Number(Number::Int(1)));
+            Ok(Value::Object(Object::from(mk)))
         }
         Bson::MinKey => {
-            let mut mk = HashMap::new();
-            mk.insert("$minKey".to_string(), SurrealValue::Int(1));
-            Ok(SurrealValue::Object(mk))
+            let mut mk = std::collections::BTreeMap::new();
+            mk.insert("$minKey".to_string(), Value::Number(Number::Int(1)));
+            Ok(Value::Object(Object::from(mk)))
         }
         Bson::DbPointer(_db_pointer) => {
             // DBPointer is deprecated and fields are private
             // Store as a special string to preserve the information
-            Ok(SurrealValue::String("$dbPointer".to_string()))
+            Ok(Value::Strand(Strand::from("$dbPointer".to_string())))
         }
     }
 }
@@ -453,5 +452,5 @@ fn convert_bson_document_to_record(
 
     let id = surrealdb::sql::Thing::from((collection_name, id));
 
-    Ok(crate::Record { id, data })
+    Ok(crate::Record::new(id, data))
 }

@@ -1,5 +1,6 @@
-pub use super::{Record, RecordWithSurrealValues, Relation};
+pub use super::{Record, Relation};
 use std::collections::HashMap;
+use surrealdb_types::SurrealValue;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChangeOp {
@@ -11,38 +12,20 @@ pub enum ChangeOp {
 #[derive(Debug, Clone)]
 pub enum Change {
     UpsertRecord(Record),
-    UpsertRecordWithSurrealValues(RecordWithSurrealValues),
     DeleteRecord(surrealdb::sql::Thing),
     UpsertRelation(Relation),
     DeleteRelation(surrealdb::sql::Thing),
 }
 
 impl Change {
-    pub fn record(
-        operation: ChangeOp,
-        id: surrealdb::sql::Thing,
-        data: HashMap<String, crate::SurrealValue>,
-    ) -> Self {
-        match operation {
-            ChangeOp::Create | ChangeOp::Update => Change::UpsertRecord(Record {
-                id: id.clone(),
-                data,
-            }),
-            ChangeOp::Delete => Change::DeleteRecord(id.clone()),
-        }
-    }
-
     /// Create a record change using native surrealdb::sql::Value types.
-    /// This is used by the unified TypedValue conversion path.
-    pub fn record_with_surreal_values(
+    pub fn record(
         operation: ChangeOp,
         id: surrealdb::sql::Thing,
         data: HashMap<String, surrealdb::sql::Value>,
     ) -> Self {
         match operation {
-            ChangeOp::Create | ChangeOp::Update => {
-                Change::UpsertRecordWithSurrealValues(RecordWithSurrealValues { id, data })
-            }
+            ChangeOp::Create | ChangeOp::Update => Change::UpsertRecord(Record::new(id, data)),
             ChangeOp::Delete => Change::DeleteRecord(id),
         }
     }
@@ -52,7 +35,7 @@ impl Change {
         id: surrealdb::sql::Thing,
         input: surrealdb::sql::Thing,
         output: surrealdb::sql::Thing,
-        data: Option<std::collections::HashMap<String, crate::SurrealValue>>,
+        data: Option<HashMap<String, SurrealValue>>,
     ) -> Self {
         match operation {
             ChangeOp::Create | ChangeOp::Update => {

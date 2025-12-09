@@ -9,12 +9,9 @@
 //! This module provides a bridge between the existing `SurrealType` enum and the new
 //! `UniversalType` from sync-core. The `surreal_type_to_sync_type` function converts
 //! between these representations, enabling the unified TypedValue conversion path.
-//!
-//! In future, `SurrealType` and `SurrealValue` will be removed, and schema collection
-//! will directly produce `UniversalType` values.
 
-use crate::SurrealValue;
 use std::collections::HashMap;
+use surrealdb::sql::{Number, Strand, Value};
 use sync_core::UniversalType;
 
 /// Generic data type representation for schema-aware conversion
@@ -114,7 +111,7 @@ pub fn surreal_type_to_sync_type(surreal_type: &SurrealType) -> UniversalType {
     }
 }
 
-/// Convert JSON value to SurrealValue using schema information for type precision
+/// Convert JSON value to surrealdb::sql::Value using schema information for type precision
 ///
 /// This function provides schema-aware conversion that preserves database-specific
 /// type precision during incremental sync operations that go through JSON conversion.
@@ -122,7 +119,7 @@ pub fn json_to_surreal_with_schema(
     value: serde_json::Value,
     field_name: &str,
     schema: &SurrealTableSchema,
-) -> anyhow::Result<SurrealValue> {
+) -> anyhow::Result<Value> {
     // Look up the generic type for this field
     let generic_type = schema.columns.get(field_name);
 
@@ -137,14 +134,14 @@ pub fn json_to_surreal_with_schema(
         // High-precision decimal conversion
         (serde_json::Value::Number(n), Some(SurrealType::Decimal { .. })) => {
             let decimal_str = n.to_string();
-            match surrealdb::sql::Number::try_from(decimal_str.as_str()) {
-                Ok(surreal_num) => Ok(SurrealValue::Decimal(surreal_num)),
+            match Number::try_from(decimal_str.as_str()) {
+                Ok(surreal_num) => Ok(Value::Number(surreal_num)),
                 Err(_) => {
                     // Fallback to float if decimal parsing fails
                     if let Some(f) = n.as_f64() {
-                        Ok(SurrealValue::Float(f))
+                        Ok(Value::Number(Number::Float(f)))
                     } else {
-                        Ok(SurrealValue::String(decimal_str))
+                        Ok(Value::Strand(Strand::from(decimal_str)))
                     }
                 }
             }
@@ -157,51 +154,55 @@ pub fn json_to_surreal_with_schema(
             if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S") {
                 let dt =
                     chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ndt, chrono::Utc);
-                Ok(SurrealValue::DateTime(dt))
+                Ok(Value::Datetime(surrealdb::sql::Datetime::from(dt)))
             // Try MySQL Timestamp-like format with fractional seconds (space separator)
             } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S%.f") {
                 let dt =
                     chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ndt, chrono::Utc);
-                Ok(SurrealValue::DateTime(dt))
+                Ok(Value::Datetime(surrealdb::sql::Datetime::from(dt)))
             // Try ISO 8601 format with T separator (PostgreSQL to_jsonb output)
             } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S%.f") {
                 let dt =
                     chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ndt, chrono::Utc);
-                Ok(SurrealValue::DateTime(dt))
+                Ok(Value::Datetime(surrealdb::sql::Datetime::from(dt)))
             // Try ISO 8601 format without fractional seconds
             } else if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S") {
                 let dt =
                     chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ndt, chrono::Utc);
-                Ok(SurrealValue::DateTime(dt))
+                Ok(Value::Datetime(surrealdb::sql::Datetime::from(dt)))
             } else if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&s) {
-                Ok(SurrealValue::DateTime(dt.with_timezone(&chrono::Utc)))
+                Ok(Value::Datetime(surrealdb::sql::Datetime::from(
+                    dt.with_timezone(&chrono::Utc),
+                )))
             } else {
                 // Fallback to string if parsing fails
-                Ok(SurrealValue::String(s))
+                Ok(Value::Strand(Strand::from(s)))
             }
         }
 
         // Timestamp with timezone
         (serde_json::Value::String(s), Some(SurrealType::TimestampWithTimezone)) => {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&s) {
-                Ok(SurrealValue::DateTime(dt.with_timezone(&chrono::Utc)))
+                Ok(Value::Datetime(surrealdb::sql::Datetime::from(
+                    dt.with_timezone(&chrono::Utc),
+                )))
             } else {
-                Ok(SurrealValue::String(s))
+                Ok(Value::Strand(Strand::from(s)))
             }
         }
 
         // UUID validation and preservation
         (serde_json::Value::String(s), Some(SurrealType::Uuid)) => {
             // For now, just preserve as string (could add UUID validation later)
-            Ok(SurrealValue::String(s))
+            Ok(Value::Strand(Strand::from(s)))
         }
 
         // JSON type - parse if it's a string representation
         (serde_json::Value::String(s), Some(SurrealType::Json)) => {
             // Try to parse JSON string into object
             match serde_json::from_str::<serde_json::Value>(&s) {
-                Ok(parsed_json) => crate::json_to_surreal_without_schema(parsed_json),
-                Err(_) => Ok(SurrealValue::String(s)), // Keep as string if not valid JSON
+                Ok(parsed_json) => Ok(json_to_surreal_without_schema(parsed_json)),
+                Err(_) => Ok(Value::Strand(Strand::from(s))), // Keep as string if not valid JSON
             }
         }
 
@@ -213,22 +214,22 @@ pub fn json_to_surreal_with_schema(
                     .ok_or_else(|| anyhow::anyhow!("Invalid date"))?;
                 let dt =
                     chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(dt, chrono::Utc);
-                Ok(SurrealValue::DateTime(dt))
+                Ok(Value::Datetime(surrealdb::sql::Datetime::from(dt)))
             } else {
-                Ok(SurrealValue::String(s))
+                Ok(Value::Strand(Strand::from(s)))
             }
         }
 
         // Time conversion
         (serde_json::Value::String(s), Some(SurrealType::Time)) => {
             // Keep time as string since SurrealDB doesn't have pure time type
-            Ok(SurrealValue::String(s))
+            Ok(Value::Strand(Strand::from(s)))
         }
 
         // Boolean conversion - handle MySQL TINYINT(1) which comes as 0/1 integers
         (serde_json::Value::Number(n), Some(SurrealType::Boolean)) => {
             if let Some(i) = n.as_i64() {
-                Ok(SurrealValue::Bool(i != 0))
+                Ok(Value::Bool(i != 0))
             } else {
                 Err(anyhow::anyhow!(
                     "Boolean field expected integer value, got non-integer number: {n}",
@@ -242,13 +243,15 @@ pub fn json_to_surreal_with_schema(
         {
             // Convert comma-separated SET values to array
             if s.is_empty() {
-                Ok(SurrealValue::Array(Vec::new()))
+                Ok(Value::Array(surrealdb::sql::Array::from(
+                    Vec::<Value>::new(),
+                )))
             } else {
-                let values: Vec<SurrealValue> = s
+                let values: Vec<Value> = s
                     .split(',')
-                    .map(|v| SurrealValue::String(v.to_string()))
+                    .map(|v| Value::Strand(Strand::from(v.to_string())))
                     .collect();
-                Ok(SurrealValue::Array(values))
+                Ok(Value::Array(surrealdb::sql::Array::from(values)))
             }
         }
 
@@ -256,11 +259,71 @@ pub fn json_to_surreal_with_schema(
         (serde_json::Value::Null, Some(SurrealType::Array(inner)))
             if matches!(inner.as_ref(), SurrealType::String) =>
         {
-            Ok(SurrealValue::Null)
+            Ok(Value::Null)
         }
 
-        // For all other cases, use the existing generic JSON conversion
-        (value, _) => crate::json_to_surreal_without_schema(value),
+        // For all other cases, use the generic JSON conversion
+        (value, _) => Ok(json_to_surreal_without_schema(value)),
+    }
+}
+
+/// Convert JSON value to surrealdb::sql::Value without schema information
+///
+/// This function performs generic JSON to SurrealDB value conversion.
+/// It auto-detects ISO 8601 duration strings and converts them to Duration values.
+fn json_to_surreal_without_schema(value: serde_json::Value) -> Value {
+    match value {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Number(Number::Int(i))
+            } else if let Some(f) = n.as_f64() {
+                Value::Number(Number::Float(f))
+            } else {
+                Value::Strand(Strand::from(n.to_string()))
+            }
+        }
+        serde_json::Value::String(s) => {
+            // Auto-detect ISO 8601 duration strings (PTxxxS format) and convert to Duration
+            if let Some(duration) = try_parse_iso8601_duration(&s) {
+                Value::Duration(surrealdb::sql::Duration::from(duration))
+            } else {
+                Value::Strand(Strand::from(s))
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            let values: Vec<Value> = arr
+                .into_iter()
+                .map(json_to_surreal_without_schema)
+                .collect();
+            Value::Array(surrealdb::sql::Array::from(values))
+        }
+        serde_json::Value::Object(map) => {
+            let mut obj = std::collections::BTreeMap::new();
+            for (key, val) in map {
+                obj.insert(key, json_to_surreal_without_schema(val));
+            }
+            Value::Object(surrealdb::sql::Object::from(obj))
+        }
+    }
+}
+
+/// Parse an ISO 8601 duration string (PTxS or PTx.xxxxxxxxxS format).
+fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
+    let trimmed = s.trim();
+    if let Some(secs_str) = trimmed.strip_prefix("PT").and_then(|s| s.strip_suffix('S')) {
+        if let Some(dot_pos) = secs_str.find('.') {
+            let secs: u64 = secs_str[..dot_pos].parse().ok()?;
+            let nanos_str = &secs_str[dot_pos + 1..];
+            let nanos: u32 = nanos_str.parse().ok()?;
+            Some(std::time::Duration::new(secs, nanos))
+        } else {
+            let secs: u64 = secs_str.parse().ok()?;
+            Some(std::time::Duration::from_secs(secs))
+        }
+    } else {
+        None
     }
 }
 
@@ -397,8 +460,8 @@ mod tests {
         let result = json_to_surreal_with_schema(json_value, "price", &schema).unwrap();
 
         match result {
-            SurrealValue::Decimal(_) => (), // Success
-            _ => panic!("Expected Decimal, got {result:?}"),
+            Value::Number(_) => (), // Success
+            _ => panic!("Expected Number, got {result:?}"),
         }
     }
 
@@ -417,8 +480,8 @@ mod tests {
         let result = json_to_surreal_with_schema(json_value, "created_at", &schema).unwrap();
 
         match result {
-            SurrealValue::DateTime(_) => (), // Success
-            _ => panic!("Expected DateTime, got {result:?}"),
+            Value::Datetime(_) => (), // Success
+            _ => panic!("Expected Datetime, got {result:?}"),
         }
     }
 
@@ -434,8 +497,8 @@ mod tests {
         let result = json_to_surreal_with_schema(json_value, "unknown_field", &schema).unwrap();
 
         match result {
-            SurrealValue::String(s) => assert_eq!(s, "test"),
-            _ => panic!("Expected String, got {result:?}"),
+            Value::Strand(s) => assert_eq!(s.as_str(), "test"),
+            _ => panic!("Expected Strand, got {result:?}"),
         }
     }
 

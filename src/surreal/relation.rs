@@ -1,4 +1,4 @@
-pub use super::SurrealValue;
+use surrealdb_types::SurrealValue;
 
 #[derive(Debug, Clone)]
 pub struct Relation {
@@ -20,8 +20,7 @@ impl Relation {
         let mut m = std::collections::BTreeMap::new();
         for (k, v) in &self.data {
             tracing::debug!("Adding field to relation: {} -> {:?}", k, v);
-            let surreal_value = v.to_surrealql_value();
-            m.insert(k.clone(), surreal_value);
+            m.insert(k.clone(), v.clone().into_inner());
         }
 
         // Use the Thing directly for the relation id field

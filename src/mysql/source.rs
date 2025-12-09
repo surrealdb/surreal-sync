@@ -325,12 +325,8 @@ impl MySQLChangeStream {
                 surrealdb::sql::Thing::from((table_name.clone(), row_id))
             };
 
-            // Use the new Change::record_with_surreal_values method for unified path
-            changes.push(Change::record_with_surreal_values(
-                op,
-                record_id,
-                surreal_data,
-            ));
+            // Create change record using unified path
+            changes.push(Change::record(op, record_id, surreal_data));
 
             self.last_sequence_id = sequence_id;
         }

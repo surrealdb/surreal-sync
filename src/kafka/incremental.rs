@@ -134,7 +134,7 @@ pub async fn run_incremental_sync(
                         )?
                     };
 
-                    crate::surreal::write_record_with_surreal_values(&surreal, &record).await?;
+                    crate::surreal::write_record(&surreal, &record).await?;
 
                     let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
                     if count % 100 == 0 {

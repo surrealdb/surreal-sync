@@ -20,10 +20,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-/// Convert a BSON document directly to a SurrealValue map
+/// Convert a BSON document directly to a surrealdb::sql::Value map
 fn bson_doc_to_keys_and_surreal_values(
     doc: Document,
-) -> Result<HashMap<String, crate::SurrealValue>> {
+) -> Result<HashMap<String, surrealdb::sql::Value>> {
     let mut map = HashMap::new();
 
     for (key, value) in doc {
