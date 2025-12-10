@@ -226,7 +226,7 @@ tables:
         }
 
         // Age should be in range - field type is Int so should be Int value
-        if let Some(UniversalValue::Int(age)) = row.get_field("age") {
+        if let Some(UniversalValue::Int32(age)) = row.get_field("age") {
             assert!(*age >= 18 && *age <= 80);
         } else {
             panic!("Expected Int for age, got {:?}", row.get_field("age"));

@@ -6,7 +6,7 @@
 //!
 //! ## Type System Bridge
 //!
-//! This module provides a bridge between the existing `SurrealType` enum and the new
+//! This module provides a bridge between the existing `LegacyType` enum and the new
 //! `UniversalType` from sync-core. The `surreal_type_to_sync_type` function converts
 //! between these representations, enabling the unified TypedValue conversion path.
 
@@ -20,11 +20,11 @@ use sync_core::UniversalType;
 /// across different database sources (PostgreSQL, MySQL, etc.) to enable
 /// consistent type conversion between full and incremental sync modes.
 #[derive(Debug, Clone, PartialEq)]
-pub enum SurrealType {
+pub enum LegacyType {
     /// Boolean type
-    Boolean,
+    Bool,
     /// Integer type (any size)
-    Integer,
+    Int,
     /// Floating point type
     Float,
     /// String/text type
@@ -41,15 +41,15 @@ pub enum SurrealType {
     /// Time only (no date component)
     Time,
     /// Timestamp without timezone
-    Timestamp,
+    DateTime,
     /// Timestamp with timezone
-    TimestampWithTimezone,
+    TimestampTz,
     /// Time duration/interval
     Duration,
     /// JSON/JSONB data
     Json,
     /// Array of another type
-    Array(Box<SurrealType>),
+    Array(Box<LegacyType>),
     /// UUID type
     Uuid,
     /// Geometric/spatial data
@@ -60,54 +60,54 @@ pub enum SurrealType {
 
 /// Table schema information for schema-aware conversion
 #[derive(Debug, Clone)]
-pub struct SurrealTableSchema {
+pub struct LegacyTableDefinition {
     pub table_name: String,
-    pub columns: HashMap<String, SurrealType>,
+    pub columns: HashMap<String, LegacyType>,
 }
 
 /// Database schema information containing all table schemas
 #[derive(Debug, Clone)]
-pub struct SurrealDatabaseSchema {
-    pub tables: HashMap<String, SurrealTableSchema>,
+pub struct LegacySchema {
+    pub tables: HashMap<String, LegacyTableDefinition>,
 }
 
-/// Convert SurrealType to UniversalType for use with TypedValue conversions.
+/// Convert LegacyType to UniversalType for use with TypedValue conversions.
 ///
-/// This function bridges the existing `SurrealType` enum (used for schema representation)
+/// This function bridges the existing `LegacyType` enum (used for schema representation)
 /// with `UniversalType` from sync-core (used for TypedValue conversions). This enables
 /// the unified conversion path:
 /// `JSON → TypedValue (json-types) → surrealdb::sql::Value (surrealdb-types)`
 ///
 /// # Note
-/// This is a transitional function. In Phase 24, when `SurrealType` is removed,
+/// This is a transitional function. When `LegacyType` is removed,
 /// schema collection will directly produce `UniversalType` values.
-pub fn surreal_type_to_sync_type(surreal_type: &SurrealType) -> UniversalType {
-    match surreal_type {
-        SurrealType::Boolean => UniversalType::Bool,
-        SurrealType::Integer => UniversalType::BigInt, // Use BigInt as safest default
-        SurrealType::Float => UniversalType::Double,
-        SurrealType::String => UniversalType::Text,
-        SurrealType::Bytes => UniversalType::Bytes,
-        SurrealType::Decimal { precision, scale } => UniversalType::Decimal {
+pub fn legacy_type_to_universal_type(legacy_type: &LegacyType) -> UniversalType {
+    match legacy_type {
+        LegacyType::Bool => UniversalType::Bool,
+        LegacyType::Int => UniversalType::Int64, // Use Int64 as safest default
+        LegacyType::Float => UniversalType::Float64,
+        LegacyType::String => UniversalType::Text,
+        LegacyType::Bytes => UniversalType::Bytes,
+        LegacyType::Decimal { precision, scale } => UniversalType::Decimal {
             // precision/scale are u32 but UniversalType expects u8, cap at 38
             precision: precision.map(|p| p.min(38) as u8).unwrap_or(38),
             scale: scale.map(|s| s.min(38) as u8).unwrap_or(10),
         },
-        SurrealType::Date => UniversalType::Date,
-        SurrealType::Time => UniversalType::Time,
-        SurrealType::Timestamp => UniversalType::DateTime,
-        SurrealType::TimestampWithTimezone => UniversalType::TimestampTz,
-        SurrealType::Duration => UniversalType::Text, // Duration stored as text
-        SurrealType::Json => UniversalType::Json,
-        SurrealType::Array(inner) => UniversalType::Array {
-            element_type: Box::new(surreal_type_to_sync_type(inner)),
+        LegacyType::Date => UniversalType::Date,
+        LegacyType::Time => UniversalType::Time,
+        LegacyType::DateTime => UniversalType::LocalDateTime,
+        LegacyType::TimestampTz => UniversalType::ZonedDateTime,
+        LegacyType::Duration => UniversalType::Text, // Duration stored as text
+        LegacyType::Json => UniversalType::Json,
+        LegacyType::Array(inner) => UniversalType::Array {
+            element_type: Box::new(legacy_type_to_universal_type(inner)),
         },
-        SurrealType::Uuid => UniversalType::Uuid,
-        SurrealType::Geometry => UniversalType::Geometry {
+        LegacyType::Uuid => UniversalType::Uuid,
+        LegacyType::Geometry => UniversalType::Geometry {
             // Use Point as a generic fallback - actual geometry type is in the data
             geometry_type: sync_core::GeometryType::Point,
         },
-        SurrealType::SourceSpecific(_) => UniversalType::Text, // Fallback to text
+        LegacyType::SourceSpecific(_) => UniversalType::Text, // Fallback to text
     }
 }
 
@@ -118,7 +118,7 @@ pub fn surreal_type_to_sync_type(surreal_type: &SurrealType) -> UniversalType {
 pub fn json_to_surreal_with_schema(
     value: serde_json::Value,
     field_name: &str,
-    schema: &SurrealTableSchema,
+    schema: &LegacyTableDefinition,
 ) -> anyhow::Result<Value> {
     // Look up the generic type for this field
     let generic_type = schema.columns.get(field_name);
@@ -132,7 +132,7 @@ pub fn json_to_surreal_with_schema(
 
     match (value, generic_type) {
         // High-precision decimal conversion
-        (serde_json::Value::Number(n), Some(SurrealType::Decimal { .. })) => {
+        (serde_json::Value::Number(n), Some(LegacyType::Decimal { .. })) => {
             let decimal_str = n.to_string();
             match Number::try_from(decimal_str.as_str()) {
                 Ok(surreal_num) => Ok(Value::Number(surreal_num)),
@@ -148,7 +148,7 @@ pub fn json_to_surreal_with_schema(
         }
 
         // Timestamp conversion (works for both PostgreSQL and MySQL)
-        (serde_json::Value::String(s), Some(SurrealType::Timestamp)) => {
+        (serde_json::Value::String(s), Some(LegacyType::DateTime)) => {
             use chrono::NaiveDateTime;
             // Try common timestamp formats
             if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S") {
@@ -181,7 +181,7 @@ pub fn json_to_surreal_with_schema(
         }
 
         // Timestamp with timezone
-        (serde_json::Value::String(s), Some(SurrealType::TimestampWithTimezone)) => {
+        (serde_json::Value::String(s), Some(LegacyType::TimestampTz)) => {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&s) {
                 Ok(Value::Datetime(surrealdb::sql::Datetime::from(
                     dt.with_timezone(&chrono::Utc),
@@ -192,13 +192,13 @@ pub fn json_to_surreal_with_schema(
         }
 
         // UUID validation and preservation
-        (serde_json::Value::String(s), Some(SurrealType::Uuid)) => {
+        (serde_json::Value::String(s), Some(LegacyType::Uuid)) => {
             // For now, just preserve as string (could add UUID validation later)
             Ok(Value::Strand(Strand::from(s)))
         }
 
         // JSON type - parse if it's a string representation
-        (serde_json::Value::String(s), Some(SurrealType::Json)) => {
+        (serde_json::Value::String(s), Some(LegacyType::Json)) => {
             // Try to parse JSON string into object
             match serde_json::from_str::<serde_json::Value>(&s) {
                 Ok(parsed_json) => Ok(json_to_surreal_without_schema(parsed_json)),
@@ -207,7 +207,7 @@ pub fn json_to_surreal_with_schema(
         }
 
         // Date conversion
-        (serde_json::Value::String(s), Some(SurrealType::Date)) => {
+        (serde_json::Value::String(s), Some(LegacyType::Date)) => {
             if let Ok(date) = chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
                 let dt = date
                     .and_hms_opt(0, 0, 0)
@@ -221,13 +221,13 @@ pub fn json_to_surreal_with_schema(
         }
 
         // Time conversion
-        (serde_json::Value::String(s), Some(SurrealType::Time)) => {
+        (serde_json::Value::String(s), Some(LegacyType::Time)) => {
             // Keep time as string since SurrealDB doesn't have pure time type
             Ok(Value::Strand(Strand::from(s)))
         }
 
         // Boolean conversion - handle MySQL TINYINT(1) which comes as 0/1 integers
-        (serde_json::Value::Number(n), Some(SurrealType::Boolean)) => {
+        (serde_json::Value::Number(n), Some(LegacyType::Bool)) => {
             if let Some(i) = n.as_i64() {
                 Ok(Value::Bool(i != 0))
             } else {
@@ -238,8 +238,8 @@ pub fn json_to_surreal_with_schema(
         }
 
         // SET column conversion - handle MySQL SET columns encoded as comma-separated strings
-        (serde_json::Value::String(s), Some(SurrealType::Array(inner)))
-            if matches!(inner.as_ref(), SurrealType::String) =>
+        (serde_json::Value::String(s), Some(LegacyType::Array(inner)))
+            if matches!(inner.as_ref(), LegacyType::String) =>
         {
             // Convert comma-separated SET values to array
             if s.is_empty() {
@@ -256,8 +256,8 @@ pub fn json_to_surreal_with_schema(
         }
 
         // Handle NULL SET columns
-        (serde_json::Value::Null, Some(SurrealType::Array(inner)))
-            if matches!(inner.as_ref(), SurrealType::String) =>
+        (serde_json::Value::Null, Some(LegacyType::Array(inner)))
+            if matches!(inner.as_ref(), LegacyType::String) =>
         {
             Ok(Value::Null)
         }
@@ -345,7 +345,7 @@ pub fn convert_id_with_schema(
     id_str: &str,
     table_name: &str,
     id_column: &str,
-    schema: &SurrealDatabaseSchema,
+    schema: &LegacySchema,
 ) -> anyhow::Result<surrealdb::sql::Id> {
     // Look up the table schema
     let table_schema = schema
@@ -360,7 +360,7 @@ pub fn convert_id_with_schema(
 
     // Convert based on the schema-defined type
     match id_type {
-        SurrealType::Integer => {
+        LegacyType::Int => {
             // Parse as integer
             let id_int: i64 = id_str.parse().map_err(|e| {
                 anyhow::anyhow!(
@@ -369,7 +369,7 @@ pub fn convert_id_with_schema(
             })?;
             Ok(surrealdb::sql::Id::Number(id_int))
         }
-        SurrealType::Uuid => {
+        LegacyType::Uuid => {
             // Parse as UUID
             let uuid = uuid::Uuid::parse_str(id_str).map_err(|e| {
                 anyhow::anyhow!(
@@ -378,7 +378,7 @@ pub fn convert_id_with_schema(
             })?;
             Ok(surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(uuid)))
         }
-        SurrealType::String => {
+        LegacyType::String => {
             // Keep as string
             Ok(surrealdb::sql::Id::String(id_str.to_string()))
         }
@@ -400,43 +400,43 @@ mod tests {
 
     #[test]
     fn test_generic_data_type_creation() {
-        let decimal_type = SurrealType::Decimal {
+        let decimal_type = LegacyType::Decimal {
             precision: Some(10),
             scale: Some(2),
         };
         assert_eq!(
             decimal_type,
-            SurrealType::Decimal {
+            LegacyType::Decimal {
                 precision: Some(10),
                 scale: Some(2),
             }
         );
 
-        let timestamp_type = SurrealType::Timestamp;
-        assert_eq!(timestamp_type, SurrealType::Timestamp);
+        let timestamp_type = LegacyType::DateTime;
+        assert_eq!(timestamp_type, LegacyType::DateTime);
     }
 
     #[test]
     fn test_table_schema_creation() {
         let mut columns = HashMap::new();
-        columns.insert("id".to_string(), SurrealType::Integer);
+        columns.insert("id".to_string(), LegacyType::Int);
         columns.insert(
             "price".to_string(),
-            SurrealType::Decimal {
+            LegacyType::Decimal {
                 precision: Some(10),
                 scale: Some(2),
             },
         );
-        columns.insert("created_at".to_string(), SurrealType::Timestamp);
+        columns.insert("created_at".to_string(), LegacyType::DateTime);
 
-        let schema = SurrealTableSchema {
+        let schema = LegacyTableDefinition {
             table_name: "products".to_string(),
             columns,
         };
 
         assert_eq!(schema.table_name, "products");
         assert_eq!(schema.columns.len(), 3);
-        assert_eq!(schema.columns.get("id"), Some(&SurrealType::Integer));
+        assert_eq!(schema.columns.get("id"), Some(&LegacyType::Int));
     }
 
     #[test]
@@ -444,13 +444,13 @@ mod tests {
         let mut columns = HashMap::new();
         columns.insert(
             "price".to_string(),
-            SurrealType::Decimal {
+            LegacyType::Decimal {
                 precision: Some(10),
                 scale: Some(2),
             },
         );
 
-        let schema = SurrealTableSchema {
+        let schema = LegacyTableDefinition {
             table_name: "products".to_string(),
             columns,
         };
@@ -468,9 +468,9 @@ mod tests {
     #[test]
     fn test_schema_aware_timestamp_conversion() {
         let mut columns = HashMap::new();
-        columns.insert("created_at".to_string(), SurrealType::Timestamp);
+        columns.insert("created_at".to_string(), LegacyType::DateTime);
 
-        let schema = SurrealTableSchema {
+        let schema = LegacyTableDefinition {
             table_name: "events".to_string(),
             columns,
         };
@@ -487,7 +487,7 @@ mod tests {
 
     #[test]
     fn test_schema_aware_fallback() {
-        let schema = SurrealTableSchema {
+        let schema = LegacyTableDefinition {
             table_name: "test".to_string(),
             columns: HashMap::new(), // Empty schema
         };
@@ -506,15 +506,15 @@ mod tests {
     fn test_convert_id_with_schema_integer() {
         let mut tables = HashMap::new();
         let mut columns = HashMap::new();
-        columns.insert("id".to_string(), SurrealType::Integer);
+        columns.insert("id".to_string(), LegacyType::Int);
         tables.insert(
             "users".to_string(),
-            SurrealTableSchema {
+            LegacyTableDefinition {
                 table_name: "users".to_string(),
                 columns,
             },
         );
-        let schema = SurrealDatabaseSchema { tables };
+        let schema = LegacySchema { tables };
 
         // Test integer ID conversion
         let id = convert_id_with_schema("12345", "users", "id", &schema).unwrap();
@@ -528,15 +528,15 @@ mod tests {
     fn test_convert_id_with_schema_uuid() {
         let mut tables = HashMap::new();
         let mut columns = HashMap::new();
-        columns.insert("id".to_string(), SurrealType::Uuid);
+        columns.insert("id".to_string(), LegacyType::Uuid);
         tables.insert(
             "products".to_string(),
-            SurrealTableSchema {
+            LegacyTableDefinition {
                 table_name: "products".to_string(),
                 columns,
             },
         );
-        let schema = SurrealDatabaseSchema { tables };
+        let schema = LegacySchema { tables };
 
         // Test UUID ID conversion
         let uuid_str = "550e8400-e29b-41d4-a716-446655440000";
@@ -555,15 +555,15 @@ mod tests {
     fn test_convert_id_with_schema_string() {
         let mut tables = HashMap::new();
         let mut columns = HashMap::new();
-        columns.insert("id".to_string(), SurrealType::String);
+        columns.insert("id".to_string(), LegacyType::String);
         tables.insert(
             "documents".to_string(),
-            SurrealTableSchema {
+            LegacyTableDefinition {
                 table_name: "documents".to_string(),
                 columns,
             },
         );
-        let schema = SurrealDatabaseSchema { tables };
+        let schema = LegacySchema { tables };
 
         // Test string ID conversion (should remain as string)
         let id = convert_id_with_schema("doc-123-abc", "documents", "id", &schema).unwrap();
@@ -575,7 +575,7 @@ mod tests {
 
     #[test]
     fn test_convert_id_with_schema_table_not_found() {
-        let schema = SurrealDatabaseSchema {
+        let schema = LegacySchema {
             tables: HashMap::new(),
         };
 

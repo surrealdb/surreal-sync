@@ -19,7 +19,7 @@
 //! let csv_val: CsvValue = tv.into();
 //!
 //! // Reverse: CSV string → TypedValue
-//! let csv_str = CsvStringWithSchema::new("42", &UniversalType::Int);
+//! let csv_str = CsvStringWithSchema::new("42", &UniversalType::Int32);
 //! let tv = csv_str.to_typed_value().unwrap();
 //! ```
 

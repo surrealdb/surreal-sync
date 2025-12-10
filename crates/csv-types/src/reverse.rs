@@ -75,7 +75,7 @@ pub fn csv_string_to_typed_value(
         },
 
         // TinyInt with width 1 - treat as boolean (MySQL pattern)
-        UniversalType::TinyInt { width: 1 } => match value.to_lowercase().as_str() {
+        UniversalType::Int8 { width: 1 } => match value.to_lowercase().as_str() {
             "true" | "1" | "yes" | "t" | "y" => Ok(TypedValue {
                 sync_type: schema_type.clone(),
                 value: UniversalValue::Bool(true),
@@ -92,24 +92,24 @@ pub fn csv_string_to_typed_value(
         },
 
         // Integer types - strict 1:1 matching
-        UniversalType::TinyInt { width } => match value.parse::<i8>() {
-            Ok(i) => Ok(TypedValue::tinyint(i, *width)),
+        UniversalType::Int8 { width } => match value.parse::<i8>() {
+            Ok(i) => Ok(TypedValue::int8(i, *width)),
             Err(_) => Err(CsvParseError {
                 message: "Invalid tinyint".to_string(),
                 value: value.to_string(),
                 expected_type: "TinyInt".to_string(),
             }),
         },
-        UniversalType::SmallInt => match value.parse::<i16>() {
-            Ok(i) => Ok(TypedValue::smallint(i)),
+        UniversalType::Int16 => match value.parse::<i16>() {
+            Ok(i) => Ok(TypedValue::int16(i)),
             Err(_) => Err(CsvParseError {
                 message: "Invalid smallint".to_string(),
                 value: value.to_string(),
                 expected_type: "SmallInt".to_string(),
             }),
         },
-        UniversalType::Int => match value.parse::<i32>() {
-            Ok(i) => Ok(TypedValue::int(i)),
+        UniversalType::Int32 => match value.parse::<i32>() {
+            Ok(i) => Ok(TypedValue::int32(i)),
             Err(_) => Err(CsvParseError {
                 message: "Invalid integer".to_string(),
                 value: value.to_string(),
@@ -117,8 +117,8 @@ pub fn csv_string_to_typed_value(
             }),
         },
 
-        UniversalType::BigInt => match value.parse::<i64>() {
-            Ok(i) => Ok(TypedValue::bigint(i)),
+        UniversalType::Int64 => match value.parse::<i64>() {
+            Ok(i) => Ok(TypedValue::int64(i)),
             Err(_) => Err(CsvParseError {
                 message: "Invalid bigint".to_string(),
                 value: value.to_string(),
@@ -127,16 +127,16 @@ pub fn csv_string_to_typed_value(
         },
 
         // Float types - strict 1:1 matching
-        UniversalType::Float => match value.parse::<f32>() {
-            Ok(f) => Ok(TypedValue::float(f)),
+        UniversalType::Float32 => match value.parse::<f32>() {
+            Ok(f) => Ok(TypedValue::float32(f)),
             Err(_) => Err(CsvParseError {
                 message: "Invalid float".to_string(),
                 value: value.to_string(),
                 expected_type: "Float".to_string(),
             }),
         },
-        UniversalType::Double => match value.parse::<f64>() {
-            Ok(f) => Ok(TypedValue::double(f)),
+        UniversalType::Float64 => match value.parse::<f64>() {
+            Ok(f) => Ok(TypedValue::float64(f)),
             Err(_) => Err(CsvParseError {
                 message: "Invalid double".to_string(),
                 value: value.to_string(),
@@ -217,7 +217,7 @@ pub fn csv_string_to_typed_value(
         }
 
         // DateTime types - strict 1:1 matching
-        UniversalType::DateTime => {
+        UniversalType::LocalDateTime => {
             // Try RFC3339 first
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
                 return Ok(TypedValue::datetime(dt.with_timezone(&Utc)));
@@ -236,7 +236,7 @@ pub fn csv_string_to_typed_value(
                 expected_type: "DateTime".to_string(),
             })
         }
-        UniversalType::DateTimeNano => {
+        UniversalType::LocalDateTimeNano => {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
                 return Ok(TypedValue::datetime_nano(dt.with_timezone(&Utc)));
             }
@@ -252,7 +252,7 @@ pub fn csv_string_to_typed_value(
                 expected_type: "DateTimeNano".to_string(),
             })
         }
-        UniversalType::TimestampTz => {
+        UniversalType::ZonedDateTime => {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
                 return Ok(TypedValue::timestamptz(dt.with_timezone(&Utc)));
             }
@@ -399,9 +399,9 @@ fn json_to_generated_value(json: &serde_json::Value) -> UniversalValue {
         serde_json::Value::Bool(b) => UniversalValue::Bool(*b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                UniversalValue::BigInt(i)
+                UniversalValue::Int64(i)
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Double(f)
+                UniversalValue::Float64(f)
             } else {
                 UniversalValue::Text(n.to_string())
             }
@@ -427,12 +427,12 @@ pub fn csv_string_to_typed_value_inferred(value: &str) -> TypedValue {
 
     // Try integer
     if let Ok(i) = value.parse::<i64>() {
-        return TypedValue::bigint(i);
+        return TypedValue::int64(i);
     }
 
     // Try float
     if let Ok(f) = value.parse::<f64>() {
-        return TypedValue::double(f);
+        return TypedValue::float64(f);
     }
 
     // Try boolean
@@ -482,19 +482,19 @@ mod tests {
 
     #[test]
     fn test_reverse_int() {
-        let result = csv_string_to_typed_value("12345", &UniversalType::Int).unwrap();
+        let result = csv_string_to_typed_value("12345", &UniversalType::Int32).unwrap();
         assert_eq!(result.value.as_i32(), Some(12345));
     }
 
     #[test]
     fn test_reverse_bigint() {
-        let result = csv_string_to_typed_value("9876543210", &UniversalType::BigInt).unwrap();
+        let result = csv_string_to_typed_value("9876543210", &UniversalType::Int64).unwrap();
         assert_eq!(result.value.as_i64(), Some(9876543210i64));
     }
 
     #[test]
     fn test_reverse_float() {
-        let result = csv_string_to_typed_value("1.23", &UniversalType::Double).unwrap();
+        let result = csv_string_to_typed_value("1.23", &UniversalType::Float64).unwrap();
         assert!((result.value.as_f64().unwrap() - 1.23).abs() < 0.001);
     }
 
@@ -562,7 +562,7 @@ mod tests {
     #[test]
     fn test_reverse_datetime_rfc3339() {
         let result =
-            csv_string_to_typed_value("2024-06-15T10:30:00+00:00", &UniversalType::DateTime)
+            csv_string_to_typed_value("2024-06-15T10:30:00+00:00", &UniversalType::LocalDateTime)
                 .unwrap();
         let dt = result.value.as_datetime().unwrap();
         assert_eq!(
@@ -574,7 +574,8 @@ mod tests {
     #[test]
     fn test_reverse_datetime_no_timezone() {
         let result =
-            csv_string_to_typed_value("2024-06-15T10:30:00", &UniversalType::DateTime).unwrap();
+            csv_string_to_typed_value("2024-06-15T10:30:00", &UniversalType::LocalDateTime)
+                .unwrap();
         let dt = result.value.as_datetime().unwrap();
         assert_eq!(
             dt.format("%Y-%m-%dT%H:%M:%S").to_string(),
@@ -611,7 +612,7 @@ mod tests {
         let result = csv_string_to_typed_value(
             "[1, 2, 3]",
             &UniversalType::Array {
-                element_type: Box::new(UniversalType::Int),
+                element_type: Box::new(UniversalType::Int32),
             },
         )
         .unwrap();
@@ -707,7 +708,7 @@ mod tests {
 
     #[test]
     fn test_csv_string_with_schema() {
-        let schema_type = UniversalType::Int;
+        let schema_type = UniversalType::Int32;
         let csv_str = CsvStringWithSchema::new("42", &schema_type);
         let result = csv_str.to_typed_value().unwrap();
         assert_eq!(result.value.as_i32(), Some(42));

@@ -7,42 +7,42 @@ use sync_core::{UniversalType, UniversalValue};
 /// Convert a string value to the appropriate UniversalValue based on the target type.
 fn string_to_typed_value(s: &str, target_type: &UniversalType) -> UniversalValue {
     match target_type {
-        UniversalType::Int => match s.parse::<i32>() {
-            Ok(i) => UniversalValue::Int(i),
+        UniversalType::Int32 => match s.parse::<i32>() {
+            Ok(i) => UniversalValue::Int32(i),
             Err(_) => UniversalValue::Text(s.to_string()),
         },
-        UniversalType::SmallInt => match s.parse::<i16>() {
-            Ok(i) => UniversalValue::SmallInt(i),
+        UniversalType::Int16 => match s.parse::<i16>() {
+            Ok(i) => UniversalValue::Int16(i),
             Err(_) => UniversalValue::Text(s.to_string()),
         },
-        UniversalType::BigInt => match s.parse::<i64>() {
-            Ok(i) => UniversalValue::BigInt(i),
+        UniversalType::Int64 => match s.parse::<i64>() {
+            Ok(i) => UniversalValue::Int64(i),
             Err(_) => UniversalValue::Text(s.to_string()),
         },
-        UniversalType::TinyInt { width: 1 } => {
+        UniversalType::Int8 { width: 1 } => {
             // TinyInt(1) is often used as boolean
             match s.to_lowercase().as_str() {
                 "true" | "1" | "yes" => UniversalValue::Bool(true),
                 "false" | "0" | "no" => UniversalValue::Bool(false),
                 _ => match s.parse::<i8>() {
-                    Ok(i) => UniversalValue::TinyInt { value: i, width: 1 },
+                    Ok(i) => UniversalValue::Int8 { value: i, width: 1 },
                     Err(_) => UniversalValue::Text(s.to_string()),
                 },
             }
         }
-        UniversalType::TinyInt { width } => match s.parse::<i8>() {
-            Ok(i) => UniversalValue::TinyInt {
+        UniversalType::Int8 { width } => match s.parse::<i8>() {
+            Ok(i) => UniversalValue::Int8 {
                 value: i,
                 width: *width,
             },
             Err(_) => UniversalValue::Text(s.to_string()),
         },
-        UniversalType::Float => match s.parse::<f32>() {
-            Ok(f) => UniversalValue::Float(f),
+        UniversalType::Float32 => match s.parse::<f32>() {
+            Ok(f) => UniversalValue::Float32(f),
             Err(_) => UniversalValue::Text(s.to_string()),
         },
-        UniversalType::Double => match s.parse::<f64>() {
-            Ok(f) => UniversalValue::Double(f),
+        UniversalType::Float64 => match s.parse::<f64>() {
+            Ok(f) => UniversalValue::Float64(f),
             Err(_) => UniversalValue::Text(s.to_string()),
         },
         UniversalType::Decimal { precision, scale } => match s.parse::<f64>() {

@@ -83,16 +83,16 @@ impl From<UniversalValue> for SurrealValue {
             UniversalValue::Bool(b) => SurrealValue(Value::Bool(b)),
 
             // Integer types
-            UniversalValue::TinyInt { value, .. } => {
+            UniversalValue::Int8 { value, .. } => {
                 SurrealValue(Value::Number(Number::Int(value as i64)))
             }
-            UniversalValue::SmallInt(i) => SurrealValue(Value::Number(Number::Int(i as i64))),
-            UniversalValue::Int(i) => SurrealValue(Value::Number(Number::Int(i as i64))),
-            UniversalValue::BigInt(i) => SurrealValue(Value::Number(Number::Int(i))),
+            UniversalValue::Int16(i) => SurrealValue(Value::Number(Number::Int(i as i64))),
+            UniversalValue::Int32(i) => SurrealValue(Value::Number(Number::Int(i as i64))),
+            UniversalValue::Int64(i) => SurrealValue(Value::Number(Number::Int(i))),
 
             // Floating point
-            UniversalValue::Float(f) => SurrealValue(Value::Number(Number::Float(f as f64))),
-            UniversalValue::Double(f) => SurrealValue(Value::Number(Number::Float(f))),
+            UniversalValue::Float32(f) => SurrealValue(Value::Number(Number::Float(f as f64))),
+            UniversalValue::Float64(f) => SurrealValue(Value::Number(Number::Float(f))),
 
             // Decimal
             UniversalValue::Decimal {
@@ -144,9 +144,11 @@ impl From<UniversalValue> for SurrealValue {
             UniversalValue::Time(dt) => SurrealValue(Value::Strand(Strand::from(
                 dt.format("%H:%M:%S").to_string(),
             ))),
-            UniversalValue::DateTime(dt) => SurrealValue(Value::Datetime(Datetime::from(dt))),
-            UniversalValue::DateTimeNano(dt) => SurrealValue(Value::Datetime(Datetime::from(dt))),
-            UniversalValue::TimestampTz(dt) => SurrealValue(Value::Datetime(Datetime::from(dt))),
+            UniversalValue::LocalDateTime(dt) => SurrealValue(Value::Datetime(Datetime::from(dt))),
+            UniversalValue::LocalDateTimeNano(dt) => {
+                SurrealValue(Value::Datetime(Datetime::from(dt)))
+            }
+            UniversalValue::ZonedDateTime(dt) => SurrealValue(Value::Datetime(Datetime::from(dt))),
 
             // UUID
             UniversalValue::Uuid(u) => SurrealValue(Value::Uuid(surrealdb::sql::Uuid::from(u))),
@@ -250,8 +252,8 @@ fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
 pub fn create_thing(table: &str, id: &UniversalValue) -> Option<Thing> {
     let id_part = match id {
         UniversalValue::Text(s) => surrealdb::sql::Id::String(s.clone()),
-        UniversalValue::Int(i) => surrealdb::sql::Id::Number(*i as i64),
-        UniversalValue::BigInt(i) => surrealdb::sql::Id::Number(*i),
+        UniversalValue::Int32(i) => surrealdb::sql::Id::Number(*i as i64),
+        UniversalValue::Int64(i) => surrealdb::sql::Id::Number(*i),
         UniversalValue::Uuid(u) => surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u)),
         _ => return None,
     };
@@ -332,28 +334,28 @@ mod tests {
 
     #[test]
     fn test_tinyint_conversion() {
-        let tv = TypedValue::tinyint(127, 4);
+        let tv = TypedValue::int8(127, 4);
         let surreal_val: SurrealValue = tv.into();
         assert!(matches!(surreal_val.0, Value::Number(Number::Int(127))));
     }
 
     #[test]
     fn test_smallint_conversion() {
-        let tv = TypedValue::smallint(32000);
+        let tv = TypedValue::int16(32000);
         let surreal_val: SurrealValue = tv.into();
         assert!(matches!(surreal_val.0, Value::Number(Number::Int(32000))));
     }
 
     #[test]
     fn test_int_conversion() {
-        let tv = TypedValue::int(12345);
+        let tv = TypedValue::int32(12345);
         let surreal_val: SurrealValue = tv.into();
         assert!(matches!(surreal_val.0, Value::Number(Number::Int(12345))));
     }
 
     #[test]
     fn test_bigint_conversion() {
-        let tv = TypedValue::bigint(9876543210);
+        let tv = TypedValue::int64(9876543210);
         let surreal_val: SurrealValue = tv.into();
         assert!(matches!(
             surreal_val.0,
@@ -363,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_float_conversion() {
-        let tv = TypedValue::float(1.234);
+        let tv = TypedValue::float32(1.234);
         let surreal_val: SurrealValue = tv.into();
         if let Value::Number(Number::Float(f)) = surreal_val.0 {
             assert!((f - 1.234).abs() < 0.0001);
@@ -374,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_double_conversion() {
-        let tv = TypedValue::double(1.23456);
+        let tv = TypedValue::float64(1.23456);
         let surreal_val: SurrealValue = tv.into();
         if let Value::Number(Number::Float(f)) = surreal_val.0 {
             assert!((f - 1.23456).abs() < 0.00001);
@@ -530,11 +532,11 @@ mod tests {
     fn test_array_int_conversion() {
         let tv = TypedValue::array(
             vec![
-                UniversalValue::Int(1),
-                UniversalValue::Int(2),
-                UniversalValue::Int(3),
+                UniversalValue::Int32(1),
+                UniversalValue::Int32(2),
+                UniversalValue::Int32(3),
             ],
-            UniversalType::Int,
+            UniversalType::Int32,
         );
         let surreal_val: SurrealValue = tv.into();
         if let Value::Array(arr) = surreal_val.0 {
@@ -610,7 +612,7 @@ mod tests {
 
     #[test]
     fn test_create_thing_int() {
-        let id = UniversalValue::BigInt(42);
+        let id = UniversalValue::Int64(42);
         let thing = create_thing("users", &id);
         assert!(thing.is_some());
         let t = thing.unwrap();
@@ -631,7 +633,7 @@ mod tests {
     fn test_typed_values_to_object() {
         let fields = vec![
             ("name".to_string(), TypedValue::text("Alice")),
-            ("age".to_string(), TypedValue::int(30)),
+            ("age".to_string(), TypedValue::int32(30)),
             ("active".to_string(), TypedValue::bool(true)),
         ];
 

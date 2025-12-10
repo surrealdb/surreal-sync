@@ -392,8 +392,8 @@ fn extract_record_id(
 /// Convert a TypedValue to a SurrealDB ID
 fn typed_value_to_id(tv: &TypedValue) -> Result<surrealdb::sql::Id> {
     match &tv.value {
-        UniversalValue::Int(i) => Ok(surrealdb::sql::Id::from(*i as i64)),
-        UniversalValue::BigInt(i) => Ok(surrealdb::sql::Id::from(*i)),
+        UniversalValue::Int32(i) => Ok(surrealdb::sql::Id::from(*i as i64)),
+        UniversalValue::Int64(i) => Ok(surrealdb::sql::Id::from(*i)),
         UniversalValue::Text(s) => {
             // Try to parse as integer first for numeric IDs stored as strings
             if let Ok(n) = s.parse::<i64>() {
@@ -425,17 +425,17 @@ fn typed_value_to_id(tv: &TypedValue) -> Result<surrealdb::sql::Id> {
 /// Convert a TypedValue to a string (for composite keys)
 fn typed_value_to_string(tv: &TypedValue) -> String {
     match &tv.value {
-        UniversalValue::Int(i) => i.to_string(),
-        UniversalValue::BigInt(i) => i.to_string(),
+        UniversalValue::Int32(i) => i.to_string(),
+        UniversalValue::Int64(i) => i.to_string(),
         UniversalValue::Text(s) => s.clone(),
         UniversalValue::VarChar { value: s, .. } => s.clone(),
         UniversalValue::Char { value: s, .. } => s.clone(),
         UniversalValue::Uuid(u) => u.to_string(),
         UniversalValue::Bool(b) => b.to_string(),
-        UniversalValue::Double(f) => f.to_string(),
-        UniversalValue::Float(f) => f.to_string(),
-        UniversalValue::TinyInt { value: i, .. } => i.to_string(),
-        UniversalValue::SmallInt(i) => i.to_string(),
+        UniversalValue::Float64(f) => f.to_string(),
+        UniversalValue::Float32(f) => f.to_string(),
+        UniversalValue::Int8 { value: i, .. } => i.to_string(),
+        UniversalValue::Int16(i) => i.to_string(),
         _ => "null".to_string(),
     }
 }

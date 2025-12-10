@@ -3,40 +3,40 @@
 //! This module provides functions for collecting MySQL database schema information
 //! and mapping MySQL column types to generic data types for schema-aware conversion.
 
-use crate::surreal::{SurrealDatabaseSchema, SurrealTableSchema, SurrealType};
+use crate::surreal::{LegacySchema, LegacyTableDefinition, LegacyType};
 use std::collections::HashMap;
 
-/// Convert MySQL column type information to SurrealType
-pub fn column_type_to_surreal_type(
+/// Convert MySQL column type information to LegacyType
+pub fn mysql_column_type_to_legacy_type(
     data_type: &str,
     column_type: &str,
     precision: Option<u32>,
     scale: Option<u32>,
-) -> SurrealType {
+) -> LegacyType {
     match data_type.to_uppercase().as_str() {
-        "DECIMAL" | "NUMERIC" => SurrealType::Decimal { precision, scale },
-        "TIMESTAMP" | "DATETIME" => SurrealType::Timestamp,
-        "JSON" => SurrealType::Json,
-        "BOOLEAN" | "BOOL" => SurrealType::Boolean,
+        "DECIMAL" | "NUMERIC" => LegacyType::Decimal { precision, scale },
+        "TIMESTAMP" | "DATETIME" => LegacyType::DateTime,
+        "JSON" => LegacyType::Json,
+        "BOOLEAN" | "BOOL" => LegacyType::Bool,
         "TINYINT" => {
             // TINYINT(1) is commonly used for boolean in MySQL
             if column_type.to_lowercase().starts_with("tinyint(1)") {
-                SurrealType::Boolean
+                LegacyType::Bool
             } else {
-                SurrealType::Integer
+                LegacyType::Int
             }
         }
-        "INT" | "INTEGER" | "BIGINT" | "SMALLINT" | "MEDIUMINT" => SurrealType::Integer,
-        "FLOAT" | "DOUBLE" | "REAL" => SurrealType::Float,
-        "VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => SurrealType::String,
+        "INT" | "INTEGER" | "BIGINT" | "SMALLINT" | "MEDIUMINT" => LegacyType::Int,
+        "FLOAT" | "DOUBLE" | "REAL" => LegacyType::Float,
+        "VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => LegacyType::String,
         "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => {
-            SurrealType::Bytes
+            LegacyType::Bytes
         }
-        "DATE" => SurrealType::Date,
-        "TIME" => SurrealType::Time,
-        "GEOMETRY" | "POINT" | "LINESTRING" | "POLYGON" => SurrealType::Geometry,
-        "SET" => SurrealType::Array(Box::new(SurrealType::String)),
-        _ => SurrealType::SourceSpecific(data_type.to_string()),
+        "DATE" => LegacyType::Date,
+        "TIME" => LegacyType::Time,
+        "GEOMETRY" | "POINT" | "LINESTRING" | "POLYGON" => LegacyType::Geometry,
+        "SET" => LegacyType::Array(Box::new(LegacyType::String)),
+        _ => LegacyType::SourceSpecific(data_type.to_string()),
     }
 }
 
@@ -44,7 +44,7 @@ pub fn column_type_to_surreal_type(
 pub async fn collect_mysql_schema(
     conn: &mut mysql_async::Conn,
     _database: &str,
-) -> anyhow::Result<SurrealDatabaseSchema> {
+) -> anyhow::Result<LegacySchema> {
     use mysql_async::prelude::*;
 
     let query = "
@@ -72,17 +72,19 @@ pub async fn collect_mysql_schema(
         let precision: Option<u32> = row.get::<Option<u32>, _>(4).unwrap_or(None);
         let scale: Option<u32> = row.get::<Option<u32>, _>(5).unwrap_or(None);
 
-        let generic_type = column_type_to_surreal_type(&data_type, &column_type, precision, scale);
+        let generic_type =
+            mysql_column_type_to_legacy_type(&data_type, &column_type, precision, scale);
 
-        let table_schema = tables
-            .entry(table_name.clone())
-            .or_insert_with(|| SurrealTableSchema {
-                table_name: table_name.clone(),
-                columns: HashMap::new(),
-            });
+        let table_schema =
+            tables
+                .entry(table_name.clone())
+                .or_insert_with(|| LegacyTableDefinition {
+                    table_name: table_name.clone(),
+                    columns: HashMap::new(),
+                });
 
         table_schema.columns.insert(column_name, generic_type);
     }
 
-    Ok(SurrealDatabaseSchema { tables })
+    Ok(LegacySchema { tables })
 }

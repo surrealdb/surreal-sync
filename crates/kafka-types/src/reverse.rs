@@ -89,12 +89,12 @@ pub fn proto_to_typed_value_with_schema(
 /// Convert protobuf field value to TypedValue (without schema context).
 pub fn proto_to_typed_value(value: ProtoFieldValue) -> Result<TypedValue> {
     match value {
-        ProtoFieldValue::Int32(i) => Ok(TypedValue::int(i)),
-        ProtoFieldValue::Int64(i) => Ok(TypedValue::bigint(i)),
-        ProtoFieldValue::Uint32(u) => Ok(TypedValue::bigint(u as i64)),
-        ProtoFieldValue::Uint64(u) => Ok(TypedValue::bigint(u as i64)),
-        ProtoFieldValue::Float(f) => Ok(TypedValue::float(f)),
-        ProtoFieldValue::Double(d) => Ok(TypedValue::double(d)),
+        ProtoFieldValue::Int32(i) => Ok(TypedValue::int32(i)),
+        ProtoFieldValue::Int64(i) => Ok(TypedValue::int64(i)),
+        ProtoFieldValue::Uint32(u) => Ok(TypedValue::int64(u as i64)),
+        ProtoFieldValue::Uint64(u) => Ok(TypedValue::int64(u as i64)),
+        ProtoFieldValue::Float(f) => Ok(TypedValue::float32(f)),
+        ProtoFieldValue::Double(d) => Ok(TypedValue::float64(d)),
         ProtoFieldValue::Bool(b) => Ok(TypedValue::bool(b)),
         ProtoFieldValue::String(s) => Ok(TypedValue::text(&s)),
         ProtoFieldValue::Bytes(b) => Ok(TypedValue::bytes(b)),
@@ -184,12 +184,12 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
     match value {
         UniversalValue::Null => serde_json::Value::Null,
         UniversalValue::Bool(b) => serde_json::json!(*b),
-        UniversalValue::TinyInt { value, .. } => serde_json::json!(*value),
-        UniversalValue::SmallInt(i) => serde_json::json!(*i),
-        UniversalValue::Int(i) => serde_json::json!(*i),
-        UniversalValue::BigInt(i) => serde_json::json!(*i),
-        UniversalValue::Float(f) => serde_json::json!(*f),
-        UniversalValue::Double(f) => serde_json::json!(*f),
+        UniversalValue::Int8 { value, .. } => serde_json::json!(*value),
+        UniversalValue::Int16(i) => serde_json::json!(*i),
+        UniversalValue::Int32(i) => serde_json::json!(*i),
+        UniversalValue::Int64(i) => serde_json::json!(*i),
+        UniversalValue::Float32(f) => serde_json::json!(*f),
+        UniversalValue::Float64(f) => serde_json::json!(*f),
         UniversalValue::Char { value, .. } => serde_json::json!(value),
         UniversalValue::VarChar { value, .. } => serde_json::json!(value),
         UniversalValue::Text(s) => serde_json::json!(s),
@@ -200,9 +200,9 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
         UniversalValue::Uuid(u) => serde_json::json!(u.to_string()),
         UniversalValue::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
         UniversalValue::Time(dt) => serde_json::json!(dt.format("%H:%M:%S").to_string()),
-        UniversalValue::DateTime(dt)
-        | UniversalValue::DateTimeNano(dt)
-        | UniversalValue::TimestampTz(dt) => serde_json::json!(dt.to_rfc3339()),
+        UniversalValue::LocalDateTime(dt)
+        | UniversalValue::LocalDateTimeNano(dt)
+        | UniversalValue::ZonedDateTime(dt) => serde_json::json!(dt.to_rfc3339()),
         UniversalValue::Decimal { value, .. } => serde_json::json!(value),
         UniversalValue::Array { elements, .. } => {
             serde_json::json!(elements
@@ -247,16 +247,16 @@ mod tests {
     fn test_proto_to_typed_value_int32() {
         let value = ProtoFieldValue::Int32(42);
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, UniversalType::Int);
-        assert!(matches!(result.value, UniversalValue::Int(42)));
+        assert_eq!(result.sync_type, UniversalType::Int32);
+        assert!(matches!(result.value, UniversalValue::Int32(42)));
     }
 
     #[test]
     fn test_proto_to_typed_value_int64() {
         let value = ProtoFieldValue::Int64(123456789);
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, UniversalType::BigInt);
-        assert!(matches!(result.value, UniversalValue::BigInt(123456789)));
+        assert_eq!(result.sync_type, UniversalType::Int64);
+        assert!(matches!(result.value, UniversalValue::Int64(123456789)));
     }
 
     #[test]
@@ -289,8 +289,8 @@ mod tests {
 
         let value = ProtoFieldValue::Message(Box::new(msg));
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, UniversalType::DateTime);
-        assert!(matches!(result.value, UniversalValue::DateTime(_)));
+        assert_eq!(result.sync_type, UniversalType::LocalDateTime);
+        assert!(matches!(result.value, UniversalValue::LocalDateTime(_)));
     }
 
     #[test]

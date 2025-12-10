@@ -20,7 +20,7 @@
 //!
 //! // Reverse: JSON value → TypedValue
 //! let json = serde_json::json!(42);
-//! let json_with_schema = JsonValueWithSchema::new(json, &UniversalType::Int);
+//! let json_with_schema = JsonValueWithSchema::new(json, &UniversalType::Int32);
 //! let tv = json_with_schema.to_typed_value().unwrap();
 //! ```
 

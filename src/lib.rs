@@ -59,7 +59,7 @@ pub use surreal_sync_jsonl as jsonl;
 
 // Re-export types and schema functionality for easy access
 pub use surreal::{
-    Change, Record, Relation, SurrealDatabaseSchema, SurrealTableSchema, SurrealType, SurrealValue,
+    Change, LegacySchema, LegacyTableDefinition, LegacyType, Record, Relation, SurrealValue,
 };
 
 // Re-export main migration functions for easy access

@@ -209,8 +209,8 @@ async fn process_csv_reader(
                 if let Some(id_value) = data.get(id_field) {
                     match &id_value.value {
                         sync_core::UniversalValue::Text(s) => Id::String(s.clone()),
-                        sync_core::UniversalValue::Int(n) => Id::Number(*n as i64),
-                        sync_core::UniversalValue::BigInt(n) => Id::Number(*n),
+                        sync_core::UniversalValue::Int32(n) => Id::Number(*n as i64),
+                        sync_core::UniversalValue::Int64(n) => Id::Number(*n),
                         _ => Id::ulid(), // Fallback to ULID
                     }
                 } else {
@@ -324,8 +324,8 @@ async fn process_csv_reader(
             if let Some(id_value) = data.get(id_field) {
                 match &id_value.value {
                     sync_core::UniversalValue::Text(s) => Id::String(s.clone()),
-                    sync_core::UniversalValue::Int(n) => Id::Number(*n as i64),
-                    sync_core::UniversalValue::BigInt(n) => Id::Number(*n),
+                    sync_core::UniversalValue::Int32(n) => Id::Number(*n as i64),
+                    sync_core::UniversalValue::Int64(n) => Id::Number(*n),
                     _ => Id::ulid(), // Fallback to ULID
                 }
             } else {
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn test_parse_value_with_schema_int() {
-        let result = parse_value_with_schema("42", Some(&UniversalType::Int));
+        let result = parse_value_with_schema("42", Some(&UniversalType::Int32));
         assert_eq!(result.value.as_i32(), Some(42));
     }
 

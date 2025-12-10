@@ -117,7 +117,7 @@ fn convert_bolt_to_universal_value_with_type(
 
         BoltType::Integer(i) => {
             // Neo4j integers are i64
-            Ok((UniversalValue::BigInt(i.value), UniversalType::BigInt))
+            Ok((UniversalValue::Int64(i.value), UniversalType::Int64))
         }
 
         BoltType::Float(f) => {
@@ -129,7 +129,7 @@ fn convert_bolt_to_universal_value_with_type(
             if f_val.is_infinite() {
                 return Err(Neo4jTypesError::InfinityFloat);
             }
-            Ok((UniversalValue::Double(f_val), UniversalType::Double))
+            Ok((UniversalValue::Float64(f_val), UniversalType::Float64))
         }
 
         BoltType::String(s) => {
@@ -217,8 +217,8 @@ fn convert_bolt_to_universal_value_with_type(
                 })?;
 
             Ok((
-                UniversalValue::DateTime(datetime.with_timezone(&Utc)),
-                UniversalType::DateTime,
+                UniversalValue::LocalDateTime(datetime.with_timezone(&Utc)),
+                UniversalType::LocalDateTime,
             ))
         }
 
@@ -272,8 +272,8 @@ fn convert_bolt_to_universal_value_with_type(
                     })?;
 
             Ok((
-                UniversalValue::TimestampTz(dt_with_offset.with_timezone(&Utc)),
-                UniversalType::TimestampTz,
+                UniversalValue::ZonedDateTime(dt_with_offset.with_timezone(&Utc)),
+                UniversalType::ZonedDateTime,
             ))
         }
 
@@ -296,8 +296,8 @@ fn convert_bolt_to_universal_value_with_type(
             })?;
 
             Ok((
-                UniversalValue::DateTime(datetime.with_timezone(&Utc)),
-                UniversalType::DateTime,
+                UniversalValue::LocalDateTime(datetime.with_timezone(&Utc)),
+                UniversalType::LocalDateTime,
             ))
         }
 
@@ -312,8 +312,8 @@ fn convert_bolt_to_universal_value_with_type(
                     })?;
 
             Ok((
-                UniversalValue::TimestampTz(dt_with_offset.with_timezone(&Utc)),
-                UniversalType::TimestampTz,
+                UniversalValue::ZonedDateTime(dt_with_offset.with_timezone(&Utc)),
+                UniversalType::ZonedDateTime,
             ))
         }
 
@@ -389,12 +389,12 @@ fn infer_element_type(value: &UniversalValue) -> UniversalType {
     match value {
         UniversalValue::Null => UniversalType::Text,
         UniversalValue::Bool(_) => UniversalType::Bool,
-        UniversalValue::TinyInt { width, .. } => UniversalType::TinyInt { width: *width },
-        UniversalValue::SmallInt(_) => UniversalType::SmallInt,
-        UniversalValue::Int(_) => UniversalType::Int,
-        UniversalValue::BigInt(_) => UniversalType::BigInt,
-        UniversalValue::Float(_) => UniversalType::Float,
-        UniversalValue::Double(_) => UniversalType::Double,
+        UniversalValue::Int8 { width, .. } => UniversalType::Int8 { width: *width },
+        UniversalValue::Int16(_) => UniversalType::Int16,
+        UniversalValue::Int32(_) => UniversalType::Int32,
+        UniversalValue::Int64(_) => UniversalType::Int64,
+        UniversalValue::Float32(_) => UniversalType::Float32,
+        UniversalValue::Float64(_) => UniversalType::Float64,
         UniversalValue::Decimal {
             precision, scale, ..
         } => UniversalType::Decimal {
@@ -409,9 +409,9 @@ fn infer_element_type(value: &UniversalValue) -> UniversalType {
         UniversalValue::Uuid(_) => UniversalType::Uuid,
         UniversalValue::Date(_) => UniversalType::Date,
         UniversalValue::Time(_) => UniversalType::Time,
-        UniversalValue::DateTime(_) => UniversalType::DateTime,
-        UniversalValue::DateTimeNano(_) => UniversalType::DateTimeNano,
-        UniversalValue::TimestampTz(_) => UniversalType::TimestampTz,
+        UniversalValue::LocalDateTime(_) => UniversalType::LocalDateTime,
+        UniversalValue::LocalDateTimeNano(_) => UniversalType::LocalDateTimeNano,
+        UniversalValue::ZonedDateTime(_) => UniversalType::ZonedDateTime,
         UniversalValue::Json(_) => UniversalType::Json,
         UniversalValue::Jsonb(_) => UniversalType::Jsonb,
         UniversalValue::Array { element_type, .. } => UniversalType::Array {
@@ -435,14 +435,14 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
     match value {
         UniversalValue::Null => serde_json::Value::Null,
         UniversalValue::Bool(b) => serde_json::Value::Bool(*b),
-        UniversalValue::TinyInt { value, .. } => serde_json::json!(*value),
-        UniversalValue::SmallInt(i) => serde_json::json!(*i),
-        UniversalValue::Int(i) => serde_json::json!(*i),
-        UniversalValue::BigInt(i) => serde_json::json!(*i),
-        UniversalValue::Float(f) => serde_json::Number::from_f64(*f as f64)
+        UniversalValue::Int8 { value, .. } => serde_json::json!(*value),
+        UniversalValue::Int16(i) => serde_json::json!(*i),
+        UniversalValue::Int32(i) => serde_json::json!(*i),
+        UniversalValue::Int64(i) => serde_json::json!(*i),
+        UniversalValue::Float32(f) => serde_json::Number::from_f64(*f as f64)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        UniversalValue::Double(f) => serde_json::Number::from_f64(*f)
+        UniversalValue::Float64(f) => serde_json::Number::from_f64(*f)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
         UniversalValue::Decimal { value, .. } => serde_json::Value::String(value.clone()),
@@ -455,9 +455,9 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
         UniversalValue::Uuid(u) => serde_json::Value::String(u.to_string()),
         UniversalValue::Date(dt)
         | UniversalValue::Time(dt)
-        | UniversalValue::DateTime(dt)
-        | UniversalValue::DateTimeNano(dt)
-        | UniversalValue::TimestampTz(dt) => serde_json::Value::String(dt.to_rfc3339()),
+        | UniversalValue::LocalDateTime(dt)
+        | UniversalValue::LocalDateTimeNano(dt)
+        | UniversalValue::ZonedDateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
         UniversalValue::Json(j) | UniversalValue::Jsonb(j) => (**j).clone(),
         UniversalValue::Array { elements, .. } => {
             serde_json::Value::Array(elements.iter().map(universal_value_to_json).collect())
@@ -511,15 +511,15 @@ mod tests {
 
         let bolt_int = BoltType::Integer(BoltInteger::new(42));
         let result = convert_bolt_to_typed_value(bolt_int, &config).unwrap();
-        assert!(matches!(result.value, UniversalValue::BigInt(42)));
+        assert!(matches!(result.value, UniversalValue::Int64(42)));
 
         let bolt_big = BoltType::Integer(BoltInteger::new(i64::MAX));
         let result = convert_bolt_to_typed_value(bolt_big, &config).unwrap();
-        assert!(matches!(result.value, UniversalValue::BigInt(i64::MAX)));
+        assert!(matches!(result.value, UniversalValue::Int64(i64::MAX)));
 
         let bolt_neg = BoltType::Integer(BoltInteger::new(-100));
         let result = convert_bolt_to_typed_value(bolt_neg, &config).unwrap();
-        assert!(matches!(result.value, UniversalValue::BigInt(-100)));
+        assert!(matches!(result.value, UniversalValue::Int64(-100)));
     }
 
     #[test]
@@ -528,7 +528,7 @@ mod tests {
 
         let bolt_float = BoltType::Float(BoltFloat::new(1.23456789));
         let result = convert_bolt_to_typed_value(bolt_float, &config).unwrap();
-        if let UniversalValue::Double(f) = result.value {
+        if let UniversalValue::Float64(f) = result.value {
             assert!((f - 1.23456789).abs() < 0.0001);
         } else {
             panic!("Expected Double value");
@@ -632,7 +632,7 @@ mod tests {
         let bolt_date = BoltType::Date(BoltDate::from(naive_date));
         let result = convert_bolt_to_typed_value(bolt_date, &config).unwrap();
 
-        if let UniversalValue::DateTime(dt) = result.value {
+        if let UniversalValue::LocalDateTime(dt) = result.value {
             assert_eq!(dt.year(), 2024);
             assert_eq!(dt.month(), 6);
             assert_eq!(dt.day(), 15);
@@ -652,7 +652,7 @@ mod tests {
         let bolt_date = BoltType::Date(BoltDate::from(naive_date));
         let result = convert_bolt_to_typed_value(bolt_date, &config).unwrap();
 
-        if let UniversalValue::DateTime(dt) = result.value {
+        if let UniversalValue::LocalDateTime(dt) = result.value {
             // Midnight in EST (UTC-5) is 05:00 UTC
             assert_eq!(dt.year(), 2024);
             assert_eq!(dt.month(), 1);
@@ -677,9 +677,9 @@ mod tests {
 
         if let UniversalValue::Array { elements, .. } = result.value {
             assert_eq!(elements.len(), 3);
-            assert!(matches!(elements[0], UniversalValue::BigInt(1)));
-            assert!(matches!(elements[1], UniversalValue::BigInt(2)));
-            assert!(matches!(elements[2], UniversalValue::BigInt(3)));
+            assert!(matches!(elements[0], UniversalValue::Int64(1)));
+            assert!(matches!(elements[1], UniversalValue::Int64(2)));
+            assert!(matches!(elements[2], UniversalValue::Int64(3)));
         } else {
             panic!("Expected Array value");
         }
@@ -779,7 +779,7 @@ mod tests {
         let bolt_local_dt = BoltType::LocalDateTime(BoltLocalDateTime::from(naive_dt));
         let result = convert_bolt_to_typed_value(bolt_local_dt, &config).unwrap();
 
-        if let UniversalValue::DateTime(dt) = result.value {
+        if let UniversalValue::LocalDateTime(dt) = result.value {
             assert_eq!(dt.year(), 2024);
             assert_eq!(dt.month(), 6);
             assert_eq!(dt.day(), 15);

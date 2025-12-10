@@ -28,14 +28,14 @@ impl ToDdl for PostgreSQLDdl {
             UniversalType::Bool => "BOOLEAN".to_string(),
 
             // Integer types
-            UniversalType::TinyInt { .. } => "SMALLINT".to_string(), // PostgreSQL doesn't have TINYINT
-            UniversalType::SmallInt => "SMALLINT".to_string(),
-            UniversalType::Int => "INTEGER".to_string(),
-            UniversalType::BigInt => "BIGINT".to_string(),
+            UniversalType::Int8 { .. } => "SMALLINT".to_string(), // PostgreSQL doesn't have TINYINT
+            UniversalType::Int16 => "SMALLINT".to_string(),
+            UniversalType::Int32 => "INTEGER".to_string(),
+            UniversalType::Int64 => "BIGINT".to_string(),
 
             // Floating point
-            UniversalType::Float => "REAL".to_string(),
-            UniversalType::Double => "DOUBLE PRECISION".to_string(),
+            UniversalType::Float32 => "REAL".to_string(),
+            UniversalType::Float64 => "DOUBLE PRECISION".to_string(),
 
             // Exact numeric
             UniversalType::Decimal { precision, scale } => {
@@ -54,9 +54,9 @@ impl ToDdl for PostgreSQLDdl {
             // Date/time types
             UniversalType::Date => "DATE".to_string(),
             UniversalType::Time => "TIME".to_string(),
-            UniversalType::DateTime => "TIMESTAMP".to_string(),
-            UniversalType::DateTimeNano => "TIMESTAMP".to_string(), // PostgreSQL TIMESTAMP has microsecond precision
-            UniversalType::TimestampTz => "TIMESTAMPTZ".to_string(),
+            UniversalType::LocalDateTime => "TIMESTAMP".to_string(),
+            UniversalType::LocalDateTimeNano => "TIMESTAMP".to_string(), // PostgreSQL TIMESTAMP has microsecond precision
+            UniversalType::ZonedDateTime => "TIMESTAMPTZ".to_string(),
 
             // Special types
             UniversalType::Uuid => "UUID".to_string(),
@@ -237,17 +237,17 @@ mod tests {
     #[test]
     fn test_integer_ddl() {
         let ddl = PostgreSQLDdl;
-        assert_eq!(ddl.to_ddl(&UniversalType::TinyInt { width: 4 }), "SMALLINT");
-        assert_eq!(ddl.to_ddl(&UniversalType::SmallInt), "SMALLINT");
-        assert_eq!(ddl.to_ddl(&UniversalType::Int), "INTEGER");
-        assert_eq!(ddl.to_ddl(&UniversalType::BigInt), "BIGINT");
+        assert_eq!(ddl.to_ddl(&UniversalType::Int8 { width: 4 }), "SMALLINT");
+        assert_eq!(ddl.to_ddl(&UniversalType::Int16), "SMALLINT");
+        assert_eq!(ddl.to_ddl(&UniversalType::Int32), "INTEGER");
+        assert_eq!(ddl.to_ddl(&UniversalType::Int64), "BIGINT");
     }
 
     #[test]
     fn test_float_ddl() {
         let ddl = PostgreSQLDdl;
-        assert_eq!(ddl.to_ddl(&UniversalType::Float), "REAL");
-        assert_eq!(ddl.to_ddl(&UniversalType::Double), "DOUBLE PRECISION");
+        assert_eq!(ddl.to_ddl(&UniversalType::Float32), "REAL");
+        assert_eq!(ddl.to_ddl(&UniversalType::Float64), "DOUBLE PRECISION");
     }
 
     #[test]
@@ -285,8 +285,8 @@ mod tests {
         let ddl = PostgreSQLDdl;
         assert_eq!(ddl.to_ddl(&UniversalType::Date), "DATE");
         assert_eq!(ddl.to_ddl(&UniversalType::Time), "TIME");
-        assert_eq!(ddl.to_ddl(&UniversalType::DateTime), "TIMESTAMP");
-        assert_eq!(ddl.to_ddl(&UniversalType::TimestampTz), "TIMESTAMPTZ");
+        assert_eq!(ddl.to_ddl(&UniversalType::LocalDateTime), "TIMESTAMP");
+        assert_eq!(ddl.to_ddl(&UniversalType::ZonedDateTime), "TIMESTAMPTZ");
     }
 
     #[test]
@@ -307,7 +307,7 @@ mod tests {
         let ddl = PostgreSQLDdl;
         assert_eq!(
             ddl.to_ddl(&UniversalType::Array {
-                element_type: Box::new(UniversalType::Int)
+                element_type: Box::new(UniversalType::Int32)
             }),
             "INTEGER[]"
         );
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(
             ddl.to_ddl(&UniversalType::Array {
                 element_type: Box::new(UniversalType::Array {
-                    element_type: Box::new(UniversalType::Int)
+                    element_type: Box::new(UniversalType::Int32)
                 })
             }),
             "INTEGER[][]"
@@ -386,7 +386,7 @@ mod tests {
                 UniversalType::VarChar { length: 255 },
                 false,
             ),
-            ("age".to_string(), UniversalType::Int, true),
+            ("age".to_string(), UniversalType::Int32, true),
         ];
 
         let sql = ddl.to_create_table("users", &columns);
@@ -457,7 +457,7 @@ mod tests {
         let ddl = PostgreSQLDdl;
         let columns = vec![
             ("name".to_string(), UniversalType::Text),
-            ("age".to_string(), UniversalType::Int),
+            ("age".to_string(), UniversalType::Int32),
         ];
 
         let sql = ddl.to_batch_insert_unnest("users", &columns);

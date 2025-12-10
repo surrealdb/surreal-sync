@@ -71,14 +71,14 @@ impl From<UniversalValue> for BsonValue {
             UniversalValue::Bool(b) => BsonValue(Bson::Boolean(b)),
 
             // Integer types - MongoDB uses i32 and i64
-            UniversalValue::TinyInt { value, .. } => BsonValue(Bson::Int32(value as i32)),
-            UniversalValue::SmallInt(i) => BsonValue(Bson::Int32(i as i32)),
-            UniversalValue::Int(i) => BsonValue(Bson::Int32(i)),
-            UniversalValue::BigInt(i) => BsonValue(Bson::Int64(i)),
+            UniversalValue::Int8 { value, .. } => BsonValue(Bson::Int32(value as i32)),
+            UniversalValue::Int16(i) => BsonValue(Bson::Int32(i as i32)),
+            UniversalValue::Int32(i) => BsonValue(Bson::Int32(i)),
+            UniversalValue::Int64(i) => BsonValue(Bson::Int64(i)),
 
             // Floating point
-            UniversalValue::Float(f) => BsonValue(Bson::Double(f as f64)),
-            UniversalValue::Double(f) => BsonValue(Bson::Double(f)),
+            UniversalValue::Float32(f) => BsonValue(Bson::Double(f as f64)),
+            UniversalValue::Float64(f) => BsonValue(Bson::Double(f)),
 
             // Decimal - MongoDB has Decimal128, but we'll use string for precision
             UniversalValue::Decimal { value, .. } => BsonValue(Bson::String(value)),
@@ -107,14 +107,14 @@ impl From<UniversalValue> for BsonValue {
                 // Store time as string in HH:MM:SS format
                 BsonValue(Bson::String(dt.format("%H:%M:%S").to_string()))
             }
-            UniversalValue::DateTime(dt) => {
+            UniversalValue::LocalDateTime(dt) => {
                 BsonValue(Bson::DateTime(BsonDateTime::from_chrono(dt)))
             }
-            UniversalValue::DateTimeNano(dt) => {
+            UniversalValue::LocalDateTimeNano(dt) => {
                 // MongoDB DateTime has millisecond precision, so we lose nanoseconds
                 BsonValue(Bson::DateTime(BsonDateTime::from_chrono(dt)))
             }
-            UniversalValue::TimestampTz(dt) => {
+            UniversalValue::ZonedDateTime(dt) => {
                 BsonValue(Bson::DateTime(BsonDateTime::from_chrono(dt)))
             }
 
@@ -227,12 +227,12 @@ fn generated_value_to_bson(value: &UniversalValue) -> Bson {
     match value {
         UniversalValue::Null => Bson::Null,
         UniversalValue::Bool(b) => Bson::Boolean(*b),
-        UniversalValue::TinyInt { value, .. } => Bson::Int32(*value as i32),
-        UniversalValue::SmallInt(i) => Bson::Int32(*i as i32),
-        UniversalValue::Int(i) => Bson::Int32(*i),
-        UniversalValue::BigInt(i) => Bson::Int64(*i),
-        UniversalValue::Float(f) => Bson::Double(*f as f64),
-        UniversalValue::Double(f) => Bson::Double(*f),
+        UniversalValue::Int8 { value, .. } => Bson::Int32(*value as i32),
+        UniversalValue::Int16(i) => Bson::Int32(*i as i32),
+        UniversalValue::Int32(i) => Bson::Int32(*i),
+        UniversalValue::Int64(i) => Bson::Int64(*i),
+        UniversalValue::Float32(f) => Bson::Double(*f as f64),
+        UniversalValue::Float64(f) => Bson::Double(*f),
         UniversalValue::Char { value, .. } => Bson::String(value.clone()),
         UniversalValue::VarChar { value, .. } => Bson::String(value.clone()),
         UniversalValue::Text(s) => Bson::String(s.clone()),
@@ -246,9 +246,9 @@ fn generated_value_to_bson(value: &UniversalValue) -> Bson {
         }),
         UniversalValue::Date(dt)
         | UniversalValue::Time(dt)
-        | UniversalValue::DateTime(dt)
-        | UniversalValue::DateTimeNano(dt)
-        | UniversalValue::TimestampTz(dt) => Bson::DateTime(BsonDateTime::from_chrono(*dt)),
+        | UniversalValue::LocalDateTime(dt)
+        | UniversalValue::LocalDateTimeNano(dt)
+        | UniversalValue::ZonedDateTime(dt) => Bson::DateTime(BsonDateTime::from_chrono(*dt)),
         UniversalValue::Decimal { value, .. } => Bson::String(value.clone()),
         UniversalValue::Array { elements, .. } => {
             Bson::Array(elements.iter().map(generated_value_to_bson).collect())
@@ -349,35 +349,35 @@ mod tests {
 
     #[test]
     fn test_tinyint_conversion() {
-        let tv = TypedValue::tinyint(127, 4);
+        let tv = TypedValue::int8(127, 4);
         let bson_val: BsonValue = tv.into();
         assert!(matches!(bson_val.0, Bson::Int32(127)));
     }
 
     #[test]
     fn test_smallint_conversion() {
-        let tv = TypedValue::smallint(32000);
+        let tv = TypedValue::int16(32000);
         let bson_val: BsonValue = tv.into();
         assert!(matches!(bson_val.0, Bson::Int32(32000)));
     }
 
     #[test]
     fn test_int_conversion() {
-        let tv = TypedValue::int(12345);
+        let tv = TypedValue::int32(12345);
         let bson_val: BsonValue = tv.into();
         assert!(matches!(bson_val.0, Bson::Int32(12345)));
     }
 
     #[test]
     fn test_bigint_conversion() {
-        let tv = TypedValue::bigint(9876543210);
+        let tv = TypedValue::int64(9876543210);
         let bson_val: BsonValue = tv.into();
         assert!(matches!(bson_val.0, Bson::Int64(9876543210)));
     }
 
     #[test]
     fn test_float_conversion() {
-        let tv = TypedValue::float(1.234);
+        let tv = TypedValue::float32(1.234);
         let bson_val: BsonValue = tv.into();
         if let Bson::Double(f) = bson_val.0 {
             assert!((f - 1.234).abs() < 0.001);
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_double_conversion() {
-        let tv = TypedValue::double(1.23456);
+        let tv = TypedValue::float64(1.23456);
         let bson_val: BsonValue = tv.into();
         if let Bson::Double(f) = bson_val.0 {
             assert!((f - 1.23456).abs() < 0.00001);
@@ -532,11 +532,11 @@ mod tests {
     fn test_array_int_conversion() {
         let tv = TypedValue::array(
             vec![
-                UniversalValue::Int(1),
-                UniversalValue::Int(2),
-                UniversalValue::Int(3),
+                UniversalValue::Int32(1),
+                UniversalValue::Int32(2),
+                UniversalValue::Int32(3),
             ],
-            UniversalType::Int,
+            UniversalType::Int32,
         );
         let bson_val: BsonValue = tv.into();
         if let Bson::Array(arr) = bson_val.0 {
@@ -616,7 +616,7 @@ mod tests {
     fn test_typed_values_to_document() {
         let fields = vec![
             ("name".to_string(), TypedValue::text("Alice")),
-            ("age".to_string(), TypedValue::int(30)),
+            ("age".to_string(), TypedValue::int32(30)),
             ("active".to_string(), TypedValue::bool(true)),
         ];
 

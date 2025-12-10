@@ -455,11 +455,11 @@ fn convert_value_inferred(value: &Value) -> TypedValue {
         Value::Bool(b) => TypedValue::bool(*b),
         Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                TypedValue::bigint(i)
+                TypedValue::int64(i)
             } else if let Some(f) = n.as_f64() {
-                TypedValue::double(f)
+                TypedValue::float64(f)
             } else {
-                TypedValue::null(UniversalType::BigInt)
+                TypedValue::null(UniversalType::Int64)
             }
         }
         Value::String(s) => {

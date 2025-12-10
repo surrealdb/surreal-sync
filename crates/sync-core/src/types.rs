@@ -45,27 +45,28 @@ pub enum UniversalType {
     Bool,
 
     // Integer types (sized)
-    /// MySQL TINYINT with display width (e.g., `TinyInt(1)` for boolean-like)
-    TinyInt {
+    /// 8-bit signed integer
+    /// Used for e.g. MySQL TINYINT with display width (e.g., `Int8(1)` for boolean-like)
+    Int8 {
         /// Display width
         width: u8,
     },
 
     /// 16-bit signed integer
-    SmallInt,
+    Int16,
 
     /// 32-bit signed integer
-    Int,
+    Int32,
 
     /// 64-bit signed integer
-    BigInt,
+    Int64,
 
     // Floating point
     /// 32-bit IEEE 754 floating point
-    Float,
+    Float32,
 
     /// 64-bit IEEE 754 floating point
-    Double,
+    Float64,
 
     // Exact numeric
     /// Exact decimal with specified precision and scale
@@ -107,13 +108,13 @@ pub enum UniversalType {
     Time,
 
     /// Timestamp without timezone (microsecond precision)
-    DateTime,
+    LocalDateTime,
 
     /// Timestamp with nanosecond precision
-    DateTimeNano,
+    LocalDateTimeNano,
 
     /// Timestamp with timezone
-    TimestampTz,
+    ZonedDateTime,
 
     // Special types
     /// UUID (128-bit)
@@ -190,25 +191,25 @@ impl Serialize for UniversalType {
         match self {
             // Simple types - serialize as string
             Self::Bool => serializer.serialize_str("bool"),
-            Self::SmallInt => serializer.serialize_str("small_int"),
-            Self::Int => serializer.serialize_str("int"),
-            Self::BigInt => serializer.serialize_str("big_int"),
-            Self::Float => serializer.serialize_str("float"),
-            Self::Double => serializer.serialize_str("double"),
+            Self::Int16 => serializer.serialize_str("small_int"),
+            Self::Int32 => serializer.serialize_str("int"),
+            Self::Int64 => serializer.serialize_str("big_int"),
+            Self::Float32 => serializer.serialize_str("float"),
+            Self::Float64 => serializer.serialize_str("double"),
             Self::Text => serializer.serialize_str("text"),
             Self::Blob => serializer.serialize_str("blob"),
             Self::Bytes => serializer.serialize_str("bytes"),
             Self::Date => serializer.serialize_str("date"),
             Self::Time => serializer.serialize_str("time"),
-            Self::DateTime => serializer.serialize_str("date_time"),
-            Self::DateTimeNano => serializer.serialize_str("date_time_nano"),
-            Self::TimestampTz => serializer.serialize_str("timestamp_tz"),
+            Self::LocalDateTime => serializer.serialize_str("date_time"),
+            Self::LocalDateTimeNano => serializer.serialize_str("date_time_nano"),
+            Self::ZonedDateTime => serializer.serialize_str("timestamp_tz"),
             Self::Uuid => serializer.serialize_str("uuid"),
             Self::Json => serializer.serialize_str("json"),
             Self::Jsonb => serializer.serialize_str("jsonb"),
 
             // Complex types - serialize as map
-            Self::TinyInt { width } => {
+            Self::Int8 { width } => {
                 let mut map = serializer.serialize_map(Some(2))?;
                 map.serialize_entry("type", "tiny_int")?;
                 map.serialize_entry("width", width)?;
@@ -285,19 +286,19 @@ impl<'de> Deserialize<'de> for UniversalType {
             {
                 match value {
                     "bool" => Ok(UniversalType::Bool),
-                    "small_int" | "smallint" => Ok(UniversalType::SmallInt),
-                    "int" => Ok(UniversalType::Int),
-                    "big_int" | "bigint" => Ok(UniversalType::BigInt),
-                    "float" => Ok(UniversalType::Float),
-                    "double" => Ok(UniversalType::Double),
+                    "small_int" | "smallint" => Ok(UniversalType::Int16),
+                    "int" => Ok(UniversalType::Int32),
+                    "big_int" | "bigint" => Ok(UniversalType::Int64),
+                    "float" => Ok(UniversalType::Float32),
+                    "double" => Ok(UniversalType::Float64),
                     "text" => Ok(UniversalType::Text),
                     "blob" => Ok(UniversalType::Blob),
                     "bytes" => Ok(UniversalType::Bytes),
                     "date" => Ok(UniversalType::Date),
                     "time" => Ok(UniversalType::Time),
-                    "date_time" | "datetime" => Ok(UniversalType::DateTime),
-                    "date_time_nano" | "datetime_nano" => Ok(UniversalType::DateTimeNano),
-                    "timestamp_tz" | "timestamptz" => Ok(UniversalType::TimestampTz),
+                    "date_time" | "datetime" => Ok(UniversalType::LocalDateTime),
+                    "date_time_nano" | "datetime_nano" => Ok(UniversalType::LocalDateTimeNano),
+                    "timestamp_tz" | "timestamptz" => Ok(UniversalType::ZonedDateTime),
                     "uuid" => Ok(UniversalType::Uuid),
                     "json" => Ok(UniversalType::Json),
                     "jsonb" => Ok(UniversalType::Jsonb),
@@ -327,19 +328,19 @@ impl<'de> Deserialize<'de> for UniversalType {
                 match type_name.as_str() {
                     // Simple types that might appear in map format
                     "bool" => Ok(UniversalType::Bool),
-                    "small_int" | "smallint" => Ok(UniversalType::SmallInt),
-                    "int" => Ok(UniversalType::Int),
-                    "big_int" | "bigint" => Ok(UniversalType::BigInt),
-                    "float" => Ok(UniversalType::Float),
-                    "double" => Ok(UniversalType::Double),
+                    "small_int" | "smallint" => Ok(UniversalType::Int16),
+                    "int" => Ok(UniversalType::Int32),
+                    "big_int" | "bigint" => Ok(UniversalType::Int64),
+                    "float" => Ok(UniversalType::Float32),
+                    "double" => Ok(UniversalType::Float64),
                     "text" => Ok(UniversalType::Text),
                     "blob" => Ok(UniversalType::Blob),
                     "bytes" => Ok(UniversalType::Bytes),
                     "date" => Ok(UniversalType::Date),
                     "time" => Ok(UniversalType::Time),
-                    "date_time" | "datetime" => Ok(UniversalType::DateTime),
-                    "date_time_nano" | "datetime_nano" => Ok(UniversalType::DateTimeNano),
-                    "timestamp_tz" | "timestamptz" => Ok(UniversalType::TimestampTz),
+                    "date_time" | "datetime" => Ok(UniversalType::LocalDateTime),
+                    "date_time_nano" | "datetime_nano" => Ok(UniversalType::LocalDateTimeNano),
+                    "timestamp_tz" | "timestamptz" => Ok(UniversalType::ZonedDateTime),
                     "uuid" => Ok(UniversalType::Uuid),
                     "json" => Ok(UniversalType::Json),
                     "jsonb" => Ok(UniversalType::Jsonb),
@@ -348,7 +349,7 @@ impl<'de> Deserialize<'de> for UniversalType {
                     // Complex types
                     "tiny_int" | "tinyint" => {
                         let width = get_field(&fields, "width").unwrap_or(1);
-                        Ok(UniversalType::TinyInt { width })
+                        Ok(UniversalType::Int8 { width })
                     }
                     "decimal" => {
                         let precision = get_field_required(&fields, "precision")?;
@@ -422,7 +423,7 @@ pub trait ToDdl {
 impl UniversalType {
     /// Create a new TinyInt type with the given display width.
     pub fn tiny_int(width: u8) -> Self {
-        Self::TinyInt { width }
+        Self::Int8 { width }
     }
 
     /// Create a new Decimal type with the given precision and scale.
@@ -466,12 +467,12 @@ impl UniversalType {
     pub fn is_numeric(&self) -> bool {
         matches!(
             self,
-            Self::TinyInt { .. }
-                | Self::SmallInt
-                | Self::Int
-                | Self::BigInt
-                | Self::Float
-                | Self::Double
+            Self::Int8 { .. }
+                | Self::Int16
+                | Self::Int32
+                | Self::Int64
+                | Self::Float32
+                | Self::Float64
                 | Self::Decimal { .. }
         )
     }
@@ -485,7 +486,11 @@ impl UniversalType {
     pub fn is_temporal(&self) -> bool {
         matches!(
             self,
-            Self::Date | Self::Time | Self::DateTime | Self::DateTimeNano | Self::TimestampTz
+            Self::Date
+                | Self::Time
+                | Self::LocalDateTime
+                | Self::LocalDateTimeNano
+                | Self::ZonedDateTime
         )
     }
 
@@ -501,10 +506,7 @@ mod tests {
 
     #[test]
     fn test_sync_data_type_constructors() {
-        assert_eq!(
-            UniversalType::tiny_int(1),
-            UniversalType::TinyInt { width: 1 }
-        );
+        assert_eq!(UniversalType::tiny_int(1), UniversalType::Int8 { width: 1 });
         assert_eq!(
             UniversalType::decimal(10, 2),
             UniversalType::Decimal {
@@ -520,17 +522,17 @@ mod tests {
 
     #[test]
     fn test_type_categories() {
-        assert!(UniversalType::Int.is_numeric());
+        assert!(UniversalType::Int32.is_numeric());
         assert!(UniversalType::decimal(10, 2).is_numeric());
         assert!(!UniversalType::Text.is_numeric());
 
         assert!(UniversalType::Text.is_string());
         assert!(UniversalType::varchar(255).is_string());
-        assert!(!UniversalType::Int.is_string());
+        assert!(!UniversalType::Int32.is_string());
 
-        assert!(UniversalType::DateTime.is_temporal());
+        assert!(UniversalType::LocalDateTime.is_temporal());
         assert!(UniversalType::Date.is_temporal());
-        assert!(!UniversalType::Int.is_temporal());
+        assert!(!UniversalType::Int32.is_temporal());
 
         assert!(UniversalType::Blob.is_binary());
         assert!(UniversalType::Bytes.is_binary());
@@ -545,7 +547,7 @@ mod tests {
 
         let yaml = "int";
         let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, UniversalType::Int);
+        assert_eq!(parsed, UniversalType::Int32);
 
         let yaml = "text";
         let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
@@ -580,7 +582,7 @@ type: tiny_int
 width: 1
 "#;
         let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, UniversalType::TinyInt { width: 1 });
+        assert_eq!(parsed, UniversalType::Int8 { width: 1 });
     }
 
     #[test]
@@ -588,10 +590,10 @@ width: 1
         let types = vec![
             UniversalType::Bool,
             UniversalType::tiny_int(1),
-            UniversalType::Int,
+            UniversalType::Int32,
             UniversalType::decimal(10, 2),
             UniversalType::varchar(255),
-            UniversalType::array(UniversalType::Int),
+            UniversalType::array(UniversalType::Int32),
             UniversalType::enumeration(vec!["a".to_string(), "b".to_string()]),
         ];
 

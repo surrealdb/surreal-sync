@@ -52,13 +52,13 @@ pub fn universal_to_cypher_literal(
         UniversalValue::Bool(b) => Ok(b.to_string()),
 
         // Integer types
-        UniversalValue::TinyInt { value, .. } => Ok(value.to_string()),
-        UniversalValue::SmallInt(i) => Ok(i.to_string()),
-        UniversalValue::Int(i) => Ok(i.to_string()),
-        UniversalValue::BigInt(i) => Ok(i.to_string()),
+        UniversalValue::Int8 { value, .. } => Ok(value.to_string()),
+        UniversalValue::Int16(i) => Ok(i.to_string()),
+        UniversalValue::Int32(i) => Ok(i.to_string()),
+        UniversalValue::Int64(i) => Ok(i.to_string()),
 
         // Float types - error on NaN/Infinity instead of silent fallback
-        UniversalValue::Float(f) => {
+        UniversalValue::Float32(f) => {
             if f.is_nan() {
                 Err(Neo4jTypesError::NanFloat)
             } else if f.is_infinite() {
@@ -67,7 +67,7 @@ pub fn universal_to_cypher_literal(
                 Ok(f.to_string())
             }
         }
-        UniversalValue::Double(f) => {
+        UniversalValue::Float64(f) => {
             if f.is_nan() {
                 Err(Neo4jTypesError::NanFloat)
             } else if f.is_infinite() {
@@ -89,15 +89,15 @@ pub fn universal_to_cypher_literal(
         UniversalValue::Uuid(u) => Ok(escape_neo4j_string(&u.to_string())),
 
         // DateTime types - use Neo4j datetime() function
-        UniversalValue::DateTime(dt) => Ok(format!(
+        UniversalValue::LocalDateTime(dt) => Ok(format!(
             "datetime('{}')",
             dt.format("%Y-%m-%dT%H:%M:%S%.fZ")
         )),
-        UniversalValue::DateTimeNano(dt) => Ok(format!(
+        UniversalValue::LocalDateTimeNano(dt) => Ok(format!(
             "datetime('{}')",
             dt.format("%Y-%m-%dT%H:%M:%S%.fZ")
         )),
-        UniversalValue::TimestampTz(dt) => Ok(format!(
+        UniversalValue::ZonedDateTime(dt) => Ok(format!(
             "datetime('{}')",
             dt.format("%Y-%m-%dT%H:%M:%S%.fZ")
         )),
@@ -229,37 +229,37 @@ mod tests {
 
     #[test]
     fn test_tinyint_conversion() {
-        let tv = TypedValue::tinyint(127, 4);
+        let tv = TypedValue::int8(127, 4);
         assert_eq!(typed_to_cypher_literal(&tv).unwrap(), "127");
     }
 
     #[test]
     fn test_smallint_conversion() {
-        let tv = TypedValue::smallint(32000);
+        let tv = TypedValue::int16(32000);
         assert_eq!(typed_to_cypher_literal(&tv).unwrap(), "32000");
     }
 
     #[test]
     fn test_int_conversion() {
-        let tv = TypedValue::int(42);
+        let tv = TypedValue::int32(42);
         assert_eq!(typed_to_cypher_literal(&tv).unwrap(), "42");
     }
 
     #[test]
     fn test_bigint_conversion() {
-        let tv = TypedValue::bigint(9_223_372_036_854_775_807i64);
+        let tv = TypedValue::int64(9_223_372_036_854_775_807i64);
         assert_eq!(typed_to_cypher_literal(&tv).unwrap(), "9223372036854775807");
     }
 
     #[test]
     fn test_float_conversion() {
-        let tv = TypedValue::float(1.5);
+        let tv = TypedValue::float32(1.5);
         assert_eq!(typed_to_cypher_literal(&tv).unwrap(), "1.5");
     }
 
     #[test]
     fn test_double_conversion() {
-        let tv = TypedValue::double(1.23456789);
+        let tv = TypedValue::float64(1.23456789);
         let result = typed_to_cypher_literal(&tv).unwrap();
         // Just check it starts with the right value (precision may vary)
         assert!(result.starts_with("1.23456789"), "Got: {result}");
@@ -267,7 +267,7 @@ mod tests {
 
     #[test]
     fn test_float_nan_returns_error() {
-        let tv = TypedValue::float(f32::NAN);
+        let tv = TypedValue::float32(f32::NAN);
         let result = typed_to_cypher_literal(&tv);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Neo4jTypesError::NanFloat));
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_double_nan_returns_error() {
-        let tv = TypedValue::double(f64::NAN);
+        let tv = TypedValue::float64(f64::NAN);
         let result = typed_to_cypher_literal(&tv);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Neo4jTypesError::NanFloat));
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_float_infinity_returns_error() {
-        let tv = TypedValue::float(f32::INFINITY);
+        let tv = TypedValue::float32(f32::INFINITY);
         let result = typed_to_cypher_literal(&tv);
         assert!(result.is_err());
         assert!(matches!(
@@ -294,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_double_neg_infinity_returns_error() {
-        let tv = TypedValue::double(f64::NEG_INFINITY);
+        let tv = TypedValue::float64(f64::NEG_INFINITY);
         let result = typed_to_cypher_literal(&tv);
         assert!(result.is_err());
         assert!(matches!(
@@ -418,11 +418,11 @@ mod tests {
     fn test_array_int_conversion() {
         let tv = TypedValue::array(
             vec![
-                UniversalValue::Int(1),
-                UniversalValue::Int(2),
-                UniversalValue::Int(3),
+                UniversalValue::Int32(1),
+                UniversalValue::Int32(2),
+                UniversalValue::Int32(3),
             ],
-            UniversalType::Int,
+            UniversalType::Int32,
         );
         assert_eq!(typed_to_cypher_literal(&tv).unwrap(), "[1, 2, 3]");
     }

@@ -27,7 +27,9 @@ pub fn generate_proto_for_table(table_schema: &TableDefinition, package_name: &s
     let needs_timestamp = table_schema.fields.iter().any(|f| {
         matches!(
             f.field_type,
-            UniversalType::DateTime | UniversalType::DateTimeNano | UniversalType::TimestampTz
+            UniversalType::LocalDateTime
+                | UniversalType::LocalDateTimeNano
+                | UniversalType::ZonedDateTime
         )
     });
 
@@ -75,20 +77,20 @@ fn sync_type_to_proto_type(sync_type: &UniversalType) -> ProtoTypeInfo {
         },
 
         // Integer types -> int64 (safest for all integer ranges)
-        UniversalType::TinyInt { .. }
-        | UniversalType::SmallInt
-        | UniversalType::Int
-        | UniversalType::BigInt => ProtoTypeInfo {
+        UniversalType::Int8 { .. }
+        | UniversalType::Int16
+        | UniversalType::Int32
+        | UniversalType::Int64 => ProtoTypeInfo {
             type_name: "int64".to_string(),
             requires_timestamp_import: false,
         },
 
         // Floating point
-        UniversalType::Float => ProtoTypeInfo {
+        UniversalType::Float32 => ProtoTypeInfo {
             type_name: "float".to_string(),
             requires_timestamp_import: false,
         },
-        UniversalType::Double => ProtoTypeInfo {
+        UniversalType::Float64 => ProtoTypeInfo {
             type_name: "double".to_string(),
             requires_timestamp_import: false,
         },
@@ -114,12 +116,12 @@ fn sync_type_to_proto_type(sync_type: &UniversalType) -> ProtoTypeInfo {
         },
 
         // Temporal types -> google.protobuf.Timestamp
-        UniversalType::DateTime | UniversalType::DateTimeNano | UniversalType::TimestampTz => {
-            ProtoTypeInfo {
-                type_name: "google.protobuf.Timestamp".to_string(),
-                requires_timestamp_import: true,
-            }
-        }
+        UniversalType::LocalDateTime
+        | UniversalType::LocalDateTimeNano
+        | UniversalType::ZonedDateTime => ProtoTypeInfo {
+            type_name: "google.protobuf.Timestamp".to_string(),
+            requires_timestamp_import: true,
+        },
 
         // Date and Time -> string (ISO format)
         UniversalType::Date | UniversalType::Time => ProtoTypeInfo {
@@ -253,21 +255,21 @@ tables:
         assert!(!info.requires_timestamp_import);
 
         // Integer types
-        let info = sync_type_to_proto_type(&UniversalType::BigInt);
+        let info = sync_type_to_proto_type(&UniversalType::Int64);
         assert_eq!(info.type_name, "int64");
 
         // Float
-        let info = sync_type_to_proto_type(&UniversalType::Float);
+        let info = sync_type_to_proto_type(&UniversalType::Float32);
         assert_eq!(info.type_name, "float");
 
         // DateTime
-        let info = sync_type_to_proto_type(&UniversalType::DateTime);
+        let info = sync_type_to_proto_type(&UniversalType::LocalDateTime);
         assert_eq!(info.type_name, "google.protobuf.Timestamp");
         assert!(info.requires_timestamp_import);
 
         // Array<Int>
         let info = sync_type_to_proto_type(&UniversalType::Array {
-            element_type: Box::new(UniversalType::Int),
+            element_type: Box::new(UniversalType::Int32),
         });
         assert_eq!(info.type_name, "repeated int64");
     }

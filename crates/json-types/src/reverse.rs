@@ -101,48 +101,48 @@ impl From<JsonValueWithSchema> for TypedValue {
             }
 
             // Integer types
-            (UniversalType::TinyInt { width }, serde_json::Value::Number(n)) => {
+            (UniversalType::Int8 { width }, serde_json::Value::Number(n)) => {
                 if let Some(i) = n.as_i64() {
-                    TypedValue::tinyint(i as i8, *width)
+                    TypedValue::int8(i as i8, *width)
                 } else {
-                    TypedValue::null(UniversalType::TinyInt { width: *width })
+                    TypedValue::null(UniversalType::Int8 { width: *width })
                 }
             }
-            (UniversalType::SmallInt, serde_json::Value::Number(n)) => {
+            (UniversalType::Int16, serde_json::Value::Number(n)) => {
                 if let Some(i) = n.as_i64() {
-                    TypedValue::smallint(i as i16)
+                    TypedValue::int16(i as i16)
                 } else {
-                    TypedValue::null(UniversalType::SmallInt)
+                    TypedValue::null(UniversalType::Int16)
                 }
             }
-            (UniversalType::Int, serde_json::Value::Number(n)) => {
+            (UniversalType::Int32, serde_json::Value::Number(n)) => {
                 if let Some(i) = n.as_i64() {
-                    TypedValue::int(i as i32)
+                    TypedValue::int32(i as i32)
                 } else {
-                    TypedValue::null(UniversalType::Int)
+                    TypedValue::null(UniversalType::Int32)
                 }
             }
-            (UniversalType::BigInt, serde_json::Value::Number(n)) => {
+            (UniversalType::Int64, serde_json::Value::Number(n)) => {
                 if let Some(i) = n.as_i64() {
-                    TypedValue::bigint(i)
+                    TypedValue::int64(i)
                 } else {
-                    TypedValue::null(UniversalType::BigInt)
+                    TypedValue::null(UniversalType::Int64)
                 }
             }
 
             // Floating point
-            (UniversalType::Float, serde_json::Value::Number(n)) => {
+            (UniversalType::Float32, serde_json::Value::Number(n)) => {
                 if let Some(f) = n.as_f64() {
-                    TypedValue::float(f as f32)
+                    TypedValue::float32(f as f32)
                 } else {
-                    TypedValue::null(UniversalType::Float)
+                    TypedValue::null(UniversalType::Float32)
                 }
             }
-            (UniversalType::Double, serde_json::Value::Number(n)) => {
+            (UniversalType::Float64, serde_json::Value::Number(n)) => {
                 if let Some(f) = n.as_f64() {
-                    TypedValue::double(f)
+                    TypedValue::float64(f)
                 } else {
-                    TypedValue::null(UniversalType::Double)
+                    TypedValue::null(UniversalType::Float64)
                 }
             }
 
@@ -187,25 +187,25 @@ impl From<JsonValueWithSchema> for TypedValue {
             }
 
             // Date/time types - multiple formats supported
-            (UniversalType::DateTime, serde_json::Value::String(s)) => {
+            (UniversalType::LocalDateTime, serde_json::Value::String(s)) => {
                 if let Some(dt) = parse_datetime_string(s) {
                     TypedValue::datetime(dt)
                 } else {
-                    TypedValue::null(UniversalType::DateTime)
+                    TypedValue::null(UniversalType::LocalDateTime)
                 }
             }
-            (UniversalType::DateTimeNano, serde_json::Value::String(s)) => {
+            (UniversalType::LocalDateTimeNano, serde_json::Value::String(s)) => {
                 if let Some(dt) = parse_datetime_string(s) {
                     TypedValue::datetime_nano(dt)
                 } else {
-                    TypedValue::null(UniversalType::DateTimeNano)
+                    TypedValue::null(UniversalType::LocalDateTimeNano)
                 }
             }
-            (UniversalType::TimestampTz, serde_json::Value::String(s)) => {
+            (UniversalType::ZonedDateTime, serde_json::Value::String(s)) => {
                 if let Some(dt) = parse_datetime_string(s) {
                     TypedValue::timestamptz(dt)
                 } else {
-                    TypedValue::null(UniversalType::TimestampTz)
+                    TypedValue::null(UniversalType::ZonedDateTime)
                 }
             }
 
@@ -341,9 +341,9 @@ fn json_value_to_universal(value: &serde_json::Value) -> UniversalValue {
         serde_json::Value::Bool(b) => UniversalValue::Bool(*b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                UniversalValue::BigInt(i)
+                UniversalValue::Int64(i)
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Double(f)
+                UniversalValue::Float64(f)
             } else {
                 UniversalValue::Text(n.to_string())
             }
@@ -371,9 +371,9 @@ fn json_value_to_generated(value: &serde_json::Value) -> UniversalValue {
         serde_json::Value::Bool(b) => UniversalValue::Bool(*b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                UniversalValue::BigInt(i)
+                UniversalValue::Int64(i)
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Double(f)
+                UniversalValue::Float64(f)
             } else {
                 UniversalValue::Null
             }
@@ -502,10 +502,10 @@ pub fn json_to_generated_value_with_config(
                     // Convert 0/1 to boolean for specified paths
                     UniversalValue::Bool(i == 1)
                 } else {
-                    UniversalValue::BigInt(i)
+                    UniversalValue::Int64(i)
                 }
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Double(f)
+                UniversalValue::Float64(f)
             } else {
                 UniversalValue::Text(n.to_string())
             }
@@ -579,8 +579,8 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
     match value {
         UniversalValue::Null => serde_json::Value::Null,
         UniversalValue::Bool(b) => serde_json::Value::Bool(*b),
-        UniversalValue::BigInt(i) => serde_json::json!(*i),
-        UniversalValue::Double(f) => serde_json::json!(*f),
+        UniversalValue::Int64(i) => serde_json::json!(*i),
+        UniversalValue::Float64(f) => serde_json::json!(*f),
         UniversalValue::Text(s) => serde_json::Value::String(s.clone()),
         UniversalValue::Array { elements, .. } => {
             serde_json::Value::Array(elements.iter().map(universal_value_to_json).collect())
@@ -671,23 +671,23 @@ mod tests {
 
     #[test]
     fn test_int_conversion() {
-        let jv = JsonValueWithSchema::new(json!(42), UniversalType::Int);
+        let jv = JsonValueWithSchema::new(json!(42), UniversalType::Int32);
         let tv = TypedValue::from(jv);
-        assert!(matches!(tv.value, UniversalValue::Int(42)));
+        assert!(matches!(tv.value, UniversalValue::Int32(42)));
     }
 
     #[test]
     fn test_bigint_conversion() {
-        let jv = JsonValueWithSchema::new(json!(9876543210i64), UniversalType::BigInt);
+        let jv = JsonValueWithSchema::new(json!(9876543210i64), UniversalType::Int64);
         let tv = TypedValue::from(jv);
-        assert!(matches!(tv.value, UniversalValue::BigInt(9876543210)));
+        assert!(matches!(tv.value, UniversalValue::Int64(9876543210)));
     }
 
     #[test]
     fn test_float_conversion() {
-        let jv = JsonValueWithSchema::new(json!(1.23456), UniversalType::Double);
+        let jv = JsonValueWithSchema::new(json!(1.23456), UniversalType::Float64);
         let tv = TypedValue::from(jv);
-        if let UniversalValue::Double(f) = tv.value {
+        if let UniversalValue::Float64(f) = tv.value {
             assert!((f - 1.23456).abs() < 0.00001);
         } else {
             panic!("Expected Float64");
@@ -766,9 +766,9 @@ mod tests {
     #[test]
     fn test_datetime_conversion() {
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 10, 30, 0).unwrap();
-        let jv = JsonValueWithSchema::new(json!(dt.to_rfc3339()), UniversalType::DateTime);
+        let jv = JsonValueWithSchema::new(json!(dt.to_rfc3339()), UniversalType::LocalDateTime);
         let tv = TypedValue::from(jv);
-        if let UniversalValue::DateTime(result_dt) = tv.value {
+        if let UniversalValue::LocalDateTime(result_dt) = tv.value {
             assert_eq!(result_dt.year(), 2024);
             assert_eq!(result_dt.month(), 6);
             assert_eq!(result_dt.day(), 15);
@@ -888,13 +888,13 @@ mod tests {
         let jv = JsonValueWithSchema::new(
             json!([1, 2, 3]),
             UniversalType::Array {
-                element_type: Box::new(UniversalType::Int),
+                element_type: Box::new(UniversalType::Int32),
             },
         );
         let tv = TypedValue::from(jv);
         if let UniversalValue::Array { elements, .. } = tv.value {
             assert_eq!(elements.len(), 3);
-            assert!(matches!(elements[0], UniversalValue::Int(1)));
+            assert!(matches!(elements[0], UniversalValue::Int32(1)));
         } else {
             panic!("Expected Array");
         }
@@ -968,8 +968,8 @@ mod tests {
         let name = extract_field(&obj, "name", &UniversalType::Text);
         assert!(matches!(name.value, UniversalValue::Text(ref s) if s == "Alice"));
 
-        let age = extract_field(&obj, "age", &UniversalType::Int);
-        assert!(matches!(age.value, UniversalValue::Int(30)));
+        let age = extract_field(&obj, "age", &UniversalType::Int32);
+        assert!(matches!(age.value, UniversalValue::Int32(30)));
 
         let missing = extract_field(&obj, "missing", &UniversalType::Text);
         assert!(matches!(missing.value, UniversalValue::Null));
@@ -981,7 +981,7 @@ mod tests {
         let schema = vec![
             ("name".to_string(), UniversalType::Text),
             ("active".to_string(), UniversalType::Bool),
-            ("score".to_string(), UniversalType::Double),
+            ("score".to_string(), UniversalType::Float64),
         ];
 
         let values = parse_jsonl_line(line, &schema).unwrap();

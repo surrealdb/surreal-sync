@@ -46,10 +46,10 @@ fn build_create_node_query(
     // Add the id field - always as string since Neo4j full sync expects string IDs
     // The Neo4j full sync uses the 'id' property to create SurrealDB record IDs
     let id_string = match &row.id {
-        UniversalValue::TinyInt { value, .. } => value.to_string(),
-        UniversalValue::SmallInt(i) => i.to_string(),
-        UniversalValue::Int(i) => i.to_string(),
-        UniversalValue::BigInt(i) => i.to_string(),
+        UniversalValue::Int8 { value, .. } => value.to_string(),
+        UniversalValue::Int16(i) => i.to_string(),
+        UniversalValue::Int32(i) => i.to_string(),
+        UniversalValue::Int64(i) => i.to_string(),
         UniversalValue::Text(s) => s.clone(),
         UniversalValue::Char { value, .. } => value.clone(),
         UniversalValue::VarChar { value, .. } => value.clone(),
@@ -87,20 +87,20 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
         UniversalValue::Bool(b) => b.to_string(),
 
         // Integer types - strict 1:1 matching
-        UniversalValue::TinyInt { value, .. } => value.to_string(),
-        UniversalValue::SmallInt(i) => i.to_string(),
-        UniversalValue::Int(i) => i.to_string(),
-        UniversalValue::BigInt(i) => i.to_string(),
+        UniversalValue::Int8 { value, .. } => value.to_string(),
+        UniversalValue::Int16(i) => i.to_string(),
+        UniversalValue::Int32(i) => i.to_string(),
+        UniversalValue::Int64(i) => i.to_string(),
 
         // Float types - strict 1:1 matching
-        UniversalValue::Float(f) => {
+        UniversalValue::Float32(f) => {
             if f.is_nan() {
                 "null".to_string()
             } else {
                 f.to_string()
             }
         }
-        UniversalValue::Double(f) => {
+        UniversalValue::Float64(f) => {
             if f.is_nan() {
                 "null".to_string() // Neo4j doesn't support NaN
             } else {
@@ -120,13 +120,13 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
         UniversalValue::Uuid(u) => escape_neo4j_string(&u.to_string()),
 
         // DateTime types - strict 1:1 matching
-        UniversalValue::DateTime(dt) => {
+        UniversalValue::LocalDateTime(dt) => {
             format!("datetime('{}')", dt.format("%Y-%m-%dT%H:%M:%S%.fZ"))
         }
-        UniversalValue::DateTimeNano(dt) => {
+        UniversalValue::LocalDateTimeNano(dt) => {
             format!("datetime('{}')", dt.format("%Y-%m-%dT%H:%M:%S%.fZ"))
         }
-        UniversalValue::TimestampTz(dt) => {
+        UniversalValue::ZonedDateTime(dt) => {
             format!("datetime('{}')", dt.format("%Y-%m-%dT%H:%M:%S%.fZ"))
         }
         UniversalValue::Date(dt) => {
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn test_typed_to_neo4j_literal() {
-        let int_val = TypedValue::int(42);
+        let int_val = TypedValue::int32(42);
         assert_eq!(typed_to_neo4j_literal(&int_val), "42");
 
         let str_val = TypedValue::text("hello");

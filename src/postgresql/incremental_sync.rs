@@ -1,6 +1,6 @@
 use crate::surreal::{
     convert_id_with_schema, json_to_surreal_with_schema, surreal_connect, Change, ChangeOp,
-    SurrealDatabaseSchema,
+    LegacySchema,
 };
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use crate::{SourceOpts, SurrealOpts};
@@ -175,7 +175,7 @@ pub struct PostgresIncrementalSource {
     client: Arc<Mutex<Client>>,
     tracking_table: String,
     last_sequence: i64,
-    database_schema: Option<SurrealDatabaseSchema>,
+    database_schema: Option<LegacySchema>,
     /// Mapping of table names to their primary key column names
     /// Used for schema-aware ID type conversion in the change stream
     pk_columns: HashMap<String, Vec<String>>,
@@ -509,7 +509,7 @@ pub struct PostgresChangeStream {
     last_sequence: i64,
     buffer: Vec<Change>,
     empty_poll_count: usize,
-    database_schema: Option<SurrealDatabaseSchema>,
+    database_schema: Option<LegacySchema>,
     /// Mapping of table names to their primary key column names
     pk_columns: HashMap<String, Vec<String>>,
 }
@@ -519,7 +519,7 @@ impl PostgresChangeStream {
         client: Arc<Mutex<Client>>,
         tracking_table: String,
         start_sequence: i64,
-        database_schema: Option<SurrealDatabaseSchema>,
+        database_schema: Option<LegacySchema>,
         pk_columns: HashMap<String, Vec<String>>,
     ) -> Result<Self> {
         Ok(Self {

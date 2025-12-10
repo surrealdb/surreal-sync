@@ -28,14 +28,14 @@ impl ToDdl for MySQLDdl {
             UniversalType::Bool => "TINYINT(1)".to_string(),
 
             // Integer types
-            UniversalType::TinyInt { width } => format!("TINYINT({width})"),
-            UniversalType::SmallInt => "SMALLINT".to_string(),
-            UniversalType::Int => "INT".to_string(),
-            UniversalType::BigInt => "BIGINT".to_string(),
+            UniversalType::Int8 { width } => format!("TINYINT({width})"),
+            UniversalType::Int16 => "SMALLINT".to_string(),
+            UniversalType::Int32 => "INT".to_string(),
+            UniversalType::Int64 => "BIGINT".to_string(),
 
             // Floating point
-            UniversalType::Float => "FLOAT".to_string(),
-            UniversalType::Double => "DOUBLE".to_string(),
+            UniversalType::Float32 => "FLOAT".to_string(),
+            UniversalType::Float64 => "DOUBLE".to_string(),
 
             // Exact numeric
             UniversalType::Decimal { precision, scale } => {
@@ -54,9 +54,9 @@ impl ToDdl for MySQLDdl {
             // Date/time types
             UniversalType::Date => "DATE".to_string(),
             UniversalType::Time => "TIME".to_string(),
-            UniversalType::DateTime => "DATETIME(6)".to_string(),
-            UniversalType::DateTimeNano => "DATETIME(6)".to_string(), // MySQL max precision is 6
-            UniversalType::TimestampTz => "TIMESTAMP(6)".to_string(),
+            UniversalType::LocalDateTime => "DATETIME(6)".to_string(),
+            UniversalType::LocalDateTimeNano => "DATETIME(6)".to_string(), // MySQL max precision is 6
+            UniversalType::ZonedDateTime => "TIMESTAMP(6)".to_string(),
 
             // Special types
             UniversalType::Uuid => "CHAR(36)".to_string(),
@@ -223,20 +223,17 @@ mod tests {
     #[test]
     fn test_integer_ddl() {
         let ddl = MySQLDdl;
-        assert_eq!(
-            ddl.to_ddl(&UniversalType::TinyInt { width: 4 }),
-            "TINYINT(4)"
-        );
-        assert_eq!(ddl.to_ddl(&UniversalType::SmallInt), "SMALLINT");
-        assert_eq!(ddl.to_ddl(&UniversalType::Int), "INT");
-        assert_eq!(ddl.to_ddl(&UniversalType::BigInt), "BIGINT");
+        assert_eq!(ddl.to_ddl(&UniversalType::Int8 { width: 4 }), "TINYINT(4)");
+        assert_eq!(ddl.to_ddl(&UniversalType::Int16), "SMALLINT");
+        assert_eq!(ddl.to_ddl(&UniversalType::Int32), "INT");
+        assert_eq!(ddl.to_ddl(&UniversalType::Int64), "BIGINT");
     }
 
     #[test]
     fn test_float_ddl() {
         let ddl = MySQLDdl;
-        assert_eq!(ddl.to_ddl(&UniversalType::Float), "FLOAT");
-        assert_eq!(ddl.to_ddl(&UniversalType::Double), "DOUBLE");
+        assert_eq!(ddl.to_ddl(&UniversalType::Float32), "FLOAT");
+        assert_eq!(ddl.to_ddl(&UniversalType::Float64), "DOUBLE");
     }
 
     #[test]
@@ -274,8 +271,8 @@ mod tests {
         let ddl = MySQLDdl;
         assert_eq!(ddl.to_ddl(&UniversalType::Date), "DATE");
         assert_eq!(ddl.to_ddl(&UniversalType::Time), "TIME");
-        assert_eq!(ddl.to_ddl(&UniversalType::DateTime), "DATETIME(6)");
-        assert_eq!(ddl.to_ddl(&UniversalType::TimestampTz), "TIMESTAMP(6)");
+        assert_eq!(ddl.to_ddl(&UniversalType::LocalDateTime), "DATETIME(6)");
+        assert_eq!(ddl.to_ddl(&UniversalType::ZonedDateTime), "TIMESTAMP(6)");
     }
 
     #[test]
@@ -296,7 +293,7 @@ mod tests {
         let ddl = MySQLDdl;
         assert_eq!(
             ddl.to_ddl(&UniversalType::Array {
-                element_type: Box::new(UniversalType::Int)
+                element_type: Box::new(UniversalType::Int32)
             }),
             "JSON"
         );
@@ -363,7 +360,7 @@ mod tests {
                 UniversalType::VarChar { length: 255 },
                 false,
             ),
-            ("age".to_string(), UniversalType::Int, true),
+            ("age".to_string(), UniversalType::Int32, true),
         ];
 
         let sql = ddl.to_create_table("users", &columns);

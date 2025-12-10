@@ -608,14 +608,14 @@ fn universal_value_to_surreal_value(value: sync_core::UniversalValue) -> anyhow:
         UniversalValue::Bool(b) => Ok(Value::Bool(b)),
 
         // Integer types → Number::Int
-        UniversalValue::TinyInt { value, .. } => Ok(Value::Number(Number::Int(value as i64))),
-        UniversalValue::SmallInt(i) => Ok(Value::Number(Number::Int(i as i64))),
-        UniversalValue::Int(i) => Ok(Value::Number(Number::Int(i as i64))),
-        UniversalValue::BigInt(i) => Ok(Value::Number(Number::Int(i))),
+        UniversalValue::Int8 { value, .. } => Ok(Value::Number(Number::Int(value as i64))),
+        UniversalValue::Int16(i) => Ok(Value::Number(Number::Int(i as i64))),
+        UniversalValue::Int32(i) => Ok(Value::Number(Number::Int(i as i64))),
+        UniversalValue::Int64(i) => Ok(Value::Number(Number::Int(i))),
 
         // Float types → Number::Float
-        UniversalValue::Float(f) => Ok(Value::Number(Number::Float(f as f64))),
-        UniversalValue::Double(f) => Ok(Value::Number(Number::Float(f))),
+        UniversalValue::Float32(f) => Ok(Value::Number(Number::Float(f as f64))),
+        UniversalValue::Float64(f) => Ok(Value::Number(Number::Float(f))),
 
         // Decimal → Number::Float (best effort)
         UniversalValue::Decimal { value, .. } => match value.parse::<f64>() {
@@ -638,9 +638,9 @@ fn universal_value_to_surreal_value(value: sync_core::UniversalValue) -> anyhow:
         // DateTime types → Datetime
         UniversalValue::Date(dt) => Ok(Value::Datetime(Datetime::from(dt))),
         UniversalValue::Time(dt) => Ok(Value::Datetime(Datetime::from(dt))),
-        UniversalValue::DateTime(dt) => Ok(Value::Datetime(Datetime::from(dt))),
-        UniversalValue::DateTimeNano(dt) => Ok(Value::Datetime(Datetime::from(dt))),
-        UniversalValue::TimestampTz(dt) => Ok(Value::Datetime(Datetime::from(dt))),
+        UniversalValue::LocalDateTime(dt) => Ok(Value::Datetime(Datetime::from(dt))),
+        UniversalValue::LocalDateTimeNano(dt) => Ok(Value::Datetime(Datetime::from(dt))),
+        UniversalValue::ZonedDateTime(dt) => Ok(Value::Datetime(Datetime::from(dt))),
 
         // JSON types → Object (via helper function)
         UniversalValue::Json(json_val) => json_value_to_surreal_value(&json_val),

@@ -107,23 +107,23 @@ pub fn encode_generated_value(
         }
 
         // Integer types - strict 1:1 matching
-        UniversalValue::TinyInt { value: i, .. } => {
+        UniversalValue::Int8 { value: i, .. } => {
             stream
                 .write_int64(field_number, *i as i64)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::SmallInt(i) => {
+        UniversalValue::Int16(i) => {
             stream
                 .write_int64(field_number, *i as i64)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::Int(i) => {
+        UniversalValue::Int32(i) => {
             // Wire type 0 (varint) - encode as int64 for proto3 compatibility
             stream
                 .write_int64(field_number, *i as i64)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::BigInt(i) => {
+        UniversalValue::Int64(i) => {
             // Wire type 0 (varint)
             stream
                 .write_int64(field_number, *i)
@@ -131,12 +131,12 @@ pub fn encode_generated_value(
         }
 
         // Float types - strict 1:1 matching
-        UniversalValue::Float(f) => {
+        UniversalValue::Float32(f) => {
             stream
                 .write_float(field_number, *f)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
-        UniversalValue::Double(f) => {
+        UniversalValue::Float64(f) => {
             // Wire type 1 (64-bit)
             stream
                 .write_double(field_number, *f)
@@ -186,9 +186,9 @@ pub fn encode_generated_value(
         }
 
         // DateTime types - strict 1:1 matching
-        UniversalValue::DateTime(dt)
-        | UniversalValue::DateTimeNano(dt)
-        | UniversalValue::TimestampTz(dt) => {
+        UniversalValue::LocalDateTime(dt)
+        | UniversalValue::LocalDateTimeNano(dt)
+        | UniversalValue::ZonedDateTime(dt) => {
             // Encode as google.protobuf.Timestamp (nested message)
             let mut timestamp_bytes = Vec::new();
             {
@@ -305,10 +305,10 @@ pub fn get_message_key_from_typed_values(
 fn generated_value_to_key(value: &UniversalValue) -> Vec<u8> {
     match value {
         // Integer types
-        UniversalValue::TinyInt { value: i, .. } => i.to_string().into_bytes(),
-        UniversalValue::SmallInt(i) => i.to_string().into_bytes(),
-        UniversalValue::Int(i) => i.to_string().into_bytes(),
-        UniversalValue::BigInt(i) => i.to_string().into_bytes(),
+        UniversalValue::Int8 { value: i, .. } => i.to_string().into_bytes(),
+        UniversalValue::Int16(i) => i.to_string().into_bytes(),
+        UniversalValue::Int32(i) => i.to_string().into_bytes(),
+        UniversalValue::Int64(i) => i.to_string().into_bytes(),
         // String types
         UniversalValue::Text(s) => s.as_bytes().to_vec(),
         UniversalValue::Char { value: s, .. } => s.as_bytes().to_vec(),
@@ -326,10 +326,10 @@ fn generated_value_to_key(value: &UniversalValue) -> Vec<u8> {
 pub fn get_proto_type(sync_type: &UniversalType) -> &'static str {
     match sync_type {
         UniversalType::Bool => "bool",
-        UniversalType::TinyInt { .. } | UniversalType::SmallInt | UniversalType::Int => "int32",
-        UniversalType::BigInt => "int64",
-        UniversalType::Float => "float",
-        UniversalType::Double => "double",
+        UniversalType::Int8 { .. } | UniversalType::Int16 | UniversalType::Int32 => "int32",
+        UniversalType::Int64 => "int64",
+        UniversalType::Float32 => "float",
+        UniversalType::Float64 => "double",
         UniversalType::Decimal { .. } => "string",
         UniversalType::Char { .. }
         | UniversalType::VarChar { .. }
@@ -337,9 +337,9 @@ pub fn get_proto_type(sync_type: &UniversalType) -> &'static str {
         | UniversalType::Uuid
         | UniversalType::Enum { .. } => "string",
         UniversalType::Bytes | UniversalType::Blob => "bytes",
-        UniversalType::DateTime
-        | UniversalType::DateTimeNano
-        | UniversalType::TimestampTz
+        UniversalType::LocalDateTime
+        | UniversalType::LocalDateTimeNano
+        | UniversalType::ZonedDateTime
         | UniversalType::Date
         | UniversalType::Time => "google.protobuf.Timestamp",
         UniversalType::Json | UniversalType::Jsonb => "string", // JSON encoded as string
@@ -361,7 +361,7 @@ mod tests {
         TableDefinition {
             name: "users".to_string(),
             id: IDDefinition {
-                id_type: UniversalType::BigInt,
+                id_type: UniversalType::Int64,
                 generator: GeneratorConfig::Sequential { start: 1 },
             },
             fields: vec![
@@ -375,7 +375,7 @@ mod tests {
                 },
                 FieldDefinition {
                     name: "age".to_string(),
-                    field_type: UniversalType::Int,
+                    field_type: UniversalType::Int32,
                     generator: GeneratorConfig::IntRange { min: 18, max: 80 },
                     nullable: false,
                 },
@@ -397,10 +397,10 @@ mod tests {
             "email".to_string(),
             UniversalValue::Text("test@example.com".to_string()),
         );
-        fields.insert("age".to_string(), UniversalValue::Int(25));
+        fields.insert("age".to_string(), UniversalValue::Int32(25));
         fields.insert("is_active".to_string(), UniversalValue::Bool(true));
 
-        let row = UniversalRow::new("users", 0, UniversalValue::BigInt(1), fields);
+        let row = UniversalRow::new("users", 0, UniversalValue::Int64(1), fields);
 
         let encoded = encode_row(&row, &schema).unwrap();
         assert!(!encoded.is_empty());
@@ -420,12 +420,12 @@ mod tests {
         let schema = TableDefinition {
             name: "events".to_string(),
             id: IDDefinition {
-                id_type: UniversalType::BigInt,
+                id_type: UniversalType::Int64,
                 generator: GeneratorConfig::Sequential { start: 1 },
             },
             fields: vec![FieldDefinition {
                 name: "created_at".to_string(),
-                field_type: UniversalType::DateTime,
+                field_type: UniversalType::LocalDateTime,
                 generator: GeneratorConfig::TimestampRange {
                     start: "2024-01-01T00:00:00Z".to_string(),
                     end: "2024-12-31T23:59:59Z".to_string(),
@@ -436,9 +436,9 @@ mod tests {
 
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 12, 30, 45).unwrap();
         let mut fields = HashMap::new();
-        fields.insert("created_at".to_string(), UniversalValue::DateTime(dt));
+        fields.insert("created_at".to_string(), UniversalValue::LocalDateTime(dt));
 
-        let row = UniversalRow::new("events", 0, UniversalValue::BigInt(1), fields);
+        let row = UniversalRow::new("events", 0, UniversalValue::Int64(1), fields);
         let encoded = encode_row(&row, &schema).unwrap();
         assert!(!encoded.is_empty());
     }
@@ -448,7 +448,7 @@ mod tests {
         let schema = TableDefinition {
             name: "products".to_string(),
             id: IDDefinition {
-                id_type: UniversalType::BigInt,
+                id_type: UniversalType::Int64,
                 generator: GeneratorConfig::Sequential { start: 1 },
             },
             fields: vec![FieldDefinition {
@@ -477,14 +477,14 @@ mod tests {
             },
         );
 
-        let row = UniversalRow::new("products", 0, UniversalValue::BigInt(1), fields);
+        let row = UniversalRow::new("products", 0, UniversalValue::Int64(1), fields);
         let encoded = encode_row(&row, &schema).unwrap();
         assert!(!encoded.is_empty());
     }
 
     #[test]
     fn test_get_message_key_int() {
-        let row = UniversalRow::new("test", 0, UniversalValue::BigInt(42), HashMap::new());
+        let row = UniversalRow::new("test", 0, UniversalValue::Int64(42), HashMap::new());
         let key = get_message_key(&row);
         assert_eq!(key, b"42");
     }

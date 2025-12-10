@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 
 use crate::surreal::{
-    convert_id_with_schema, surreal_type_to_sync_type, Change, ChangeOp, SurrealDatabaseSchema,
+    convert_id_with_schema, legacy_type_to_universal_type, Change, ChangeOp, LegacySchema,
 };
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use anyhow::{anyhow, Result};
@@ -39,7 +39,7 @@ pub struct MySQLIncrementalSource {
     pool: Pool,
     server_id: u32,
     sequence_id: i64,
-    database_schema: Option<SurrealDatabaseSchema>,
+    database_schema: Option<LegacySchema>,
 }
 
 impl MySQLIncrementalSource {
@@ -111,7 +111,7 @@ pub struct MySQLChangeStream {
     server_id: u32,
     buffer: Vec<Change>,
     last_sequence_id: i64,
-    database_schema: Option<SurrealDatabaseSchema>,
+    database_schema: Option<LegacySchema>,
 }
 
 impl MySQLChangeStream {
@@ -119,7 +119,7 @@ impl MySQLChangeStream {
         pool: Pool,
         server_id: u32,
         starting_sequence_id: i64,
-        database_schema: Option<SurrealDatabaseSchema>,
+        database_schema: Option<LegacySchema>,
     ) -> Result<Self> {
         let connection = pool.get_conn().await?;
 
@@ -140,7 +140,7 @@ impl MySQLChangeStream {
         field_name: &str,
         table_name: &str,
     ) -> Result<TypedValue> {
-        // Get the SurrealType from schema to check for SET columns
+        // Get the LegacyType from schema to check for SET columns
         let surreal_type = self
             .database_schema
             .as_ref()
@@ -148,8 +148,8 @@ impl MySQLChangeStream {
             .and_then(|ts| ts.columns.get(field_name));
 
         // Handle SET columns specially - MySQL JSON_OBJECT stores SET as comma-separated string
-        if let Some(crate::surreal::SurrealType::Array(inner)) = surreal_type {
-            if matches!(inner.as_ref(), crate::surreal::SurrealType::String) {
+        if let Some(crate::surreal::LegacyType::Array(inner)) = surreal_type {
+            if matches!(inner.as_ref(), crate::surreal::LegacyType::String) {
                 // This is a SET column - parse comma-separated string to array
                 if let serde_json::Value::String(s) = &value {
                     let values: Vec<String> = if s.is_empty() {
@@ -164,7 +164,7 @@ impl MySQLChangeStream {
 
         // Get the sync type from schema for standard conversion
         let sync_type = surreal_type
-            .map(surreal_type_to_sync_type)
+            .map(legacy_type_to_universal_type)
             .unwrap_or(sync_core::UniversalType::Text); // Default to text if not found
 
         // Use json-types for conversion

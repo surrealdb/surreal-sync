@@ -230,10 +230,10 @@ impl StreamingVerifier {
                 self.table_name.as_str(),
                 Id::Uuid(surrealdb::sql::Uuid::from(*u)),
             )),
-            sync_core::UniversalValue::BigInt(i) => {
+            sync_core::UniversalValue::Int64(i) => {
                 Thing::from((self.table_name.as_str(), Id::Number(*i)))
             }
-            sync_core::UniversalValue::Int(i) => {
+            sync_core::UniversalValue::Int32(i) => {
                 Thing::from((self.table_name.as_str(), Id::Number(*i as i64)))
             }
             sync_core::UniversalValue::Text(s) => {
@@ -312,14 +312,14 @@ impl StreamingVerifier {
                 let val: Option<bool> = response.take((0, field_name))?;
                 Ok(val.map(SurrealValue::Bool))
             }
-            UniversalType::TinyInt { .. }
-            | UniversalType::SmallInt
-            | UniversalType::Int
-            | UniversalType::BigInt => {
+            UniversalType::Int8 { .. }
+            | UniversalType::Int16
+            | UniversalType::Int32
+            | UniversalType::Int64 => {
                 let val: Option<i64> = response.take((0, field_name))?;
                 Ok(val.map(|v| SurrealValue::Number(surrealdb::sql::Number::Int(v))))
             }
-            UniversalType::Float | UniversalType::Double => {
+            UniversalType::Float32 | UniversalType::Float64 => {
                 let val: Option<f64> = response.take((0, field_name))?;
                 Ok(val.map(|v| SurrealValue::Number(surrealdb::sql::Number::Float(v))))
             }
@@ -370,7 +370,9 @@ impl StreamingVerifier {
                     }
                 }
             }
-            UniversalType::DateTime | UniversalType::DateTimeNano | UniversalType::TimestampTz => {
+            UniversalType::LocalDateTime
+            | UniversalType::LocalDateTimeNano
+            | UniversalType::ZonedDateTime => {
                 let val: Option<chrono::DateTime<chrono::Utc>> = response.take((0, field_name))?;
                 Ok(val.map(|v| SurrealValue::Datetime(surrealdb::sql::Datetime::from(v))))
             }
@@ -395,7 +397,7 @@ impl StreamingVerifier {
             UniversalType::Array { element_type } => {
                 // Extract array based on element type
                 match element_type.as_ref() {
-                    UniversalType::Int | UniversalType::SmallInt | UniversalType::BigInt => {
+                    UniversalType::Int32 | UniversalType::Int16 | UniversalType::Int64 => {
                         let val: Option<Vec<i64>> = response.take((0, field_name))?;
                         Ok(val.map(|arr| {
                             let items: Vec<SurrealValue> = arr
@@ -504,8 +506,8 @@ impl StreamingVerifier {
 fn format_id(value: &sync_core::UniversalValue) -> String {
     match value {
         sync_core::UniversalValue::Uuid(u) => u.to_string(),
-        sync_core::UniversalValue::BigInt(i) => i.to_string(),
-        sync_core::UniversalValue::Int(i) => i.to_string(),
+        sync_core::UniversalValue::Int64(i) => i.to_string(),
+        sync_core::UniversalValue::Int32(i) => i.to_string(),
         sync_core::UniversalValue::Text(s) => s.clone(),
         _ => format!("{value:?}"),
     }
@@ -590,10 +592,7 @@ tables:
             format_id(&sync_core::UniversalValue::Uuid(uuid)),
             "550e8400-e29b-41d4-a716-446655440000"
         );
-        assert_eq!(
-            format_id(&sync_core::UniversalValue::BigInt(12345)),
-            "12345"
-        );
+        assert_eq!(format_id(&sync_core::UniversalValue::Int64(12345)), "12345");
         assert_eq!(
             format_id(&sync_core::UniversalValue::Text("test-id".to_string())),
             "test-id"

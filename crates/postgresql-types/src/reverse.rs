@@ -133,7 +133,7 @@ impl PostgreSQLValueWithSchema {
             // Integer types
             t if *t == Type::INT2 => {
                 if let PostgreSQLRawValue::Int16(i) = self.value {
-                    Ok(TypedValue::smallint(i))
+                    Ok(TypedValue::int16(i))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "int16".to_string(),
@@ -144,7 +144,7 @@ impl PostgreSQLValueWithSchema {
 
             t if *t == Type::INT4 => {
                 if let PostgreSQLRawValue::Int32(i) = self.value {
-                    Ok(TypedValue::int(i))
+                    Ok(TypedValue::int32(i))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "int32".to_string(),
@@ -155,7 +155,7 @@ impl PostgreSQLValueWithSchema {
 
             t if *t == Type::INT8 => {
                 if let PostgreSQLRawValue::Int64(i) = self.value {
-                    Ok(TypedValue::bigint(i))
+                    Ok(TypedValue::int64(i))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "int64".to_string(),
@@ -167,7 +167,7 @@ impl PostgreSQLValueWithSchema {
             // Floating point
             t if *t == Type::FLOAT4 => {
                 if let PostgreSQLRawValue::Float32(f) = self.value {
-                    Ok(TypedValue::float(f))
+                    Ok(TypedValue::float32(f))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "float32".to_string(),
@@ -178,7 +178,7 @@ impl PostgreSQLValueWithSchema {
 
             t if *t == Type::FLOAT8 => {
                 if let PostgreSQLRawValue::Float64(f) = self.value {
-                    Ok(TypedValue::double(f))
+                    Ok(TypedValue::float64(f))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "float64".to_string(),
@@ -327,8 +327,8 @@ impl PostgreSQLValueWithSchema {
             t if *t == Type::INT4_ARRAY => {
                 if let PostgreSQLRawValue::Int32Array(arr) = &self.value {
                     let values: Vec<UniversalValue> =
-                        arr.iter().map(|i| UniversalValue::Int(*i)).collect();
-                    Ok(TypedValue::array(values, UniversalType::Int))
+                        arr.iter().map(|i| UniversalValue::Int32(*i)).collect();
+                    Ok(TypedValue::array(values, UniversalType::Int32))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "int4[]".to_string(),
@@ -340,8 +340,8 @@ impl PostgreSQLValueWithSchema {
             t if *t == Type::INT8_ARRAY => {
                 if let PostgreSQLRawValue::Int64Array(arr) = &self.value {
                     let values: Vec<UniversalValue> =
-                        arr.iter().map(|i| UniversalValue::BigInt(*i)).collect();
-                    Ok(TypedValue::array(values, UniversalType::BigInt))
+                        arr.iter().map(|i| UniversalValue::Int64(*i)).collect();
+                    Ok(TypedValue::array(values, UniversalType::Int64))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "int8[]".to_string(),
@@ -353,8 +353,8 @@ impl PostgreSQLValueWithSchema {
             t if *t == Type::FLOAT8_ARRAY => {
                 if let PostgreSQLRawValue::Float64Array(arr) = &self.value {
                     let values: Vec<UniversalValue> =
-                        arr.iter().map(|f| UniversalValue::Double(*f)).collect();
-                    Ok(TypedValue::array(values, UniversalType::Double))
+                        arr.iter().map(|f| UniversalValue::Float64(*f)).collect();
+                    Ok(TypedValue::array(values, UniversalType::Float64))
                 } else {
                     Err(ConversionError::TypeMismatch {
                         expected: "float8[]".to_string(),
@@ -409,11 +409,11 @@ impl PostgreSQLValueWithSchema {
 fn pg_type_to_sync_type(pg_type: &Type) -> UniversalType {
     match pg_type {
         t if *t == Type::BOOL => UniversalType::Bool,
-        t if *t == Type::INT2 => UniversalType::SmallInt,
-        t if *t == Type::INT4 => UniversalType::Int,
-        t if *t == Type::INT8 => UniversalType::BigInt,
-        t if *t == Type::FLOAT4 => UniversalType::Float,
-        t if *t == Type::FLOAT8 => UniversalType::Double,
+        t if *t == Type::INT2 => UniversalType::Int16,
+        t if *t == Type::INT4 => UniversalType::Int32,
+        t if *t == Type::INT8 => UniversalType::Int64,
+        t if *t == Type::FLOAT4 => UniversalType::Float32,
+        t if *t == Type::FLOAT8 => UniversalType::Float64,
         t if *t == Type::NUMERIC => UniversalType::Decimal {
             precision: 38,
             scale: 10,
@@ -425,21 +425,21 @@ fn pg_type_to_sync_type(pg_type: &Type) -> UniversalType {
         t if *t == Type::UUID => UniversalType::Uuid,
         t if *t == Type::DATE => UniversalType::Date,
         t if *t == Type::TIME => UniversalType::Time,
-        t if *t == Type::TIMESTAMP => UniversalType::DateTime,
-        t if *t == Type::TIMESTAMPTZ => UniversalType::TimestampTz,
+        t if *t == Type::TIMESTAMP => UniversalType::LocalDateTime,
+        t if *t == Type::TIMESTAMPTZ => UniversalType::ZonedDateTime,
         t if *t == Type::JSON => UniversalType::Json,
         t if *t == Type::JSONB => UniversalType::Jsonb,
         t if *t == Type::TEXT_ARRAY => UniversalType::Array {
             element_type: Box::new(UniversalType::Text),
         },
         t if *t == Type::INT4_ARRAY => UniversalType::Array {
-            element_type: Box::new(UniversalType::Int),
+            element_type: Box::new(UniversalType::Int32),
         },
         t if *t == Type::INT8_ARRAY => UniversalType::Array {
-            element_type: Box::new(UniversalType::BigInt),
+            element_type: Box::new(UniversalType::Int64),
         },
         t if *t == Type::FLOAT8_ARRAY => UniversalType::Array {
-            element_type: Box::new(UniversalType::Double),
+            element_type: Box::new(UniversalType::Float64),
         },
         t if *t == Type::BOOL_ARRAY => UniversalType::Array {
             element_type: Box::new(UniversalType::Bool),
@@ -459,9 +459,9 @@ fn json_to_generated_value(json: serde_json::Value) -> UniversalValue {
         serde_json::Value::Bool(b) => UniversalValue::Bool(b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                UniversalValue::BigInt(i)
+                UniversalValue::Int64(i)
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Double(f)
+                UniversalValue::Float64(f)
             } else {
                 UniversalValue::Text(n.to_string())
             }
@@ -498,8 +498,8 @@ mod tests {
     fn test_int_conversion() {
         let pv = PostgreSQLValueWithSchema::new(Type::INT4, PostgreSQLRawValue::Int32(42));
         let tv = pv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Int));
-        assert!(matches!(tv.value, UniversalValue::Int(42)));
+        assert!(matches!(tv.sync_type, UniversalType::Int32));
+        assert!(matches!(tv.value, UniversalValue::Int32(42)));
     }
 
     #[test]
@@ -509,10 +509,10 @@ mod tests {
             PostgreSQLRawValue::Int64(9_223_372_036_854_775_807),
         );
         let tv = pv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::BigInt));
+        assert!(matches!(tv.sync_type, UniversalType::Int64));
         assert!(matches!(
             tv.value,
-            UniversalValue::BigInt(9_223_372_036_854_775_807)
+            UniversalValue::Int64(9_223_372_036_854_775_807)
         ));
     }
 
@@ -549,8 +549,8 @@ mod tests {
         let ts = NaiveDateTime::parse_from_str("2024-06-15 10:30:45", "%Y-%m-%d %H:%M:%S").unwrap();
         let pv = PostgreSQLValueWithSchema::new(Type::TIMESTAMP, PostgreSQLRawValue::Timestamp(ts));
         let tv = pv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::DateTime));
-        if let UniversalValue::DateTime(dt) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::LocalDateTime));
+        if let UniversalValue::LocalDateTime(dt) = tv.value {
             assert_eq!(dt.year(), 2024);
         } else {
             panic!("Expected DateTime value");
@@ -561,7 +561,7 @@ mod tests {
     fn test_null_conversion() {
         let pv = PostgreSQLValueWithSchema::new(Type::INT4, PostgreSQLRawValue::Null);
         let tv = pv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Int));
+        assert!(matches!(tv.sync_type, UniversalType::Int32));
         assert!(matches!(tv.value, UniversalValue::Null));
     }
 
@@ -627,7 +627,7 @@ mod tests {
         let tv = pv.to_typed_value().unwrap();
         if let UniversalValue::Array { elements, .. } = tv.value {
             assert_eq!(elements.len(), 3);
-            assert!(matches!(elements[0], UniversalValue::Int(1)));
+            assert!(matches!(elements[0], UniversalValue::Int32(1)));
         } else {
             panic!("Expected Array value");
         }

@@ -155,7 +155,7 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
                     // Values other than 0/1 stay as integer even for boolean columns
                 }
 
-                Ok(TypedValue::tinyint(
+                Ok(TypedValue::int8(
                     i as i8,
                     mv.column_length.unwrap_or(4) as u8,
                 ))
@@ -163,28 +163,28 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
 
             MYSQL_TYPE_SHORT => {
                 let i = extract_int(&mv.value)?;
-                Ok(TypedValue::smallint(i as i16))
+                Ok(TypedValue::int16(i as i16))
             }
 
             MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => {
                 let i = extract_int(&mv.value)?;
-                Ok(TypedValue::int(i as i32))
+                Ok(TypedValue::int32(i as i32))
             }
 
             MYSQL_TYPE_LONGLONG => {
                 let i = extract_int(&mv.value)?;
-                Ok(TypedValue::bigint(i))
+                Ok(TypedValue::int64(i))
             }
 
             // Floating point
             MYSQL_TYPE_FLOAT => {
                 let f = extract_float(&mv.value)?;
-                Ok(TypedValue::float(f as f32))
+                Ok(TypedValue::float32(f as f32))
             }
 
             MYSQL_TYPE_DOUBLE => {
                 let f = extract_float(&mv.value)?;
-                Ok(TypedValue::double(f))
+                Ok(TypedValue::float64(f))
             }
 
             // Decimal
@@ -256,7 +256,7 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
 
             MYSQL_TYPE_YEAR => {
                 let i = extract_int(&mv.value)?;
-                Ok(TypedValue::smallint(i as i16))
+                Ok(TypedValue::int16(i as i16))
             }
 
             // JSON
@@ -325,16 +325,16 @@ fn column_type_to_sync_type(col_type: ColumnType, mv: &MySQLValueWithSchema) -> 
             if mv.is_boolean_column() {
                 UniversalType::Bool
             } else {
-                UniversalType::TinyInt {
+                UniversalType::Int8 {
                     width: mv.column_length.unwrap_or(4) as u8,
                 }
             }
         }
-        MYSQL_TYPE_SHORT => UniversalType::SmallInt,
-        MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => UniversalType::Int,
-        MYSQL_TYPE_LONGLONG => UniversalType::BigInt,
-        MYSQL_TYPE_FLOAT => UniversalType::Float,
-        MYSQL_TYPE_DOUBLE => UniversalType::Double,
+        MYSQL_TYPE_SHORT => UniversalType::Int16,
+        MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => UniversalType::Int32,
+        MYSQL_TYPE_LONGLONG => UniversalType::Int64,
+        MYSQL_TYPE_FLOAT => UniversalType::Float32,
+        MYSQL_TYPE_DOUBLE => UniversalType::Float64,
         MYSQL_TYPE_DECIMAL | MYSQL_TYPE_NEWDECIMAL => UniversalType::Decimal {
             precision: mv.precision.unwrap_or(10),
             scale: mv.scale.unwrap_or(0),
@@ -354,9 +354,9 @@ fn column_type_to_sync_type(col_type: ColumnType, mv: &MySQLValueWithSchema) -> 
         }
         MYSQL_TYPE_DATE => UniversalType::Date,
         MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => UniversalType::Time,
-        MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => UniversalType::DateTime,
-        MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => UniversalType::TimestampTz,
-        MYSQL_TYPE_YEAR => UniversalType::SmallInt,
+        MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => UniversalType::LocalDateTime,
+        MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => UniversalType::ZonedDateTime,
+        MYSQL_TYPE_YEAR => UniversalType::Int16,
         MYSQL_TYPE_JSON => UniversalType::Json,
         MYSQL_TYPE_ENUM => UniversalType::Enum { values: vec![] },
         MYSQL_TYPE_SET => UniversalType::Set { values: vec![] },
@@ -670,8 +670,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Int));
-        assert!(matches!(tv.value, UniversalValue::Int(42)));
+        assert!(matches!(tv.sync_type, UniversalType::Int32));
+        assert!(matches!(tv.value, UniversalValue::Int32(42)));
     }
 
     #[test]
@@ -682,10 +682,10 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::BigInt));
+        assert!(matches!(tv.sync_type, UniversalType::Int64));
         assert!(matches!(
             tv.value,
-            UniversalValue::BigInt(9_223_372_036_854_775_807)
+            UniversalValue::Int64(9_223_372_036_854_775_807)
         ));
     }
 
@@ -730,8 +730,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::DateTime));
-        if let UniversalValue::DateTime(dt) = tv.value {
+        assert!(matches!(tv.sync_type, UniversalType::LocalDateTime));
+        if let UniversalValue::LocalDateTime(dt) = tv.value {
             assert_eq!(dt.year(), 2024);
             assert_eq!(dt.month(), 6);
             assert_eq!(dt.day(), 15);
@@ -748,7 +748,7 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Int));
+        assert!(matches!(tv.sync_type, UniversalType::Int32));
         assert!(matches!(tv.value, UniversalValue::Null));
     }
 
@@ -866,8 +866,8 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::TinyInt { .. }));
-        assert!(matches!(tv.value, UniversalValue::TinyInt { value: 1, .. }));
+        assert!(matches!(tv.sync_type, UniversalType::Int8 { .. }));
+        assert!(matches!(tv.value, UniversalValue::Int8 { value: 1, .. }));
     }
 
     #[test]
@@ -909,8 +909,8 @@ mod tests {
         .with_length(1);
         let tv = mv.to_typed_value().unwrap();
         // The type still says TinyInt, but value is 5
-        assert!(matches!(tv.sync_type, UniversalType::TinyInt { .. }));
-        assert!(matches!(tv.value, UniversalValue::TinyInt { value: 5, .. }));
+        assert!(matches!(tv.sync_type, UniversalType::Int8 { .. }));
+        assert!(matches!(tv.value, UniversalValue::Int8 { value: 5, .. }));
     }
 
     #[test]
@@ -1349,7 +1349,7 @@ mod tests {
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::SmallInt));
-        assert!(matches!(tv.value, UniversalValue::SmallInt(2024)));
+        assert!(matches!(tv.sync_type, UniversalType::Int16));
+        assert!(matches!(tv.value, UniversalValue::Int16(2024)));
     }
 }

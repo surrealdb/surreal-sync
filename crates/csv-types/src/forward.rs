@@ -41,14 +41,14 @@ impl From<UniversalValue> for CsvValue {
             }),
 
             // Integer types
-            UniversalValue::TinyInt { value, .. } => CsvValue(value.to_string()),
-            UniversalValue::SmallInt(i) => CsvValue(i.to_string()),
-            UniversalValue::Int(i) => CsvValue(i.to_string()),
-            UniversalValue::BigInt(i) => CsvValue(i.to_string()),
+            UniversalValue::Int8 { value, .. } => CsvValue(value.to_string()),
+            UniversalValue::Int16(i) => CsvValue(i.to_string()),
+            UniversalValue::Int32(i) => CsvValue(i.to_string()),
+            UniversalValue::Int64(i) => CsvValue(i.to_string()),
 
             // Floating point
-            UniversalValue::Float(f) => CsvValue(f.to_string()),
-            UniversalValue::Double(f) => CsvValue(f.to_string()),
+            UniversalValue::Float32(f) => CsvValue(f.to_string()),
+            UniversalValue::Float64(f) => CsvValue(f.to_string()),
 
             // Decimal - preserve as-is (no precision check needed for CSV)
             UniversalValue::Decimal { value, .. } => CsvValue(value),
@@ -71,9 +71,9 @@ impl From<UniversalValue> for CsvValue {
             // Date/time types - ISO 8601 format
             UniversalValue::Date(dt) => CsvValue(dt.format("%Y-%m-%d").to_string()),
             UniversalValue::Time(dt) => CsvValue(dt.format("%H:%M:%S").to_string()),
-            UniversalValue::DateTime(dt) => CsvValue(dt.to_rfc3339()),
-            UniversalValue::DateTimeNano(dt) => CsvValue(dt.to_rfc3339()),
-            UniversalValue::TimestampTz(dt) => CsvValue(dt.to_rfc3339()),
+            UniversalValue::LocalDateTime(dt) => CsvValue(dt.to_rfc3339()),
+            UniversalValue::LocalDateTimeNano(dt) => CsvValue(dt.to_rfc3339()),
+            UniversalValue::ZonedDateTime(dt) => CsvValue(dt.to_rfc3339()),
 
             // UUID
             UniversalValue::Uuid(u) => CsvValue(u.to_string()),
@@ -125,12 +125,12 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
     match value {
         UniversalValue::Null => serde_json::Value::Null,
         UniversalValue::Bool(b) => serde_json::json!(*b),
-        UniversalValue::TinyInt { value, .. } => serde_json::json!(*value),
-        UniversalValue::SmallInt(i) => serde_json::json!(*i),
-        UniversalValue::Int(i) => serde_json::json!(*i),
-        UniversalValue::BigInt(i) => serde_json::json!(*i),
-        UniversalValue::Float(f) => serde_json::json!(*f),
-        UniversalValue::Double(f) => serde_json::json!(*f),
+        UniversalValue::Int8 { value, .. } => serde_json::json!(*value),
+        UniversalValue::Int16(i) => serde_json::json!(*i),
+        UniversalValue::Int32(i) => serde_json::json!(*i),
+        UniversalValue::Int64(i) => serde_json::json!(*i),
+        UniversalValue::Float32(f) => serde_json::json!(*f),
+        UniversalValue::Float64(f) => serde_json::json!(*f),
         UniversalValue::Char { value, .. } => serde_json::json!(value),
         UniversalValue::VarChar { value, .. } => serde_json::json!(value),
         UniversalValue::Text(s) => serde_json::json!(s),
@@ -141,9 +141,9 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
         UniversalValue::Uuid(u) => serde_json::json!(u.to_string()),
         UniversalValue::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
         UniversalValue::Time(dt) => serde_json::json!(dt.format("%H:%M:%S").to_string()),
-        UniversalValue::DateTime(dt)
-        | UniversalValue::DateTimeNano(dt)
-        | UniversalValue::TimestampTz(dt) => serde_json::json!(dt.to_rfc3339()),
+        UniversalValue::LocalDateTime(dt)
+        | UniversalValue::LocalDateTimeNano(dt)
+        | UniversalValue::ZonedDateTime(dt) => serde_json::json!(dt.to_rfc3339()),
         UniversalValue::Decimal { value, .. } => serde_json::json!(value),
         UniversalValue::Array { elements, .. } => {
             serde_json::json!(elements
@@ -240,21 +240,21 @@ mod tests {
 
     #[test]
     fn test_int_conversion() {
-        let tv = TypedValue::int(12345);
+        let tv = TypedValue::int32(12345);
         let csv_val: CsvValue = tv.into();
         assert_eq!(csv_val.0, "12345");
     }
 
     #[test]
     fn test_bigint_conversion() {
-        let tv = TypedValue::bigint(9876543210i64);
+        let tv = TypedValue::int64(9876543210i64);
         let csv_val: CsvValue = tv.into();
         assert_eq!(csv_val.0, "9876543210");
     }
 
     #[test]
     fn test_float_conversion() {
-        let tv = TypedValue::float(1.23);
+        let tv = TypedValue::float32(1.23);
         let csv_val: CsvValue = tv.into();
         assert!(csv_val.0.starts_with("1.23"));
     }
@@ -356,7 +356,7 @@ mod tests {
     fn test_typed_values_to_csv_line() {
         let fields = vec![
             TypedValue::text("Alice"),
-            TypedValue::int(30),
+            TypedValue::int32(30),
             TypedValue::bool(true),
         ];
         let line = typed_values_to_csv_line(fields);
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn test_typed_values_to_csv_line_with_escape() {
-        let fields = vec![TypedValue::text("Hello, World"), TypedValue::int(42)];
+        let fields = vec![TypedValue::text("Hello, World"), TypedValue::int32(42)];
         let line = typed_values_to_csv_line(fields);
         assert_eq!(line, "\"Hello, World\",42");
     }
@@ -374,7 +374,7 @@ mod tests {
     fn test_typed_values_to_csv_line_ordered() {
         let fields = vec![
             ("name".to_string(), TypedValue::text("Bob")),
-            ("age".to_string(), TypedValue::int(25)),
+            ("age".to_string(), TypedValue::int32(25)),
             ("city".to_string(), TypedValue::text("NYC")),
         ];
         let order = ["age", "name", "city"];

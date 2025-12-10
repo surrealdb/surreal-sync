@@ -48,9 +48,9 @@ pub fn yaml_to_generated_value(yaml: &YamlValue) -> UniversalValue {
         YamlValue::Bool(b) => UniversalValue::Bool(*b),
         YamlValue::Number(n) => {
             if let Some(i) = n.as_i64() {
-                UniversalValue::BigInt(i)
+                UniversalValue::Int64(i)
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Double(f)
+                UniversalValue::Float64(f)
             } else {
                 UniversalValue::Text(n.to_string())
             }
@@ -100,13 +100,13 @@ mod tests {
     #[test]
     fn test_yaml_int() {
         let yaml: YamlValue = serde_yaml::from_str("42").unwrap();
-        assert_eq!(yaml_to_generated_value(&yaml), UniversalValue::BigInt(42));
+        assert_eq!(yaml_to_generated_value(&yaml), UniversalValue::Int64(42));
     }
 
     #[test]
     fn test_yaml_float() {
         let yaml: YamlValue = serde_yaml::from_str("1.234").unwrap();
-        if let UniversalValue::Double(f) = yaml_to_generated_value(&yaml) {
+        if let UniversalValue::Float64(f) = yaml_to_generated_value(&yaml) {
             assert!((f - 1.234).abs() < 0.001);
         } else {
             panic!("Expected Double");
@@ -127,7 +127,7 @@ mod tests {
         let yaml: YamlValue = serde_yaml::from_str("[1, 2, 3]").unwrap();
         if let UniversalValue::Array { elements, .. } = yaml_to_generated_value(&yaml) {
             assert_eq!(elements.len(), 3);
-            assert_eq!(elements[0], UniversalValue::BigInt(1));
+            assert_eq!(elements[0], UniversalValue::Int64(1));
         } else {
             panic!("Expected Array");
         }

@@ -39,14 +39,14 @@ impl From<UniversalValue> for MySQLValue {
             UniversalValue::Bool(b) => MySQLValue(Value::Int(if b { 1 } else { 0 })),
 
             // Integer types
-            UniversalValue::TinyInt { value, .. } => MySQLValue(Value::Int(value as i64)),
-            UniversalValue::SmallInt(i) => MySQLValue(Value::Int(i as i64)),
-            UniversalValue::Int(i) => MySQLValue(Value::Int(i as i64)),
-            UniversalValue::BigInt(i) => MySQLValue(Value::Int(i)),
+            UniversalValue::Int8 { value, .. } => MySQLValue(Value::Int(value as i64)),
+            UniversalValue::Int16(i) => MySQLValue(Value::Int(i as i64)),
+            UniversalValue::Int32(i) => MySQLValue(Value::Int(i as i64)),
+            UniversalValue::Int64(i) => MySQLValue(Value::Int(i)),
 
             // Floating point
-            UniversalValue::Float(f) => MySQLValue(Value::Float(f)),
-            UniversalValue::Double(f) => MySQLValue(Value::Double(f)),
+            UniversalValue::Float32(f) => MySQLValue(Value::Float(f)),
+            UniversalValue::Float64(f) => MySQLValue(Value::Double(f)),
 
             // Decimal - stored as string in MySQL for precision
             UniversalValue::Decimal { value, .. } => MySQLValue(Value::Bytes(value.into_bytes())),
@@ -85,9 +85,9 @@ impl From<UniversalValue> for MySQLValue {
             )),
 
             // DateTime variants - MySQL DATETIME(6) and TIMESTAMP
-            UniversalValue::DateTime(dt)
-            | UniversalValue::DateTimeNano(dt)
-            | UniversalValue::TimestampTz(dt) => MySQLValue(Value::Date(
+            UniversalValue::LocalDateTime(dt)
+            | UniversalValue::LocalDateTimeNano(dt)
+            | UniversalValue::ZonedDateTime(dt) => MySQLValue(Value::Date(
                 dt.year() as u16,
                 dt.month() as u8,
                 dt.day() as u8,
@@ -155,16 +155,16 @@ fn generated_to_json(gv: UniversalValue) -> serde_json::Value {
     match gv {
         UniversalValue::Null => serde_json::Value::Null,
         UniversalValue::Bool(b) => serde_json::Value::Bool(b),
-        UniversalValue::TinyInt { value, .. } => {
+        UniversalValue::Int8 { value, .. } => {
             serde_json::Value::Number(serde_json::Number::from(value))
         }
-        UniversalValue::SmallInt(i) => serde_json::Value::Number(serde_json::Number::from(i)),
-        UniversalValue::Int(i) => serde_json::Value::Number(serde_json::Number::from(i)),
-        UniversalValue::BigInt(i) => serde_json::Value::Number(serde_json::Number::from(i)),
-        UniversalValue::Float(f) => serde_json::Number::from_f64(f as f64)
+        UniversalValue::Int16(i) => serde_json::Value::Number(serde_json::Number::from(i)),
+        UniversalValue::Int32(i) => serde_json::Value::Number(serde_json::Number::from(i)),
+        UniversalValue::Int64(i) => serde_json::Value::Number(serde_json::Number::from(i)),
+        UniversalValue::Float32(f) => serde_json::Number::from_f64(f as f64)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        UniversalValue::Double(f) => serde_json::Number::from_f64(f)
+        UniversalValue::Float64(f) => serde_json::Number::from_f64(f)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
         UniversalValue::Char { value, .. } => serde_json::Value::String(value),
@@ -175,9 +175,9 @@ fn generated_to_json(gv: UniversalValue) -> serde_json::Value {
         UniversalValue::Uuid(u) => serde_json::Value::String(u.to_string()),
         UniversalValue::Date(dt)
         | UniversalValue::Time(dt)
-        | UniversalValue::DateTime(dt)
-        | UniversalValue::DateTimeNano(dt)
-        | UniversalValue::TimestampTz(dt) => serde_json::Value::String(dt.to_rfc3339()),
+        | UniversalValue::LocalDateTime(dt)
+        | UniversalValue::LocalDateTimeNano(dt)
+        | UniversalValue::ZonedDateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
         UniversalValue::Decimal { value, .. } => serde_json::Value::String(value),
         UniversalValue::Array { elements, .. } => generated_array_to_json(elements),
         UniversalValue::Set { elements, .. } => {
@@ -225,21 +225,21 @@ mod tests {
 
     #[test]
     fn test_int_conversion() {
-        let tv = TypedValue::int(42);
+        let tv = TypedValue::int32(42);
         let mysql_val: MySQLValue = tv.into();
         assert!(matches!(mysql_val.0, Value::Int(42)));
     }
 
     #[test]
     fn test_bigint_conversion() {
-        let tv = TypedValue::bigint(9_223_372_036_854_775_807i64);
+        let tv = TypedValue::int64(9_223_372_036_854_775_807i64);
         let mysql_val: MySQLValue = tv.into();
         assert!(matches!(mysql_val.0, Value::Int(9_223_372_036_854_775_807)));
     }
 
     #[test]
     fn test_float_conversion() {
-        let tv = TypedValue::float(1.234);
+        let tv = TypedValue::float32(1.234);
         let mysql_val: MySQLValue = tv.into();
         if let Value::Float(f) = mysql_val.0 {
             assert!((f - 1.234).abs() < 0.01);
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_double_conversion() {
-        let tv = TypedValue::double(1.23456789012345);
+        let tv = TypedValue::float64(1.23456789012345);
         let mysql_val: MySQLValue = tv.into();
         if let Value::Double(d) = mysql_val.0 {
             assert!((d - 1.23456789012345).abs() < 0.0001);
@@ -323,11 +323,11 @@ mod tests {
     #[test]
     fn test_array_conversion() {
         let arr = vec![
-            UniversalValue::BigInt(1),
-            UniversalValue::BigInt(2),
-            UniversalValue::BigInt(3),
+            UniversalValue::Int64(1),
+            UniversalValue::Int64(2),
+            UniversalValue::Int64(3),
         ];
-        let tv = TypedValue::array(arr, UniversalType::BigInt);
+        let tv = TypedValue::array(arr, UniversalType::Int64);
         let mysql_val: MySQLValue = tv.into();
         if let Value::Bytes(b) = mysql_val.0 {
             let json: serde_json::Value = serde_json::from_slice(&b).unwrap();

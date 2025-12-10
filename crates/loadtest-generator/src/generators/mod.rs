@@ -36,7 +36,7 @@ pub fn generate_value_typed<R: Rng>(
     let raw_value = match config {
         GeneratorConfig::UuidV4 => uuid::generate_uuid_v4(rng),
 
-        GeneratorConfig::Sequential { start } => UniversalValue::BigInt(start + index as i64),
+        GeneratorConfig::Sequential { start } => UniversalValue::Int64(start + index as i64),
 
         GeneratorConfig::Pattern { pattern } => pattern::generate_pattern(pattern, rng, index),
 
@@ -115,22 +115,20 @@ fn convert_to_strict_type(
         }
 
         // Integer type conversions - strict 1:1 matching
-        (Some(UniversalType::TinyInt { width }), UniversalValue::BigInt(i)) => {
-            UniversalValue::TinyInt {
-                value: i as i8,
-                width: *width,
-            }
-        }
-        (Some(UniversalType::SmallInt), UniversalValue::BigInt(i)) => {
-            UniversalValue::SmallInt(i as i16)
-        }
-        (Some(UniversalType::Int), UniversalValue::BigInt(i)) => UniversalValue::Int(i as i32),
+        (Some(UniversalType::Int8 { width }), UniversalValue::Int64(i)) => UniversalValue::Int8 {
+            value: i as i8,
+            width: *width,
+        },
+        (Some(UniversalType::Int16), UniversalValue::Int64(i)) => UniversalValue::Int16(i as i16),
+        (Some(UniversalType::Int32), UniversalValue::Int64(i)) => UniversalValue::Int32(i as i32),
 
         // Float type conversions - strict 1:1 matching
-        (Some(UniversalType::Float), UniversalValue::Double(f)) => UniversalValue::Float(f as f32),
+        (Some(UniversalType::Float32), UniversalValue::Float64(f)) => {
+            UniversalValue::Float32(f as f32)
+        }
 
         // Decimal conversion
-        (Some(UniversalType::Decimal { precision, scale }), UniversalValue::Double(f)) => {
+        (Some(UniversalType::Decimal { precision, scale }), UniversalValue::Float64(f)) => {
             UniversalValue::Decimal {
                 value: f.to_string(),
                 precision: *precision,
@@ -139,13 +137,13 @@ fn convert_to_strict_type(
         }
 
         // Date/time conversions - strict 1:1 matching
-        (Some(UniversalType::Date), UniversalValue::DateTime(dt)) => UniversalValue::Date(dt),
-        (Some(UniversalType::Time), UniversalValue::DateTime(dt)) => UniversalValue::Time(dt),
-        (Some(UniversalType::DateTimeNano), UniversalValue::DateTime(dt)) => {
-            UniversalValue::DateTimeNano(dt)
+        (Some(UniversalType::Date), UniversalValue::LocalDateTime(dt)) => UniversalValue::Date(dt),
+        (Some(UniversalType::Time), UniversalValue::LocalDateTime(dt)) => UniversalValue::Time(dt),
+        (Some(UniversalType::LocalDateTimeNano), UniversalValue::LocalDateTime(dt)) => {
+            UniversalValue::LocalDateTimeNano(dt)
         }
-        (Some(UniversalType::TimestampTz), UniversalValue::DateTime(dt)) => {
-            UniversalValue::TimestampTz(dt)
+        (Some(UniversalType::ZonedDateTime), UniversalValue::LocalDateTime(dt)) => {
+            UniversalValue::ZonedDateTime(dt)
         }
 
         // Binary type conversions

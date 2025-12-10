@@ -9,7 +9,7 @@ use sync_core::UniversalValue;
 /// This is NOT deterministic - each call returns the current time.
 /// Useful for `updated_at` fields in incremental sync scenarios.
 pub fn generate_timestamp_now() -> UniversalValue {
-    UniversalValue::DateTime(Utc::now())
+    UniversalValue::LocalDateTime(Utc::now())
 }
 
 /// Generate a random timestamp in the given range.
@@ -25,15 +25,15 @@ pub fn generate_timestamp_range<R: Rng>(rng: &mut R, start: &str, end: &str) -> 
             let end_ts = end.timestamp();
 
             if start_ts >= end_ts {
-                UniversalValue::DateTime(start)
+                UniversalValue::LocalDateTime(start)
             } else {
                 let random_ts = rng.gen_range(start_ts..=end_ts);
                 let dt = DateTime::from_timestamp(random_ts, 0).unwrap_or(start);
-                UniversalValue::DateTime(dt)
+                UniversalValue::LocalDateTime(dt)
             }
         }
-        (Some(dt), None) | (None, Some(dt)) => UniversalValue::DateTime(dt),
-        (None, None) => UniversalValue::DateTime(Utc::now()),
+        (Some(dt), None) | (None, Some(dt)) => UniversalValue::LocalDateTime(dt),
+        (None, None) => UniversalValue::LocalDateTime(Utc::now()),
     }
 }
 
@@ -66,7 +66,7 @@ mod tests {
         let value =
             generate_timestamp_range(&mut rng, "2020-01-01T00:00:00Z", "2024-12-31T23:59:59Z");
 
-        if let UniversalValue::DateTime(dt) = value {
+        if let UniversalValue::LocalDateTime(dt) = value {
             assert!(dt.year() >= 2020 && dt.year() <= 2024);
         } else {
             panic!("Expected DateTime value");
@@ -79,7 +79,7 @@ mod tests {
 
         let value = generate_timestamp_range(&mut rng, "2020-01-01", "2024-12-31");
 
-        if let UniversalValue::DateTime(dt) = value {
+        if let UniversalValue::LocalDateTime(dt) = value {
             assert!(dt.year() >= 2020 && dt.year() <= 2024);
         } else {
             panic!("Expected DateTime value");

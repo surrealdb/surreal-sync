@@ -38,14 +38,14 @@ impl From<UniversalValue> for JsonValue {
             UniversalValue::Bool(b) => JsonValue(json!(b)),
 
             // Integer types
-            UniversalValue::TinyInt { value, .. } => JsonValue(json!(value)),
-            UniversalValue::SmallInt(i) => JsonValue(json!(i)),
-            UniversalValue::Int(i) => JsonValue(json!(i)),
-            UniversalValue::BigInt(i) => JsonValue(json!(i)),
+            UniversalValue::Int8 { value, .. } => JsonValue(json!(value)),
+            UniversalValue::Int16(i) => JsonValue(json!(i)),
+            UniversalValue::Int32(i) => JsonValue(json!(i)),
+            UniversalValue::Int64(i) => JsonValue(json!(i)),
 
             // Floating point
-            UniversalValue::Float(f) => JsonValue(json!(f)),
-            UniversalValue::Double(f) => JsonValue(json!(f)),
+            UniversalValue::Float32(f) => JsonValue(json!(f)),
+            UniversalValue::Float64(f) => JsonValue(json!(f)),
 
             // Decimal - store as string to preserve precision
             UniversalValue::Decimal { value, .. } => JsonValue(json!(value)),
@@ -68,9 +68,9 @@ impl From<UniversalValue> for JsonValue {
             // Date/time types - ISO 8601 format
             UniversalValue::Date(dt) => JsonValue(json!(dt.format("%Y-%m-%d").to_string())),
             UniversalValue::Time(dt) => JsonValue(json!(dt.format("%H:%M:%S").to_string())),
-            UniversalValue::DateTime(dt) => JsonValue(json!(dt.to_rfc3339())),
-            UniversalValue::DateTimeNano(dt) => JsonValue(json!(dt.to_rfc3339())),
-            UniversalValue::TimestampTz(dt) => JsonValue(json!(dt.to_rfc3339())),
+            UniversalValue::LocalDateTime(dt) => JsonValue(json!(dt.to_rfc3339())),
+            UniversalValue::LocalDateTimeNano(dt) => JsonValue(json!(dt.to_rfc3339())),
+            UniversalValue::ZonedDateTime(dt) => JsonValue(json!(dt.to_rfc3339())),
 
             // UUID
             UniversalValue::Uuid(u) => JsonValue(json!(u.to_string())),
@@ -141,12 +141,12 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
     match value {
         UniversalValue::Null => serde_json::Value::Null,
         UniversalValue::Bool(b) => json!(*b),
-        UniversalValue::TinyInt { value, .. } => json!(*value),
-        UniversalValue::SmallInt(i) => json!(*i),
-        UniversalValue::Int(i) => json!(*i),
-        UniversalValue::BigInt(i) => json!(*i),
-        UniversalValue::Float(f) => json!(*f),
-        UniversalValue::Double(f) => json!(*f),
+        UniversalValue::Int8 { value, .. } => json!(*value),
+        UniversalValue::Int16(i) => json!(*i),
+        UniversalValue::Int32(i) => json!(*i),
+        UniversalValue::Int64(i) => json!(*i),
+        UniversalValue::Float32(f) => json!(*f),
+        UniversalValue::Float64(f) => json!(*f),
         UniversalValue::Char { value, .. } => json!(value),
         UniversalValue::VarChar { value, .. } => json!(value),
         UniversalValue::Text(s) => json!(s),
@@ -157,9 +157,9 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
         UniversalValue::Uuid(u) => json!(u.to_string()),
         UniversalValue::Date(dt) => json!(dt.format("%Y-%m-%d").to_string()),
         UniversalValue::Time(dt) => json!(dt.format("%H:%M:%S").to_string()),
-        UniversalValue::DateTime(dt)
-        | UniversalValue::DateTimeNano(dt)
-        | UniversalValue::TimestampTz(dt) => json!(dt.to_rfc3339()),
+        UniversalValue::LocalDateTime(dt)
+        | UniversalValue::LocalDateTimeNano(dt)
+        | UniversalValue::ZonedDateTime(dt) => json!(dt.to_rfc3339()),
         UniversalValue::Decimal { value, .. } => json!(value),
         UniversalValue::Array { elements, .. } => {
             json!(elements
@@ -236,35 +236,35 @@ mod tests {
 
     #[test]
     fn test_tinyint_conversion() {
-        let tv = TypedValue::tinyint(127, 4);
+        let tv = TypedValue::int8(127, 4);
         let json_val: JsonValue = tv.into();
         assert_eq!(json_val.0, json!(127));
     }
 
     #[test]
     fn test_smallint_conversion() {
-        let tv = TypedValue::smallint(32000);
+        let tv = TypedValue::int16(32000);
         let json_val: JsonValue = tv.into();
         assert_eq!(json_val.0, json!(32000));
     }
 
     #[test]
     fn test_int_conversion() {
-        let tv = TypedValue::int(12345);
+        let tv = TypedValue::int32(12345);
         let json_val: JsonValue = tv.into();
         assert_eq!(json_val.0, json!(12345));
     }
 
     #[test]
     fn test_bigint_conversion() {
-        let tv = TypedValue::bigint(9876543210i64);
+        let tv = TypedValue::int64(9876543210i64);
         let json_val: JsonValue = tv.into();
         assert_eq!(json_val.0, json!(9876543210i64));
     }
 
     #[test]
     fn test_float_conversion() {
-        let tv = TypedValue::float(1.234);
+        let tv = TypedValue::float32(1.234);
         let json_val: JsonValue = tv.into();
         if let Some(f) = json_val.0.as_f64() {
             assert!((f - 1.234f64).abs() < 0.001);
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_double_conversion() {
-        let tv = TypedValue::double(1.23456);
+        let tv = TypedValue::float64(1.23456);
         let json_val: JsonValue = tv.into();
         if let Some(f) = json_val.0.as_f64() {
             assert!((f - 1.23456).abs() < 0.00001);
@@ -363,11 +363,11 @@ mod tests {
     fn test_array_int_conversion() {
         let tv = TypedValue::array(
             vec![
-                UniversalValue::Int(1),
-                UniversalValue::Int(2),
-                UniversalValue::Int(3),
+                UniversalValue::Int32(1),
+                UniversalValue::Int32(2),
+                UniversalValue::Int32(3),
             ],
-            UniversalType::Int,
+            UniversalType::Int32,
         );
         let json_val: JsonValue = tv.into();
         assert_eq!(json_val.0, json!([1, 2, 3]));
@@ -417,7 +417,7 @@ mod tests {
     fn test_typed_values_to_json() {
         let fields = vec![
             ("name".to_string(), TypedValue::text("Alice")),
-            ("age".to_string(), TypedValue::int(30)),
+            ("age".to_string(), TypedValue::int32(30)),
             ("active".to_string(), TypedValue::bool(true)),
         ];
 
@@ -432,7 +432,7 @@ mod tests {
     fn test_typed_values_to_jsonl() {
         let fields = vec![
             ("name".to_string(), TypedValue::text("Bob")),
-            ("age".to_string(), TypedValue::int(25)),
+            ("age".to_string(), TypedValue::int32(25)),
         ];
 
         let jsonl = typed_values_to_jsonl(fields);

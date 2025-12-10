@@ -32,12 +32,12 @@
 //! use sync_core::values::{UniversalValue, TypedValue};
 //!
 //! // Create a typed value using factory methods
-//! let value = TypedValue::int(42);
+//! let value = TypedValue::int32(42);
 //!
 //! // For dynamic types (e.g., from schema), use try_with_type for validation:
 //! let dynamic_value = TypedValue::try_with_type(
-//!     UniversalType::Int,
-//!     UniversalValue::Int(42)
+//!     UniversalType::Int32,
+//!     UniversalValue::Int32(42)
 //! ).expect("valid type-value combination");
 //!
 //! // Type-specific crates implement From<TypedValue> for their native types:

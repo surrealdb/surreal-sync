@@ -51,8 +51,8 @@ fn typed_values_to_record_with_id(
 /// Convert a UniversalValue to a SurrealDB ID.
 fn universal_value_to_surreal_id(value: &UniversalValue) -> Result<surrealdb::sql::Id> {
     match value {
-        UniversalValue::Int(i) => Ok(surrealdb::sql::Id::Number(*i as i64)),
-        UniversalValue::BigInt(i) => Ok(surrealdb::sql::Id::Number(*i)),
+        UniversalValue::Int32(i) => Ok(surrealdb::sql::Id::Number(*i as i64)),
+        UniversalValue::Int64(i) => Ok(surrealdb::sql::Id::Number(*i)),
         UniversalValue::Text(s) => Ok(surrealdb::sql::Id::String(s.clone())),
         UniversalValue::Uuid(u) => Ok(surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u))),
         other => anyhow::bail!("Cannot convert {other:?} to SurrealDB ID"),

@@ -386,7 +386,7 @@ tables:
                         length: 255,
                     },
                 ),
-                ("age".to_string(), UniversalValue::Int(25)),
+                ("age".to_string(), UniversalValue::Int32(25)),
             ]
             .into_iter()
             .collect(),

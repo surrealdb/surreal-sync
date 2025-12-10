@@ -334,7 +334,7 @@ tables:
         assert_eq!(email_type, &UniversalType::VarChar { length: 255 });
 
         let age_type = schema.get_field_type("users", "age").unwrap();
-        assert_eq!(age_type, &UniversalType::Int);
+        assert_eq!(age_type, &UniversalType::Int32);
     }
 
     #[test]

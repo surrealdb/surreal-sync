@@ -38,19 +38,19 @@ impl From<SurrealValueWithSchema> for TypedValue {
             (UniversalType::Bool, Value::Bool(b)) => TypedValue::bool(*b),
 
             // Integer types
-            (UniversalType::TinyInt { width }, Value::Number(Number::Int(i))) => TypedValue {
-                sync_type: UniversalType::TinyInt { width: *width },
-                value: UniversalValue::Int(*i as i32),
+            (UniversalType::Int8 { width }, Value::Number(Number::Int(i))) => TypedValue {
+                sync_type: UniversalType::Int8 { width: *width },
+                value: UniversalValue::Int32(*i as i32),
             },
-            (UniversalType::SmallInt, Value::Number(Number::Int(i))) => {
-                TypedValue::smallint(*i as i16)
-            }
-            (UniversalType::Int, Value::Number(Number::Int(i))) => TypedValue::int(*i as i32),
-            (UniversalType::BigInt, Value::Number(Number::Int(i))) => TypedValue::bigint(*i),
+            (UniversalType::Int16, Value::Number(Number::Int(i))) => TypedValue::int16(*i as i16),
+            (UniversalType::Int32, Value::Number(Number::Int(i))) => TypedValue::int32(*i as i32),
+            (UniversalType::Int64, Value::Number(Number::Int(i))) => TypedValue::int64(*i),
 
             // Floating point
-            (UniversalType::Float, Value::Number(Number::Float(f))) => TypedValue::float(*f as f32),
-            (UniversalType::Double, Value::Number(Number::Float(f))) => TypedValue::double(*f),
+            (UniversalType::Float32, Value::Number(Number::Float(f))) => {
+                TypedValue::float32(*f as f32)
+            }
+            (UniversalType::Float64, Value::Number(Number::Float(f))) => TypedValue::float64(*f),
 
             // Decimal
             (UniversalType::Decimal { precision, scale }, Value::Number(Number::Decimal(d))) => {
@@ -90,14 +90,14 @@ impl From<SurrealValueWithSchema> for TypedValue {
             }
 
             // Date/time types
-            (UniversalType::DateTime, Value::Datetime(dt)) => TypedValue::datetime(dt.0),
-            (UniversalType::DateTimeNano, Value::Datetime(dt)) => TypedValue {
-                sync_type: UniversalType::DateTimeNano,
-                value: UniversalValue::DateTime(dt.0),
+            (UniversalType::LocalDateTime, Value::Datetime(dt)) => TypedValue::datetime(dt.0),
+            (UniversalType::LocalDateTimeNano, Value::Datetime(dt)) => TypedValue {
+                sync_type: UniversalType::LocalDateTimeNano,
+                value: UniversalValue::LocalDateTime(dt.0),
             },
-            (UniversalType::TimestampTz, Value::Datetime(dt)) => TypedValue {
-                sync_type: UniversalType::TimestampTz,
-                value: UniversalValue::DateTime(dt.0),
+            (UniversalType::ZonedDateTime, Value::Datetime(dt)) => TypedValue {
+                sync_type: UniversalType::ZonedDateTime,
+                value: UniversalValue::LocalDateTime(dt.0),
             },
 
             // Date stored as string
@@ -107,7 +107,7 @@ impl From<SurrealValueWithSchema> for TypedValue {
                     let utc_dt = DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc);
                     TypedValue {
                         sync_type: UniversalType::Date,
-                        value: UniversalValue::DateTime(utc_dt),
+                        value: UniversalValue::LocalDateTime(utc_dt),
                     }
                 } else {
                     TypedValue::null(UniversalType::Date)
@@ -123,7 +123,7 @@ impl From<SurrealValueWithSchema> for TypedValue {
                     let utc_dt = DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc);
                     TypedValue {
                         sync_type: UniversalType::Time,
-                        value: UniversalValue::DateTime(utc_dt),
+                        value: UniversalValue::LocalDateTime(utc_dt),
                     }
                 } else {
                     TypedValue::null(UniversalType::Time)
@@ -227,8 +227,8 @@ fn surreal_value_to_generated(value: &Value) -> UniversalValue {
     match value {
         Value::None => UniversalValue::Null,
         Value::Bool(b) => UniversalValue::Bool(*b),
-        Value::Number(Number::Int(i)) => UniversalValue::BigInt(*i),
-        Value::Number(Number::Float(f)) => UniversalValue::Double(*f),
+        Value::Number(Number::Int(i)) => UniversalValue::Int64(*i),
+        Value::Number(Number::Float(f)) => UniversalValue::Float64(*f),
         Value::Number(Number::Decimal(d)) => UniversalValue::Decimal {
             value: d.to_string(),
             precision: 38,
@@ -237,7 +237,7 @@ fn surreal_value_to_generated(value: &Value) -> UniversalValue {
         Value::Strand(s) => UniversalValue::Text(s.as_str().to_string()),
         Value::Bytes(b) => UniversalValue::Bytes(b.clone().into_inner()),
         Value::Uuid(u) => UniversalValue::Uuid(u.0),
-        Value::Datetime(dt) => UniversalValue::DateTime(dt.0),
+        Value::Datetime(dt) => UniversalValue::LocalDateTime(dt.0),
         Value::Array(arr) => {
             let elements: Vec<UniversalValue> =
                 arr.iter().map(surreal_value_to_generated).collect();
@@ -386,29 +386,29 @@ mod tests {
 
     #[test]
     fn test_int_conversion() {
-        let sv = SurrealValueWithSchema::new(Value::Number(Number::Int(42)), UniversalType::Int);
+        let sv = SurrealValueWithSchema::new(Value::Number(Number::Int(42)), UniversalType::Int32);
         let tv = TypedValue::from(sv);
-        assert!(matches!(tv.value, UniversalValue::Int(42)));
+        assert!(matches!(tv.value, UniversalValue::Int32(42)));
     }
 
     #[test]
     fn test_bigint_conversion() {
         let sv = SurrealValueWithSchema::new(
             Value::Number(Number::Int(9876543210)),
-            UniversalType::BigInt,
+            UniversalType::Int64,
         );
         let tv = TypedValue::from(sv);
-        assert!(matches!(tv.value, UniversalValue::BigInt(9876543210)));
+        assert!(matches!(tv.value, UniversalValue::Int64(9876543210)));
     }
 
     #[test]
     fn test_float_conversion() {
         let sv = SurrealValueWithSchema::new(
             Value::Number(Number::Float(1.23456)),
-            UniversalType::Double,
+            UniversalType::Float64,
         );
         let tv = TypedValue::from(sv);
-        if let UniversalValue::Double(f) = tv.value {
+        if let UniversalValue::Float64(f) = tv.value {
             assert!((f - 1.23456).abs() < 0.00001);
         } else {
             panic!("Expected Float64");
@@ -506,10 +506,10 @@ mod tests {
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 10, 30, 0).unwrap();
         let sv = SurrealValueWithSchema::new(
             Value::Datetime(Datetime::from(dt)),
-            UniversalType::DateTime,
+            UniversalType::LocalDateTime,
         );
         let tv = TypedValue::from(sv);
-        if let UniversalValue::DateTime(result_dt) = tv.value {
+        if let UniversalValue::LocalDateTime(result_dt) = tv.value {
             assert_eq!(result_dt.year(), 2024);
             assert_eq!(result_dt.month(), 6);
             assert_eq!(result_dt.day(), 15);
@@ -525,7 +525,7 @@ mod tests {
             UniversalType::Date,
         );
         let tv = TypedValue::from(sv);
-        if let UniversalValue::DateTime(dt) = tv.value {
+        if let UniversalValue::LocalDateTime(dt) = tv.value {
             assert_eq!(dt.format("%Y-%m-%d").to_string(), "2024-06-15");
         } else {
             panic!("Expected DateTime");
@@ -539,7 +539,7 @@ mod tests {
             UniversalType::Time,
         );
         let tv = TypedValue::from(sv);
-        if let UniversalValue::DateTime(dt) = tv.value {
+        if let UniversalValue::LocalDateTime(dt) = tv.value {
             assert_eq!(dt.format("%H:%M:%S").to_string(), "14:30:45");
         } else {
             panic!("Expected DateTime");
@@ -581,14 +581,14 @@ mod tests {
         let sv = SurrealValueWithSchema::new(
             Value::Array(arr),
             UniversalType::Array {
-                element_type: Box::new(UniversalType::Int),
+                element_type: Box::new(UniversalType::Int32),
             },
         );
         let tv = TypedValue::from(sv);
         if let UniversalValue::Array { elements, .. } = tv.value {
             assert_eq!(elements.len(), 3);
             // Values are converted as Int32
-            assert!(matches!(elements[0], UniversalValue::Int(1)));
+            assert!(matches!(elements[0], UniversalValue::Int32(1)));
         } else {
             panic!("Expected Array");
         }
@@ -636,8 +636,8 @@ mod tests {
         let name = extract_field(&obj, "name", &UniversalType::Text);
         assert!(matches!(name.value, UniversalValue::Text(ref s) if s == "Alice"));
 
-        let age = extract_field(&obj, "age", &UniversalType::Int);
-        assert!(matches!(age.value, UniversalValue::Int(30)));
+        let age = extract_field(&obj, "age", &UniversalType::Int32);
+        assert!(matches!(age.value, UniversalValue::Int32(30)));
 
         let missing = extract_field(&obj, "missing", &UniversalType::Text);
         assert!(matches!(missing.value, UniversalValue::Null));
@@ -654,7 +654,7 @@ mod tests {
         let schema = vec![
             ("name".to_string(), UniversalType::Text),
             ("active".to_string(), UniversalType::Bool),
-            ("score".to_string(), UniversalType::Double),
+            ("score".to_string(), UniversalType::Float64),
         ];
 
         let values = object_to_typed_values(&obj, &schema);
@@ -666,7 +666,7 @@ mod tests {
             values.get("active").unwrap().value,
             UniversalValue::Bool(true)
         ));
-        if let UniversalValue::Double(f) = values.get("score").unwrap().value {
+        if let UniversalValue::Float64(f) = values.get("score").unwrap().value {
             assert!((f - 95.5).abs() < 0.001);
         } else {
             panic!("Expected Float64");
