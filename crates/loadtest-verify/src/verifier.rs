@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use surrealdb::engine::any::Any;
 use surrealdb::sql::Value as SurrealValue;
 use surrealdb::Surreal;
-use sync_core::{Schema, TableDefinition, UniversalRow};
+use sync_core::{GeneratorTableDefinition, Schema, UniversalRow};
 use tracing::{debug, info, warn};
 
 /// Streaming verifier that generates expected data and compares with SurrealDB.
@@ -220,7 +220,7 @@ impl StreamingVerifier {
     async fn query_row(
         &self,
         expected_row: &UniversalRow,
-        table_schema: &TableDefinition,
+        table_schema: &GeneratorTableDefinition,
     ) -> Result<Option<RecordResult>, VerifyError> {
         use surrealdb::sql::{Id, Thing};
 
@@ -446,7 +446,7 @@ impl StreamingVerifier {
         &self,
         expected: &UniversalRow,
         actual: &RecordResult,
-        table_schema: &TableDefinition,
+        table_schema: &GeneratorTableDefinition,
     ) -> Vec<FieldMismatch> {
         let mut mismatches = Vec::new();
 

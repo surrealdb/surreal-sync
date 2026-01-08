@@ -49,11 +49,18 @@ pub mod types;
 pub mod values;
 
 // Re-exports for convenience
+// Base types (context-neutral, no generators)
+pub use schema::{ColumnDefinition, DatabaseSchema, TableDefinition};
+
+// Generator types (with generators)
 pub use schema::{
-    FieldDefinition, GeneratorConfig, IDDefinition, Schema, SchemaError, TableDefinition,
+    FieldDefinition, GeneratorConfig, GeneratorFieldDefinition, GeneratorIDDefinition,
+    GeneratorSchema, GeneratorTableDefinition, IDDefinition, Schema, SchemaError,
+    TableDefinitionWithGenerators,
 };
+
 // Legacy alias for backwards compatibility
-#[deprecated(since = "1.0.0", note = "Use Schema instead")]
+#[deprecated(since = "1.0.0", note = "Use GeneratorSchema instead")]
 pub type LoadTestSchema = Schema;
 pub use types::{GeometryType, ToDdl, UniversalType};
 pub use values::{

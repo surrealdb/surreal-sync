@@ -17,12 +17,13 @@
 use crate::neo4j::Neo4jConversionContext;
 use crate::surreal::{surreal_connect, Change};
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
-use crate::{Record, SourceOpts};
+use crate::SourceOpts;
 use async_trait::async_trait;
 use chrono::Utc;
 use neo4rs::{Graph, Query};
 use std::collections::HashMap;
 use surrealdb::sql::{Array, Number, Strand, Value};
+use surrealdb_types::RecordWithSurrealValues as Record;
 
 /// Neo4j implementation of incremental sync source
 pub struct Neo4jIncrementalSource {

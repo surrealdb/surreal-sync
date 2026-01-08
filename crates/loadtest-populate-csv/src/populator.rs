@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use sync_core::{Schema, TableDefinition, TypedValue, UniversalRow};
+use sync_core::{GeneratorTableDefinition, Schema, TypedValue, UniversalRow};
 use tracing::{debug, info};
 
 /// Default buffer size for CSV writing.
@@ -276,14 +276,17 @@ impl CSVPopulator {
 }
 
 /// Get column names for a table schema (id + fields).
-fn get_column_names(table_schema: &TableDefinition) -> Vec<String> {
+fn get_column_names(table_schema: &GeneratorTableDefinition) -> Vec<String> {
     let mut columns = vec!["id".to_string()];
     columns.extend(table_schema.field_names().iter().map(|s| s.to_string()));
     columns
 }
 
 /// Convert an UniversalRow to a CSV record (vector of strings).
-fn internal_row_to_csv_record(row: &UniversalRow, table_schema: &TableDefinition) -> Vec<String> {
+fn internal_row_to_csv_record(
+    row: &UniversalRow,
+    table_schema: &GeneratorTableDefinition,
+) -> Vec<String> {
     let mut record = Vec::new();
 
     // Add the ID

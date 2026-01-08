@@ -21,9 +21,7 @@
 
 use std::collections::HashMap;
 
-use crate::surreal::{
-    convert_id_with_schema, legacy_type_to_universal_type, Change, ChangeOp, LegacySchema,
-};
+use crate::surreal::{Change, ChangeOp};
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -31,15 +29,16 @@ use chrono::Utc;
 use json_types::JsonValueWithSchema;
 use log::info;
 use mysql_async::{prelude::*, Conn, Pool, Row, Value};
+use surrealdb_types::convert_id_with_database_schema;
 use surrealdb_types::typed_values_to_surreal_map;
-use sync_core::TypedValue;
+use sync_core::{DatabaseSchema, TypedValue, UniversalType};
 
 /// MySQL incremental sync implementation using audit table-based change tracking
 pub struct MySQLIncrementalSource {
     pool: Pool,
     server_id: u32,
     sequence_id: i64,
-    database_schema: Option<LegacySchema>,
+    database_schema: Option<DatabaseSchema>,
 }
 
 impl MySQLIncrementalSource {
@@ -68,7 +67,7 @@ impl IncrementalSource for MySQLIncrementalSource {
 
         // Collect database schema for type-aware conversion
         let mut conn = self.pool.get_conn().await?;
-        let schema = super::schema::collect_mysql_schema(&mut conn, "").await?;
+        let schema = super::schema::collect_mysql_database_schema(&mut conn).await?;
         self.database_schema = Some(schema);
         info!("Collected MySQL database schema for type-aware conversion");
 
@@ -111,7 +110,7 @@ pub struct MySQLChangeStream {
     server_id: u32,
     buffer: Vec<Change>,
     last_sequence_id: i64,
-    database_schema: Option<LegacySchema>,
+    database_schema: Option<DatabaseSchema>,
 }
 
 impl MySQLChangeStream {
@@ -119,7 +118,7 @@ impl MySQLChangeStream {
         pool: Pool,
         server_id: u32,
         starting_sequence_id: i64,
-        database_schema: Option<LegacySchema>,
+        database_schema: Option<DatabaseSchema>,
     ) -> Result<Self> {
         let connection = pool.get_conn().await?;
 
@@ -140,32 +139,27 @@ impl MySQLChangeStream {
         field_name: &str,
         table_name: &str,
     ) -> Result<TypedValue> {
-        // Get the LegacyType from schema to check for SET columns
-        let surreal_type = self
+        // Get the UniversalType from schema to check for SET columns
+        let column_type = self
             .database_schema
             .as_ref()
-            .and_then(|s| s.tables.get(table_name))
-            .and_then(|ts| ts.columns.get(field_name));
+            .and_then(|s| s.get_table(table_name))
+            .and_then(|ts| ts.get_column_type(field_name));
 
         // Handle SET columns specially - MySQL JSON_OBJECT stores SET as comma-separated string
-        if let Some(crate::surreal::LegacyType::Array(inner)) = surreal_type {
-            if matches!(inner.as_ref(), crate::surreal::LegacyType::String) {
-                // This is a SET column - parse comma-separated string to array
-                if let serde_json::Value::String(s) = &value {
-                    let values: Vec<String> = if s.is_empty() {
-                        Vec::new()
-                    } else {
-                        s.split(',').map(|v| v.to_string()).collect()
-                    };
-                    return Ok(sync_core::TypedValue::set(values, vec![]));
-                }
+        if let Some(UniversalType::Set { .. }) = column_type {
+            if let serde_json::Value::String(s) = &value {
+                let values: Vec<String> = if s.is_empty() {
+                    Vec::new()
+                } else {
+                    s.split(',').map(|v| v.to_string()).collect()
+                };
+                return Ok(sync_core::TypedValue::set(values, vec![]));
             }
         }
 
         // Get the sync type from schema for standard conversion
-        let sync_type = surreal_type
-            .map(legacy_type_to_universal_type)
-            .unwrap_or(sync_core::UniversalType::Text); // Default to text if not found
+        let sync_type = column_type.cloned().unwrap_or(UniversalType::Text); // Default to text if not found
 
         // Use json-types for conversion
         let jvs = JsonValueWithSchema::new(value, sync_type);
@@ -276,7 +270,7 @@ impl MySQLChangeStream {
                                 || self
                                     .database_schema
                                     .as_ref()
-                                    .and_then(|s| s.tables.get(&table_name))
+                                    .and_then(|s| s.get_table(&table_name))
                                     .is_none()
                             {
                                 anyhow::bail!(
@@ -318,7 +312,8 @@ impl MySQLChangeStream {
             // This ensures that BIGINT IDs are stored as numbers, UUIDs as UUIDs, etc.
             let record_id = if let Some(schema) = &self.database_schema {
                 // Use schema-aware conversion to get proper ID type
-                let surreal_id = convert_id_with_schema(&row_id, &table_name, "id", schema)?;
+                let surreal_id =
+                    convert_id_with_database_schema(&row_id, &table_name, "id", schema)?;
                 surrealdb::sql::Thing::from((table_name.clone(), surreal_id))
             } else {
                 // Fallback to string ID if no schema available (shouldn't happen)

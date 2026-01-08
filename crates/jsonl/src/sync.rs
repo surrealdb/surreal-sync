@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use surreal_sync_file::{FileSource, DEFAULT_BUFFER_SIZE};
 use surrealdb::sql::Thing;
-use sync_core::{Schema, TableDefinition, TypedValue, UniversalType, UniversalValue};
+use sync_core::{DatabaseSchema, TableDefinition, TypedValue, UniversalType, UniversalValue};
 
 /// Configuration for JSONL import
 #[derive(Clone)]
@@ -50,7 +50,7 @@ pub struct Config {
     pub dry_run: bool,
 
     /// Optional schema for type-aware conversion (e.g., UUID, DateTime parsing)
-    pub schema: Option<Schema>,
+    pub schema: Option<DatabaseSchema>,
 }
 
 impl Default for Config {
@@ -393,7 +393,7 @@ fn convert_json_to_record(
                 }
             } else {
                 // Get schema type hint for this field if available
-                let data_type = table_schema.and_then(|ts| ts.get_field_type(key));
+                let data_type = table_schema.and_then(|ts| ts.get_column_type(key));
 
                 // Convert the value with schema-aware conversion using json-types
                 let v = convert_value_with_schema(val, rules, data_type);

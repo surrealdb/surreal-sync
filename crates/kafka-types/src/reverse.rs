@@ -7,7 +7,7 @@ use crate::error::{KafkaTypesError, Result};
 use json_types::JsonValueWithSchema;
 use std::collections::HashMap;
 use surreal_sync_kafka::ProtoFieldValue;
-use sync_core::{TableDefinition, TypedValue, UniversalType, UniversalValue};
+use sync_core::{ColumnDefinition, TableDefinition, TypedValue, UniversalType, UniversalValue};
 use tracing::debug;
 
 /// Convert a Kafka message to TypedValue key-value pairs.
@@ -29,23 +29,23 @@ pub fn message_to_typed_values(
         surreal_sync_kafka::Payload::Protobuf(msg) => {
             // First, convert all fields from the message
             for (key, value) in msg.fields {
-                let field_schema = table_schema.and_then(|ts| ts.get_field(&key));
-                let typed_value = proto_to_typed_value_with_schema(value, field_schema)?;
+                let column_schema = table_schema.and_then(|ts| ts.get_column(&key));
+                let typed_value = proto_to_typed_value_with_schema(value, column_schema)?;
                 kvs.insert(key, typed_value);
             }
 
             // If we have schema, add missing array fields as empty arrays
             if let Some(schema) = table_schema {
-                for field in &schema.fields {
-                    if !kvs.contains_key(&field.name) {
+                for column in &schema.columns {
+                    if !kvs.contains_key(&column.name) {
                         // Check if this is an array field
-                        if let UniversalType::Array { element_type } = &field.field_type {
+                        if let UniversalType::Array { element_type } = &column.column_type {
                             debug!(
                                 "Adding empty array for missing field '{}' based on schema",
-                                field.name
+                                column.name
                             );
                             kvs.insert(
-                                field.name.clone(),
+                                column.name.clone(),
                                 TypedValue::array(Vec::new(), (**element_type).clone()),
                             );
                         }
@@ -61,22 +61,27 @@ pub fn message_to_typed_values(
 /// Convert protobuf field value to TypedValue with optional schema information.
 pub fn proto_to_typed_value_with_schema(
     value: ProtoFieldValue,
-    field_schema: Option<&sync_core::FieldDefinition>,
+    column_schema: Option<&ColumnDefinition>,
 ) -> Result<TypedValue> {
     match value {
         ProtoFieldValue::String(s) => {
             // Check if this is actually a JSON/Object field encoded as string
-            if let Some(fs) = field_schema {
-                if matches!(fs.field_type, UniversalType::Json | UniversalType::Jsonb) {
-                    debug!("Parsing string field '{}' as JSON based on schema", fs.name);
+            if let Some(col) = column_schema {
+                if matches!(col.column_type, UniversalType::Json | UniversalType::Jsonb) {
+                    debug!(
+                        "Parsing string field '{}' as JSON based on schema",
+                        col.name
+                    );
                     // Parse the JSON string and convert to TypedValue using json-types
                     let json_value: serde_json::Value =
                         serde_json::from_str(&s).map_err(|e| KafkaTypesError::JsonParse {
-                            field: fs.name.clone(),
+                            field: col.name.clone(),
                             message: e.to_string(),
                         })?;
-                    return Ok(JsonValueWithSchema::new(json_value, fs.field_type.clone())
-                        .to_typed_value());
+                    return Ok(
+                        JsonValueWithSchema::new(json_value, col.column_type.clone())
+                            .to_typed_value(),
+                    );
                 }
             }
             Ok(TypedValue::text(&s))
@@ -315,17 +320,10 @@ mod tests {
 
     #[test]
     fn test_proto_to_typed_value_with_schema_json() {
-        let field_schema = sync_core::FieldDefinition {
-            name: "metadata".to_string(),
-            field_type: UniversalType::Json,
-            generator: sync_core::GeneratorConfig::Pattern {
-                pattern: "{}".to_string(),
-            },
-            nullable: true,
-        };
+        let column_schema = sync_core::ColumnDefinition::nullable("metadata", UniversalType::Json);
 
         let value = ProtoFieldValue::String(r#"{"key": "value"}"#.to_string());
-        let result = proto_to_typed_value_with_schema(value, Some(&field_schema)).unwrap();
+        let result = proto_to_typed_value_with_schema(value, Some(&column_schema)).unwrap();
         assert_eq!(result.sync_type, UniversalType::Json);
         assert!(matches!(result.value, UniversalValue::Json(_)));
     }

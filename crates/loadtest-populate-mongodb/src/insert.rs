@@ -4,7 +4,7 @@ use crate::error::MongoDBPopulatorError;
 use bson::{doc, Document};
 use mongodb::Collection;
 use mongodb_types::forward::BsonValue;
-use sync_core::{TableDefinition, TypedValue, UniversalRow};
+use sync_core::{GeneratorTableDefinition, TypedValue, UniversalRow};
 
 /// Default batch size for INSERT operations.
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -12,7 +12,7 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 /// Insert a batch of documents into a MongoDB collection.
 pub async fn insert_batch(
     collection: &Collection<Document>,
-    table_schema: &TableDefinition,
+    table_schema: &GeneratorTableDefinition,
     rows: &[UniversalRow],
 ) -> Result<u64, MongoDBPopulatorError> {
     if rows.is_empty() {
@@ -32,7 +32,10 @@ pub async fn insert_batch(
 }
 
 /// Convert an UniversalRow to a BSON Document.
-fn internal_row_to_document(row: &UniversalRow, table_schema: &TableDefinition) -> Document {
+fn internal_row_to_document(
+    row: &UniversalRow,
+    table_schema: &GeneratorTableDefinition,
+) -> Document {
     let mut doc = Document::new();
 
     // Add the _id field
@@ -62,7 +65,7 @@ fn internal_row_to_document(row: &UniversalRow, table_schema: &TableDefinition) 
 #[allow(dead_code)]
 pub async fn insert_single(
     collection: &Collection<Document>,
-    table_schema: &TableDefinition,
+    table_schema: &GeneratorTableDefinition,
     row: &UniversalRow,
 ) -> Result<u64, MongoDBPopulatorError> {
     let doc = internal_row_to_document(row, table_schema);

@@ -2,6 +2,7 @@ use neo4rs::{ConfigBuilder, Graph, Query};
 use std::collections::HashSet;
 use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Value};
 use surrealdb::{engine::any::connect, Surreal};
+use surrealdb_types::{RecordWithSurrealValues as Record, Relation as SurrealRelation};
 
 use crate::{Neo4jJsonProperty, SourceOpts, SurrealOpts};
 
@@ -204,7 +205,7 @@ async fn migrate_neo4j_nodes(
         .param("label", label.clone());
         let mut node_result = graph.execute(node_query).await?;
 
-        let mut batch: Vec<crate::Record> = Vec::new();
+        let mut batch: Vec<Record> = Vec::new();
         let mut processed = 0;
 
         while let Some(row) = node_result.next().await? {
@@ -301,7 +302,7 @@ async fn migrate_neo4j_relationships(
         .param("rel_type", rel_type.clone());
         let mut rel_result = graph.execute(rel_query).await?;
 
-        let mut batch: Vec<crate::Relation> = Vec::new();
+        let mut batch: Vec<SurrealRelation> = Vec::new();
         let mut processed = 0;
 
         while let Some(row) = rel_result.next().await? {
@@ -377,7 +378,7 @@ fn convert_neo4j_row_to_record(
     row: &neo4rs::Row,
     label: &str,
     ctx: &Neo4jConversionContext,
-) -> anyhow::Result<crate::Record> {
+) -> anyhow::Result<Record> {
     let node: neo4rs::Node = row.get("n")?;
     let node_id: i64 = row.get("node_id")?;
 
@@ -417,7 +418,7 @@ fn convert_neo4j_row_to_record(
         }
     };
 
-    anyhow::Ok(crate::Record::new(id, data))
+    anyhow::Ok(Record::new(id, data))
 }
 
 /// Convert Neo4j node to keys and surreal values
@@ -475,7 +476,7 @@ pub struct Relation {
 }
 
 impl Relation {
-    pub fn to_relation(&self, ctx: &Neo4jConversionContext) -> anyhow::Result<crate::Relation> {
+    pub fn to_relation(&self, ctx: &Neo4jConversionContext) -> anyhow::Result<SurrealRelation> {
         let id = surrealdb::sql::Thing::from((
             self.rel_type.to_lowercase(),
             surrealdb::sql::Id::from(self.id),
@@ -506,7 +507,7 @@ impl Relation {
             data.insert(k.to_string(), surrealdb_types::SurrealValue(v));
         }
 
-        Ok(crate::Relation {
+        Ok(SurrealRelation {
             id,
             input,
             output,

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};
 use surrealdb::sql::{Id, Thing};
+use surrealdb_types::{typed_values_to_surreal_map, RecordWithSurrealValues};
 use sync_core::{Schema, TypedValue, UniversalType};
 use tracing::{debug, info, warn};
 
@@ -166,7 +167,7 @@ async fn process_csv_reader(
         // Process all the records we just read
         let mut total_processed = 0;
         let mut record_count = 0;
-        let mut batch: Vec<crate::surreal::Record> = Vec::new();
+        let mut batch: Vec<RecordWithSurrealValues> = Vec::new();
 
         for record in all_records {
             // Validate column count matches
@@ -220,10 +221,12 @@ async fn process_csv_reader(
                 Id::ulid()
             };
 
-            let surreal_record = crate::surreal::Record {
-                id: Thing::from((config.table.as_str(), id)),
-                data,
-            };
+            // Convert TypedValue data to surrealdb::sql::Value
+            let surreal_data = typed_values_to_surreal_map(data);
+            let surreal_record = RecordWithSurrealValues::new(
+                Thing::from((config.table.as_str(), id)),
+                surreal_data,
+            );
 
             batch.push(surreal_record);
             record_count += 1;
@@ -283,7 +286,7 @@ async fn process_csv_reader(
         .and_then(|s| s.get_table(&config.table));
 
     // Process records in batches
-    let mut batch: Vec<crate::surreal::Record> = Vec::new();
+    let mut batch: Vec<RecordWithSurrealValues> = Vec::new();
     let mut total_processed = 0;
     let mut record_count = 0;
 
@@ -335,10 +338,10 @@ async fn process_csv_reader(
             Id::ulid()
         };
 
-        let surreal_record = crate::surreal::Record {
-            id: Thing::from((config.table.as_str(), id)),
-            data,
-        };
+        // Convert TypedValue data to surrealdb::sql::Value
+        let surreal_data = typed_values_to_surreal_map(data);
+        let surreal_record =
+            RecordWithSurrealValues::new(Thing::from((config.table.as_str(), id)), surreal_data);
 
         batch.push(surreal_record);
         record_count += 1;

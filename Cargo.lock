@@ -6102,6 +6102,7 @@ dependencies = [
  "mysql_async",
  "neo4j-types",
  "neo4rs",
+ "postgresql-types",
  "rand 0.8.5",
  "rust_decimal",
  "serde",
@@ -6387,6 +6388,7 @@ dependencies = [
  "sync-core",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "uuid",
 ]
 

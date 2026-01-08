@@ -108,7 +108,7 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             conversion_rules: vec![],
             batch_size: BATCH_SIZE,
             dry_run: false,
-            schema: Some(schema.clone()), // Pass schema for type-aware conversion
+            schema: Some(schema.to_database_schema()), // Pass schema for type-aware conversion
         };
 
         sync(config).await?;

@@ -3,13 +3,13 @@
 //! This module uses the unified type conversion flow:
 //! MySQL Row → TypedValue (mysql-types) → surrealdb::sql::Value (surrealdb-types)
 
-use crate::surreal::RecordWithSurrealValues;
 use crate::{SourceOpts, SurrealOpts};
 use anyhow::Result;
 use mysql_async::{prelude::*, Pool, Row};
 use mysql_types::{row_to_typed_values_with_config, JsonConversionConfig, RowConversionConfig};
 use std::collections::HashMap;
 use surrealdb_types::typed_values_to_surreal_map;
+use surrealdb_types::RecordWithSurrealValues;
 use sync_core::{TypedValue, UniversalValue};
 use tracing::{debug, info};
 

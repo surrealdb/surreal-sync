@@ -2,7 +2,9 @@
 
 use crate::error::Neo4jPopulatorError;
 use neo4rs::{query, Graph, Query};
-use sync_core::{TableDefinition, TypedValue, UniversalRow, UniversalType, UniversalValue};
+use sync_core::{
+    GeneratorTableDefinition, TypedValue, UniversalRow, UniversalType, UniversalValue,
+};
 use tracing::debug;
 
 /// Default batch size for INSERT operations.
@@ -13,7 +15,7 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 /// Neo4j uses labels instead of tables - each "table" becomes a node label.
 pub async fn insert_batch(
     graph: &Graph,
-    table_schema: &TableDefinition,
+    table_schema: &GeneratorTableDefinition,
     rows: &[UniversalRow],
 ) -> Result<u64, Neo4jPopulatorError> {
     if rows.is_empty() {
@@ -38,7 +40,7 @@ pub async fn insert_batch(
 fn build_create_node_query(
     label: &str,
     row: &UniversalRow,
-    table_schema: &TableDefinition,
+    table_schema: &GeneratorTableDefinition,
 ) -> Result<Query, Neo4jPopulatorError> {
     // Build property map for the node
     let mut props = Vec::new();

@@ -321,7 +321,7 @@ impl KafkaPopulator {
     async fn publish_batch(
         &self,
         topic: &str,
-        table_schema: &sync_core::TableDefinition,
+        table_schema: &sync_core::GeneratorTableDefinition,
         rows: &[UniversalRow],
     ) -> Result<u64, KafkaPopulatorError> {
         // First, encode all messages (key + payload pairs)

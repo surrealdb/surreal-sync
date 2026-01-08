@@ -1,29 +1,9 @@
 //! SurrealDB utilities for CSV import
 
 use anyhow::Result;
-use std::collections::HashMap;
 use surrealdb::sql::Thing;
 use surrealdb::Surreal;
-use surrealdb_types::SurrealValue;
-use sync_core::TypedValue;
-
-/// A record to be written to SurrealDB
-#[derive(Debug, Clone)]
-pub struct Record {
-    pub id: Thing,
-    pub data: HashMap<String, TypedValue>,
-}
-
-impl Record {
-    fn get_upsert_content(&self) -> surrealdb::sql::Value {
-        let mut m = std::collections::BTreeMap::new();
-        for (k, v) in &self.data {
-            let sql_value: surrealdb::sql::Value = SurrealValue::from(v.clone()).into_inner();
-            m.insert(k.clone(), sql_value);
-        }
-        surrealdb::sql::Value::Object(surrealdb::sql::Object::from(m))
-    }
-}
+use surrealdb_types::RecordWithSurrealValues;
 
 /// SurrealDB connection options
 #[derive(Clone, Debug)]
@@ -60,7 +40,7 @@ pub async fn surreal_connect(
 /// Write a single record to SurrealDB
 async fn write_record(
     surreal: &Surreal<surrealdb::engine::any::Any>,
-    document: &Record,
+    document: &RecordWithSurrealValues,
 ) -> Result<()> {
     let upsert_content = document.get_upsert_content();
     let record_id = &document.id;
@@ -81,7 +61,7 @@ async fn write_record(
 pub async fn write_records(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     table_name: &str,
-    batch: &[Record],
+    batch: &[RecordWithSurrealValues],
 ) -> Result<()> {
     tracing::debug!(
         "Starting migration batch for table '{}' with {} records",

@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use sync_core::{Schema, TableDefinition, TypedValue, UniversalRow};
+use sync_core::{GeneratorTableDefinition, Schema, TypedValue, UniversalRow};
 use tracing::{debug, info};
 
 /// Default buffer size for JSONL writing.
@@ -262,7 +262,7 @@ impl JsonlPopulator {
 /// Convert an UniversalRow to a JSON object.
 fn internal_row_to_json(
     row: &UniversalRow,
-    table_schema: &TableDefinition,
+    table_schema: &GeneratorTableDefinition,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut obj = serde_json::Map::new();
 

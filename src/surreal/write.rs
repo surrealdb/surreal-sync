@@ -1,5 +1,6 @@
-use super::{Change, Record, Relation};
+use super::Change;
 use surrealdb::Surreal;
+use surrealdb_types::{RecordWithSurrealValues as Record, Relation};
 
 // Apply a single change event to SurrealDB
 pub async fn apply_change(

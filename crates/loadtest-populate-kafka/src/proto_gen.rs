@@ -3,7 +3,7 @@
 //! This module generates .proto file content from a Schema table definition,
 //! enabling dynamic protobuf schema generation for Kafka loadtesting.
 
-use sync_core::{TableDefinition, UniversalType};
+use sync_core::{GeneratorTableDefinition, UniversalType};
 
 /// Information about a proto field type.
 struct ProtoTypeInfo {
@@ -16,7 +16,10 @@ struct ProtoTypeInfo {
 /// Generate a .proto file content from a table schema.
 ///
 /// The message name is the capitalized table name (e.g., "users" -> "Users").
-pub fn generate_proto_for_table(table_schema: &TableDefinition, package_name: &str) -> String {
+pub fn generate_proto_for_table(
+    table_schema: &GeneratorTableDefinition,
+    package_name: &str,
+) -> String {
     let mut proto = String::new();
 
     // Syntax declaration

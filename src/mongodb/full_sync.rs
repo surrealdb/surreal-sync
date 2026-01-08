@@ -1,6 +1,7 @@
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
 use std::time::Duration;
 use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Thing, Value};
+use surrealdb_types::RecordWithSurrealValues as Record;
 
 use crate::surreal::surreal_connect;
 use crate::sync::IncrementalSource;
@@ -168,7 +169,7 @@ pub async fn run_full_sync(
             "Cursor created successfully for collection: {}",
             collection_name
         );
-        let mut batch: Vec<crate::Record> = Vec::new();
+        let mut batch: Vec<Record> = Vec::new();
         let mut processed = 0;
 
         tracing::debug!(
@@ -427,7 +428,7 @@ pub fn convert_bson_to_surreal_value(bson_value: mongodb::bson::Bson) -> anyhow:
 fn convert_bson_document_to_record(
     doc: mongodb::bson::Document,
     collection_name: &str,
-) -> anyhow::Result<crate::Record> {
+) -> anyhow::Result<Record> {
     // Extract MongoDB ObjectId and create Thing
     let id = if let Some(id_value) = doc.get("_id") {
         match id_value {
@@ -452,5 +453,5 @@ fn convert_bson_document_to_record(
 
     let id = surrealdb::sql::Thing::from((collection_name, id));
 
-    Ok(crate::Record::new(id, data))
+    Ok(Record::new(id, data))
 }

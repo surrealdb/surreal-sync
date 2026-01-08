@@ -57,10 +57,8 @@ pub use surreal_sync_csv as csv;
 // Re-export JSONL crate
 pub use surreal_sync_jsonl as jsonl;
 
-// Re-export types and schema functionality for easy access
-pub use surreal::{
-    Change, LegacySchema, LegacyTableDefinition, LegacyType, Record, Relation, SurrealValue,
-};
+// Re-export Change type for easy access
+pub use surreal::Change;
 
 // Re-export main migration functions for easy access
 pub use mongodb::migrate_from_mongodb;

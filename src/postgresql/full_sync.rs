@@ -9,6 +9,7 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
 use surrealdb::sql::{Array, Datetime, Number, Strand, Value};
+use surrealdb_types::RecordWithSurrealValues as Record;
 use tokio_postgres::{Client, NoTls, Row};
 use tracing::{debug, info, warn};
 
@@ -224,15 +225,11 @@ async fn get_primary_key_columns(client: &Client, table_name: &str) -> Result<Ve
     }
 }
 
-fn convert_row_to_record(
-    table: &str,
-    row: &Row,
-    pk_columns: &[String],
-) -> anyhow::Result<crate::Record> {
+fn convert_row_to_record(table: &str, row: &Row, pk_columns: &[String]) -> anyhow::Result<Record> {
     let (id, data) = convert_row_to_keys_and_surreal_values(row, pk_columns)?;
     let id = surrealdb::sql::Thing::from((table, id));
 
-    Ok(crate::Record::new(id, data))
+    Ok(Record::new(id, data))
 }
 
 /// Convert a PostgreSQL row to a map of surreal values

@@ -477,7 +477,10 @@ async fn run() -> anyhow::Result<()> {
                     .with_context(|| format!("Failed to load sync schema from {schema_path:?}"))?;
                 // Get the table schema using the configured table name or topic name
                 let table_name = config.table_name.as_ref().unwrap_or(&config.topic);
-                schema.get_table(table_name).cloned()
+                // Convert GeneratorTableDefinition to base TableDefinition for sync operations
+                schema
+                    .get_table(table_name)
+                    .map(|t| t.to_table_definition())
             } else {
                 None
             };

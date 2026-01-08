@@ -1,7 +1,4 @@
-use crate::surreal::{
-    convert_id_with_schema, json_to_surreal_with_schema, surreal_connect, Change, ChangeOp,
-    LegacySchema,
-};
+use crate::surreal::{surreal_connect, Change, ChangeOp};
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use crate::{SourceOpts, SurrealOpts};
 use anyhow::{anyhow, Result};
@@ -11,6 +8,8 @@ use log::{error, info, warn};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
+use surrealdb_types::{convert_id_with_database_schema, json_to_surreal_with_table_schema};
+use sync_core::DatabaseSchema;
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
 use tracing::debug;
@@ -175,7 +174,7 @@ pub struct PostgresIncrementalSource {
     client: Arc<Mutex<Client>>,
     tracking_table: String,
     last_sequence: i64,
-    database_schema: Option<LegacySchema>,
+    database_schema: Option<DatabaseSchema>,
     /// Mapping of table names to their primary key column names
     /// Used for schema-aware ID type conversion in the change stream
     pk_columns: HashMap<String, Vec<String>>,
@@ -468,7 +467,7 @@ impl IncrementalSource for PostgresIncrementalSource {
     async fn initialize(&mut self) -> Result<()> {
         // Collect database schema for type-aware conversion
         let client = self.client.lock().await;
-        let schema = super::schema::collect_postgresql_schema(&client, "public").await?;
+        let schema = super::schema::collect_postgresql_database_schema(&client).await?;
         drop(client); // Release lock before storing schema
         self.database_schema = Some(schema);
         info!("Collected PostgreSQL database schema for type-aware conversion");
@@ -509,7 +508,7 @@ pub struct PostgresChangeStream {
     last_sequence: i64,
     buffer: Vec<Change>,
     empty_poll_count: usize,
-    database_schema: Option<LegacySchema>,
+    database_schema: Option<DatabaseSchema>,
     /// Mapping of table names to their primary key column names
     pk_columns: HashMap<String, Vec<String>>,
 }
@@ -519,7 +518,7 @@ impl PostgresChangeStream {
         client: Arc<Mutex<Client>>,
         tracking_table: String,
         start_sequence: i64,
-        database_schema: Option<LegacySchema>,
+        database_schema: Option<DatabaseSchema>,
         pk_columns: HashMap<String, Vec<String>>,
     ) -> Result<Self> {
         Ok(Self {
@@ -607,7 +606,7 @@ impl PostgresChangeStream {
                 if let Some(table_schema) = self
                     .database_schema
                     .as_ref()
-                    .and_then(|s| s.tables.get(&table_name))
+                    .and_then(|s| s.get_table(&table_name))
                 {
                     // Convert JSON object using schema information
                     // NOTE: We must filter out ALL primary key column(s) from the content data.
@@ -647,7 +646,7 @@ impl PostgresChangeStream {
                                     // Skip PK columns - they're used as record ID, not content
                                     continue;
                                 }
-                                let v = json_to_surreal_with_schema(val, &key, table_schema)?;
+                                let v = json_to_surreal_with_table_schema(val, &key, table_schema)?;
                                 m.insert(key, v);
                             }
                             m
@@ -697,7 +696,12 @@ impl PostgresChangeStream {
 
                         // Use schema-aware conversion if schema is available
                         if let Some(schema) = &self.database_schema {
-                            convert_id_with_schema(&id_str, &table_name, pk_column, schema)?
+                            convert_id_with_database_schema(
+                                &id_str,
+                                &table_name,
+                                pk_column,
+                                schema,
+                            )?
                         } else {
                             // Fallback to value-based inference if no schema
                             if let Ok(n) = id_str.parse::<i64>() {
@@ -722,7 +726,12 @@ impl PostgresChangeStream {
 
                             // Use schema-aware conversion if schema is available
                             let surreal_id = if let Some(schema) = &self.database_schema {
-                                convert_id_with_schema(&id_str, &table_name, pk_column, schema)?
+                                convert_id_with_database_schema(
+                                    &id_str,
+                                    &table_name,
+                                    pk_column,
+                                    schema,
+                                )?
                             } else {
                                 // Fallback to string if no schema
                                 surrealdb::sql::Id::String(id_str)

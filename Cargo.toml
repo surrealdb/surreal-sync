@@ -89,6 +89,7 @@ sync-core = { path = "crates/sync-core" }
 # Type conversion crates
 json-types = { path = "crates/json-types" }
 mysql-types = { path = "crates/mysql-types" }
+postgresql-types = { path = "crates/postgresql-types" }
 surrealdb-types = { path = "crates/surrealdb-types" }
 kafka-types = { path = "crates/kafka-types" }
 neo4j-types = { path = "crates/neo4j-types" }

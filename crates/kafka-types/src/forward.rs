@@ -6,7 +6,9 @@
 use crate::error::{KafkaTypesError, Result};
 use protobuf::CodedOutputStream;
 use std::collections::HashMap;
-use sync_core::{TableDefinition, TypedValue, UniversalRow, UniversalType, UniversalValue};
+use sync_core::{
+    GeneratorTableDefinition, TypedValue, UniversalRow, UniversalType, UniversalValue,
+};
 
 /// Encode an UniversalRow to protobuf binary format.
 ///
@@ -14,7 +16,7 @@ use sync_core::{TableDefinition, TypedValue, UniversalRow, UniversalType, Univer
 /// - Each field is encoded as (tag, value) pairs
 /// - Tag = (field_number << 3) | wire_type
 /// - Wire types: 0=varint, 1=64-bit, 2=length-delimited, 5=32-bit
-pub fn encode_row(row: &UniversalRow, table_schema: &TableDefinition) -> Result<Vec<u8>> {
+pub fn encode_row(row: &UniversalRow, table_schema: &GeneratorTableDefinition) -> Result<Vec<u8>> {
     let mut buffer = Vec::new();
     {
         let mut stream = CodedOutputStream::vec(&mut buffer);
@@ -45,7 +47,7 @@ pub fn encode_row(row: &UniversalRow, table_schema: &TableDefinition) -> Result<
 /// rather than InternalRow.
 pub fn encode_typed_values(
     values: &HashMap<String, TypedValue>,
-    table_schema: &TableDefinition,
+    table_schema: &GeneratorTableDefinition,
 ) -> Result<Vec<u8>> {
     let mut buffer = Vec::new();
     {
@@ -357,8 +359,8 @@ mod tests {
     use protobuf::CodedInputStream;
     use sync_core::{FieldDefinition, GeneratorConfig, IDDefinition};
 
-    fn test_table_schema() -> TableDefinition {
-        TableDefinition {
+    fn test_table_schema() -> GeneratorTableDefinition {
+        GeneratorTableDefinition {
             name: "users".to_string(),
             id: IDDefinition {
                 id_type: UniversalType::Int64,
@@ -417,7 +419,7 @@ mod tests {
 
     #[test]
     fn test_encode_datetime() {
-        let schema = TableDefinition {
+        let schema = GeneratorTableDefinition {
             name: "events".to_string(),
             id: IDDefinition {
                 id_type: UniversalType::Int64,
@@ -445,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_encode_array() {
-        let schema = TableDefinition {
+        let schema = GeneratorTableDefinition {
             name: "products".to_string(),
             id: IDDefinition {
                 id_type: UniversalType::Int64,

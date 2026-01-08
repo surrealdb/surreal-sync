@@ -1,6 +1,6 @@
-pub use super::{Record, Relation};
 use std::collections::HashMap;
 use surrealdb_types::SurrealValue;
+use surrealdb_types::{RecordWithSurrealValues as Record, Relation};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ChangeOp {

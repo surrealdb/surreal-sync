@@ -2,7 +2,7 @@
 
 use crate::error::PostgreSQLPopulatorError;
 use postgresql_types::forward::PostgreSQLValue;
-use sync_core::{Schema, TableDefinition, TypedValue, UniversalRow};
+use sync_core::{GeneratorTableDefinition, Schema, TypedValue, UniversalRow};
 use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
 
@@ -12,7 +12,7 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 /// Insert a batch of rows into a PostgreSQL table.
 pub async fn insert_batch(
     client: &Client,
-    table_schema: &TableDefinition,
+    table_schema: &GeneratorTableDefinition,
     rows: &[UniversalRow],
 ) -> Result<u64, PostgreSQLPopulatorError> {
     if rows.is_empty() {
@@ -123,7 +123,7 @@ fn pg_value_to_boxed(value: PostgreSQLValue) -> Box<dyn ToSql + Sync + Send> {
 #[allow(dead_code)]
 pub async fn insert_single(
     client: &Client,
-    table_schema: &TableDefinition,
+    table_schema: &GeneratorTableDefinition,
     row: &UniversalRow,
 ) -> Result<u64, PostgreSQLPopulatorError> {
     // Build column list: id + all fields

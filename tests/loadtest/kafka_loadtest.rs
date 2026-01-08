@@ -177,7 +177,10 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         let deadline = Utc::now() + chrono::Duration::seconds(SYNC_TIMEOUT_SECS);
 
         // Get the table schema for schema-aware conversion
-        let table_schema = schema.get_table(table_name).cloned();
+        // Convert from GeneratorTableDefinition to base TableDefinition
+        let table_schema = schema
+            .get_table(table_name)
+            .map(|t| t.to_table_definition());
 
         let sync_handle = tokio::spawn({
             let namespace = surreal_config.surreal_namespace.clone();

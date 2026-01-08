@@ -3,7 +3,7 @@
 use crate::error::MySQLPopulatorError;
 use mysql_async::{prelude::*, Params, Pool, Value};
 use mysql_types::forward::MySQLValue;
-use sync_core::{Schema, TableDefinition, TypedValue, UniversalRow};
+use sync_core::{GeneratorTableDefinition, Schema, TypedValue, UniversalRow};
 
 /// Default batch size for INSERT operations.
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -11,7 +11,7 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 /// Insert a batch of rows into a MySQL table.
 pub async fn insert_batch(
     pool: &Pool,
-    table_schema: &TableDefinition,
+    table_schema: &GeneratorTableDefinition,
     rows: &[UniversalRow],
 ) -> Result<u64, MySQLPopulatorError> {
     if rows.is_empty() {
@@ -75,7 +75,7 @@ pub async fn insert_batch(
 #[allow(dead_code)]
 pub async fn insert_single(
     pool: &Pool,
-    table_schema: &TableDefinition,
+    table_schema: &GeneratorTableDefinition,
     row: &UniversalRow,
 ) -> Result<u64, MySQLPopulatorError> {
     let mut conn = pool.get_conn().await?;
