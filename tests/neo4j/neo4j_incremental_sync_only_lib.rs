@@ -69,7 +69,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     };
 
     // Create a sync config for checkpoint emission
-    let sync_config = surreal_sync::sync::SyncConfig {
+    let sync_config = surreal_sync_neo4j::SyncConfig {
         incremental: false, // This is full sync with empty data
         incremental_from: None,
         emit_checkpoints: true,
@@ -77,11 +77,11 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     };
 
     // Run full sync with empty data to get checkpoint (t1)
-    surreal_sync::neo4j::run_full_sync(
-        source_opts.clone(),
+    surreal_sync_neo4j::run_full_sync(
+        surreal_sync_neo4j::SourceOpts::from(&source_opts),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_opts.clone(),
+        surreal_sync_neo4j::SurrealOpts::from(&surreal_opts),
         Some(sync_config),
     )
     .await?;
@@ -98,12 +98,12 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     //     surreal_sync::checkpoint::get_first_checkpoint_from_dir(".test-checkpoints").await?;
 
     // Run incremental sync using the checkpoint
-    surreal_sync::neo4j::run_incremental_sync(
-        source_opts,
+    surreal_sync_neo4j::run_incremental_sync(
+        surreal_sync_neo4j::SourceOpts::from(&source_opts),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_opts,
-        surreal_sync::sync::SyncCheckpoint::Neo4j(t1),
+        surreal_sync_neo4j::SurrealOpts::from(&surreal_opts),
+        surreal_sync_neo4j::SyncCheckpoint::Neo4j(t1),
         chrono::Utc::now() + chrono::Duration::hours(1), // 1 hour deadline
         None, // No target checkpoint - sync all available changes
     )

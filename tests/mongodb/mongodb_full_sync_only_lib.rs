@@ -6,7 +6,7 @@
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
-use surreal_sync::{mongodb, SourceOpts, SurrealOpts};
+use surreal_sync::{SourceOpts, SurrealOpts};
 
 #[tokio::test]
 async fn test_mongodb_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -53,11 +53,11 @@ async fn test_mongodb_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> 
     };
 
     // Execute full sync from MongoDB to SurrealDB
-    mongodb::migrate_from_mongodb(
-        source_opts,
+    surreal_sync_mongodb::migrate_from_mongodb(
+        surreal_sync_mongodb::SourceOpts::from(&source_opts),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_opts,
+        surreal_sync_mongodb::SurrealOpts::from(&surreal_opts),
     )
     .await?;
 

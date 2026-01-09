@@ -58,11 +58,17 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use surreal_sync::{
-    csv, jsonl, kafka, mongodb, mysql, neo4j, postgresql,
+    csv, jsonl, kafka, mysql, postgresql,
     sync::{SyncCheckpoint, SyncConfig},
     SourceOpts, SurrealOpts,
 };
 use surreal_sync_surreal::surreal_connect;
+
+// Database-specific sync crates (fully-qualified paths used in match arms)
+#[allow(clippy::single_component_path_imports)]
+use surreal_sync_mongodb;
+#[allow(clippy::single_component_path_imports)]
+use surreal_sync_neo4j;
 
 // Load testing imports
 use loadtest_populate_csv::CSVPopulateArgs;
@@ -617,7 +623,7 @@ async fn run_full_sync(
     match from {
         SourceDatabase::MongoDB => {
             let sync_config = if emit_checkpoints {
-                Some(SyncConfig {
+                Some(surreal_sync_mongodb::SyncConfig {
                     incremental: false,
                     incremental_from: None,
                     emit_checkpoints: true,
@@ -626,18 +632,18 @@ async fn run_full_sync(
             } else {
                 None
             };
-            surreal_sync::mongodb::run_full_sync(
-                from_opts,
+            surreal_sync_mongodb::run_full_sync(
+                surreal_sync_mongodb::SourceOpts::from(&from_opts),
                 to_namespace,
                 to_database,
-                to_opts,
+                surreal_sync_mongodb::SurrealOpts::from(&to_opts),
                 sync_config,
             )
             .await?;
         }
         SourceDatabase::Neo4j => {
             let sync_config = if emit_checkpoints {
-                Some(SyncConfig {
+                Some(surreal_sync_neo4j::SyncConfig {
                     incremental: false,
                     incremental_from: None,
                     emit_checkpoints: true,
@@ -646,11 +652,11 @@ async fn run_full_sync(
             } else {
                 None
             };
-            surreal_sync::neo4j::run_full_sync(
-                from_opts,
+            surreal_sync_neo4j::run_full_sync(
+                surreal_sync_neo4j::SourceOpts::from(&from_opts),
                 to_namespace,
                 to_database,
-                to_opts,
+                surreal_sync_neo4j::SurrealOpts::from(&to_opts),
                 sync_config,
             )
             .await?;
@@ -772,26 +778,39 @@ async fn run_incremental_sync(
 
     match from {
         SourceDatabase::Neo4j => {
-            neo4j::run_incremental_sync(
-                from_opts,
+            // Parse checkpoint strings directly using neo4j crate's types
+            let neo4j_from = surreal_sync_neo4j::SyncCheckpoint::from_string(&incremental_from)?;
+            let neo4j_to = incremental_to
+                .as_ref()
+                .map(|s| surreal_sync_neo4j::SyncCheckpoint::from_string(s))
+                .transpose()?;
+            surreal_sync_neo4j::run_incremental_sync(
+                surreal_sync_neo4j::SourceOpts::from(&from_opts),
                 to_namespace,
                 to_database,
-                to_opts,
-                from_checkpoint,
+                surreal_sync_neo4j::SurrealOpts::from(&to_opts),
+                neo4j_from,
                 deadline,
-                to_checkpoint,
+                neo4j_to,
             )
             .await?;
         }
         SourceDatabase::MongoDB => {
-            mongodb::run_incremental_sync(
-                from_opts,
+            // Parse checkpoint strings directly using mongodb crate's types
+            let mongodb_from =
+                surreal_sync_mongodb::SyncCheckpoint::from_string(&incremental_from)?;
+            let mongodb_to = incremental_to
+                .as_ref()
+                .map(|s| surreal_sync_mongodb::SyncCheckpoint::from_string(s))
+                .transpose()?;
+            surreal_sync_mongodb::run_incremental_sync(
+                surreal_sync_mongodb::SourceOpts::from(&from_opts),
                 to_namespace,
                 to_database,
-                to_opts,
-                from_checkpoint,
+                surreal_sync_mongodb::SurrealOpts::from(&to_opts),
+                mongodb_from,
                 deadline,
-                to_checkpoint,
+                mongodb_to,
             )
             .await?;
         }

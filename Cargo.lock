@@ -6111,6 +6111,8 @@ dependencies = [
  "surreal-sync-jsonl",
  "surreal-sync-kafka",
  "surreal-sync-kafka-producer",
+ "surreal-sync-mongodb",
+ "surreal-sync-neo4j",
  "surreal-sync-postgresql-replication",
  "surreal-sync-surreal",
  "surrealdb",
@@ -6224,6 +6226,56 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "surreal-sync-mongodb"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "bson",
+ "chrono",
+ "futures",
+ "log",
+ "mongodb",
+ "serde",
+ "serde_json",
+ "surreal-sync-surreal",
+ "surrealdb",
+ "surrealdb-types",
+ "sync-core",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
+name = "surreal-sync-neo4j"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "futures",
+ "geo 0.31.0",
+ "geo-types",
+ "log",
+ "neo4j-types",
+ "neo4rs",
+ "serde",
+ "serde_json",
+ "surreal-sync-surreal",
+ "surrealdb",
+ "surrealdb-types",
+ "sync-core",
+ "tokio",
+ "tokio-stream",
+ "tokio-test",
+ "tracing",
 ]
 
 [[package]]

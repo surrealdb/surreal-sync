@@ -1,10 +1,63 @@
+//! Neo4j full sync implementation
+//!
+//! This module provides full synchronization from Neo4j to SurrealDB.
+
 use neo4rs::{ConfigBuilder, Graph, Query};
 use std::collections::HashSet;
 use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Value};
 use surrealdb::{engine::any::connect, Surreal};
 use surrealdb_types::{RecordWithSurrealValues as Record, Relation as SurrealRelation};
 
-use crate::{Neo4jJsonProperty, SourceOpts, SurrealOpts};
+use crate::sync_types::{SyncConfig, SyncManager, SyncPhase};
+
+/// Source database connection options (Neo4j-specific, library type without clap)
+#[derive(Clone, Debug)]
+pub struct SourceOpts {
+    pub source_uri: String,
+    pub source_database: Option<String>,
+    pub source_username: Option<String>,
+    pub source_password: Option<String>,
+    pub neo4j_timezone: String,
+    pub neo4j_json_properties: Option<Vec<String>>,
+}
+
+/// SurrealDB connection options (library type without clap)
+#[derive(Clone, Debug)]
+pub struct SurrealOpts {
+    pub surreal_endpoint: String,
+    pub surreal_username: String,
+    pub surreal_password: String,
+    pub batch_size: usize,
+    pub dry_run: bool,
+}
+
+/// Parsed configuration for Neo4j JSON-to-object conversion
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Neo4jJsonProperty {
+    pub label: String,
+    pub property: String,
+}
+
+impl Neo4jJsonProperty {
+    /// Parse "Label.property" format into Neo4jJsonProperty
+    pub fn parse(s: &str) -> anyhow::Result<Self> {
+        let parts: Vec<&str> = s.split('.').collect();
+        if parts.len() != 2 {
+            anyhow::bail!(
+                "Invalid Neo4j JSON property format: '{s}'. Expected format: 'NodeLabel.propertyName'",
+            );
+        }
+        Ok(Neo4jJsonProperty {
+            label: parts[0].to_string(),
+            property: parts[1].to_string(),
+        })
+    }
+
+    /// Parse multiple entries from CLI argument
+    pub fn parse_vec(entries: &[String]) -> anyhow::Result<Vec<Self>> {
+        entries.iter().map(|s| Self::parse(s)).collect()
+    }
+}
 
 /// Context for Neo4j type conversion with JSON-to-object configuration
 #[derive(Clone)]
@@ -44,7 +97,7 @@ pub async fn run_full_sync(
     to_namespace: String,
     to_database: String,
     to_opts: SurrealOpts,
-    sync_config: Option<crate::sync::SyncConfig>,
+    sync_config: Option<SyncConfig>,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Neo4j migration");
     tracing::debug!(
@@ -79,15 +132,15 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t1 (before full sync starts) if configured
     let _checkpoint_t1 = if let Some(ref config) = sync_config {
-        let sync_manager = crate::sync::SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone());
 
         // Use timestamp-based checkpoint tracking
         tracing::info!("Using timestamp-based checkpoint tracking");
-        let checkpoint = super::neo4j_checkpoint::get_current_checkpoint();
+        let checkpoint = crate::neo4j_checkpoint::get_current_checkpoint();
 
         // Emit the checkpoint
         sync_manager
-            .emit_checkpoint(&checkpoint, crate::sync::SyncPhase::FullSyncStart)
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
             .await?;
 
         tracing::info!(
@@ -146,14 +199,14 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t2 (after full sync completes) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = crate::sync::SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone());
 
         // Use timestamp-based checkpoint tracking
-        let checkpoint = super::neo4j_checkpoint::get_current_checkpoint();
+        let checkpoint = crate::neo4j_checkpoint::get_current_checkpoint();
 
         // Emit the checkpoint
         sync_manager
-            .emit_checkpoint(&checkpoint, crate::sync::SyncPhase::FullSyncEnd)
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
             .await?;
 
         tracing::info!(
@@ -295,7 +348,7 @@ async fn migrate_neo4j_relationships(
         tracing::info!("Migrating relationships of type: {}", rel_type);
 
         let rel_query = Query::new(
-            "MATCH (start_node)-[r]->(end_node) WHERE type(r) = $rel_type 
+            "MATCH (start_node)-[r]->(end_node) WHERE type(r) = $rel_type
              RETURN r, id(r) as rel_id, id(start_node) as start_id, id(end_node) as end_id,
              labels(start_node) as start_labels, labels(end_node) as end_labels"
                 .to_string(),
@@ -1069,8 +1122,6 @@ mod tests {
 
     #[test]
     fn test_neo4j_json_property_parse() {
-        use crate::Neo4jJsonProperty;
-
         // Test valid format
         let prop = Neo4jJsonProperty::parse("User.metadata").unwrap();
         assert_eq!(prop.label, "User");

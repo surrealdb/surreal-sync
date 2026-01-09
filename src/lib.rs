@@ -16,8 +16,8 @@
 //! supported databases. See [`sync`] module for the core architecture and
 //! individual database modules for specific implementations:
 //!
-//! - [`neo4j_incremental`] - Neo4j timestamp-based tracking
-//! - [`mongodb_incremental`] - MongoDB change streams
+//! - `surreal_sync_neo4j` - Neo4j timestamp-based tracking
+//! - `surreal_sync_mongodb` - MongoDB change streams
 //! - [`postgresql_incremental`] - PostgreSQL trigger-based tracking
 //! - [`mysql_incremental`] - MySQL audit table tracking
 //!
@@ -43,9 +43,7 @@ use clap::Parser;
 
 pub mod checkpoint;
 pub mod kafka;
-pub mod mongodb;
 pub mod mysql;
-pub mod neo4j;
 pub mod postgresql;
 pub mod sync;
 pub mod testing;
@@ -53,37 +51,6 @@ pub mod testing;
 // Re-export CSV and JSONL crates for convenience
 pub use surreal_sync_csv as csv;
 pub use surreal_sync_jsonl as jsonl;
-
-// Re-export main migration functions for easy access
-pub use mongodb::migrate_from_mongodb;
-
-/// Parsed configuration for Neo4j JSON-to-object conversion
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Neo4jJsonProperty {
-    pub label: String,
-    pub property: String,
-}
-
-impl Neo4jJsonProperty {
-    /// Parse "Label.property" format into Neo4jJsonProperty
-    pub fn parse(s: &str) -> anyhow::Result<Self> {
-        let parts: Vec<&str> = s.split('.').collect();
-        if parts.len() != 2 {
-            anyhow::bail!(
-                "Invalid Neo4j JSON property format: '{s}'. Expected format: 'NodeLabel.propertyName'",
-            );
-        }
-        Ok(Neo4jJsonProperty {
-            label: parts[0].to_string(),
-            property: parts[1].to_string(),
-        })
-    }
-
-    /// Parse multiple entries from CLI argument
-    pub fn parse_vec(entries: &[String]) -> anyhow::Result<Vec<Self>> {
-        entries.iter().map(|s| Self::parse(s)).collect()
-    }
-}
 
 #[derive(Parser, Clone)]
 pub struct SourceOpts {
@@ -147,4 +114,52 @@ pub struct SurrealOpts {
     /// Dry run mode - don't actually write data
     #[arg(long)]
     pub dry_run: bool,
+}
+
+// CLI type → MongoDB library type conversions
+impl From<&SourceOpts> for surreal_sync_mongodb::SourceOpts {
+    fn from(opts: &SourceOpts) -> Self {
+        Self {
+            source_uri: opts.source_uri.clone(),
+            source_database: opts.source_database.clone(),
+        }
+    }
+}
+
+impl From<&SurrealOpts> for surreal_sync_mongodb::SurrealOpts {
+    fn from(opts: &SurrealOpts) -> Self {
+        Self {
+            surreal_endpoint: opts.surreal_endpoint.clone(),
+            surreal_username: opts.surreal_username.clone(),
+            surreal_password: opts.surreal_password.clone(),
+            batch_size: opts.batch_size,
+            dry_run: opts.dry_run,
+        }
+    }
+}
+
+// CLI type → Neo4j library type conversions
+impl From<&SourceOpts> for surreal_sync_neo4j::SourceOpts {
+    fn from(opts: &SourceOpts) -> Self {
+        Self {
+            source_uri: opts.source_uri.clone(),
+            source_database: opts.source_database.clone(),
+            source_username: opts.source_username.clone(),
+            source_password: opts.source_password.clone(),
+            neo4j_timezone: opts.neo4j_timezone.clone(),
+            neo4j_json_properties: opts.neo4j_json_properties.clone(),
+        }
+    }
+}
+
+impl From<&SurrealOpts> for surreal_sync_neo4j::SurrealOpts {
+    fn from(opts: &SurrealOpts) -> Self {
+        Self {
+            surreal_endpoint: opts.surreal_endpoint.clone(),
+            surreal_username: opts.surreal_username.clone(),
+            surreal_password: opts.surreal_password.clone(),
+            batch_size: opts.batch_size,
+            dry_run: opts.dry_run,
+        }
+    }
 }

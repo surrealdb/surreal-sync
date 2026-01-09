@@ -1,11 +1,32 @@
+//! MongoDB full sync implementation
+//!
+//! This module provides full synchronization from MongoDB to SurrealDB.
+
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
 use std::time::Duration;
 use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Thing, Value};
 use surrealdb_types::RecordWithSurrealValues as Record;
 
-use crate::sync::IncrementalSource;
-use crate::{SourceOpts, SurrealOpts};
 use surreal_sync_surreal::{surreal_connect, write_records, SurrealOpts as SurrealConnOpts};
+
+use crate::sync_types::{IncrementalSource, SyncConfig, SyncManager, SyncPhase};
+
+/// Source database connection options (MongoDB-specific, library type without clap)
+#[derive(Clone, Debug)]
+pub struct SourceOpts {
+    pub source_uri: String,
+    pub source_database: Option<String>,
+}
+
+/// SurrealDB connection options (library type without clap)
+#[derive(Clone, Debug)]
+pub struct SurrealOpts {
+    pub surreal_endpoint: String,
+    pub surreal_username: String,
+    pub surreal_password: String,
+    pub batch_size: usize,
+    pub dry_run: bool,
+}
 
 /// Parse an ISO 8601 duration string (PTxS or PTx.xxxxxxxxxS format).
 fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
@@ -40,7 +61,7 @@ pub async fn run_full_sync(
     to_namespace: String,
     to_database: String,
     to_opts: SurrealOpts,
-    sync_config: Option<crate::sync::SyncConfig>,
+    sync_config: Option<SyncConfig>,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting MongoDB migration");
     tracing::debug!(
@@ -82,14 +103,14 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t1 (before full sync starts) if configured
     let _checkpoint_t1 = if let Some(ref config) = sync_config {
-        let sync_manager = crate::sync::SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone());
 
         // Get current resume token from MongoDB before creating source
         let initial_resume_token =
-            super::checkpoint::get_resume_token(&mongo_client, &source_db_name).await?;
+            crate::checkpoint::get_resume_token(&mongo_client, &source_db_name).await?;
 
         // Create source with initial resume token
-        let source = super::incremental_sync::MongodbIncrementalSource::new(
+        let source = crate::incremental_sync::MongodbIncrementalSource::new(
             &from_opts.source_uri,
             &source_db_name,
             initial_resume_token,
@@ -99,7 +120,7 @@ pub async fn run_full_sync(
 
         // Emit the checkpoint
         sync_manager
-            .emit_checkpoint(&checkpoint, crate::sync::SyncPhase::FullSyncStart)
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
             .await?;
 
         tracing::info!(
@@ -266,7 +287,7 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t2 (after full sync completes) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = crate::sync::SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone());
 
         // Get current checkpoint after migration
         let database_name = from_opts
@@ -275,8 +296,8 @@ pub async fn run_full_sync(
             .ok_or_else(|| anyhow::anyhow!("MongoDB database name is required"))?;
         // Get current resume token for end checkpoint
         let end_resume_token =
-            super::checkpoint::get_resume_token(&mongo_client, database_name).await?;
-        let source = super::incremental_sync::MongodbIncrementalSource::new(
+            crate::checkpoint::get_resume_token(&mongo_client, database_name).await?;
+        let source = crate::incremental_sync::MongodbIncrementalSource::new(
             &from_opts.source_uri,
             database_name,
             end_resume_token,
@@ -286,7 +307,7 @@ pub async fn run_full_sync(
 
         // Emit the checkpoint
         sync_manager
-            .emit_checkpoint(&checkpoint, crate::sync::SyncPhase::FullSyncEnd)
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
             .await?;
 
         tracing::info!(

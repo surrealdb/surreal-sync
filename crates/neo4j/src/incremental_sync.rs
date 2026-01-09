@@ -14,9 +14,10 @@
 //! If you need to sync deletions, run periodic clean-ups and full syncs to ensure SurrealDB
 //! exactly matches Neo4j.
 
-use crate::neo4j::Neo4jConversionContext;
-use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
-use crate::SourceOpts;
+use crate::sync_types::{
+    ChangeStream as ChangeStreamTrait, IncrementalSource, SourceDatabase, SyncCheckpoint,
+};
+use crate::{Neo4jConversionContext, SourceOpts, SurrealOpts};
 use async_trait::async_trait;
 use chrono::Utc;
 use neo4rs::{Graph, Query};
@@ -67,7 +68,7 @@ impl IncrementalSource for Neo4jIncrementalSource {
         Ok(())
     }
 
-    async fn get_changes(&mut self) -> anyhow::Result<Box<dyn ChangeStream>> {
+    async fn get_changes(&mut self) -> anyhow::Result<Box<dyn ChangeStreamTrait>> {
         Ok(Box::new(Neo4jChangeStream::new(
             self.graph.clone(),
             self.current_timestamp,
@@ -185,7 +186,7 @@ impl Neo4jChangeStream {
                     // Determine label for JSON-to-object check
                     let should_parse_json = self.ctx.should_parse_json(label, key);
 
-                    if let Ok(v) = crate::neo4j::convert_neo4j_type_to_surreal_value(
+                    if let Ok(v) = crate::convert_neo4j_type_to_surreal_value(
                         value,
                         &self.ctx.timezone,
                         should_parse_json,
@@ -243,11 +244,8 @@ impl Neo4jChangeStream {
 
         while let Some(row) = rel_result.next().await? {
             // Convert relationship to surreal data
-            let r = crate::neo4j::row_to_relation(
-                &row,
-                None,
-                Some(self.change_tracking_property.clone()),
-            )?;
+            let r =
+                crate::row_to_relation(&row, None, Some(self.change_tracking_property.clone()))?;
 
             max_checkpoint = max_checkpoint.max(r.updated_at);
 
@@ -266,7 +264,7 @@ impl Neo4jChangeStream {
 }
 
 #[async_trait]
-impl ChangeStream for Neo4jChangeStream {
+impl ChangeStreamTrait for Neo4jChangeStream {
     async fn next(&mut self) -> Option<anyhow::Result<Change>> {
         // If buffer is empty, fetch next batch
         if self.change_buffer.is_empty() && !self.finished {
@@ -322,7 +320,7 @@ pub async fn run_incremental_sync(
     from_opts: SourceOpts,
     to_namespace: String,
     to_database: String,
-    to_opts: crate::SurrealOpts,
+    to_opts: SurrealOpts,
     from_checkpoint: SyncCheckpoint,
     deadline: chrono::DateTime<chrono::Utc>,
     target_checkpoint: Option<SyncCheckpoint>,
@@ -336,7 +334,7 @@ pub async fn run_incremental_sync(
     tracing::info!("Using timestamp-based change tracking for incremental sync");
     // Extract timestamp from checkpoint and create graph
     let initial_timestamp = from_checkpoint.to_neo4j_timestamp()?.timestamp_millis();
-    let graph = super::neo4j_client::new_neo4j_client(&from_opts).await?;
+    let graph = crate::new_neo4j_client(&from_opts).await?;
 
     let mut source: Box<dyn IncrementalSource> = Box::new(Neo4jIncrementalSource::new(
         graph,

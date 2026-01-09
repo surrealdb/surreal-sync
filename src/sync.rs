@@ -20,10 +20,10 @@
 //! Each database has its own incremental source implementation that implements
 //! the [`IncrementalSource`] trait:
 //!
-//! - Neo4j: [`crate::neo4j_incremental::Neo4jIncrementalSource`] - Timestamp-based sync
-//! - MongoDB: [`crate::mongodb_incremental::MongodbIncrementalSource`] - Change streams
-//! - PostgreSQL: [`crate::postgresql_incremental::PostgresIncrementalSource`] - Trigger-based tracking
-//! - MySQL: [`crate::mysql_incremental::MySQLIncrementalSource`] - Audit table tracking
+//! - Neo4j: `surreal_sync_neo4j::Neo4jIncrementalSource` - Timestamp-based sync
+//! - MongoDB: `surreal_sync_mongodb::MongodbIncrementalSource` - Change streams
+//! - PostgreSQL: [`crate::postgresql::incremental_sync::PostgresIncrementalSource`] - Trigger-based tracking
+//! - MySQL: [`crate::mysql::incremental_sync::MySQLIncrementalSource`] - Audit table tracking
 //!
 //! ## Implementation Approaches
 //!

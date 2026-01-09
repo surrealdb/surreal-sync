@@ -126,11 +126,11 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         dry_run: false,
     };
 
-    surreal_sync::neo4j::run_full_sync(
-        source_opts,
+    surreal_sync_neo4j::run_full_sync(
+        surreal_sync_neo4j::SourceOpts::from(&source_opts),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_opts,
+        surreal_sync_neo4j::SurrealOpts::from(&surreal_opts),
         None,
     )
     .await?;

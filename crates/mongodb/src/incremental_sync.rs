@@ -3,7 +3,6 @@
 //! This module provides incremental synchronization capabilities for MongoDB using
 //! Change Streams, which provide real-time change notifications.
 
-use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use bson::Document;
@@ -22,6 +21,11 @@ use surreal_sync_surreal::{
 };
 use tokio::sync::Mutex;
 
+use crate::sync_types::{
+    ChangeStream as ChangeStreamTrait, IncrementalSource, SourceDatabase, SyncCheckpoint,
+};
+use crate::{SourceOpts, SurrealOpts};
+
 /// Convert a BSON document directly to a surrealdb::sql::Value map
 fn bson_doc_to_keys_and_surreal_values(
     doc: Document,
@@ -29,7 +33,7 @@ fn bson_doc_to_keys_and_surreal_values(
     let mut map = HashMap::new();
 
     for (key, value) in doc {
-        let v = crate::mongodb::convert_bson_to_surreal_value(value)?;
+        let v = crate::convert_bson_to_surreal_value(value)?;
         map.insert(key, v);
     }
 
@@ -252,7 +256,7 @@ impl IncrementalSource for MongodbIncrementalSource {
         Ok(())
     }
 
-    async fn get_changes(&mut self) -> Result<Box<dyn ChangeStream>> {
+    async fn get_changes(&mut self) -> Result<Box<dyn ChangeStreamTrait>> {
         let checkpoint = Some(SyncCheckpoint::MongoDB {
             resume_token: self.resume_token.lock().await.clone(),
             timestamp: Utc::now(),
@@ -303,7 +307,7 @@ impl MongoChangeStream {
 }
 
 #[async_trait]
-impl ChangeStream for MongoChangeStream {
+impl ChangeStreamTrait for MongoChangeStream {
     async fn next(&mut self) -> Option<Result<Change>> {
         let mut stream = self.stream.lock().await;
         stream.next().await
@@ -322,10 +326,10 @@ impl ChangeStream for MongoChangeStream {
 /// 3. Applies changes to SurrealDB
 /// 4. Continues streaming changes until stopped
 pub async fn run_incremental_sync(
-    from_opts: crate::SourceOpts,
+    from_opts: SourceOpts,
     to_namespace: String,
     to_database: String,
-    to_opts: crate::SurrealOpts,
+    to_opts: SurrealOpts,
     from_checkpoint: SyncCheckpoint,
     deadline: DateTime<Utc>,
     target_checkpoint: Option<SyncCheckpoint>,
