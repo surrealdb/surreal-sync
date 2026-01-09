@@ -6,7 +6,7 @@
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
-use surreal_sync::{SourceOpts, SurrealOpts};
+use surreal_sync::SurrealOpts;
 
 #[tokio::test]
 async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,7 +42,7 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
     surreal_sync::testing::neo4j::create_nodes(&graph, &dataset).await?;
 
     // Perform full sync from Neo4j to SurrealDB
-    let source_opts = SourceOpts {
+    let source_opts = surreal_sync_neo4j::SourceOpts {
         source_uri: neo4j_config.get_uri(),
         source_database: Some(neo4j_config.get_database()),
         source_username: Some(neo4j_config.get_username()),
@@ -52,7 +52,6 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
             "all_types_users.metadata".to_string(),
             "all_types_posts.post_categories".to_string(),
         ]),
-        mysql_boolean_paths: None,
     };
 
     let surreal_opts = SurrealOpts {
@@ -65,7 +64,7 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
 
     // Execute full sync from Neo4j to SurrealDB
     surreal_sync_neo4j::run_full_sync(
-        surreal_sync_neo4j::SourceOpts::from(&source_opts),
+        source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
         surreal_sync_neo4j::SurrealOpts::from(&surreal_opts),

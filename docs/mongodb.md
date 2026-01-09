@@ -1,12 +1,12 @@
 # Surreal-Sync for MongoDB
 
-`surreal-sync mongodb` as a sub-command to `surreal-sync` that exports MongoDB collections to SurrealDB tables.
+`surreal-sync from mongodb` as a sub-command to `surreal-sync` that exports MongoDB collections to SurrealDB tables.
 
 It supports inconsistent full syncs and consistent incremental syncs, and together provides ability to reproduce consistent snapshots from the source MongoDB collections onto the target SurrealDB tables.
 
 ## How It Works
 
-`surreal-sync mongodb` supports two types of syncs, `full` and `incremental`.
+`surreal-sync from mongodb` supports two types of syncs, `full` and `incremental`.
 
 The full sync uses standard MongoDB queries to dump the collection items. As you might already know,
 it does not guarantee something like "snapshot isolation at the collection or the database level".
@@ -21,17 +21,17 @@ That's because change streams require a replica set.
 
 ## Full Sync
 
-You can start a full sync via the `surreal-sync sync mongodb` command like below:
+You can start a full sync via the `surreal-sync from mongodb full` command like below:
 
 ```bash
-export SOURCE_URI="mongodb://root:root@mongodb:27017"
+export CONNECTION_STRING="mongodb://root:root@mongodb:27017"
 export SURREAL_ENDPOINT="ws://localhost:8000"
 
 # Full sync (automatically verifies change streams)
-surreal-sync full mongodb \
+surreal-sync from mongodb full \
   # Source = MongoDB settings
-  --source-uri "$SOURCE_URI" \
-  --source-database "myapp" \
+  --connection-string "$CONNECTION_STRING" \
+  --database "myapp" \
   # Target = SurrealDB settings
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \
@@ -52,7 +52,7 @@ INFO surreal_sync::mongodb: Emitted full sync end checkpoint (t2): mongodb::2024
 
 To continue incremental sync after this full sync, you need to specify t1 (not t2) as the starting point for incremental sync.
 
-This corresponds to the fact that the `surreal-sync mongodb`'s full sync produces inconsistent snapshot of the MongoDB collections, due to the nature of MongoDB's isolation guarantee.
+This corresponds to the fact that the `surreal-sync from mongodb`'s full sync produces inconsistent snapshot of the MongoDB collections, due to the nature of MongoDB's isolation guarantee.
 
 By reading and applying changes made since t1 instead of t2, when the incremental sync writes all the changes up to t2, the target SurrealDB tables can be viewed as consistent with the source collections at t2.
 
@@ -69,13 +69,13 @@ RESUME_TOKEN=$(cat ./.surreal-sync-checkpoints/checkpoint_full_sync_start_*.json
 CHECKPOINT="mongodb:$RESUME_TOKEN"
 ```
 
-With the proper checkpoint, an incremental sync can be triggered via `sureral-sync incremental mongodb`:
+With the proper checkpoint, an incremental sync can be triggered via `surreal-sync from mongodb incremental`:
 
 ```bash
-surreal-sync incremental mongodb \
+surreal-sync from mongodb incremental \
   # Source = MongoDB settings
-  --source-uri "$SOURCE_URI" \
-  --source-database "myapp" \
+  --connection-string "$CONNECTION_STRING" \
+  --database "myapp" \
   # Target = SurrealDB settings
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \

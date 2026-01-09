@@ -36,11 +36,12 @@ async fn test_mysql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
 
     // Execute CLI command for initial full sync
     let full_sync_args = [
-        "full",
+        "from",
         "mysql",
-        "--source-uri",
+        "full",
+        "--connection-string",
         &mysql_config.get_connection_string(),
-        "--source-database",
+        "--database",
         "testdb",
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,
@@ -75,11 +76,12 @@ async fn test_mysql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
     // Execute CLI incremental sync command
     // For MySQL incremental sync, we need to provide a checkpoint
     let incremental_args = [
-        "incremental",
+        "from",
         "mysql",
-        "--source-uri",
+        "incremental",
+        "--connection-string",
         &mysql_config.get_connection_string(),
-        "--source-database",
+        "--database",
         "testdb",
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,

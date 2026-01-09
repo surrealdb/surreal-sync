@@ -40,11 +40,12 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
     // This sets up the change stream infrastructure and emits a checkpoint with resume token
     println!("📝 Phase 1: Running full sync with empty database to setup change stream and get checkpoint...");
     let full_args = vec![
-        "full".to_string(),
+        "from".to_string(),
         "mongodb".to_string(),
-        "--source-uri".to_string(),
+        "full".to_string(),
+        "--connection-string".to_string(),
         "mongodb://root:root@mongodb:27017".to_string(),
-        "--source-database".to_string(),
+        "--database".to_string(),
         "testdb".to_string(),
         "--surreal-endpoint".to_string(),
         surreal_config.surreal_endpoint.clone(),
@@ -90,11 +91,12 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
     // Run INCREMENTAL sync using the checkpoint to capture only the new data
     println!("📝 Phase 4: Running incremental sync from checkpoint to capture newly added data...");
     let incremental_args = vec![
-        "incremental".to_string(),
+        "from".to_string(),
         "mongodb".to_string(),
-        "--source-uri".to_string(),
+        "incremental".to_string(),
+        "--connection-string".to_string(),
         "mongodb://root:root@mongodb:27017".to_string(),
-        "--source-database".to_string(),
+        "--database".to_string(),
         "testdb".to_string(),
         "--to-namespace".to_string(),
         surreal_config.surreal_namespace.clone(),

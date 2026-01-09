@@ -46,11 +46,12 @@ async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error
 
     // Execute CLI command for initial full sync
     let args = [
+        "from",
+        "postgresql-trigger",
         "full",
-        "postgresql",
-        "--source-uri",
+        "--connection-string",
         &pg_config.get_connection_string(),
-        "--source-database",
+        "--database",
         "testdb",
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,
@@ -87,11 +88,12 @@ async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error
     // Execute CLI incremental sync command
     // For PostgreSQL incremental sync, we need to provide a checkpoint (sequence-based)
     let incremental_args = [
+        "from",
+        "postgresql-trigger",
         "incremental",
-        "postgresql",
-        "--source-uri",
+        "--connection-string",
         &pg_config.get_connection_string(),
-        "--source-database",
+        "--database",
         "testdb",
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,

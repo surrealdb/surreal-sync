@@ -35,11 +35,12 @@ async fn test_mongodb_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> 
 
     // Execute CLI command for MongoDB full sync with data
     let args = [
-        "full",
+        "from",
         "mongodb",
-        "--source-uri",
+        "full",
+        "--connection-string",
         "mongodb://root:root@mongodb:27017",
-        "--source-database",
+        "--database",
         "testdb",
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,

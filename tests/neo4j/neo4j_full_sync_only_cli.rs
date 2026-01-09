@@ -42,15 +42,16 @@ async fn test_neo4j_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
 
     // Execute CLI command for Neo4j full sync with data
     let args = [
-        "full",
+        "from",
         "neo4j",
-        "--source-uri",
+        "full",
+        "--connection-string",
         &neo4j_config.get_uri(),
-        "--source-database",
+        "--database",
         &neo4j_config.get_database(),
-        "--source-username",
+        "--username",
         &neo4j_config.get_username(),
-        "--source-password",
+        "--password",
         &neo4j_config.get_password(),
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,
@@ -62,9 +63,9 @@ async fn test_neo4j_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
         "root",
         "--surreal-password",
         "root",
-        "--neo4j-timezone",
+        "--timezone",
         "UTC",
-        "--neo4j-json-properties",
+        "--json-properties",
         "all_types_users.metadata,all_types_posts.post_categories",
     ];
 

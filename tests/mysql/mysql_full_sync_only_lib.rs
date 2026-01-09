@@ -6,7 +6,7 @@
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
-use surreal_sync::{SourceOpts, SurrealOpts};
+use surreal_sync::SurrealOpts;
 
 #[tokio::test]
 async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,13 +35,9 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
     surreal_sync::testing::mysql::insert_rows(&mut mysql_conn, &dataset).await?;
 
     // Perform full sync from MySQL to SurrealDB
-    let source_opts = SourceOpts {
+    let source_opts = surreal_sync_mysql_trigger::SourceOpts {
         source_uri: mysql_config.get_connection_string(),
         source_database: Some("testdb".to_string()),
-        source_username: None,
-        source_password: None,
-        neo4j_timezone: "UTC".to_string(),
-        neo4j_json_properties: None,
         mysql_boolean_paths: Some(vec![
             "all_types_users.metadata=settings.notifications".to_string()
         ]),
@@ -69,7 +65,7 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
 
     // Execute full sync from MySQL to SurrealDB
     surreal_sync_mysql_trigger::run_full_sync(
-        &surreal_sync_mysql_trigger::SourceOpts::from(&source_opts),
+        &source_opts,
         &surreal_sync_mysql_trigger::SurrealOpts::from(&surreal_opts),
         None,
         &surreal2,

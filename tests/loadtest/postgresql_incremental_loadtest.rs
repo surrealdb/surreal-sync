@@ -12,7 +12,7 @@
 use loadtest_populate_postgresql::PostgreSQLPopulator;
 use loadtest_verify::StreamingVerifier;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
-use surreal_sync::{SourceOpts, SurrealOpts};
+use surreal_sync::SurrealOpts;
 use sync_core::Schema;
 use tokio_postgres::NoTls;
 
@@ -96,14 +96,9 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
     // === PHASE 2: RUN FULL SYNC WITH CHECKPOINTS (sets up triggers) ===
     tracing::info!("Running full sync to set up triggers and emit checkpoints");
 
-    let source_opts = SourceOpts {
+    let source_opts = surreal_sync_postgresql_trigger::SourceOpts {
         source_uri: pg_conn_string.clone(),
         source_database: Some("public".to_string()), // PostgreSQL schema
-        source_username: None,
-        source_password: None,
-        neo4j_timezone: "UTC".to_string(),
-        neo4j_json_properties: None,
-        mysql_boolean_paths: None,
     };
 
     let surreal_opts = SurrealOpts {
@@ -122,7 +117,7 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
     };
 
     surreal_sync_postgresql_trigger::run_full_sync(
-        surreal_sync_postgresql_trigger::SourceOpts::from(&source_opts),
+        source_opts.clone(),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
         surreal_sync_postgresql::SurrealOpts::from(&surreal_opts),
@@ -176,7 +171,7 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
     );
 
     surreal_sync_postgresql_trigger::run_incremental_sync(
-        surreal_sync_postgresql_trigger::SourceOpts::from(&source_opts),
+        source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
         surreal_sync_postgresql::SurrealOpts::from(&surreal_opts),

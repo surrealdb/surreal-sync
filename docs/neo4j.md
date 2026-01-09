@@ -1,12 +1,12 @@
 # Surreal-Sync for Neo4j
 
-`surreal-sync neo4j` as a sub-command to `surreal-sync` that exports Neo4j nodes and relationships to SurrealDB tables.
+`surreal-sync from neo4j` as a sub-command to `surreal-sync` that exports Neo4j nodes and relationships to SurrealDB tables.
 
 It supports inconsistent full syncs and consistent incremental syncs, and together provides ability to reproduce consistent snapshots from the source Neo4j graph onto the target SurrealDB tables.
 
 ## How It Works
 
-`surreal-sync neo4j` supports two types of syncs, `full` and `incremental`.
+`surreal-sync from neo4j` supports two types of syncs, `full` and `incremental`.
 
 The full sync uses standard Neo4j Cypher queries to dump the nodes and relationships. As you might already know,
 it does not guarantee something like "snapshot isolation at the graph or the database level".
@@ -23,21 +23,21 @@ Neo4j incremental sync cannot detect deletions for now. Deleted nodes and relati
 
 ## Full Sync
 
-You can start a full sync via the `surreal-sync sync neo4j` command like below:
+You can start a full sync via the `surreal-sync from neo4j full` command like below:
 
 ```bash
-export SOURCE_URI="bolt://neo4j:7687"
-export SOURCE_USERNAME="neo4j"
-export SOURCE_PASSWORD="password"
+export CONNECTION_STRING="bolt://neo4j:7687"
+export USERNAME="neo4j"
+export PASSWORD="password"
 export SURREAL_ENDPOINT="ws://localhost:8000"
 
 # Full sync (captures baseline timestamp)
-surreal-sync full neo4j \
+surreal-sync from neo4j full \
   # Source = Neo4j settings
-  --source-uri "$SOURCE_URI" \
-  --source-username "$SOURCE_USERNAME" \
-  --source-password "$SOURCE_PASSWORD" \
-  --neo4j-timezone "UTC" \
+  --connection-string "$CONNECTION_STRING" \
+  --username "$USERNAME" \
+  --password "$PASSWORD" \
+  --timezone "UTC" \
   # Target = SurrealDB settings
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \
@@ -58,7 +58,7 @@ INFO surreal_sync::neo4j: Emitted full sync end checkpoint (t2): neo4j:2024-01-1
 
 To continue incremental sync after this full sync, you need to specify t1 (not t2) as the starting point for incremental sync.
 
-This corresponds to the fact that the `surreal-sync neo4j`'s full sync produces inconsistent snapshot of the Neo4j graph, due to the nature of Neo4j's isolation guarantee.
+This corresponds to the fact that the `surreal-sync from neo4j`'s full sync produces inconsistent snapshot of the Neo4j graph, due to the nature of Neo4j's isolation guarantee.
 
 By reading and applying changes made since t1 instead of t2, when the incremental sync writes all the changes up to t2, the target SurrealDB tables can be viewed as consistent with the source graph at t2.
 
@@ -77,15 +77,15 @@ TIMESTAMP=$(cat ./.surreal-sync-checkpoints/checkpoint_full_sync_start_*.json | 
 CHECKPOINT="neo4j:$TIMESTAMP"
 ```
 
-With the proper checkpoint, an incremental sync can be triggered via `surreal-sync incremental neo4j`:
+With the proper checkpoint, an incremental sync can be triggered via `surreal-sync from neo4j incremental`:
 
 ```bash
-surreal-sync incremental neo4j \
+surreal-sync from neo4j incremental \
   # Source = Neo4j settings
-  --source-uri "$SOURCE_URI" \
-  --source-username "$SOURCE_USERNAME" \
-  --source-password "$SOURCE_PASSWORD" \
-  --neo4j-timezone "UTC" \
+  --connection-string "$CONNECTION_STRING" \
+  --username "$USERNAME" \
+  --password "$PASSWORD" \
+  --timezone "UTC" \
   # Target = SurrealDB settings
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \

@@ -13,8 +13,8 @@ JSONL source is particularly useful for:
 ## Basic Usage
 
 ```bash
-surreal-sync full jsonl \
-  --source-uri /path/to/jsonl/directory \
+surreal-sync from jsonl \
+  --directory /path/to/jsonl/directory \
   --to-namespace myns \
   --to-database mydb
 ```
@@ -64,8 +64,8 @@ Create a directory with the following JSONL files:
 Use the following command to import the data with conversion rules for parent references:
 
 ```bash
-surreal-sync sync jsonl \
-  --source-uri /workspace/tests/test_data/jsonl \
+surreal-sync from jsonl \
+  --directory /workspace/tests/test_data/jsonl \
   --to-namespace notion \
   --to-database docs \
   --surreal-endpoint http://surrealdb:8000 \
@@ -336,8 +336,8 @@ However, for most use cases, the Thing references created during import are suff
 By default, surreal-sync looks for an `id` field in each JSON object. You can specify a different field name:
 
 ```bash
-surreal-sync sync jsonl \
-  --source-uri /path/to/jsonl \
+surreal-sync from jsonl \
+  --directory /path/to/jsonl \
   --to-namespace myns \
   --to-database mydb \
   --id-field "item_id"
@@ -369,9 +369,9 @@ You can also use environment variables for configuration:
 export SURREAL_ENDPOINT=http://localhost:8000
 export SURREAL_USERNAME=root
 export SURREAL_PASSWORD=root
-export SOURCE_URI=/path/to/jsonl
 
-surreal-sync sync jsonl \
+surreal-sync from jsonl \
+  --directory /path/to/jsonl \
   --to-namespace myns \
   --to-database mydb
 ```

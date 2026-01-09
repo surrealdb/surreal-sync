@@ -12,7 +12,7 @@
 use loadtest_populate_mysql::MySQLPopulator;
 use loadtest_verify::StreamingVerifier;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
-use surreal_sync::{SourceOpts, SurrealOpts};
+use surreal_sync::SurrealOpts;
 use sync_core::Schema;
 
 const SEED: u64 = 42;
@@ -88,13 +88,9 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
     // === PHASE 2: RUN FULL SYNC WITH CHECKPOINTS (sets up triggers) ===
     tracing::info!("Running full sync to set up triggers and emit checkpoints");
 
-    let source_opts = SourceOpts {
+    let source_opts = surreal_sync_mysql_trigger::SourceOpts {
         source_uri: mysql_conn_string.clone(),
         source_database: Some("testdb".to_string()),
-        source_username: None,
-        source_password: None,
-        neo4j_timezone: "UTC".to_string(),
-        neo4j_json_properties: None,
         mysql_boolean_paths: None,
     };
 
@@ -126,7 +122,7 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
     .await?;
 
     surreal_sync_mysql_trigger::run_full_sync(
-        &surreal_sync_mysql_trigger::SourceOpts::from(&source_opts),
+        &source_opts,
         &surreal_sync_mysql_trigger::SurrealOpts::from(&surreal_opts),
         Some(sync_config),
         &surreal_for_sync,
@@ -178,7 +174,7 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
     );
 
     surreal_sync_mysql_trigger::run_incremental_sync(
-        surreal_sync_mysql_trigger::SourceOpts::from(&source_opts),
+        source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
         surreal_sync_mysql_trigger::SurrealOpts::from(&surreal_opts),

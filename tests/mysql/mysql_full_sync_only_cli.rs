@@ -35,11 +35,12 @@ async fn test_mysql_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
 
     // Execute CLI command for MySQL full sync with data
     let args = [
-        "full",
+        "from",
         "mysql",
-        "--source-uri",
+        "full",
+        "--connection-string",
         &mysql_config.get_connection_string(),
-        "--source-database",
+        "--database",
         "testdb",
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,
@@ -51,7 +52,7 @@ async fn test_mysql_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
         "root",
         "--surreal-password",
         "root",
-        "--mysql-boolean-paths",
+        "--boolean-paths",
         "all_types_users.metadata=settings.notifications",
     ];
 

@@ -19,11 +19,11 @@ sudo mv surreal-sync /usr/local/bin/
 ## Usage
 
 ```bash
-surreal-sync [full|incremental] <DATABASE_TYPE> \
-  --source-uri [SOURCE URI] \
+surreal-sync from <SOURCE> <COMMAND> \
+  --connection-string [CONNECTION STRING] \
   [SOURCE OPTIONS] \
   --surreal-endpoint [SURREAL ENDPOINT] \
-  --surreal-user [SURREAL USER] \
+  --surreal-username [SURREAL USERNAME] \
   --surreal-password [SURREAL PASSWORD] \
   --to-namespace <NS> \
   --to-database <DB>
@@ -32,8 +32,8 @@ surreal-sync [full|incremental] <DATABASE_TYPE> \
 See source-specific guides for more details:
 
 - **[MongoDB](docs/mongodb.md)**: Full and incremental sync using change streams
-- **[MySQL](docs/mysql.md)**: Full and incremental sync using trigger-based CDC + GTID checkpoints
-- **[PostgreSQL](docs/postgresql.md)**: Full and incremental sync using trigger-based CDC + sequence checkpoints
+- **[MySQL](docs/mysql.md)**: Full and incremental sync using trigger-based CDC + sequence checkpoints
+- **[PostgreSQL (Trigger-based)](docs/postgresql.md)**: Full and incremental sync using trigger-based CDC + sequence checkpoints
 - **[Neo4j](docs/neo4j.md)**: Full and incremental sync using timestamp-based tracking
 - **[JSONL](docs/jsonl.md)**: Bulk import from JSON Lines files
 - **[Kafka](docs/kafka.md)**: Kafka consumer that subscribes to a topic, importing Kafka message payloads into SurrealDB with optional deduplication

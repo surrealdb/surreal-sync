@@ -7,7 +7,7 @@
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
-use surreal_sync::{SourceOpts, SurrealOpts};
+use surreal_sync::SurrealOpts;
 
 #[tokio::test]
 async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -47,7 +47,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Create schema/constraints but don't insert data yet
     surreal_sync::testing::neo4j::create_constraints_and_indices(&graph, &dataset).await?;
 
-    let source_opts = SourceOpts {
+    let source_opts = surreal_sync_neo4j::SourceOpts {
         source_uri: neo4j_config.get_uri(),
         source_database: Some(neo4j_config.get_database()),
         source_username: Some(neo4j_config.get_username()),
@@ -57,7 +57,6 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
             "all_types_users.metadata".to_string(),
             "all_types_posts.post_categories".to_string(),
         ]),
-        mysql_boolean_paths: None,
     };
 
     let surreal_opts = SurrealOpts {
@@ -77,7 +76,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
     // Run full sync with empty data to get checkpoint (t1)
     surreal_sync_neo4j::run_full_sync(
-        surreal_sync_neo4j::SourceOpts::from(&source_opts),
+        source_opts.clone(),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
         surreal_sync_neo4j::SurrealOpts::from(&surreal_opts),
@@ -99,7 +98,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Run incremental sync using the checkpoint
     let neo4j_checkpoint = surreal_sync_neo4j::Neo4jCheckpoint { timestamp: t1 };
     surreal_sync_neo4j::run_incremental_sync(
-        surreal_sync_neo4j::SourceOpts::from(&source_opts),
+        source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
         surreal_sync_neo4j::SurrealOpts::from(&surreal_opts),

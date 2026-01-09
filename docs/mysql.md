@@ -1,12 +1,12 @@
 # Surreal-Sync for MySQL
 
-`surreal-sync mysql` as a sub-command to `surreal-sync` that exports MySQL tables to SurrealDB tables.
+`surreal-sync from mysql` as a sub-command to `surreal-sync` that exports MySQL tables to SurrealDB tables.
 
 It supports inconsistent full syncs and consistent incremental syncs, and together provides ability to reproduce consistent snapshots from the source MySQL tables onto the target SurrealDB tables.
 
 ## How It Works
 
-`surreal-sync mysql` supports two types of syncs, `full` and `incremental`.
+`surreal-sync from mysql` supports two types of syncs, `full` and `incremental`.
 
 The full sync uses standard MySQL queries to dump the table rows. As you might already know,
 it does not guarantee something like "snapshot isolation at the table or the database level".
@@ -22,17 +22,17 @@ That's because the incremental sync relies on database triggers to capture chang
 
 ## Full Sync
 
-You can start a full sync via the `surreal-sync sync mysql` command like below:
+You can start a full sync via the `surreal-sync from mysql full` command like below:
 
 ```bash
-export SOURCE_URI="mysql://root:root@mysql:3306/myapp"
+export CONNECTION_STRING="mysql://root:root@mysql:3306/myapp"
 export SURREAL_ENDPOINT="ws://localhost:8000"
 
 # Full sync (automatically sets up triggers for incremental sync)
-surreal-sync full mysql \
+surreal-sync from mysql full \
   # Source = MySQL settings
-  --source-uri "$SOURCE_URI" \
-  --source-database "myapp" \
+  --connection-string "$CONNECTION_STRING" \
+  --database "myapp" \
   # Target = SurrealDB settings
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \
@@ -53,7 +53,7 @@ INFO surreal_sync::mysql: Emitted full sync end checkpoint (t2): mysql:sequence:
 
 To continue incremental sync after this full sync, you need to specify t1 (not t2) as the starting point for incremental sync.
 
-This corresponds to the fact that the `surreal-sync mysql`'s full sync may produce inconsistent snapshot of the MySQL tables, depending on the nature of the MySQL isolation guarantee you chose.
+This corresponds to the fact that the `surreal-sync from mysql`'s full sync may produce inconsistent snapshot of the MySQL tables, depending on the nature of the MySQL isolation guarantee you chose.
 
 By reading and applying changes made since t1 instead of t2, when the incremental sync writes all the changes up to t2, the target SurrealDB tables can be viewed as consistent with the source tables at t2.
 
@@ -65,18 +65,18 @@ You must run full sync first to generate the checkpoint and set up the necessary
 # Find the checkpoint file
 ls ./.surreal-sync-checkpoints/checkpoint_full_sync_start_*.json
 
-# Extract GTID for incremental sync
+# Extract sequence ID for incremental sync
 NUM=$(cat ./.surreal-sync-checkpoints/checkpoint_full_sync_start_*.json | jq -r '.checkpoint.MySQL.sequence')
 CHECKPOINT="mysql:sequence:$NUM"
 ```
 
-With the proper checkpoint, an incremental sync can be triggered via `surreal-sync incremental mysql`:
+With the proper checkpoint, an incremental sync can be triggered via `surreal-sync from mysql incremental`:
 
 ```bash
-surreal-sync incremental mysql \
+surreal-sync from mysql incremental \
   # Source = MySQL settings
-  --source-uri "$SOURCE_URI" \
-  --source-database "myapp" \
+  --connection-string "$CONNECTION_STRING" \
+  --database "myapp" \
   # Target = SurrealDB settings
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \

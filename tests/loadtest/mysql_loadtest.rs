@@ -10,7 +10,7 @@
 use loadtest_populate_mysql::MySQLPopulator;
 use loadtest_verify::StreamingVerifier;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
-use surreal_sync::{SourceOpts, SurrealOpts};
+use surreal_sync::SurrealOpts;
 use sync_core::Schema;
 
 const SEED: u64 = 42;
@@ -92,13 +92,9 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     // === PHASE 2: RUN SYNC from MySQL to SurrealDB ===
     tracing::info!("Running full sync from MySQL to SurrealDB");
 
-    let source_opts = SourceOpts {
+    let source_opts = surreal_sync_mysql_trigger::SourceOpts {
         source_uri: mysql_conn_string.clone(),
         source_database: Some("testdb".to_string()),
-        source_username: None,
-        source_password: None,
-        neo4j_timezone: "UTC".to_string(),
-        neo4j_json_properties: None,
         mysql_boolean_paths: None,
     };
 
@@ -123,7 +119,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     .await?;
 
     surreal_sync_mysql_trigger::run_full_sync(
-        &surreal_sync_mysql_trigger::SourceOpts::from(&source_opts),
+        &source_opts,
         &surreal_sync_mysql_trigger::SurrealOpts::from(&surreal_opts),
         None,
         &surreal_for_sync,

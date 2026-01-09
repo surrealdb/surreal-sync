@@ -17,7 +17,7 @@ To protobuf decoding, the Kafka source requires the local filesystem path to the
 ## Usage
 
 ```bash
-surreal-sync kafka [OPTIONS] --to-namespace <TO_NAMESPACE> --to-database <TO_DATABASE> <PROTO_PATH> [BROKERS]... <GROUP_ID> <TOPIC> <MESSAGE_TYPE> <BUFFER_SIZE> <SESSION_TIMEOUT_MS>
+surreal-sync from kafka [OPTIONS] --to-namespace <TO_NAMESPACE> --to-database <TO_DATABASE> <PROTO_PATH> [BROKERS]... <GROUP_ID> <TOPIC> <MESSAGE_TYPE> <BUFFER_SIZE> <SESSION_TIMEOUT_MS>
 
 Arguments:
   <PROTO_PATH>          Proto file path
@@ -67,4 +67,4 @@ surreal start --user root --pass root
 
 ### Run one surreal-sync process per topic
 
-- In case you are to import two or more Kafka topics to SurrealDB, run the Kafka source for each topic. This is so to simplify the usage of the Kafka source- by running a `surreal-sync kafka` process per topic, you can differentiate the group IDs, topics, message types, and the proto schema files per topic, which enables it to adapt to whatever advanced scenarios we can imagine.
+- In case you are to import two or more Kafka topics to SurrealDB, run the Kafka source for each topic. This is so to simplify the usage of the Kafka source- by running a `surreal-sync from kafka` process per topic, you can differentiate the group IDs, topics, message types, and the proto schema files per topic, which enables it to adapt to whatever advanced scenarios we can imagine.

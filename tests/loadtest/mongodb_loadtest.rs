@@ -10,7 +10,7 @@
 use loadtest_populate_mongodb::MongoDBPopulator;
 use loadtest_verify::StreamingVerifier;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
-use surreal_sync::{SourceOpts, SurrealOpts};
+use surreal_sync::SurrealOpts;
 use sync_core::Schema;
 
 const SEED: u64 = 42;
@@ -97,14 +97,9 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
     // === PHASE 2: RUN SYNC from MongoDB to SurrealDB ===
     tracing::info!("Running full sync from MongoDB to SurrealDB");
 
-    let source_opts = SourceOpts {
+    let source_opts = surreal_sync_mongodb::SourceOpts {
         source_uri: MONGODB_URI.to_string(),
         source_database: Some(MONGODB_DATABASE.to_string()),
-        source_username: None,
-        source_password: None,
-        neo4j_timezone: "UTC".to_string(),
-        neo4j_json_properties: None,
-        mysql_boolean_paths: None,
     };
 
     let surreal_opts = SurrealOpts {
@@ -116,7 +111,7 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
     };
 
     surreal_sync_mongodb::run_full_sync(
-        surreal_sync_mongodb::SourceOpts::from(&source_opts),
+        source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
         surreal_sync_mongodb::SurrealOpts::from(&surreal_opts),

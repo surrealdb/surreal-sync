@@ -7,7 +7,7 @@
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
-use surreal_sync::{SourceOpts, SurrealOpts};
+use surreal_sync::SurrealOpts;
 
 #[tokio::test]
 async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -41,14 +41,9 @@ async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error
 
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
 
-    let source_opts = SourceOpts {
+    let source_opts = surreal_sync_postgresql_trigger::SourceOpts {
         source_uri: pg_config.get_connection_string(),
         source_database: Some("testdb".to_string()),
-        source_username: None,
-        source_password: None,
-        neo4j_timezone: "UTC".to_string(),
-        neo4j_json_properties: None,
-        mysql_boolean_paths: None,
     };
 
     let surreal_opts = SurrealOpts {
@@ -61,7 +56,7 @@ async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error
 
     // Execute full sync for the users table
     surreal_sync_postgresql_trigger::run_full_sync(
-        surreal_sync_postgresql_trigger::SourceOpts::from(&source_opts),
+        source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
         surreal_sync_postgresql::SurrealOpts::from(&surreal_opts),

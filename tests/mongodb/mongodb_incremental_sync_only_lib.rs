@@ -7,7 +7,7 @@
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
-use surreal_sync::{SourceOpts, SurrealOpts};
+use surreal_sync::SurrealOpts;
 
 #[tokio::test]
 async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -36,14 +36,9 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     surreal_sync::testing::mongodb::create_collections(&db, &dataset).await?;
     surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
 
-    let source_opts = SourceOpts {
+    let source_opts = surreal_sync_mongodb::SourceOpts {
         source_uri: "mongodb://root:root@mongodb:27017".to_string(),
         source_database: Some("testdb".to_string()),
-        source_username: None,
-        source_password: None,
-        neo4j_timezone: "UTC".to_string(),
-        neo4j_json_properties: None,
-        mysql_boolean_paths: None,
     };
 
     let surreal_opts = SurrealOpts {
@@ -67,7 +62,7 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     };
 
     surreal_sync_mongodb::run_full_sync(
-        surreal_sync_mongodb::SourceOpts::from(&source_opts),
+        source_opts.clone(),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
         surreal_sync_mongodb::SurrealOpts::from(&surreal_opts),
@@ -100,7 +95,7 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
 
     // Run TRUE incremental sync using the checkpoint with target timestamp
     surreal_sync_mongodb::run_incremental_sync(
-        surreal_sync_mongodb::SourceOpts::from(&source_opts),
+        source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
         surreal_sync_mongodb::SurrealOpts::from(&surreal_opts),

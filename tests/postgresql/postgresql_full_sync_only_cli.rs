@@ -43,11 +43,12 @@ async fn test_postgresql_full_sync_cli() -> Result<(), Box<dyn std::error::Error
 
     // Execute CLI command with data
     let args = [
+        "from",
+        "postgresql-trigger",
         "full",
-        "postgresql",
-        "--source-uri",
+        "--connection-string",
         &pg_config.get_connection_string(),
-        "--source-database",
+        "--database",
         "testdb",
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,

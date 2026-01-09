@@ -1,12 +1,12 @@
-# Surreal-Sync for PostgreSQL
+# Surreal-Sync for PostgreSQL (Trigger-Based)
 
-`surreal-sync postgresql` as a sub-command to `surreal-sync` that exports PostgreSQL tables to SurrealDB tables.
+`surreal-sync from postgresql-trigger` as a sub-command to `surreal-sync` that exports PostgreSQL tables to SurrealDB tables.
 
 It supports inconsistent full syncs and consistent incremental syncs, and together provides ability to reproduce consistent snapshots from the source PostgreSQL tables onto the target SurrealDB tables.
 
 ## How It Works
 
-`surreal-sync postgresql` supports two types of syncs, `full` and `incremental`.
+`surreal-sync from postgresql-trigger` supports two types of syncs, `full` and `incremental`.
 
 The full sync uses standard PostgreSQL queries to dump the table rows. As you might already know,
 it does not guarantee something like "snapshot isolation at the table or the database level".
@@ -16,7 +16,7 @@ The incremental sync uses a trigger-based approach with an audit table to captur
 A potential alternative to this approach is to read and parse WAL and reply changes recorded in the WAL.
 We opted to use the trigger-based approach believing it's more reliable from the application perspective because
 you don't need to explore less mature WAL reading/parsing libraries/code/etc.
-But we may build an alternative PostgreSQL incremental sync backend that relis on WAL.
+But we may build an alternative PostgreSQL incremental sync backend that relies on WAL.
 
 ## Prerequisites
 
@@ -25,17 +25,17 @@ That's because the incremental sync relies on database triggers to capture chang
 
 ## Full Sync
 
-You can start a full sync via the `surreal-sync sync postgresql` command like below:
+You can start a full sync via the `surreal-sync from postgresql-trigger full` command like below:
 
 ```bash
-export SOURCE_URI="postgresql://postgres:postgres@postgresql:5432/myapp"
+export CONNECTION_STRING="postgresql://postgres:postgres@postgresql:5432/myapp"
 export SURREAL_ENDPOINT="ws://localhost:8000"
 
 # Full sync (automatically sets up triggers for incremental sync)
-surreal-sync full postgresql \
+surreal-sync from postgresql-trigger full \
   # Source = PostgreSQL settings
-  --source-uri "$SOURCE_URI" \
-  --source-database "myapp" \
+  --connection-string "$CONNECTION_STRING" \
+  --database "myapp" \
   # Target = SurrealDB settings
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \
@@ -50,13 +50,13 @@ surreal-sync full postgresql \
 A `surreal-sync` with the `emit-checkpoints` flag will produce logs like the below:
 
 ```
-INFO surreal_sync::postgresql: Emitted full sync start checkpoint (t1): postgresql:0
-INFO surreal_sync::postgresql: Emitted full sync end checkpoint (t2): postgresql:0/6FC17B8
+INFO surreal_sync::postgresql: Emitted full sync start checkpoint (t1): postgresql:sequence:0
+INFO surreal_sync::postgresql: Emitted full sync end checkpoint (t2): postgresql:sequence:123
 ```
 
 To continue incremental sync after this full sync, you need to specify t1 (not t2) as the starting point for incremental sync.
 
-This corresponds to the fact that the `surreal-sync postgresql`'s full sync produces inconsistent snapshot of the PostgreSQL tables, due to the nature of PostgreSQL's isolation guarantee.
+This corresponds to the fact that the `surreal-sync from postgresql-trigger`'s full sync produces inconsistent snapshot of the PostgreSQL tables, due to the nature of PostgreSQL's isolation guarantee.
 
 By reading and applying changes made since t1 instead of t2, when the incremental sync writes all the changes up to t2, the target SurrealDB tables can be viewed as consistent with the source tables at t2.
 
@@ -73,13 +73,13 @@ NUM=$(cat ./.surreal-sync-checkpoints/checkpoint_full_sync_start_*.json | jq -r 
 CHECKPOINT="postgresql:sequence:$NUM"
 ```
 
-With the proper checkpoint, an incremental sync can be triggered via `surreal-sync incremental postgresql`:
+With the proper checkpoint, an incremental sync can be triggered via `surreal-sync from postgresql-trigger incremental`:
 
 ```bash
-surreal-sync incremental postgresql \
+surreal-sync from postgresql-trigger incremental \
   # Source = PostgreSQL settings
-  --source-uri "$SOURCE_URI" \
-  --source-database "myapp" \
+  --connection-string "$CONNECTION_STRING" \
+  --database "myapp" \
   # Target = SurrealDB settings
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \
