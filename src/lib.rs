@@ -34,7 +34,6 @@
 
 use clap::Parser;
 
-pub mod sync;
 pub mod testing;
 
 // Re-export CSV and JSONL crates for convenience
