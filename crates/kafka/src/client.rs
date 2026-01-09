@@ -1,7 +1,12 @@
-use crate::consumer::{Consumer, ConsumerConfig, Message};
+//! High-level Kafka client API.
+//!
+//! Provides a Client for managing Kafka consumers with protobuf decoding.
+
+use crate::consumer::{Consumer, ConsumerConfig};
 use crate::error::Result;
 use crate::proto::decoder::ProtoDecoder;
-use crate::proto::parser::ProtoSchema;
+use crate::proto::parser::ProtoParser;
+use kafka_types::{Message, ProtoSchema};
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
@@ -21,7 +26,7 @@ pub struct Client {
 impl Client {
     /// Create a new Kafka client from a .proto file
     pub fn from_proto_file<P: AsRef<Path>>(proto_path: P, config: ConsumerConfig) -> Result<Self> {
-        let schema = ProtoSchema::from_file(proto_path)?;
+        let schema = ProtoParser::from_file(proto_path)?;
         Ok(Self {
             schema: Arc::new(schema),
             config,
@@ -30,7 +35,7 @@ impl Client {
 
     /// Create a new Kafka client from a .proto string
     pub fn from_proto_string(proto_content: &str, config: ConsumerConfig) -> Result<Self> {
-        let schema = ProtoSchema::from_string(proto_content)?;
+        let schema = ProtoParser::from_string(proto_content)?;
         Ok(Self {
             schema: Arc::new(schema),
             config,

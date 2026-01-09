@@ -11,6 +11,12 @@
 //! 2. Publish test messages (users, posts, relations) using protobuf encoding
 //! 3. Run incremental sync to consume and sync messages to SurrealDB
 //! 4. Verify synced data in SurrealDB using assert_synced
+//!
+//! ## Import Note
+//!
+//! This test imports directly from `surreal_sync_kafka` crate (not re-exported
+//! through main crate). This follows the pattern established for other database-
+//! specific sync crates (mysql-trigger, postgresql-trigger, etc.).
 
 use chrono::Utc;
 use std::time::Duration;
@@ -18,6 +24,7 @@ use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
 use surreal_sync::SurrealOpts;
+use surreal_sync_kafka::{Config as KafkaConfig, SurrealOpts as KafkaSurrealOpts};
 use surreal_sync_kafka_producer::{
     publish_test_posts, publish_test_relations, publish_test_users, KafkaTestProducer,
 };
@@ -107,7 +114,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     )?;
 
     // Run sync for users topic with a deadline
-    let user_config = surreal_sync::kafka::Config {
+    let user_config = KafkaConfig {
         proto_path: user_proto_path.to_string_lossy().to_string(),
         brokers: vec![KAFKA_BROKER.to_string()],
         group_id: format!("test-group-users-{test_id}"),
@@ -125,14 +132,21 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Run sync with a short deadline (just enough to consume existing messages)
     let deadline = Utc::now() + chrono::Duration::seconds(5);
 
+    // Convert CLI SurrealOpts to Kafka-specific SurrealOpts
+    let kafka_surreal_opts = KafkaSurrealOpts {
+        surreal_endpoint: surreal_opts.surreal_endpoint.clone(),
+        surreal_username: surreal_opts.surreal_username.clone(),
+        surreal_password: surreal_opts.surreal_password.clone(),
+    };
+
     // Spawn sync task
     let sync_handle = tokio::spawn({
         let config = user_config.clone();
         let namespace = surreal_config.surreal_namespace.clone();
         let database = surreal_config.surreal_database.clone();
-        let opts = surreal_opts.clone();
+        let opts = kafka_surreal_opts.clone();
         async move {
-            surreal_sync::kafka::run_incremental_sync(
+            surreal_sync_kafka::run_incremental_sync(
                 config, namespace, database, opts, deadline, None,
             )
             .await
@@ -158,7 +172,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         include_str!("../../crates/kafka-producer/proto/post.proto"),
     )?;
 
-    let post_config = surreal_sync::kafka::Config {
+    let post_config = KafkaConfig {
         proto_path: post_proto_path.to_string_lossy().to_string(),
         brokers: vec![KAFKA_BROKER.to_string()],
         group_id: format!("test-group-posts-{test_id}"),
@@ -179,9 +193,9 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         let config = post_config;
         let namespace = surreal_config.surreal_namespace.clone();
         let database = surreal_config.surreal_database.clone();
-        let opts = surreal_opts.clone();
+        let opts = kafka_surreal_opts.clone();
         async move {
-            surreal_sync::kafka::run_incremental_sync(
+            surreal_sync_kafka::run_incremental_sync(
                 config, namespace, database, opts, deadline, None,
             )
             .await
@@ -206,7 +220,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         include_str!("../../crates/kafka-producer/proto/user_post_relation.proto"),
     )?;
 
-    let relation_config = surreal_sync::kafka::Config {
+    let relation_config = KafkaConfig {
         proto_path: relation_proto_path.to_string_lossy().to_string(),
         brokers: vec![KAFKA_BROKER.to_string()],
         group_id: format!("test-group-relations-{test_id}"),
@@ -227,9 +241,9 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         let config = relation_config;
         let namespace = surreal_config.surreal_namespace.clone();
         let database = surreal_config.surreal_database.clone();
-        let opts = surreal_opts;
+        let opts = kafka_surreal_opts;
         async move {
-            surreal_sync::kafka::run_incremental_sync(
+            surreal_sync_kafka::run_incremental_sync(
                 config, namespace, database, opts, deadline, None,
             )
             .await

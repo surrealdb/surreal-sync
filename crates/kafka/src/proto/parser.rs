@@ -1,102 +1,23 @@
+//! Protobuf schema parser.
+//!
+//! This module parses .proto files and produces ProtoSchema from kafka-types.
+//! The types (ProtoSchema, ProtoMessageDescriptor, ProtoFieldDescriptor, ProtoType)
+//! are defined in kafka-types; this module provides the parsing logic.
+
 use crate::error::{Error, Result};
+use kafka_types::{ProtoFieldDescriptor, ProtoMessageDescriptor, ProtoSchema, ProtoType};
 use protobuf_parse::Parser;
 use std::collections::HashMap;
 use std::path::Path;
 
-/// Represents a parsed protobuf schema
-#[derive(Debug, Clone)]
-pub struct ProtoSchema {
-    /// Map of message type names to their field descriptors
-    pub(crate) messages: HashMap<String, ProtoMessageDescriptor>,
-}
+/// Protobuf schema parser.
+///
+/// Parses .proto files and produces ProtoSchema compatible with kafka-types.
+pub struct ProtoParser;
 
-/// Describes a protobuf message type
-#[derive(Debug, Clone)]
-pub struct ProtoMessageDescriptor {
-    /// Fully qualified message name (e.g., "mypackage.MyMessage")
-    pub name: String,
-    /// Map of field names to their descriptors
-    pub fields: HashMap<String, ProtoFieldDescriptor>,
-    /// Ordered list of field names
-    pub field_order: Vec<String>,
-}
-
-/// Describes a single field in a message
-#[derive(Debug, Clone)]
-pub struct ProtoFieldDescriptor {
-    /// Field name
-    pub name: String,
-    /// Field number (tag)
-    pub number: i32,
-    /// Field type
-    pub field_type: ProtoType,
-    /// Whether the field is repeated
-    pub is_repeated: bool,
-    /// Whether the field is optional
-    pub is_optional: bool,
-}
-
-/// Protobuf field types
-#[derive(Debug, Clone, PartialEq)]
-pub enum ProtoType {
-    Double,
-    Float,
-    Int32,
-    Int64,
-    Uint32,
-    Uint64,
-    Sint32,
-    Sint64,
-    Fixed32,
-    Fixed64,
-    Sfixed32,
-    Sfixed64,
-    Bool,
-    String,
-    Bytes,
-    Message(String), // Nested message type name
-    Enum(String),    // Enum type name
-    Repeated(Box<ProtoType>),
-    Optional(Box<ProtoType>),
-    Null,
-}
-
-impl std::fmt::Display for ProtoType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.type_name())
-    }
-}
-
-impl ProtoType {
-    pub fn type_name(&self) -> String {
-        match self {
-            ProtoType::Double => "double".to_string(),
-            ProtoType::Float => "float".to_string(),
-            ProtoType::Int32 => "int32".to_string(),
-            ProtoType::Int64 => "int64".to_string(),
-            ProtoType::Uint32 => "uint32".to_string(),
-            ProtoType::Uint64 => "uint64".to_string(),
-            ProtoType::Sint32 => "sint32".to_string(),
-            ProtoType::Sint64 => "sint64".to_string(),
-            ProtoType::Fixed32 => "fixed32".to_string(),
-            ProtoType::Fixed64 => "fixed64".to_string(),
-            ProtoType::Sfixed32 => "sfixed32".to_string(),
-            ProtoType::Sfixed64 => "sfixed64".to_string(),
-            ProtoType::Bool => "bool".to_string(),
-            ProtoType::String => "string".to_string(),
-            ProtoType::Bytes => "bytes".to_string(),
-            ProtoType::Message(name) => format!("message:{name}"),
-            ProtoType::Enum(name) => format!("enum:{name}"),
-            ProtoType::Repeated(inner) => format!("repeated<{}>", inner.type_name()),
-            ProtoType::Optional(inner) => format!("optional<{}>", inner.type_name()),
-            ProtoType::Null => "null".to_string(),
-        }
-    }
-}
-
-impl ProtoSchema {
-    /// Parse a .proto file and create a schema
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+impl ProtoParser {
+    /// Parse a .proto file and create a schema.
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<ProtoSchema> {
         let p = path.as_ref();
 
         // Parse using protobuf_parse with pure parsing (no includes needed)
@@ -171,8 +92,8 @@ impl ProtoSchema {
         Ok(ProtoSchema { messages })
     }
 
-    /// Parse a .proto file content from string
-    pub fn from_string(content: &str) -> Result<Self> {
+    /// Parse a .proto file content from string.
+    pub fn from_string(content: &str) -> Result<ProtoSchema> {
         use std::io::Write;
         use tempfile::NamedTempFile;
 
@@ -229,32 +150,6 @@ impl ProtoSchema {
             }
         })
     }
-
-    /// Get a message descriptor by name
-    pub fn get_message(&self, name: &str) -> Result<&ProtoMessageDescriptor> {
-        self.messages
-            .get(name)
-            .ok_or_else(|| Error::MessageTypeNotFound(name.to_string()))
-    }
-
-    /// List all message types in the schema
-    pub fn list_messages(&self) -> Vec<String> {
-        self.messages.keys().cloned().collect()
-    }
-}
-
-impl ProtoMessageDescriptor {
-    /// Get a field descriptor by name
-    pub fn get_field(&self, name: &str) -> Result<&ProtoFieldDescriptor> {
-        self.fields
-            .get(name)
-            .ok_or_else(|| Error::FieldNotFound(name.to_string()))
-    }
-
-    /// List all field names in order
-    pub fn list_fields(&self) -> &[String] {
-        &self.field_order
-    }
 }
 
 #[cfg(test)]
@@ -273,7 +168,7 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         assert_eq!(schema.messages.len(), 1);
 
         let user_msg = schema.get_message("User").expect("User message not found");
@@ -308,7 +203,7 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         let product_msg = schema
             .get_message("Product")
             .expect("Product message not found");
@@ -334,7 +229,7 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         let team_msg = schema.get_message("Team").expect("Team message not found");
 
         let members_field = team_msg
@@ -371,7 +266,7 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         let msg = schema
             .get_message("NumericTypes")
             .expect("NumericTypes message not found");
@@ -438,7 +333,7 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         let msg = schema
             .get_message("BinaryData")
             .expect("BinaryData message not found");
@@ -466,7 +361,7 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         assert_eq!(schema.messages.len(), 2);
 
         let address_msg = schema
@@ -506,7 +401,7 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         let entity_msg = schema
             .get_message("Entity")
             .expect("Entity message not found");
@@ -534,7 +429,7 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         let msg = schema
             .get_message("OptionalExample")
             .expect("OptionalExample message not found");
@@ -579,12 +474,12 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         assert_eq!(schema.messages.len(), 3);
 
-        assert!(schema.get_message("User").is_ok());
-        assert!(schema.get_message("Post").is_ok());
-        assert!(schema.get_message("Comment").is_ok());
+        assert!(schema.get_message("User").is_some());
+        assert!(schema.get_message("Post").is_some());
+        assert!(schema.get_message("Comment").is_some());
 
         let messages = schema.list_messages();
         assert_eq!(messages.len(), 3);
@@ -603,7 +498,7 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         let msg = schema
             .get_message("OrderedMessage")
             .expect("OrderedMessage not found");
@@ -642,7 +537,7 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         assert_eq!(schema.messages.len(), 2);
 
         let product_msg = schema.get_message("Product").expect("Product not found");
@@ -665,7 +560,7 @@ mod tests {
             }
         "#;
 
-        let result = ProtoSchema::from_string(proto);
+        let result = ProtoParser::from_string(proto);
         assert!(result.is_err());
     }
 
@@ -679,9 +574,9 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         let result = schema.get_message("NonExistent");
-        assert!(result.is_err());
+        assert!(result.is_none());
     }
 
     #[test]
@@ -694,10 +589,10 @@ mod tests {
             }
         "#;
 
-        let schema = ProtoSchema::from_string(proto).expect("Failed to parse proto");
+        let schema = ProtoParser::from_string(proto).expect("Failed to parse proto");
         let user_msg = schema.get_message("User").expect("User not found");
         let result = user_msg.get_field("nonexistent");
-        assert!(result.is_err());
+        assert!(result.is_none());
     }
 
     #[test]

@@ -12,6 +12,12 @@
 //! - No full sync phase required
 //! - Consumer offsets are managed by Kafka internally
 //! - Test uses timeout-based sync (runs until deadline)
+//!
+//! ## Import Note
+//!
+//! This test imports directly from `surreal_sync_kafka` crate (not re-exported
+//! through main crate). This follows the pattern established for other database-
+//! specific sync crates (mysql-trigger, postgresql-trigger, etc.).
 
 use chrono::Utc;
 use loadtest_populate_kafka::KafkaPopulator;
@@ -19,6 +25,7 @@ use loadtest_verify::StreamingVerifier;
 use std::time::Duration;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
 use surreal_sync::SurrealOpts;
+use surreal_sync_kafka::{Config as KafkaConfig, SurrealOpts as KafkaSurrealOpts};
 use sync_core::Schema;
 use tokio::time::sleep;
 
@@ -158,7 +165,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             message_type
         );
 
-        let config = surreal_sync::kafka::Config {
+        let config = KafkaConfig {
             proto_path: proto_path.to_string_lossy().to_string(),
             brokers: vec![KAFKA_BROKER.to_string()],
             group_id: format!("loadtest-{table_name}-{test_id}"),
@@ -182,16 +189,22 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             .get_table(table_name)
             .map(|t| t.to_table_definition());
 
+        // Convert CLI SurrealOpts to Kafka-specific SurrealOpts
+        let kafka_opts = KafkaSurrealOpts {
+            surreal_endpoint: surreal_opts.surreal_endpoint.clone(),
+            surreal_username: surreal_opts.surreal_username.clone(),
+            surreal_password: surreal_opts.surreal_password.clone(),
+        };
+
         let sync_handle = tokio::spawn({
             let namespace = surreal_config.surreal_namespace.clone();
             let database = surreal_config.surreal_database.clone();
-            let opts = surreal_opts.clone();
             async move {
-                surreal_sync::kafka::run_incremental_sync(
+                surreal_sync_kafka::run_incremental_sync(
                     config,
                     namespace,
                     database,
-                    opts,
+                    kafka_opts,
                     deadline,
                     table_schema,
                 )

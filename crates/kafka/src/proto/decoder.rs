@@ -1,70 +1,41 @@
-use super::parser::{ProtoFieldDescriptor, ProtoMessageDescriptor, ProtoSchema, ProtoType};
+//! Protobuf decoder implementation.
+//!
+//! This module provides the runtime protobuf decoder that uses the schema
+//! from the parser module and produces ProtoMessage/ProtoFieldValue from
+//! kafka-types.
+
 use crate::error::{Error, Result};
+use kafka_types::{
+    ProtoFieldDescriptor, ProtoFieldValue, ProtoMessage, ProtoMessageDescriptor, ProtoSchema,
+    ProtoType,
+};
 use protobuf::CodedInputStream;
 use std::collections::HashMap;
 
-/// Represents a decoded protobuf message
-#[derive(Debug, Clone)]
-pub struct ProtoMessage {
-    /// Message type name
-    pub message_type: String,
-    /// Decoded field values
-    pub fields: HashMap<String, ProtoFieldValue>,
-    /// Schema reference for field introspection
-    pub descriptor: ProtoMessageDescriptor,
-}
-
-/// Represents a field value in a decoded message
-#[derive(Debug, Clone)]
-pub enum ProtoFieldValue {
-    Double(f64),
-    Float(f32),
-    Int32(i32),
-    Int64(i64),
-    Uint32(u32),
-    Uint64(u64),
-    Bool(bool),
-    String(String),
-    Bytes(Vec<u8>),
-    Message(Box<ProtoMessage>),
-    Repeated(Vec<ProtoFieldValue>),
-    Null,
-}
-
-impl ProtoFieldValue {
-    /// Get the type name of this field value
-    pub fn proto_field_type(&self) -> ProtoType {
-        match self {
-            ProtoFieldValue::Double(_) => ProtoType::Double,
-            ProtoFieldValue::Float(_) => ProtoType::Float,
-            ProtoFieldValue::Int32(_) => ProtoType::Int32,
-            ProtoFieldValue::Int64(_) => ProtoType::Int64,
-            ProtoFieldValue::Uint32(_) => ProtoType::Uint32,
-            ProtoFieldValue::Uint64(_) => ProtoType::Uint64,
-            ProtoFieldValue::Bool(_) => ProtoType::Bool,
-            ProtoFieldValue::String(_) => ProtoType::String,
-            ProtoFieldValue::Bytes(_) => ProtoType::Bytes,
-            ProtoFieldValue::Message(msg) => ProtoType::Message(msg.message_type.clone()),
-            ProtoFieldValue::Repeated(_) => ProtoType::Repeated(Box::new(ProtoType::Null)), // Placeholder,
-            ProtoFieldValue::Null => ProtoType::Null,
-        }
-    }
-}
-
-/// Runtime protobuf decoder
+/// Runtime protobuf decoder.
+///
+/// Decodes binary protobuf data into ProtoMessage using a parsed schema.
 pub struct ProtoDecoder {
     schema: ProtoSchema,
 }
 
 impl ProtoDecoder {
-    /// Create a new decoder from a schema
+    /// Create a new decoder from a schema.
     pub fn new(schema: ProtoSchema) -> Self {
         Self { schema }
     }
 
-    /// Decode a protobuf message from bytes
+    /// Get a reference to the schema.
+    pub fn schema(&self) -> &ProtoSchema {
+        &self.schema
+    }
+
+    /// Decode a protobuf message from bytes.
     pub fn decode(&self, message_type: &str, data: &[u8]) -> Result<ProtoMessage> {
-        let descriptor = self.schema.get_message(message_type)?;
+        let descriptor = self
+            .schema
+            .get_message(message_type)
+            .ok_or_else(|| Error::MessageTypeNotFound(message_type.to_string()))?;
         let mut stream = CodedInputStream::from_bytes(data);
         self.decode_message(descriptor, &mut stream)
     }
@@ -200,7 +171,10 @@ impl ProtoDecoder {
 
                 // Extract just the type name without package prefix
                 let simple_type = type_name.split('.').next_back().unwrap_or(type_name);
-                let nested_descriptor = self.schema.get_message(simple_type)?;
+                let nested_descriptor = self
+                    .schema
+                    .get_message(simple_type)
+                    .ok_or_else(|| Error::MessageTypeNotFound(simple_type.to_string()))?;
                 let nested_message = self.decode_message(nested_descriptor, stream)?;
 
                 stream.pop_limit(old_limit);
@@ -217,131 +191,6 @@ impl ProtoDecoder {
                 "Unsupported field type: {:?}",
                 field_desc.field_type
             ))),
-        }
-    }
-}
-
-impl ProtoMessage {
-    /// List all field names in this message
-    pub fn list_fields(&self) -> Vec<String> {
-        self.descriptor.field_order.clone()
-    }
-
-    /// Get a field value by name
-    pub fn get_field(&self, name: &str) -> Result<&ProtoFieldValue> {
-        self.fields
-            .get(name)
-            .ok_or_else(|| Error::FieldNotFound(name.to_string()))
-    }
-
-    /// Get a field value as a specific type
-    pub fn get_string(&self, name: &str) -> Result<&str> {
-        match self.get_field(name)? {
-            ProtoFieldValue::String(s) => Ok(s),
-            other => Err(Error::InvalidFieldType {
-                expected: ProtoType::String,
-                actual: other.proto_field_type(),
-            }),
-        }
-    }
-
-    pub fn get_int64(&self, name: &str) -> Result<i64> {
-        match self.get_field(name)? {
-            ProtoFieldValue::Int64(v) => Ok(*v),
-            other => Err(Error::InvalidFieldType {
-                expected: ProtoType::Int64,
-                actual: other.proto_field_type(),
-            }),
-        }
-    }
-
-    pub fn get_int32(&self, name: &str) -> Result<i32> {
-        match self.get_field(name)? {
-            ProtoFieldValue::Int32(v) => Ok(*v),
-            other => Err(Error::InvalidFieldType {
-                expected: ProtoType::Int32,
-                actual: other.proto_field_type(),
-            }),
-        }
-    }
-
-    pub fn get_uint64(&self, name: &str) -> Result<u64> {
-        match self.get_field(name)? {
-            ProtoFieldValue::Uint64(v) => Ok(*v),
-            other => Err(Error::InvalidFieldType {
-                expected: ProtoType::Uint64,
-                actual: other.proto_field_type(),
-            }),
-        }
-    }
-
-    pub fn get_uint32(&self, name: &str) -> Result<u32> {
-        match self.get_field(name)? {
-            ProtoFieldValue::Uint32(v) => Ok(*v),
-            other => Err(Error::InvalidFieldType {
-                expected: ProtoType::Uint32,
-                actual: other.proto_field_type(),
-            }),
-        }
-    }
-
-    pub fn get_bool(&self, name: &str) -> Result<bool> {
-        match self.get_field(name)? {
-            ProtoFieldValue::Bool(v) => Ok(*v),
-            other => Err(Error::InvalidFieldType {
-                expected: ProtoType::Bool,
-                actual: other.proto_field_type(),
-            }),
-        }
-    }
-
-    pub fn get_double(&self, name: &str) -> Result<f64> {
-        match self.get_field(name)? {
-            ProtoFieldValue::Double(v) => Ok(*v),
-            other => Err(Error::InvalidFieldType {
-                expected: ProtoType::Double,
-                actual: other.proto_field_type(),
-            }),
-        }
-    }
-
-    pub fn get_float(&self, name: &str) -> Result<f32> {
-        match self.get_field(name)? {
-            ProtoFieldValue::Float(v) => Ok(*v),
-            other => Err(Error::InvalidFieldType {
-                expected: ProtoType::Float,
-                actual: other.proto_field_type(),
-            }),
-        }
-    }
-
-    pub fn get_bytes(&self, name: &str) -> Result<&[u8]> {
-        match self.get_field(name)? {
-            ProtoFieldValue::Bytes(v) => Ok(v),
-            other => Err(Error::InvalidFieldType {
-                expected: ProtoType::Bytes,
-                actual: other.proto_field_type(),
-            }),
-        }
-    }
-
-    pub fn get_message(&self, name: &str) -> Result<&ProtoMessage> {
-        match self.get_field(name)? {
-            ProtoFieldValue::Message(m) => Ok(m),
-            other => Err(Error::InvalidFieldType {
-                expected: ProtoType::Message("".to_string()), // Placeholder
-                actual: other.proto_field_type(),
-            }),
-        }
-    }
-
-    pub fn get_repeated(&self, name: &str) -> Result<&[ProtoFieldValue]> {
-        match self.get_field(name)? {
-            ProtoFieldValue::Repeated(values) => Ok(values),
-            other => Err(Error::InvalidFieldType {
-                expected: ProtoType::Repeated(Box::new(ProtoType::Null)), // Placeholder
-                actual: other.proto_field_type(),
-            }),
         }
     }
 }

@@ -6,6 +6,17 @@ description = "Kafka consumer with protobuf support for surreal-sync"
 authors = ["surreal-sync contributors"]
 
 [dependencies]
+# Type definitions (proto types, message types)
+# NOTE: kafka-types defines the shared types (ProtoFieldValue, Message, Payload, etc.)
+# This crate depends on kafka-types, NOT the other way around.
+# This dependency direction breaks the original circular dependency.
+kafka-types = { path = "../kafka-types" }
+
+# For sync functionality
+surreal-sync-surreal = { path = "../surreal" }
+surrealdb-types = { path = "../surrealdb-types" }
+sync-core = { path = "../sync-core" }
+
 # Kafka client
 rdkafka = { version = "0.36", features = ["tokio"] }
 
@@ -32,6 +43,12 @@ log = "0.4"
 bytes = "1.0"
 base64 = "0.22"
 tempfile = "3.0"
+
+# CLI argument parsing (for Config struct)
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# DateTime support
+chrono = { version = "0.4.41", features = ["serde"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

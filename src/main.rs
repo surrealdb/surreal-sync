@@ -58,7 +58,7 @@
 use anyhow::Context;
 use checkpoint::Checkpoint;
 use clap::{Parser, Subcommand, ValueEnum};
-use surreal_sync::{csv, jsonl, kafka, SourceOpts, SurrealOpts};
+use surreal_sync::{csv, jsonl, SourceOpts, SurrealOpts};
 use surreal_sync_surreal::surreal_connect;
 
 // Database-specific sync crates (fully-qualified paths used in match arms)
@@ -189,7 +189,7 @@ enum Commands {
     Kafka {
         /// Kafka source configuration
         #[command(flatten)]
-        config: kafka::Config,
+        config: surreal_sync_kafka::Config,
 
         /// Target SurrealDB namespace
         #[arg(long)]
@@ -492,11 +492,11 @@ async fn run() -> anyhow::Result<()> {
                 None
             };
 
-            kafka::run_incremental_sync(
+            surreal_sync_kafka::run_incremental_sync(
                 config,
                 to_namespace,
                 to_database,
-                to_opts,
+                surreal_sync_kafka::SurrealOpts::from(&to_opts),
                 chrono::Utc::now() + chrono::Duration::hours(1),
                 table_schema,
             )

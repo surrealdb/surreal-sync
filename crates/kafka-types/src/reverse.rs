@@ -4,9 +4,10 @@
 //! for unified type handling across sources.
 
 use crate::error::{KafkaTypesError, Result};
+use crate::proto::{ProtoFieldValue, ProtoType};
+use crate::{Message, Payload};
 use json_types::JsonValueWithSchema;
 use std::collections::HashMap;
-use surreal_sync_kafka::ProtoFieldValue;
 use sync_core::{ColumnDefinition, TableDefinition, TypedValue, UniversalType, UniversalValue};
 use tracing::debug;
 
@@ -20,13 +21,13 @@ use tracing::debug;
 /// - Missing array fields are filled with empty arrays
 /// - Type information is preserved from the schema
 pub fn message_to_typed_values(
-    message: surreal_sync_kafka::Message,
+    message: Message,
     table_schema: Option<&TableDefinition>,
 ) -> Result<HashMap<String, TypedValue>> {
     let mut kvs = HashMap::new();
 
     match message.payload {
-        surreal_sync_kafka::Payload::Protobuf(msg) => {
+        Payload::Protobuf(msg) => {
             // First, convert all fields from the message
             for (key, value) in msg.fields {
                 let column_schema = table_schema.and_then(|ts| ts.get_column(&key));
@@ -139,12 +140,8 @@ pub fn proto_to_typed_value(value: ProtoFieldValue) -> Result<TypedValue> {
                         let v = match m.fields.get(k) {
                             Some(v) => v,
                             None => match f.field_type {
-                                surreal_sync_kafka::ProtoType::Bool => {
-                                    &ProtoFieldValue::Bool(false)
-                                }
-                                surreal_sync_kafka::ProtoType::Repeated(_) => {
-                                    &ProtoFieldValue::Repeated(vec![])
-                                }
+                                ProtoType::Bool => &ProtoFieldValue::Bool(false),
+                                ProtoType::Repeated(_) => &ProtoFieldValue::Repeated(vec![]),
                                 _ => {
                                     return Err(KafkaTypesError::MissingField(format!(
                                         "Field '{k}' listed in descriptor but missing in fields"
@@ -238,7 +235,7 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use surreal_sync_kafka::{ProtoMessage, ProtoMessageDescriptor};
+    use crate::proto::{ProtoMessage, ProtoMessageDescriptor};
 
     fn empty_descriptor() -> ProtoMessageDescriptor {
         ProtoMessageDescriptor {

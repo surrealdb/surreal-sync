@@ -8,8 +8,10 @@ authors = ["surreal-sync contributors"]
 [dependencies]
 # Core types
 sync-core = { path = "../sync-core" }
-surreal-sync-kafka = { path = "../kafka" }
 json-types = { path = "../json-types" }
+# NOTE: NO dependency on surreal-sync-kafka - this crate defines the shared types
+# that kafka depends on, reversing the original dependency direction to break
+# the circular dependency.
 
 # Protobuf encoding
 protobuf = "3.5"

@@ -1,6 +1,5 @@
+use kafka_types::ProtoType;
 use thiserror::Error;
-
-use crate::ProtoType;
 
 #[derive(Error, Debug)]
 pub enum Error {

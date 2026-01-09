@@ -1,5 +1,10 @@
+//! Kafka consumer with peek buffer and manual offset management.
+//!
+//! Uses Message and Payload types from kafka-types.
+
 use crate::error::{Error, Result};
-use crate::proto::decoder::{ProtoDecoder, ProtoMessage};
+use crate::proto::decoder::ProtoDecoder;
+use kafka_types::{Message, Payload};
 use rdkafka::config::ClientConfig;
 use rdkafka::consumer::{Consumer as RdkafkaConsumer, StreamConsumer as RdkafkaStreamConsumer};
 use rdkafka::message::{BorrowedMessage as RdkafkaBorrowedMessage, Message as RdkafkaMessage};
@@ -67,28 +72,6 @@ impl Default for ConsumerConfig {
             enable_auto_commit: false,
         }
     }
-}
-
-/// A Kafka message with decoded protobuf content
-#[derive(Debug, Clone)]
-pub struct Message {
-    /// Decoded protobuf message content
-    pub payload: Payload,
-    /// Kafka topic
-    pub topic: String,
-    /// Kafka partition
-    pub partition: i32,
-    /// Kafka offset
-    pub offset: i64,
-    /// Message key (if any)
-    pub key: Option<Vec<u8>>,
-    /// Message timestamp (milliseconds since epoch)
-    pub timestamp: Option<i64>,
-}
-
-#[derive(Debug, Clone)]
-pub enum Payload {
-    Protobuf(ProtoMessage),
 }
 
 /// Kafka consumer with peek buffer and manual offset management

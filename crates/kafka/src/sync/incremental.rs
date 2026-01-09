@@ -1,13 +1,36 @@
-use crate::SurrealOpts;
+//! Kafka incremental sync to SurrealDB.
+//!
+//! Consumes protobuf-encoded messages from Kafka topics and writes
+//! them as records to SurrealDB tables.
+//!
+//! This module was moved from src/kafka/incremental.rs in the main crate
+//! to break the circular dependency between kafka and kafka-types.
+
 use anyhow::Result;
 use clap::Parser;
+use kafka_types::Message;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use surreal_sync_kafka::{ConsumerConfig, Message};
 use sync_core::TableDefinition;
 use tracing::{debug, error, info};
 
-/// Configuration for Kafka source
+use crate::consumer::ConsumerConfig;
+use crate::Client;
+
+/// SurrealDB connection options.
+///
+/// Defined locally to avoid dependency on main crate.
+#[derive(Clone, Debug)]
+pub struct SurrealOpts {
+    /// SurrealDB endpoint URL
+    pub surreal_endpoint: String,
+    /// SurrealDB username
+    pub surreal_username: String,
+    /// SurrealDB password
+    pub surreal_password: String,
+}
+
+/// Configuration for Kafka source.
 #[derive(Debug, Clone, Parser)]
 pub struct Config {
     /// Proto file path
@@ -42,7 +65,7 @@ pub struct Config {
     pub id_field: String,
 }
 
-/// Run incremental sync from Kafka to SurrealDB
+/// Run incremental sync from Kafka to SurrealDB.
 pub async fn run_incremental_sync(
     config: Config,
     to_namespace: String,
@@ -82,7 +105,7 @@ pub async fn run_incremental_sync(
         ..Default::default()
     };
 
-    let client = surreal_sync_kafka::Client::from_proto_file(config.proto_path, consumer_config)?;
+    let client = Client::from_proto_file(config.proto_path, consumer_config)?;
     info!(
         "Kafka client created successfully: schema={:?}",
         client.schema()
