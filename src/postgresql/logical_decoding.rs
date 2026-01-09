@@ -45,7 +45,7 @@ pub struct Config {
 /// # Returns
 /// Returns Ok(()) on successful completion, or an error if the sync fails
 pub async fn sync(config: Config) -> Result<()> {
-    let _pg_config = surreal_sync_postgresql_replication::Config::new(
+    let _pg_config = surreal_sync_postgresql_logical_replication::Config::new(
         &config.connection_string,
         config.slot.clone(),
     )?;

@@ -10,7 +10,7 @@
 use loadtest_populate_postgresql::PostgreSQLPopulator;
 use loadtest_verify::StreamingVerifier;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
-use surreal_sync::{postgresql, SourceOpts, SurrealOpts};
+use surreal_sync::{SourceOpts, SurrealOpts};
 use sync_core::Schema;
 use tokio_postgres::NoTls;
 
@@ -116,11 +116,11 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
         dry_run: false,
     };
 
-    postgresql::run_full_sync(
-        source_opts,
+    surreal_sync_postgresql_trigger::run_full_sync(
+        surreal_sync_postgresql_trigger::SourceOpts::from(&source_opts),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_opts,
+        surreal_sync_postgresql_trigger::SurrealOpts::from(&surreal_opts),
         None,
     )
     .await?;

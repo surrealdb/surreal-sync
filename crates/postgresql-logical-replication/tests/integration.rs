@@ -1,7 +1,9 @@
 //! Integration tests for PostgreSQL logical replication with wal2json
 
 use anyhow::{bail, Context, Result};
-use surreal_sync_postgresql_replication::{testing::container::PostgresContainer, Action, Client};
+use surreal_sync_postgresql_logical_replication::{
+    testing::container::PostgresContainer, Action, Client,
+};
 use tokio_postgres::NoTls;
 use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};

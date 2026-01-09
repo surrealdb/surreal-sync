@@ -108,22 +108,28 @@ pub fn list_checkpoint_files<P: AsRef<Path>>(
 /// Read and parse the t1 (full_sync_start) checkpoint from a directory
 ///
 /// This function searches for the t1 checkpoint file in the given directory,
-/// reads its content, and parses it into a SyncCheckpoint structure.
+/// reads its content, and returns it as a CheckpointFile that can be parsed
+/// into database-specific checkpoint types.
 ///
 /// # Arguments
 /// * `checkpoint_dir` - Path to the checkpoint directory
 ///
 /// # Returns
-/// * `Ok(SyncCheckpoint)` - The parsed t1 checkpoint
+/// * `Ok(CheckpointFile)` - The parsed checkpoint file (use `.parse::<T>()` to get specific type)
 /// * `Err` - If no t1 checkpoint is found or parsing fails
 ///
 /// # Examples
 /// ```ignore
-/// let t1 = surreal_sync::testing::checkpoint::read_t1_checkpoint(".test-checkpoints")?;
+/// let t1_file = surreal_sync::testing::checkpoint::read_t1_checkpoint(".test-checkpoints")?;
+/// let mysql_checkpoint: MySQLCheckpoint = t1_file.parse()?;
 /// ```
+///
+/// # Note
+/// Prefer using `checkpoint::get_checkpoint_for_phase()` from the checkpoint crate directly
+/// for new code.
 pub fn read_t1_checkpoint<P: AsRef<Path>>(
     checkpoint_dir: P,
-) -> anyhow::Result<crate::sync::SyncCheckpoint> {
+) -> anyhow::Result<checkpoint::CheckpointFile> {
     // Find all checkpoint files
     let checkpoint_files = list_checkpoint_files(&checkpoint_dir)?;
 
@@ -144,11 +150,9 @@ pub fn read_t1_checkpoint<P: AsRef<Path>>(
         );
     }
 
-    // Read and parse t1 checkpoint
+    // Read and parse t1 checkpoint file
     let t1_content = std::fs::read_to_string(t1_files[0].path())?;
-    let t1_json: serde_json::Value = serde_json::from_str(&t1_content)?;
-    let t1_checkpoint: crate::sync::SyncCheckpoint =
-        serde_json::from_value(t1_json["checkpoint"].clone())?;
+    let t1_checkpoint: checkpoint::CheckpointFile = serde_json::from_str(&t1_content)?;
 
     Ok(t1_checkpoint)
 }
@@ -262,8 +266,8 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
 
         "mysql" => {
             // MySQL: Sequence ID progression
-            let t1_checkpoint: crate::mysql::checkpoint::MySQLCheckpoint = t1_file.parse()?;
-            let t2_checkpoint: crate::mysql::checkpoint::MySQLCheckpoint = t2_file.parse()?;
+            let t1_checkpoint: surreal_sync_mysql_trigger::MySQLCheckpoint = t1_file.parse()?;
+            let t2_checkpoint: surreal_sync_mysql_trigger::MySQLCheckpoint = t2_file.parse()?;
 
             assert!(
                 t2_checkpoint.sequence_id >= t1_checkpoint.sequence_id,
@@ -279,9 +283,9 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
 
         "postgresql" => {
             // PostgreSQL: Sequence ID progression
-            let t1_checkpoint: crate::postgresql::checkpoint::PostgreSQLCheckpoint =
+            let t1_checkpoint: surreal_sync_postgresql_trigger::PostgreSQLCheckpoint =
                 t1_file.parse()?;
-            let t2_checkpoint: crate::postgresql::checkpoint::PostgreSQLCheckpoint =
+            let t2_checkpoint: surreal_sync_postgresql_trigger::PostgreSQLCheckpoint =
                 t2_file.parse()?;
 
             assert!(

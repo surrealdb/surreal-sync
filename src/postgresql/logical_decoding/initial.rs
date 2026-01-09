@@ -29,8 +29,18 @@ pub async fn sync(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to connect to PostgreSQL: {e}"))?;
 
+    // Convert main crate SurrealOpts to sub-crate SurrealOpts
+    let sub_crate_opts = surreal_sync_postgresql_trigger::SurrealOpts {
+        surreal_endpoint: config.to_opts.surreal_endpoint.clone(),
+        surreal_username: config.to_opts.surreal_username.clone(),
+        surreal_password: config.to_opts.surreal_password.clone(),
+        batch_size: config.to_opts.batch_size,
+        dry_run: config.to_opts.dry_run,
+    };
+
     for tb in &config.tables {
-        crate::postgresql::migrate_table(&psql_client, surreal, tb, &config.to_opts).await?;
+        surreal_sync_postgresql_trigger::migrate_table(&psql_client, surreal, tb, &sub_crate_opts)
+            .await?;
     }
 
     // Spawn connection handler
@@ -39,8 +49,10 @@ pub async fn sync(
             error!("Connection error: {e}");
         }
     });
-    let client =
-        surreal_sync_postgresql_replication::Client::new(psql_client, config.tables.clone());
+    let client = surreal_sync_postgresql_logical_replication::Client::new(
+        psql_client,
+        config.tables.clone(),
+    );
     let pre_lsn = client.get_current_wal_lsn().await?;
 
     Ok(pre_lsn)

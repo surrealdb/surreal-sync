@@ -1,4 +1,4 @@
-//! KA Kafka consumer library designed for `surreal-sync`'s specific use case of processing Kafka messages
+//! Kafka consumer library designed for `surreal-sync`'s specific use case of processing Kafka messages
 //! whose values are encoded in protobuf.
 //!
 //! Features:

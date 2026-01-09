@@ -69,8 +69,7 @@ async fn test_mysql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
     use checkpoint::{Checkpoint, SyncPhase};
     let checkpoint_file =
         checkpoint::get_checkpoint_for_phase(".test-checkpoints", SyncPhase::FullSyncStart).await?;
-    let mysql_checkpoint: surreal_sync::mysql::checkpoint::MySQLCheckpoint =
-        checkpoint_file.parse()?;
+    let mysql_checkpoint: surreal_sync_mysql_trigger::MySQLCheckpoint = checkpoint_file.parse()?;
     let checkpoint_string = mysql_checkpoint.to_cli_string();
 
     // Execute CLI incremental sync command

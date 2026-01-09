@@ -6126,8 +6126,10 @@ dependencies = [
  "surreal-sync-kafka",
  "surreal-sync-kafka-producer",
  "surreal-sync-mongodb",
+ "surreal-sync-mysql-trigger",
  "surreal-sync-neo4j",
- "surreal-sync-postgresql-replication",
+ "surreal-sync-postgresql-logical-replication",
+ "surreal-sync-postgresql-trigger",
  "surreal-sync-surreal",
  "surrealdb",
  "surrealdb-types",
@@ -6268,6 +6270,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "surreal-sync-mysql-trigger"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "checkpoint",
+ "chrono",
+ "futures",
+ "json-types",
+ "log",
+ "mysql-types",
+ "mysql_async",
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "surreal-sync-surreal",
+ "surrealdb",
+ "surrealdb-types",
+ "sync-core",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
 name = "surreal-sync-neo4j"
 version = "0.1.0"
 dependencies = [
@@ -6297,7 +6325,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "surreal-sync-postgresql-replication"
+name = "surreal-sync-postgresql-logical-replication"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -6309,6 +6337,36 @@ dependencies = [
  "tokio-postgres",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "surreal-sync-postgresql-trigger"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "checkpoint",
+ "chrono",
+ "chrono-tz",
+ "futures",
+ "geo-types",
+ "json-types",
+ "log",
+ "postgresql-types",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "surreal-sync-surreal",
+ "surrealdb",
+ "surrealdb-types",
+ "sync-core",
+ "tempfile",
+ "tokio",
+ "tokio-postgres",
+ "tokio-stream",
+ "tracing",
  "uuid",
 ]
 

@@ -1,7 +1,8 @@
 [package]
-name = "surreal-sync-postgresql-replication"
+name = "surreal-sync-postgresql-logical-replication"
 version = "0.1.0"
 edition = "2021"
+description = "PostgreSQL logical replication (WAL) sync for surreal-sync"
 
 [dependencies]
 anyhow = "1.0"
@@ -18,9 +19,9 @@ uuid = { version = "1.0", features = ["v4"] }
 [dev-dependencies]
 
 [[bin]]
-name = "surreal-sync-postgresql-replication-demo"
+name = "surreal-sync-postgresql-logical-replication-demo"
 path = "src/main.rs"
 
 [lib]
-name = "surreal_sync_postgresql_replication"
+name = "surreal_sync_postgresql_logical_replication"
 path = "src/lib.rs"

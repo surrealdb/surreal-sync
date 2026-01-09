@@ -10,39 +10,31 @@
 //! - Reliable checkpointing: Resume sync from any point after failures
 //! - Portability: Trigger-based approaches work in any environment
 //!
-//! # Incremental Sync Architecture
+//! # Database-Specific Sync Crates
 //!
-//! The library provides a universal incremental sync design that works across all
-//! supported databases. See [`sync`] module for the core architecture and
-//! individual database modules for specific implementations:
+//! Each database has its own dedicated sync crate:
 //!
 //! - `surreal_sync_neo4j` - Neo4j timestamp-based tracking
 //! - `surreal_sync_mongodb` - MongoDB change streams
-//! - [`postgresql_incremental`] - PostgreSQL trigger-based tracking
-//! - [`mysql_incremental`] - MySQL audit table tracking
+//! - `surreal_sync_postgresql_trigger` - PostgreSQL trigger-based tracking
+//! - `surreal_sync_mysql_trigger` - MySQL audit table tracking
+//! - `surreal_sync_kafka` - Kafka consumer integration
 //!
 //! # Quick Start
 //!
 //! ```ignore
-//! use surreal_sync::sync::{IncrementalSource, SyncCheckpoint};
+//! // PostgreSQL incremental sync using the dedicated crate
+//! use surreal_sync_postgresql_trigger::{PostgresIncrementalSource, PostgreSQLCheckpoint};
 //!
-//! // PostgreSQL incremental sync
-//! let mut source = postgresql_incremental::PostgresIncrementalSource::new(
-//!     "postgres://user:pass@localhost/db"
-//! ).await?;
-//!
-//! source.initialize(None).await?;
-//! let mut stream = source.get_changes().await?;
-//!
-//! while let Some(change) = stream.next().await {
-//!     // Process change...
-//! }
+//! let checkpoint = PostgreSQLCheckpoint::from_cli_string("postgresql:sequence:0")?;
+//! let client = surreal_sync_postgresql_trigger::new_postgresql_client(&connection_string).await?;
+//! let source = PostgresIncrementalSource::new(client, checkpoint.sequence_id);
+//! // ... run incremental sync
 //! ```
 
 use clap::Parser;
 
 pub mod kafka;
-pub mod mysql;
 pub mod postgresql;
 pub mod sync;
 pub mod testing;
@@ -152,6 +144,51 @@ impl From<&SourceOpts> for surreal_sync_neo4j::SourceOpts {
 }
 
 impl From<&SurrealOpts> for surreal_sync_neo4j::SurrealOpts {
+    fn from(opts: &SurrealOpts) -> Self {
+        Self {
+            surreal_endpoint: opts.surreal_endpoint.clone(),
+            surreal_username: opts.surreal_username.clone(),
+            surreal_password: opts.surreal_password.clone(),
+            batch_size: opts.batch_size,
+            dry_run: opts.dry_run,
+        }
+    }
+}
+
+// CLI type → MySQL trigger library type conversions
+impl From<&SourceOpts> for surreal_sync_mysql_trigger::SourceOpts {
+    fn from(opts: &SourceOpts) -> Self {
+        Self {
+            source_uri: opts.source_uri.clone(),
+            source_database: opts.source_database.clone(),
+            mysql_boolean_paths: opts.mysql_boolean_paths.clone(),
+        }
+    }
+}
+
+impl From<&SurrealOpts> for surreal_sync_mysql_trigger::SurrealOpts {
+    fn from(opts: &SurrealOpts) -> Self {
+        Self {
+            surreal_endpoint: opts.surreal_endpoint.clone(),
+            surreal_username: opts.surreal_username.clone(),
+            surreal_password: opts.surreal_password.clone(),
+            batch_size: opts.batch_size,
+            dry_run: opts.dry_run,
+        }
+    }
+}
+
+// CLI type → PostgreSQL trigger library type conversions
+impl From<&SourceOpts> for surreal_sync_postgresql_trigger::SourceOpts {
+    fn from(opts: &SourceOpts) -> Self {
+        Self {
+            source_uri: opts.source_uri.clone(),
+            source_database: opts.source_database.clone(),
+        }
+    }
+}
+
+impl From<&SurrealOpts> for surreal_sync_postgresql_trigger::SurrealOpts {
     fn from(opts: &SurrealOpts) -> Self {
         Self {
             surreal_endpoint: opts.surreal_endpoint.clone(),

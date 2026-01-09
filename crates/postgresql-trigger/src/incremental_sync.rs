@@ -1,5 +1,4 @@
 use super::checkpoint::PostgreSQLCheckpoint;
-use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use crate::{SourceOpts, SurrealOpts};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -17,6 +16,49 @@ use sync_core::DatabaseSchema;
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
 use tracing::debug;
+
+// ============================================================================
+// Traits for PostgreSQL incremental sync
+//
+// These traits are duplicated here (rather than shared via a common crate)
+// because they use database-specific checkpoint types and each database's
+// implementation is self-contained. The duplication is minimal (~20 lines)
+// and simplifies the dependency graph.
+// ============================================================================
+
+/// Trait for PostgreSQL incremental sync source
+///
+/// Provides the interface for initializing the source, getting a change stream,
+/// and managing checkpoints for reliable resumption.
+#[async_trait]
+pub trait IncrementalSource: Send + Sync {
+    /// Get the source database type identifier
+    fn source_type(&self) -> &'static str;
+
+    /// Initialize the incremental source (setup tasks like schema collection)
+    async fn initialize(&mut self) -> Result<()>;
+
+    /// Get a stream of changes from the source
+    async fn get_changes(&mut self) -> Result<Box<dyn ChangeStream>>;
+
+    /// Get the current checkpoint position
+    async fn get_checkpoint(&self) -> Result<PostgreSQLCheckpoint>;
+
+    /// Cleanup resources
+    async fn cleanup(self) -> Result<()>;
+}
+
+/// Trait for a stream of changes from PostgreSQL
+#[async_trait]
+pub trait ChangeStream: Send + Sync {
+    /// Get the next change event from the stream
+    /// Returns None when no more changes are available
+    async fn next(&mut self) -> Option<Result<Change>>;
+
+    /// Get the current checkpoint of the stream
+    /// This can be used to resume from this position later
+    fn checkpoint(&self) -> Option<PostgreSQLCheckpoint>;
+}
 
 /// Run incremental sync from PostgreSQL to SurrealDB
 pub async fn run_incremental_sync(
@@ -99,12 +141,8 @@ pub async fn run_incremental_sync(
 
                 // Check if we've reached the target checkpoint
                 if let Some(ref target) = target_checkpoint {
-                    if let Some(crate::sync::SyncCheckpoint::PostgreSQL {
-                        sequence_id: current_seq,
-                        ..
-                    }) = stream.checkpoint()
-                    {
-                        if current_seq >= target.sequence_id {
+                    if let Some(current_checkpoint) = stream.checkpoint() {
+                        if current_checkpoint.sequence_id >= target.sequence_id {
                             info!(
                                 "Reached target checkpoint: {}, stopping incremental sync",
                                 target.to_cli_string()
@@ -463,8 +501,8 @@ impl PostgresIncrementalSource {
 
 #[async_trait]
 impl IncrementalSource for PostgresIncrementalSource {
-    fn source_type(&self) -> SourceDatabase {
-        SourceDatabase::PostgreSQL
+    fn source_type(&self) -> &'static str {
+        "postgresql"
     }
 
     async fn initialize(&mut self) -> Result<()> {
@@ -491,8 +529,8 @@ impl IncrementalSource for PostgresIncrementalSource {
         Ok(Box::new(stream))
     }
 
-    async fn get_checkpoint(&self) -> Result<SyncCheckpoint> {
-        Ok(SyncCheckpoint::PostgreSQL {
+    async fn get_checkpoint(&self) -> Result<PostgreSQLCheckpoint> {
+        Ok(PostgreSQLCheckpoint {
             sequence_id: self.last_sequence,
             timestamp: Utc::now(),
         })
@@ -818,8 +856,8 @@ impl ChangeStream for PostgresChangeStream {
         }
     }
 
-    fn checkpoint(&self) -> Option<SyncCheckpoint> {
-        Some(SyncCheckpoint::PostgreSQL {
+    fn checkpoint(&self) -> Option<PostgreSQLCheckpoint> {
+        Some(PostgreSQLCheckpoint {
             sequence_id: self.last_sequence,
             timestamp: Utc::now(),
         })

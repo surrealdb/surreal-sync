@@ -71,19 +71,6 @@ pub async fn get_current_checkpoint(conn: &mut mysql_async::Conn) -> Result<MySQ
     })
 }
 
-/// Get current checkpoint as legacy SyncCheckpoint enum (for backwards compatibility)
-///
-/// Note: This is a temporary bridge function during migration to database-specific checkpoints.
-pub async fn get_current_sync_checkpoint(
-    conn: &mut mysql_async::Conn,
-) -> Result<crate::sync::SyncCheckpoint> {
-    let checkpoint = get_current_checkpoint(conn).await?;
-    Ok(crate::sync::SyncCheckpoint::MySQL {
-        sequence_id: checkpoint.sequence_id,
-        timestamp: checkpoint.timestamp,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

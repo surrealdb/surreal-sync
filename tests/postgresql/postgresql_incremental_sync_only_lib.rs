@@ -72,11 +72,11 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
         checkpoint_dir: Some(".test-checkpoints".to_string()),
     };
 
-    surreal_sync::postgresql::run_full_sync(
-        source_opts.clone(),
+    surreal_sync_postgresql_trigger::run_full_sync(
+        surreal_sync_postgresql_trigger::SourceOpts::from(&source_opts),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_opts.clone(),
+        surreal_sync_postgresql_trigger::SurrealOpts::from(&surreal_opts),
         Some(sync_config),
     )
     .await?;
@@ -94,15 +94,15 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
     )
     .await?;
     // Parse the CheckpointFile into database-specific checkpoint type
-    let sync_checkpoint: surreal_sync::postgresql::checkpoint::PostgreSQLCheckpoint =
+    let sync_checkpoint: surreal_sync_postgresql_trigger::PostgreSQLCheckpoint =
         checkpoint_file.parse()?;
 
     // Run incremental sync using the checkpoint
-    surreal_sync::postgresql::run_incremental_sync(
-        source_opts,
+    surreal_sync_postgresql_trigger::run_incremental_sync(
+        surreal_sync_postgresql_trigger::SourceOpts::from(&source_opts),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_opts,
+        surreal_sync_postgresql_trigger::SurrealOpts::from(&surreal_opts),
         sync_checkpoint,
         chrono::Utc::now() + chrono::Duration::hours(1), // 1 hour deadline
         None, // No target checkpoint - sync all available changes

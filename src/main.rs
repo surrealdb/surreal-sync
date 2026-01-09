@@ -58,14 +58,18 @@
 use anyhow::Context;
 use checkpoint::Checkpoint;
 use clap::{Parser, Subcommand, ValueEnum};
-use surreal_sync::{csv, jsonl, kafka, mysql, postgresql, SourceOpts, SurrealOpts};
+use surreal_sync::{csv, jsonl, kafka, SourceOpts, SurrealOpts};
 use surreal_sync_surreal::surreal_connect;
 
 // Database-specific sync crates (fully-qualified paths used in match arms)
 #[allow(clippy::single_component_path_imports)]
 use surreal_sync_mongodb;
 #[allow(clippy::single_component_path_imports)]
+use surreal_sync_mysql_trigger;
+#[allow(clippy::single_component_path_imports)]
 use surreal_sync_neo4j;
+#[allow(clippy::single_component_path_imports)]
+use surreal_sync_postgresql_trigger;
 
 // Load testing imports
 use loadtest_populate_csv::CSVPopulateArgs;
@@ -518,7 +522,7 @@ async fn run() -> anyhow::Result<()> {
                 None
             };
 
-            let config = postgresql::Config {
+            let config = surreal_sync::postgresql::Config {
                 connection_string,
                 slot,
                 tables,
@@ -527,7 +531,7 @@ async fn run() -> anyhow::Result<()> {
                 to_database,
                 to_opts,
             };
-            postgresql::sync(config).await?;
+            surreal_sync::postgresql::sync(config).await?;
         }
         Commands::Csv {
             files,
@@ -666,11 +670,11 @@ async fn run_full_sync(
             } else {
                 None
             };
-            surreal_sync::postgresql::run_full_sync(
-                from_opts,
+            surreal_sync_postgresql_trigger::run_full_sync(
+                surreal_sync_postgresql_trigger::SourceOpts::from(&from_opts),
                 to_namespace,
                 to_database,
-                to_opts,
+                surreal_sync_postgresql_trigger::SurrealOpts::from(&to_opts),
                 sync_config,
             )
             .await?;
@@ -685,7 +689,13 @@ async fn run_full_sync(
             } else {
                 None
             };
-            surreal_sync::mysql::run_full_sync(&from_opts, &to_opts, sync_config, &surreal).await?;
+            surreal_sync_mysql_trigger::run_full_sync(
+                &surreal_sync_mysql_trigger::SourceOpts::from(&from_opts),
+                &surreal_sync_mysql_trigger::SurrealOpts::from(&to_opts),
+                sync_config,
+                &surreal,
+            )
+            .await?;
         }
         SourceDatabase::Jsonl => {
             // Note: JSONL sync is file-based and does not require checkpoints
@@ -785,17 +795,18 @@ async fn run_incremental_sync(
         }
         SourceDatabase::PostgreSQL => {
             // Parse checkpoint strings using database-specific types
-            let pg_from =
-                postgresql::checkpoint::PostgreSQLCheckpoint::from_cli_string(&incremental_from)?;
+            let pg_from = surreal_sync_postgresql_trigger::PostgreSQLCheckpoint::from_cli_string(
+                &incremental_from,
+            )?;
             let pg_to = incremental_to
                 .as_ref()
-                .map(|s| postgresql::checkpoint::PostgreSQLCheckpoint::from_cli_string(s))
+                .map(|s| surreal_sync_postgresql_trigger::PostgreSQLCheckpoint::from_cli_string(s))
                 .transpose()?;
-            postgresql::run_incremental_sync(
-                from_opts,
+            surreal_sync_postgresql_trigger::run_incremental_sync(
+                surreal_sync_postgresql_trigger::SourceOpts::from(&from_opts),
                 to_namespace,
                 to_database,
-                to_opts,
+                surreal_sync_postgresql_trigger::SurrealOpts::from(&to_opts),
                 pg_from,
                 deadline,
                 pg_to,
@@ -805,16 +816,16 @@ async fn run_incremental_sync(
         SourceDatabase::MySQL => {
             // Parse checkpoint strings using database-specific types
             let mysql_from =
-                mysql::checkpoint::MySQLCheckpoint::from_cli_string(&incremental_from)?;
+                surreal_sync_mysql_trigger::MySQLCheckpoint::from_cli_string(&incremental_from)?;
             let mysql_to = incremental_to
                 .as_ref()
-                .map(|s| mysql::checkpoint::MySQLCheckpoint::from_cli_string(s))
+                .map(|s| surreal_sync_mysql_trigger::MySQLCheckpoint::from_cli_string(s))
                 .transpose()?;
-            mysql::run_incremental_sync(
-                from_opts,
+            surreal_sync_mysql_trigger::run_incremental_sync(
+                surreal_sync_mysql_trigger::SourceOpts::from(&from_opts),
                 to_namespace,
                 to_database,
-                to_opts,
+                surreal_sync_mysql_trigger::SurrealOpts::from(&to_opts),
                 mysql_from,
                 deadline,
                 mysql_to,

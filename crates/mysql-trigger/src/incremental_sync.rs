@@ -4,6 +4,7 @@
 //! to SurrealDB.
 
 use super::checkpoint::MySQLCheckpoint;
+use super::source::IncrementalSource;
 use crate::{SourceOpts, SurrealOpts};
 use anyhow::Result;
 use checkpoint::Checkpoint;
@@ -61,12 +62,8 @@ pub async fn run_incremental_sync(
 
                 // Check if we've reached the target checkpoint
                 if let Some(ref target) = target_checkpoint {
-                    if let Some(crate::sync::SyncCheckpoint::MySQL {
-                        sequence_id: current_seq,
-                        ..
-                    }) = stream.checkpoint()
-                    {
-                        if current_seq >= target.sequence_id {
+                    if let Some(current_checkpoint) = stream.checkpoint() {
+                        if current_checkpoint.sequence_id >= target.sequence_id {
                             info!(
                                 "Reached target checkpoint: {}, stopping incremental sync",
                                 target.to_cli_string()
@@ -99,5 +96,3 @@ pub async fn run_incremental_sync(
 
     Ok(())
 }
-
-use crate::sync::IncrementalSource;

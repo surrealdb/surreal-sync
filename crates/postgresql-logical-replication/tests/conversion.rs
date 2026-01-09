@@ -1,7 +1,7 @@
 //! Tests for wal2json to PostgreSQL type conversion
 
 use anyhow::{Context, Result};
-use surreal_sync_postgresql_replication::{
+use surreal_sync_postgresql_logical_replication::{
     testing::container::PostgresContainer, Action, Client, Value,
 };
 use tokio_postgres::NoTls;

@@ -6,7 +6,7 @@
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
-use surreal_sync::{mysql, SourceOpts, SurrealOpts};
+use surreal_sync::{SourceOpts, SurrealOpts};
 
 #[tokio::test]
 async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -68,7 +68,13 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     // Execute full sync from MySQL to SurrealDB
-    mysql::run_full_sync(&source_opts, &surreal_opts, None, &surreal2).await?;
+    surreal_sync_mysql_trigger::run_full_sync(
+        &surreal_sync_mysql_trigger::SourceOpts::from(&source_opts),
+        &surreal_sync_mysql_trigger::SurrealOpts::from(&surreal_opts),
+        None,
+        &surreal2,
+    )
+    .await?;
 
     surreal_sync::testing::surrealdb::assert_synced(
         &surreal,

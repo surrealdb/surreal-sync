@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use std::env;
-use surreal_sync_postgresql_replication::{Client, Slot};
+use surreal_sync_postgresql_logical_replication::{Client, Slot};
 use tokio_postgres::NoTls;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};

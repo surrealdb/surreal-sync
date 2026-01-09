@@ -80,7 +80,7 @@ async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error
     use checkpoint::{Checkpoint, SyncPhase};
     let checkpoint_file =
         checkpoint::get_checkpoint_for_phase(".test-checkpoints", SyncPhase::FullSyncStart).await?;
-    let pg_checkpoint: surreal_sync::postgresql::checkpoint::PostgreSQLCheckpoint =
+    let pg_checkpoint: surreal_sync_postgresql_trigger::PostgreSQLCheckpoint =
         checkpoint_file.parse()?;
     let checkpoint_string = pg_checkpoint.to_cli_string();
 

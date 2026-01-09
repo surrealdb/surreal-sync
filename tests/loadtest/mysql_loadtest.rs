@@ -10,7 +10,7 @@
 use loadtest_populate_mysql::MySQLPopulator;
 use loadtest_verify::StreamingVerifier;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
-use surreal_sync::{mysql, SourceOpts, SurrealOpts};
+use surreal_sync::{SourceOpts, SurrealOpts};
 use sync_core::Schema;
 
 const SEED: u64 = 42;
@@ -122,7 +122,13 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     )
     .await?;
 
-    mysql::run_full_sync(&source_opts, &surreal_opts, None, &surreal_for_sync).await?;
+    surreal_sync_mysql_trigger::run_full_sync(
+        &surreal_sync_mysql_trigger::SourceOpts::from(&source_opts),
+        &surreal_sync_mysql_trigger::SurrealOpts::from(&surreal_opts),
+        None,
+        &surreal_for_sync,
+    )
+    .await?;
 
     tracing::info!("Sync completed successfully");
 

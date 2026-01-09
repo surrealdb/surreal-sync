@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use surreal_sync_postgresql_replication::{
+use surreal_sync_postgresql_logical_replication::{
     testing::container::PostgresContainer, Action, Client, Value,
 };
 use tokio_postgres::NoTls;

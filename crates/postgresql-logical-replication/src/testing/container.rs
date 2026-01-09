@@ -47,12 +47,12 @@ impl PostgresContainer {
         loop {
             let cargo_toml = current_dir.join("Cargo.toml");
             if cargo_toml.exists() {
-                // Check if this is the workspace root by looking for the postgresql crate
-                let postgresql_dockerfile =
-                    current_dir.join("crates/postgresql/Dockerfile.postgres16.wal2json");
+                // Check if this is the workspace root by looking for the postgresql-logical-replication crate
+                let postgresql_dockerfile = current_dir
+                    .join("crates/postgresql-logical-replication/Dockerfile.postgres16.wal2json");
                 if postgresql_dockerfile.exists() {
                     dockerfile_path = postgresql_dockerfile;
-                    context_path = current_dir.join("crates/postgresql");
+                    context_path = current_dir.join("crates/postgresql-logical-replication");
                     break;
                 }
             }

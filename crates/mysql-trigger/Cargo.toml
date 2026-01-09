@@ -1,0 +1,29 @@
+[package]
+name = "surreal-sync-mysql-trigger"
+version = "0.1.0"
+edition = "2021"
+description = "MySQL trigger-based sync for surreal-sync"
+
+[dependencies]
+mysql_async = "0.34"
+surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+surreal-sync-surreal = { path = "../surreal" }
+surrealdb-types = { path = "../surrealdb-types" }
+sync-core = { path = "../sync-core" }
+checkpoint = { path = "../checkpoint" }
+mysql-types = { path = "../mysql-types" }
+json-types = { path = "../json-types" }
+tokio = { version = "1.47", features = ["full"] }
+tokio-stream = "0.1"
+anyhow = "1.0.100"
+tracing = "0.1"
+chrono = { version = "0.4.41", features = ["serde"] }
+futures = "0.3"
+async-trait = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.8"
+log = "0.4"
+
+[dev-dependencies]
+tempfile = "3.0"

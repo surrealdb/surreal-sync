@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 
-use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
+use super::checkpoint::MySQLCheckpoint;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -32,6 +32,49 @@ use surreal_sync_surreal::{Change, ChangeOp};
 use surrealdb_types::convert_id_with_database_schema;
 use surrealdb_types::typed_values_to_surreal_map;
 use sync_core::{DatabaseSchema, TypedValue, UniversalType};
+
+// ============================================================================
+// Traits for MySQL incremental sync
+//
+// These traits are duplicated here (rather than shared via a common crate)
+// because they use database-specific checkpoint types and each database's
+// implementation is self-contained. The duplication is minimal (~20 lines)
+// and simplifies the dependency graph.
+// ============================================================================
+
+/// Trait for MySQL incremental sync source
+///
+/// Provides the interface for initializing the source, getting a change stream,
+/// and managing checkpoints for reliable resumption.
+#[async_trait]
+pub trait IncrementalSource: Send + Sync {
+    /// Get the source database type identifier
+    fn source_type(&self) -> &'static str;
+
+    /// Initialize the incremental source (setup tasks like schema collection)
+    async fn initialize(&mut self) -> Result<()>;
+
+    /// Get a stream of changes from the source
+    async fn get_changes(&mut self) -> Result<Box<dyn ChangeStream>>;
+
+    /// Get the current checkpoint position
+    async fn get_checkpoint(&self) -> Result<MySQLCheckpoint>;
+
+    /// Cleanup resources
+    async fn cleanup(self) -> Result<()>;
+}
+
+/// Trait for a stream of changes from MySQL
+#[async_trait]
+pub trait ChangeStream: Send + Sync {
+    /// Get the next change event from the stream
+    /// Returns None when no more changes are available
+    async fn next(&mut self) -> Option<Result<Change>>;
+
+    /// Get the current checkpoint of the stream
+    /// This can be used to resume from this position later
+    fn checkpoint(&self) -> Option<MySQLCheckpoint>;
+}
 
 /// MySQL incremental sync implementation using audit table-based change tracking
 pub struct MySQLIncrementalSource {
@@ -56,8 +99,8 @@ impl MySQLIncrementalSource {
 
 #[async_trait]
 impl IncrementalSource for MySQLIncrementalSource {
-    fn source_type(&self) -> SourceDatabase {
-        SourceDatabase::MySQL
+    fn source_type(&self) -> &'static str {
+        "mysql"
     }
 
     async fn initialize(&mut self) -> Result<()> {
@@ -88,8 +131,8 @@ impl IncrementalSource for MySQLIncrementalSource {
         Ok(Box::new(stream))
     }
 
-    async fn get_checkpoint(&self) -> Result<SyncCheckpoint> {
-        Ok(SyncCheckpoint::MySQL {
+    async fn get_checkpoint(&self) -> Result<MySQLCheckpoint> {
+        Ok(MySQLCheckpoint {
             sequence_id: self.sequence_id,
             timestamp: Utc::now(),
         })
@@ -352,8 +395,8 @@ impl ChangeStream for MySQLChangeStream {
         }
     }
 
-    fn checkpoint(&self) -> Option<SyncCheckpoint> {
-        Some(SyncCheckpoint::MySQL {
+    fn checkpoint(&self) -> Option<MySQLCheckpoint> {
+        Some(MySQLCheckpoint {
             sequence_id: self.last_sequence_id,
             timestamp: Utc::now(),
         })
@@ -364,7 +407,7 @@ impl ChangeStream for MySQLChangeStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mysql::checkpoint::MySQLCheckpoint;
+    use crate::checkpoint::MySQLCheckpoint;
     use checkpoint::Checkpoint;
 
     #[tokio::test]
