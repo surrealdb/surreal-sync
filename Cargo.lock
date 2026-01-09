@@ -1303,7 +1303,7 @@ dependencies = [
  "num-traits",
  "serde",
  "wasm-bindgen",
- "windows-link",
+ "windows-link 0.1.3",
 ]
 
 [[package]]
@@ -1418,6 +1418,17 @@ name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
+
+[[package]]
+name = "comfy-table"
+version = "7.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b03b7db8e0b4b2fdad6c551e634134e99ec000e5c8c3b6856c65e8bbaded7a3b"
+dependencies = [
+ "crossterm",
+ "unicode-segmentation",
+ "unicode-width 0.2.2",
+]
 
 [[package]]
 name = "concurrent-queue"
@@ -1593,6 +1604,29 @@ name = "crossbeam-utils"
 version = "0.8.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+
+[[package]]
+name = "crossterm"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8b9f2e4c67f833b660cdb0a3523065869fb35570177239812ed4c905aeff87b"
+dependencies = [
+ "bitflags 2.9.1",
+ "crossterm_winapi",
+ "document-features",
+ "parking_lot",
+ "rustix 1.0.7",
+ "winapi",
+]
+
+[[package]]
+name = "crossterm_winapi"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "acdd7c62a3665c7f6830a51635d9ac9b23ed385797f70a83bb8bafe9c572ab2b"
+dependencies = [
+ "winapi",
+]
 
 [[package]]
 name = "crunchy"
@@ -1898,6 +1932,15 @@ checksum = "bb2dfc7a18dffd3ef60a442b72a827126f1557d914620f8fc4d1049916da43c1"
 dependencies = [
  "trice",
  "urlencoding",
+]
+
+[[package]]
+name = "document-features"
+version = "0.2.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d4b8a88685455ed29a21542a33abd9cb6510b6b129abadabdcef0f4c55bc8f61"
+dependencies = [
+ "litrs",
 ]
 
 [[package]]
@@ -2642,6 +2685,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hostname"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link 0.2.1",
+]
+
+[[package]]
 name = "html5ever"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3340,6 +3394,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "241eaef5fd12c88705a01fc1066c48c4b36e0dd4377dcdc7ec3942cea7a69956"
 
 [[package]]
+name = "litrs"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
+name = "loadtest-distributed"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "comfy-table",
+ "hostname",
+ "loadtest-generator",
+ "loadtest-populate-csv",
+ "loadtest-populate-jsonl",
+ "loadtest-populate-kafka",
+ "loadtest-populate-mongodb",
+ "loadtest-populate-mysql",
+ "loadtest-populate-neo4j",
+ "loadtest-populate-postgresql",
+ "loadtest-verify",
+ "nix",
+ "num_cpus",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sync-core",
+ "sysinfo 0.32.1",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "loadtest-generator"
 version = "0.1.0"
 dependencies = [
@@ -3355,6 +3445,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "loadtest-populate"
+version = "0.1.0"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "loadtest-populate-csv"
 version = "0.1.0"
 dependencies = [
@@ -3362,6 +3459,7 @@ dependencies = [
  "csv",
  "csv-types",
  "loadtest-generator",
+ "loadtest-populate",
  "sync-core",
  "tempfile",
  "thiserror 1.0.69",
@@ -3378,6 +3476,7 @@ dependencies = [
  "clap",
  "json-types",
  "loadtest-generator",
+ "loadtest-populate",
  "serde_json",
  "sync-core",
  "tempfile",
@@ -3398,6 +3497,7 @@ dependencies = [
  "clap",
  "kafka-types",
  "loadtest-generator",
+ "loadtest-populate",
  "protobuf",
  "protobuf-parse",
  "rdkafka",
@@ -3420,6 +3520,7 @@ dependencies = [
  "chrono",
  "clap",
  "loadtest-generator",
+ "loadtest-populate",
  "mongodb",
  "mongodb-types",
  "sync-core",
@@ -3437,6 +3538,7 @@ dependencies = [
  "async-trait",
  "clap",
  "loadtest-generator",
+ "loadtest-populate",
  "mysql-types",
  "mysql_async",
  "sync-core",
@@ -3474,6 +3576,7 @@ dependencies = [
  "clap",
  "geo-types",
  "loadtest-generator",
+ "loadtest-populate",
  "postgres-types",
  "postgresql-types",
  "rust_decimal",
@@ -3680,7 +3783,7 @@ dependencies = [
  "miette-derive",
  "once_cell",
  "thiserror 1.0.69",
- "unicode-width",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -4054,6 +4157,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77a5d83df9f36fe23f0c3648c6bbb8b0298bb5f1939c8f2704431371f4b84d43"
 dependencies = [
  "smallvec",
+]
+
+[[package]]
+name = "nix"
+version = "0.29.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags 2.9.1",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
 ]
 
 [[package]]
@@ -6100,6 +6215,7 @@ dependencies = [
  "geo-types",
  "json-types",
  "kafka-types",
+ "loadtest-distributed",
  "loadtest-generator",
  "loadtest-populate-csv",
  "loadtest-populate-jsonl",
@@ -6120,6 +6236,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "serde_yaml",
  "surreal-sync-csv",
  "surreal-sync-jsonl",
  "surreal-sync-kafka",
@@ -6411,6 +6528,7 @@ dependencies = [
  "log",
  "surrealdb",
  "surrealdb-types",
+ "tokio",
  "tracing",
 ]
 
@@ -6532,7 +6650,7 @@ dependencies = [
  "strsim",
  "subtle",
  "surrealkv",
- "sysinfo",
+ "sysinfo 0.33.1",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -6639,6 +6757,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.103",
+]
+
+[[package]]
+name = "sysinfo"
+version = "0.32.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c33cd241af0f2e9e3b5c32163b873b29956890b5342e6745b917ce9d490f4af"
+dependencies = [
+ "core-foundation-sys",
+ "libc",
+ "memchr",
+ "ntapi",
+ "rayon",
+ "windows",
 ]
 
 [[package]]
@@ -7245,10 +7377,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "unicode-segmentation"
+version = "1.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6ccf251212114b54433ec949fd6a7841275f9ada20dddd2f29e9ceea4501493"
+
+[[package]]
 name = "unicode-width"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
+
+[[package]]
+name = "unicode-width"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 
 [[package]]
 name = "unicode-xid"
@@ -7640,7 +7784,7 @@ checksum = "c0fdd3ddb90610c7638aa2b3a3ab2904fb9e5cdbecc643ddb3647212781c4ae3"
 dependencies = [
  "windows-implement 0.60.0",
  "windows-interface 0.59.1",
- "windows-link",
+ "windows-link 0.1.3",
  "windows-result 0.3.4",
  "windows-strings",
 ]
@@ -7696,12 +7840,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e6ad25900d524eaabdbbb96d20b4311e1e7ae1699af4fb28c17ae66c80d798a"
 
 [[package]]
+name = "windows-link"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
 name = "windows-registry"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b8a9ed28765efc97bbc954883f4e6796c33a06546ebafacbabee9696967499e"
 dependencies = [
- "windows-link",
+ "windows-link 0.1.3",
  "windows-result 0.3.4",
  "windows-strings",
 ]
@@ -7721,7 +7871,7 @@ version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56f42bd332cc6c8eac5af113fc0c1fd6a8fd2aa08a0119358686e5160d0586c6"
 dependencies = [
- "windows-link",
+ "windows-link 0.1.3",
 ]
 
 [[package]]
@@ -7730,7 +7880,7 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "56e6c93f3a0c3b36176cb1327a4958a0353d5d166c2a35cb268ace15e91d3b57"
 dependencies = [
- "windows-link",
+ "windows-link 0.1.3",
 ]
 
 [[package]]

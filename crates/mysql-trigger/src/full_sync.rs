@@ -14,6 +14,21 @@ use surrealdb_types::RecordWithSurrealValues;
 use sync_core::{TypedValue, UniversalValue};
 use tracing::{debug, info};
 
+/// Sanitize connection string for logging (hide password)
+fn sanitize_connection_string(uri: &str) -> String {
+    // Replace password in mysql://user:pass@host/db format
+    if let Some(at_pos) = uri.find('@') {
+        if let Some(colon_pos) = uri[..at_pos].rfind(':') {
+            // Check if this looks like a URL with credentials
+            if uri[..colon_pos].rfind('/').is_some() || uri[..colon_pos].contains("://") {
+                // mysql://user:pass@host -> mysql://user:***@host
+                return format!("{}:***{}", &uri[..colon_pos], &uri[at_pos..]);
+            }
+        }
+    }
+    uri.to_string()
+}
+
 /// Main entry point for MySQL to SurrealDB migration with checkpoint support
 pub async fn run_full_sync(
     from_opts: &SourceOpts,
@@ -23,9 +38,22 @@ pub async fn run_full_sync(
 ) -> Result<()> {
     info!("Starting MySQL migration to SurrealDB");
 
-    // Create connection pool
-    let pool = Pool::from_url(&from_opts.source_uri)?;
-    let mut conn = pool.get_conn().await?;
+    // Create connection pool with better error context
+    let pool = Pool::from_url(&from_opts.source_uri).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to create MySQL connection pool from URI '{}': {}",
+            sanitize_connection_string(&from_opts.source_uri),
+            e
+        )
+    })?;
+
+    let mut conn = pool.get_conn().await.map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to connect to MySQL at '{}': {}",
+            sanitize_connection_string(&from_opts.source_uri),
+            e
+        )
+    })?;
 
     // Get database name from options or connection
     let database_name = if let Some(db) = &from_opts.source_database {

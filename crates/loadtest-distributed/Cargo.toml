@@ -1,0 +1,48 @@
+[package]
+name = "loadtest-distributed"
+version = "0.1.0"
+edition = "2021"
+description = "Container-based distributed load testing for surreal-sync (library)"
+license = "MIT"
+
+# NOTE: Binary removed - all functionality integrated into main surreal-sync binary
+# The loadtest-distributed crate is now a library only. See src/main.rs in main crate.
+
+[lib]
+name = "loadtest_distributed"
+path = "src/lib.rs"
+
+[dependencies]
+# Existing loadtest crates
+loadtest-generator = { path = "../loadtest-generator" }
+loadtest-populate-mysql = { path = "../loadtest-populate-mysql" }
+loadtest-populate-postgresql = { path = "../loadtest-populate-postgresql" }
+loadtest-populate-mongodb = { path = "../loadtest-populate-mongodb" }
+loadtest-populate-neo4j = { path = "../loadtest-populate-neo4j" }
+loadtest-populate-csv = { path = "../loadtest-populate-csv" }
+loadtest-populate-jsonl = { path = "../loadtest-populate-jsonl" }
+loadtest-populate-kafka = { path = "../loadtest-populate-kafka" }
+loadtest-verify = { path = "../loadtest-verify" }
+sync-core = { path = "../sync-core" }
+
+# CLI and serialization
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# System info for environment verification
+sysinfo = "0.32"
+num_cpus = "1.16"
+nix = { version = "0.29", features = ["fs"] }
+hostname = "0.4"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+
+# Table formatting for aggregation output
+comfy-table = "7"

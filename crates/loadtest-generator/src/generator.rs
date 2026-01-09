@@ -29,6 +29,8 @@ pub struct DataGenerator {
     rng: StdRng,
     /// Current row index (for incremental generation)
     index: u64,
+    /// Base seed provided at construction (used for index-based seeding)
+    seed: u64,
 }
 
 impl DataGenerator {
@@ -38,6 +40,7 @@ impl DataGenerator {
             schema,
             rng: StdRng::seed_from_u64(seed),
             index: 0,
+            seed,
         }
     }
 
@@ -58,10 +61,11 @@ impl DataGenerator {
     /// Compute the RNG seed for a specific index.
     ///
     /// This allows jumping to any index while maintaining determinism.
+    /// Uses the CLI-provided seed stored in self.seed.
     fn compute_rng_seed_for_index(&self, index: u64) -> u64 {
         // Combine the base seed with the index
-        let base_seed = self.schema.seed.unwrap_or(0);
-        base_seed.wrapping_add(index.wrapping_mul(0x9E3779B97F4A7C15))
+        self.seed
+            .wrapping_add(index.wrapping_mul(0x9E3779B97F4A7C15))
     }
 
     /// Get the current row index.
@@ -171,7 +175,6 @@ mod tests {
     fn test_schema() -> Schema {
         let yaml = r#"
 version: 1
-seed: 42
 
 tables:
   - name: users

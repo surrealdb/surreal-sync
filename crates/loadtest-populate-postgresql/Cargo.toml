@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 sync-core = { path = "../sync-core" }
 loadtest-generator = { path = "../loadtest-generator" }
+loadtest-populate = { path = "../loadtest-populate" }
 postgresql-types = { path = "../postgresql-types" }
 
 clap = { version = "4.5", features = ["derive", "env"] }

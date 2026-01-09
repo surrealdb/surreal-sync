@@ -7,5 +7,5 @@ mod connect;
 mod write;
 
 pub use change::{Change, ChangeOp};
-pub use connect::{surreal_connect, SurrealOpts};
+pub use connect::{surreal_connect, surreal_connect_with_retries, SurrealOpts};
 pub use write::{apply_change, write_record, write_records, write_relations};

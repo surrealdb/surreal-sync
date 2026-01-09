@@ -45,4 +45,8 @@ pub struct VerifyArgs {
     /// SurrealDB password
     #[arg(long, default_value = "root", env = "SURREAL_PASSWORD")]
     pub surreal_password: String,
+
+    /// Dry-run mode: validate schema and configuration without performing actual verification
+    #[arg(long)]
+    pub dry_run: bool,
 }

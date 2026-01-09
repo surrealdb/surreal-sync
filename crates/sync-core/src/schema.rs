@@ -439,10 +439,6 @@ pub struct GeneratorSchema {
     #[serde(default = "default_version")]
     pub version: u32,
 
-    /// Default seed for random generation
-    #[serde(default)]
-    pub seed: Option<u64>,
-
     /// Table definitions with generators
     pub tables: Vec<GeneratorTableDefinition>,
 
@@ -625,7 +621,6 @@ mod tests {
 
     const SAMPLE_SCHEMA: &str = r#"
 version: 1
-seed: 12345
 
 tables:
   - name: users
@@ -664,7 +659,6 @@ tables:
         let schema = GeneratorSchema::from_yaml(SAMPLE_SCHEMA).unwrap();
 
         assert_eq!(schema.version, 1);
-        assert_eq!(schema.seed, Some(12345));
         assert_eq!(schema.tables.len(), 1);
 
         let users = schema.get_table("users").unwrap();

@@ -9,6 +9,10 @@ pub enum MySQLPopulatorError {
     #[error("MySQL error: {0}")]
     MySQL(#[from] mysql_async::Error),
 
+    /// Connection error with context (e.g., after retries exhausted).
+    #[error("Connection error: {0}")]
+    Connection(String),
+
     /// Schema-related error.
     #[error("Schema error: {0}")]
     Schema(String),

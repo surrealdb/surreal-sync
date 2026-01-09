@@ -11,3 +11,4 @@ surrealdb-types = { path = "../surrealdb-types" }
 anyhow = "1.0.100"
 tracing = "0.1"
 log = "0.4"
+tokio = { version = "1", features = ["time"] }

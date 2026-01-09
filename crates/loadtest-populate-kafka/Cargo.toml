@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 sync-core = { path = "../sync-core" }
 loadtest-generator = { path = "../loadtest-generator" }
+loadtest-populate = { path = "../loadtest-populate" }
 kafka-types = { path = "../kafka-types" }
 
 clap = { version = "4.5", features = ["derive", "env"] }

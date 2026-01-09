@@ -86,6 +86,13 @@ use loadtest_populate_postgresql::PostgreSQLPopulateArgs;
 use loadtest_verify::VerifyArgs;
 use sync_core::Schema;
 
+// Load testing distributed imports
+use loadtest_distributed::{
+    build_cluster_config,
+    generator::{ConfigGenerator, DockerComposeGenerator, KubernetesGenerator},
+    AggregateServerArgs, GenerateArgs, Platform,
+};
+
 #[derive(Parser)]
 #[command(name = "surreal-sync")]
 #[command(about = "A tool for syncing data FROM various sources TO SurrealDB")]
@@ -717,6 +724,12 @@ enum LoadtestCommand {
         #[command(flatten)]
         args: VerifyArgs,
     },
+
+    /// Generate Docker Compose or Kubernetes configurations for distributed load testing
+    Generate(GenerateArgs),
+
+    /// Run HTTP server to aggregate metrics from distributed workers
+    AggregateServer(AggregateServerArgs),
 }
 
 /// Source database to populate with test data
@@ -1361,8 +1374,25 @@ async fn handle_loadtest_command(command: LoadtestCommand) -> anyhow::Result<()>
     match command {
         LoadtestCommand::Populate { source } => run_populate(source).await?,
         LoadtestCommand::Verify { args } => run_verify(args).await?,
+        LoadtestCommand::Generate(args) => run_loadtest_generate(args).await?,
+        LoadtestCommand::AggregateServer(args) => run_aggregate_server(args).await?,
     }
     Ok(())
+}
+
+/// Mask password in connection string for safe logging
+fn mask_connection_password(conn_str: &str) -> String {
+    // Pattern: protocol://user:password@host...
+    // Replace password portion with ***
+    if let Some(at_pos) = conn_str.find('@') {
+        if let Some(colon_pos) = conn_str[..at_pos].rfind(':') {
+            let protocol_end = conn_str.find("://").map(|p| p + 3).unwrap_or(0);
+            if colon_pos > protocol_end {
+                return format!("{}:***{}", &conn_str[..colon_pos], &conn_str[at_pos..]);
+            }
+        }
+    }
+    conn_str.to_string()
 }
 
 /// Run populate command to fill source database with deterministic test data
@@ -1371,6 +1401,27 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
         PopulateSource::MySQL { args } => {
             let schema = Schema::from_file(&args.common.schema)
                 .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
+
+            let tables = if args.common.tables.is_empty() {
+                schema.table_names()
+            } else {
+                args.common.tables.iter().map(|s| s.as_str()).collect()
+            };
+
+            if args.common.dry_run {
+                tracing::info!(
+                    "[DRY-RUN] Would populate MySQL with {} rows per table (seed={})",
+                    args.common.row_count,
+                    args.common.seed
+                );
+                tracing::info!(
+                    "[DRY-RUN] Connection: {}",
+                    mask_connection_password(&args.mysql_connection_string)
+                );
+                tracing::info!("[DRY-RUN] Tables: {:?}", tables);
+                tracing::info!("[DRY-RUN] Schema validated successfully");
+                return Ok(());
+            }
 
             tracing::info!(
                 "Populating MySQL with {} rows per table (seed={})",
@@ -1386,12 +1437,6 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             .await
             .context("Failed to connect to MySQL")?
             .with_batch_size(args.common.batch_size);
-
-            let tables = if args.common.tables.is_empty() {
-                schema.table_names()
-            } else {
-                args.common.tables.iter().map(|s| s.as_str()).collect()
-            };
 
             for table_name in &tables {
                 populator
@@ -1416,6 +1461,27 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             let schema = Schema::from_file(&args.common.schema)
                 .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
 
+            let tables = if args.common.tables.is_empty() {
+                schema.table_names()
+            } else {
+                args.common.tables.iter().map(|s| s.as_str()).collect()
+            };
+
+            if args.common.dry_run {
+                tracing::info!(
+                    "[DRY-RUN] Would populate PostgreSQL with {} rows per table (seed={})",
+                    args.common.row_count,
+                    args.common.seed
+                );
+                tracing::info!(
+                    "[DRY-RUN] Connection: {}",
+                    mask_connection_password(&args.postgresql_connection_string)
+                );
+                tracing::info!("[DRY-RUN] Tables: {:?}", tables);
+                tracing::info!("[DRY-RUN] Schema validated successfully");
+                return Ok(());
+            }
+
             tracing::info!(
                 "Populating PostgreSQL with {} rows per table (seed={})",
                 args.common.row_count,
@@ -1430,12 +1496,6 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             .await
             .context("Failed to connect to PostgreSQL")?
             .with_batch_size(args.common.batch_size);
-
-            let tables = if args.common.tables.is_empty() {
-                schema.table_names()
-            } else {
-                args.common.tables.iter().map(|s| s.as_str()).collect()
-            };
 
             for table_name in &tables {
                 populator
@@ -1460,6 +1520,28 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             let schema = Schema::from_file(&args.common.schema)
                 .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
 
+            let tables = if args.common.tables.is_empty() {
+                schema.table_names()
+            } else {
+                args.common.tables.iter().map(|s| s.as_str()).collect()
+            };
+
+            if args.common.dry_run {
+                tracing::info!(
+                    "[DRY-RUN] Would populate MongoDB with {} documents per collection (seed={})",
+                    args.common.row_count,
+                    args.common.seed
+                );
+                tracing::info!(
+                    "[DRY-RUN] Connection: {}",
+                    mask_connection_password(&args.mongodb_connection_string)
+                );
+                tracing::info!("[DRY-RUN] Database: {}", args.mongodb_database);
+                tracing::info!("[DRY-RUN] Collections: {:?}", tables);
+                tracing::info!("[DRY-RUN] Schema validated successfully");
+                return Ok(());
+            }
+
             tracing::info!(
                 "Populating MongoDB with {} documents per collection (seed={})",
                 args.common.row_count,
@@ -1475,12 +1557,6 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             .await
             .context("Failed to connect to MongoDB")?
             .with_batch_size(args.common.batch_size);
-
-            let tables = if args.common.tables.is_empty() {
-                schema.table_names()
-            } else {
-                args.common.tables.iter().map(|s| s.as_str()).collect()
-            };
 
             for table_name in &tables {
                 let metrics = populator
@@ -1500,6 +1576,24 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             let schema = Schema::from_file(&args.common.schema)
                 .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
 
+            let tables = if args.common.tables.is_empty() {
+                schema.table_names()
+            } else {
+                args.common.tables.iter().map(|s| s.as_str()).collect()
+            };
+
+            if args.common.dry_run {
+                tracing::info!(
+                    "[DRY-RUN] Would generate CSV files with {} rows per table (seed={})",
+                    args.common.row_count,
+                    args.common.seed
+                );
+                tracing::info!("[DRY-RUN] Output directory: {:?}", args.output_dir);
+                tracing::info!("[DRY-RUN] Tables: {:?}", tables);
+                tracing::info!("[DRY-RUN] Schema validated successfully");
+                return Ok(());
+            }
+
             tracing::info!(
                 "Generating CSV files with {} rows per table (seed={})",
                 args.common.row_count,
@@ -1512,12 +1606,6 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
 
             let mut populator =
                 loadtest_populate_csv::CSVPopulator::new(schema.clone(), args.common.seed);
-
-            let tables = if args.common.tables.is_empty() {
-                schema.table_names()
-            } else {
-                args.common.tables.iter().map(|s| s.as_str()).collect()
-            };
 
             for table_name in &tables {
                 let output_path = args.output_dir.join(format!("{table_name}.csv"));
@@ -1537,6 +1625,24 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             let schema = Schema::from_file(&args.common.schema)
                 .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
 
+            let tables = if args.common.tables.is_empty() {
+                schema.table_names()
+            } else {
+                args.common.tables.iter().map(|s| s.as_str()).collect()
+            };
+
+            if args.common.dry_run {
+                tracing::info!(
+                    "[DRY-RUN] Would generate JSONL files with {} rows per table (seed={})",
+                    args.common.row_count,
+                    args.common.seed
+                );
+                tracing::info!("[DRY-RUN] Output directory: {:?}", args.output_dir);
+                tracing::info!("[DRY-RUN] Tables: {:?}", tables);
+                tracing::info!("[DRY-RUN] Schema validated successfully");
+                return Ok(());
+            }
+
             tracing::info!(
                 "Generating JSONL files with {} rows per table (seed={})",
                 args.common.row_count,
@@ -1549,12 +1655,6 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
 
             let mut populator =
                 loadtest_populate_jsonl::JsonlPopulator::new(schema.clone(), args.common.seed);
-
-            let tables = if args.common.tables.is_empty() {
-                schema.table_names()
-            } else {
-                args.common.tables.iter().map(|s| s.as_str()).collect()
-            };
 
             for table_name in &tables {
                 let output_path = args.output_dir.join(format!("{table_name}.jsonl"));
@@ -1574,17 +1674,29 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             let schema = Schema::from_file(&args.common.schema)
                 .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
 
-            tracing::info!(
-                "Populating Kafka topics with {} rows per table (seed={})",
-                args.common.row_count,
-                args.common.seed
-            );
-
             let tables = if args.common.tables.is_empty() {
                 schema.table_names()
             } else {
                 args.common.tables.iter().map(|s| s.as_str()).collect()
             };
+
+            if args.common.dry_run {
+                tracing::info!(
+                    "[DRY-RUN] Would populate Kafka topics with {} messages per topic (seed={})",
+                    args.common.row_count,
+                    args.common.seed
+                );
+                tracing::info!("[DRY-RUN] Brokers: {}", args.kafka_brokers);
+                tracing::info!("[DRY-RUN] Topics: {:?}", tables);
+                tracing::info!("[DRY-RUN] Schema validated successfully");
+                return Ok(());
+            }
+
+            tracing::info!(
+                "Populating Kafka topics with {} rows per table (seed={})",
+                args.common.row_count,
+                args.common.seed
+            );
 
             for table_name in &tables {
                 // Create a fresh populator for each table to reset the generator index
@@ -1636,13 +1748,42 @@ async fn run_verify(args: VerifyArgs) -> anyhow::Result<()> {
     let schema = Schema::from_file(&args.schema)
         .with_context(|| format!("Failed to load schema from {:?}", args.schema))?;
 
+    let tables = if args.tables.is_empty() {
+        schema.table_names()
+    } else {
+        args.tables.iter().map(|s| s.as_str()).collect()
+    };
+
+    if args.dry_run {
+        tracing::info!(
+            "[DRY-RUN] Would verify {} rows per table in SurrealDB (seed={})",
+            args.row_count,
+            args.seed
+        );
+        tracing::info!("[DRY-RUN] Endpoint: {}", args.surreal_endpoint);
+        tracing::info!(
+            "[DRY-RUN] Namespace/Database: {}/{}",
+            args.surreal_namespace,
+            args.surreal_database
+        );
+        tracing::info!("[DRY-RUN] Tables: {:?}", tables);
+        tracing::info!("[DRY-RUN] Schema validated successfully");
+        return Ok(());
+    }
+
     tracing::info!(
         "Verifying {} rows per table in SurrealDB (seed={})",
         args.row_count,
         args.seed
     );
 
-    let surreal = surrealdb::engine::any::connect(&args.surreal_endpoint)
+    // Convert http:// to ws:// for WebSocket connection (SurrealDB client uses WebSocket protocol)
+    let endpoint = args
+        .surreal_endpoint
+        .replace("http://", "ws://")
+        .replace("https://", "wss://");
+
+    let surreal = surrealdb::engine::any::connect(&endpoint)
         .await
         .context("Failed to connect to SurrealDB")?;
 
@@ -1659,12 +1800,6 @@ async fn run_verify(args: VerifyArgs) -> anyhow::Result<()> {
         .use_db(&args.surreal_database)
         .await
         .context("Failed to select namespace/database")?;
-
-    let tables = if args.tables.is_empty() {
-        schema.table_names()
-    } else {
-        args.tables.iter().map(|s| s.as_str()).collect()
-    };
 
     let mut all_passed = true;
 
@@ -1708,6 +1843,132 @@ async fn run_verify(args: VerifyArgs) -> anyhow::Result<()> {
             "Verification failed - some tables have missing or mismatched data"
         ))
     }
+}
+
+// =============================================================================
+// Loadtest Generate Handler
+// =============================================================================
+
+/// Run the loadtest generate command.
+async fn run_loadtest_generate(args: GenerateArgs) -> anyhow::Result<()> {
+    tracing::info!("Generating load test configuration...");
+    tracing::info!("Platform: {:?}", args.platform);
+    tracing::info!("Source: {:?}", args.source);
+    tracing::info!("Preset: {:?}", args.preset);
+
+    // Convert CLI enums to internal types
+    let preset_size = args.preset.into();
+    let source_type = args.source.into();
+    let platforms = args.platform.to_platforms();
+
+    // Get tables from schema file
+    let schema_content = std::fs::read_to_string(&args.schema)
+        .with_context(|| format!("Failed to read schema file: {:?}", args.schema))?;
+    let schema: sync_core::GeneratorSchema =
+        serde_yaml::from_str(&schema_content).with_context(|| "Failed to parse schema YAML")?;
+    let tables: Vec<String> = schema.tables.iter().map(|t| t.name.clone()).collect();
+
+    // Build cluster configuration
+    let config = build_cluster_config(
+        preset_size,
+        source_type,
+        platforms[0], // Use first platform for config
+        args.num_containers,
+        args.cpu_limit.clone(),
+        args.memory_limit.clone(),
+        if args.tmpfs {
+            args.tmpfs_size.clone()
+        } else {
+            None
+        },
+        args.row_count,
+        args.batch_size,
+        Some(args.schema.clone()),
+        &tables,
+        args.dry_run,
+    )?;
+
+    // Create output directory
+    let output_dir = &args.output_dir;
+    std::fs::create_dir_all(output_dir)
+        .with_context(|| format!("Failed to create output directory: {output_dir:?}"))?;
+
+    // Generate configurations
+    for platform in &platforms {
+        match platform {
+            Platform::DockerCompose => {
+                let generator = DockerComposeGenerator;
+                let content = generator.generate(&config)?;
+                let path = output_dir.join(generator.filename());
+                std::fs::write(&path, &content)
+                    .with_context(|| format!("Failed to write {}", path.display()))?;
+                tracing::info!("Generated: {}", path.display());
+            }
+            Platform::Kubernetes => {
+                let generator = KubernetesGenerator;
+
+                // Option 1: Single file
+                let content = generator.generate(&config)?;
+                let path = output_dir.join(generator.filename());
+                std::fs::write(&path, &content)
+                    .with_context(|| format!("Failed to write {}", path.display()))?;
+                tracing::info!("Generated: {}", path.display());
+
+                // Option 2: Multiple files in subdirectory
+                let k8s_dir = output_dir.join("kubernetes");
+                std::fs::create_dir_all(&k8s_dir)?;
+                let files = generator.generate_to_files(&config)?;
+                for (filename, content) in files {
+                    let path = k8s_dir.join(&filename);
+                    std::fs::write(&path, &content)
+                        .with_context(|| format!("Failed to write {}", path.display()))?;
+                    tracing::info!("Generated: {}", path.display());
+                }
+            }
+        }
+    }
+
+    // Copy schema file
+    let schema_dest = output_dir.join("config").join("schema.yaml");
+    std::fs::create_dir_all(schema_dest.parent().unwrap())?;
+    std::fs::copy(&args.schema, &schema_dest)
+        .with_context(|| format!("Failed to copy schema from {:?}", args.schema))?;
+    tracing::info!("Copied schema to: {}", schema_dest.display());
+
+    tracing::info!(
+        "Configuration generated successfully in: {}",
+        output_dir.display()
+    );
+    tracing::info!("");
+    tracing::info!("Next steps:");
+    if platforms.contains(&Platform::DockerCompose) {
+        tracing::info!("  Docker Compose:");
+        tracing::info!(
+            "    cd {:?} && docker-compose -f docker-compose.loadtest.yml up",
+            output_dir
+        );
+    }
+    if platforms.contains(&Platform::Kubernetes) {
+        tracing::info!("  Kubernetes:");
+        tracing::info!("    kubectl apply -f {:?}/kubernetes/", output_dir);
+    }
+
+    Ok(())
+}
+
+// =============================================================================
+// Aggregate Server Handler
+// =============================================================================
+
+/// Run the aggregate server command.
+async fn run_aggregate_server(args: AggregateServerArgs) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting aggregator server on {} (expecting {} containers)",
+        args.listen,
+        args.expected_containers
+    );
+
+    loadtest_distributed::run_aggregator_server(args).await
 }
 
 // =============================================================================

@@ -6,7 +6,12 @@ use loadtest_generator::DataGenerator;
 use mysql_async::{prelude::*, Pool};
 use std::time::{Duration, Instant};
 use sync_core::{Schema, UniversalRow};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+/// Default number of connection retry attempts
+const DEFAULT_RETRY_ATTEMPTS: u32 = 10;
+/// Default delay between retry attempts in seconds
+const DEFAULT_RETRY_DELAY_SECS: u64 = 3;
 
 /// Metrics from a populate operation.
 #[derive(Debug, Clone, Default)]
@@ -61,20 +66,85 @@ impl MySQLPopulator {
     /// ).await?;
     /// ```
     pub async fn new(uri: &str, schema: Schema, seed: u64) -> Result<Self, MySQLPopulatorError> {
-        let pool = Pool::new(uri);
-
-        // Test connection
-        let mut conn = pool.get_conn().await?;
-        let _: Option<String> = conn.query_first("SELECT 'test'").await?;
-
-        let generator = DataGenerator::new(schema.clone(), seed);
-
-        Ok(Self {
-            pool,
+        Self::new_with_retries(
+            uri,
             schema,
-            generator,
-            batch_size: DEFAULT_BATCH_SIZE,
-        })
+            seed,
+            DEFAULT_RETRY_ATTEMPTS,
+            DEFAULT_RETRY_DELAY_SECS,
+        )
+        .await
+    }
+
+    /// Create a new MySQL populator with configurable retry settings.
+    ///
+    /// This method will retry connection failures up to `max_retries` times,
+    /// waiting `retry_delay_secs` seconds between attempts.
+    pub async fn new_with_retries(
+        uri: &str,
+        schema: Schema,
+        seed: u64,
+        max_retries: u32,
+        retry_delay_secs: u64,
+    ) -> Result<Self, MySQLPopulatorError> {
+        let pool = Pool::new(uri);
+        let sanitized_uri = sanitize_uri(uri);
+
+        info!(
+            "Connecting to MySQL at '{}' (max {} retries, {}s delay)",
+            sanitized_uri, max_retries, retry_delay_secs
+        );
+
+        let mut last_error = None;
+
+        for attempt in 1..=max_retries {
+            match pool.get_conn().await {
+                Ok(mut conn) => {
+                    // Test the connection
+                    match conn.query_first::<String, _>("SELECT 'test'").await {
+                        Ok(_) => {
+                            if attempt > 1 {
+                                info!("Successfully connected to MySQL after {} attempts", attempt);
+                            }
+
+                            let generator = DataGenerator::new(schema.clone(), seed);
+
+                            return Ok(Self {
+                                pool,
+                                schema,
+                                generator,
+                                batch_size: DEFAULT_BATCH_SIZE,
+                            });
+                        }
+                        Err(e) => {
+                            last_error = Some(e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                }
+            }
+
+            if attempt < max_retries {
+                warn!(
+                    "Failed to connect to MySQL at '{}' (attempt {}/{}): {}. Retrying in {}s...",
+                    sanitized_uri,
+                    attempt,
+                    max_retries,
+                    last_error.as_ref().unwrap(),
+                    retry_delay_secs
+                );
+                tokio::time::sleep(Duration::from_secs(retry_delay_secs)).await;
+            }
+        }
+
+        Err(MySQLPopulatorError::Connection(format!(
+            "Failed to connect to MySQL at '{}' after {} attempts. Last error: {}",
+            sanitized_uri,
+            max_retries,
+            last_error.unwrap()
+        )))
     }
 
     /// Create a new MySQL populator with an existing pool.
@@ -253,6 +323,22 @@ impl MySQLPopulator {
     pub async fn close(self) {
         self.pool.disconnect().await.ok();
     }
+}
+
+/// Sanitize a MySQL URI by hiding the password.
+/// Converts "mysql://user:password@host:port/db" to "mysql://user:***@host:port/db"
+fn sanitize_uri(uri: &str) -> String {
+    // Find the @ symbol that separates credentials from host
+    if let Some(at_pos) = uri.find('@') {
+        // Find the last colon before @ (separates user from password)
+        if let Some(colon_pos) = uri[..at_pos].rfind(':') {
+            // Make sure this colon is after the :// scheme separator
+            if uri[..colon_pos].contains("://") {
+                return format!("{}:***{}", &uri[..colon_pos], &uri[at_pos..]);
+            }
+        }
+    }
+    uri.to_string()
 }
 
 #[cfg(test)]
