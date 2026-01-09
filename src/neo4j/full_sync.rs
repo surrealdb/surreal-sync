@@ -224,7 +224,8 @@ async fn migrate_neo4j_nodes(
                     label
                 );
                 if !to_opts.dry_run {
-                    crate::surreal::write_records(surreal, &label.to_lowercase(), &batch).await?;
+                    surreal_sync_surreal::write_records(surreal, &label.to_lowercase(), &batch)
+                        .await?;
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
                 }
@@ -243,7 +244,7 @@ async fn migrate_neo4j_nodes(
                 label
             );
             if !to_opts.dry_run {
-                crate::surreal::write_records(surreal, &label.to_lowercase(), &batch).await?;
+                surreal_sync_surreal::write_records(surreal, &label.to_lowercase(), &batch).await?;
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");
             }
@@ -327,8 +328,12 @@ async fn migrate_neo4j_relationships(
                     rel_type
                 );
                 if !to_opts.dry_run {
-                    crate::surreal::write_relations(surreal, &rel_type.to_lowercase(), &batch)
-                        .await?;
+                    surreal_sync_surreal::write_relations(
+                        surreal,
+                        &rel_type.to_lowercase(),
+                        &batch,
+                    )
+                    .await?;
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
                 }
@@ -351,7 +356,8 @@ async fn migrate_neo4j_relationships(
                 rel_type
             );
             if !to_opts.dry_run {
-                crate::surreal::write_relations(surreal, &rel_type.to_lowercase(), &batch).await?;
+                surreal_sync_surreal::write_relations(surreal, &rel_type.to_lowercase(), &batch)
+                    .await?;
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");
             }

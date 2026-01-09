@@ -1,4 +1,3 @@
-use crate::surreal::{surreal_connect, Change, ChangeOp};
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use crate::{SourceOpts, SurrealOpts};
 use anyhow::{anyhow, Result};
@@ -8,6 +7,9 @@ use log::{error, info, warn};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
+use surreal_sync_surreal::{
+    apply_change, surreal_connect, Change, ChangeOp, SurrealOpts as SurrealConnOpts,
+};
 use surrealdb_types::{convert_id_with_database_schema, json_to_surreal_with_table_schema};
 use sync_core::DatabaseSchema;
 use tokio::sync::Mutex;
@@ -66,7 +68,12 @@ pub async fn run_incremental_sync(
     source.setup_tracking(tables).await?;
     log::debug!("Tracking setup completed");
 
-    let surreal = surreal_connect(&to_opts, &to_namespace, &to_database).await?;
+    let surreal_conn_opts = SurrealConnOpts {
+        surreal_endpoint: to_opts.surreal_endpoint.clone(),
+        surreal_username: to_opts.surreal_username.clone(),
+        surreal_password: to_opts.surreal_password.clone(),
+    };
+    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
 
     // Get change stream
     log::debug!("📡 Getting change stream");
@@ -111,7 +118,7 @@ pub async fn run_incremental_sync(
                     }
                 }
 
-                crate::surreal::apply_change(&surreal, &change).await?;
+                apply_change(&surreal, &change).await?;
 
                 change_count += 1;
                 if change_count % 100 == 0 {

@@ -57,12 +57,12 @@
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
-use surreal_sync::surreal::surreal_connect;
 use surreal_sync::{
     csv, jsonl, kafka, mongodb, mysql, neo4j, postgresql,
     sync::{SyncCheckpoint, SyncConfig},
     SourceOpts, SurrealOpts,
 };
+use surreal_sync_surreal::surreal_connect;
 
 // Load testing imports
 use loadtest_populate_csv::CSVPopulateArgs;
@@ -560,7 +560,7 @@ async fn run() -> anyhow::Result<()> {
                 batch_size: to_opts.batch_size,
                 namespace: to_namespace,
                 database: to_database,
-                surreal_opts: csv::surreal::SurrealOpts {
+                surreal_opts: surreal_sync_surreal::SurrealOpts {
                     surreal_endpoint: to_opts.surreal_endpoint,
                     surreal_username: to_opts.surreal_username,
                     surreal_password: to_opts.surreal_password,
@@ -607,7 +607,12 @@ async fn run_full_sync(
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
-    let surreal = surreal_connect(&to_opts, &to_namespace, &to_database).await?;
+    let surreal_conn_opts = surreal_sync_surreal::SurrealOpts {
+        surreal_endpoint: to_opts.surreal_endpoint.clone(),
+        surreal_username: to_opts.surreal_username.clone(),
+        surreal_password: to_opts.surreal_password.clone(),
+    };
+    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
 
     match from {
         SourceDatabase::MongoDB => {
@@ -689,12 +694,10 @@ async fn run_full_sync(
             let jsonl_from_opts = jsonl::SourceOpts {
                 source_uri: from_opts.source_uri,
             };
-            let jsonl_to_opts = jsonl::SurrealOpts {
+            let jsonl_to_opts = surreal_sync_surreal::SurrealOpts {
                 surreal_endpoint: to_opts.surreal_endpoint,
                 surreal_username: to_opts.surreal_username,
                 surreal_password: to_opts.surreal_password,
-                batch_size: to_opts.batch_size,
-                dry_run: to_opts.dry_run,
             };
             jsonl::migrate_from_jsonl(
                 jsonl_from_opts,

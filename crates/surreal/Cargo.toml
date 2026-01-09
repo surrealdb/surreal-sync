@@ -1,0 +1,13 @@
+[package]
+name = "surreal-sync-surreal"
+version = "0.1.0"
+edition = "2021"
+description = "SurrealDB connection and write utilities"
+license = "MIT"
+
+[dependencies]
+surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+surrealdb-types = { path = "../surrealdb-types" }
+anyhow = "1.0.100"
+tracing = "0.1"
+log = "0.4"

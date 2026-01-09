@@ -4,10 +4,12 @@
 //! (local files, S3, HTTP/HTTPS) and import them into SurrealDB tables.
 
 mod metrics;
-pub mod surreal;
 mod sync;
 
 pub use sync::{sync, Config};
+
+// Re-export SurrealDB utilities from shared crate
+pub use surreal_sync_surreal::{surreal_connect, write_records, SurrealOpts};
 
 // Re-export file source types for convenience
 pub use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};

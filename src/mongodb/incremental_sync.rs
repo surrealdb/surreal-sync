@@ -3,7 +3,6 @@
 //! This module provides incremental synchronization capabilities for MongoDB using
 //! Change Streams, which provide real-time change notifications.
 
-use crate::surreal::{surreal_connect, Change, ChangeOp};
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -18,6 +17,9 @@ use mongodb::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+use surreal_sync_surreal::{
+    apply_change, surreal_connect, Change, ChangeOp, SurrealOpts as SurrealConnOpts,
+};
 use tokio::sync::Mutex;
 
 /// Convert a BSON document directly to a surrealdb::sql::Value map
@@ -348,7 +350,12 @@ pub async fn run_incremental_sync(
         MongodbIncrementalSource::new(&connection_string, &source_database, initial_resume_token)
             .await?;
 
-    let surreal = surreal_connect(&to_opts, &to_namespace, &to_database).await?;
+    let surreal_conn_opts = SurrealConnOpts {
+        surreal_endpoint: to_opts.surreal_endpoint.clone(),
+        surreal_username: to_opts.surreal_username.clone(),
+        surreal_password: to_opts.surreal_password.clone(),
+    };
+    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
 
     // Authenticate
     surreal
@@ -386,7 +393,7 @@ pub async fn run_incremental_sync(
             Ok(change) => {
                 debug!("Received change: {change:?}");
 
-                crate::surreal::apply_change(&surreal, &change).await?;
+                apply_change(&surreal, &change).await?;
 
                 change_count += 1;
                 if change_count % 100 == 0 {

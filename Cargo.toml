@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kafka", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql", "crates/csv", "crates/jsonl", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surrealdb-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify"]
+members = ["crates/kafka", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql", "crates/csv", "crates/jsonl", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surrealdb-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify", "crates/surreal"]
 resolver = "2"
 
 [package]
@@ -93,6 +93,7 @@ postgresql-types = { path = "crates/postgresql-types" }
 surrealdb-types = { path = "crates/surrealdb-types" }
 kafka-types = { path = "crates/kafka-types" }
 neo4j-types = { path = "crates/neo4j-types" }
+surreal-sync-surreal = { path = "crates/surreal" }
 
 [dev-dependencies]
 # Testing

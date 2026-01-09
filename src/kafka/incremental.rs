@@ -56,7 +56,14 @@ pub async fn run_incremental_sync(
         config.message_type, config.topic
     );
 
-    let surreal = crate::surreal::surreal_connect(&to_opts, &to_namespace, &to_database).await?;
+    let surreal_conn_opts = surreal_sync_surreal::SurrealOpts {
+        surreal_endpoint: to_opts.surreal_endpoint.clone(),
+        surreal_username: to_opts.surreal_username.clone(),
+        surreal_password: to_opts.surreal_password.clone(),
+    };
+    let surreal =
+        surreal_sync_surreal::surreal_connect(&surreal_conn_opts, &to_namespace, &to_database)
+            .await?;
     let surreal = Arc::new(surreal);
 
     // Determine table name: use configured table_name if provided, otherwise use topic name
@@ -134,7 +141,7 @@ pub async fn run_incremental_sync(
                         )?
                     };
 
-                    crate::surreal::write_record(&surreal, &record).await?;
+                    surreal_sync_surreal::write_record(&surreal, &record).await?;
 
                     let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
                     if count % 100 == 0 {

@@ -47,18 +47,12 @@ pub mod mongodb;
 pub mod mysql;
 pub mod neo4j;
 pub mod postgresql;
-pub mod surreal;
 pub mod sync;
 pub mod testing;
 
-// Re-export CSV crate
+// Re-export CSV and JSONL crates for convenience
 pub use surreal_sync_csv as csv;
-
-// Re-export JSONL crate
 pub use surreal_sync_jsonl as jsonl;
-
-// Re-export Change type for easy access
-pub use surreal::Change;
 
 // Re-export main migration functions for easy access
 pub use mongodb::migrate_from_mongodb;

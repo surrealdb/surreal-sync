@@ -454,7 +454,7 @@ async fn write_records_with_surreal_values(
 
     for (i, record) in batch.iter().enumerate() {
         tracing::trace!("Processing record {}/{}", i + 1, batch.len());
-        crate::surreal::write_record(surreal, record).await?;
+        surreal_sync_surreal::write_record(surreal, record).await?;
     }
 
     tracing::debug!(

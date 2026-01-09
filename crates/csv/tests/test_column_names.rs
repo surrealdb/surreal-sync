@@ -62,7 +62,7 @@ async fn test_csv_with_custom_column_names() {
         batch_size: 100,
         namespace: namespace.to_string(),
         database: database.to_string(),
-        surreal_opts: surreal_sync_csv::surreal::SurrealOpts {
+        surreal_opts: surreal_sync_surreal::SurrealOpts {
             surreal_endpoint: "ws://surrealdb:8000".to_string(),
             surreal_username: "root".to_string(),
             surreal_password: "root".to_string(),
@@ -136,7 +136,7 @@ async fn test_csv_column_count_mismatch_error() {
         batch_size: 100,
         namespace: namespace.to_string(),
         database: database.to_string(),
-        surreal_opts: surreal_sync_csv::surreal::SurrealOpts {
+        surreal_opts: surreal_sync_surreal::SurrealOpts {
             surreal_endpoint: "ws://surrealdb:8000".to_string(),
             surreal_username: "root".to_string(),
             surreal_password: "root".to_string(),
@@ -198,7 +198,7 @@ async fn test_csv_without_headers_auto_generated_names() {
         batch_size: 100,
         namespace: namespace.to_string(),
         database: database.to_string(),
-        surreal_opts: surreal_sync_csv::surreal::SurrealOpts {
+        surreal_opts: surreal_sync_surreal::SurrealOpts {
             surreal_endpoint: "ws://surrealdb:8000".to_string(),
             surreal_username: "root".to_string(),
             surreal_password: "root".to_string(),
@@ -264,7 +264,7 @@ async fn test_csv_column_count_mismatch_with_extra_columns_in_row() {
         batch_size: 100,
         namespace: namespace.to_string(),
         database: database.to_string(),
-        surreal_opts: surreal_sync_csv::surreal::SurrealOpts {
+        surreal_opts: surreal_sync_surreal::SurrealOpts {
             surreal_endpoint: "ws://surrealdb:8000".to_string(),
             surreal_username: "root".to_string(),
             surreal_password: "root".to_string(),

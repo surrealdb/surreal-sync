@@ -15,13 +15,13 @@
 //! exactly matches Neo4j.
 
 use crate::neo4j::Neo4jConversionContext;
-use crate::surreal::{surreal_connect, Change};
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use crate::SourceOpts;
 use async_trait::async_trait;
 use chrono::Utc;
 use neo4rs::{Graph, Query};
 use std::collections::HashMap;
+use surreal_sync_surreal::{apply_change, surreal_connect, Change, SurrealOpts as SurrealConnOpts};
 use surrealdb::sql::{Array, Number, Strand, Value};
 use surrealdb_types::RecordWithSurrealValues as Record;
 
@@ -301,7 +301,7 @@ pub async fn apply_incremental_changes(
             continue;
         }
 
-        crate::surreal::apply_change(surreal, &change).await?;
+        apply_change(surreal, &change).await?;
 
         applied_count += 1;
     }
@@ -346,7 +346,12 @@ pub async fn run_incremental_sync(
         initial_timestamp,
     )?);
 
-    let surreal = surreal_connect(&to_opts, &to_namespace, &to_database).await?;
+    let surreal_conn_opts = SurrealConnOpts {
+        surreal_endpoint: to_opts.surreal_endpoint.clone(),
+        surreal_username: to_opts.surreal_username.clone(),
+        surreal_password: to_opts.surreal_password.clone(),
+    };
+    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
 
     surreal
         .signin(surrealdb::opt::auth::Root {

@@ -1,4 +1,10 @@
-use crate::SurrealOpts;
+/// SurrealDB connection options
+#[derive(Clone, Debug)]
+pub struct SurrealOpts {
+    pub surreal_endpoint: String,
+    pub surreal_username: String,
+    pub surreal_password: String,
+}
 
 pub async fn surreal_connect(
     opts: &SurrealOpts,

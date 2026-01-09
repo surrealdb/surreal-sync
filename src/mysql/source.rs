@@ -21,7 +21,6 @@
 
 use std::collections::HashMap;
 
-use crate::surreal::{Change, ChangeOp};
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -29,6 +28,7 @@ use chrono::Utc;
 use json_types::JsonValueWithSchema;
 use log::info;
 use mysql_async::{prelude::*, Conn, Pool, Row, Value};
+use surreal_sync_surreal::{Change, ChangeOp};
 use surrealdb_types::convert_id_with_database_schema;
 use surrealdb_types::typed_values_to_surreal_map;
 use sync_core::{DatabaseSchema, TypedValue, UniversalType};

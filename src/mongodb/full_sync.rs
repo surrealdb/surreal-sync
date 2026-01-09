@@ -3,9 +3,9 @@ use std::time::Duration;
 use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Thing, Value};
 use surrealdb_types::RecordWithSurrealValues as Record;
 
-use crate::surreal::surreal_connect;
 use crate::sync::IncrementalSource;
 use crate::{SourceOpts, SurrealOpts};
+use surreal_sync_surreal::{surreal_connect, write_records, SurrealOpts as SurrealConnOpts};
 
 /// Parse an ISO 8601 duration string (PTxS or PTx.xxxxxxxxxS format).
 fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
@@ -111,7 +111,12 @@ pub async fn run_full_sync(
         None
     };
 
-    let surreal = surreal_connect(&to_opts, &to_namespace, &to_database).await?;
+    let surreal_conn_opts = SurrealConnOpts {
+        surreal_endpoint: to_opts.surreal_endpoint.clone(),
+        surreal_username: to_opts.surreal_username.clone(),
+        surreal_password: to_opts.surreal_password.clone(),
+    };
+    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
 
     tracing::debug!(
         "Signing in to SurrealDB with username: {}",
@@ -214,7 +219,7 @@ pub async fn run_full_sync(
                 );
                 if !to_opts.dry_run {
                     tracing::debug!("Migrating batch of {} documents to SurrealDB", batch.len());
-                    crate::surreal::write_records(&surreal, &collection_name, &batch).await?;
+                    write_records(&surreal, &collection_name, &batch).await?;
                     tracing::debug!("Batch migration completed");
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
@@ -243,7 +248,7 @@ pub async fn run_full_sync(
                     "Migrating final batch of {} documents to SurrealDB",
                     batch.len()
                 );
-                crate::surreal::write_records(&surreal, &collection_name, &batch).await?;
+                write_records(&surreal, &collection_name, &batch).await?;
                 tracing::debug!("Final batch migration completed");
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");

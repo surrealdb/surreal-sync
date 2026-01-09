@@ -1,4 +1,4 @@
-use super::Change;
+use crate::Change;
 use surrealdb::Surreal;
 use surrealdb_types::{RecordWithSurrealValues as Record, Relation};
 

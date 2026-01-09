@@ -6112,6 +6112,7 @@ dependencies = [
  "surreal-sync-kafka",
  "surreal-sync-kafka-producer",
  "surreal-sync-postgresql-replication",
+ "surreal-sync-surreal",
  "surrealdb",
  "surrealdb-types",
  "sync-core",
@@ -6141,6 +6142,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sync-file",
+ "surreal-sync-surreal",
  "surrealdb",
  "surrealdb-types",
  "sync-core",
@@ -6178,6 +6180,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sync-file",
+ "surreal-sync-surreal",
  "surrealdb",
  "surrealdb-types",
  "sync-core",
@@ -6237,6 +6240,17 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "surreal-sync-surreal"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "log",
+ "surrealdb",
+ "surrealdb-types",
+ "tracing",
 ]
 
 [[package]]

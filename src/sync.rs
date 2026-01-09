@@ -46,10 +46,10 @@
 //! Checkpoints are managed by [`SyncManager`] and can be persisted to disk for
 //! reliable resumption after failures.
 
-use crate::surreal::Change;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
+use surreal_sync_surreal::Change;
 
 /// Represents different phases of the synchronization process for checkpoint management
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

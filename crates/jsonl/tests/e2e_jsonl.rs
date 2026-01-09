@@ -1,6 +1,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
-use surreal_sync_jsonl::{migrate_from_jsonl, ConversionRule, SourceOpts, SurrealOpts};
+use surreal_sync_jsonl::{migrate_from_jsonl, ConversionRule, SourceOpts};
+use surreal_sync_surreal::SurrealOpts;
 use surrealdb::{engine::any::connect, sql::Thing, Surreal};
 
 #[derive(Debug, Deserialize)]
@@ -71,8 +72,6 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
         surreal_endpoint: surreal_endpoint.to_string(),
         surreal_username: "root".to_string(),
         surreal_password: "root".to_string(),
-        batch_size: 10,
-        dry_run: false,
     };
 
     // Define conversion rules for Notion-like parent references
@@ -239,8 +238,6 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
         surreal_endpoint: surreal_endpoint.to_string(),
         surreal_username: "root".to_string(),
         surreal_password: "root".to_string(),
-        batch_size: 10,
-        dry_run: false,
     };
 
     migrate_from_jsonl(
@@ -333,8 +330,6 @@ async fn test_jsonl_with_complex_id_field() {
         surreal_endpoint: surreal_endpoint.to_string(),
         surreal_username: "root".to_string(),
         surreal_password: "root".to_string(),
-        batch_size: 10,
-        dry_run: false,
     };
 
     migrate_from_jsonl(

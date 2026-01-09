@@ -58,9 +58,17 @@ pub async fn sync(config: Config) -> Result<()> {
     tracing::info!("Tables: {:?}", config.tables);
     tracing::info!("Target: {}/{}", config.to_namespace, config.to_database);
 
-    let surreal =
-        crate::surreal::surreal_connect(&config.to_opts, &config.to_namespace, &config.to_database)
-            .await?;
+    let surreal_conn_opts = surreal_sync_surreal::SurrealOpts {
+        surreal_endpoint: config.to_opts.surreal_endpoint.clone(),
+        surreal_username: config.to_opts.surreal_username.clone(),
+        surreal_password: config.to_opts.surreal_password.clone(),
+    };
+    let surreal = surreal_sync_surreal::surreal_connect(
+        &surreal_conn_opts,
+        &config.to_namespace,
+        &config.to_database,
+    )
+    .await?;
     let store = super::state::Store::new(surreal.clone());
     let id = super::state::StateID::from_connection_and_slot(
         &config.connection_string,

@@ -114,8 +114,13 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
         checkpoint_dir: Some(CHECKPOINT_DIR.to_string()),
     };
 
-    let surreal_for_sync = surreal_sync::surreal::surreal_connect(
-        &surreal_opts,
+    let surreal_conn_opts = surreal_sync_surreal::SurrealOpts {
+        surreal_endpoint: surreal_opts.surreal_endpoint.clone(),
+        surreal_username: surreal_opts.surreal_username.clone(),
+        surreal_password: surreal_opts.surreal_password.clone(),
+    };
+    let surreal_for_sync = surreal_sync_surreal::surreal_connect(
+        &surreal_conn_opts,
         &surreal_config.surreal_namespace,
         &surreal_config.surreal_database,
     )

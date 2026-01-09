@@ -9,8 +9,9 @@
 
 use loadtest_populate_jsonl::JsonlPopulator;
 use loadtest_verify::StreamingVerifier;
-use surreal_sync::jsonl::{sync, Config, FileSource, SurrealOpts};
+use surreal_sync::jsonl::{sync, Config, FileSource};
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
+use surreal_sync_surreal::SurrealOpts;
 use sync_core::Schema;
 use tempfile::TempDir;
 
@@ -90,8 +91,6 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         surreal_endpoint: surreal_config.surreal_endpoint.clone(),
         surreal_username: "root".to_string(),
         surreal_password: "root".to_string(),
-        batch_size: BATCH_SIZE,
-        dry_run: false,
     };
 
     // Sync each JSONL file (table name is derived from filename)

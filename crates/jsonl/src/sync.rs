@@ -1,7 +1,6 @@
 //! JSONL synchronization logic
 
 use crate::conversion::ConversionRule;
-use crate::surreal::{FieldValue, Record, SourceOpts, SurrealOpts};
 use anyhow::{anyhow, Context, Result};
 use json_types::JsonValueWithSchema;
 use serde_json::Value;
@@ -10,7 +9,14 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use surreal_sync_file::{FileSource, DEFAULT_BUFFER_SIZE};
 use surrealdb::sql::Thing;
+use surrealdb_types::{RecordWithSurrealValues, SurrealValue};
 use sync_core::{DatabaseSchema, TableDefinition, TypedValue, UniversalType, UniversalValue};
+
+/// Source database connection options (JSONL-specific)
+#[derive(Clone, Debug)]
+pub struct SourceOpts {
+    pub source_uri: String,
+}
 
 /// Configuration for JSONL import
 #[derive(Clone)]
@@ -35,7 +41,7 @@ pub struct Config {
     pub database: String,
 
     /// SurrealDB connection options
-    pub surreal_opts: SurrealOpts,
+    pub surreal_opts: surreal_sync_surreal::SurrealOpts,
 
     /// Field to use as record ID (default: "id")
     pub id_field: String,
@@ -62,12 +68,10 @@ impl Default for Config {
             http_uris: vec![],
             namespace: "test".to_string(),
             database: "test".to_string(),
-            surreal_opts: SurrealOpts {
+            surreal_opts: surreal_sync_surreal::SurrealOpts {
                 surreal_endpoint: "ws://localhost:8000".to_string(),
                 surreal_username: "root".to_string(),
                 surreal_password: "root".to_string(),
-                batch_size: 1000,
-                dry_run: false,
             },
             id_field: "id".to_string(),
             conversion_rules: vec![],
@@ -92,7 +96,7 @@ async fn process_jsonl_reader(
     tracing::info!("Processing JSONL from: {source_name}");
 
     let buf_reader = BufReader::new(reader);
-    let mut batch: Vec<Record> = Vec::new();
+    let mut batch: Vec<RecordWithSurrealValues> = Vec::new();
     let mut total_migrated = 0;
 
     // Determine table name from source name (filename without extension)
@@ -155,7 +159,7 @@ async fn process_jsonl_reader(
         // Process batch when it reaches the batch size
         if batch.len() >= config.batch_size {
             if !config.dry_run {
-                crate::surreal::write_records(surreal, &table_name, &batch).await?;
+                surreal_sync_surreal::write_records(surreal, &table_name, &batch).await?;
             }
             total_migrated += batch.len();
             tracing::debug!("Migrated batch of {} documents", batch.len());
@@ -166,7 +170,7 @@ async fn process_jsonl_reader(
     // Process remaining documents
     if !batch.is_empty() {
         if !config.dry_run {
-            crate::surreal::write_records(surreal, &table_name, &batch).await?;
+            surreal_sync_surreal::write_records(surreal, &table_name, &batch).await?;
         }
         total_migrated += batch.len();
         tracing::debug!("Migrated final batch of {} documents", batch.len());
@@ -211,9 +215,12 @@ pub async fn sync(config: Config) -> Result<()> {
     tracing::debug!("Parsed {} conversion rules", rules.len());
 
     // Connect to SurrealDB
-    let surreal =
-        crate::surreal::surreal_connect(&config.surreal_opts, &config.namespace, &config.database)
-            .await?;
+    let surreal = surreal_sync_surreal::surreal_connect(
+        &config.surreal_opts,
+        &config.namespace,
+        &config.database,
+    )
+    .await?;
     tracing::info!("Connected to SurrealDB");
 
     let mut total_sources = 0;
@@ -315,7 +322,7 @@ pub async fn migrate_from_jsonl(
     from_opts: SourceOpts,
     to_namespace: String,
     to_database: String,
-    to_opts: SurrealOpts,
+    to_opts: surreal_sync_surreal::SurrealOpts,
     id_field: String,
     conversion_rules: Vec<String>,
 ) -> Result<()> {
@@ -369,11 +376,11 @@ fn convert_json_to_record(
     id_field: &str,
     rules: &[ConversionRule],
     table_schema: Option<&TableDefinition>,
-) -> Result<Record> {
+) -> Result<RecordWithSurrealValues> {
     let mut id: Option<surrealdb::sql::Id> = None;
 
     if let Value::Object(obj) = value {
-        let mut data = HashMap::new();
+        let mut data: HashMap<String, surrealdb::sql::Value> = HashMap::new();
 
         for (key, val) in obj {
             if key == id_field {
@@ -395,30 +402,30 @@ fn convert_json_to_record(
                 // Get schema type hint for this field if available
                 let data_type = table_schema.and_then(|ts| ts.get_column_type(key));
 
-                // Convert the value with schema-aware conversion using json-types
-                let v = convert_value_with_schema(val, rules, data_type);
+                // Convert the value directly to surrealdb::sql::Value
+                let v = convert_value_to_surreal(val, rules, data_type);
                 data.insert(key.clone(), v);
             }
         }
 
         // Create proper SurrealDB Thing for the record
-        let id = match id {
+        let thing = match id {
             Some(id) => surrealdb::sql::Thing::from((table_name.to_string(), id)),
             None => return Err(anyhow!("Missing ID field: {id_field}")),
         };
 
-        Ok(Record { id, data })
+        Ok(RecordWithSurrealValues::new(thing, data))
     } else {
         Err(anyhow!("JSONL line must be a JSON object"))
     }
 }
 
-/// Convert a JSON value to FieldValue with optional schema type hint
-fn convert_value_with_schema(
+/// Convert a JSON value to surrealdb::sql::Value with optional schema type hint
+fn convert_value_to_surreal(
     value: &Value,
     rules: &[ConversionRule],
     data_type: Option<&UniversalType>,
-) -> FieldValue {
+) -> surrealdb::sql::Value {
     // First check if this is an object that matches a conversion rule (Thing reference)
     if let Value::Object(obj) = value {
         if let Some(type_value) = obj.get("type").and_then(|v| v.as_str()) {
@@ -427,7 +434,7 @@ fn convert_value_with_schema(
                     // This object matches the rule, convert to Thing reference
                     if let Some(id_value) = obj.get(&rule.id_field).and_then(|v| v.as_str()) {
                         let thing = Thing::from((rule.target_table.clone(), id_value.to_string()));
-                        return FieldValue::Thing(thing);
+                        return surrealdb::sql::Value::Thing(thing);
                     }
                 }
             }
@@ -436,13 +443,13 @@ fn convert_value_with_schema(
 
     // If we have a schema type hint, use json-types for type-aware conversion
     if let Some(dt) = data_type {
-        return FieldValue::Typed(
-            JsonValueWithSchema::new(value.clone(), dt.clone()).to_typed_value(),
-        );
+        let tv = JsonValueWithSchema::new(value.clone(), dt.clone()).to_typed_value();
+        return SurrealValue::from(tv).into_inner();
     }
 
     // Fall back to generic conversion (inferred types)
-    FieldValue::Typed(convert_value_inferred(value))
+    let tv = convert_value_inferred(value);
+    SurrealValue::from(tv).into_inner()
 }
 
 /// Convert a JSON value to TypedValue with inferred types (no schema)

@@ -21,8 +21,10 @@ sync-core = { path = "../sync-core" }
 # Type conversion crates
 json-types = { path = "../json-types" }
 surrealdb-types = { path = "../surrealdb-types" }
+surreal-sync-surreal = { path = "../surreal" }
 
 [dev-dependencies]
 tokio-test = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+surreal-sync-surreal = { path = "../surreal" }
