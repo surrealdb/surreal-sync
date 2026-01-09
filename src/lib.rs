@@ -41,7 +41,6 @@
 
 use clap::Parser;
 
-pub mod checkpoint;
 pub mod kafka;
 pub mod mysql;
 pub mod postgresql;

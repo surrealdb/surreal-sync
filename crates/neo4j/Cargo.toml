@@ -17,6 +17,9 @@ surrealdb-types = { path = "../surrealdb-types" }
 # Sync core traits
 sync-core = { path = "../sync-core" }
 
+# Checkpoint management
+checkpoint = { path = "../checkpoint" }
+
 # Type conversion
 neo4j-types = { path = "../neo4j-types" }
 
@@ -40,3 +43,4 @@ serde_json = "1.0.145"
 
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile = "3.10"

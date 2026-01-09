@@ -8,7 +8,7 @@ use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Value};
 use surrealdb::{engine::any::connect, Surreal};
 use surrealdb_types::{RecordWithSurrealValues as Record, Relation as SurrealRelation};
 
-use crate::sync_types::{SyncConfig, SyncManager, SyncPhase};
+use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
 
 /// Source database connection options (Neo4j-specific, library type without clap)
 #[derive(Clone, Debug)]
@@ -145,7 +145,7 @@ pub async fn run_full_sync(
 
         tracing::info!(
             "Emitted full sync start checkpoint (t1): {}",
-            checkpoint.to_string()
+            checkpoint.to_cli_string()
         );
         Some(checkpoint)
     } else {
@@ -211,7 +211,7 @@ pub async fn run_full_sync(
 
         tracing::info!(
             "Emitted full sync end checkpoint (t2): {}",
-            checkpoint.to_string()
+            checkpoint.to_cli_string()
         );
     }
 

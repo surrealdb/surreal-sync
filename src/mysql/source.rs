@@ -364,47 +364,40 @@ impl ChangeStream for MySQLChangeStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mysql::checkpoint::MySQLCheckpoint;
+    use checkpoint::Checkpoint;
 
     #[tokio::test]
     async fn test_sequence_checkpoint() {
         let sequence_id = 1234i64;
-        let checkpoint = SyncCheckpoint::MySQL {
+        let checkpoint = MySQLCheckpoint {
             sequence_id,
             timestamp: Utc::now(),
         };
 
-        match checkpoint {
-            SyncCheckpoint::MySQL {
-                sequence_id: parsed_seq,
-                ..
-            } => {
-                assert_eq!(parsed_seq, sequence_id);
-            }
-            _ => panic!("Wrong checkpoint type"),
-        }
+        assert_eq!(checkpoint.sequence_id, sequence_id);
+
+        // Test CLI string roundtrip
+        let cli_str = checkpoint.to_cli_string();
+        let parsed = MySQLCheckpoint::from_cli_string(&cli_str).unwrap();
+        assert_eq!(parsed.sequence_id, sequence_id);
     }
 
     #[tokio::test]
     async fn test_initial_checkpoint() {
-        let checkpoint = SyncCheckpoint::MySQL {
+        let checkpoint = MySQLCheckpoint {
             sequence_id: 0,
             timestamp: Utc::now(),
         };
 
-        match checkpoint {
-            SyncCheckpoint::MySQL {
-                sequence_id: parsed_seq,
-                ..
-            } => {
-                assert_eq!(parsed_seq, 0);
-            }
-            _ => panic!("Wrong checkpoint type"),
-        }
+        assert_eq!(checkpoint.sequence_id, 0);
     }
 
     #[tokio::test]
     async fn test_checkpoint_json_serialization() {
-        let checkpoint = SyncCheckpoint::MySQL {
+        use checkpoint::{CheckpointFile, SyncPhase};
+
+        let checkpoint = MySQLCheckpoint {
             sequence_id: 156,
             timestamp: Utc::now(),
         };
@@ -414,23 +407,19 @@ mod tests {
         println!("Direct JSON: {json}");
 
         // Test deserialization
-        let deserialized: SyncCheckpoint = serde_json::from_str(&json).unwrap();
+        let deserialized: MySQLCheckpoint = serde_json::from_str(&json).unwrap();
         println!("Direct deserialization: {deserialized:?}");
+        assert_eq!(deserialized.sequence_id, 156);
 
-        // Test file format (like SyncManager does)
-        let checkpoint_data = serde_json::json!({
-            "checkpoint": checkpoint,
-            "phase": "full_sync_start",
-            "timestamp": Utc::now().to_rfc3339(),
-        });
-
-        let file_json = serde_json::to_string_pretty(&checkpoint_data).unwrap();
+        // Test CheckpointFile format (new approach)
+        let file = CheckpointFile::new(&checkpoint, SyncPhase::FullSyncStart).unwrap();
+        let file_json = serde_json::to_string_pretty(&file).unwrap();
         println!("File format JSON: {file_json}");
 
-        // Test deserialization from file format
-        let parsed: serde_json::Value = serde_json::from_str(&file_json).unwrap();
-        let checkpoint_from_file =
-            serde_json::from_value::<SyncCheckpoint>(parsed["checkpoint"].clone()).unwrap();
-        println!("From file deserialization: {checkpoint_from_file:?}");
+        // Test parsing from CheckpointFile
+        let parsed_file: CheckpointFile = serde_json::from_str(&file_json).unwrap();
+        let parsed_checkpoint: MySQLCheckpoint = parsed_file.parse().unwrap();
+        println!("From file deserialization: {parsed_checkpoint:?}");
+        assert_eq!(parsed_checkpoint.sequence_id, 156);
     }
 }

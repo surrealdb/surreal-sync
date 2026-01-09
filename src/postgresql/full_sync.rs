@@ -5,6 +5,7 @@
 
 use crate::{SourceOpts, SurrealOpts};
 use anyhow::Result;
+use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
@@ -19,7 +20,7 @@ pub async fn run_full_sync(
     to_namespace: String,
     to_database: String,
     to_opts: SurrealOpts,
-    sync_config: Option<crate::sync::SyncConfig>,
+    sync_config: Option<SyncConfig>,
 ) -> Result<()> {
     info!("Starting PostgreSQL migration to SurrealDB");
 
@@ -35,7 +36,7 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t1 (before full sync starts) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = crate::sync::SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone());
 
         // Set up triggers on user tables so changes during full sync are captured
         let tables = super::autoconf::get_user_tables(
@@ -51,18 +52,18 @@ pub async fn run_full_sync(
 
         let current_sequence = incremental_source.get_current_sequence().await?;
 
-        let checkpoint = crate::sync::SyncCheckpoint::PostgreSQL {
-            sequence_id: current_sequence, // Store current sequence from audit table
+        let checkpoint = super::checkpoint::PostgreSQLCheckpoint {
+            sequence_id: current_sequence,
             timestamp: Utc::now(),
         };
 
         sync_manager
-            .emit_checkpoint(&checkpoint, crate::sync::SyncPhase::FullSyncStart)
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
             .await?;
 
         info!(
             "Emitted full sync start checkpoint (t1): {}",
-            checkpoint.to_string()
+            checkpoint.to_cli_string()
         );
     }
 
@@ -107,21 +108,21 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t2 (after full sync completes) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = crate::sync::SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone());
 
         // For trigger-based sync, checkpoint reflects the current state
-        let checkpoint = crate::sync::SyncCheckpoint::PostgreSQL {
+        let checkpoint = super::checkpoint::PostgreSQLCheckpoint {
             sequence_id: 0, // Full sync complete, incremental will start from audit table
             timestamp: Utc::now(),
         };
 
         sync_manager
-            .emit_checkpoint(&checkpoint, crate::sync::SyncPhase::FullSyncEnd)
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
             .await?;
 
         info!(
             "Emitted full sync end checkpoint (t2): {}",
-            checkpoint.to_string()
+            checkpoint.to_cli_string()
         );
     }
 

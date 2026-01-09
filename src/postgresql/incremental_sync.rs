@@ -1,7 +1,9 @@
+use super::checkpoint::PostgreSQLCheckpoint;
 use crate::sync::{ChangeStream, IncrementalSource, SourceDatabase, SyncCheckpoint};
 use crate::{SourceOpts, SurrealOpts};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
+use checkpoint::Checkpoint;
 use chrono::{DateTime, Utc};
 use log::{error, info, warn};
 use serde_json::Value as JsonValue;
@@ -22,19 +24,19 @@ pub async fn run_incremental_sync(
     to_namespace: String,
     to_database: String,
     to_opts: SurrealOpts,
-    from_checkpoint: crate::sync::SyncCheckpoint,
+    from_checkpoint: PostgreSQLCheckpoint,
     deadline: chrono::DateTime<chrono::Utc>,
-    target_checkpoint: Option<crate::sync::SyncCheckpoint>,
+    target_checkpoint: Option<PostgreSQLCheckpoint>,
 ) -> Result<()> {
     log::debug!("🎯 ENTERING run_incremental_sync function with checkpoint: {from_checkpoint:?}");
     info!(
         "Starting PostgreSQL incremental sync from checkpoint: {}",
-        from_checkpoint.to_string()
+        from_checkpoint.to_cli_string()
     );
 
     // Create PostgreSQL incremental source using trigger-based tracking (reliable, no special config needed)
-    // Extract sequence_id from checkpoint
-    let sequence_id = from_checkpoint.to_postgresql_sequence_id()?;
+    // sequence_id is directly available from the checkpoint
+    let sequence_id = from_checkpoint.sequence_id;
 
     log::debug!("🚀 Creating PostgreSQL incremental source");
     let client = super::client::new_postgresql_client(&from_opts.source_uri).await?;
@@ -97,21 +99,15 @@ pub async fn run_incremental_sync(
 
                 // Check if we've reached the target checkpoint
                 if let Some(ref target) = target_checkpoint {
-                    if let (
-                        Some(crate::sync::SyncCheckpoint::PostgreSQL {
-                            sequence_id: current_seq,
-                            ..
-                        }),
-                        crate::sync::SyncCheckpoint::PostgreSQL {
-                            sequence_id: target_seq,
-                            ..
-                        },
-                    ) = (stream.checkpoint(), target)
+                    if let Some(crate::sync::SyncCheckpoint::PostgreSQL {
+                        sequence_id: current_seq,
+                        ..
+                    }) = stream.checkpoint()
                     {
-                        if current_seq >= *target_seq {
+                        if current_seq >= target.sequence_id {
                             info!(
                                 "Reached target checkpoint: {}, stopping incremental sync",
-                                target.to_string()
+                                target.to_cli_string()
                             );
                             break;
                         }
@@ -837,19 +833,16 @@ mod tests {
     #[tokio::test]
     async fn test_sequence_parsing() {
         let sequence_id = 12345i64;
-        let checkpoint = SyncCheckpoint::PostgreSQL {
+        let checkpoint = PostgreSQLCheckpoint {
             sequence_id,
             timestamp: Utc::now(),
         };
 
-        match checkpoint {
-            SyncCheckpoint::PostgreSQL {
-                sequence_id: parsed_seq,
-                ..
-            } => {
-                assert_eq!(parsed_seq, sequence_id);
-            }
-            _ => panic!("Wrong checkpoint type"),
-        }
+        assert_eq!(checkpoint.sequence_id, sequence_id);
+
+        // Test CLI string roundtrip
+        let cli_str = checkpoint.to_cli_string();
+        let parsed = PostgreSQLCheckpoint::from_cli_string(&cli_str).unwrap();
+        assert_eq!(parsed.sequence_id, sequence_id);
     }
 }

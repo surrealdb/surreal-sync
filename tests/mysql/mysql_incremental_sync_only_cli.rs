@@ -62,13 +62,19 @@ async fn test_mysql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
 
     surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(".test-checkpoints")?;
 
-    let t1 = surreal_sync::testing::checkpoint::read_t1_checkpoint(".test-checkpoints")?;
-
     surreal_sync::testing::mysql::insert_rows(&mut mysql_conn, &dataset).await?;
+
+    // Read the t1 (FullSyncStart) checkpoint from the file - this is the one we need
+    // for incremental sync to pick up changes made after full sync started
+    use checkpoint::{Checkpoint, SyncPhase};
+    let checkpoint_file =
+        checkpoint::get_checkpoint_for_phase(".test-checkpoints", SyncPhase::FullSyncStart).await?;
+    let mysql_checkpoint: surreal_sync::mysql::checkpoint::MySQLCheckpoint =
+        checkpoint_file.parse()?;
+    let checkpoint_string = mysql_checkpoint.to_cli_string();
 
     // Execute CLI incremental sync command
     // For MySQL incremental sync, we need to provide a checkpoint
-    // Since this is a test, we'll use a sequence-based checkpoint that starts from the beginning
     let incremental_args = [
         "incremental",
         "mysql",
@@ -87,7 +93,7 @@ async fn test_mysql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
         "--surreal-password",
         "root",
         "--incremental-from",
-        &t1.to_string(), // Start from beginning of sequence
+        &checkpoint_string, // Use checkpoint read from file
     ];
 
     let incremental_output = execute_surreal_sync(&incremental_args)?;

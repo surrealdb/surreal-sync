@@ -3,6 +3,8 @@
 //! This module provides incremental synchronization capabilities for MongoDB using
 //! Change Streams, which provide real-time change notifications.
 
+use crate::checkpoint::MongoDBCheckpoint;
+use crate::{SourceOpts, SurrealOpts};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use bson::Document;
@@ -21,10 +23,15 @@ use surreal_sync_surreal::{
 };
 use tokio::sync::Mutex;
 
-use crate::sync_types::{
-    ChangeStream as ChangeStreamTrait, IncrementalSource, SourceDatabase, SyncCheckpoint,
-};
-use crate::{SourceOpts, SurrealOpts};
+/// Trait for a stream of changes from MongoDB
+#[async_trait]
+pub trait ChangeStream: Send + Sync {
+    /// Get the next change event from the stream
+    async fn next(&mut self) -> Option<Result<Change>>;
+
+    /// Get the current checkpoint of the stream
+    fn checkpoint(&self) -> Option<MongoDBCheckpoint>;
+}
 
 /// Convert a BSON document directly to a surrealdb::sql::Value map
 fn bson_doc_to_keys_and_surreal_values(
@@ -100,10 +107,42 @@ impl MongodbIncrementalSource {
         Err(anyhow!("No resume token available from change stream"))
     }
 
+    /// Initialize the incremental source
+    pub async fn initialize(&mut self) -> Result<()> {
+        // Source is already initialized via constructor - nothing to do
+        Ok(())
+    }
+
+    /// Get a stream of changes
+    pub async fn get_changes(&mut self) -> Result<Box<dyn ChangeStream>> {
+        let checkpoint = MongoDBCheckpoint {
+            resume_token: self.resume_token.lock().await.clone(),
+            timestamp: Utc::now(),
+        };
+
+        let stream = self.start_change_stream(Some(checkpoint)).await?;
+        let initial_token = self.resume_token.lock().await.clone();
+
+        Ok(Box::new(MongoChangeStream::new(stream, initial_token)))
+    }
+
+    /// Get the current checkpoint
+    pub async fn get_checkpoint(&self) -> Result<MongoDBCheckpoint> {
+        Ok(MongoDBCheckpoint {
+            resume_token: self.resume_token.lock().await.clone(),
+            timestamp: Utc::now(),
+        })
+    }
+
+    /// Cleanup resources
+    pub async fn cleanup(self) -> Result<()> {
+        Ok(())
+    }
+
     /// Start change stream from a specific checkpoint
     async fn start_change_stream(
         &self,
-        checkpoint: Option<SyncCheckpoint>,
+        checkpoint: Option<MongoDBCheckpoint>,
     ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>>> {
         let database = self.client.database(&self.database);
 
@@ -114,46 +153,27 @@ impl MongodbIncrementalSource {
 
         // If we have a checkpoint with a resume token, use it to resume the stream
         if let Some(checkpoint) = checkpoint {
-            match checkpoint {
-                SyncCheckpoint::MongoDB {
-                    resume_token: token_bytes,
-                    ..
-                } => {
-                    // Deserialize the token bytes back to a ResumeToken
-                    // ResumeToken implements Deserialize, so we can deserialize it directly from BSON
-                    let resume_token = bson::from_slice::<ResumeToken>(&token_bytes)
-                        .map_err(|e| {
-                            // We fail fast here to prevent silent data loss. If we cannot deserialize
-                            // the resume token, starting from "current position" would skip all changes
-                            // between the checkpoint time and now. This could result in missing critical
-                            // data updates. By failing fast, we force operator intervention to either:
-                            // 1. Provide a valid checkpoint
-                            // 2. Explicitly start without a checkpoint (understanding the implications)
-                            // 3. Perform a full sync to ensure consistency
-                            anyhow!(
-                                "Failed to deserialize resume token - refusing to start to prevent data loss. \
-                                Error: {e}. The resume token may be corrupted or from an incompatible MongoDB version. \
-                                Options: (1) Start without a checkpoint if data loss is acceptable, \
-                                (2) Perform a full sync first, or (3) Provide a valid checkpoint.",
-                            )
-                        })?;
+            // Deserialize the token bytes back to a ResumeToken
+            // ResumeToken implements Deserialize, so we can deserialize it directly from BSON
+            let resume_token = bson::from_slice::<ResumeToken>(&checkpoint.resume_token)
+                .map_err(|e| {
+                    // We fail fast here to prevent silent data loss. If we cannot deserialize
+                    // the resume token, starting from "current position" would skip all changes
+                    // between the checkpoint time and now. This could result in missing critical
+                    // data updates. By failing fast, we force operator intervention to either:
+                    // 1. Provide a valid checkpoint
+                    // 2. Explicitly start without a checkpoint (understanding the implications)
+                    // 3. Perform a full sync to ensure consistency
+                    anyhow!(
+                        "Failed to deserialize resume token - refusing to start to prevent data loss. \
+                        Error: {e}. The resume token may be corrupted or from an incompatible MongoDB version. \
+                        Options: (1) Start without a checkpoint if data loss is acceptable, \
+                        (2) Perform a full sync first, or (3) Provide a valid checkpoint.",
+                    )
+                })?;
 
-                    options.resume_after = Some(resume_token);
-                    info!("Resuming change stream from saved checkpoint");
-                }
-                _ => {
-                    // Invalid checkpoint type for MongoDB. We fail fast here because the operator
-                    // explicitly provided a checkpoint that we cannot use. Starting from current
-                    // position would lose all changes between the intended checkpoint and now.
-                    // This is likely a configuration error that needs human intervention.
-                    return Err(anyhow!(
-                        "Invalid checkpoint type for MongoDB incremental sync. \
-                        Expected MongoDB checkpoint, got {checkpoint:?}. \
-                        This prevents resumption from the intended point and could cause data loss. \
-                        Please provide a valid MongoDB checkpoint or start without one.",
-                    ));
-                }
-            }
+            options.resume_after = Some(resume_token);
+            info!("Resuming change stream from saved checkpoint");
         }
 
         // Create the change stream
@@ -245,41 +265,6 @@ impl MongodbIncrementalSource {
     }
 }
 
-#[async_trait]
-impl IncrementalSource for MongodbIncrementalSource {
-    fn source_type(&self) -> SourceDatabase {
-        SourceDatabase::MongoDB
-    }
-
-    async fn initialize(&mut self) -> Result<()> {
-        // Source is already initialized via constructor - nothing to do
-        Ok(())
-    }
-
-    async fn get_changes(&mut self) -> Result<Box<dyn ChangeStreamTrait>> {
-        let checkpoint = Some(SyncCheckpoint::MongoDB {
-            resume_token: self.resume_token.lock().await.clone(),
-            timestamp: Utc::now(),
-        });
-
-        let stream = self.start_change_stream(checkpoint).await?;
-        let initial_token = self.resume_token.lock().await.clone();
-
-        Ok(Box::new(MongoChangeStream::new(stream, initial_token)))
-    }
-
-    async fn get_checkpoint(&self) -> Result<SyncCheckpoint> {
-        Ok(SyncCheckpoint::MongoDB {
-            resume_token: self.resume_token.lock().await.clone(),
-            timestamp: Utc::now(),
-        })
-    }
-
-    async fn cleanup(self) -> Result<()> {
-        Ok(())
-    }
-}
-
 // Type alias for complex MongoDB change stream type
 type MongoStreamType =
     Arc<Mutex<std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>>>>;
@@ -288,7 +273,7 @@ type MongoStreamType =
 pub struct MongoChangeStream {
     // Wrap in Arc<Mutex> to make it Sync
     stream: MongoStreamType,
-    current_checkpoint: Option<SyncCheckpoint>,
+    current_checkpoint: Option<MongoDBCheckpoint>,
 }
 
 impl MongoChangeStream {
@@ -298,7 +283,7 @@ impl MongoChangeStream {
     ) -> Self {
         Self {
             stream: Arc::new(Mutex::new(stream)),
-            current_checkpoint: Some(SyncCheckpoint::MongoDB {
+            current_checkpoint: Some(MongoDBCheckpoint {
                 resume_token: initial_resume_token,
                 timestamp: Utc::now(),
             }),
@@ -307,13 +292,13 @@ impl MongoChangeStream {
 }
 
 #[async_trait]
-impl ChangeStreamTrait for MongoChangeStream {
+impl ChangeStream for MongoChangeStream {
     async fn next(&mut self) -> Option<Result<Change>> {
         let mut stream = self.stream.lock().await;
         stream.next().await
     }
 
-    fn checkpoint(&self) -> Option<SyncCheckpoint> {
+    fn checkpoint(&self) -> Option<MongoDBCheckpoint> {
         self.current_checkpoint.clone()
     }
 }
@@ -330,13 +315,15 @@ pub async fn run_incremental_sync(
     to_namespace: String,
     to_database: String,
     to_opts: SurrealOpts,
-    from_checkpoint: SyncCheckpoint,
+    from_checkpoint: MongoDBCheckpoint,
     deadline: DateTime<Utc>,
-    target_checkpoint: Option<SyncCheckpoint>,
+    target_checkpoint: Option<MongoDBCheckpoint>,
 ) -> anyhow::Result<()> {
+    use checkpoint::Checkpoint;
+
     info!(
         "Starting MongoDB incremental sync from checkpoint: {}",
-        from_checkpoint.to_string()
+        from_checkpoint.to_cli_string()
     );
 
     // Extract MongoDB connection details from SourceOpts
@@ -346,13 +333,13 @@ pub async fn run_incremental_sync(
         .clone()
         .ok_or_else(|| anyhow!("MongoDB source database name is required"))?;
 
-    // Extract resume token from checkpoint using helper function
-    let initial_resume_token = from_checkpoint.to_mongodb_resume_token()?;
-
-    // Create MongoDB incremental source with resume token (already initialized)
-    let mut source =
-        MongodbIncrementalSource::new(&connection_string, &source_database, initial_resume_token)
-            .await?;
+    // Create MongoDB incremental source with resume token from checkpoint
+    let mut source = MongodbIncrementalSource::new(
+        &connection_string,
+        &source_database,
+        from_checkpoint.resume_token.clone(),
+    )
+    .await?;
 
     let surreal_conn_opts = SurrealConnOpts {
         surreal_endpoint: to_opts.surreal_endpoint.clone(),
@@ -407,24 +394,10 @@ pub async fn run_incremental_sync(
                 // Check if we've reached the target checkpoint
                 if let Some(ref target) = target_checkpoint {
                     let current = source.get_checkpoint().await?;
-                    let reached = match (&current, target) {
-                        (
-                            SyncCheckpoint::MongoDB {
-                                resume_token: current_token,
-                                ..
-                            },
-                            SyncCheckpoint::MongoDB {
-                                resume_token: target_token,
-                                ..
-                            },
-                        ) => current_token >= target_token,
-                        _ => false,
-                    };
-
-                    if reached {
+                    if current.resume_token >= target.resume_token {
                         info!(
                             "Reached target checkpoint: {}, stopping incremental sync",
-                            target.to_string()
+                            target.to_cli_string()
                         );
                         break;
                     }
@@ -461,37 +434,24 @@ mod tests {
     #[tokio::test]
     async fn test_resume_token_checkpoint() {
         let token = vec![1, 2, 3, 4, 5];
-        let checkpoint = SyncCheckpoint::MongoDB {
+        let checkpoint = MongoDBCheckpoint {
             resume_token: token.clone(),
             timestamp: Utc::now(),
         };
 
-        match checkpoint {
-            SyncCheckpoint::MongoDB { resume_token, .. } => {
-                assert_eq!(resume_token, token);
-            }
-            _ => panic!("Wrong checkpoint type"),
-        }
+        assert_eq!(checkpoint.resume_token, token);
     }
 
     #[tokio::test]
     async fn test_mongodb_checkpoint() {
         let token = vec![1, 2, 3, 4, 5];
         let timestamp = Utc::now();
-        let checkpoint = SyncCheckpoint::MongoDB {
+        let checkpoint = MongoDBCheckpoint {
             resume_token: token.clone(),
             timestamp,
         };
 
-        match checkpoint {
-            SyncCheckpoint::MongoDB {
-                resume_token: parsed_token,
-                timestamp: parsed_ts,
-            } => {
-                assert_eq!(parsed_token, token);
-                assert_eq!(parsed_ts, timestamp);
-            }
-            _ => panic!("Wrong checkpoint type"),
-        }
+        assert_eq!(checkpoint.resume_token, token);
+        assert_eq!(checkpoint.timestamp, timestamp);
     }
 }

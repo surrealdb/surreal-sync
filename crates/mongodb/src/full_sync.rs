@@ -2,14 +2,13 @@
 //!
 //! This module provides full synchronization from MongoDB to SurrealDB.
 
+use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
 use std::time::Duration;
 use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Thing, Value};
 use surrealdb_types::RecordWithSurrealValues as Record;
 
 use surreal_sync_surreal::{surreal_connect, write_records, SurrealOpts as SurrealConnOpts};
-
-use crate::sync_types::{IncrementalSource, SyncConfig, SyncManager, SyncPhase};
 
 /// Source database connection options (MongoDB-specific, library type without clap)
 #[derive(Clone, Debug)]
@@ -125,7 +124,7 @@ pub async fn run_full_sync(
 
         tracing::info!(
             "Emitted full sync start checkpoint (t1): {}",
-            checkpoint.to_string()
+            checkpoint.to_cli_string()
         );
         Some(checkpoint)
     } else {
@@ -312,7 +311,7 @@ pub async fn run_full_sync(
 
         tracing::info!(
             "Emitted full sync end checkpoint (t2): {}",
-            checkpoint.to_string()
+            checkpoint.to_cli_string()
         );
     }
 

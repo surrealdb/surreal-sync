@@ -56,12 +56,9 @@
 //! - MySQL: `mysql:sequence:456` (trigger-based audit table)
 
 use anyhow::Context;
+use checkpoint::Checkpoint;
 use clap::{Parser, Subcommand, ValueEnum};
-use surreal_sync::{
-    csv, jsonl, kafka, mysql, postgresql,
-    sync::{SyncCheckpoint, SyncConfig},
-    SourceOpts, SurrealOpts,
-};
+use surreal_sync::{csv, jsonl, kafka, mysql, postgresql, SourceOpts, SurrealOpts};
 use surreal_sync_surreal::surreal_connect;
 
 // Database-specific sync crates (fully-qualified paths used in match arms)
@@ -623,9 +620,8 @@ async fn run_full_sync(
     match from {
         SourceDatabase::MongoDB => {
             let sync_config = if emit_checkpoints {
-                Some(surreal_sync_mongodb::SyncConfig {
+                Some(checkpoint::SyncConfig {
                     incremental: false,
-                    incremental_from: None,
                     emit_checkpoints: true,
                     checkpoint_dir: Some(checkpoint_dir.clone()),
                 })
@@ -643,9 +639,8 @@ async fn run_full_sync(
         }
         SourceDatabase::Neo4j => {
             let sync_config = if emit_checkpoints {
-                Some(surreal_sync_neo4j::SyncConfig {
+                Some(checkpoint::SyncConfig {
                     incremental: false,
-                    incremental_from: None,
                     emit_checkpoints: true,
                     checkpoint_dir: Some(checkpoint_dir),
                 })
@@ -663,9 +658,8 @@ async fn run_full_sync(
         }
         SourceDatabase::PostgreSQL => {
             let sync_config = if emit_checkpoints {
-                Some(SyncConfig {
+                Some(checkpoint::SyncConfig {
                     incremental: false,
-                    incremental_from: None,
                     emit_checkpoints: true,
                     checkpoint_dir: Some(checkpoint_dir.clone()),
                 })
@@ -683,9 +677,8 @@ async fn run_full_sync(
         }
         SourceDatabase::MySQL => {
             let sync_config = if emit_checkpoints {
-                Some(SyncConfig {
+                Some(checkpoint::SyncConfig {
                     incremental: false,
-                    incremental_from: None,
                     emit_checkpoints: true,
                     checkpoint_dir: Some(checkpoint_dir),
                 })
@@ -745,31 +738,6 @@ async fn run_incremental_sync(
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
-    // Parse checkpoints
-    let from_checkpoint = SyncCheckpoint::from_string(&incremental_from).with_context(|| {
-        format!(
-            "Failed to parse checkpoint: '{incremental_from}'\n\n\
-                    Valid checkpoint formats:\n\
-                    • Neo4j: 'neo4j:2024-01-01T00:00:00Z'\n\
-                    • MongoDB: 'mongodb:base64token:2024-01-01T00:00:00Z'\n\
-                    • PostgreSQL: 'postgresql:sequence:123'\n\
-                    • MySQL: 'mysql:sequence:456'\n\
-                    \n\
-                    Example: --incremental-from 'mysql:sequence:123'"
-        )
-    })?;
-    let to_checkpoint = incremental_to
-        .as_ref()
-        .map(|s| {
-            SyncCheckpoint::from_string(s).with_context(|| {
-                format!(
-                    "Failed to parse 'to' checkpoint: '{s}'\n\n\
-                        See valid checkpoint formats above."
-                )
-            })
-        })
-        .transpose()?;
-
     // Parse timeout from CLI parameter and compute deadline (defaults to 1 hour)
     let timeout_seconds: i64 = timeout
         .parse()
@@ -778,11 +746,12 @@ async fn run_incremental_sync(
 
     match from {
         SourceDatabase::Neo4j => {
-            // Parse checkpoint strings directly using neo4j crate's types
-            let neo4j_from = surreal_sync_neo4j::SyncCheckpoint::from_string(&incremental_from)?;
+            // Parse checkpoint strings using database-specific types
+            let neo4j_from =
+                surreal_sync_neo4j::Neo4jCheckpoint::from_cli_string(&incremental_from)?;
             let neo4j_to = incremental_to
                 .as_ref()
-                .map(|s| surreal_sync_neo4j::SyncCheckpoint::from_string(s))
+                .map(|s| surreal_sync_neo4j::Neo4jCheckpoint::from_cli_string(s))
                 .transpose()?;
             surreal_sync_neo4j::run_incremental_sync(
                 surreal_sync_neo4j::SourceOpts::from(&from_opts),
@@ -796,12 +765,12 @@ async fn run_incremental_sync(
             .await?;
         }
         SourceDatabase::MongoDB => {
-            // Parse checkpoint strings directly using mongodb crate's types
+            // Parse checkpoint strings using database-specific types
             let mongodb_from =
-                surreal_sync_mongodb::SyncCheckpoint::from_string(&incremental_from)?;
+                surreal_sync_mongodb::MongoDBCheckpoint::from_cli_string(&incremental_from)?;
             let mongodb_to = incremental_to
                 .as_ref()
-                .map(|s| surreal_sync_mongodb::SyncCheckpoint::from_string(s))
+                .map(|s| surreal_sync_mongodb::MongoDBCheckpoint::from_cli_string(s))
                 .transpose()?;
             surreal_sync_mongodb::run_incremental_sync(
                 surreal_sync_mongodb::SourceOpts::from(&from_opts),
@@ -815,26 +784,40 @@ async fn run_incremental_sync(
             .await?;
         }
         SourceDatabase::PostgreSQL => {
+            // Parse checkpoint strings using database-specific types
+            let pg_from =
+                postgresql::checkpoint::PostgreSQLCheckpoint::from_cli_string(&incremental_from)?;
+            let pg_to = incremental_to
+                .as_ref()
+                .map(|s| postgresql::checkpoint::PostgreSQLCheckpoint::from_cli_string(s))
+                .transpose()?;
             postgresql::run_incremental_sync(
                 from_opts,
                 to_namespace,
                 to_database,
                 to_opts,
-                from_checkpoint,
+                pg_from,
                 deadline,
-                to_checkpoint,
+                pg_to,
             )
             .await?;
         }
         SourceDatabase::MySQL => {
+            // Parse checkpoint strings using database-specific types
+            let mysql_from =
+                mysql::checkpoint::MySQLCheckpoint::from_cli_string(&incremental_from)?;
+            let mysql_to = incremental_to
+                .as_ref()
+                .map(|s| mysql::checkpoint::MySQLCheckpoint::from_cli_string(s))
+                .transpose()?;
             mysql::run_incremental_sync(
                 from_opts,
                 to_namespace,
                 to_database,
                 to_opts,
-                from_checkpoint,
+                mysql_from,
                 deadline,
-                to_checkpoint,
+                mysql_to,
             )
             .await?;
         }

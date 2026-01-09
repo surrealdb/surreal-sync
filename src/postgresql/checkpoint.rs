@@ -1,24 +1,26 @@
-//! MySQL checkpoint management
+//! PostgreSQL checkpoint management
 //!
-//! This module provides utilities for obtaining and managing MySQL sequence-based checkpoints
+//! This module provides utilities for obtaining and managing PostgreSQL sequence-based checkpoints
 //! for trigger-based incremental synchronization.
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use mysql_async::prelude::Queryable;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use tokio_postgres::Client;
 
-/// MySQL-specific checkpoint containing sequence_id and timestamp
+/// PostgreSQL-specific checkpoint containing sequence_id and timestamp
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct MySQLCheckpoint {
+pub struct PostgreSQLCheckpoint {
     /// Sequence ID from the audit table
     pub sequence_id: i64,
     /// Timestamp when checkpoint was created
     pub timestamp: DateTime<Utc>,
 }
 
-impl checkpoint::Checkpoint for MySQLCheckpoint {
-    const DATABASE_TYPE: &'static str = "mysql";
+impl checkpoint::Checkpoint for PostgreSQLCheckpoint {
+    const DATABASE_TYPE: &'static str = "postgresql";
 
     fn to_cli_string(&self) -> String {
         // Just the sequence_id - timestamp is optional metadata
@@ -27,7 +29,7 @@ impl checkpoint::Checkpoint for MySQLCheckpoint {
 
     fn from_cli_string(s: &str) -> Result<Self> {
         let sequence_id = s.parse::<i64>().map_err(|e| {
-            anyhow::anyhow!("Invalid MySQL checkpoint: expected number, got '{s}': {e}")
+            anyhow::anyhow!("Invalid PostgreSQL checkpoint: expected number, got '{s}': {e}")
         })?;
 
         Ok(Self {
@@ -37,50 +39,41 @@ impl checkpoint::Checkpoint for MySQLCheckpoint {
     }
 }
 
-/// Get current checkpoint from MySQL audit table
+/// Get current checkpoint from PostgreSQL audit table
 ///
 /// This is a GENERATION operation - it queries the audit table for the current
 /// maximum sequence_id and creates a new checkpoint from that position.
-pub async fn get_current_checkpoint(conn: &mut mysql_async::Conn) -> Result<MySQLCheckpoint> {
+pub async fn get_current_checkpoint(client: Arc<Mutex<Client>>) -> Result<PostgreSQLCheckpoint> {
+    let client = client.lock().await;
+
     // Check if audit table exists first
-    let table_check: Vec<mysql_async::Row> = conn
-        .query("SELECT 1 FROM information_schema.tables WHERE table_name = 'surreal_sync_changes' AND table_schema = DATABASE()")
+    let table_exists: Vec<tokio_postgres::Row> = client
+        .query(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'surreal_sync_changes' AND table_schema = 'public'",
+            &[]
+        )
         .await?;
 
-    if table_check.is_empty() {
+    if table_exists.is_empty() {
         // Audit table doesn't exist yet, return 0
-        return Ok(MySQLCheckpoint {
+        return Ok(PostgreSQLCheckpoint {
             sequence_id: 0,
             timestamp: Utc::now(),
         });
     }
 
-    // Get current max sequence_id from the audit table
-    let result: Vec<mysql_async::Row> = conn
-        .query("SELECT COALESCE(MAX(sequence_id), 0) FROM surreal_sync_changes")
+    let rows = client
+        .query(
+            "SELECT COALESCE(MAX(sequence_id), 0) FROM surreal_sync_changes",
+            &[],
+        )
         .await?;
 
-    let current_sequence = result
-        .first()
-        .and_then(|row| row.get::<i64, _>(0))
-        .unwrap_or(0);
+    let sequence_id: i64 = if rows.is_empty() { 0 } else { rows[0].get(0) };
 
-    Ok(MySQLCheckpoint {
-        sequence_id: current_sequence,
+    Ok(PostgreSQLCheckpoint {
+        sequence_id,
         timestamp: Utc::now(),
-    })
-}
-
-/// Get current checkpoint as legacy SyncCheckpoint enum (for backwards compatibility)
-///
-/// Note: This is a temporary bridge function during migration to database-specific checkpoints.
-pub async fn get_current_sync_checkpoint(
-    conn: &mut mysql_async::Conn,
-) -> Result<crate::sync::SyncCheckpoint> {
-    let checkpoint = get_current_checkpoint(conn).await?;
-    Ok(crate::sync::SyncCheckpoint::MySQL {
-        sequence_id: checkpoint.sequence_id,
-        timestamp: checkpoint.timestamp,
     })
 }
 
@@ -91,8 +84,8 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_mysql_checkpoint_cli_string_roundtrip() {
-        let original = MySQLCheckpoint {
+    fn test_postgresql_checkpoint_cli_string_roundtrip() {
+        let original = PostgreSQLCheckpoint {
             sequence_id: 12345,
             timestamp: Utc::now(),
         };
@@ -101,23 +94,23 @@ mod tests {
         let cli_string = original.to_cli_string();
         assert_eq!(cli_string, "12345");
 
-        let decoded = MySQLCheckpoint::from_cli_string(&cli_string).unwrap();
+        let decoded = PostgreSQLCheckpoint::from_cli_string(&cli_string).unwrap();
 
         assert_eq!(original.sequence_id, decoded.sequence_id);
     }
 
     #[test]
-    fn test_mysql_checkpoint_file_roundtrip() {
-        let original = MySQLCheckpoint {
+    fn test_postgresql_checkpoint_file_roundtrip() {
+        let original = PostgreSQLCheckpoint {
             sequence_id: 999,
             timestamp: Utc::now(),
         };
 
         let file = CheckpointFile::new(&original, SyncPhase::FullSyncStart).unwrap();
 
-        assert_eq!(file.database_type(), MySQLCheckpoint::DATABASE_TYPE);
+        assert_eq!(file.database_type(), PostgreSQLCheckpoint::DATABASE_TYPE);
 
-        let decoded: MySQLCheckpoint = file.parse().unwrap();
+        let decoded: PostgreSQLCheckpoint = file.parse().unwrap();
 
         assert_eq!(original.sequence_id, decoded.sequence_id);
         assert_eq!(
@@ -127,7 +120,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_mysql_checkpoint_save_load_roundtrip() {
+    async fn test_postgresql_checkpoint_save_load_roundtrip() {
         let tmp = TempDir::new().unwrap();
         let config = SyncConfig {
             emit_checkpoints: true,
@@ -136,7 +129,7 @@ mod tests {
         };
 
         let manager = SyncManager::new(config);
-        let original = MySQLCheckpoint {
+        let original = PostgreSQLCheckpoint {
             sequence_id: 42,
             timestamp: Utc::now(),
         };
@@ -146,7 +139,7 @@ mod tests {
             .await
             .unwrap();
 
-        let loaded: MySQLCheckpoint = manager
+        let loaded: PostgreSQLCheckpoint = manager
             .read_checkpoint(SyncPhase::FullSyncEnd)
             .await
             .unwrap();
@@ -155,47 +148,47 @@ mod tests {
     }
 
     #[test]
-    fn test_mysql_checkpoint_invalid_sequence_id() {
-        let result = MySQLCheckpoint::from_cli_string("not-a-number");
+    fn test_postgresql_checkpoint_invalid_sequence_id() {
+        let result = PostgreSQLCheckpoint::from_cli_string("not-a-number");
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_mysql_checkpoint_negative_sequence_id() {
-        let result = MySQLCheckpoint::from_cli_string("-1");
+    fn test_postgresql_checkpoint_negative_sequence_id() {
+        let result = PostgreSQLCheckpoint::from_cli_string("-1");
         // Negative sequence IDs should be allowed
         assert!(result.is_ok());
         assert_eq!(result.unwrap().sequence_id, -1);
     }
 
     #[test]
-    fn test_mysql_checkpoint_zero_sequence_id() {
-        let checkpoint = MySQLCheckpoint::from_cli_string("0").unwrap();
+    fn test_postgresql_checkpoint_zero_sequence_id() {
+        let checkpoint = PostgreSQLCheckpoint::from_cli_string("0").unwrap();
         assert_eq!(checkpoint.sequence_id, 0);
     }
 
     #[test]
-    fn test_mysql_checkpoint_large_sequence_id() {
+    fn test_postgresql_checkpoint_large_sequence_id() {
         let large_id = i64::MAX;
-        let checkpoint = MySQLCheckpoint {
+        let checkpoint = PostgreSQLCheckpoint {
             sequence_id: large_id,
             timestamp: Utc::now(),
         };
 
         let cli_string = checkpoint.to_cli_string();
-        let decoded = MySQLCheckpoint::from_cli_string(&cli_string).unwrap();
+        let decoded = PostgreSQLCheckpoint::from_cli_string(&cli_string).unwrap();
 
         assert_eq!(large_id, decoded.sequence_id);
     }
 
     #[test]
-    fn test_mysql_checkpoint_database_type() {
-        assert_eq!(MySQLCheckpoint::DATABASE_TYPE, "mysql");
+    fn test_postgresql_checkpoint_database_type() {
+        assert_eq!(PostgreSQLCheckpoint::DATABASE_TYPE, "postgresql");
     }
 
     #[test]
-    fn test_mysql_checkpoint_file_type_mismatch() {
-        let checkpoint = MySQLCheckpoint {
+    fn test_postgresql_checkpoint_file_type_mismatch() {
+        let checkpoint = PostgreSQLCheckpoint {
             sequence_id: 100,
             timestamp: Utc::now(),
         };
@@ -205,12 +198,12 @@ mod tests {
         // Serialize to JSON then modify database_type
         let mut json_value: serde_json::Value =
             serde_json::from_str(&serde_json::to_string(&file).unwrap()).unwrap();
-        json_value["database_type"] = serde_json::Value::String("postgresql".to_string());
+        json_value["database_type"] = serde_json::Value::String("mysql".to_string());
         let modified_json = serde_json::to_string(&json_value).unwrap();
         let modified_file: CheckpointFile = serde_json::from_str(&modified_json).unwrap();
 
-        // Should fail to parse as MySQL
-        let result: Result<MySQLCheckpoint> = modified_file.parse();
+        // Should fail to parse as PostgreSQL
+        let result: Result<PostgreSQLCheckpoint> = modified_file.parse();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("type mismatch"));
     }

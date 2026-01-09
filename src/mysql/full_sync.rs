@@ -5,6 +5,7 @@
 
 use crate::{SourceOpts, SurrealOpts};
 use anyhow::Result;
+use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
 use mysql_async::{prelude::*, Pool, Row};
 use mysql_types::{row_to_typed_values_with_config, JsonConversionConfig, RowConversionConfig};
 use std::collections::HashMap;
@@ -17,7 +18,7 @@ use tracing::{debug, info};
 pub async fn run_full_sync(
     from_opts: &SourceOpts,
     to_opts: &SurrealOpts,
-    sync_config: Option<crate::sync::SyncConfig>,
+    sync_config: Option<SyncConfig>,
     surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
 ) -> Result<()> {
     info!("Starting MySQL migration to SurrealDB");
@@ -40,7 +41,7 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t1 (before full sync starts) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = crate::sync::SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone());
 
         // Set up triggers and audit table FIRST to establish incremental sync infrastructure
         super::change_tracking::setup_mysql_change_tracking(&mut conn, &database_name).await?;
@@ -50,12 +51,12 @@ pub async fn run_full_sync(
         let checkpoint = super::checkpoint::get_current_checkpoint(&mut conn).await?;
 
         sync_manager
-            .emit_checkpoint(&checkpoint, crate::sync::SyncPhase::FullSyncStart)
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
             .await?;
 
         info!(
             "Emitted full sync start checkpoint (t1): {}",
-            checkpoint.to_string()
+            checkpoint.to_cli_string()
         );
     }
 
@@ -90,18 +91,18 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t2 (after full sync completes) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = crate::sync::SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone());
 
         // Get current checkpoint after migration
         let checkpoint = super::checkpoint::get_current_checkpoint(&mut conn).await?;
 
         sync_manager
-            .emit_checkpoint(&checkpoint, crate::sync::SyncPhase::FullSyncEnd)
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
             .await?;
 
         info!(
             "Emitted full sync end checkpoint (t2): {}",
-            checkpoint.to_string()
+            checkpoint.to_cli_string()
         );
     }
 

@@ -14,9 +14,7 @@
 //! If you need to sync deletions, run periodic clean-ups and full syncs to ensure SurrealDB
 //! exactly matches Neo4j.
 
-use crate::sync_types::{
-    ChangeStream as ChangeStreamTrait, IncrementalSource, SourceDatabase, SyncCheckpoint,
-};
+use crate::neo4j_checkpoint::Neo4jCheckpoint;
 use crate::{Neo4jConversionContext, SourceOpts, SurrealOpts};
 use async_trait::async_trait;
 use chrono::Utc;
@@ -25,6 +23,16 @@ use std::collections::HashMap;
 use surreal_sync_surreal::{apply_change, surreal_connect, Change, SurrealOpts as SurrealConnOpts};
 use surrealdb::sql::{Array, Number, Strand, Value};
 use surrealdb_types::RecordWithSurrealValues as Record;
+
+/// Trait for a stream of changes from Neo4j
+#[async_trait]
+pub trait ChangeStream: Send + Sync {
+    /// Get the next change event from the stream
+    async fn next(&mut self) -> Option<anyhow::Result<Change>>;
+
+    /// Get the current checkpoint of the stream
+    fn checkpoint(&self) -> Option<Neo4jCheckpoint>;
+}
 
 /// Neo4j implementation of incremental sync source
 pub struct Neo4jIncrementalSource {
@@ -55,20 +63,15 @@ impl Neo4jIncrementalSource {
             current_timestamp: initial_timestamp,
         })
     }
-}
 
-#[async_trait]
-impl IncrementalSource for Neo4jIncrementalSource {
-    fn source_type(&self) -> SourceDatabase {
-        SourceDatabase::Neo4j
-    }
-
-    async fn initialize(&mut self) -> anyhow::Result<()> {
+    /// Initialize the incremental source
+    pub async fn initialize(&mut self) -> anyhow::Result<()> {
         // Source is already initialized via constructor - nothing to do
         Ok(())
     }
 
-    async fn get_changes(&mut self) -> anyhow::Result<Box<dyn ChangeStreamTrait>> {
+    /// Get a stream of changes
+    pub async fn get_changes(&mut self) -> anyhow::Result<Box<dyn ChangeStream>> {
         Ok(Box::new(Neo4jChangeStream::new(
             self.graph.clone(),
             self.current_timestamp,
@@ -77,14 +80,18 @@ impl IncrementalSource for Neo4jIncrementalSource {
         )))
     }
 
-    async fn get_checkpoint(&self) -> anyhow::Result<SyncCheckpoint> {
+    /// Get the current checkpoint
+    pub fn get_checkpoint(&self) -> anyhow::Result<Neo4jCheckpoint> {
         let checkpoint_datetime =
             chrono::DateTime::from_timestamp_millis(self.current_timestamp)
                 .ok_or_else(|| anyhow::anyhow!("Invalid timestamp: {}", self.current_timestamp))?;
-        Ok(SyncCheckpoint::Neo4j(checkpoint_datetime))
+        Ok(Neo4jCheckpoint {
+            timestamp: checkpoint_datetime,
+        })
     }
 
-    async fn cleanup(self) -> anyhow::Result<()> {
+    /// Cleanup resources
+    pub async fn cleanup(self) -> anyhow::Result<()> {
         // No cleanup needed for custom tracking approach
         Ok(())
     }
@@ -264,7 +271,7 @@ impl Neo4jChangeStream {
 }
 
 #[async_trait]
-impl ChangeStreamTrait for Neo4jChangeStream {
+impl ChangeStream for Neo4jChangeStream {
     async fn next(&mut self) -> Option<anyhow::Result<Change>> {
         // If buffer is empty, fetch next batch
         if self.change_buffer.is_empty() && !self.finished {
@@ -277,8 +284,10 @@ impl ChangeStreamTrait for Neo4jChangeStream {
         self.change_buffer.pop().map(Ok)
     }
 
-    fn checkpoint(&self) -> Option<SyncCheckpoint> {
-        Some(SyncCheckpoint::Neo4j(Utc::now()))
+    fn checkpoint(&self) -> Option<Neo4jCheckpoint> {
+        Some(Neo4jCheckpoint {
+            timestamp: Utc::now(),
+        })
     }
 }
 
@@ -310,39 +319,40 @@ pub async fn apply_incremental_changes(
 /// Run incremental sync from Neo4j to SurrealDB
 ///
 /// This function implements the incremental sync logic:
-/// 1. Attempts to use Neo4j CDC if available (Neo4j 5.13+)
-/// 2. Falls back to custom change tracking if CDC is not available
-/// 3. Connects to both Neo4j and SurrealDB
-/// 4. Reads changes from the specified checkpoint
-/// 5. Applies changes to SurrealDB
-/// 6. Continues until caught up with current state
+/// 1. Uses timestamp-based change tracking
+/// 2. Connects to both Neo4j and SurrealDB
+/// 3. Reads changes from the specified checkpoint
+/// 4. Applies changes to SurrealDB
+/// 5. Continues until caught up with current state
 pub async fn run_incremental_sync(
     from_opts: SourceOpts,
     to_namespace: String,
     to_database: String,
     to_opts: SurrealOpts,
-    from_checkpoint: SyncCheckpoint,
+    from_checkpoint: Neo4jCheckpoint,
     deadline: chrono::DateTime<chrono::Utc>,
-    target_checkpoint: Option<SyncCheckpoint>,
+    target_checkpoint: Option<Neo4jCheckpoint>,
 ) -> anyhow::Result<()> {
+    use checkpoint::Checkpoint;
+
     tracing::info!(
         "Starting Neo4j incremental sync from checkpoint: {}",
-        from_checkpoint.to_string()
+        from_checkpoint.to_cli_string()
     );
 
     // Use timestamp-based change tracking for incremental sync
     tracing::info!("Using timestamp-based change tracking for incremental sync");
     // Extract timestamp from checkpoint and create graph
-    let initial_timestamp = from_checkpoint.to_neo4j_timestamp()?.timestamp_millis();
+    let initial_timestamp = from_checkpoint.timestamp.timestamp_millis();
     let graph = crate::new_neo4j_client(&from_opts).await?;
 
-    let mut source: Box<dyn IncrementalSource> = Box::new(Neo4jIncrementalSource::new(
+    let mut source = Neo4jIncrementalSource::new(
         graph,
         from_opts.neo4j_timezone.clone(),
         from_opts.neo4j_json_properties.clone(),
         None,
         initial_timestamp,
-    )?);
+    )?;
 
     let surreal_conn_opts = SurrealConnOpts {
         surreal_endpoint: to_opts.surreal_endpoint.clone(),
@@ -377,13 +387,11 @@ pub async fn run_incremental_sync(
 
         // Check if we've reached the target checkpoint
         if let Some(ref target) = target_checkpoint {
-            if let (Some(SyncCheckpoint::Neo4j(current_ts)), SyncCheckpoint::Neo4j(target_ts)) =
-                (stream.checkpoint(), target)
-            {
-                if current_ts >= *target_ts {
+            if let Some(current) = stream.checkpoint() {
+                if current.timestamp >= target.timestamp {
                     tracing::info!(
                         "Reached target checkpoint: {}, stopping incremental sync",
-                        target.to_string()
+                        target.to_cli_string()
                     );
                     break;
                 }

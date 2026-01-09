@@ -234,84 +234,87 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
     let t1_content = std::fs::read_to_string(t1_files[0].path())?;
     let t2_content = std::fs::read_to_string(t2_files[0].path())?;
 
-    // Parse checkpoint file format (has "checkpoint" wrapper)
-    let t1_json: serde_json::Value = serde_json::from_str(&t1_content)?;
-    let t2_json: serde_json::Value = serde_json::from_str(&t2_content)?;
+    // Parse checkpoint file format using the new CheckpointFile type
+    let t1_file: checkpoint::CheckpointFile = serde_json::from_str(&t1_content)?;
+    let t2_file: checkpoint::CheckpointFile = serde_json::from_str(&t2_content)?;
 
-    let t1_checkpoint: crate::sync::SyncCheckpoint =
-        serde_json::from_value(t1_json["checkpoint"].clone())?;
-    let t2_checkpoint: crate::sync::SyncCheckpoint =
-        serde_json::from_value(t2_json["checkpoint"].clone())?;
+    // Verify both checkpoints are from the same database type
+    assert_eq!(
+        t1_file.database_type(),
+        t2_file.database_type(),
+        "t1 and t2 checkpoints should be from the same database type"
+    );
 
-    match (&t1_checkpoint, &t2_checkpoint) {
-        // MongoDB: Resume token comparison
-        (
-            crate::sync::SyncCheckpoint::MongoDB {
-                resume_token: t1_token,
-                ..
-            },
-            crate::sync::SyncCheckpoint::MongoDB {
-                resume_token: t2_token,
-                ..
-            },
-        ) => {
-            if t1_token == t2_token {
+    let db_type = t1_file.database_type();
+
+    match db_type {
+        "mongodb" => {
+            // MongoDB: Resume token comparison
+            let t1_checkpoint: surreal_sync_mongodb::MongoDBCheckpoint = t1_file.parse()?;
+            let t2_checkpoint: surreal_sync_mongodb::MongoDBCheckpoint = t2_file.parse()?;
+
+            if t1_checkpoint.resume_token == t2_checkpoint.resume_token {
                 println!("Checkpoint content verification passed: MongoDB resume tokens unchanged (no changes to monitored collections)");
             } else {
                 println!("Checkpoint content verification passed: MongoDB resume tokens differ (changes detected)");
             }
         }
 
-        // MySQL: Sequence ID progression
-        (
-            crate::sync::SyncCheckpoint::MySQL {
-                sequence_id: t1_seq,
-                ..
-            },
-            crate::sync::SyncCheckpoint::MySQL {
-                sequence_id: t2_seq,
-                ..
-            },
-        ) => {
+        "mysql" => {
+            // MySQL: Sequence ID progression
+            let t1_checkpoint: crate::mysql::checkpoint::MySQLCheckpoint = t1_file.parse()?;
+            let t2_checkpoint: crate::mysql::checkpoint::MySQLCheckpoint = t2_file.parse()?;
+
             assert!(
-                t2_seq >= t1_seq,
-                "t2 sequence ID should be >= t1 sequence ID: t1={t1_seq}, t2={t2_seq}"
+                t2_checkpoint.sequence_id >= t1_checkpoint.sequence_id,
+                "t2 sequence ID should be >= t1 sequence ID: t1={}, t2={}",
+                t1_checkpoint.sequence_id,
+                t2_checkpoint.sequence_id
             );
-            println!("Checkpoint content verification passed: MySQL sequence IDs show progression ({t1_seq} → {t2_seq})");
+            println!(
+                "Checkpoint content verification passed: MySQL sequence IDs show progression ({} → {})",
+                t1_checkpoint.sequence_id, t2_checkpoint.sequence_id
+            );
         }
 
-        // PostgreSQL: Sequence ID progression
-        (
-            crate::sync::SyncCheckpoint::PostgreSQL {
-                sequence_id: t1_seq,
-                ..
-            },
-            crate::sync::SyncCheckpoint::PostgreSQL {
-                sequence_id: t2_seq,
-                ..
-            },
-        ) => {
+        "postgresql" => {
+            // PostgreSQL: Sequence ID progression
+            let t1_checkpoint: crate::postgresql::checkpoint::PostgreSQLCheckpoint =
+                t1_file.parse()?;
+            let t2_checkpoint: crate::postgresql::checkpoint::PostgreSQLCheckpoint =
+                t2_file.parse()?;
+
             assert!(
-                t2_seq >= t1_seq,
-                "t2 sequence ID should be >= t1 sequence ID: t1={t1_seq}, t2={t2_seq}"
+                t2_checkpoint.sequence_id >= t1_checkpoint.sequence_id,
+                "t2 sequence ID should be >= t1 sequence ID: t1={}, t2={}",
+                t1_checkpoint.sequence_id,
+                t2_checkpoint.sequence_id
             );
-            println!("Checkpoint content verification passed: PostgreSQL sequence IDs show progression ({t1_seq} → {t2_seq})");
+            println!(
+                "Checkpoint content verification passed: PostgreSQL sequence IDs show progression ({} → {})",
+                t1_checkpoint.sequence_id, t2_checkpoint.sequence_id
+            );
         }
 
-        // Neo4j: Timestamp progression
-        (
-            crate::sync::SyncCheckpoint::Neo4j(t1_timestamp),
-            crate::sync::SyncCheckpoint::Neo4j(t2_timestamp),
-        ) => {
+        "neo4j" => {
+            // Neo4j: Timestamp progression
+            let t1_checkpoint: surreal_sync_neo4j::Neo4jCheckpoint = t1_file.parse()?;
+            let t2_checkpoint: surreal_sync_neo4j::Neo4jCheckpoint = t2_file.parse()?;
+
             assert!(
-                t2_timestamp >= t1_timestamp,
-                "t2 checkpoint timestamp should be >= t1 checkpoint timestamp: t1={t1_timestamp}, t2={t2_timestamp}"
+                t2_checkpoint.timestamp >= t1_checkpoint.timestamp,
+                "t2 checkpoint timestamp should be >= t1 checkpoint timestamp: t1={}, t2={}",
+                t1_checkpoint.timestamp,
+                t2_checkpoint.timestamp
             );
-            println!("Checkpoint content verification passed: Neo4j checkpoint timestamps show progression ({t1_timestamp} → {t2_timestamp})");
+            println!(
+                "Checkpoint content verification passed: Neo4j checkpoint timestamps show progression ({} → {})",
+                t1_checkpoint.timestamp, t2_checkpoint.timestamp
+            );
         }
 
         _ => {
-            println!("Checkpoint content verification skipped: Mixed or unknown checkpoint types");
+            println!("Checkpoint content verification skipped: Unknown database type '{db_type}'");
         }
     }
 

@@ -3,8 +3,8 @@
 //! This test validates that the CLI handles Neo4j incremental sync with all data types
 //! correctly, using the unified dataset.
 
-use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::{
+    cli::{assert_cli_success, execute_surreal_sync},
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
 
@@ -17,6 +17,8 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
         .ok();
 
     let test_id = generate_test_id();
+    // Capture timestamp BEFORE any operations - this ensures all nodes created later
+    // will have updated_at > t1 and will be picked up by incremental sync
     let t1 = chrono::Utc::now();
     let dataset = create_unified_full_dataset();
 
@@ -76,16 +78,15 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
 
     surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(".test-checkpoints")?;
 
-    // let t1 = surreal_sync::checkpoint::get_first_checkpoint_from_dir(".test-checkpoints").await?;
-    // let t1_checkpoint = t1.to_neo4j_timestamp()?.to_rfc3339();
-    // let t1_str = t1_checkpoint.as_str();
-    // println!("T1 Checkpoint: {t1_str}");
-
-    let t1_string = t1.to_rfc3339();
-    let t1_str = t1_string.as_str();
-
     // Now insert test data into Neo4j (with timestamps for incremental tracking)
     surreal_sync::testing::neo4j::create_nodes(&graph, &dataset).await?;
+
+    // For Neo4j incremental sync, we use the timestamp captured at the START of the test
+    // (before any nodes were created). This ensures all nodes with updated_at > t1
+    // will be picked up by incremental sync.
+    // Note: Unlike MySQL/PostgreSQL which use sequence-based checkpoints from the audit
+    // table, Neo4j uses pure timestamp-based tracking via the updated_at property.
+    let t1_str = t1.to_rfc3339();
 
     // Execute CLI incremental sync command
     // For Neo4j incremental sync, we use timestamp-based checkpoints
@@ -115,7 +116,7 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
         "--neo4j-json-properties",
         "all_types_users.metadata,all_types_posts.post_categories",
         "--incremental-from",
-        &format!("neo4j:{t1_str}"), // Start from beginning of time
+        &t1_str, // Use timestamp captured at test start (before nodes were created)
     ];
 
     let incremental_output = execute_surreal_sync(&incremental_args)?;

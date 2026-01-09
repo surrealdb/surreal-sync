@@ -3,8 +3,10 @@
 //! This module provides functionality to perform incremental database migration from MySQL
 //! to SurrealDB.
 
+use super::checkpoint::MySQLCheckpoint;
 use crate::{SourceOpts, SurrealOpts};
 use anyhow::Result;
+use checkpoint::Checkpoint;
 use surreal_sync_surreal::{apply_change, surreal_connect, SurrealOpts as SurrealConnOpts};
 use tracing::{debug, info, warn};
 
@@ -14,17 +16,17 @@ pub async fn run_incremental_sync(
     to_namespace: String,
     to_database: String,
     to_opts: SurrealOpts,
-    from_checkpoint: crate::sync::SyncCheckpoint,
+    from_checkpoint: MySQLCheckpoint,
     deadline: chrono::DateTime<chrono::Utc>,
-    target_checkpoint: Option<crate::sync::SyncCheckpoint>,
+    target_checkpoint: Option<MySQLCheckpoint>,
 ) -> Result<()> {
     info!(
         "Starting MySQL incremental sync from checkpoint: {}",
-        from_checkpoint.to_string()
+        from_checkpoint.to_cli_string()
     );
 
-    // Extract sequence_id from checkpoint
-    let sequence_id = from_checkpoint.to_mysql_sequence_id()?;
+    // sequence_id is directly available from the checkpoint
+    let sequence_id = from_checkpoint.sequence_id;
 
     // Create MySQL pool and incremental source
     let pool = super::client::new_mysql_pool(&from_opts.source_uri)?;
@@ -59,26 +61,15 @@ pub async fn run_incremental_sync(
 
                 // Check if we've reached the target checkpoint
                 if let Some(ref target) = target_checkpoint {
-                    // Compare checkpoints based on type
-                    if let (Some(current), target) = (stream.checkpoint(), target) {
-                        let reached = match (current, target) {
-                            (
-                                crate::sync::SyncCheckpoint::MySQL {
-                                    sequence_id: current_seq,
-                                    ..
-                                },
-                                crate::sync::SyncCheckpoint::MySQL {
-                                    sequence_id: target_seq,
-                                    ..
-                                },
-                            ) => current_seq >= *target_seq,
-                            _ => false,
-                        };
-
-                        if reached {
+                    if let Some(crate::sync::SyncCheckpoint::MySQL {
+                        sequence_id: current_seq,
+                        ..
+                    }) = stream.checkpoint()
+                    {
+                        if current_seq >= target.sequence_id {
                             info!(
                                 "Reached target checkpoint: {}, stopping incremental sync",
-                                target.to_string()
+                                target.to_cli_string()
                             );
                             break;
                         }
