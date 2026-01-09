@@ -64,7 +64,7 @@ async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error
         surreal_sync_postgresql_trigger::SourceOpts::from(&source_opts),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_postgresql_trigger::SurrealOpts::from(&surreal_opts),
+        surreal_sync_postgresql::SurrealOpts::from(&surreal_opts),
         None,
     )
     .await?;

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kafka", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql-logical-replication", "crates/postgresql-trigger", "crates/csv", "crates/jsonl", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surrealdb-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify", "crates/surreal", "crates/mongodb", "crates/neo4j", "crates/checkpoint", "crates/mysql-trigger"]
+members = ["crates/kafka", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql", "crates/postgresql-logical-replication", "crates/postgresql-trigger", "crates/csv", "crates/jsonl", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surrealdb-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify", "crates/surreal", "crates/mongodb", "crates/neo4j", "crates/checkpoint", "crates/mysql-trigger"]
 resolver = "2"
 
 [package]
@@ -109,6 +109,9 @@ surreal-sync-mysql-trigger = { path = "crates/mysql-trigger" }
 
 # PostgreSQL trigger-based sync
 surreal-sync-postgresql-trigger = { path = "crates/postgresql-trigger" }
+
+# PostgreSQL shared utilities
+surreal-sync-postgresql = { path = "crates/postgresql" }
 
 [dev-dependencies]
 # Testing

@@ -1,0 +1,27 @@
+[package]
+name = "surreal-sync-postgresql"
+version = "0.1.0"
+edition = "2021"
+description = "Shared PostgreSQL utilities for surreal-sync"
+authors = ["surreal-sync contributors"]
+
+[dependencies]
+anyhow = "1.0"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+geo-types = "0.7"
+log = "0.4"
+rust_decimal = { version = "^1.23", features = ["db-tokio-postgres"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+surreal-sync-surreal = { path = "../surreal" }
+surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+surrealdb-types = { path = "../surrealdb-types" }
+tokio = { version = "1.0", features = ["full"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1", "with-geo-types-0_7"] }
+tracing = "0.1"
+uuid = { version = "1.0", features = ["v4"] }
+
+[lib]
+name = "surreal_sync_postgresql"
+path = "src/lib.rs"

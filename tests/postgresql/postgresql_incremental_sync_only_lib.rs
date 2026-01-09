@@ -76,7 +76,7 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
         surreal_sync_postgresql_trigger::SourceOpts::from(&source_opts),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_postgresql_trigger::SurrealOpts::from(&surreal_opts),
+        surreal_sync_postgresql::SurrealOpts::from(&surreal_opts),
         Some(sync_config),
     )
     .await?;
@@ -102,7 +102,7 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
         surreal_sync_postgresql_trigger::SourceOpts::from(&source_opts),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_postgresql_trigger::SurrealOpts::from(&surreal_opts),
+        surreal_sync_postgresql::SurrealOpts::from(&surreal_opts),
         sync_checkpoint,
         chrono::Utc::now() + chrono::Duration::hours(1), // 1 hour deadline
         None, // No target checkpoint - sync all available changes

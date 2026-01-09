@@ -6,6 +6,7 @@
 mod change;
 mod config;
 mod logical_replication;
+pub mod sync;
 mod value;
 mod wal2json;
 
@@ -16,5 +17,6 @@ pub mod testing;
 pub use change::{wal2json_to_psql, Action, Row, Value};
 pub use config::Config;
 pub use logical_replication::{Client, Slot};
+pub use sync::{State, StateID, Store};
 pub use value::{Date, Interval, Time, TimeTz, Timestamp, TimestampTz, Uuid};
 pub use wal2json::parse_wal2json;

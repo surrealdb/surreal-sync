@@ -34,7 +34,6 @@
 
 use clap::Parser;
 
-pub mod postgresql;
 pub mod sync;
 pub mod testing;
 
@@ -187,7 +186,8 @@ impl From<&SourceOpts> for surreal_sync_postgresql_trigger::SourceOpts {
     }
 }
 
-impl From<&SurrealOpts> for surreal_sync_postgresql_trigger::SurrealOpts {
+// CLI type → PostgreSQL shared library type conversions (used by trigger and logical-replication)
+impl From<&SurrealOpts> for surreal_sync_postgresql::SurrealOpts {
     fn from(opts: &SurrealOpts) -> Self {
         Self {
             surreal_endpoint: opts.surreal_endpoint.clone(),
@@ -201,6 +201,17 @@ impl From<&SurrealOpts> for surreal_sync_postgresql_trigger::SurrealOpts {
 
 // CLI type → Kafka library type conversions
 impl From<&SurrealOpts> for surreal_sync_kafka::SurrealOpts {
+    fn from(opts: &SurrealOpts) -> Self {
+        Self {
+            surreal_endpoint: opts.surreal_endpoint.clone(),
+            surreal_username: opts.surreal_username.clone(),
+            surreal_password: opts.surreal_password.clone(),
+        }
+    }
+}
+
+// CLI type → PostgreSQL logical replication library type conversions
+impl From<&SurrealOpts> for surreal_sync_postgresql_logical_replication::sync::SurrealOpts {
     fn from(opts: &SurrealOpts) -> Self {
         Self {
             surreal_endpoint: opts.surreal_endpoint.clone(),

@@ -69,6 +69,10 @@ use surreal_sync_mysql_trigger;
 #[allow(clippy::single_component_path_imports)]
 use surreal_sync_neo4j;
 #[allow(clippy::single_component_path_imports)]
+use surreal_sync_postgresql;
+#[allow(clippy::single_component_path_imports)]
+use surreal_sync_postgresql_logical_replication;
+#[allow(clippy::single_component_path_imports)]
 use surreal_sync_postgresql_trigger;
 
 // Load testing imports
@@ -522,16 +526,17 @@ async fn run() -> anyhow::Result<()> {
                 None
             };
 
-            let config = surreal_sync::postgresql::Config {
+            let config = surreal_sync_postgresql_logical_replication::sync::Config {
                 connection_string,
                 slot,
                 tables,
                 schema,
                 to_namespace,
                 to_database,
-                to_opts,
             };
-            surreal_sync::postgresql::sync(config).await?;
+            let surreal_opts =
+                surreal_sync_postgresql_logical_replication::sync::SurrealOpts::from(&to_opts);
+            surreal_sync_postgresql_logical_replication::sync::sync(config, surreal_opts).await?;
         }
         Commands::Csv {
             files,
@@ -674,7 +679,7 @@ async fn run_full_sync(
                 surreal_sync_postgresql_trigger::SourceOpts::from(&from_opts),
                 to_namespace,
                 to_database,
-                surreal_sync_postgresql_trigger::SurrealOpts::from(&to_opts),
+                surreal_sync_postgresql::SurrealOpts::from(&to_opts),
                 sync_config,
             )
             .await?;
@@ -806,7 +811,7 @@ async fn run_incremental_sync(
                 surreal_sync_postgresql_trigger::SourceOpts::from(&from_opts),
                 to_namespace,
                 to_database,
-                surreal_sync_postgresql_trigger::SurrealOpts::from(&to_opts),
+                surreal_sync_postgresql::SurrealOpts::from(&to_opts),
                 pg_from,
                 deadline,
                 pg_to,

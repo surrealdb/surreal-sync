@@ -9,19 +9,22 @@ use surrealdb::sql::{Number, Strand, Value};
 use tokio_postgres::NoTls;
 use tracing::{debug, error, info};
 
+use super::config_and_sync::Config;
+
 /// Perform incremental sync using logical replication
 ///
 /// This function starts logical replication from the position
 /// saved during the initial sync phase.
 ///
 /// # Arguments
+/// * `surreal` - SurrealDB client
 /// * `config` - Configuration for the sync operation
 ///
 /// # Returns
 /// Returns Ok(()) on successful completion, or an error if the sync fails
 pub async fn sync(
     surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
-    config: &super::Config,
+    config: &Config,
 ) -> Result<()> {
     info!(
         "Starting incremental sync from replication slot: {}",
@@ -40,10 +43,7 @@ pub async fn sync(
         }
     });
 
-    let client = surreal_sync_postgresql_logical_replication::Client::new(
-        psql_client,
-        config.tables.clone(),
-    );
+    let client = crate::Client::new(psql_client, config.tables.clone());
 
     // Start replication with the existing slot
     info!("Starting replication with slot: {}", config.slot);
@@ -65,7 +65,7 @@ pub async fn sync(
 /// Streams changes from the replication slot and debug prints them
 async fn stream_changes(
     surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
-    slot: &surreal_sync_postgresql_logical_replication::Slot,
+    slot: &crate::Slot,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
 ) -> Result<()> {
     loop {
@@ -92,28 +92,28 @@ async fn stream_changes(
 
                             // Log the change type for analysis
                             match change {
-                                surreal_sync_postgresql_logical_replication::Action::Insert(row) => {
+                                crate::Action::Insert(row) => {
                                     debug!("INSERT: schema={}, table={}, primary_key={:?}, columns={:?}",
                                         row.schema, row.table, row.primary_key, row.columns);
 
                                     upsert(surreal, row).await?;
                                 }
-                                surreal_sync_postgresql_logical_replication::Action::Update(row) => {
+                                crate::Action::Update(row) => {
                                     debug!("UPDATE: schema={}, table={}, primary_key={:?}, columns={:?}",
                                         row.schema, row.table, row.primary_key, row.columns);
 
                                     upsert(surreal, row).await?;
                                 }
-                                surreal_sync_postgresql_logical_replication::Action::Delete(row) => {
+                                crate::Action::Delete(row) => {
                                     debug!("DELETE: schema={}, table={}, primary_key={:?}",
                                         row.schema, row.table, row.primary_key);
 
                                     delete(surreal, row).await?;
                                 }
-                                surreal_sync_postgresql_logical_replication::Action::Begin { xid, timestamp } => {
+                                crate::Action::Begin { xid, timestamp } => {
                                     debug!("BEGIN: xid={}, timestamp={:?}", xid, timestamp);
                                 }
-                                surreal_sync_postgresql_logical_replication::Action::Commit { xid, nextlsn, timestamp } => {
+                                crate::Action::Commit { xid, nextlsn, timestamp } => {
                                     debug!("COMMIT: xid={}, nextlsn={}, timestamp={:?}", xid, nextlsn, timestamp);
                                 }
                             }
@@ -164,7 +164,7 @@ fn setup_shutdown_handler() -> tokio::sync::broadcast::Receiver<()> {
 
 async fn upsert(
     surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
-    row: &surreal_sync_postgresql_logical_replication::Row,
+    row: &crate::Row,
 ) -> Result<()> {
     let mut surrealql = String::from("UPSERT type::thing($tb, $id) SET ");
 
@@ -180,17 +180,11 @@ async fn upsert(
     for (i, (col, val)) in row.columns.iter().enumerate() {
         let field = format!("{col}{i}");
         let surreal_value: Value = match val {
-            surreal_sync_postgresql_logical_replication::Value::Integer(v) => {
-                Value::Number(Number::Int(v.to_i64().unwrap()))
-            }
-            surreal_sync_postgresql_logical_replication::Value::Double(v) => {
-                Value::Number(Number::Float(*v))
-            }
-            surreal_sync_postgresql_logical_replication::Value::Text(v) => {
-                Value::Strand(Strand::from(v.to_owned()))
-            }
-            surreal_sync_postgresql_logical_replication::Value::Boolean(v) => Value::Bool(*v),
-            surreal_sync_postgresql_logical_replication::Value::Null => Value::None,
+            crate::Value::Integer(v) => Value::Number(Number::Int(v.to_i64().unwrap())),
+            crate::Value::Double(v) => Value::Number(Number::Float(*v)),
+            crate::Value::Text(v) => Value::Strand(Strand::from(v.to_owned())),
+            crate::Value::Boolean(v) => Value::Bool(*v),
+            crate::Value::Null => Value::None,
             v => {
                 anyhow::bail!("Unsupported value type for upsert {v:?}");
             }
@@ -200,12 +194,8 @@ async fn upsert(
     }
 
     let id: Value = match &row.primary_key {
-        surreal_sync_postgresql_logical_replication::Value::Integer(v) => {
-            Value::Number(Number::Int(v.to_i64().unwrap()))
-        }
-        surreal_sync_postgresql_logical_replication::Value::Text(v) => {
-            Value::Strand(Strand::from(v.to_owned()))
-        }
+        crate::Value::Integer(v) => Value::Number(Number::Int(v.to_i64().unwrap())),
+        crate::Value::Text(v) => Value::Strand(Strand::from(v.to_owned())),
         _ => anyhow::bail!(
             "Unsupported primary key type for upsert: {:?}",
             row.primary_key
@@ -223,15 +213,11 @@ async fn upsert(
 
 async fn delete(
     surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
-    row: &surreal_sync_postgresql_logical_replication::Row,
+    row: &crate::Row,
 ) -> Result<()> {
     let id: Value = match &row.primary_key {
-        surreal_sync_postgresql_logical_replication::Value::Integer(v) => {
-            Value::Number(Number::Int(v.to_i64().unwrap()))
-        }
-        surreal_sync_postgresql_logical_replication::Value::Text(v) => {
-            Value::Strand(Strand::from(v.to_owned()))
-        }
+        crate::Value::Integer(v) => Value::Number(Number::Int(v.to_i64().unwrap())),
+        crate::Value::Text(v) => Value::Strand(Strand::from(v.to_owned())),
         _ => anyhow::bail!(
             "Unsupported primary key type for delete: {:?}",
             row.primary_key

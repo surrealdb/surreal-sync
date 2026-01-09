@@ -1,5 +1,5 @@
 use super::checkpoint::PostgreSQLCheckpoint;
-use crate::{SourceOpts, SurrealOpts};
+use crate::SourceOpts;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use checkpoint::Checkpoint;
@@ -8,6 +8,7 @@ use log::{error, info, warn};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
+use surreal_sync_postgresql::SurrealOpts;
 use surreal_sync_surreal::{
     apply_change, surreal_connect, Change, ChangeOp, SurrealOpts as SurrealConnOpts,
 };
@@ -81,8 +82,8 @@ pub async fn run_incremental_sync(
     let sequence_id = from_checkpoint.sequence_id;
 
     log::debug!("🚀 Creating PostgreSQL incremental source");
-    let client = super::client::new_postgresql_client(&from_opts.source_uri).await?;
-    let mut source = super::incremental_sync::PostgresIncrementalSource::new(client, sequence_id);
+    let client = surreal_sync_postgresql::new_postgresql_client(&from_opts.source_uri).await?;
+    let mut source = PostgresIncrementalSource::new(client, sequence_id);
     log::debug!("PostgreSQL incremental source created");
 
     // Initialize source (schema collection)
@@ -100,7 +101,7 @@ pub async fn run_incremental_sync(
         }
     });
 
-    let tables = super::autoconf::get_user_tables(
+    let tables = surreal_sync_postgresql::get_user_tables(
         &pg_client,
         from_opts.source_database.as_deref().unwrap_or("public"),
     )

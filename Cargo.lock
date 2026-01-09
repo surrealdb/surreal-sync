@@ -6127,6 +6127,7 @@ dependencies = [
  "surreal-sync-mongodb",
  "surreal-sync-mysql-trigger",
  "surreal-sync-neo4j",
+ "surreal-sync-postgresql",
  "surreal-sync-postgresql-logical-replication",
  "surreal-sync-postgresql-trigger",
  "surreal-sync-surreal",
@@ -6330,14 +6331,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "surreal-sync-postgresql"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "geo-types",
+ "log",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "surreal-sync-surreal",
+ "surrealdb",
+ "surrealdb-types",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "surreal-sync-postgresql-logical-replication"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
+ "clap",
  "hex",
+ "rust_decimal",
  "serde",
  "serde_json",
+ "surreal-sync-postgresql",
+ "surreal-sync-surreal",
+ "surrealdb",
  "tokio",
  "tokio-postgres",
  "tracing",
@@ -6363,6 +6390,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "surreal-sync-postgresql",
  "surreal-sync-surreal",
  "surrealdb",
  "surrealdb-types",

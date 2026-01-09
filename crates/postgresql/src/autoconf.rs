@@ -1,3 +1,7 @@
+//! PostgreSQL automatic configuration utilities
+//!
+//! This module provides utilities for discovering PostgreSQL database structure.
+
 use anyhow::Result;
 use tokio_postgres::Client;
 
