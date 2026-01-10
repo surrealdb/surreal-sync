@@ -161,56 +161,121 @@ run: docker-build generate
 
 # Wait for completion with early failure detection
 # This monitors containers and exits immediately when any container fails
+#
+# Exit codes:
+#   0 = All verify containers completed successfully
+#   1 = Timeout reached (shows which containers were still running)
+#   2 = Container failed (non-zero exit code)
+#   3 = Verification mismatch (container exited 0 but reported mismatches)
 wait-for-completion:
-	@start_time=$$(date +%s); \
+	@cd $(OUTPUT_DIR) && \
+	start_time=$$(date +%s); \
 	while true; do \
 		elapsed=$$(( $$(date +%s) - start_time )); \
 		\
-		if [ $$elapsed -ge $(TIMEOUT) ]; then \
-			echo ""; \
-			echo "=== TIMEOUT after $(TIMEOUT)s ==="; \
-			echo "Dumping logs from all containers:"; \
-			cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml logs 2>/dev/null; \
-			cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml down -v 2>/dev/null; \
-			exit 1; \
-		fi; \
+		ps_output=$$(docker-compose -f docker-compose.loadtest.yml ps -a 2>/dev/null); \
 		\
-		ps_output=$$(cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml ps -a 2>/dev/null); \
+		populate_done=$$(echo "$$ps_output" | grep -E "output-populate-[0-9]+-1" | grep -c "Exited (0)" 2>/dev/null); \
+		populate_done=$${populate_done:-0}; \
+		sync_done=$$(echo "$$ps_output" | grep -E "output-sync-1" | grep -c "Exited (0)" 2>/dev/null); \
+		sync_done=$${sync_done:-0}; \
+		verify_done=$$(echo "$$ps_output" | grep -E "output-verify-[0-9]+-1" | grep -c "Exited (0)" 2>/dev/null); \
+		verify_done=$${verify_done:-0}; \
 		\
-		failed=$$(echo "$$ps_output" | grep -E "Exit [1-9]|Exited \([1-9]" | awk '{print $$1}' | head -5); \
+		failed=$$(echo "$$ps_output" | grep -E "output-(populate|sync|verify)-[0-9]*-?1" | grep -E "Exited \([1-9]" | awk '{print $$1}' | head -5); \
 		if [ -n "$$failed" ]; then \
 			echo ""; \
-			echo "=== FAILED containers detected ==="; \
-			echo "$$failed"; \
 			echo ""; \
-			echo "=== Failed container logs ==="; \
+			echo "╔══════════════════════════════════════════════════════════════════╗"; \
+			echo "║  FAILED: Container(s) exited with non-zero status                ║"; \
+			echo "╚══════════════════════════════════════════════════════════════════╝"; \
+			echo ""; \
+			echo "Failed containers:"; \
+			echo "$$failed" | sed 's/^/  - /'; \
+			echo ""; \
 			for container in $$failed; do \
-				echo "--- $$container ---"; \
-				docker logs "$$container" 2>&1 | tail -50 || true; \
+				echo "═══════════════════════════════════════════════════════════════════"; \
+				echo "Logs from: $$container"; \
+				echo "═══════════════════════════════════════════════════════════════════"; \
+				docker logs "$$container" 2>&1 | tail -80 || echo "(could not retrieve logs)"; \
 				echo ""; \
 			done; \
-			cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml down -v 2>/dev/null; \
-			exit 1; \
+			echo "Hint: Run 'make logs' or 'docker logs <container>' for full logs"; \
+			docker-compose -f docker-compose.loadtest.yml down -v 2>/dev/null || true; \
+			exit 2; \
 		fi; \
 		\
-		completed=$$(echo "$$ps_output" | grep -cE "Exit 0|Exited \(0\)" 2>/dev/null || echo "0"); \
-		running=$$(echo "$$ps_output" | grep -cE "Up|running" 2>/dev/null || echo "0"); \
+		printf "\r[%3ds] Populate: %s/$(WORKERS), Sync: %s/1, Verify: %s/$(WORKERS)" "$$elapsed" "$$populate_done" "$$sync_done" "$$verify_done"; \
 		\
-		printf "\r[%3ds] Running: %s, Completed: %s" "$$elapsed" "$$running" "$$completed"; \
-		\
-		sync_done=$$(echo "$$ps_output" | grep sync | grep -cE "Exit 0|Exited \(0\)" 2>/dev/null || echo "0"); \
-		if [ "$$sync_done" = "1" ]; then \
-			verify_done=$$(echo "$$ps_output" | grep verify | grep -cE "Exit 0|Exited \(0\)" 2>/dev/null || echo "0"); \
-			if [ "$$verify_done" -ge "$(WORKERS)" ]; then \
+		if [ "$$sync_done" -ge 1 ] && [ "$$verify_done" -ge $(WORKERS) ]; then \
+			echo ""; \
+			echo ""; \
+			verify_logs=$$(docker-compose -f docker-compose.loadtest.yml logs verify-1 verify-2 2>&1); \
+			if echo "$$verify_logs" | grep -qE "[1-9][0-9]* mismatched"; then \
+				echo "╔══════════════════════════════════════════════════════════════════╗"; \
+				echo "║  VERIFICATION FAILED: Data mismatches detected                   ║"; \
+				echo "╚══════════════════════════════════════════════════════════════════╝"; \
 				echo ""; \
+				echo "Verification results:"; \
+				echo "$$verify_logs" | grep -E "Table|matched|mismatched|missing|successfully|Error" | sed 's/^/  /'; \
 				echo ""; \
-				echo "=== SUCCESS - All containers completed ==="; \
-				echo ""; \
-				echo "=== Summary logs ==="; \
-				cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml logs --tail=20 2>/dev/null; \
-				cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml down -v 2>/dev/null; \
-				exit 0; \
+				echo "Hint: Check sync logic or schema definitions for data type issues"; \
+				docker-compose -f docker-compose.loadtest.yml down -v 2>/dev/null || true; \
+				exit 3; \
 			fi; \
+			echo "╔══════════════════════════════════════════════════════════════════╗"; \
+			echo "║  SUCCESS: All tables verified successfully                       ║"; \
+			echo "╚══════════════════════════════════════════════════════════════════╝"; \
+			echo ""; \
+			echo "Verification summary:"; \
+			echo "$$verify_logs" | grep -E "Table|rows verified|successfully" | sed 's/^/  /' | tail -20; \
+			echo ""; \
+			docker-compose -f docker-compose.loadtest.yml down -v 2>/dev/null || true; \
+			exit 0; \
+		fi; \
+		\
+		if [ $$elapsed -ge $(TIMEOUT) ]; then \
+			echo ""; \
+			echo ""; \
+			echo "╔══════════════════════════════════════════════════════════════════╗"; \
+			echo "║  TIMEOUT: Test did not complete within $(TIMEOUT) seconds               ║"; \
+			echo "╚══════════════════════════════════════════════════════════════════╝"; \
+			echo ""; \
+			echo "Progress at timeout:"; \
+			echo "  Populate: $$populate_done/$(WORKERS) completed"; \
+			echo "  Sync:     $$sync_done/1 completed"; \
+			echo "  Verify:   $$verify_done/$(WORKERS) completed"; \
+			echo ""; \
+			if [ "$$populate_done" -lt "$(WORKERS)" ]; then \
+				echo "BLOCKED AT: Populate stage - data generation not complete"; \
+				echo ""; \
+				echo "Populate container logs:"; \
+				for i in 1 2; do \
+					echo ""; \
+					echo "─── populate-$$i (last 30 lines) ───"; \
+					docker-compose -f docker-compose.loadtest.yml logs --tail=30 populate-$$i 2>/dev/null || echo "(no logs)"; \
+				done; \
+			elif [ "$$sync_done" -lt "1" ]; then \
+				echo "BLOCKED AT: Sync stage - data synchronization not complete"; \
+				echo ""; \
+				echo "─── sync (last 50 lines) ───"; \
+				docker-compose -f docker-compose.loadtest.yml logs --tail=50 sync 2>/dev/null || echo "(no logs)"; \
+			else \
+				echo "BLOCKED AT: Verify stage - verification not complete"; \
+				echo ""; \
+				echo "Verify container logs:"; \
+				for i in 1 2; do \
+					echo ""; \
+					echo "─── verify-$$i (last 30 lines) ───"; \
+					docker-compose -f docker-compose.loadtest.yml logs --tail=30 verify-$$i 2>/dev/null || echo "(no logs)"; \
+				done; \
+			fi; \
+			echo ""; \
+			echo "Full container status:"; \
+			docker-compose -f docker-compose.loadtest.yml ps -a 2>/dev/null || true; \
+			echo ""; \
+			docker-compose -f docker-compose.loadtest.yml down -v 2>/dev/null || true; \
+			exit 1; \
 		fi; \
 		\
 		sleep $(POLL_INTERVAL); \
