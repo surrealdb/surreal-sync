@@ -388,13 +388,9 @@ enum PostgreSQLTriggerCommands {
 
 #[derive(Args)]
 struct PostgreSQLTriggerFullArgs {
-    /// PostgreSQL connection string
+    /// PostgreSQL connection string (must include database name, e.g., postgresql://user:pass@host:5432/mydb)
     #[arg(long, env = "POSTGRESQL_URI")]
     connection_string: String,
-
-    /// PostgreSQL database name (extracted from connection string if not provided)
-    #[arg(long, env = "POSTGRESQL_DATABASE")]
-    database: Option<String>,
 
     /// Target SurrealDB namespace
     #[arg(long)]
@@ -422,13 +418,9 @@ struct PostgreSQLTriggerFullArgs {
 
 #[derive(Args)]
 struct PostgreSQLTriggerIncrementalArgs {
-    /// PostgreSQL connection string
+    /// PostgreSQL connection string (must include database name, e.g., postgresql://user:pass@host:5432/mydb)
     #[arg(long, env = "POSTGRESQL_URI")]
     connection_string: String,
-
-    /// PostgreSQL database name (extracted from connection string if not provided)
-    #[arg(long, env = "POSTGRESQL_DATABASE")]
-    database: Option<String>,
 
     /// Target SurrealDB namespace
     #[arg(long)]
@@ -1090,9 +1082,10 @@ async fn run_postgresql_trigger_full(args: PostgreSQLTriggerFullArgs) -> anyhow:
         None
     };
 
+    let source_database = extract_postgresql_database(&args.connection_string);
     let source_opts = surreal_sync_postgresql_trigger::SourceOpts {
         source_uri: args.connection_string,
-        source_database: args.database,
+        source_database,
     };
 
     surreal_sync_postgresql_trigger::run_full_sync(
@@ -1140,9 +1133,10 @@ async fn run_postgresql_trigger_incremental(
         .map(|s| surreal_sync_postgresql_trigger::PostgreSQLCheckpoint::from_cli_string(s))
         .transpose()?;
 
+    let source_database = extract_postgresql_database(&args.connection_string);
     let source_opts = surreal_sync_postgresql_trigger::SourceOpts {
         source_uri: args.connection_string,
-        source_database: args.database,
+        source_database,
     };
 
     surreal_sync_postgresql_trigger::run_incremental_sync(
@@ -2126,4 +2120,21 @@ fn extract_json_fields_from_schema(schema: &Schema) -> Vec<String> {
         }
     }
     json_fields
+}
+
+/// Extract database name from a PostgreSQL connection string.
+/// Supports formats like: postgresql://user:pass@host:port/database
+fn extract_postgresql_database(connection_string: &str) -> Option<String> {
+    // Try to extract from connection string
+    // Format: postgresql://user:pass@host:port/database?params
+    if let Some(db_start) = connection_string.rfind('/') {
+        let after_slash = &connection_string[db_start + 1..];
+        // Remove query params if present
+        let db_name = after_slash.split('?').next().unwrap_or(after_slash);
+        if !db_name.is_empty() {
+            return Some(db_name.to_string());
+        }
+    }
+
+    None
 }

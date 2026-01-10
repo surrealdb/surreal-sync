@@ -42,14 +42,13 @@ async fn test_postgresql_full_sync_cli() -> Result<(), Box<dyn std::error::Error
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
 
     // Execute CLI command with data
+    // Note: database is extracted from connection string, not passed separately
     let args = [
         "from",
         "postgresql-trigger",
         "full",
         "--connection-string",
         &pg_config.get_connection_string(),
-        "--database",
-        "testdb",
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,
         "--to-namespace",

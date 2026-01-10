@@ -437,7 +437,7 @@ fn generate_sync_service(config: &ClusterConfig) -> Value {
         }
         SourceType::PostgreSQL => {
             format!(
-                "from postgresql full --connection-string 'postgresql://postgres:postgres@postgresql:5432/{}' --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --schema-file /config/schema.yaml{}",
+                "from postgresql-trigger full --connection-string 'postgresql://postgres:postgres@postgresql:5432/{}' --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --schema-file /config/schema.yaml{}",
                 config.database.database_name, config.surrealdb.namespace, config.surrealdb.database, dry_run_flag
             )
         }

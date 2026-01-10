@@ -45,14 +45,13 @@ async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error
     surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
 
     // Execute CLI command for initial full sync
+    // Note: database is extracted from connection string, not passed separately
     let args = [
         "from",
         "postgresql-trigger",
         "full",
         "--connection-string",
         &pg_config.get_connection_string(),
-        "--database",
-        "testdb",
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,
         "--to-namespace",
@@ -87,14 +86,13 @@ async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error
 
     // Execute CLI incremental sync command
     // For PostgreSQL incremental sync, we need to provide a checkpoint (sequence-based)
+    // Note: database is extracted from connection string, not passed separately
     let incremental_args = [
         "from",
         "postgresql-trigger",
         "incremental",
         "--connection-string",
         &pg_config.get_connection_string(),
-        "--database",
-        "testdb",
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,
         "--to-namespace",
