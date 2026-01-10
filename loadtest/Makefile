@@ -8,8 +8,66 @@
 #
 # The test pipeline runs: populate -> sync -> verify
 # Each stage must complete successfully before the next starts.
+#
+# =============================================================================
+# Common Workflow (Automated)
+# =============================================================================
+#
+# The simplest way to run a full test. This command:
+#   1. Builds the Docker image
+#   2. Generates docker-compose.loadtest.yml
+#   3. Starts all containers (populate -> sync -> verify)
+#   4. Monitors progress, exits early on failure
+#   5. Prints summary and cleans up on success
+#
+#   cd loadtest && make down; make run SOURCE=mysql TIMEOUT=180
+#
+# The `run` target blocks until completion or timeout. Exit code 0 = success.
+#
+# =============================================================================
+# Manual Workflow (Step-by-Step Debugging)
+# =============================================================================
+#
+# Use this when you need to inspect state between stages or debug failures.
+#
+# Step 1: Build and start containers in background
+#   make run-detached SOURCE=mysql
+#
+# Step 2: Monitor progress (run in a separate terminal or poll periodically)
+#   make status                    # Shows container states (running/exited)
+#   make logs                      # Follow all container logs (Ctrl+C to stop)
+#
+# Step 3: Wait for completion
+#   - Populate containers exit first (populate-1, populate-2)
+#   - Sync container exits after all populates complete
+#   - Verify containers exit after sync completes
+#   - Check `make status` until all show "Exited (0)"
+#
+# Step 4: Check verification results
+#   make logs-verify               # Shows matched/mismatched/missing counts
+#
+# Step 5: Inspect specific container logs if needed
+#   make logs-populate             # Populate container output
+#   make logs-sync                 # Sync container output
+#
+# Step 6: Clean up
+#   make down                      # Stop and remove containers
+#
+# =============================================================================
+# Interactive Debugging (Database Access)
+# =============================================================================
+#
+# Connect to MySQL while containers are running:
+#   cd output && docker-compose -f docker-compose.loadtest.yml exec mysql \
+#     mysql -uroot -proot loadtest
+#
+# Connect to SurrealDB while containers are running:
+#   cd output && docker-compose -f docker-compose.loadtest.yml exec surrealdb \
+#     /surreal sql --endpoint http://localhost:8000 --user root --pass root \
+#     --namespace loadtest --database test
+#
 
-.PHONY: docker-build generate run run-detached clean logs status help \
+.PHONY: docker-build generate run run-detached clean logs logs-verify logs-sync logs-populate status help \
 	test-dry-run-docker-compose test-dry-run-kubernetes \
 	run-mysql run-postgresql run-mongodb run-neo4j run-kafka run-csv run-jsonl \
 	kind-create kind-delete kind-load k8s-run-mysql k8s-run-postgresql k8s-run-mongodb k8s-run-neo4j \
@@ -34,15 +92,20 @@ POLL_INTERVAL ?= 5
 help:
 	@echo "Distributed Load Testing Makefile"
 	@echo ""
-	@echo "Targets:"
+	@echo "Main Targets:"
 	@echo "  docker-build   Build the surreal-sync Docker image"
 	@echo "  generate       Generate Docker Compose configuration"
 	@echo "  run            Run the load test with monitoring (detects failures early)"
 	@echo "  run-detached   Run in background without monitoring"
 	@echo "  down           Stop and remove all containers"
 	@echo "  clean          Clean up containers, volumes, and generated files"
-	@echo "  logs           Show logs from containers"
-	@echo "  status         Show container status"
+	@echo ""
+	@echo "Debugging Targets:"
+	@echo "  logs           Show logs from all containers (follow mode)"
+	@echo "  logs-verify    Show verification results (matched/mismatched/missing)"
+	@echo "  logs-sync      Show sync container logs"
+	@echo "  logs-populate  Show populate container logs"
+	@echo "  status         Show container status and recent logs"
 	@echo ""
 	@echo "Configuration (environment variables):"
 	@echo "  SCHEMA=$(SCHEMA)"
@@ -56,8 +119,9 @@ help:
 	@echo "  POLL_INTERVAL=$(POLL_INTERVAL) (seconds)"
 	@echo ""
 	@echo "Examples:"
-	@echo "  make run                              # Run with defaults"
-	@echo "  make run SOURCE=postgresql WORKERS=4 # PostgreSQL with 4 containers"
+	@echo "  make down; make run SOURCE=mysql TIMEOUT=180  # Full MySQL test"
+	@echo "  make run SOURCE=postgresql WORKERS=4          # PostgreSQL with 4 containers"
+	@echo "  make run-detached && make logs-verify         # Run detached, check results"
 	@echo "  make run PRESET=large ROW_COUNT=10000 TIMEOUT=600"
 
 # Build the Docker image (uses root Dockerfile)
@@ -158,9 +222,25 @@ run-detached: docker-build generate
 	cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml up -d --build
 	@echo "Use 'make logs' to view output or 'make status' to check progress"
 
-# Show logs
+# Show logs (all containers, follow mode)
 logs:
 	cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml logs -f
+
+# Show verification results (matched/mismatched/missing counts)
+logs-verify:
+	@echo "=== Verification Results ==="
+	@cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml logs verify-1 verify-2 2>&1 | \
+		grep -E "(matched|missing|mismatched|successfully|MISMATCH|Table:)" | tail -30
+	@echo ""
+	@echo "For full verify logs: cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml logs verify-1 verify-2"
+
+# Show sync container logs
+logs-sync:
+	cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml logs sync
+
+# Show populate container logs
+logs-populate:
+	cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml logs populate-1 populate-2
 
 # Show status
 status:
