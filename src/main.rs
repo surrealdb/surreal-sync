@@ -149,9 +149,12 @@ enum FromSource {
         command: MySQLCommands,
     },
 
-    /// Sync from PostgreSQL using WAL-based logical replication (continuous sync)
+    /// Sync from PostgreSQL using WAL-based logical replication (supports full and incremental)
     #[command(name = "postgresql")]
-    PostgreSQL(PostgreSQLArgs),
+    PostgreSQL {
+        #[command(subcommand)]
+        command: PostgreSQLLogicalCommands,
+    },
 
     /// Sync from Kafka topics (incremental-only)
     #[command(name = "kafka")]
@@ -543,12 +546,20 @@ struct MySQLIncrementalArgs {
 }
 
 // =============================================================================
-// PostgreSQL WAL-based Logical Replication Args (single command - continuous sync)
+// PostgreSQL WAL-based Logical Replication Commands and Args
 // =============================================================================
 
+#[derive(Subcommand)]
+enum PostgreSQLLogicalCommands {
+    /// Full sync from PostgreSQL (logical replication)
+    Full(PostgreSQLLogicalFullArgs),
+    /// Incremental sync from PostgreSQL using logical replication
+    Incremental(PostgreSQLLogicalIncrementalArgs),
+}
+
 #[derive(Args)]
-struct PostgreSQLArgs {
-    /// PostgreSQL connection string
+struct PostgreSQLLogicalFullArgs {
+    /// PostgreSQL connection string (must include database name, e.g., postgresql://user:pass@host:5432/mydb)
     #[arg(long)]
     connection_string: String,
 
@@ -575,6 +586,60 @@ struct PostgreSQLArgs {
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
+
+    /// Emit checkpoints for incremental sync coordination
+    #[arg(long)]
+    emit_checkpoints: bool,
+
+    /// Directory to store checkpoint files
+    #[arg(long, value_name = "DIR")]
+    checkpoint_dir: Option<String>,
+
+    #[command(flatten)]
+    surreal: SurrealOpts,
+}
+
+#[derive(Args)]
+struct PostgreSQLLogicalIncrementalArgs {
+    /// PostgreSQL connection string (must include database name, e.g., postgresql://user:pass@host:5432/mydb)
+    #[arg(long)]
+    connection_string: String,
+
+    /// Replication slot name
+    #[arg(long, default_value = "surreal_sync_slot")]
+    slot: String,
+
+    /// Tables to sync (comma-separated, empty means all tables)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
+    /// PostgreSQL schema
+    #[arg(long, default_value = "public")]
+    schema: String,
+
+    /// Target SurrealDB namespace
+    #[arg(long)]
+    to_namespace: String,
+
+    /// Target SurrealDB database
+    #[arg(long)]
+    to_database: String,
+
+    /// Schema file for type-aware conversion
+    #[arg(long, value_name = "PATH")]
+    schema_file: Option<PathBuf>,
+
+    /// Start incremental sync from this checkpoint (LSN format, e.g., "0/1949850")
+    #[arg(long)]
+    incremental_from: String,
+
+    /// Stop incremental sync at this checkpoint (optional)
+    #[arg(long)]
+    incremental_to: Option<String>,
+
+    /// Timeout in seconds (default: 3600 = 1 hour)
+    #[arg(long, default_value = "3600")]
+    timeout: String,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -825,7 +890,12 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
             MySQLCommands::Full(args) => run_mysql_full(args).await?,
             MySQLCommands::Incremental(args) => run_mysql_incremental(args).await?,
         },
-        FromSource::PostgreSQL(args) => run_postgresql_logical(args).await?,
+        FromSource::PostgreSQL { command } => match command {
+            PostgreSQLLogicalCommands::Full(args) => run_postgresql_logical_full(args).await?,
+            PostgreSQLLogicalCommands::Incremental(args) => {
+                run_postgresql_logical_incremental(args).await?
+            }
+        },
         FromSource::Kafka(args) => run_kafka(args).await?,
         FromSource::Csv(args) => run_csv(args).await?,
         FromSource::Jsonl(args) => run_jsonl(args).await?,
@@ -1255,11 +1325,11 @@ async fn run_mysql_incremental(args: MySQLIncrementalArgs) -> anyhow::Result<()>
 }
 
 // =============================================================================
-// PostgreSQL WAL-based Logical Replication Handler
+// PostgreSQL WAL-based Logical Replication Handlers
 // =============================================================================
 
-async fn run_postgresql_logical(args: PostgreSQLArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting PostgreSQL WAL-based logical replication");
+async fn run_postgresql_logical_full(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting full sync from PostgreSQL (logical replication) to SurrealDB");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
 
     if args.surreal.dry_run {
@@ -1268,18 +1338,84 @@ async fn run_postgresql_logical(args: PostgreSQLArgs) -> anyhow::Result<()> {
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    let config = surreal_sync_postgresql_logical_replication::sync::Config {
-        connection_string: args.connection_string,
-        slot: args.slot,
-        tables: args.tables,
-        schema: args.schema,
-        to_namespace: args.to_namespace,
-        to_database: args.to_database,
+    // Build sync config for checkpoint emission
+    let sync_config = if args.emit_checkpoints {
+        Some(checkpoint::SyncConfig {
+            emit_checkpoints: true,
+            checkpoint_dir: args.checkpoint_dir.clone(),
+            incremental: false,
+        })
+    } else {
+        None
     };
 
-    let surreal_opts =
-        surreal_sync_postgresql_logical_replication::sync::SurrealOpts::from(&args.surreal);
-    surreal_sync_postgresql_logical_replication::sync::sync(config, surreal_opts).await?;
+    let source_opts = surreal_sync_postgresql_logical_replication::SourceOpts {
+        connection_string: args.connection_string,
+        slot_name: args.slot,
+        tables: args.tables,
+        schema: args.schema,
+    };
+
+    surreal_sync_postgresql_logical_replication::run_full_sync(
+        source_opts,
+        args.to_namespace,
+        args.to_database,
+        surreal_sync_postgresql::SurrealOpts::from(&args.surreal),
+        sync_config,
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn run_postgresql_logical_incremental(
+    args: PostgreSQLLogicalIncrementalArgs,
+) -> anyhow::Result<()> {
+    tracing::info!("Starting incremental sync from PostgreSQL (logical replication) to SurrealDB");
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    // Parse checkpoints
+    let from_checkpoint =
+        surreal_sync_postgresql_logical_replication::PostgreSQLLogicalCheckpoint::from_cli_string(
+            &args.incremental_from,
+        )?;
+
+    let to_checkpoint = args
+        .incremental_to
+        .map(|s| {
+            surreal_sync_postgresql_logical_replication::PostgreSQLLogicalCheckpoint::from_cli_string(&s)
+        })
+        .transpose()?;
+
+    // Parse timeout
+    let timeout_secs: u64 = args
+        .timeout
+        .parse()
+        .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
+
+    let source_opts = surreal_sync_postgresql_logical_replication::SourceOpts {
+        connection_string: args.connection_string,
+        slot_name: args.slot,
+        tables: args.tables,
+        schema: args.schema,
+    };
+
+    surreal_sync_postgresql_logical_replication::run_incremental_sync(
+        source_opts,
+        args.to_namespace,
+        args.to_database,
+        surreal_sync_postgresql::SurrealOpts::from(&args.surreal),
+        from_checkpoint,
+        to_checkpoint,
+        timeout_secs,
+    )
+    .await?;
 
     Ok(())
 }

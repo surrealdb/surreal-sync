@@ -25,6 +25,8 @@ impl std::fmt::Display for Platform {
 pub enum SourceType {
     MySQL,
     PostgreSQL,
+    /// PostgreSQL with WAL-based logical replication (requires wal2json extension)
+    PostgreSQLLogical,
     MongoDB,
     Neo4j,
     Kafka,
@@ -37,6 +39,7 @@ impl std::fmt::Display for SourceType {
         match self {
             SourceType::MySQL => write!(f, "mysql"),
             SourceType::PostgreSQL => write!(f, "postgresql"),
+            SourceType::PostgreSQLLogical => write!(f, "postgresql-logical"),
             SourceType::MongoDB => write!(f, "mongodb"),
             SourceType::Neo4j => write!(f, "neo4j"),
             SourceType::Kafka => write!(f, "kafka"),
@@ -52,7 +55,8 @@ impl std::str::FromStr for SourceType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "mysql" => Ok(SourceType::MySQL),
-            "postgresql" | "postgres" => Ok(SourceType::PostgreSQL),
+            "postgresql" | "postgres" | "postgresql-trigger" => Ok(SourceType::PostgreSQL),
+            "postgresql-logical" | "postgresql-wal" => Ok(SourceType::PostgreSQLLogical),
             "mongodb" | "mongo" => Ok(SourceType::MongoDB),
             "neo4j" => Ok(SourceType::Neo4j),
             "kafka" => Ok(SourceType::Kafka),
@@ -355,7 +359,7 @@ pub fn build_cluster_config(
 fn get_default_connection_string(source_type: SourceType) -> String {
     match source_type {
         SourceType::MySQL => "mysql://root:root@mysql:3306/loadtest".to_string(),
-        SourceType::PostgreSQL => {
+        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => {
             "postgresql://postgres:postgres@postgresql:5432/loadtest".to_string()
         }
         SourceType::MongoDB => {
@@ -373,6 +377,9 @@ fn get_default_database_image(source_type: SourceType) -> String {
     match source_type {
         SourceType::MySQL => "mysql:8.0".to_string(),
         SourceType::PostgreSQL => "postgres:16".to_string(),
+        // PostgreSQL logical replication requires wal2json extension
+        // Using debezium/postgres image which includes wal2json
+        SourceType::PostgreSQLLogical => "debezium/postgres:16".to_string(),
         SourceType::MongoDB => "mongo:7".to_string(),
         SourceType::Neo4j => "neo4j:5".to_string(),
         SourceType::Kafka => "confluentinc/cp-kafka:7.5.0".to_string(),

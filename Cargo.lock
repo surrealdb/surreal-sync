@@ -6475,6 +6475,7 @@ name = "surreal-sync-postgresql-logical-replication"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "checkpoint",
  "chrono",
  "clap",
  "hex",
@@ -6484,6 +6485,7 @@ dependencies = [
  "surreal-sync-postgresql",
  "surreal-sync-surreal",
  "surrealdb",
+ "tempfile",
  "tokio",
  "tokio-postgres",
  "tracing",

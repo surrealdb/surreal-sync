@@ -107,7 +107,10 @@ async fn run_populate(
 
     let total_rows = match args.source_type() {
         SourceType::MySQL => run_mysql_populate(args, schema).await?,
-        SourceType::PostgreSQL => run_postgresql_populate(args, schema).await?,
+        // Both PostgreSQL variants use the same populate function (data goes to same database)
+        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => {
+            run_postgresql_populate(args, schema).await?
+        }
         SourceType::MongoDB => run_mongodb_populate(args, schema).await?,
         SourceType::Neo4j => run_neo4j_populate(args, schema).await?,
         SourceType::Csv => run_csv_populate(args, schema)?,

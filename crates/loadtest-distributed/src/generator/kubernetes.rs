@@ -122,7 +122,7 @@ impl KubernetesGenerator {
 fn database_name(source_type: SourceType) -> &'static str {
     match source_type {
         SourceType::MySQL => "mysql",
-        SourceType::PostgreSQL => "postgresql",
+        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => "postgresql",
         SourceType::MongoDB => "mongodb",
         SourceType::Neo4j => "neo4j",
         SourceType::Kafka => "kafka",
@@ -509,7 +509,7 @@ fn generate_sync_job(config: &ClusterConfig) -> String {
         SourceType::PostgreSQL => {
             format!(
                 r#"        - from
-        - postgresql
+        - postgresql-trigger
         - full
         - --connection-string
         - 'postgresql://postgres:postgres@postgresql:5432/{db}'
@@ -526,6 +526,47 @@ fn generate_sync_job(config: &ClusterConfig) -> String {
         - --schema-file
         - /config/schema.yaml{dry_run}"#,
                 db = config.database.database_name,
+                ns = config.surrealdb.namespace,
+                database = config.surrealdb.database,
+                dry_run = if config.dry_run {
+                    "\n        - --dry-run"
+                } else {
+                    ""
+                }
+            )
+        }
+        SourceType::PostgreSQLLogical => {
+            // Get all table names from containers for the --tables argument
+            let tables: Vec<String> = config
+                .containers
+                .iter()
+                .flat_map(|c| c.tables.clone())
+                .collect();
+            let tables_arg = tables.join(",");
+            format!(
+                r#"        - from
+        - postgresql
+        - full
+        - --connection-string
+        - 'postgresql://postgres:postgres@postgresql:5432/{db}'
+        - --slot
+        - surreal_sync_loadtest
+        - --tables
+        - '{tables}'
+        - --to-namespace
+        - {ns}
+        - --to-database
+        - {database}
+        - --surreal-endpoint
+        - 'http://surrealdb:8000'
+        - --surreal-username
+        - root
+        - --surreal-password
+        - root
+        - --schema-file
+        - /config/schema.yaml{dry_run}"#,
+                db = config.database.database_name,
+                tables = tables_arg,
                 ns = config.surrealdb.namespace,
                 database = config.surrealdb.database,
                 dry_run = if config.dry_run {
@@ -826,7 +867,7 @@ spec:
 fn get_db_port(source_type: SourceType) -> u16 {
     match source_type {
         SourceType::MySQL => 3306,
-        SourceType::PostgreSQL => 5432,
+        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => 5432,
         SourceType::MongoDB => 27017,
         SourceType::Neo4j => 7687,
         SourceType::Kafka => 9092,

@@ -135,7 +135,7 @@ impl ConfigGenerator for DockerComposeGenerator {
 fn database_service_name(source_type: SourceType) -> String {
     match source_type {
         SourceType::MySQL => "mysql".to_string(),
-        SourceType::PostgreSQL => "postgresql".to_string(),
+        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => "postgresql".to_string(),
         SourceType::MongoDB => "mongodb".to_string(),
         SourceType::Neo4j => "neo4j".to_string(),
         SourceType::Kafka => "kafka".to_string(),
@@ -253,7 +253,8 @@ fn generate_populate_service(
     let tables_arg = container.tables.join(",");
     let source_cmd = match config.source_type {
         SourceType::MySQL => "mysql",
-        SourceType::PostgreSQL => "postgresql",
+        // Both PostgreSQL variants use the same populate command (data goes to same database)
+        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => "postgresql",
         SourceType::MongoDB => "mongodb",
         SourceType::Neo4j => "neo4j",
         SourceType::Kafka => "kafka",
@@ -269,7 +270,7 @@ fn generate_populate_service(
                 container.connection_string
             )
         }
-        SourceType::PostgreSQL => {
+        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => {
             format!(
                 "--postgresql-connection-string '{}'",
                 container.connection_string
@@ -441,6 +442,19 @@ fn generate_sync_service(config: &ClusterConfig) -> Value {
                 config.database.database_name, config.surrealdb.namespace, config.surrealdb.database, dry_run_flag
             )
         }
+        SourceType::PostgreSQLLogical => {
+            // Get all table names from containers for the --tables argument
+            let tables: Vec<String> = config
+                .containers
+                .iter()
+                .flat_map(|c| c.tables.clone())
+                .collect();
+            let tables_arg = tables.join(",");
+            format!(
+                "from postgresql full --connection-string 'postgresql://postgres:postgres@postgresql:5432/{}' --slot 'surreal_sync_loadtest' --tables '{}' --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --schema-file /config/schema.yaml{}",
+                config.database.database_name, tables_arg, config.surrealdb.namespace, config.surrealdb.database, dry_run_flag
+            )
+        }
         SourceType::MongoDB => {
             format!(
                 "from mongodb full --connection-string 'mongodb://root:root@mongodb:27017' --database {} --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --schema-file /config/schema.yaml{}",
@@ -526,7 +540,7 @@ fn generate_sync_service(config: &ClusterConfig) -> Value {
     // exit before MySQL finishes initializing since they don't connect)
     let source_service_name = match config.source_type {
         SourceType::MySQL => Some("mysql"),
-        SourceType::PostgreSQL => Some("postgresql"),
+        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => Some("postgresql"),
         SourceType::MongoDB => Some("mongodb"),
         SourceType::Neo4j => Some("neo4j"),
         SourceType::Kafka => Some("kafka"),

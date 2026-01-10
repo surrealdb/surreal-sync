@@ -77,6 +77,28 @@ impl Client {
         Ok(lsn)
     }
 
+    /// Gets the current WAL LSN position as a checkpoint
+    ///
+    /// This is a convenience method that returns a PostgreSQLLogicalCheckpoint
+    /// instead of a raw LSN string.
+    pub async fn get_current_wal_lsn_checkpoint(
+        &self,
+    ) -> Result<crate::checkpoint::PostgreSQLLogicalCheckpoint> {
+        let lsn = self.get_current_wal_lsn().await?;
+        Ok(crate::checkpoint::PostgreSQLLogicalCheckpoint {
+            lsn,
+            timestamp: chrono::Utc::now(),
+        })
+    }
+
+    /// Returns a reference to the underlying PostgreSQL client
+    ///
+    /// This is useful when you need to perform operations that require
+    /// direct access to the tokio_postgres::Client.
+    pub fn pg_client(&self) -> &PgClient {
+        &self.pg_client
+    }
+
     /// Creates a logical replication slot if it doesn't exist
     ///
     /// # Arguments
