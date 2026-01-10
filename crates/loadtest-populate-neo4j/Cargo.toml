@@ -8,6 +8,10 @@ description = "Neo4j populator for surreal-sync loadtests"
 # Core dependencies
 sync-core = { path = "../sync-core" }
 loadtest-generator = { path = "../loadtest-generator" }
+loadtest-populate = { path = "../loadtest-populate" }
+
+# CLI argument parsing
+clap = { version = "4.5", features = ["derive", "env"] }
 
 # Neo4j driver
 neo4rs = "0.9.0-rc.8"

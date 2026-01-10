@@ -35,10 +35,12 @@
 //! println!("Inserted {} nodes in {:?}", metrics.rows_inserted, metrics.total_duration);
 //! ```
 
+mod args;
 mod error;
 mod insert;
 mod populator;
 
+pub use args::Neo4jPopulateArgs;
 pub use error::Neo4jPopulatorError;
 pub use insert::DEFAULT_BATCH_SIZE;
 pub use populator::{Neo4jPopulator, PopulateMetrics};

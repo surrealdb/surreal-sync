@@ -436,7 +436,7 @@ fn generate_sync_service(config: &ClusterConfig) -> Value {
         }
         SourceType::Neo4j => {
             format!(
-                "from neo4j full --connection-string 'bolt://neo4j:7687' --username neo4j --password password --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root{}",
+                "from neo4j full --connection-string 'bolt://neo4j:7687' --username neo4j --password password --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --schema-file /config/schema.yaml{}",
                 config.surrealdb.namespace, config.surrealdb.database, dry_run_flag
             )
         }

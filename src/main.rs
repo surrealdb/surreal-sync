@@ -82,6 +82,7 @@ use loadtest_populate_jsonl::JSONLPopulateArgs;
 use loadtest_populate_kafka::KafkaPopulateArgs;
 use loadtest_populate_mongodb::MongoDBPopulateArgs;
 use loadtest_populate_mysql::MySQLPopulateArgs;
+use loadtest_populate_neo4j::Neo4jPopulateArgs;
 use loadtest_populate_postgresql::PostgreSQLPopulateArgs;
 use loadtest_verify::VerifyArgs;
 use sync_core::Schema;
@@ -753,6 +754,12 @@ enum PopulateSource {
         #[command(flatten)]
         args: MongoDBPopulateArgs,
     },
+    /// Populate Neo4j database with test data
+    #[command(name = "neo4j")]
+    Neo4j {
+        #[command(flatten)]
+        args: Neo4jPopulateArgs,
+    },
     /// Generate CSV files with test data
     #[command(name = "csv")]
     Csv {
@@ -937,7 +944,25 @@ async fn run_neo4j_full(args: Neo4jFullArgs) -> anyhow::Result<()> {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
-    let _schema = load_schema_if_provided(&args.schema_file)?;
+    let schema = load_schema_if_provided(&args.schema_file)?;
+
+    // If json_properties not explicitly provided but schema file is, extract JSON fields from schema
+    let json_properties = if args.json_properties.is_some() {
+        args.json_properties
+    } else if let Some(ref s) = schema {
+        let json_fields = extract_json_fields_from_schema(s);
+        if !json_fields.is_empty() {
+            tracing::info!(
+                "Auto-detected JSON properties from schema: {:?}",
+                json_fields
+            );
+            Some(json_fields)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let sync_config = if args.emit_checkpoints {
         Some(checkpoint::SyncConfig {
@@ -955,7 +980,7 @@ async fn run_neo4j_full(args: Neo4jFullArgs) -> anyhow::Result<()> {
         source_username: args.username,
         source_password: args.password,
         neo4j_timezone: args.timezone,
-        neo4j_json_properties: args.json_properties,
+        neo4j_json_properties: json_properties,
     };
 
     surreal_sync_neo4j::run_full_sync(
@@ -984,7 +1009,25 @@ async fn run_neo4j_incremental(args: Neo4jIncrementalArgs) -> anyhow::Result<()>
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
-    let _schema = load_schema_if_provided(&args.schema_file)?;
+    let schema = load_schema_if_provided(&args.schema_file)?;
+
+    // If json_properties not explicitly provided but schema file is, extract JSON fields from schema
+    let json_properties = if args.json_properties.is_some() {
+        args.json_properties
+    } else if let Some(ref s) = schema {
+        let json_fields = extract_json_fields_from_schema(s);
+        if !json_fields.is_empty() {
+            tracing::info!(
+                "Auto-detected JSON properties from schema: {:?}",
+                json_fields
+            );
+            Some(json_fields)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     let timeout_seconds: i64 = args
         .timeout
@@ -1005,7 +1048,7 @@ async fn run_neo4j_incremental(args: Neo4jIncrementalArgs) -> anyhow::Result<()>
         source_username: args.username,
         source_password: args.password,
         neo4j_timezone: args.timezone,
-        neo4j_json_properties: args.json_properties,
+        neo4j_json_properties: json_properties,
     };
 
     surreal_sync_neo4j::run_incremental_sync(
@@ -1759,6 +1802,68 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 );
             }
         }
+        PopulateSource::Neo4j { args } => {
+            let schema = Schema::from_file(&args.common.schema)
+                .with_context(|| format!("Failed to load schema from {:?}", args.common.schema))?;
+
+            let tables = if args.common.tables.is_empty() {
+                schema.table_names()
+            } else {
+                args.common.tables.iter().map(|s| s.as_str()).collect()
+            };
+
+            if args.common.dry_run {
+                tracing::info!(
+                    "[DRY-RUN] Would populate Neo4j with {} nodes per label (seed={})",
+                    args.common.row_count,
+                    args.common.seed
+                );
+                tracing::info!(
+                    "[DRY-RUN] Connection: {}",
+                    mask_connection_password(&args.neo4j_connection_string)
+                );
+                tracing::info!("[DRY-RUN] Database: {}", args.neo4j_database);
+                tracing::info!("[DRY-RUN] Labels: {:?}", tables);
+                tracing::info!("[DRY-RUN] Schema validated successfully");
+                return Ok(());
+            }
+
+            tracing::info!(
+                "Populating Neo4j with {} nodes per label (seed={})",
+                args.common.row_count,
+                args.common.seed
+            );
+
+            for table_name in &tables {
+                // Create a fresh populator (and thus a fresh DataGenerator) for each table.
+                // See MySQL populator comment above for detailed explanation.
+                let mut populator = loadtest_populate_neo4j::Neo4jPopulator::new(
+                    &args.neo4j_connection_string,
+                    &args.neo4j_username,
+                    &args.neo4j_password,
+                    &args.neo4j_database,
+                    schema.clone(),
+                    args.common.seed,
+                )
+                .await
+                .context("Failed to connect to Neo4j")?
+                .with_batch_size(args.common.batch_size);
+
+                populator.delete_nodes(table_name).await.ok();
+
+                let metrics = populator
+                    .populate(table_name, args.common.row_count)
+                    .await
+                    .with_context(|| format!("Failed to populate label '{table_name}'"))?;
+
+                tracing::info!(
+                    "Populated {}: {} nodes in {:?}",
+                    table_name,
+                    metrics.rows_inserted,
+                    metrics.total_duration
+                );
+            }
+        }
     }
 
     tracing::info!("Populate completed successfully");
@@ -2005,4 +2110,20 @@ fn load_schema_if_provided(schema_file: &Option<PathBuf>) -> anyhow::Result<Opti
     } else {
         Ok(None)
     }
+}
+
+/// Extract JSON field paths from a schema (e.g., ["users.profile_data", "products.metadata"]).
+/// This is used to auto-populate Neo4j JSON properties from the schema file.
+fn extract_json_fields_from_schema(schema: &Schema) -> Vec<String> {
+    use sync_core::UniversalType;
+
+    let mut json_fields = Vec::new();
+    for table in &schema.tables {
+        for field in &table.fields {
+            if matches!(field.field_type, UniversalType::Json | UniversalType::Jsonb) {
+                json_fields.push(format!("{}.{}", table.name, field.name));
+            }
+        }
+    }
+    json_fields
 }
