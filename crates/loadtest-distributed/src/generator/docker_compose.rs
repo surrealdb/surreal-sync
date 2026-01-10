@@ -387,6 +387,19 @@ fn generate_populate_service(
         Value::Mapping(aggregator_dep),
     );
 
+    // For MongoDB, also wait for mongodb-init to complete (replica set initialization)
+    if config.source_type == SourceType::MongoDB {
+        let mut init_dep = Mapping::new();
+        init_dep.insert(
+            Value::String("condition".to_string()),
+            Value::String("service_completed_successfully".to_string()),
+        );
+        depends_on.insert(
+            Value::String("mongodb-init".to_string()),
+            Value::Mapping(init_dep),
+        );
+    }
+
     service.insert(
         Value::String("depends_on".to_string()),
         Value::Mapping(depends_on),

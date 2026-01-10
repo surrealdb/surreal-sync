@@ -1,6 +1,6 @@
 //! MongoDB Docker and Kubernetes configurations for load testing.
 
-use super::{add_environment, add_healthcheck, add_tmpfs, add_volume, create_base_docker_service};
+use super::{add_healthcheck, add_tmpfs, add_volume, create_base_docker_service};
 use crate::config::DatabaseConfig;
 use serde_yaml::{Mapping, Value};
 
@@ -9,17 +9,10 @@ pub fn generate_mongodb_docker_service(config: &DatabaseConfig) -> Value {
     let mut service =
         create_base_docker_service(&config.image, &config.resources, "loadtest-network");
 
-    // Environment variables for MongoDB
-    add_environment(
-        &mut service,
-        vec![
-            ("MONGO_INITDB_ROOT_USERNAME", "root"),
-            ("MONGO_INITDB_ROOT_PASSWORD", "root"),
-        ],
-    );
-
     // Command for replica set mode (required for change streams)
-    let command = vec!["mongod", "--replSet", "rs0", "--bind_ip_all", "--nojournal"];
+    // Note: We use --noauth to avoid keyFile complexity in single-node loadtest replica sets
+    // Authentication user is created by mongodb-init after replica set initialization
+    let command = vec!["mongod", "--replSet", "rs0", "--bind_ip_all", "--noauth"];
     service.insert(
         Value::String("command".to_string()),
         Value::Sequence(
@@ -75,15 +68,39 @@ pub(crate) fn generate_mongodb_init_service_internal() -> Value {
         Value::Mapping(depends_on),
     );
 
-    // Init script to configure replica set
-    let command = r#"mongosh --host mongodb -u root -p root --authenticationDatabase admin --eval "
-        rs.initiate({
-            _id: 'rs0',
-            members: [{ _id: 0, host: 'mongodb:27017' }]
-        })
-    " && sleep 5 && mongosh --host mongodb -u root -p root --authenticationDatabase admin --eval "
-        while (!rs.isMaster().ismaster) { sleep(1000); }
-        print('Replica set initialized');
+    // Init script to configure replica set and create root user
+    // Note: MongoDB is running with --noauth, so we connect without auth
+    // We create the root user for compatibility with authenticated connection strings
+    let command = r#"mongosh --host mongodb --quiet --eval "
+        try {
+            rs.status();
+            print('Replica set already configured');
+        } catch (e) {
+            print('Initializing replica set...');
+            rs.initiate({
+                _id: 'rs0',
+                members: [{ _id: 0, host: 'mongodb:27017' }]
+            });
+            print('Replica set initialized');
+        }
+
+        // Wait for replica set to become primary
+        while (!db.isMaster().ismaster) {
+            sleep(1000);
+        }
+
+        // Create root user for compatibility with authenticated connection strings
+        db = db.getSiblingDB('admin');
+        try {
+            db.createUser({
+                user: 'root',
+                pwd: 'root',
+                roles: ['root']
+            });
+            print('Root user created');
+        } catch(e) {
+            print('User creation skipped (may already exist): ' + e);
+        }
     ""#;
 
     service.insert(
@@ -172,7 +189,6 @@ spec:
         - --replSet
         - rs0
         - --bind_ip_all
-        - --nojournal
         ports:
         - containerPort: 27017
         resources:
@@ -289,7 +305,9 @@ mod tests {
 
         assert!(yaml.contains("mongo:7"));
         assert!(yaml.contains("replSet"));
-        assert!(yaml.contains("MONGO_INITDB_ROOT_USERNAME=root"));
+        // MongoDB uses --noauth mode for single-node loadtest replica sets
+        // Authentication is set up via mongodb-init container after replica set initialization
+        assert!(yaml.contains("--noauth"));
     }
 
     #[test]
