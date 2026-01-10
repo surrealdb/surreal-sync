@@ -1429,16 +1429,29 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.seed
             );
 
-            let mut populator = loadtest_populate_mysql::MySQLPopulator::new(
-                &args.mysql_connection_string,
-                schema.clone(),
-                args.common.seed,
-            )
-            .await
-            .context("Failed to connect to MySQL")?
-            .with_batch_size(args.common.batch_size);
-
             for table_name in &tables {
+                // Create a fresh populator (and thus a fresh DataGenerator) for each table.
+                //
+                // The DataGenerator uses an internal index counter that increments with each row.
+                // If we reused the same populator across tables, the second table would start at
+                // index N (after generating N rows for the first table), causing sequential IDs
+                // to be offset (e.g., table2 would have IDs starting at 1001 instead of 1).
+                //
+                // This offset causes verification failures because:
+                // 1. The verifier looks up records by generated ID (e.g., `SELECT * FROM orders:1`)
+                // 2. If populate used offset IDs (orders:1001-2000), the record `orders:1` doesn't exist
+                // 3. The verifier reports these as "missing" even though the data exists at different IDs
+                //
+                // Both populate and verify must use the same per-table generator reset strategy.
+                let mut populator = loadtest_populate_mysql::MySQLPopulator::new(
+                    &args.mysql_connection_string,
+                    schema.clone(),
+                    args.common.seed,
+                )
+                .await
+                .context("Failed to connect to MySQL")?
+                .with_batch_size(args.common.batch_size);
+
                 populator
                     .create_table(table_name)
                     .await
@@ -1488,16 +1501,18 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.seed
             );
 
-            let mut populator = loadtest_populate_postgresql::PostgreSQLPopulator::new(
-                &args.postgresql_connection_string,
-                schema.clone(),
-                args.common.seed,
-            )
-            .await
-            .context("Failed to connect to PostgreSQL")?
-            .with_batch_size(args.common.batch_size);
-
             for table_name in &tables {
+                // Create a fresh populator (and thus a fresh DataGenerator) for each table.
+                // See MySQL populator comment above for detailed explanation.
+                let mut populator = loadtest_populate_postgresql::PostgreSQLPopulator::new(
+                    &args.postgresql_connection_string,
+                    schema.clone(),
+                    args.common.seed,
+                )
+                .await
+                .context("Failed to connect to PostgreSQL")?
+                .with_batch_size(args.common.batch_size);
+
                 populator
                     .create_table(table_name)
                     .await
@@ -1548,17 +1563,19 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.seed
             );
 
-            let mut populator = loadtest_populate_mongodb::MongoDBPopulator::new(
-                &args.mongodb_connection_string,
-                &args.mongodb_database,
-                schema.clone(),
-                args.common.seed,
-            )
-            .await
-            .context("Failed to connect to MongoDB")?
-            .with_batch_size(args.common.batch_size);
-
             for table_name in &tables {
+                // Create a fresh populator (and thus a fresh DataGenerator) for each table.
+                // See MySQL populator comment above for detailed explanation.
+                let mut populator = loadtest_populate_mongodb::MongoDBPopulator::new(
+                    &args.mongodb_connection_string,
+                    &args.mongodb_database,
+                    schema.clone(),
+                    args.common.seed,
+                )
+                .await
+                .context("Failed to connect to MongoDB")?
+                .with_batch_size(args.common.batch_size);
+
                 let metrics = populator
                     .populate(table_name, args.common.row_count)
                     .await
@@ -1604,10 +1621,12 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 format!("Failed to create output directory {:?}", args.output_dir)
             })?;
 
-            let mut populator =
-                loadtest_populate_csv::CSVPopulator::new(schema.clone(), args.common.seed);
-
             for table_name in &tables {
+                // Create a fresh populator (and thus a fresh DataGenerator) for each table.
+                // See MySQL populator comment above for detailed explanation.
+                let mut populator =
+                    loadtest_populate_csv::CSVPopulator::new(schema.clone(), args.common.seed);
+
                 let output_path = args.output_dir.join(format!("{table_name}.csv"));
                 let metrics = populator
                     .populate(table_name, &output_path, args.common.row_count)
@@ -1653,10 +1672,12 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 format!("Failed to create output directory {:?}", args.output_dir)
             })?;
 
-            let mut populator =
-                loadtest_populate_jsonl::JsonlPopulator::new(schema.clone(), args.common.seed);
-
             for table_name in &tables {
+                // Create a fresh populator (and thus a fresh DataGenerator) for each table.
+                // See MySQL populator comment above for detailed explanation.
+                let mut populator =
+                    loadtest_populate_jsonl::JsonlPopulator::new(schema.clone(), args.common.seed);
+
                 let output_path = args.output_dir.join(format!("{table_name}.jsonl"));
                 let metrics = populator
                     .populate(table_name, &output_path, args.common.row_count)
@@ -1699,7 +1720,8 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             );
 
             for table_name in &tables {
-                // Create a fresh populator for each table to reset the generator index
+                // Create a fresh populator (and thus a fresh DataGenerator) for each table.
+                // See MySQL populator comment above for detailed explanation.
                 let mut populator = loadtest_populate_kafka::KafkaPopulator::new(
                     &args.kafka_brokers,
                     schema.clone(),

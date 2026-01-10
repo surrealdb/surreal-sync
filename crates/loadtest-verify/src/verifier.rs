@@ -43,6 +43,23 @@ impl StreamingVerifier {
     /// * `schema` - Load test schema
     /// * `seed` - Random seed (must match the seed used for data generation)
     /// * `table_name` - Name of the table to verify
+    ///
+    /// # Design Note: Fresh Generator Per Table
+    ///
+    /// A fresh DataGenerator is created for each table. This is intentional and must match
+    /// the populate behavior, which also creates a fresh generator per table. The generator's
+    /// internal index counter starts at 0, so each table independently generates IDs starting
+    /// from the schema-defined `start` value (e.g., 1 for `sequential` with `start: 1`).
+    ///
+    /// If the populator or verifier reused a single generator across tables, the IDs would
+    /// be offset for subsequent tables (e.g., table2 would have IDs starting at 1001 after
+    /// generating 1000 rows for table1). This causes verification failures because:
+    ///
+    /// 1. The verifier looks up records by generated ID (e.g., `SELECT * FROM orders:1`)
+    /// 2. If populate used offset IDs (orders:1001-2000), the record `orders:1` doesn't exist
+    /// 3. The verifier reports these as "missing" even though the data exists at different IDs
+    ///
+    /// Both populate and verify must use the same per-table generator reset strategy.
     pub fn new(
         surreal: Surreal<Any>,
         schema: Schema,
@@ -54,6 +71,7 @@ impl StreamingVerifier {
             return Err(VerifyError::TableNotFound(table_name.to_string()));
         }
 
+        // Fresh generator for each table - see doc comment above.
         let generator = DataGenerator::new(schema.clone(), seed);
         Ok(Self {
             surreal,
@@ -460,23 +478,30 @@ impl StreamingVerifier {
             let actual_value = actual.fields.get(&field_schema.name);
 
             match (expected_value, actual_value) {
-                (Some(exp), Some(act)) => match compare_values(exp, act) {
-                    CompareResult::Match => {}
-                    CompareResult::Mismatch { expected, actual } => {
-                        mismatches.push(FieldMismatch {
-                            field: field_schema.name.clone(),
-                            expected,
-                            actual,
-                        });
+                (Some(exp), Some(act)) => {
+                    let result = compare_values(exp, act);
+                    debug!(
+                        "Field '{}' comparison: exp={:?}, act={:?}, result={:?}",
+                        field_schema.name, exp, act, result
+                    );
+                    match result {
+                        CompareResult::Match => {}
+                        CompareResult::Mismatch { expected, actual } => {
+                            mismatches.push(FieldMismatch {
+                                field: field_schema.name.clone(),
+                                expected,
+                                actual,
+                            });
+                        }
+                        CompareResult::Missing => {
+                            mismatches.push(FieldMismatch {
+                                field: field_schema.name.clone(),
+                                expected: format!("{exp:?}"),
+                                actual: "MISSING".to_string(),
+                            });
+                        }
                     }
-                    CompareResult::Missing => {
-                        mismatches.push(FieldMismatch {
-                            field: field_schema.name.clone(),
-                            expected: format!("{exp:?}"),
-                            actual: "MISSING".to_string(),
-                        });
-                    }
-                },
+                }
                 (Some(exp), None) => {
                     // Expected field but not found in SurrealDB
                     mismatches.push(FieldMismatch {
