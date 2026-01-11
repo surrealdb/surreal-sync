@@ -202,10 +202,10 @@ fn generate_configmap(config: &ClusterConfig) -> String {
         // Indent each line of the schema content for proper YAML formatting
         let indented_content = content
             .lines()
-            .map(|line| format!("    {}", line))
+            .map(|line| format!("    {line}"))
             .collect::<Vec<_>>()
             .join("\n");
-        format!("  schema.yaml: |\n{}", indented_content)
+        format!("  schema.yaml: |\n{indented_content}")
     } else {
         // Placeholder if schema content not provided
         "  # Schema file should be added here or mounted from external source\n  # schema.yaml: |\n  #   tables:\n  #     - name: users\n  #       ...".to_string()
@@ -237,13 +237,10 @@ fn generate_proto_configmap(config: &ClusterConfig) -> Option<String> {
         // Indent each line of the proto content for proper YAML formatting
         let indented_content = proto_content
             .lines()
-            .map(|line| format!("    {}", line))
+            .map(|line| format!("    {line}"))
             .collect::<Vec<_>>()
             .join("\n");
-        proto_data.push_str(&format!(
-            "  {}.proto: |\n{}\n",
-            table_name, indented_content
-        ));
+        proto_data.push_str(&format!("  {table_name}.proto: |\n{indented_content}\n"));
     }
 
     Some(format!(
@@ -496,10 +493,7 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
             sleep 2
           done
           echo "Aggregator is ready!"
-"#,
-                wait_image = wait_image,
-                wait_command = wait_command,
-                mongodb_init_wait = mongodb_init_wait,
+"#
             )
         } else {
             String::new()
@@ -956,10 +950,7 @@ fn generate_verify_job(config: &ClusterConfig) -> String {
     let wait_for_sync_command = if config.source_type == SourceType::Kafka {
         // For Kafka, wait for all sync jobs (one per table)
         // Convert table names to valid K8s names (replace underscores with dashes)
-        let k8s_table_names: Vec<String> = tables_all
-            .iter()
-            .map(|t| t.replace('_', "-"))
-            .collect();
+        let k8s_table_names: Vec<String> = tables_all.iter().map(|t| t.replace('_', "-")).collect();
         format!(
             r#"echo "Waiting for all Kafka sync jobs to complete..."
           for table in {}; do
@@ -1251,8 +1242,7 @@ fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str,
             echo "MySQL is not ready yet..."
             sleep 2
           done
-          echo "MySQL is ready!""#,
-                db_name = db_name
+          echo "MySQL is ready!""#
             ),
         ),
         SourceType::PostgreSQL | SourceType::PostgreSQLLogical => (
@@ -1263,8 +1253,7 @@ fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str,
             echo "PostgreSQL is not ready yet..."
             sleep 2
           done
-          echo "PostgreSQL is ready!""#,
-                db_name = db_name
+          echo "PostgreSQL is ready!""#
             ),
         ),
         SourceType::MongoDB => (
@@ -1275,8 +1264,7 @@ fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str,
             echo "MongoDB is not ready yet..."
             sleep 2
           done
-          echo "MongoDB is ready!""#,
-                db_name = db_name
+          echo "MongoDB is ready!""#
             ),
         ),
         SourceType::Neo4j => (
@@ -1287,8 +1275,7 @@ fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str,
             echo "Neo4j is not ready yet..."
             sleep 2
           done
-          echo "Neo4j is ready!""#,
-                db_name = db_name
+          echo "Neo4j is ready!""#
             ),
         ),
         SourceType::Kafka => (
@@ -1300,8 +1287,7 @@ fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str,
             echo "Kafka is not ready yet..."
             sleep 2
           done
-          echo "Kafka is ready!""#,
-                db_name = db_name
+          echo "Kafka is ready!""#
             ),
         ),
         SourceType::Csv | SourceType::Jsonl => (
@@ -1453,8 +1439,9 @@ mod tests {
 
         // Should NOT contain --dry-run flag
         assert!(!yaml.contains("--dry-run"));
-        // Should still contain populate command
-        assert!(yaml.contains("loadtest populate mysql"));
+        // Should still contain populate command (in args array format)
+        assert!(yaml.contains("- populate"));
+        assert!(yaml.contains("- mysql"));
     }
 
     #[test]

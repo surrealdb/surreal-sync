@@ -186,7 +186,12 @@ spec:
 {volumes_section}
 {volume_claim_templates}
 "#,
-        namespace, config.image, cpu_limit, memory_limit, cpu_request, memory_request,
+        namespace,
+        config.image,
+        cpu_limit,
+        memory_limit,
+        cpu_request,
+        memory_request,
         volumes_section = volumes_section,
         volume_claim_templates = volume_claim_templates
     )
