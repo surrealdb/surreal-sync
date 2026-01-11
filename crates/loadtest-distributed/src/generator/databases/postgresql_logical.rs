@@ -15,8 +15,7 @@ use serde_yaml::Value;
 /// - Setting max_wal_senders and max_replication_slots for replication connections
 /// - Using the debezium/postgres image which includes wal2json extension
 pub fn generate_postgresql_logical_docker_service(config: &DatabaseConfig) -> Value {
-    let mut service =
-        create_base_docker_service(&config.image, &config.resources, "loadtest-network");
+    let mut service = create_base_docker_service(&config.image, &config.resources, "loadtest");
 
     // Environment variables for PostgreSQL
     add_environment(

@@ -6,8 +6,7 @@ use serde_yaml::Value;
 
 /// Generate PostgreSQL Docker service configuration.
 pub fn generate_postgresql_docker_service(config: &DatabaseConfig) -> Value {
-    let mut service =
-        create_base_docker_service(&config.image, &config.resources, "loadtest-network");
+    let mut service = create_base_docker_service(&config.image, &config.resources, "loadtest");
 
     // Environment variables for PostgreSQL
     add_environment(

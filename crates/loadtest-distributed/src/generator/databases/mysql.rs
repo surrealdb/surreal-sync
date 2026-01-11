@@ -6,8 +6,7 @@ use serde_yaml::Value;
 
 /// Generate MySQL Docker service configuration.
 pub fn generate_mysql_docker_service(config: &DatabaseConfig) -> Value {
-    let mut service =
-        create_base_docker_service(&config.image, &config.resources, "loadtest-network");
+    let mut service = create_base_docker_service(&config.image, &config.resources, "loadtest");
 
     // Environment variables for MySQL
     add_environment(

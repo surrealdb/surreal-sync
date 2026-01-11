@@ -35,7 +35,7 @@ pub fn generate_file_generator_docker_service(_config: &DatabaseConfig) -> Value
     );
 
     // Networks
-    let networks = vec![Value::String("loadtest-network".to_string())];
+    let networks = vec![Value::String("loadtest".to_string())];
     service.insert(
         Value::String("networks".to_string()),
         Value::Sequence(networks),

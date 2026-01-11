@@ -6,8 +6,7 @@ use serde_yaml::Value;
 
 /// Generate Neo4j Docker service configuration.
 pub fn generate_neo4j_docker_service(config: &DatabaseConfig) -> Value {
-    let mut service =
-        create_base_docker_service(&config.image, &config.resources, "loadtest-network");
+    let mut service = create_base_docker_service(&config.image, &config.resources, "loadtest");
 
     // Calculate memory settings based on resource limits
     let heap_size = calculate_heap_size(&config.resources.memory_limit);

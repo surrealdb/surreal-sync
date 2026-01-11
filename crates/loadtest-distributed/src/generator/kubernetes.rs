@@ -433,11 +433,11 @@ spec:
     )
 }
 
-/// Generate Populate Worker Job.
-/// Containers POST metrics to aggregator server when done.
+/// Generate Populate Worker Jobs.
+/// Creates separate jobs for each container (matching Docker Compose pattern).
+/// Each job handles a specific set of tables with its own seed.
 fn generate_populate_job(config: &ClusterConfig) -> String {
     let db_name = database_name(config.source_type);
-    let container_count = config.containers.len();
     let source_type_lower = match config.source_type {
         SourceType::MySQL => "mysql",
         // Both PostgreSQL variants use the same populate command (data goes to same database)
@@ -450,14 +450,14 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
     };
 
     // Build init containers to wait for database and aggregator
-    let mut init_containers = String::new();
-    if config.source_type != SourceType::Csv && config.source_type != SourceType::Jsonl {
-        let (wait_image, wait_command) = get_db_health_check(config.source_type, db_name);
+    let init_containers =
+        if config.source_type != SourceType::Csv && config.source_type != SourceType::Jsonl {
+            let (wait_image, wait_command) = get_db_health_check(config.source_type, db_name);
 
-        // For MongoDB, add extra init container to wait for mongodb-init job
-        let mongodb_init_wait = if config.source_type == SourceType::MongoDB {
-            format!(
-                r#"      - name: wait-for-mongodb-init
+            // For MongoDB, add extra init container to wait for mongodb-init job
+            let mongodb_init_wait = if config.source_type == SourceType::MongoDB {
+                format!(
+                    r#"      - name: wait-for-mongodb-init
         image: bitnami/kubectl:latest
         imagePullPolicy: IfNotPresent
         command:
@@ -468,14 +468,14 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
           kubectl wait --for=condition=complete job/mongodb-init -n {namespace} --timeout=5m
           echo "mongodb-init job completed!"
 "#,
-                namespace = config.network_name
-            )
-        } else {
-            String::new()
-        };
+                    namespace = config.network_name
+                )
+            } else {
+                String::new()
+            };
 
-        init_containers = format!(
-            r#"      initContainers:
+            format!(
+                r#"      initContainers:
       - name: wait-for-db
         image: {wait_image}
         imagePullPolicy: IfNotPresent
@@ -497,63 +497,13 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
           done
           echo "Aggregator is ready!"
 "#,
-            wait_image = wait_image,
-            wait_command = wait_command,
-            mongodb_init_wait = mongodb_init_wait,
-        );
-    }
-
-    let first_container = config.containers.first();
-    let default_resources = crate::config::ResourceLimits::default();
-    let worker_resources = first_container
-        .map(|w| &w.resources)
-        .unwrap_or(&default_resources);
-
-    let tables_all: Vec<String> = config
-        .containers
-        .iter()
-        .flat_map(|c| c.tables.clone())
-        .collect();
-    let tables_arg = tables_all.join(",");
-
-    let connection_string = first_container
-        .map(|w| w.connection_string.as_str())
-        .unwrap_or("");
-
-    // Build connection string args based on source type (matching docker-compose pattern)
-    let connection_args = match config.source_type {
-        SourceType::MySQL => {
-            format!("--mysql-connection-string '{}'", connection_string)
-        }
-        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => {
-            format!("--postgresql-connection-string '{}'", connection_string)
-        }
-        SourceType::MongoDB => {
-            // MongoDB needs connection string and database
-            format!(
-                "--mongodb-connection-string '{}' --mongodb-database {}",
-                connection_string, config.database.database_name
+                wait_image = wait_image,
+                wait_command = wait_command,
+                mongodb_init_wait = mongodb_init_wait,
             )
-        }
-        SourceType::Neo4j => {
-            format!(
-                "--neo4j-connection-string '{}' --neo4j-username neo4j --neo4j-password password",
-                connection_string
-            )
-        }
-        SourceType::Kafka => {
-            format!("--kafka-brokers '{}'", connection_string)
-        }
-        SourceType::Csv | SourceType::Jsonl => {
-            format!("--output-dir '{}'", connection_string)
-        }
-    };
-
-    let dry_run_flag = if config.dry_run {
-        " \\\n            --dry-run"
-    } else {
-        ""
-    };
+        } else {
+            String::new()
+        };
 
     // For MongoDB, we need serviceAccountName for the kubectl wait in init container
     let service_account_line = if config.source_type == SourceType::MongoDB {
@@ -562,18 +512,68 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
         ""
     };
 
-    format!(
-        r#"apiVersion: batch/v1
+    let dry_run_flag = if config.dry_run {
+        "\n        - --dry-run"
+    } else {
+        ""
+    };
+
+    // Generate separate jobs for each container (matching Docker Compose pattern)
+    let mut jobs = Vec::new();
+
+    for (idx, container) in config.containers.iter().enumerate() {
+        let job_index = idx + 1;
+        let tables_arg = container.tables.join(",");
+
+        // Build connection string args as separate YAML list items (each flag and value on its own line)
+        let connection_args = match config.source_type {
+            SourceType::MySQL => {
+                format!(
+                    "- --mysql-connection-string\n        - '{}'",
+                    container.connection_string
+                )
+            }
+            SourceType::PostgreSQL | SourceType::PostgreSQLLogical => {
+                format!(
+                    "- --postgresql-connection-string\n        - '{}'",
+                    container.connection_string
+                )
+            }
+            SourceType::MongoDB => {
+                format!(
+                    "- --mongodb-connection-string\n        - '{}'\n        - --mongodb-database\n        - {}",
+                    container.connection_string, config.database.database_name
+                )
+            }
+            SourceType::Neo4j => {
+                format!(
+                    "- --neo4j-connection-string\n        - '{}'\n        - --neo4j-username\n        - neo4j\n        - --neo4j-password\n        - password",
+                    container.connection_string
+                )
+            }
+            SourceType::Kafka => {
+                format!(
+                    "- --kafka-brokers\n        - '{}'",
+                    container.connection_string
+                )
+            }
+            SourceType::Csv | SourceType::Jsonl => {
+                format!(
+                    "- --output-dir\n        - '{}'",
+                    container.connection_string
+                )
+            }
+        };
+
+        let job = format!(
+            r#"apiVersion: batch/v1
 kind: Job
 metadata:
-  name: loadtest-populate
+  name: loadtest-populate-{job_index}
   namespace: {namespace}
   labels:
     app: loadtest-populate
 spec:
-  parallelism: {container_count}
-  completions: {container_count}
-  completionMode: Indexed
   template:
     spec:
 {service_account_line}{init_containers}      containers:
@@ -581,20 +581,25 @@ spec:
         image: surreal-sync:latest
         imagePullPolicy: IfNotPresent
         command:
-        - /bin/sh
-        - -c
-        - |
-          WORKER_ID="populate-$JOB_COMPLETION_INDEX"
-          surreal-sync loadtest populate {source_type} \
-            --schema /config/schema.yaml \
-            --worker-id $WORKER_ID \
-            --tables {tables_arg} \
-            --row-count {row_count} \
-            --seed $((42 + JOB_COMPLETION_INDEX)) \
-            --batch-size {batch_size} \
-            --aggregator-url http://aggregator:9090 \
-            {connection_args}{dry_run_flag}
+        - surreal-sync
+        args:
+        - loadtest
+        - populate
+        - {source_type}
+        - --schema
+        - /config/schema.yaml
+        - --tables
+        - '{tables_arg}'
+        - --row-count
+        - '{row_count}'
+        - --seed
+        - '{seed}'
+        - --batch-size
+        - '{batch_size}'
+        {connection_args}{dry_run_flag}
         env:
+        - name: CONTAINER_ID
+          value: "populate-{job_index}"
         - name: RUST_LOG
           value: "info"
         resources:
@@ -612,26 +617,31 @@ spec:
       - name: config
         configMap:
           name: loadtest-config
-      restartPolicy: OnFailure
-"#,
-        namespace = config.network_name,
-        container_count = container_count,
-        service_account_line = service_account_line,
-        init_containers = init_containers,
-        source_type = source_type_lower,
-        tables_arg = tables_arg,
-        row_count = first_container.map(|w| w.row_count).unwrap_or(10000),
-        batch_size = first_container.map(|w| w.batch_size).unwrap_or(1000),
-        connection_args = connection_args,
-        dry_run_flag = dry_run_flag,
-        cpu_limit = worker_resources.cpu_limit,
-        memory_limit = worker_resources.memory_limit,
-        cpu_request = worker_resources.cpu_request.as_deref().unwrap_or("0.25"),
-        memory_request = worker_resources
-            .memory_request
-            .as_deref()
-            .unwrap_or("256Mi"),
-    )
+      restartPolicy: OnFailure"#,
+            namespace = config.network_name,
+            job_index = job_index,
+            service_account_line = service_account_line,
+            init_containers = init_containers,
+            source_type = source_type_lower,
+            tables_arg = tables_arg,
+            row_count = container.row_count,
+            seed = container.seed,
+            batch_size = container.batch_size,
+            connection_args = connection_args,
+            dry_run_flag = dry_run_flag,
+            cpu_limit = container.resources.cpu_limit,
+            memory_limit = container.resources.memory_limit,
+            cpu_request = container.resources.cpu_request.as_deref().unwrap_or("0.25"),
+            memory_request = container
+                .resources
+                .memory_request
+                .as_deref()
+                .unwrap_or("256Mi"),
+        );
+        jobs.push(job);
+    }
+
+    jobs.join("\n---\n")
 }
 
 /// Generate Sync Job.
@@ -791,7 +801,9 @@ fn generate_sync_job(config: &ClusterConfig) -> String {
         - --surreal-username
         - root
         - --surreal-password
-        - root{dry_run}"#,
+        - root
+        - --schema-file
+        - /config/schema.yaml{dry_run}"#,
                 ns = config.surrealdb.namespace,
                 database = config.surrealdb.database,
                 dry_run = if config.dry_run {
@@ -845,6 +857,29 @@ fn generate_sync_job(config: &ClusterConfig) -> String {
     // Suppress unused variable warning
     let _ = dry_run_flag;
 
+    // Build wait-for-populate command that waits for all populate jobs
+    let container_count = config.containers.len();
+    let wait_for_populate_cmd = if container_count == 1 {
+        format!(
+            r#"echo "Waiting for populate job to complete..."
+          kubectl wait --for=condition=complete job/loadtest-populate-1 -n {namespace} --timeout=30m
+          echo "Populate job completed!""#,
+            namespace = config.network_name
+        )
+    } else {
+        let job_indices: Vec<String> = (1..=container_count).map(|i| i.to_string()).collect();
+        format!(
+            r#"echo "Waiting for all populate jobs to complete..."
+          for i in {indices}; do
+            echo "Waiting for loadtest-populate-$i..."
+            kubectl wait --for=condition=complete job/loadtest-populate-$i -n {namespace} --timeout=30m
+          done
+          echo "All populate jobs completed!""#,
+            indices = job_indices.join(" "),
+            namespace = config.network_name
+        )
+    };
+
     format!(
         r#"apiVersion: batch/v1
 kind: Job
@@ -868,9 +903,7 @@ spec:
         - sh
         - -c
         - |
-          echo "Waiting for populate job to complete..."
-          kubectl wait --for=condition=complete job/loadtest-populate -n {namespace} --timeout=30m
-          echo "Populate job completed!"
+          {wait_for_populate_cmd}
       containers:
       - name: sync
         image: surreal-sync:latest
@@ -903,56 +936,61 @@ spec:
     )
 }
 
-/// Generate Verify Worker Job.
-/// Runs after sync completes and verifies data in SurrealDB.
+/// Generate Verify Worker Jobs.
+/// Creates separate jobs for each container (matching Docker Compose pattern).
+/// Each job verifies a specific set of tables with its matching seed.
 fn generate_verify_job(config: &ClusterConfig) -> String {
-    let container_count = config.containers.len();
-
-    let first_container = config.containers.first();
-    let default_resources = crate::config::ResourceLimits::default();
-    let worker_resources = first_container
-        .map(|w| &w.resources)
-        .unwrap_or(&default_resources);
-
     let tables_all: Vec<String> = config
         .containers
         .iter()
         .flat_map(|c| c.tables.clone())
         .collect();
-    let tables_arg = tables_all.join(",");
 
     let dry_run_flag = if config.dry_run {
-        " \\\n            --dry-run"
+        "\n        - --dry-run"
     } else {
         ""
     };
 
-    // For Kafka, wait for all sync jobs (one per table)
+    // Build wait-for-sync command
     let wait_for_sync_command = if config.source_type == SourceType::Kafka {
+        // For Kafka, wait for all sync jobs (one per table)
+        // Convert table names to valid K8s names (replace underscores with dashes)
+        let k8s_table_names: Vec<String> = tables_all
+            .iter()
+            .map(|t| t.replace('_', "-"))
+            .collect();
         format!(
-            r#"          echo "Waiting for all Kafka sync jobs to complete..."
+            r#"echo "Waiting for all Kafka sync jobs to complete..."
           for table in {}; do
             echo "Waiting for loadtest-sync-$table..."
             kubectl wait --for=condition=complete job/loadtest-sync-$table -n {} --timeout=30m
           done
           echo "All sync jobs completed!""#,
-            tables_all.join(" "),
+            k8s_table_names.join(" "),
             config.network_name
         )
     } else {
         format!(
-            r#"          echo "Waiting for sync job to complete..."
+            r#"echo "Waiting for sync job to complete..."
           kubectl wait --for=condition=complete job/loadtest-sync -n {} --timeout=30m
           echo "Sync job completed!""#,
             config.network_name
         )
     };
 
-    format!(
-        r#"apiVersion: batch/v1
+    // Generate separate jobs for each container (matching Docker Compose pattern)
+    let mut jobs = Vec::new();
+
+    for (idx, container) in config.containers.iter().enumerate() {
+        let job_index = idx + 1;
+        let tables_arg = container.tables.join(",");
+
+        let job = format!(
+            r#"apiVersion: batch/v1
 kind: Job
 metadata:
-  name: loadtest-verify
+  name: loadtest-verify-{job_index}
   namespace: {namespace}
   labels:
     app: loadtest-verify
@@ -960,9 +998,6 @@ metadata:
     # This job should wait for sync to complete
     argocd.argoproj.io/sync-wave: "2"
 spec:
-  parallelism: {container_count}
-  completions: {container_count}
-  completionMode: Indexed
   template:
     spec:
       serviceAccountName: loadtest-runner
@@ -974,26 +1009,37 @@ spec:
         - sh
         - -c
         - |
-{wait_for_sync_command}
+          {wait_for_sync_command}
       containers:
       - name: verify
         image: surreal-sync:latest
         imagePullPolicy: IfNotPresent
         command:
-        - /bin/sh
-        - -c
-        - |
-          surreal-sync loadtest verify \
-            --surreal-endpoint 'http://surrealdb:8000' \
-            --surreal-username root \
-            --surreal-password root \
-            --surreal-namespace {ns} \
-            --surreal-database {db} \
-            --schema /config/schema.yaml \
-            --tables {tables_arg} \
-            --seed $((42 + JOB_COMPLETION_INDEX)) \
-            --row-count {row_count}{dry_run_flag}
+        - surreal-sync
+        args:
+        - loadtest
+        - verify
+        - --surreal-endpoint
+        - 'http://surrealdb:8000'
+        - --surreal-username
+        - root
+        - --surreal-password
+        - root
+        - --surreal-namespace
+        - {ns}
+        - --surreal-database
+        - {db}
+        - --schema
+        - /config/schema.yaml
+        - --tables
+        - '{tables_arg}'
+        - --seed
+        - '{seed}'
+        - --row-count
+        - '{row_count}'{dry_run_flag}
         env:
+        - name: CONTAINER_ID
+          value: "verify-{job_index}"
         - name: RUST_LOG
           value: "info"
         resources:
@@ -1011,23 +1057,29 @@ spec:
       - name: config
         configMap:
           name: loadtest-config
-      restartPolicy: OnFailure
-"#,
-        namespace = config.network_name,
-        ns = config.surrealdb.namespace,
-        db = config.surrealdb.database,
-        container_count = container_count,
-        tables_arg = tables_arg,
-        row_count = first_container.map(|w| w.row_count).unwrap_or(10000),
-        dry_run_flag = dry_run_flag,
-        cpu_limit = worker_resources.cpu_limit,
-        memory_limit = worker_resources.memory_limit,
-        cpu_request = worker_resources.cpu_request.as_deref().unwrap_or("0.25"),
-        memory_request = worker_resources
-            .memory_request
-            .as_deref()
-            .unwrap_or("256Mi"),
-    )
+      restartPolicy: OnFailure"#,
+            namespace = config.network_name,
+            job_index = job_index,
+            wait_for_sync_command = wait_for_sync_command,
+            ns = config.surrealdb.namespace,
+            db = config.surrealdb.database,
+            tables_arg = tables_arg,
+            seed = container.seed,
+            row_count = container.row_count,
+            dry_run_flag = dry_run_flag,
+            cpu_limit = container.resources.cpu_limit,
+            memory_limit = container.resources.memory_limit,
+            cpu_request = container.resources.cpu_request.as_deref().unwrap_or("0.25"),
+            memory_request = container
+                .resources
+                .memory_request
+                .as_deref()
+                .unwrap_or("256Mi"),
+        );
+        jobs.push(job);
+    }
+
+    jobs.join("\n---\n")
 }
 
 /// Convert table name to PascalCase for Kafka message type.
@@ -1054,15 +1106,40 @@ fn generate_kafka_sync_jobs(config: &ClusterConfig) -> String {
 
     let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
 
+    // Build wait-for-populate command for all populate jobs
+    let container_count = config.containers.len();
+    let wait_for_populate_cmd = if container_count == 1 {
+        format!(
+            r#"echo "Waiting for populate job to complete..."
+          kubectl wait --for=condition=complete job/loadtest-populate-1 -n {namespace} --timeout=30m
+          echo "Populate job completed!""#,
+            namespace = config.network_name
+        )
+    } else {
+        let job_indices: Vec<String> = (1..=container_count).map(|i| i.to_string()).collect();
+        format!(
+            r#"echo "Waiting for all populate jobs to complete..."
+          for i in {indices}; do
+            echo "Waiting for loadtest-populate-$i..."
+            kubectl wait --for=condition=complete job/loadtest-populate-$i -n {namespace} --timeout=30m
+          done
+          echo "All populate jobs completed!""#,
+            indices = job_indices.join(" "),
+            namespace = config.network_name
+        )
+    };
+
     let mut jobs = Vec::new();
 
     for table_name in &tables {
         let message_type = to_pascal_case(table_name);
+        // Convert table name to valid K8s name (replace underscores with dashes)
+        let k8s_name = table_name.replace('_', "-");
         let job = format!(
             r#"apiVersion: batch/v1
 kind: Job
 metadata:
-  name: loadtest-sync-{table_name}
+  name: loadtest-sync-{k8s_name}
   namespace: {namespace}
   labels:
     app: loadtest-sync
@@ -1082,9 +1159,7 @@ spec:
         - sh
         - -c
         - |
-          echo "Waiting for populate job to complete..."
-          kubectl wait --for=condition=complete job/loadtest-populate -n {namespace} --timeout=30m
-          echo "Populate job completed!"
+          {wait_for_populate_cmd}
       containers:
       - name: sync
         image: surreal-sync:latest
@@ -1097,7 +1172,7 @@ spec:
         - --proto-path
         - '/proto/{table_name}.proto'
         - --brokers
-        - 'kafka:9092'
+        - 'kafka-0.kafka:9092'
         - --group-id
         - 'loadtest-sync-{table_name}'
         - --topic
@@ -1111,7 +1186,7 @@ spec:
         - --kafka-batch-size
         - '100'
         - --timeout
-        - '1m'
+        - '3m'
         - --to-namespace
         - {ns}
         - --to-database
@@ -1150,11 +1225,13 @@ spec:
           name: loadtest-proto
       restartPolicy: OnFailure"#,
             namespace = config.network_name,
+            k8s_name = k8s_name,
             table_name = table_name,
             message_type = message_type,
             ns = config.surrealdb.namespace,
             database = config.surrealdb.database,
             dry_run_flag = dry_run_flag,
+            wait_for_populate_cmd = wait_for_populate_cmd,
         );
         jobs.push(job);
     }
@@ -1216,9 +1293,10 @@ fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str,
         ),
         SourceType::Kafka => (
             "apache/kafka:latest",
+            // For Kafka with headless service, use pod-specific DNS name (kafka-0.kafka)
             format!(
                 r#"          echo "Waiting for Kafka to be ready..."
-          until /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server {db_name}:9092 2>/dev/null; do
+          until /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server {db_name}-0.{db_name}:9092 2>/dev/null; do
             echo "Kafka is not ready yet..."
             sleep 2
           done

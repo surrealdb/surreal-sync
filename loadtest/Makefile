@@ -1,5 +1,8 @@
 # Makefile for distributed load testing
 #
+# Use bash for shell commands (required for jq with startswith filter in k8s-wait-for-completion)
+SHELL := /bin/bash
+
 # Usage:
 #   make docker-build    # Build the surreal-sync Docker image
 #   make generate        # Generate Docker Compose configuration
@@ -469,6 +472,10 @@ k8s-run: kind-create kind-load k8s-clean
 	@echo "Timeout: $(TIMEOUT)s"
 	@echo ""
 	$(MAKE) generate SOURCE=$(SOURCE) PLATFORM=kubernetes
+	@echo "Creating namespace first..."
+	kubectl apply -f $(OUTPUT_DIR)/kubernetes/namespace.yaml
+	@echo "Waiting for namespace to be active..."
+	@kubectl wait --for=jsonpath='{.status.phase}'=Active namespace/loadtest --timeout=30s
 	kubectl apply -f $(OUTPUT_DIR)/kubernetes/
 	@echo "Resources applied. Monitoring for completion..."
 	@$(MAKE) -s k8s-wait-for-completion TIMEOUT=$(TIMEOUT) POLL_INTERVAL=$(POLL_INTERVAL)
@@ -506,7 +513,21 @@ k8s-wait-for-completion:
 				kubectl logs job/$$job -n loadtest 2>&1 | tail -80 || echo "(could not retrieve logs)"; \
 				echo ""; \
 			done; \
-			$(MAKE) k8s-clean 2>/dev/null || true; \
+			echo ""; \
+			echo "╔══════════════════════════════════════════════════════════════════╗"; \
+			echo "║  DEBUG: Resources preserved for investigation                    ║"; \
+			echo "╚══════════════════════════════════════════════════════════════════╝"; \
+			echo ""; \
+			echo "Useful commands:"; \
+			echo "  kubectl get pods -n loadtest              # List all pods"; \
+			echo "  kubectl get jobs -n loadtest              # List all jobs"; \
+			echo "  kubectl logs job/<job-name> -n loadtest   # Get job logs"; \
+			echo "  kubectl describe pod <pod-name> -n loadtest # Get pod details"; \
+			echo "  kubectl exec -it <pod-name> -n loadtest -- sh  # Shell into pod"; \
+			echo ""; \
+			echo "When done investigating, run:"; \
+			echo "  make k8s-clean"; \
+			echo ""; \
 			exit 2; \
 		fi; \
 		\
@@ -524,7 +545,18 @@ k8s-wait-for-completion:
 				echo "Verification results:"; \
 				echo "$$verify_logs" | grep -E "Table|matched|mismatched|missing|successfully|Error" | sed 's/^/  /'; \
 				echo ""; \
-				$(MAKE) k8s-clean 2>/dev/null || true; \
+				echo "╔══════════════════════════════════════════════════════════════════╗"; \
+				echo "║  DEBUG: Resources preserved for investigation                    ║"; \
+				echo "╚══════════════════════════════════════════════════════════════════╝"; \
+				echo ""; \
+				echo "Useful commands:"; \
+				echo "  kubectl get pods -n loadtest              # List all pods"; \
+				echo "  kubectl exec -it surrealdb-0 -n loadtest -- /surreal sql  # Query SurrealDB"; \
+				echo "  kubectl logs job/verify-<table> -n loadtest  # Verify logs"; \
+				echo ""; \
+				echo "When done investigating, run:"; \
+				echo "  make k8s-clean"; \
+				echo ""; \
 				exit 3; \
 			fi; \
 			echo "╔══════════════════════════════════════════════════════════════════╗"; \
@@ -564,7 +596,20 @@ k8s-wait-for-completion:
 			echo "Full job status:"; \
 			kubectl get jobs -n loadtest 2>/dev/null || true; \
 			echo ""; \
-			$(MAKE) k8s-clean 2>/dev/null || true; \
+			echo "╔══════════════════════════════════════════════════════════════════╗"; \
+			echo "║  DEBUG: Resources preserved for investigation                    ║"; \
+			echo "╚══════════════════════════════════════════════════════════════════╝"; \
+			echo ""; \
+			echo "Useful commands:"; \
+			echo "  kubectl get pods -n loadtest              # List all pods"; \
+			echo "  kubectl get jobs -n loadtest              # List all jobs"; \
+			echo "  kubectl describe pod <pod-name> -n loadtest # Get pod details"; \
+			echo "  kubectl logs <pod-name> -n loadtest       # Get pod logs"; \
+			echo "  kubectl logs <pod-name> -c init-wait-* -n loadtest  # Init container logs"; \
+			echo ""; \
+			echo "When done investigating, run:"; \
+			echo "  make k8s-clean"; \
+			echo ""; \
 			exit 1; \
 		fi; \
 		\

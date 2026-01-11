@@ -6,8 +6,7 @@ use serde_yaml::Value;
 
 /// Generate Kafka Docker service configuration.
 pub fn generate_kafka_docker_service(config: &DatabaseConfig) -> Value {
-    let mut service =
-        create_base_docker_service(&config.image, &config.resources, "loadtest-network");
+    let mut service = create_base_docker_service(&config.image, &config.resources, "loadtest");
 
     // Environment variables for Kafka (KRaft mode - no Zookeeper)
     // Using Apache Kafka native format (no CLUSTER_ID needed - auto-generated)
@@ -77,16 +76,24 @@ pub fn generate_kafka_k8s_statefulset(config: &DatabaseConfig, namespace: &str) 
         .unwrap_or("512Mi");
     let cpu_request = config.resources.cpu_request.as_deref().unwrap_or("0.5");
 
-    let volume_spec = if config.tmpfs_storage {
+    // For tmpfs, we use emptyDir with Memory medium (goes under volumes)
+    // For persistent storage, we use volumeClaimTemplates (goes at StatefulSet spec level)
+    let (volumes_section, volume_claim_templates) = if config.tmpfs_storage {
         let size = config.tmpfs_size.as_deref().unwrap_or("4Gi");
-        format!(
-            r#"      - name: kafka-data
+        (
+            format!(
+                r#"      volumes:
+      - name: kafka-data
         emptyDir:
           medium: Memory
           sizeLimit: {size}"#
+            ),
+            String::new(),
         )
     } else {
-        r#"  volumeClaimTemplates:
+        (
+            String::new(), // No volumes section needed for volumeClaimTemplates
+            r#"  volumeClaimTemplates:
   - metadata:
       name: kafka-data
     spec:
@@ -94,7 +101,8 @@ pub fn generate_kafka_k8s_statefulset(config: &DatabaseConfig, namespace: &str) 
       resources:
         requests:
           storage: 10Gi"#
-            .to_string()
+                .to_string(),
+        )
     };
 
     format!(
@@ -123,11 +131,11 @@ spec:
         - name: KAFKA_PROCESS_ROLES
           value: "broker,controller"
         - name: KAFKA_CONTROLLER_QUORUM_VOTERS
-          value: "1@kafka:9093"
+          value: "1@localhost:9093"
         - name: KAFKA_LISTENERS
-          value: "PLAINTEXT://kafka:19092,PLAINTEXT_HOST://kafka:9092,CONTROLLER://kafka:9093"
+          value: "PLAINTEXT://:19092,PLAINTEXT_HOST://:9092,CONTROLLER://:9093"
         - name: KAFKA_ADVERTISED_LISTENERS
-          value: "PLAINTEXT://kafka:19092,PLAINTEXT_HOST://kafka:9092"
+          value: "PLAINTEXT://kafka-0.kafka:19092,PLAINTEXT_HOST://kafka-0.kafka:9092"
         - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
           value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
         - name: KAFKA_CONTROLLER_LISTENER_NAMES
@@ -162,21 +170,25 @@ spec:
             command:
             - bash
             - -c
-            - /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092
+            - /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092
           initialDelaySeconds: 30
           periodSeconds: 10
+          timeoutSeconds: 30
         livenessProbe:
           exec:
             command:
             - bash
             - -c
-            - /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092
+            - /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092
           initialDelaySeconds: 60
           periodSeconds: 30
-      volumes:
-{}
+          timeoutSeconds: 30
+{volumes_section}
+{volume_claim_templates}
 "#,
-        namespace, config.image, cpu_limit, memory_limit, cpu_request, memory_request, volume_spec
+        namespace, config.image, cpu_limit, memory_limit, cpu_request, memory_request,
+        volumes_section = volumes_section,
+        volume_claim_templates = volume_claim_templates
     )
 }
 

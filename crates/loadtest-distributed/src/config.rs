@@ -280,7 +280,7 @@ pub struct ClusterConfig {
 }
 
 fn default_network_name() -> String {
-    "loadtest-network".to_string()
+    "loadtest".to_string()
 }
 
 use crate::partitioner::partition_tables;
@@ -315,7 +315,7 @@ pub fn build_cluster_config(
     );
 
     // Build container configurations
-    let connection_string = get_default_connection_string(source_type);
+    let connection_string = get_default_connection_string(source_type, platform);
 
     let containers = partition_tables(
         tables,
@@ -365,7 +365,7 @@ pub fn build_cluster_config(
 }
 
 /// Get default connection string for a source type.
-fn get_default_connection_string(source_type: SourceType) -> String {
+fn get_default_connection_string(source_type: SourceType, platform: Platform) -> String {
     match source_type {
         SourceType::MySQL => "mysql://root:root@mysql:3306/loadtest".to_string(),
         SourceType::PostgreSQL | SourceType::PostgreSQLLogical => {
@@ -375,7 +375,13 @@ fn get_default_connection_string(source_type: SourceType) -> String {
             "mongodb://root:root@mongodb:27017/loadtest?authSource=admin".to_string()
         }
         SourceType::Neo4j => "bolt://neo4j:password@neo4j:7687".to_string(),
-        SourceType::Kafka => "kafka:9092".to_string(),
+        SourceType::Kafka => {
+            // Kubernetes uses headless services, so we need the pod-specific DNS name
+            match platform {
+                Platform::Kubernetes => "kafka-0.kafka:9092".to_string(),
+                Platform::DockerCompose => "kafka:9092".to_string(),
+            }
+        }
         SourceType::Csv => "/data/csv".to_string(),
         SourceType::Jsonl => "/data/jsonl".to_string(),
     }

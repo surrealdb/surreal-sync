@@ -6,8 +6,7 @@ use serde_yaml::{Mapping, Value};
 
 /// Generate MongoDB Docker service configuration.
 pub fn generate_mongodb_docker_service(config: &DatabaseConfig) -> Value {
-    let mut service =
-        create_base_docker_service(&config.image, &config.resources, "loadtest-network");
+    let mut service = create_base_docker_service(&config.image, &config.resources, "loadtest");
 
     // Command for replica set mode (required for change streams)
     // Note: We use --noauth to avoid keyFile complexity in single-node loadtest replica sets
@@ -119,7 +118,7 @@ pub(crate) fn generate_mongodb_init_service_internal() -> Value {
     );
 
     // Networks
-    let networks = vec![Value::String("loadtest-network".to_string())];
+    let networks = vec![Value::String("loadtest".to_string())];
     service.insert(
         Value::String("networks".to_string()),
         Value::Sequence(networks),
