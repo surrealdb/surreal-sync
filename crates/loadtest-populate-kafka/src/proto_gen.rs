@@ -15,7 +15,7 @@ struct ProtoTypeInfo {
 
 /// Generate a .proto file content from a table schema.
 ///
-/// The message name is the capitalized table name (e.g., "users" -> "Users").
+/// The message name is the PascalCase of table name (e.g., "order_items" -> "OrderItems").
 pub fn generate_proto_for_table(
     table_schema: &GeneratorTableDefinition,
     package_name: &str,
@@ -40,8 +40,8 @@ pub fn generate_proto_for_table(
         proto.push_str("import \"google/protobuf/timestamp.proto\";\n\n");
     }
 
-    // Message name is capitalized table name
-    let message_name = capitalize(&table_schema.name);
+    // Message name is PascalCase of table name (e.g., "order_items" -> "OrderItems")
+    let message_name = to_pascal_case(&table_schema.name);
     proto.push_str(&format!("message {message_name} {{\n"));
 
     // Field number counter (starts at 1)
@@ -173,13 +173,18 @@ fn sync_type_to_proto_type(sync_type: &UniversalType) -> ProtoTypeInfo {
     }
 }
 
-/// Capitalize the first letter of a string.
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
-    }
+/// Convert a snake_case string to PascalCase.
+/// e.g., "order_items" -> "OrderItems", "users" -> "Users"
+fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -243,11 +248,13 @@ tables:
     }
 
     #[test]
-    fn test_capitalize() {
-        assert_eq!(capitalize("users"), "Users");
-        assert_eq!(capitalize("orders"), "Orders");
-        assert_eq!(capitalize(""), "");
-        assert_eq!(capitalize("a"), "A");
+    fn test_to_pascal_case() {
+        assert_eq!(to_pascal_case("users"), "Users");
+        assert_eq!(to_pascal_case("orders"), "Orders");
+        assert_eq!(to_pascal_case("order_items"), "OrderItems");
+        assert_eq!(to_pascal_case(""), "");
+        assert_eq!(to_pascal_case("a"), "A");
+        assert_eq!(to_pascal_case("foo_bar_baz"), "FooBarBaz");
     }
 
     #[test]

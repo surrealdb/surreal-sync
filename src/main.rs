@@ -79,7 +79,7 @@ use surreal_sync_postgresql_trigger;
 // Load testing imports
 use loadtest_populate_csv::CSVPopulateArgs;
 use loadtest_populate_jsonl::JSONLPopulateArgs;
-use loadtest_populate_kafka::KafkaPopulateArgs;
+use loadtest_populate_kafka::{generate_proto_for_table, KafkaPopulateArgs};
 use loadtest_populate_mongodb::MongoDBPopulateArgs;
 use loadtest_populate_mysql::MySQLPopulateArgs;
 use loadtest_populate_neo4j::Neo4jPopulateArgs;
@@ -91,7 +91,7 @@ use sync_core::Schema;
 use loadtest_distributed::{
     build_cluster_config,
     generator::{ConfigGenerator, DockerComposeGenerator, KubernetesGenerator},
-    AggregateServerArgs, GenerateArgs, Platform,
+    AggregateServerArgs, GenerateArgs, Platform, SourceType,
 };
 
 #[derive(Parser)]
@@ -666,6 +666,11 @@ struct KafkaArgs {
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
+
+    /// Timeout for consuming messages (e.g. "1h", "30m", "300s")
+    /// After this time, the consumer will stop and exit.
+    #[arg(long, default_value = "1h")]
+    timeout: String,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -1427,10 +1432,17 @@ async fn run_postgresql_logical_incremental(
 async fn run_kafka(args: KafkaArgs) -> anyhow::Result<()> {
     tracing::info!("Starting Kafka consumer sync");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+    tracing::info!("Timeout: {}", args.timeout);
 
     if args.surreal.dry_run {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
+
+    // Parse timeout duration
+    let timeout_secs = parse_duration_to_secs(&args.timeout)
+        .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
+    let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_secs);
+    tracing::info!("Will consume until deadline: {}", deadline);
 
     let table_schema = if let Some(schema_path) = args.schema_file {
         let schema = Schema::from_file(&schema_path)
@@ -1452,7 +1464,7 @@ async fn run_kafka(args: KafkaArgs) -> anyhow::Result<()> {
         args.to_namespace,
         args.to_database,
         surreal_sync_kafka::SurrealOpts::from(&args.surreal),
-        chrono::Utc::now() + chrono::Duration::hours(1),
+        deadline,
         table_schema,
     )
     .await?;
@@ -2192,6 +2204,21 @@ async fn run_loadtest_generate(args: GenerateArgs) -> anyhow::Result<()> {
         .with_context(|| format!("Failed to copy schema from {:?}", args.schema))?;
     tracing::info!("Copied schema to: {}", schema_dest.display());
 
+    // Generate proto files for Kafka source
+    if source_type == SourceType::Kafka {
+        let proto_dir = output_dir.join("config").join("proto");
+        std::fs::create_dir_all(&proto_dir)
+            .with_context(|| format!("Failed to create proto directory: {proto_dir:?}"))?;
+
+        for table in &schema.tables {
+            let proto_content = generate_proto_for_table(table, "loadtest");
+            let proto_path = proto_dir.join(format!("{}.proto", table.name));
+            std::fs::write(&proto_path, &proto_content)
+                .with_context(|| format!("Failed to write proto file: {proto_path:?}"))?;
+            tracing::info!("Generated proto file: {}", proto_path.display());
+        }
+    }
+
     tracing::info!(
         "Configuration generated successfully in: {}",
         output_dir.display()
@@ -2256,6 +2283,43 @@ fn extract_json_fields_from_schema(schema: &Schema) -> Vec<String> {
         }
     }
     json_fields
+}
+
+/// Parse a duration string like "1h", "30m", "300s", "300" into seconds.
+/// Supports:
+/// - Plain numbers (interpreted as seconds): "300"
+/// - Seconds suffix: "300s"
+/// - Minutes suffix: "30m"
+/// - Hours suffix: "1h"
+fn parse_duration_to_secs(s: &str) -> anyhow::Result<i64> {
+    let s = s.trim();
+    if s.is_empty() {
+        anyhow::bail!("Empty duration string");
+    }
+
+    // Check for suffix
+    if let Some(num_str) = s.strip_suffix('h') {
+        let hours: i64 = num_str
+            .parse()
+            .with_context(|| format!("Invalid hours value: {num_str}"))?;
+        return Ok(hours * 3600);
+    }
+    if let Some(num_str) = s.strip_suffix('m') {
+        let minutes: i64 = num_str
+            .parse()
+            .with_context(|| format!("Invalid minutes value: {num_str}"))?;
+        return Ok(minutes * 60);
+    }
+    if let Some(num_str) = s.strip_suffix('s') {
+        let secs: i64 = num_str
+            .parse()
+            .with_context(|| format!("Invalid seconds value: {num_str}"))?;
+        return Ok(secs);
+    }
+
+    // No suffix - treat as seconds
+    s.parse::<i64>()
+        .with_context(|| format!("Invalid duration value: {s}"))
 }
 
 /// Extract database name from a PostgreSQL connection string.

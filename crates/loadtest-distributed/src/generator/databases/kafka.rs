@@ -10,6 +10,7 @@ pub fn generate_kafka_docker_service(config: &DatabaseConfig) -> Value {
         create_base_docker_service(&config.image, &config.resources, "loadtest-network");
 
     // Environment variables for Kafka (KRaft mode - no Zookeeper)
+    // Using Apache Kafka native format (no CLUSTER_ID needed - auto-generated)
     add_environment(
         &mut service,
         vec![
@@ -18,22 +19,23 @@ pub fn generate_kafka_docker_service(config: &DatabaseConfig) -> Value {
             ("KAFKA_CONTROLLER_QUORUM_VOTERS", "1@kafka:9093"),
             (
                 "KAFKA_LISTENERS",
-                "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093",
+                "PLAINTEXT://kafka:19092,PLAINTEXT_HOST://kafka:9092,CONTROLLER://kafka:9093",
             ),
-            ("KAFKA_ADVERTISED_LISTENERS", "PLAINTEXT://kafka:9092"),
+            (
+                "KAFKA_ADVERTISED_LISTENERS",
+                "PLAINTEXT://kafka:19092,PLAINTEXT_HOST://kafka:9092",
+            ),
             (
                 "KAFKA_LISTENER_SECURITY_PROTOCOL_MAP",
-                "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
+                "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT",
             ),
             ("KAFKA_CONTROLLER_LISTENER_NAMES", "CONTROLLER"),
-            ("KAFKA_INTER_BROKER_LISTENER_NAME", "PLAINTEXT"),
-            ("CLUSTER_ID", "loadtest-kafka-cluster-001"),
             // Performance settings
             ("KAFKA_NUM_PARTITIONS", "8"),
-            ("KAFKA_DEFAULT_REPLICATION_FACTOR", "1"),
-            ("KAFKA_LOG_RETENTION_HOURS", "1"),
-            ("KAFKA_LOG_RETENTION_BYTES", "1073741824"),
-            ("KAFKA_AUTO_CREATE_TOPICS_ENABLE", "true"),
+            ("KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR", "1"),
+            ("KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR", "1"),
+            ("KAFKA_TRANSACTION_STATE_LOG_MIN_ISR", "1"),
+            ("KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS", "0"),
         ],
     );
 
@@ -48,12 +50,13 @@ pub fn generate_kafka_docker_service(config: &DatabaseConfig) -> Value {
         );
     }
 
-    // Healthcheck
+    // Healthcheck - Apache Kafka image uses .sh scripts
+    // Use kafka:9092 to match KAFKA_ADVERTISED_LISTENERS
     add_healthcheck(
         &mut service,
         vec![
             "CMD-SHELL",
-            "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1",
+            "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092 || exit 1",
         ],
         "10s",
         "10s",
@@ -122,25 +125,23 @@ spec:
         - name: KAFKA_CONTROLLER_QUORUM_VOTERS
           value: "1@kafka:9093"
         - name: KAFKA_LISTENERS
-          value: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+          value: "PLAINTEXT://kafka:19092,PLAINTEXT_HOST://kafka:9092,CONTROLLER://kafka:9093"
         - name: KAFKA_ADVERTISED_LISTENERS
-          value: "PLAINTEXT://kafka:9092"
+          value: "PLAINTEXT://kafka:19092,PLAINTEXT_HOST://kafka:9092"
         - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
-          value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+          value: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
         - name: KAFKA_CONTROLLER_LISTENER_NAMES
           value: "CONTROLLER"
-        - name: KAFKA_INTER_BROKER_LISTENER_NAME
-          value: "PLAINTEXT"
-        - name: CLUSTER_ID
-          value: "loadtest-kafka-cluster-001"
         - name: KAFKA_NUM_PARTITIONS
           value: "8"
-        - name: KAFKA_DEFAULT_REPLICATION_FACTOR
+        - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
           value: "1"
-        - name: KAFKA_LOG_RETENTION_HOURS
+        - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
           value: "1"
-        - name: KAFKA_AUTO_CREATE_TOPICS_ENABLE
-          value: "true"
+        - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+          value: "1"
+        - name: KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS
+          value: "0"
         ports:
         - containerPort: 9092
           name: kafka
@@ -161,7 +162,7 @@ spec:
             command:
             - bash
             - -c
-            - kafka-broker-api-versions --bootstrap-server localhost:9092
+            - /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092
           initialDelaySeconds: 30
           periodSeconds: 10
         livenessProbe:
@@ -169,7 +170,7 @@ spec:
             command:
             - bash
             - -c
-            - kafka-broker-api-versions --bootstrap-server localhost:9092
+            - /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092
           initialDelaySeconds: 60
           periodSeconds: 30
       volumes:
@@ -210,7 +211,7 @@ mod tests {
     fn test_config() -> DatabaseConfig {
         DatabaseConfig {
             source_type: SourceType::Kafka,
-            image: "confluentinc/cp-kafka:7.5.0".to_string(),
+            image: "apache/kafka:latest".to_string(),
             resources: ResourceLimits::default(),
             tmpfs_storage: false,
             tmpfs_size: None,
@@ -226,7 +227,7 @@ mod tests {
         let service = generate_kafka_docker_service(&config);
         let yaml = serde_yaml::to_string(&service).unwrap();
 
-        assert!(yaml.contains("confluentinc/cp-kafka"));
+        assert!(yaml.contains("apache/kafka"));
         assert!(yaml.contains("KAFKA_PROCESS_ROLES=broker,controller"));
         assert!(yaml.contains("KAFKA_NUM_PARTITIONS=8"));
     }

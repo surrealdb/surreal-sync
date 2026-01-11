@@ -382,7 +382,7 @@ fn get_default_database_image(source_type: SourceType) -> String {
         SourceType::PostgreSQLLogical => "debezium/postgres:16".to_string(),
         SourceType::MongoDB => "mongo:7".to_string(),
         SourceType::Neo4j => "neo4j:5".to_string(),
-        SourceType::Kafka => "confluentinc/cp-kafka:7.5.0".to_string(),
+        SourceType::Kafka => "apache/kafka:latest".to_string(),
         SourceType::Csv | SourceType::Jsonl => "busybox:latest".to_string(),
     }
 }

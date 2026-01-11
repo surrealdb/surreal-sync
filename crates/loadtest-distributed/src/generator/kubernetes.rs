@@ -638,29 +638,23 @@ fn generate_sync_job(config: &ClusterConfig) -> String {
             )
         }
         SourceType::Kafka => {
-            format!(
-                r#"        - from
-        - kafka
-        - full
-        - --brokers
-        - 'kafka:9092'
-        - --to-namespace
-        - {ns}
-        - --to-database
-        - {database}
-        - --surreal-endpoint
-        - 'http://surrealdb:8000'
-        - --surreal-username
-        - root
-        - --surreal-password
-        - root{dry_run}"#,
-                ns = config.surrealdb.namespace,
-                database = config.surrealdb.database,
-                dry_run = if config.dry_run {
-                    "\n        - --dry-run"
-                } else {
-                    ""
-                }
+            // Kafka sync requires proto files to be shared between populate and sync containers.
+            // For Kubernetes, proto files should be distributed via ConfigMap:
+            //
+            // 1. The `loadtest generate` command creates proto files at config time (before any
+            //    containers run) by calling `generate_proto_for_table()` for each table.
+            // 2. These proto files are bundled into a ConfigMap (e.g., `loadtest-proto-configmap`).
+            // 3. Sync Jobs mount the ConfigMap as a volume at `/proto/` directory.
+            // 4. Each sync container reads its table's proto file (e.g., `/proto/users.proto`)
+            //    to decode protobuf messages from Kafka.
+            //
+            // TODO: Implement Kafka K8s support with:
+            // 1. ConfigMap containing proto files (created by `loadtest generate`)
+            // 2. Multiple sync Jobs (one per topic, like docker-compose implementation)
+            // 3. Each sync Job mounts the ConfigMap and specifies --proto-path '/proto/<table>.proto'
+            unimplemented!(
+                "Kafka loadtest is not yet supported on Kubernetes. Use docker-compose instead: \
+                 make run SOURCE=kafka"
             )
         }
         SourceType::Csv | SourceType::Jsonl => {

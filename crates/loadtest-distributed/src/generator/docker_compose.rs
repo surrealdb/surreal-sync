@@ -54,9 +54,20 @@ impl ConfigGenerator for DockerComposeGenerator {
             services.insert(Value::String(container.id.clone()), populate_service);
         }
 
-        // Add sync service (runs surreal-sync from <source> after populate containers complete)
-        let sync_service = generate_sync_service(config);
-        services.insert(Value::String("sync".to_string()), sync_service);
+        // Add sync service(s)
+        // For Kafka, we need one sync service per topic (table) since Kafka CLI handles one topic at a time
+        if config.source_type == SourceType::Kafka {
+            for (idx, container) in config.containers.iter().enumerate() {
+                for table in &container.tables {
+                    let sync_service = generate_kafka_sync_service(config, table, idx + 1);
+                    services.insert(Value::String(format!("sync-{table}")), sync_service);
+                }
+            }
+        } else {
+            // For other sources, a single sync service handles all tables
+            let sync_service = generate_sync_service(config);
+            services.insert(Value::String("sync".to_string()), sync_service);
+        }
 
         // Add verify container services (run after sync completes)
         for container in &config.containers {
@@ -468,10 +479,9 @@ fn generate_sync_service(config: &ClusterConfig) -> Value {
             )
         }
         SourceType::Kafka => {
-            format!(
-                "from kafka full --brokers 'kafka:9092' --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root{}",
-                config.surrealdb.namespace, config.surrealdb.database, dry_run_flag
-            )
+            // Kafka uses per-topic sync services (generate_kafka_sync_service),
+            // this case should not be reached
+            unreachable!("Kafka uses per-topic sync services, not a single sync service")
         }
         SourceType::Csv => {
             format!(
@@ -563,6 +573,138 @@ fn generate_sync_service(config: &ClusterConfig) -> Value {
     Value::Mapping(service)
 }
 
+/// Generate Kafka sync service configuration for a single topic.
+///
+/// Kafka needs one sync service per topic because the CLI handles one topic at a time.
+/// Each sync service reads from a shared proto volume and consumes from its assigned topic.
+fn generate_kafka_sync_service(
+    config: &ClusterConfig,
+    table_name: &str,
+    container_idx: usize,
+) -> Value {
+    let mut service = Mapping::new();
+
+    service.insert(
+        Value::String("image".to_string()),
+        Value::String("surreal-sync:latest".to_string()),
+    );
+
+    // Labels for cleanup
+    let mut labels = Mapping::new();
+    labels.insert(
+        Value::String("com.surreal-loadtest".to_string()),
+        Value::String("true".to_string()),
+    );
+    service.insert(Value::String("labels".to_string()), Value::Mapping(labels));
+
+    let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
+
+    // Kafka sync command - reads from topic, uses proto file for schema
+    // Message type is pascal case of table name (e.g., "users" -> "Users")
+    // Timeout is set to 1 minute (60s) - enough time to consume populated messages for small datasets
+    let message_type = to_pascal_case(table_name);
+    let command = format!(
+        "from kafka \
+        --proto-path '/proto/{table_name}.proto' \
+        --brokers 'kafka:9092' \
+        --group-id 'loadtest-sync-{table_name}' \
+        --topic '{table_name}' \
+        --message-type '{message_type}' \
+        --buffer-size 1000 \
+        --session-timeout-ms 30000 \
+        --kafka-batch-size 100 \
+        --timeout '1m' \
+        --to-namespace {} \
+        --to-database {} \
+        --surreal-endpoint 'http://surrealdb:8000' \
+        --surreal-username root \
+        --surreal-password root \
+        --schema-file /config/schema.yaml{dry_run_flag}",
+        config.surrealdb.namespace, config.surrealdb.database
+    );
+    service.insert(Value::String("command".to_string()), Value::String(command));
+
+    // Environment
+    let environment = vec![Value::String("RUST_LOG=info".to_string())];
+    service.insert(
+        Value::String("environment".to_string()),
+        Value::Sequence(environment),
+    );
+
+    // Volumes - mount config and proto files (proto files generated at config time)
+    let volumes = vec![
+        Value::String("./config:/config:ro".to_string()),
+        Value::String("./config/proto:/proto:ro".to_string()),
+    ];
+    service.insert(
+        Value::String("volumes".to_string()),
+        Value::Sequence(volumes),
+    );
+
+    // Networks
+    let networks = vec![Value::String(config.network_name.clone())];
+    service.insert(
+        Value::String("networks".to_string()),
+        Value::Sequence(networks),
+    );
+
+    // Dependencies - wait for populate container to complete
+    let mut depends_on = Mapping::new();
+
+    // Wait for the populate container that handles this table
+    let mut populate_dep = Mapping::new();
+    populate_dep.insert(
+        Value::String("condition".to_string()),
+        Value::String("service_completed_successfully".to_string()),
+    );
+    depends_on.insert(
+        Value::String(format!("populate-{container_idx}")),
+        Value::Mapping(populate_dep),
+    );
+
+    // Wait for SurrealDB to be healthy
+    let mut surreal_dep = Mapping::new();
+    surreal_dep.insert(
+        Value::String("condition".to_string()),
+        Value::String("service_healthy".to_string()),
+    );
+    depends_on.insert(
+        Value::String("surrealdb".to_string()),
+        Value::Mapping(surreal_dep),
+    );
+
+    // Wait for Kafka to be healthy
+    let mut kafka_dep = Mapping::new();
+    kafka_dep.insert(
+        Value::String("condition".to_string()),
+        Value::String("service_healthy".to_string()),
+    );
+    depends_on.insert(
+        Value::String("kafka".to_string()),
+        Value::Mapping(kafka_dep),
+    );
+
+    service.insert(
+        Value::String("depends_on".to_string()),
+        Value::Mapping(depends_on),
+    );
+
+    Value::Mapping(service)
+}
+
+/// Convert a snake_case string to PascalCase.
+fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+            }
+        })
+        .collect()
+}
+
 /// Generate verify service configuration (runs after sync completes).
 fn generate_verify_service(
     config: &ClusterConfig,
@@ -623,12 +765,28 @@ fn generate_verify_service(
     // Dependencies - wait for sync to complete
     let mut depends_on = Mapping::new();
 
-    let mut sync_dep = Mapping::new();
-    sync_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_completed_successfully".to_string()),
-    );
-    depends_on.insert(Value::String("sync".to_string()), Value::Mapping(sync_dep));
+    // For Kafka, wait for all sync-<table> services; for other sources, wait for single "sync" service
+    if config.source_type == SourceType::Kafka {
+        // Wait for sync services for tables this container handles
+        for table in &container.tables {
+            let mut sync_dep = Mapping::new();
+            sync_dep.insert(
+                Value::String("condition".to_string()),
+                Value::String("service_completed_successfully".to_string()),
+            );
+            depends_on.insert(
+                Value::String(format!("sync-{table}")),
+                Value::Mapping(sync_dep),
+            );
+        }
+    } else {
+        let mut sync_dep = Mapping::new();
+        sync_dep.insert(
+            Value::String("condition".to_string()),
+            Value::String("service_completed_successfully".to_string()),
+        );
+        depends_on.insert(Value::String("sync".to_string()), Value::Mapping(sync_dep));
+    }
 
     // Wait for aggregator to be ready (so we can POST metrics)
     let mut aggregator_dep = Mapping::new();

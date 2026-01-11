@@ -7,12 +7,14 @@
 //! to break the circular dependency between kafka and kafka-types.
 
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use clap::Parser;
 use kafka_types::Message;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use sync_core::TableDefinition;
-use tracing::{debug, error, info};
+use tokio::time::{sleep, Duration};
+use tracing::{debug, info, warn};
 
 use crate::consumer::ConsumerConfig;
 use crate::Client;
@@ -34,25 +36,35 @@ pub struct SurrealOpts {
 #[derive(Debug, Clone, Parser)]
 pub struct Config {
     /// Proto file path
+    #[clap(long)]
     pub proto_path: String,
-    /// Kafka brokers
+    /// Kafka brokers (comma-separated or multiple --brokers)
+    #[clap(long, value_delimiter = ',', required = true)]
     pub brokers: Vec<String>,
     /// Consumer group ID
+    #[clap(long)]
     pub group_id: String,
     /// Topic to consume from
+    #[clap(long)]
     pub topic: String,
     /// Protobuf message type name
+    #[clap(long)]
     pub message_type: String,
     /// Maximum buffer size for peeked messages
+    #[clap(long, default_value_t = 1000)]
     pub buffer_size: usize,
     /// Session timeout in milliseconds
+    #[clap(long, default_value = "30000")]
     pub session_timeout_ms: String,
     /// Number of consumers in the consumer group to spawn
     #[clap(long, default_value_t = 1)]
     pub num_consumers: usize,
-    /// Batch size for processing messages
+    /// Number of messages to read from Kafka per batch before processing.
+    /// Messages are read in batches, processed (written to SurrealDB one by one),
+    /// then offsets are committed to Kafka. Larger batches improve throughput
+    /// but increase memory usage and potential duplicate processing on failure.
     #[clap(long, default_value_t = 100)]
-    pub batch_size: usize,
+    pub kafka_batch_size: usize,
     /// Optional table name to use in SurrealDB (defaults to topic name)
     #[clap(long)]
     pub table_name: Option<String>,
@@ -66,17 +78,23 @@ pub struct Config {
 }
 
 /// Run incremental sync from Kafka to SurrealDB.
+///
+/// The sync will run until the deadline is reached. Once the deadline passes,
+/// the function will gracefully terminate all consumers and exit.
 pub async fn run_incremental_sync(
     config: Config,
     to_namespace: String,
     to_database: String,
     to_opts: SurrealOpts,
-    _deadline: chrono::DateTime<chrono::Utc>,
+    deadline: DateTime<Utc>,
     table_schema: Option<TableDefinition>,
 ) -> Result<()> {
+    let duration_until_deadline = deadline.signed_duration_since(Utc::now());
     info!(
-        "Starting Kafka incremental sync for message {} from topic {}",
-        config.message_type, config.topic
+        "Starting Kafka incremental sync for message {} from topic {} (deadline in {} seconds)",
+        config.message_type,
+        config.topic,
+        duration_until_deadline.num_seconds()
     );
 
     let surreal_conn_opts = surreal_sync_surreal::SurrealOpts {
@@ -179,19 +197,44 @@ pub async fn run_incremental_sync(
 
     let num_consumers = config.num_consumers;
     info!("Spawning {num_consumers} consumers in the same consumer group...");
-    let handles =
-        client.spawn_batch_consumer_group(config.num_consumers, config.batch_size, processor)?;
+    let handles = client.spawn_batch_consumer_group(
+        config.num_consumers,
+        config.kafka_batch_size,
+        processor,
+    )?;
 
-    info!("Consumers running. Press Ctrl+C to stop.");
+    // Calculate how long to wait until deadline
+    let duration_until_deadline = deadline.signed_duration_since(Utc::now());
+    let timeout_duration = if duration_until_deadline.num_seconds() > 0 {
+        Duration::from_secs(duration_until_deadline.num_seconds() as u64)
+    } else {
+        warn!("Deadline already passed, using minimal timeout");
+        Duration::from_secs(1)
+    };
 
-    // Wait for all consumers (runs indefinitely until Ctrl+C)
+    info!(
+        "Consumers running for {} seconds until deadline...",
+        timeout_duration.as_secs()
+    );
+
+    // Wait for deadline to pass
+    sleep(timeout_duration).await;
+    info!("Deadline reached, aborting consumer tasks");
+
+    // Abort all consumer tasks
     for (i, handle) in handles.into_iter().enumerate() {
-        match handle.await {
-            Ok(Ok(())) => info!("Consumer {i} finished successfully"),
-            Ok(Err(e)) => error!("Consumer {i} error: {e}"),
-            Err(e) => error!("Consumer {i} task error: {e}"),
-        }
+        handle.abort();
+        debug!("Aborted consumer task {i}");
     }
+
+    // Brief delay to allow cleanup
+    sleep(Duration::from_millis(100)).await;
+
+    let final_count = processed_count.load(Ordering::SeqCst);
+    info!(
+        "Kafka sync completed: processed {} messages total from topic {}",
+        final_count, table_name
+    );
 
     Ok(())
 }
