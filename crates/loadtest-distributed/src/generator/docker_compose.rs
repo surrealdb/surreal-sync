@@ -898,6 +898,8 @@ mod tests {
             },
             surrealdb: SurrealDbConfig::default(),
             schema_path: "schema.yaml".to_string(),
+            schema_content: None, // Not needed for Docker Compose (mounted as volume)
+            proto_contents: None, // Not needed for Docker Compose (mounted as volume)
             network_name: "loadtest-network".to_string(),
             dry_run,
         }

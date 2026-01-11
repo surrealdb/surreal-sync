@@ -69,9 +69,8 @@
 
 .PHONY: docker-build generate run run-detached clean logs logs-verify logs-sync logs-populate status help \
 	test-dry-run-docker-compose test-dry-run-kubernetes \
-	run-mysql run-postgresql run-mongodb run-neo4j run-kafka run-csv run-jsonl \
-	kind-create kind-delete kind-load k8s-run-mysql k8s-run-postgresql k8s-run-mongodb k8s-run-neo4j \
-	verify-aggregator test-all-sources down wait-for-completion
+	kind-create kind-delete kind-load kind-load-source-image k8s-run k8s-clean k8s-wait-for-completion \
+	verify-aggregator test-all-sources down wait-for-completion wait-for-start
 
 # Configuration (override with environment variables)
 SCHEMA ?= ./config/schema.yaml
@@ -390,52 +389,6 @@ test-dry-run-kubernetes: docker-build
 	-kubectl delete namespace loadtest --ignore-not-found 2>/dev/null
 	@echo "=== Kubernetes dry-run test PASSED ==="
 
-# =============================================================================
-# Source-specific Docker Compose targets (real databases, no dry-run)
-# =============================================================================
-
-run-mysql: docker-build
-	@echo "Running load test with MySQL..."
-	$(MAKE) generate SOURCE=mysql PLATFORM=docker-compose
-	$(MAKE) wait-for-start
-	@$(MAKE) -s wait-for-completion TIMEOUT=$(TIMEOUT) POLL_INTERVAL=$(POLL_INTERVAL)
-
-run-postgresql: docker-build
-	@echo "Running load test with PostgreSQL..."
-	$(MAKE) generate SOURCE=postgresql PLATFORM=docker-compose
-	$(MAKE) wait-for-start
-	@$(MAKE) -s wait-for-completion TIMEOUT=$(TIMEOUT) POLL_INTERVAL=$(POLL_INTERVAL)
-
-run-mongodb: docker-build
-	@echo "Running load test with MongoDB..."
-	$(MAKE) generate SOURCE=mongodb PLATFORM=docker-compose
-	$(MAKE) wait-for-start
-	@$(MAKE) -s wait-for-completion TIMEOUT=$(TIMEOUT) POLL_INTERVAL=$(POLL_INTERVAL)
-
-run-neo4j: docker-build
-	@echo "Running load test with Neo4j..."
-	$(MAKE) generate SOURCE=neo4j PLATFORM=docker-compose
-	$(MAKE) wait-for-start
-	@$(MAKE) -s wait-for-completion TIMEOUT=$(TIMEOUT) POLL_INTERVAL=$(POLL_INTERVAL)
-
-run-kafka: docker-build
-	@echo "Running load test with Kafka..."
-	$(MAKE) generate SOURCE=kafka PLATFORM=docker-compose
-	$(MAKE) wait-for-start
-	@$(MAKE) -s wait-for-completion TIMEOUT=$(TIMEOUT) POLL_INTERVAL=$(POLL_INTERVAL)
-
-run-csv: docker-build
-	@echo "Running load test with CSV..."
-	$(MAKE) generate SOURCE=csv PLATFORM=docker-compose
-	$(MAKE) wait-for-start
-	@$(MAKE) -s wait-for-completion TIMEOUT=$(TIMEOUT) POLL_INTERVAL=$(POLL_INTERVAL)
-
-run-jsonl: docker-build
-	@echo "Running load test with JSONL..."
-	$(MAKE) generate SOURCE=jsonl PLATFORM=docker-compose
-	$(MAKE) wait-for-start
-	@$(MAKE) -s wait-for-completion TIMEOUT=$(TIMEOUT) POLL_INTERVAL=$(POLL_INTERVAL)
-
 # Helper to start containers in detached mode
 wait-for-start:
 	cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml up -d --build
@@ -454,40 +407,169 @@ kind-delete:
 	kind delete cluster --name $(KIND_CLUSTER)
 
 kind-load: docker-build
-	@echo "Loading image into kind cluster '$(KIND_CLUSTER)'..."
+	@echo "Loading images into kind cluster '$(KIND_CLUSTER)'..."
+	@echo "Loading surreal-sync image..."
 	kind load docker-image $(IMAGE_NAME) --name $(KIND_CLUSTER)
+	@echo "Loading kubectl image for init containers..."
+	docker pull bitnami/kubectl:latest 2>/dev/null || true
+	kind load docker-image bitnami/kubectl:latest --name $(KIND_CLUSTER) 2>/dev/null || true
+	@echo "Loading busybox image for init containers..."
+	docker pull busybox:latest 2>/dev/null || true
+	kind load docker-image busybox:latest --name $(KIND_CLUSTER) 2>/dev/null || true
+	@echo "Loading SurrealDB image..."
+	docker pull surrealdb/surrealdb:latest 2>/dev/null || true
+	kind load docker-image surrealdb/surrealdb:latest --name $(KIND_CLUSTER) 2>/dev/null || true
+	@echo "Loading source-specific image for $(SOURCE)..."
+	@$(MAKE) -s kind-load-source-image SOURCE=$(SOURCE)
+
+# Load source-specific database image
+kind-load-source-image:
+ifeq ($(SOURCE),mysql)
+	docker pull mysql:8.0 2>/dev/null || true
+	kind load docker-image mysql:8.0 --name $(KIND_CLUSTER) 2>/dev/null || true
+else ifeq ($(SOURCE),postgresql)
+	docker pull postgres:16 2>/dev/null || true
+	kind load docker-image postgres:16 --name $(KIND_CLUSTER) 2>/dev/null || true
+else ifeq ($(SOURCE),postgresql-logical)
+	docker pull debezium/postgres:16 2>/dev/null || true
+	kind load docker-image debezium/postgres:16 --name $(KIND_CLUSTER) 2>/dev/null || true
+else ifeq ($(SOURCE),mongodb)
+	docker pull mongo:7 2>/dev/null || true
+	kind load docker-image mongo:7 --name $(KIND_CLUSTER) 2>/dev/null || true
+else ifeq ($(SOURCE),neo4j)
+	docker pull neo4j:5 2>/dev/null || true
+	kind load docker-image neo4j:5 --name $(KIND_CLUSTER) 2>/dev/null || true
+else ifeq ($(SOURCE),kafka)
+	docker pull apache/kafka:latest 2>/dev/null || true
+	kind load docker-image apache/kafka:latest --name $(KIND_CLUSTER) 2>/dev/null || true
+endif
+	@echo "Source image loaded for $(SOURCE)"
 
 # =============================================================================
-# Kubernetes source-specific targets (requires kind or other k8s cluster)
+# Kubernetes Load Testing (kind)
+# =============================================================================
+#
+# Usage: make k8s-run SOURCE=mysql TIMEOUT=180
+#
+# Key Differences from Docker Compose:
+# | Aspect           | Docker Compose                  | Kubernetes                            |
+# |------------------|---------------------------------|---------------------------------------|
+# | Dependency       | depends_on: condition           | Init containers with kubectl wait     |
+# | Schema mount     | ./config:/config:ro             | ConfigMap with embedded content       |
+# | Job completion   | service_completed_successfully  | kubectl wait --for=condition=complete |
+# | Database health  | service_healthy                 | Init container with health script     |
+# | RBAC             | N/A                             | ServiceAccount + Role + RoleBinding   |
+# | Image            | Local docker build              | kind load docker-image                |
+#
 # =============================================================================
 
-k8s-run-mysql: kind-load
-	@echo "Running Kubernetes load test with MySQL..."
-	$(MAKE) generate SOURCE=mysql PLATFORM=kubernetes
+k8s-run: kind-create kind-load k8s-clean
+	@echo "=== Starting Kubernetes load test ==="
+	@echo "Source: $(SOURCE)"
+	@echo "Timeout: $(TIMEOUT)s"
+	@echo ""
+	$(MAKE) generate SOURCE=$(SOURCE) PLATFORM=kubernetes
 	kubectl apply -f $(OUTPUT_DIR)/kubernetes/
-	@echo "Watching jobs... (Ctrl+C to stop)"
-	kubectl get jobs -n loadtest -w
+	@echo "Resources applied. Monitoring for completion..."
+	@$(MAKE) -s k8s-wait-for-completion TIMEOUT=$(TIMEOUT) POLL_INTERVAL=$(POLL_INTERVAL)
 
-k8s-run-postgresql: kind-load
-	@echo "Running Kubernetes load test with PostgreSQL..."
-	$(MAKE) generate SOURCE=postgresql PLATFORM=kubernetes
-	kubectl apply -f $(OUTPUT_DIR)/kubernetes/
-	@echo "Watching jobs... (Ctrl+C to stop)"
-	kubectl get jobs -n loadtest -w
-
-k8s-run-mongodb: kind-load
-	@echo "Running Kubernetes load test with MongoDB..."
-	$(MAKE) generate SOURCE=mongodb PLATFORM=kubernetes
-	kubectl apply -f $(OUTPUT_DIR)/kubernetes/
-	@echo "Watching jobs... (Ctrl+C to stop)"
-	kubectl get jobs -n loadtest -w
-
-k8s-run-neo4j: kind-load
-	@echo "Running Kubernetes load test with Neo4j..."
-	$(MAKE) generate SOURCE=neo4j PLATFORM=kubernetes
-	kubectl apply -f $(OUTPUT_DIR)/kubernetes/
-	@echo "Watching jobs... (Ctrl+C to stop)"
-	kubectl get jobs -n loadtest -w
+# Wait for Kubernetes jobs to complete with early failure detection
+k8s-wait-for-completion:
+	@start_time=$$(date +%s); \
+	while true; do \
+		elapsed=$$(( $$(date +%s) - start_time )); \
+		\
+		jobs_json=$$(kubectl get jobs -n loadtest -o json 2>/dev/null); \
+		\
+		populate_succeeded=$$(echo "$$jobs_json" | jq '[.items[] | select(.metadata.name | startswith("loadtest-populate")) | select(.status.succeeded == 1)] | length' 2>/dev/null || echo 0); \
+		populate_total=$$(echo "$$jobs_json" | jq '[.items[] | select(.metadata.name | startswith("loadtest-populate"))] | length' 2>/dev/null || echo 0); \
+		sync_succeeded=$$(echo "$$jobs_json" | jq '[.items[] | select(.metadata.name | startswith("loadtest-sync")) | select(.status.succeeded == 1)] | length' 2>/dev/null || echo 0); \
+		sync_total=$$(echo "$$jobs_json" | jq '[.items[] | select(.metadata.name | startswith("loadtest-sync"))] | length' 2>/dev/null || echo 0); \
+		verify_succeeded=$$(echo "$$jobs_json" | jq '[.items[] | select(.metadata.name | startswith("loadtest-verify")) | select(.status.succeeded == 1)] | length' 2>/dev/null || echo 0); \
+		verify_total=$$(echo "$$jobs_json" | jq '[.items[] | select(.metadata.name | startswith("loadtest-verify"))] | length' 2>/dev/null || echo 0); \
+		\
+		failed_jobs=$$(echo "$$jobs_json" | jq -r '.items[] | select(.status.failed >= 1) | .metadata.name' 2>/dev/null); \
+		if [ -n "$$failed_jobs" ]; then \
+			echo ""; \
+			echo ""; \
+			echo "╔══════════════════════════════════════════════════════════════════╗"; \
+			echo "║  FAILED: Kubernetes job(s) failed                                ║"; \
+			echo "╚══════════════════════════════════════════════════════════════════╝"; \
+			echo ""; \
+			echo "Failed jobs:"; \
+			echo "$$failed_jobs" | sed 's/^/  - /'; \
+			echo ""; \
+			for job in $$failed_jobs; do \
+				echo "═══════════════════════════════════════════════════════════════════"; \
+				echo "Logs from: $$job"; \
+				echo "═══════════════════════════════════════════════════════════════════"; \
+				kubectl logs job/$$job -n loadtest 2>&1 | tail -80 || echo "(could not retrieve logs)"; \
+				echo ""; \
+			done; \
+			$(MAKE) k8s-clean 2>/dev/null || true; \
+			exit 2; \
+		fi; \
+		\
+		printf "\r[%3ds] Populate: %s/%s, Sync: %s/%s, Verify: %s/%s" "$$elapsed" "$$populate_succeeded" "$$populate_total" "$$sync_succeeded" "$$sync_total" "$$verify_succeeded" "$$verify_total"; \
+		\
+		if [ "$$verify_total" -gt 0 ] && [ "$$verify_succeeded" -ge "$$verify_total" ]; then \
+			echo ""; \
+			echo ""; \
+			verify_logs=$$(kubectl logs -l app=loadtest-verify -n loadtest 2>&1); \
+			if echo "$$verify_logs" | grep -qE "[1-9][0-9]* mismatched"; then \
+				echo "╔══════════════════════════════════════════════════════════════════╗"; \
+				echo "║  VERIFICATION FAILED: Data mismatches detected                   ║"; \
+				echo "╚══════════════════════════════════════════════════════════════════╝"; \
+				echo ""; \
+				echo "Verification results:"; \
+				echo "$$verify_logs" | grep -E "Table|matched|mismatched|missing|successfully|Error" | sed 's/^/  /'; \
+				echo ""; \
+				$(MAKE) k8s-clean 2>/dev/null || true; \
+				exit 3; \
+			fi; \
+			echo "╔══════════════════════════════════════════════════════════════════╗"; \
+			echo "║  SUCCESS: All tables verified successfully                       ║"; \
+			echo "╚══════════════════════════════════════════════════════════════════╝"; \
+			echo ""; \
+			echo "Verification summary:"; \
+			echo "$$verify_logs" | grep -E "Table|rows verified|successfully" | sed 's/^/  /' | tail -20; \
+			echo ""; \
+			$(MAKE) k8s-clean 2>/dev/null || true; \
+			exit 0; \
+		fi; \
+		\
+		if [ $$elapsed -ge $(TIMEOUT) ]; then \
+			echo ""; \
+			echo ""; \
+			echo "╔══════════════════════════════════════════════════════════════════╗"; \
+			echo "║  TIMEOUT: Test did not complete within $(TIMEOUT) seconds               ║"; \
+			echo "╚══════════════════════════════════════════════════════════════════╝"; \
+			echo ""; \
+			echo "Progress at timeout:"; \
+			echo "  Populate: $$populate_succeeded/$$populate_total completed"; \
+			echo "  Sync:     $$sync_succeeded/$$sync_total completed"; \
+			echo "  Verify:   $$verify_succeeded/$$verify_total completed"; \
+			echo ""; \
+			if [ "$$populate_succeeded" -lt "$$populate_total" ]; then \
+				echo "BLOCKED AT: Populate stage"; \
+				kubectl logs -l app=loadtest-populate -n loadtest --tail=30 2>/dev/null || echo "(no logs)"; \
+			elif [ "$$sync_succeeded" -lt "$$sync_total" ]; then \
+				echo "BLOCKED AT: Sync stage"; \
+				kubectl logs -l app=loadtest-sync -n loadtest --tail=50 2>/dev/null || echo "(no logs)"; \
+			else \
+				echo "BLOCKED AT: Verify stage"; \
+				kubectl logs -l app=loadtest-verify -n loadtest --tail=30 2>/dev/null || echo "(no logs)"; \
+			fi; \
+			echo ""; \
+			echo "Full job status:"; \
+			kubectl get jobs -n loadtest 2>/dev/null || true; \
+			echo ""; \
+			$(MAKE) k8s-clean 2>/dev/null || true; \
+			exit 1; \
+		fi; \
+		\
+		sleep $(POLL_INTERVAL); \
+	done
 
 # Kubernetes cleanup
 k8s-clean:
@@ -517,19 +599,19 @@ verify-aggregator:
 test-all-sources:
 	@echo "=== Testing all source types ==="
 	@echo "--- MySQL ---"
-	$(MAKE) run-mysql TIMEOUT=$(TIMEOUT)
+	$(MAKE) run SOURCE=mysql TIMEOUT=$(TIMEOUT)
 	$(MAKE) verify-aggregator
 	$(MAKE) clean
 	@echo "--- PostgreSQL ---"
-	$(MAKE) run-postgresql TIMEOUT=$(TIMEOUT)
+	$(MAKE) run SOURCE=postgresql TIMEOUT=$(TIMEOUT)
 	$(MAKE) verify-aggregator
 	$(MAKE) clean
 	@echo "--- MongoDB ---"
-	$(MAKE) run-mongodb TIMEOUT=$(TIMEOUT)
+	$(MAKE) run SOURCE=mongodb TIMEOUT=$(TIMEOUT)
 	$(MAKE) verify-aggregator
 	$(MAKE) clean
 	@echo "--- Neo4j ---"
-	$(MAKE) run-neo4j TIMEOUT=$(TIMEOUT)
+	$(MAKE) run SOURCE=neo4j TIMEOUT=$(TIMEOUT)
 	$(MAKE) verify-aggregator
 	$(MAKE) clean
 	@echo "=== All source tests PASSED ==="

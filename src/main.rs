@@ -2138,7 +2138,7 @@ async fn run_loadtest_generate(args: GenerateArgs) -> anyhow::Result<()> {
     let tables: Vec<String> = schema.tables.iter().map(|t| t.name.clone()).collect();
 
     // Build cluster configuration
-    let config = build_cluster_config(
+    let mut config = build_cluster_config(
         preset_size,
         source_type,
         platforms[0], // Use first platform for config
@@ -2156,6 +2156,21 @@ async fn run_loadtest_generate(args: GenerateArgs) -> anyhow::Result<()> {
         &tables,
         args.dry_run,
     )?;
+
+    // Set schema content for Kubernetes ConfigMap embedding
+    if platforms.contains(&Platform::Kubernetes) {
+        config.schema_content = Some(schema_content.clone());
+
+        // For Kafka source, generate proto files and embed in ConfigMap
+        if source_type == SourceType::Kafka {
+            let mut proto_contents = std::collections::HashMap::new();
+            for table in &schema.tables {
+                let proto_content = generate_proto_for_table(table, "loadtest");
+                proto_contents.insert(table.name.clone(), proto_content);
+            }
+            config.proto_contents = Some(proto_contents);
+        }
+    }
 
     // Create output directory
     let output_dir = &args.output_dir;

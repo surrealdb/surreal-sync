@@ -264,6 +264,13 @@ pub struct ClusterConfig {
     pub surrealdb: SurrealDbConfig,
     /// Schema file path
     pub schema_path: String,
+    /// Schema file content (embedded for Kubernetes ConfigMap)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema_content: Option<String>,
+    /// Proto file contents for Kafka source (table_name -> proto_content)
+    /// Embedded in Kubernetes ConfigMap for proto files
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proto_contents: Option<std::collections::HashMap<String, String>>,
     /// Network name
     #[serde(default = "default_network_name")]
     pub network_name: String,
@@ -350,6 +357,8 @@ pub fn build_cluster_config(
         schema_path: schema_path
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|| "schema.yaml".to_string()),
+        schema_content: None, // Set by caller when needed (e.g., for Kubernetes)
+        proto_contents: None, // Set by caller for Kafka source on Kubernetes
         network_name: default_network_name(),
         dry_run,
     })

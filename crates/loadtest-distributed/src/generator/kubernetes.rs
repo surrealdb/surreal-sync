@@ -21,8 +21,16 @@ impl ConfigGenerator for KubernetesGenerator {
         // Namespace
         manifests.push(generate_namespace(config));
 
+        // RBAC for kubectl wait init containers
+        manifests.push(generate_rbac(config));
+
         // ConfigMap for schema
         manifests.push(generate_configmap(config));
+
+        // Proto ConfigMap for Kafka source
+        if let Some(proto_cm) = generate_proto_configmap(config) {
+            manifests.push(proto_cm);
+        }
 
         // Database service
         let db_statefulset =
@@ -68,7 +76,13 @@ impl KubernetesGenerator {
         let mut files = HashMap::new();
 
         files.insert("namespace.yaml".to_string(), generate_namespace(config));
+        files.insert("rbac.yaml".to_string(), generate_rbac(config));
         files.insert("configmap.yaml".to_string(), generate_configmap(config));
+
+        // Proto ConfigMap for Kafka source
+        if let Some(proto_cm) = generate_proto_configmap(config) {
+            files.insert("proto-configmap.yaml".to_string(), proto_cm);
+        }
 
         // Database manifests
         let db_name = database_name(config.source_type);
@@ -144,23 +158,105 @@ metadata:
     )
 }
 
+/// Generate RBAC resources (ServiceAccount, Role, RoleBinding) for kubectl wait in init containers.
+fn generate_rbac(config: &ClusterConfig) -> String {
+    format!(
+        r#"apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: loadtest-runner
+  namespace: {namespace}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: loadtest-job-watcher
+  namespace: {namespace}
+rules:
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: loadtest-runner-binding
+  namespace: {namespace}
+subjects:
+- kind: ServiceAccount
+  name: loadtest-runner
+  namespace: {namespace}
+roleRef:
+  kind: Role
+  name: loadtest-job-watcher
+  apiGroup: rbac.authorization.k8s.io
+"#,
+        namespace = config.network_name
+    )
+}
+
 /// Generate ConfigMap for schema and configuration.
 fn generate_configmap(config: &ClusterConfig) -> String {
+    // If schema content is provided, embed it in the ConfigMap
+    let schema_data = if let Some(ref content) = config.schema_content {
+        // Indent each line of the schema content for proper YAML formatting
+        let indented_content = content
+            .lines()
+            .map(|line| format!("    {}", line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("  schema.yaml: |\n{}", indented_content)
+    } else {
+        // Placeholder if schema content not provided
+        "  # Schema file should be added here or mounted from external source\n  # schema.yaml: |\n  #   tables:\n  #     - name: users\n  #       ...".to_string()
+    };
+
     format!(
         r#"apiVersion: v1
 kind: ConfigMap
 metadata:
   name: loadtest-config
-  namespace: {}
+  namespace: {namespace}
 data:
-  # Schema file should be added here or mounted from external source
-  # schema.yaml: |
-  #   tables:
-  #     - name: users
-  #       ...
+{schema_data}
 "#,
-        config.network_name
+        namespace = config.network_name,
+        schema_data = schema_data
     )
+}
+
+/// Generate ConfigMap for proto files (Kafka source only).
+fn generate_proto_configmap(config: &ClusterConfig) -> Option<String> {
+    let proto_contents = config.proto_contents.as_ref()?;
+    if proto_contents.is_empty() {
+        return None;
+    }
+
+    let mut proto_data = String::new();
+    for (table_name, proto_content) in proto_contents {
+        // Indent each line of the proto content for proper YAML formatting
+        let indented_content = proto_content
+            .lines()
+            .map(|line| format!("    {}", line))
+            .collect::<Vec<_>>()
+            .join("\n");
+        proto_data.push_str(&format!(
+            "  {}.proto: |\n{}\n",
+            table_name, indented_content
+        ));
+    }
+
+    Some(format!(
+        r#"apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loadtest-proto
+  namespace: {namespace}
+data:
+{proto_data}"#,
+        namespace = config.network_name,
+        proto_data = proto_data
+    ))
 }
 
 /// Generate Aggregator Deployment (HTTP-based metrics collection).
@@ -342,26 +438,55 @@ spec:
 fn generate_populate_job(config: &ClusterConfig) -> String {
     let db_name = database_name(config.source_type);
     let container_count = config.containers.len();
-    let source_type_lower = format!("{}", config.source_type).to_lowercase();
+    let source_type_lower = match config.source_type {
+        SourceType::MySQL => "mysql",
+        // Both PostgreSQL variants use the same populate command (data goes to same database)
+        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => "postgresql",
+        SourceType::MongoDB => "mongodb",
+        SourceType::Neo4j => "neo4j",
+        SourceType::Kafka => "kafka",
+        SourceType::Csv => "csv",
+        SourceType::Jsonl => "jsonl",
+    };
 
     // Build init containers to wait for database and aggregator
     let mut init_containers = String::new();
     if config.source_type != SourceType::Csv && config.source_type != SourceType::Jsonl {
-        init_containers = format!(
-            r#"      initContainers:
-      - name: wait-for-db
-        image: busybox:latest
+        let (wait_image, wait_command) = get_db_health_check(config.source_type, db_name);
+
+        // For MongoDB, add extra init container to wait for mongodb-init job
+        let mongodb_init_wait = if config.source_type == SourceType::MongoDB {
+            format!(
+                r#"      - name: wait-for-mongodb-init
+        image: bitnami/kubectl:latest
+        imagePullPolicy: IfNotPresent
         command:
         - sh
         - -c
         - |
-          until nc -z {db_name} {db_port}; do
-            echo "Waiting for {db_name} to be ready..."
-            sleep 2
-          done
-          echo "{db_name} is ready!"
-      - name: wait-for-aggregator
+          echo "Waiting for mongodb-init job to complete..."
+          kubectl wait --for=condition=complete job/mongodb-init -n {namespace} --timeout=5m
+          echo "mongodb-init job completed!"
+"#,
+                namespace = config.network_name
+            )
+        } else {
+            String::new()
+        };
+
+        init_containers = format!(
+            r#"      initContainers:
+      - name: wait-for-db
+        image: {wait_image}
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - |
+{wait_command}
+{mongodb_init_wait}      - name: wait-for-aggregator
         image: busybox:latest
+        imagePullPolicy: IfNotPresent
         command:
         - sh
         - -c
@@ -372,8 +497,9 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
           done
           echo "Aggregator is ready!"
 "#,
-            db_name = db_name,
-            db_port = get_db_port(config.source_type),
+            wait_image = wait_image,
+            wait_command = wait_command,
+            mongodb_init_wait = mongodb_init_wait,
         );
     }
 
@@ -394,8 +520,44 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
         .map(|w| w.connection_string.as_str())
         .unwrap_or("");
 
+    // Build connection string args based on source type (matching docker-compose pattern)
+    let connection_args = match config.source_type {
+        SourceType::MySQL => {
+            format!("--mysql-connection-string '{}'", connection_string)
+        }
+        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => {
+            format!("--postgresql-connection-string '{}'", connection_string)
+        }
+        SourceType::MongoDB => {
+            // MongoDB needs connection string and database
+            format!(
+                "--mongodb-connection-string '{}' --mongodb-database {}",
+                connection_string, config.database.database_name
+            )
+        }
+        SourceType::Neo4j => {
+            format!(
+                "--neo4j-connection-string '{}' --neo4j-username neo4j --neo4j-password password",
+                connection_string
+            )
+        }
+        SourceType::Kafka => {
+            format!("--kafka-brokers '{}'", connection_string)
+        }
+        SourceType::Csv | SourceType::Jsonl => {
+            format!("--output-dir '{}'", connection_string)
+        }
+    };
+
     let dry_run_flag = if config.dry_run {
         " \\\n            --dry-run"
+    } else {
+        ""
+    };
+
+    // For MongoDB, we need serviceAccountName for the kubectl wait in init container
+    let service_account_line = if config.source_type == SourceType::MongoDB {
+        "      serviceAccountName: loadtest-runner\n"
     } else {
         ""
     };
@@ -414,7 +576,7 @@ spec:
   completionMode: Indexed
   template:
     spec:
-{init_containers}      containers:
+{service_account_line}{init_containers}      containers:
       - name: populate
         image: surreal-sync:latest
         imagePullPolicy: IfNotPresent
@@ -424,13 +586,14 @@ spec:
         - |
           WORKER_ID="populate-$JOB_COMPLETION_INDEX"
           surreal-sync loadtest populate {source_type} \
+            --schema /config/schema.yaml \
             --worker-id $WORKER_ID \
             --tables {tables_arg} \
             --row-count {row_count} \
             --seed $((42 + JOB_COMPLETION_INDEX)) \
             --batch-size {batch_size} \
             --aggregator-url http://aggregator:9090 \
-            --connection-string '{connection_string}'{dry_run_flag}
+            {connection_args}{dry_run_flag}
         env:
         - name: RUST_LOG
           value: "info"
@@ -453,12 +616,13 @@ spec:
 "#,
         namespace = config.network_name,
         container_count = container_count,
+        service_account_line = service_account_line,
         init_containers = init_containers,
         source_type = source_type_lower,
         tables_arg = tables_arg,
         row_count = first_container.map(|w| w.row_count).unwrap_or(10000),
         batch_size = first_container.map(|w| w.batch_size).unwrap_or(1000),
-        connection_string = connection_string,
+        connection_args = connection_args,
         dry_run_flag = dry_run_flag,
         cpu_limit = worker_resources.cpu_limit,
         memory_limit = worker_resources.memory_limit,
@@ -638,24 +802,9 @@ fn generate_sync_job(config: &ClusterConfig) -> String {
             )
         }
         SourceType::Kafka => {
-            // Kafka sync requires proto files to be shared between populate and sync containers.
-            // For Kubernetes, proto files should be distributed via ConfigMap:
-            //
-            // 1. The `loadtest generate` command creates proto files at config time (before any
-            //    containers run) by calling `generate_proto_for_table()` for each table.
-            // 2. These proto files are bundled into a ConfigMap (e.g., `loadtest-proto-configmap`).
-            // 3. Sync Jobs mount the ConfigMap as a volume at `/proto/` directory.
-            // 4. Each sync container reads its table's proto file (e.g., `/proto/users.proto`)
-            //    to decode protobuf messages from Kafka.
-            //
-            // TODO: Implement Kafka K8s support with:
-            // 1. ConfigMap containing proto files (created by `loadtest generate`)
-            // 2. Multiple sync Jobs (one per topic, like docker-compose implementation)
-            // 3. Each sync Job mounts the ConfigMap and specifies --proto-path '/proto/<table>.proto'
-            unimplemented!(
-                "Kafka loadtest is not yet supported on Kubernetes. Use docker-compose instead: \
-                 make run SOURCE=kafka"
-            )
+            // Kafka needs multiple sync jobs (one per topic), handled by generate_kafka_sync_jobs
+            // Return empty string here - Kafka sync is handled separately
+            return generate_kafka_sync_jobs(config);
         }
         SourceType::Csv | SourceType::Jsonl => {
             let source_type = if config.source_type == SourceType::Csv {
@@ -710,9 +859,11 @@ metadata:
 spec:
   template:
     spec:
+      serviceAccountName: loadtest-runner
       initContainers:
       - name: wait-for-populate
         image: bitnami/kubectl:latest
+        imagePullPolicy: IfNotPresent
         command:
         - sh
         - -c
@@ -776,6 +927,27 @@ fn generate_verify_job(config: &ClusterConfig) -> String {
         ""
     };
 
+    // For Kafka, wait for all sync jobs (one per table)
+    let wait_for_sync_command = if config.source_type == SourceType::Kafka {
+        format!(
+            r#"          echo "Waiting for all Kafka sync jobs to complete..."
+          for table in {}; do
+            echo "Waiting for loadtest-sync-$table..."
+            kubectl wait --for=condition=complete job/loadtest-sync-$table -n {} --timeout=30m
+          done
+          echo "All sync jobs completed!""#,
+            tables_all.join(" "),
+            config.network_name
+        )
+    } else {
+        format!(
+            r#"          echo "Waiting for sync job to complete..."
+          kubectl wait --for=condition=complete job/loadtest-sync -n {} --timeout=30m
+          echo "Sync job completed!""#,
+            config.network_name
+        )
+    };
+
     format!(
         r#"apiVersion: batch/v1
 kind: Job
@@ -793,16 +965,16 @@ spec:
   completionMode: Indexed
   template:
     spec:
+      serviceAccountName: loadtest-runner
       initContainers:
       - name: wait-for-sync
         image: bitnami/kubectl:latest
+        imagePullPolicy: IfNotPresent
         command:
         - sh
         - -c
         - |
-          echo "Waiting for sync job to complete..."
-          kubectl wait --for=condition=complete job/loadtest-sync -n {namespace} --timeout=30m
-          echo "Sync job completed!"
+{wait_for_sync_command}
       containers:
       - name: verify
         image: surreal-sync:latest
@@ -857,15 +1029,207 @@ spec:
             .unwrap_or("256Mi"),
     )
 }
-/// Get default port for a database type.
-fn get_db_port(source_type: SourceType) -> u16 {
+
+/// Convert table name to PascalCase for Kafka message type.
+fn to_pascal_case(s: &str) -> String {
+    s.split('_')
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+            }
+        })
+        .collect()
+}
+
+/// Generate Kafka sync jobs - one job per topic/table.
+/// Each job reads from a Kafka topic and syncs to SurrealDB.
+fn generate_kafka_sync_jobs(config: &ClusterConfig) -> String {
+    let tables: Vec<String> = config
+        .containers
+        .iter()
+        .flat_map(|c| c.tables.clone())
+        .collect();
+
+    let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
+
+    let mut jobs = Vec::new();
+
+    for table_name in &tables {
+        let message_type = to_pascal_case(table_name);
+        let job = format!(
+            r#"apiVersion: batch/v1
+kind: Job
+metadata:
+  name: loadtest-sync-{table_name}
+  namespace: {namespace}
+  labels:
+    app: loadtest-sync
+    topic: {table_name}
+  annotations:
+    # This job should wait for populate to complete
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  template:
+    spec:
+      serviceAccountName: loadtest-runner
+      initContainers:
+      - name: wait-for-populate
+        image: bitnami/kubectl:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - sh
+        - -c
+        - |
+          echo "Waiting for populate job to complete..."
+          kubectl wait --for=condition=complete job/loadtest-populate -n {namespace} --timeout=30m
+          echo "Populate job completed!"
+      containers:
+      - name: sync
+        image: surreal-sync:latest
+        imagePullPolicy: IfNotPresent
+        command:
+        - surreal-sync
+        args:
+        - from
+        - kafka
+        - --proto-path
+        - '/proto/{table_name}.proto'
+        - --brokers
+        - 'kafka:9092'
+        - --group-id
+        - 'loadtest-sync-{table_name}'
+        - --topic
+        - '{table_name}'
+        - --message-type
+        - '{message_type}'
+        - --buffer-size
+        - '1000'
+        - --session-timeout-ms
+        - '30000'
+        - --kafka-batch-size
+        - '100'
+        - --timeout
+        - '1m'
+        - --to-namespace
+        - {ns}
+        - --to-database
+        - {database}
+        - --surreal-endpoint
+        - 'http://surrealdb:8000'
+        - --surreal-username
+        - root
+        - --surreal-password
+        - root
+        - --schema-file
+        - /config/schema.yaml{dry_run_flag}
+        volumeMounts:
+        - name: config
+          mountPath: /config
+          readOnly: true
+        - name: proto
+          mountPath: /proto
+          readOnly: true
+        env:
+        - name: RUST_LOG
+          value: "info"
+        resources:
+          limits:
+            cpu: "1"
+            memory: "1Gi"
+          requests:
+            cpu: "0.5"
+            memory: "512Mi"
+      volumes:
+      - name: config
+        configMap:
+          name: loadtest-config
+      - name: proto
+        configMap:
+          name: loadtest-proto
+      restartPolicy: OnFailure"#,
+            namespace = config.network_name,
+            table_name = table_name,
+            message_type = message_type,
+            ns = config.surrealdb.namespace,
+            database = config.surrealdb.database,
+            dry_run_flag = dry_run_flag,
+        );
+        jobs.push(job);
+    }
+
+    jobs.join("\n---\n")
+}
+
+/// Get database-specific health check configuration for init containers.
+/// Returns (image, command) tuple for the health check.
+fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str, String) {
     match source_type {
-        SourceType::MySQL => 3306,
-        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => 5432,
-        SourceType::MongoDB => 27017,
-        SourceType::Neo4j => 7687,
-        SourceType::Kafka => 9092,
-        SourceType::Csv | SourceType::Jsonl => 0,
+        SourceType::MySQL => (
+            "mysql:8.0",
+            format!(
+                r#"          echo "Waiting for MySQL to be ready..."
+          until mysqladmin ping -h{db_name} -uroot -proot --silent; do
+            echo "MySQL is not ready yet..."
+            sleep 2
+          done
+          echo "MySQL is ready!""#,
+                db_name = db_name
+            ),
+        ),
+        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => (
+            "postgres:16",
+            format!(
+                r#"          echo "Waiting for PostgreSQL to be ready..."
+          until pg_isready -h {db_name} -U postgres; do
+            echo "PostgreSQL is not ready yet..."
+            sleep 2
+          done
+          echo "PostgreSQL is ready!""#,
+                db_name = db_name
+            ),
+        ),
+        SourceType::MongoDB => (
+            "mongo:7",
+            format!(
+                r#"          echo "Waiting for MongoDB to be ready..."
+          until mongosh --host {db_name} --eval "db.adminCommand('ping')" --quiet; do
+            echo "MongoDB is not ready yet..."
+            sleep 2
+          done
+          echo "MongoDB is ready!""#,
+                db_name = db_name
+            ),
+        ),
+        SourceType::Neo4j => (
+            "busybox:latest",
+            format!(
+                r#"          echo "Waiting for Neo4j to be ready..."
+          until wget -q --spider http://{db_name}:7474; do
+            echo "Neo4j is not ready yet..."
+            sleep 2
+          done
+          echo "Neo4j is ready!""#,
+                db_name = db_name
+            ),
+        ),
+        SourceType::Kafka => (
+            "apache/kafka:latest",
+            format!(
+                r#"          echo "Waiting for Kafka to be ready..."
+          until /opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server {db_name}:9092 2>/dev/null; do
+            echo "Kafka is not ready yet..."
+            sleep 2
+          done
+          echo "Kafka is ready!""#,
+                db_name = db_name
+            ),
+        ),
+        SourceType::Csv | SourceType::Jsonl => (
+            "busybox:latest",
+            "          echo \"No database to wait for\"".to_string(),
+        ),
     }
 }
 
@@ -906,6 +1270,11 @@ mod tests {
             },
             surrealdb: SurrealDbConfig::default(),
             schema_path: "schema.yaml".to_string(),
+            schema_content: Some(
+                "tables:\n  - name: users\n    columns:\n      - name: id\n        type: int\n"
+                    .to_string(),
+            ),
+            proto_contents: None, // Only needed for Kafka source
             network_name: "loadtest".to_string(),
             dry_run,
         }
@@ -930,6 +1299,7 @@ mod tests {
         let files = generator.generate_to_files(&config).unwrap();
 
         assert!(files.contains_key("namespace.yaml"));
+        assert!(files.contains_key("rbac.yaml"));
         assert!(files.contains_key("configmap.yaml"));
         assert!(files.contains_key("populate-job.yaml"));
         assert!(files.contains_key("sync-job.yaml"));
@@ -937,6 +1307,64 @@ mod tests {
         assert!(files.contains_key("aggregator-deployment.yaml"));
         assert!(files.contains_key("aggregator-service.yaml"));
         assert!(files.contains_key("surrealdb-deployment.yaml"));
+    }
+
+    #[test]
+    fn test_configmap_contains_schema() {
+        let config = test_config();
+        let generator = KubernetesGenerator;
+        let files = generator.generate_to_files(&config).unwrap();
+        let configmap = files.get("configmap.yaml").unwrap();
+
+        assert!(
+            configmap.contains("schema.yaml: |"),
+            "ConfigMap should contain schema.yaml data"
+        );
+        assert!(
+            configmap.contains("name: users"),
+            "ConfigMap should contain the actual schema content"
+        );
+    }
+
+    #[test]
+    fn test_rbac_contains_required_resources() {
+        let config = test_config();
+        let generator = KubernetesGenerator;
+        let files = generator.generate_to_files(&config).unwrap();
+        let rbac = files.get("rbac.yaml").unwrap();
+
+        assert!(
+            rbac.contains("kind: ServiceAccount"),
+            "RBAC should contain ServiceAccount"
+        );
+        assert!(rbac.contains("kind: Role"), "RBAC should contain Role");
+        assert!(
+            rbac.contains("kind: RoleBinding"),
+            "RBAC should contain RoleBinding"
+        );
+        assert!(
+            rbac.contains("loadtest-runner"),
+            "RBAC should use loadtest-runner service account"
+        );
+    }
+
+    #[test]
+    fn test_sync_and_verify_jobs_use_service_account() {
+        let config = test_config();
+        let generator = KubernetesGenerator;
+        let files = generator.generate_to_files(&config).unwrap();
+
+        let sync_job = files.get("sync-job.yaml").unwrap();
+        assert!(
+            sync_job.contains("serviceAccountName: loadtest-runner"),
+            "Sync job should use loadtest-runner service account"
+        );
+
+        let verify_job = files.get("verify-job.yaml").unwrap();
+        assert!(
+            verify_job.contains("serviceAccountName: loadtest-runner"),
+            "Verify job should use loadtest-runner service account"
+        );
     }
 
     #[test]

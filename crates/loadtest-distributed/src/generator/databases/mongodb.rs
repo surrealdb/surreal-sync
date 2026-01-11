@@ -129,6 +129,8 @@ pub(crate) fn generate_mongodb_init_service_internal() -> Value {
 }
 
 /// Generate MongoDB Kubernetes StatefulSet.
+/// Uses --noauth mode matching Docker Compose pattern.
+/// Authentication is set up via mongodb-init Job after replica set initialization.
 pub fn generate_mongodb_k8s_statefulset(config: &DatabaseConfig, namespace: &str) -> String {
     let memory_limit = &config.resources.memory_limit;
     let cpu_limit = &config.resources.cpu_limit;
@@ -159,12 +161,15 @@ pub fn generate_mongodb_k8s_statefulset(config: &DatabaseConfig, namespace: &str
             .to_string()
     };
 
+    // Note: Using --noauth mode to match Docker Compose pattern
+    // This simplifies single-node loadtest replica set setup
+    // mongodb-init Job creates root user after replica set is initialized
     format!(
         r#"apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: mongodb
-  namespace: {}
+  namespace: {namespace}
 spec:
   serviceName: mongodb
   replicas: 1
@@ -178,26 +183,23 @@ spec:
     spec:
       containers:
       - name: mongodb
-        image: {}
-        env:
-        - name: MONGO_INITDB_ROOT_USERNAME
-          value: "root"
-        - name: MONGO_INITDB_ROOT_PASSWORD
-          value: "root"
+        image: {image}
+        imagePullPolicy: IfNotPresent
         command:
         - mongod
         - --replSet
         - rs0
         - --bind_ip_all
+        - --noauth
         ports:
         - containerPort: 27017
         resources:
           limits:
-            cpu: "{}"
-            memory: "{}"
+            cpu: "{cpu_limit}"
+            memory: "{memory_limit}"
           requests:
-            cpu: "{}"
-            memory: "{}"
+            cpu: "{cpu_request}"
+            memory: "{memory_request}"
         volumeMounts:
         - name: mongodb-data
           mountPath: /data/db
@@ -218,45 +220,78 @@ spec:
           initialDelaySeconds: 30
           periodSeconds: 10
       volumes:
-{}
+{volume_spec}
 ---
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: mongodb-init
-  namespace: {}
+  namespace: {namespace}
 spec:
   template:
     spec:
       containers:
       - name: init
         image: mongo:7
+        imagePullPolicy: IfNotPresent
         command:
         - bash
         - -c
         - |
-          sleep 10
-          mongosh --host mongodb -u root -p root --authenticationDatabase admin --eval "
-            rs.initiate({{
-              _id: 'rs0',
-              members: [{{ _id: 0, host: 'mongodb:27017' }}]
-            }})
+          echo "Waiting for MongoDB to be ready..."
+          until mongosh --host mongodb --quiet --eval "db.adminCommand('ping')" 2>/dev/null; do
+            echo "MongoDB is not ready yet..."
+            sleep 2
+          done
+          echo "MongoDB is ready!"
+
+          echo "Initializing replica set..."
+          mongosh --host mongodb --quiet --eval "
+            try {{
+              rs.status();
+              print('Replica set already configured');
+            }} catch (e) {{
+              print('Initializing replica set...');
+              rs.initiate({{
+                _id: 'rs0',
+                members: [{{ _id: 0, host: 'mongodb:27017' }}]
+              }});
+              print('Replica set initialized');
+            }}
           "
-          sleep 5
-          mongosh --host mongodb -u root -p root --authenticationDatabase admin --eval "
-            while (!rs.isMaster().ismaster) {{ sleep(1000); }}
-            print('Replica set initialized');
+
+          echo "Waiting for replica set to become primary..."
+          mongosh --host mongodb --quiet --eval "
+            while (!db.isMaster().ismaster) {{
+              sleep(1000);
+            }}
+            print('Replica set is primary');
           "
+
+          echo "Creating root user for compatibility..."
+          mongosh --host mongodb --quiet --eval "
+            db = db.getSiblingDB('admin');
+            try {{
+              db.createUser({{
+                user: 'root',
+                pwd: 'root',
+                roles: ['root']
+              }});
+              print('Root user created');
+            }} catch(e) {{
+              print('User creation skipped (may already exist): ' + e);
+            }}
+          "
+          echo "MongoDB initialization complete!"
       restartPolicy: OnFailure
 "#,
-        namespace,
-        config.image,
-        cpu_limit,
-        memory_limit,
-        cpu_request,
-        memory_request,
-        volume_spec,
-        namespace
+        namespace = namespace,
+        image = config.image,
+        cpu_limit = cpu_limit,
+        memory_limit = memory_limit,
+        cpu_request = cpu_request,
+        memory_request = memory_request,
+        volume_spec = volume_spec,
     )
 }
 
@@ -318,5 +353,10 @@ mod tests {
         assert!(statefulset.contains("kind: StatefulSet"));
         assert!(statefulset.contains("namespace: loadtest"));
         assert!(statefulset.contains("replSet"));
+        // K8s should also use --noauth mode to match Docker Compose pattern
+        assert!(statefulset.contains("--noauth"));
+        // Init job should be included
+        assert!(statefulset.contains("kind: Job"));
+        assert!(statefulset.contains("mongodb-init"));
     }
 }
