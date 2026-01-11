@@ -128,8 +128,24 @@ impl Consumer {
         Ok(buffer.iter().take(count).cloned().collect::<Vec<_>>())
     }
 
-    /// Receive multiple messages (blocks until at least one message is available)
+    /// Receive multiple messages (blocks until at least one message is available or timeout)
+    ///
+    /// The receive_timeout controls how long to wait for the first message when the buffer
+    /// is empty. This prevents the consumer from blocking indefinitely when no messages
+    /// are available. Default is 1 second.
     pub async fn receive_batch(&self, max_count: usize) -> Result<Vec<Message>> {
+        self.receive_batch_with_timeout(max_count, Duration::from_secs(1))
+            .await
+    }
+
+    /// Receive multiple messages with a custom timeout for the initial blocking recv.
+    ///
+    /// Returns an empty Vec if no messages are available within the timeout.
+    pub async fn receive_batch_with_timeout(
+        &self,
+        max_count: usize,
+        receive_timeout: Duration,
+    ) -> Result<Vec<Message>> {
         let mut messages = Vec::new();
         let mut buffer = self.buffer.lock().await;
 
@@ -143,17 +159,19 @@ impl Consumer {
 
         drop(buffer); // Release lock before fetching
 
-        // Fetch at least one message
+        // Fetch at least one message with timeout
         if messages.is_empty() {
-            let msg = self
-                .consumer
-                .recv()
-                .await
-                .map_err(|e| Error::Consumer(format!("Error receiving message: {e}")))?;
-            messages.push(self.decode_message(&msg)?);
+            match tokio::time::timeout(receive_timeout, self.consumer.recv()).await {
+                Ok(Ok(msg)) => messages.push(self.decode_message(&msg)?),
+                Ok(Err(e)) => return Err(Error::Consumer(format!("Error receiving message: {e}"))),
+                Err(_) => {
+                    // Timeout - no messages available, return empty batch
+                    return Ok(messages);
+                }
+            }
         }
 
-        // Try to fetch more with timeout
+        // Try to fetch more with short timeout
         while messages.len() < max_count {
             match tokio::time::timeout(Duration::from_millis(10), self.consumer.recv()).await {
                 Ok(Ok(msg)) => messages.push(self.decode_message(&msg)?),
