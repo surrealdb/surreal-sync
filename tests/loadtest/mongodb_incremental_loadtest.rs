@@ -82,7 +82,7 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
     // Then populate data after that point
     tracing::info!("Running full sync to capture resume token and emit checkpoints");
 
-    let source_opts = surreal_sync_mongodb::SourceOpts {
+    let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
         source_uri: MONGODB_URI.to_string(),
         source_database: Some(MONGODB_DATABASE.to_string()),
     };
@@ -102,11 +102,11 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
         checkpoint_dir: Some(CHECKPOINT_DIR.to_string()),
     };
 
-    surreal_sync_mongodb::run_full_sync(
+    surreal_sync_mongodb_changestream_source::run_full_sync(
         source_opts.clone(),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_mongodb::SurrealOpts::from(&surreal_opts),
+        surreal_sync_mongodb_changestream_source::SurrealOpts::from(&surreal_opts),
         Some(sync_config),
     )
     .await?;
@@ -149,18 +149,19 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
         checkpoint::get_checkpoint_for_phase(CHECKPOINT_DIR, checkpoint::SyncPhase::FullSyncStart)
             .await?;
     // Convert to mongodb crate's checkpoint type
-    let sync_checkpoint: surreal_sync_mongodb::MongoDBCheckpoint = main_checkpoint.parse()?;
+    let sync_checkpoint: surreal_sync_mongodb_changestream_source::MongoDBCheckpoint =
+        main_checkpoint.parse()?;
 
     tracing::info!(
         "Starting incremental sync from checkpoint: {:?}",
         sync_checkpoint
     );
 
-    surreal_sync_mongodb::run_incremental_sync(
+    surreal_sync_mongodb_changestream_source::run_incremental_sync(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_mongodb::SurrealOpts::from(&surreal_opts),
+        surreal_sync_mongodb_changestream_source::SurrealOpts::from(&surreal_opts),
         sync_checkpoint,
         chrono::Utc::now() + chrono::Duration::hours(1), // 1 hour deadline
         None, // No target checkpoint - sync all available changes

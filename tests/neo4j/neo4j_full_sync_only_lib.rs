@@ -42,7 +42,7 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
     surreal_sync::testing::neo4j::create_nodes(&graph, &dataset).await?;
 
     // Perform full sync from Neo4j to SurrealDB
-    let source_opts = surreal_sync_neo4j::SourceOpts {
+    let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: neo4j_config.get_uri(),
         source_database: Some(neo4j_config.get_database()),
         source_username: Some(neo4j_config.get_username()),
@@ -63,11 +63,11 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Execute full sync from Neo4j to SurrealDB
-    surreal_sync_neo4j::run_full_sync(
+    surreal_sync_neo4j_source::run_full_sync(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_neo4j::SurrealOpts::from(&surreal_opts),
+        surreal_sync_neo4j_source::SurrealOpts::from(&surreal_opts),
         None,
     )
     .await?;

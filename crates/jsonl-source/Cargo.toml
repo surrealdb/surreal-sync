@@ -1,0 +1,30 @@
+[package]
+name = "surreal-sync-jsonl-source"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde_json = "1.0"
+surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+anyhow = "1.0"
+tracing = "0.1"
+tokio = { version = "1.47", features = ["full"] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Shared file source utilities
+surreal-sync-file = { path = "../file" }
+
+# Schema support for type-aware conversion
+sync-core = { path = "../sync-core" }
+
+# Type conversion crates
+json-types = { path = "../json-types" }
+surrealdb-types = { path = "../surrealdb-types" }
+surreal-sync-surreal = { path = "../surreal" }
+
+[dev-dependencies]
+tokio-test = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+surreal-sync-surreal = { path = "../surreal" }

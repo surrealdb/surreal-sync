@@ -41,7 +41,7 @@ async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error
 
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
 
-    let source_opts = surreal_sync_postgresql_trigger::SourceOpts {
+    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
         source_uri: pg_config.get_connection_string(),
         source_database: Some("testdb".to_string()),
     };
@@ -55,7 +55,7 @@ async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error
     };
 
     // Execute full sync for the users table
-    surreal_sync_postgresql_trigger::run_full_sync(
+    surreal_sync_postgresql_trigger_source::run_full_sync(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),

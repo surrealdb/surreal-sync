@@ -88,7 +88,7 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
     // === PHASE 2: RUN FULL SYNC WITH CHECKPOINTS (sets up triggers) ===
     tracing::info!("Running full sync to set up triggers and emit checkpoints");
 
-    let source_opts = surreal_sync_mysql_trigger::SourceOpts {
+    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
         source_uri: mysql_conn_string.clone(),
         source_database: Some("testdb".to_string()),
         mysql_boolean_paths: None,
@@ -121,9 +121,9 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
     )
     .await?;
 
-    surreal_sync_mysql_trigger::run_full_sync(
+    surreal_sync_mysql_trigger_source::run_full_sync(
         &source_opts,
-        &surreal_sync_mysql_trigger::SurrealOpts::from(&surreal_opts),
+        &surreal_sync_mysql_trigger_source::SurrealOpts::from(&surreal_opts),
         Some(sync_config),
         &surreal_for_sync,
     )
@@ -166,18 +166,19 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
         checkpoint::get_checkpoint_for_phase(CHECKPOINT_DIR, checkpoint::SyncPhase::FullSyncStart)
             .await?;
     // Parse the CheckpointFile into database-specific checkpoint type
-    let sync_checkpoint: surreal_sync_mysql_trigger::MySQLCheckpoint = checkpoint_file.parse()?;
+    let sync_checkpoint: surreal_sync_mysql_trigger_source::MySQLCheckpoint =
+        checkpoint_file.parse()?;
 
     tracing::info!(
         "Starting incremental sync from checkpoint: {:?}",
         sync_checkpoint
     );
 
-    surreal_sync_mysql_trigger::run_incremental_sync(
+    surreal_sync_mysql_trigger_source::run_incremental_sync(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_mysql_trigger::SurrealOpts::from(&surreal_opts),
+        surreal_sync_mysql_trigger_source::SurrealOpts::from(&surreal_opts),
         sync_checkpoint,
         chrono::Utc::now() + chrono::Duration::hours(1), // 1 hour deadline
         None, // No target checkpoint - sync all available changes

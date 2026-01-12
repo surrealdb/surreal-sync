@@ -19,7 +19,7 @@ Kafka is a **streaming-only** data source with unique characteristics:
 Comprehensive E2E test that validates Kafka incremental sync:
 
 1. **Setup**: Creates Kafka topics for users, posts, and relations
-2. **Publishing**: Publishes protobuf-encoded test messages using `surreal-sync-kafka-producer`
+2. **Publishing**: Publishes protobuf-encoded test messages using `surreal-sync-kafka-producer` library
 3. **Sync**: Runs incremental sync for each topic to consume messages
 4. **Validation**: Verifies data is correctly synced to SurrealDB
 

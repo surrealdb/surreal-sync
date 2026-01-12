@@ -1,6 +1,6 @@
 # Kafka Producer for Testing
 
-This is a simple Kafka producer that publishes sample `UserEvent` protobuf messages to the `user-events` topic. It's designed to work with the `surreal-sync-kafka` consumer example.
+This is a simple Kafka producer that publishes sample `UserEvent` protobuf messages to the `user-events` topic. It's designed to work with the `surreal-sync-kafka-source` consumer example.
 
 ## UserEvent Schema
 
@@ -50,7 +50,7 @@ This will:
 In another terminal, run the multi-consumer example:
 
 ```bash
-cargo run -p surreal-sync-kafka --example multi_consumer
+cargo run -p surreal-sync-kafka-source --example multi_consumer
 ```
 
 The consumer will:

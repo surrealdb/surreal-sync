@@ -46,7 +46,7 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
     // Create the empty table in PostgreSQL
     surreal_sync::testing::postgresql::create_tables_and_indices(&pg_client, &dataset).await?;
 
-    let source_opts = surreal_sync_postgresql_trigger::SourceOpts {
+    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
         source_uri: pg_config.get_connection_string(),
         source_database: Some("testdb".to_string()),
     };
@@ -67,7 +67,7 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
         checkpoint_dir: Some(".test-checkpoints".to_string()),
     };
 
-    surreal_sync_postgresql_trigger::run_full_sync(
+    surreal_sync_postgresql_trigger_source::run_full_sync(
         source_opts.clone(),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
@@ -89,11 +89,11 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
     )
     .await?;
     // Parse the CheckpointFile into database-specific checkpoint type
-    let sync_checkpoint: surreal_sync_postgresql_trigger::PostgreSQLCheckpoint =
+    let sync_checkpoint: surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint =
         checkpoint_file.parse()?;
 
     // Run incremental sync using the checkpoint
-    surreal_sync_postgresql_trigger::run_incremental_sync(
+    surreal_sync_postgresql_trigger_source::run_incremental_sync(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),

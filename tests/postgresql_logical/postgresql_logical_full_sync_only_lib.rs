@@ -44,7 +44,7 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
     let table_names: Vec<String> = dataset.tables.iter().map(|t| t.name.clone()).collect();
 
     // Create source options
-    let source_opts = surreal_sync_postgresql_logical_replication::SourceOpts {
+    let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
         connection_string: pg_config.get_connection_string(),
         slot_name: "surreal_sync_lib_test_slot".to_string(),
         tables: table_names,
@@ -61,7 +61,7 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
     };
 
     // Run full sync without checkpoint emission
-    surreal_sync_postgresql_logical_replication::run_full_sync(
+    surreal_sync_postgresql_wal2json_source::run_full_sync(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),

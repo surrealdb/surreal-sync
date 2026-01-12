@@ -1,0 +1,40 @@
+[package]
+name = "surreal-sync-mongodb-changestream-source"
+version = "0.1.0"
+edition = "2021"
+description = "MongoDB sync utilities for surreal-sync"
+license = "MIT"
+
+[dependencies]
+# MongoDB client
+mongodb = "3.2.4"
+bson = { version = "2.15.0", features = ["chrono-0_4"] }
+
+# SurrealDB
+surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+surreal-sync-surreal = { path = "../surreal" }
+surrealdb-types = { path = "../surrealdb-types" }
+
+# Sync core traits
+sync-core = { path = "../sync-core" }
+
+# Checkpoint management
+checkpoint = { path = "../checkpoint" }
+
+# Async runtime
+tokio = { version = "1.47", features = ["full"] }
+tokio-stream = "0.1"
+
+# Error handling & utilities
+anyhow = "1.0.100"
+tracing = "0.1"
+log = "0.4"
+chrono = "0.4.41"
+futures = "0.3"
+async-trait = "0.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3.10"

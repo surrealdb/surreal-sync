@@ -38,7 +38,7 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     surreal_sync::testing::mysql::cleanup_mysql_test_data(&mut mysql_conn).await?;
     surreal_sync::testing::mysql::create_tables_and_indices(&mut mysql_conn, &dataset).await?;
 
-    let source_opts = surreal_sync_mysql_trigger::SourceOpts {
+    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
         source_uri: mysql_config.get_connection_string(),
         source_database: Some("testdb".to_string()),
         mysql_boolean_paths: Some(vec!["all_types_posts.post_categories".to_string()]),
@@ -73,9 +73,9 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     .await?;
 
     // Run full sync to set up triggers and get checkpoint
-    surreal_sync_mysql_trigger::run_full_sync(
+    surreal_sync_mysql_trigger_source::run_full_sync(
         &source_opts,
-        &surreal_sync_mysql_trigger::SurrealOpts::from(&surreal_opts),
+        &surreal_sync_mysql_trigger_source::SurrealOpts::from(&surreal_opts),
         Some(sync_config),
         &surreal2,
     )
@@ -96,14 +96,15 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     )
     .await?;
     // Parse the CheckpointFile into database-specific checkpoint type
-    let sync_checkpoint: surreal_sync_mysql_trigger::MySQLCheckpoint = checkpoint_file.parse()?;
+    let sync_checkpoint: surreal_sync_mysql_trigger_source::MySQLCheckpoint =
+        checkpoint_file.parse()?;
 
     // Run incremental sync using the checkpoint
-    surreal_sync_mysql_trigger::run_incremental_sync(
+    surreal_sync_mysql_trigger_source::run_incremental_sync(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_mysql_trigger::SurrealOpts::from(&surreal_opts),
+        surreal_sync_mysql_trigger_source::SurrealOpts::from(&surreal_opts),
         sync_checkpoint,
         chrono::Utc::now() + chrono::Duration::hours(1), // 1 hour deadline
         None, // No target checkpoint - sync all available changes

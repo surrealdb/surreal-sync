@@ -64,17 +64,17 @@ use surreal_sync_surreal::surreal_connect;
 
 // Database-specific sync crates (fully-qualified paths used in match arms)
 #[allow(clippy::single_component_path_imports)]
-use surreal_sync_mongodb;
+use surreal_sync_mongodb_changestream_source;
 #[allow(clippy::single_component_path_imports)]
-use surreal_sync_mysql_trigger;
+use surreal_sync_mysql_trigger_source;
 #[allow(clippy::single_component_path_imports)]
-use surreal_sync_neo4j;
+use surreal_sync_neo4j_source;
 #[allow(clippy::single_component_path_imports)]
 use surreal_sync_postgresql;
 #[allow(clippy::single_component_path_imports)]
-use surreal_sync_postgresql_logical_replication;
+use surreal_sync_postgresql_trigger_source;
 #[allow(clippy::single_component_path_imports)]
-use surreal_sync_postgresql_trigger;
+use surreal_sync_postgresql_wal2json_source;
 
 // Load testing imports
 use loadtest_populate_csv::CSVPopulateArgs;
@@ -653,7 +653,7 @@ struct PostgreSQLLogicalIncrementalArgs {
 struct KafkaArgs {
     /// Kafka source configuration
     #[command(flatten)]
-    config: surreal_sync_kafka::Config,
+    config: surreal_sync_kafka_source::Config,
 
     /// Target SurrealDB namespace
     #[arg(long)]
@@ -932,16 +932,16 @@ async fn run_mongodb_full(args: MongoDBFullArgs) -> anyhow::Result<()> {
         None
     };
 
-    let source_opts = surreal_sync_mongodb::SourceOpts {
+    let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
         source_uri: args.connection_string,
         source_database: Some(args.database),
     };
 
-    surreal_sync_mongodb::run_full_sync(
+    surreal_sync_mongodb_changestream_source::run_full_sync(
         source_opts,
         args.to_namespace,
         args.to_database,
-        surreal_sync_mongodb::SurrealOpts::from(&args.surreal),
+        surreal_sync_mongodb_changestream_source::SurrealOpts::from(&args.surreal),
         sync_config,
     )
     .await?;
@@ -972,23 +972,25 @@ async fn run_mongodb_incremental(args: MongoDBIncrementalArgs) -> anyhow::Result
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
     let mongodb_from =
-        surreal_sync_mongodb::MongoDBCheckpoint::from_cli_string(&args.incremental_from)?;
+        surreal_sync_mongodb_changestream_source::MongoDBCheckpoint::from_cli_string(
+            &args.incremental_from,
+        )?;
     let mongodb_to = args
         .incremental_to
         .as_ref()
-        .map(|s| surreal_sync_mongodb::MongoDBCheckpoint::from_cli_string(s))
+        .map(|s| surreal_sync_mongodb_changestream_source::MongoDBCheckpoint::from_cli_string(s))
         .transpose()?;
 
-    let source_opts = surreal_sync_mongodb::SourceOpts {
+    let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
         source_uri: args.connection_string,
         source_database: Some(args.database),
     };
 
-    surreal_sync_mongodb::run_incremental_sync(
+    surreal_sync_mongodb_changestream_source::run_incremental_sync(
         source_opts,
         args.to_namespace,
         args.to_database,
-        surreal_sync_mongodb::SurrealOpts::from(&args.surreal),
+        surreal_sync_mongodb_changestream_source::SurrealOpts::from(&args.surreal),
         mongodb_from,
         deadline,
         mongodb_to,
@@ -1041,7 +1043,7 @@ async fn run_neo4j_full(args: Neo4jFullArgs) -> anyhow::Result<()> {
         None
     };
 
-    let source_opts = surreal_sync_neo4j::SourceOpts {
+    let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
         source_database: args.database,
         source_username: args.username,
@@ -1050,11 +1052,11 @@ async fn run_neo4j_full(args: Neo4jFullArgs) -> anyhow::Result<()> {
         neo4j_json_properties: json_properties,
     };
 
-    surreal_sync_neo4j::run_full_sync(
+    surreal_sync_neo4j_source::run_full_sync(
         source_opts,
         args.to_namespace,
         args.to_database,
-        surreal_sync_neo4j::SurrealOpts::from(&args.surreal),
+        surreal_sync_neo4j_source::SurrealOpts::from(&args.surreal),
         sync_config,
     )
     .await?;
@@ -1102,14 +1104,15 @@ async fn run_neo4j_incremental(args: Neo4jIncrementalArgs) -> anyhow::Result<()>
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
-    let neo4j_from = surreal_sync_neo4j::Neo4jCheckpoint::from_cli_string(&args.incremental_from)?;
+    let neo4j_from =
+        surreal_sync_neo4j_source::Neo4jCheckpoint::from_cli_string(&args.incremental_from)?;
     let neo4j_to = args
         .incremental_to
         .as_ref()
-        .map(|s| surreal_sync_neo4j::Neo4jCheckpoint::from_cli_string(s))
+        .map(|s| surreal_sync_neo4j_source::Neo4jCheckpoint::from_cli_string(s))
         .transpose()?;
 
-    let source_opts = surreal_sync_neo4j::SourceOpts {
+    let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
         source_database: args.database,
         source_username: args.username,
@@ -1118,11 +1121,11 @@ async fn run_neo4j_incremental(args: Neo4jIncrementalArgs) -> anyhow::Result<()>
         neo4j_json_properties: json_properties,
     };
 
-    surreal_sync_neo4j::run_incremental_sync(
+    surreal_sync_neo4j_source::run_incremental_sync(
         source_opts,
         args.to_namespace,
         args.to_database,
-        surreal_sync_neo4j::SurrealOpts::from(&args.surreal),
+        surreal_sync_neo4j_source::SurrealOpts::from(&args.surreal),
         neo4j_from,
         deadline,
         neo4j_to,
@@ -1158,12 +1161,12 @@ async fn run_postgresql_trigger_full(args: PostgreSQLTriggerFullArgs) -> anyhow:
     };
 
     let source_database = extract_postgresql_database(&args.connection_string);
-    let source_opts = surreal_sync_postgresql_trigger::SourceOpts {
+    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
         source_uri: args.connection_string,
         source_database,
     };
 
-    surreal_sync_postgresql_trigger::run_full_sync(
+    surreal_sync_postgresql_trigger_source::run_full_sync(
         source_opts,
         args.to_namespace,
         args.to_database,
@@ -1199,22 +1202,22 @@ async fn run_postgresql_trigger_incremental(
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
-    let pg_from = surreal_sync_postgresql_trigger::PostgreSQLCheckpoint::from_cli_string(
+    let pg_from = surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint::from_cli_string(
         &args.incremental_from,
     )?;
     let pg_to = args
         .incremental_to
         .as_ref()
-        .map(|s| surreal_sync_postgresql_trigger::PostgreSQLCheckpoint::from_cli_string(s))
+        .map(|s| surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint::from_cli_string(s))
         .transpose()?;
 
     let source_database = extract_postgresql_database(&args.connection_string);
-    let source_opts = surreal_sync_postgresql_trigger::SourceOpts {
+    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
         source_uri: args.connection_string,
         source_database,
     };
 
-    surreal_sync_postgresql_trigger::run_incremental_sync(
+    surreal_sync_postgresql_trigger_source::run_incremental_sync(
         source_opts,
         args.to_namespace,
         args.to_database,
@@ -1261,15 +1264,15 @@ async fn run_mysql_full(args: MySQLFullArgs) -> anyhow::Result<()> {
         None
     };
 
-    let source_opts = surreal_sync_mysql_trigger::SourceOpts {
+    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
         source_uri: args.connection_string,
         source_database: args.database,
         mysql_boolean_paths: args.boolean_paths,
     };
 
-    surreal_sync_mysql_trigger::run_full_sync(
+    surreal_sync_mysql_trigger_source::run_full_sync(
         &source_opts,
-        &surreal_sync_mysql_trigger::SurrealOpts::from(&args.surreal),
+        &surreal_sync_mysql_trigger_source::SurrealOpts::from(&args.surreal),
         sync_config,
         &surreal,
     )
@@ -1300,25 +1303,26 @@ async fn run_mysql_incremental(args: MySQLIncrementalArgs) -> anyhow::Result<()>
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
-    let mysql_from =
-        surreal_sync_mysql_trigger::MySQLCheckpoint::from_cli_string(&args.incremental_from)?;
+    let mysql_from = surreal_sync_mysql_trigger_source::MySQLCheckpoint::from_cli_string(
+        &args.incremental_from,
+    )?;
     let mysql_to = args
         .incremental_to
         .as_ref()
-        .map(|s| surreal_sync_mysql_trigger::MySQLCheckpoint::from_cli_string(s))
+        .map(|s| surreal_sync_mysql_trigger_source::MySQLCheckpoint::from_cli_string(s))
         .transpose()?;
 
-    let source_opts = surreal_sync_mysql_trigger::SourceOpts {
+    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
         source_uri: args.connection_string,
         source_database: args.database,
         mysql_boolean_paths: args.boolean_paths,
     };
 
-    surreal_sync_mysql_trigger::run_incremental_sync(
+    surreal_sync_mysql_trigger_source::run_incremental_sync(
         source_opts,
         args.to_namespace,
         args.to_database,
-        surreal_sync_mysql_trigger::SurrealOpts::from(&args.surreal),
+        surreal_sync_mysql_trigger_source::SurrealOpts::from(&args.surreal),
         mysql_from,
         deadline,
         mysql_to,
@@ -1354,14 +1358,14 @@ async fn run_postgresql_logical_full(args: PostgreSQLLogicalFullArgs) -> anyhow:
         None
     };
 
-    let source_opts = surreal_sync_postgresql_logical_replication::SourceOpts {
+    let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
         connection_string: args.connection_string,
         slot_name: args.slot,
         tables: args.tables,
         schema: args.schema,
     };
 
-    surreal_sync_postgresql_logical_replication::run_full_sync(
+    surreal_sync_postgresql_wal2json_source::run_full_sync(
         source_opts,
         args.to_namespace,
         args.to_database,
@@ -1387,14 +1391,16 @@ async fn run_postgresql_logical_incremental(
 
     // Parse checkpoints
     let from_checkpoint =
-        surreal_sync_postgresql_logical_replication::PostgreSQLLogicalCheckpoint::from_cli_string(
+        surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint::from_cli_string(
             &args.incremental_from,
         )?;
 
     let to_checkpoint = args
         .incremental_to
         .map(|s| {
-            surreal_sync_postgresql_logical_replication::PostgreSQLLogicalCheckpoint::from_cli_string(&s)
+            surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint::from_cli_string(
+                &s,
+            )
         })
         .transpose()?;
 
@@ -1404,14 +1410,14 @@ async fn run_postgresql_logical_incremental(
         .parse()
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
 
-    let source_opts = surreal_sync_postgresql_logical_replication::SourceOpts {
+    let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
         connection_string: args.connection_string,
         slot_name: args.slot,
         tables: args.tables,
         schema: args.schema,
     };
 
-    surreal_sync_postgresql_logical_replication::run_incremental_sync(
+    surreal_sync_postgresql_wal2json_source::run_incremental_sync(
         source_opts,
         args.to_namespace,
         args.to_database,
@@ -1459,11 +1465,11 @@ async fn run_kafka(args: KafkaArgs) -> anyhow::Result<()> {
         None
     };
 
-    surreal_sync_kafka::run_incremental_sync(
+    surreal_sync_kafka_source::run_incremental_sync(
         args.config,
         args.to_namespace,
         args.to_database,
-        surreal_sync_kafka::SurrealOpts::from(&args.surreal),
+        surreal_sync_kafka_source::SurrealOpts::from(&args.surreal),
         deadline,
         table_schema,
     )

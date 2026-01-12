@@ -254,8 +254,10 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
     match db_type {
         "mongodb" => {
             // MongoDB: Resume token comparison
-            let t1_checkpoint: surreal_sync_mongodb::MongoDBCheckpoint = t1_file.parse()?;
-            let t2_checkpoint: surreal_sync_mongodb::MongoDBCheckpoint = t2_file.parse()?;
+            let t1_checkpoint: surreal_sync_mongodb_changestream_source::MongoDBCheckpoint =
+                t1_file.parse()?;
+            let t2_checkpoint: surreal_sync_mongodb_changestream_source::MongoDBCheckpoint =
+                t2_file.parse()?;
 
             if t1_checkpoint.resume_token == t2_checkpoint.resume_token {
                 println!("Checkpoint content verification passed: MongoDB resume tokens unchanged (no changes to monitored collections)");
@@ -266,8 +268,10 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
 
         "mysql" => {
             // MySQL: Sequence ID progression
-            let t1_checkpoint: surreal_sync_mysql_trigger::MySQLCheckpoint = t1_file.parse()?;
-            let t2_checkpoint: surreal_sync_mysql_trigger::MySQLCheckpoint = t2_file.parse()?;
+            let t1_checkpoint: surreal_sync_mysql_trigger_source::MySQLCheckpoint =
+                t1_file.parse()?;
+            let t2_checkpoint: surreal_sync_mysql_trigger_source::MySQLCheckpoint =
+                t2_file.parse()?;
 
             assert!(
                 t2_checkpoint.sequence_id >= t1_checkpoint.sequence_id,
@@ -283,9 +287,9 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
 
         "postgresql" => {
             // PostgreSQL: Sequence ID progression
-            let t1_checkpoint: surreal_sync_postgresql_trigger::PostgreSQLCheckpoint =
+            let t1_checkpoint: surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint =
                 t1_file.parse()?;
-            let t2_checkpoint: surreal_sync_postgresql_trigger::PostgreSQLCheckpoint =
+            let t2_checkpoint: surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint =
                 t2_file.parse()?;
 
             assert!(
@@ -302,8 +306,8 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
 
         "neo4j" => {
             // Neo4j: Timestamp progression
-            let t1_checkpoint: surreal_sync_neo4j::Neo4jCheckpoint = t1_file.parse()?;
-            let t2_checkpoint: surreal_sync_neo4j::Neo4jCheckpoint = t2_file.parse()?;
+            let t1_checkpoint: surreal_sync_neo4j_source::Neo4jCheckpoint = t1_file.parse()?;
+            let t2_checkpoint: surreal_sync_neo4j_source::Neo4jCheckpoint = t2_file.parse()?;
 
             assert!(
                 t2_checkpoint.timestamp >= t1_checkpoint.timestamp,

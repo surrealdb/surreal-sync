@@ -1,0 +1,56 @@
+[package]
+name = "surreal-sync-kafka-source"
+version = "0.1.0"
+edition = "2021"
+description = "Kafka consumer with protobuf support for surreal-sync"
+authors = ["surreal-sync contributors"]
+
+[dependencies]
+# Type definitions (proto types, message types)
+# NOTE: kafka-types defines the shared types (ProtoFieldValue, Message, Payload, etc.)
+# This crate depends on kafka-types, NOT the other way around.
+# This dependency direction breaks the original circular dependency.
+kafka-types = { path = "../kafka-types" }
+
+# For sync functionality
+surreal-sync-surreal = { path = "../surreal" }
+surrealdb-types = { path = "../surrealdb-types" }
+sync-core = { path = "../sync-core" }
+
+# Kafka client
+rdkafka = { version = "0.36", features = ["tokio"] }
+
+# Protobuf support
+protobuf = "3.5"
+protobuf-parse = "3.5"
+
+# Async runtime
+tokio = { version = "1.47", features = ["full"] }
+
+# Error handling
+anyhow = { version = "1.0.100", features = ["backtrace"] }
+thiserror = "1.0"
+
+# Serialization
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+
+# Logging
+tracing = "0.1"
+log = "0.4"
+
+# Utilities
+bytes = "1.0"
+base64 = "0.22"
+tempfile = "3.0"
+
+# CLI argument parsing (for Config struct)
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# DateTime support
+chrono = { version = "0.4.41", features = ["serde"] }
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3.0"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

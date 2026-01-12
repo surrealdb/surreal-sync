@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kafka", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql", "crates/postgresql-logical-replication", "crates/postgresql-trigger", "crates/csv", "crates/jsonl", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/loadtest-populate", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surrealdb-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify", "crates/surreal", "crates/mongodb", "crates/neo4j", "crates/checkpoint", "crates/mysql-trigger", "crates/loadtest-distributed"]
+members = ["crates/kafka-source", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql", "crates/postgresql-wal2json-source", "crates/postgresql-trigger-source", "crates/csv-source", "crates/jsonl-source", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/loadtest-populate", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surrealdb-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify", "crates/surreal", "crates/mongodb-changestream-source", "crates/neo4j-source", "crates/checkpoint", "crates/mysql-trigger-source", "crates/loadtest-distributed"]
 resolver = "2"
 
 [package]
@@ -61,16 +61,16 @@ aws-sdk-s3 = "1.54"
 aws-config = "1.5"
 
 # Kafka source
-surreal-sync-kafka = { path = "crates/kafka" }
+surreal-sync-kafka-source = { path = "crates/kafka-source" }
 
 # PostgreSQL logical replication (WAL) library
-surreal-sync-postgresql-logical-replication = { path = "crates/postgresql-logical-replication" }
+surreal-sync-postgresql-wal2json-source = { path = "crates/postgresql-wal2json-source" }
 
 # CSV source
-surreal-sync-csv = { path = "crates/csv" }
+surreal-sync-csv-source = { path = "crates/csv-source" }
 
 # JSONL source
-surreal-sync-jsonl = { path = "crates/jsonl" }
+surreal-sync-jsonl-source = { path = "crates/jsonl-source" }
 
 # Load testing populators
 loadtest-populate-mysql = { path = "crates/loadtest-populate-mysql" }
@@ -103,16 +103,16 @@ neo4j-types = { path = "crates/neo4j-types" }
 surreal-sync-surreal = { path = "crates/surreal" }
 
 # MongoDB source
-surreal-sync-mongodb = { path = "crates/mongodb" }
+surreal-sync-mongodb-changestream-source = { path = "crates/mongodb-changestream-source" }
 
 # Neo4j source
-surreal-sync-neo4j = { path = "crates/neo4j" }
+surreal-sync-neo4j-source = { path = "crates/neo4j-source" }
 
 # MySQL trigger-based sync
-surreal-sync-mysql-trigger = { path = "crates/mysql-trigger" }
+surreal-sync-mysql-trigger-source = { path = "crates/mysql-trigger-source" }
 
 # PostgreSQL trigger-based sync
-surreal-sync-postgresql-trigger = { path = "crates/postgresql-trigger" }
+surreal-sync-postgresql-trigger-source = { path = "crates/postgresql-trigger-source" }
 
 # PostgreSQL shared utilities
 surreal-sync-postgresql = { path = "crates/postgresql" }

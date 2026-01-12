@@ -97,7 +97,7 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
     // === PHASE 2: RUN SYNC from MongoDB to SurrealDB ===
     tracing::info!("Running full sync from MongoDB to SurrealDB");
 
-    let source_opts = surreal_sync_mongodb::SourceOpts {
+    let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
         source_uri: MONGODB_URI.to_string(),
         source_database: Some(MONGODB_DATABASE.to_string()),
     };
@@ -110,11 +110,11 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
         dry_run: false,
     };
 
-    surreal_sync_mongodb::run_full_sync(
+    surreal_sync_mongodb_changestream_source::run_full_sync(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_mongodb::SurrealOpts::from(&surreal_opts),
+        surreal_sync_mongodb_changestream_source::SurrealOpts::from(&surreal_opts),
         None,
     )
     .await?;

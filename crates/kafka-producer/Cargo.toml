@@ -2,7 +2,7 @@
 name = "surreal-sync-kafka-producer"
 version = "0.1.0"
 edition = "2021"
-description = "Kafka producer example for testing surreal-sync-kafka consumer"
+description = "Kafka producer example for testing surreal-sync-kafka-source consumer"
 authors = ["surreal-sync contributors"]
 
 [lib]

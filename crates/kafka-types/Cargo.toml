@@ -9,7 +9,7 @@ authors = ["surreal-sync contributors"]
 # Core types
 sync-core = { path = "../sync-core" }
 json-types = { path = "../json-types" }
-# NOTE: NO dependency on surreal-sync-kafka - this crate defines the shared types
+# NOTE: NO dependency on surreal-sync-kafka-source - this crate defines the shared types
 # that kafka depends on, reversing the original dependency direction to break
 # the circular dependency.
 

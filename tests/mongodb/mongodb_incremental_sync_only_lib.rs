@@ -36,7 +36,7 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     surreal_sync::testing::mongodb::create_collections(&db, &dataset).await?;
     surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
 
-    let source_opts = surreal_sync_mongodb::SourceOpts {
+    let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
         source_uri: "mongodb://root:root@mongodb:27017".to_string(),
         source_database: Some("testdb".to_string()),
     };
@@ -61,11 +61,11 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
         checkpoint_dir: Some(".test-checkpoints".to_string()),
     };
 
-    surreal_sync_mongodb::run_full_sync(
+    surreal_sync_mongodb_changestream_source::run_full_sync(
         source_opts.clone(),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_mongodb::SurrealOpts::from(&surreal_opts),
+        surreal_sync_mongodb_changestream_source::SurrealOpts::from(&surreal_opts),
         Some(sync_config),
     )
     .await?;
@@ -91,14 +91,15 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     )
     .await?;
     // Convert to mongodb crate's checkpoint type
-    let sync_checkpoint: surreal_sync_mongodb::MongoDBCheckpoint = main_checkpoint.parse()?;
+    let sync_checkpoint: surreal_sync_mongodb_changestream_source::MongoDBCheckpoint =
+        main_checkpoint.parse()?;
 
     // Run TRUE incremental sync using the checkpoint with target timestamp
-    surreal_sync_mongodb::run_incremental_sync(
+    surreal_sync_mongodb_changestream_source::run_incremental_sync(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_mongodb::SurrealOpts::from(&surreal_opts),
+        surreal_sync_mongodb_changestream_source::SurrealOpts::from(&surreal_opts),
         sync_checkpoint,
         deadline,
         None, // No target checkpoint - sync until deadline

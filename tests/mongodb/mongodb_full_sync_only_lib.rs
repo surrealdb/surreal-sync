@@ -34,7 +34,7 @@ async fn test_mongodb_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> 
     surreal_sync::testing::mongodb::create_collections(&db, &dataset).await?;
     surreal_sync::testing::mongodb::insert_docs(&db, &dataset).await?;
 
-    let source_opts = surreal_sync_mongodb::SourceOpts {
+    let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
         source_uri: "mongodb://root:root@mongodb:27017".to_string(),
         source_database: Some("testdb".to_string()),
     };
@@ -48,11 +48,11 @@ async fn test_mongodb_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> 
     };
 
     // Execute full sync from MongoDB to SurrealDB
-    surreal_sync_mongodb::migrate_from_mongodb(
+    surreal_sync_mongodb_changestream_source::migrate_from_mongodb(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_mongodb::SurrealOpts::from(&surreal_opts),
+        surreal_sync_mongodb_changestream_source::SurrealOpts::from(&surreal_opts),
     )
     .await?;
 

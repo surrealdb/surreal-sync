@@ -98,7 +98,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
     // === PHASE 2: RUN SYNC from PostgreSQL to SurrealDB ===
     tracing::info!("Running full sync from PostgreSQL to SurrealDB");
 
-    let source_opts = surreal_sync_postgresql_trigger::SourceOpts {
+    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
         source_uri: pg_conn_string.clone(),
         source_database: Some("public".to_string()),
     };
@@ -111,7 +111,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
         dry_run: false,
     };
 
-    surreal_sync_postgresql_trigger::run_full_sync(
+    surreal_sync_postgresql_trigger_source::run_full_sync(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),

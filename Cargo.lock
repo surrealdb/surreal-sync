@@ -6239,16 +6239,16 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "surreal-sync-csv",
- "surreal-sync-jsonl",
- "surreal-sync-kafka",
+ "surreal-sync-csv-source",
+ "surreal-sync-jsonl-source",
  "surreal-sync-kafka-producer",
- "surreal-sync-mongodb",
- "surreal-sync-mysql-trigger",
- "surreal-sync-neo4j",
+ "surreal-sync-kafka-source",
+ "surreal-sync-mongodb-changestream-source",
+ "surreal-sync-mysql-trigger-source",
+ "surreal-sync-neo4j-source",
  "surreal-sync-postgresql",
- "surreal-sync-postgresql-logical-replication",
- "surreal-sync-postgresql-trigger",
+ "surreal-sync-postgresql-trigger-source",
+ "surreal-sync-postgresql-wal2json-source",
  "surreal-sync-surreal",
  "surrealdb",
  "surrealdb-types",
@@ -6266,7 +6266,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "surreal-sync-csv"
+name = "surreal-sync-csv-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -6308,7 +6308,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "surreal-sync-jsonl"
+name = "surreal-sync-jsonl-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -6329,7 +6329,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "surreal-sync-kafka"
+name = "surreal-sync-kafka-producer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "protobuf",
+ "protobuf-codegen",
+ "rdkafka",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "surreal-sync-kafka-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -6356,21 +6370,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "surreal-sync-kafka-producer"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "chrono",
- "protobuf",
- "protobuf-codegen",
- "rdkafka",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "surreal-sync-mongodb"
+name = "surreal-sync-mongodb-changestream-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -6395,7 +6395,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "surreal-sync-mysql-trigger"
+name = "surreal-sync-mysql-trigger-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -6421,7 +6421,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "surreal-sync-neo4j"
+name = "surreal-sync-neo4j-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -6471,30 +6471,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "surreal-sync-postgresql-logical-replication"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "checkpoint",
- "chrono",
- "clap",
- "hex",
- "rust_decimal",
- "serde",
- "serde_json",
- "surreal-sync-postgresql",
- "surreal-sync-surreal",
- "surrealdb",
- "tempfile",
- "tokio",
- "tokio-postgres",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "surreal-sync-postgresql-trigger"
+name = "surreal-sync-postgresql-trigger-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -6521,6 +6498,29 @@ dependencies = [
  "tokio-postgres",
  "tokio-stream",
  "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "surreal-sync-postgresql-wal2json-source"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "checkpoint",
+ "chrono",
+ "clap",
+ "hex",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "surreal-sync-postgresql",
+ "surreal-sync-surreal",
+ "surrealdb",
+ "tempfile",
+ "tokio",
+ "tokio-postgres",
+ "tracing",
+ "tracing-subscriber",
  "uuid",
 ]
 

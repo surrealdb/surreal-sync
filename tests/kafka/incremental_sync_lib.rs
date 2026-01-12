@@ -14,7 +14,7 @@
 //!
 //! ## Import Note
 //!
-//! This test imports directly from `surreal_sync_kafka` crate (not re-exported
+//! This test imports directly from `surreal_sync_kafka_source` crate (not re-exported
 //! through main crate). This follows the pattern established for other database-
 //! specific sync crates (mysql-trigger, postgresql-trigger, etc.).
 
@@ -24,10 +24,10 @@ use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
 use surreal_sync::SurrealOpts;
-use surreal_sync_kafka::{Config as KafkaConfig, SurrealOpts as KafkaSurrealOpts};
 use surreal_sync_kafka_producer::{
     publish_test_posts, publish_test_relations, publish_test_users, KafkaTestProducer,
 };
+use surreal_sync_kafka_source::{Config as KafkaConfig, SurrealOpts as KafkaSurrealOpts};
 use tokio::time::sleep;
 
 /// Kafka broker address for testing
@@ -37,7 +37,7 @@ const KAFKA_BROKER: &str = "kafka:9092";
 async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing for debug output
     tracing_subscriber::fmt()
-        .with_env_filter("surreal_sync=debug,surreal_sync_kafka=debug")
+        .with_env_filter("surreal_sync=debug,surreal_sync_kafka_source=debug")
         .try_init()
         .ok();
 
@@ -146,7 +146,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         let database = surreal_config.surreal_database.clone();
         let opts = kafka_surreal_opts.clone();
         async move {
-            surreal_sync_kafka::run_incremental_sync(
+            surreal_sync_kafka_source::run_incremental_sync(
                 config, namespace, database, opts, deadline, None,
             )
             .await
@@ -195,7 +195,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         let database = surreal_config.surreal_database.clone();
         let opts = kafka_surreal_opts.clone();
         async move {
-            surreal_sync_kafka::run_incremental_sync(
+            surreal_sync_kafka_source::run_incremental_sync(
                 config, namespace, database, opts, deadline, None,
             )
             .await
@@ -243,7 +243,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         let database = surreal_config.surreal_database.clone();
         let opts = kafka_surreal_opts;
         async move {
-            surreal_sync_kafka::run_incremental_sync(
+            surreal_sync_kafka_source::run_incremental_sync(
                 config, namespace, database, opts, deadline, None,
             )
             .await

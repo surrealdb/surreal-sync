@@ -78,7 +78,7 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
         let checkpoint_file =
             checkpoint::get_checkpoint_for_phase(&checkpoint_dir, SyncPhase::FullSyncStart).await?;
         // Parse the CheckpointFile into database-specific checkpoint type and convert to CLI string
-        let mongodb_checkpoint: surreal_sync_mongodb::MongoDBCheckpoint =
+        let mongodb_checkpoint: surreal_sync_mongodb_changestream_source::MongoDBCheckpoint =
             checkpoint_file.parse()?;
         mongodb_checkpoint.to_cli_string()
     };

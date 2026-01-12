@@ -35,7 +35,7 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
     surreal_sync::testing::mysql::insert_rows(&mut mysql_conn, &dataset).await?;
 
     // Perform full sync from MySQL to SurrealDB
-    let source_opts = surreal_sync_mysql_trigger::SourceOpts {
+    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
         source_uri: mysql_config.get_connection_string(),
         source_database: Some("testdb".to_string()),
         mysql_boolean_paths: Some(vec![
@@ -64,9 +64,9 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     // Execute full sync from MySQL to SurrealDB
-    surreal_sync_mysql_trigger::run_full_sync(
+    surreal_sync_mysql_trigger_source::run_full_sync(
         &source_opts,
-        &surreal_sync_mysql_trigger::SurrealOpts::from(&surreal_opts),
+        &surreal_sync_mysql_trigger_source::SurrealOpts::from(&surreal_opts),
         None,
         &surreal2,
     )

@@ -15,7 +15,7 @@
 //!
 //! ## Import Note
 //!
-//! This test imports directly from `surreal_sync_kafka` crate (not re-exported
+//! This test imports directly from `surreal_sync_kafka_source` crate (not re-exported
 //! through main crate). This follows the pattern established for other database-
 //! specific sync crates (mysql-trigger, postgresql-trigger, etc.).
 
@@ -25,7 +25,7 @@ use loadtest_verify::StreamingVerifier;
 use std::time::Duration;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
 use surreal_sync::SurrealOpts;
-use surreal_sync_kafka::{Config as KafkaConfig, SurrealOpts as KafkaSurrealOpts};
+use surreal_sync_kafka_source::{Config as KafkaConfig, SurrealOpts as KafkaSurrealOpts};
 use sync_core::Schema;
 use tokio::time::sleep;
 
@@ -200,7 +200,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             let namespace = surreal_config.surreal_namespace.clone();
             let database = surreal_config.surreal_database.clone();
             async move {
-                surreal_sync_kafka::run_incremental_sync(
+                surreal_sync_kafka_source::run_incremental_sync(
                     config,
                     namespace,
                     database,

@@ -96,7 +96,7 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
     // === PHASE 2: RUN FULL SYNC WITH CHECKPOINTS (sets up triggers) ===
     tracing::info!("Running full sync to set up triggers and emit checkpoints");
 
-    let source_opts = surreal_sync_postgresql_trigger::SourceOpts {
+    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
         source_uri: pg_conn_string.clone(),
         source_database: Some("public".to_string()), // PostgreSQL schema
     };
@@ -116,7 +116,7 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
         checkpoint_dir: Some(CHECKPOINT_DIR.to_string()),
     };
 
-    surreal_sync_postgresql_trigger::run_full_sync(
+    surreal_sync_postgresql_trigger_source::run_full_sync(
         source_opts.clone(),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
@@ -162,7 +162,7 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
         checkpoint::get_checkpoint_for_phase(CHECKPOINT_DIR, checkpoint::SyncPhase::FullSyncStart)
             .await?;
     // Parse the CheckpointFile into database-specific checkpoint type
-    let sync_checkpoint: surreal_sync_postgresql_trigger::PostgreSQLCheckpoint =
+    let sync_checkpoint: surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint =
         checkpoint_file.parse()?;
 
     tracing::info!(
@@ -170,7 +170,7 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
         sync_checkpoint
     );
 
-    surreal_sync_postgresql_trigger::run_incremental_sync(
+    surreal_sync_postgresql_trigger_source::run_incremental_sync(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),

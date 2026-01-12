@@ -47,7 +47,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Create schema/constraints but don't insert data yet
     surreal_sync::testing::neo4j::create_constraints_and_indices(&graph, &dataset).await?;
 
-    let source_opts = surreal_sync_neo4j::SourceOpts {
+    let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: neo4j_config.get_uri(),
         source_database: Some(neo4j_config.get_database()),
         source_username: Some(neo4j_config.get_username()),
@@ -75,11 +75,11 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     };
 
     // Run full sync with empty data to get checkpoint (t1)
-    surreal_sync_neo4j::run_full_sync(
+    surreal_sync_neo4j_source::run_full_sync(
         source_opts.clone(),
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_neo4j::SurrealOpts::from(&surreal_opts),
+        surreal_sync_neo4j_source::SurrealOpts::from(&surreal_opts),
         Some(sync_config),
     )
     .await?;
@@ -96,12 +96,12 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     //     surreal_sync::checkpoint::get_first_checkpoint_from_dir(".test-checkpoints").await?;
 
     // Run incremental sync using the checkpoint
-    let neo4j_checkpoint = surreal_sync_neo4j::Neo4jCheckpoint { timestamp: t1 };
-    surreal_sync_neo4j::run_incremental_sync(
+    let neo4j_checkpoint = surreal_sync_neo4j_source::Neo4jCheckpoint { timestamp: t1 };
+    surreal_sync_neo4j_source::run_incremental_sync(
         source_opts,
         surreal_config.surreal_namespace.clone(),
         surreal_config.surreal_database.clone(),
-        surreal_sync_neo4j::SurrealOpts::from(&surreal_opts),
+        surreal_sync_neo4j_source::SurrealOpts::from(&surreal_opts),
         neo4j_checkpoint,
         chrono::Utc::now() + chrono::Duration::hours(1), // 1 hour deadline
         None, // No target checkpoint - sync all available changes

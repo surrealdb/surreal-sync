@@ -19,7 +19,7 @@ use std::time::Duration;
 /// 2. Run the producer:
 ///    cargo run -p surreal-sync-kafka-producer
 /// 3. Run the consumer in another terminal:
-///    cd crates/kafka && cargo run --example multi_consumer
+///    cd crates/kafka-source && cargo run --example multi_consumer
 // Generated protobuf module
 mod user_event;
 
