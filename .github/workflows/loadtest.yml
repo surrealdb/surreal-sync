@@ -1,0 +1,272 @@
+name: Load Test
+
+on:
+  schedule:
+    # Weekly on Monday at 4 AM UTC
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      preset:
+        type: choice
+        description: 'Size preset for the loadtest'
+        options:
+          - small
+          - medium
+          - large
+        default: small
+      sources:
+        type: string
+        description: 'Comma-separated list of sources to test'
+        default: 'kafka,mysql,postgresql,mongodb,neo4j'
+      timeout:
+        type: string
+        description: 'Timeout in seconds per source'
+        default: '600'
+  pull_request:
+    types: [labeled]
+
+# Cancel in-progress runs for the same branch
+concurrency:
+  group: loadtest-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Setup job to parse inputs and create matrix
+  setup:
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'loadtest'))
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      preset: ${{ steps.set-inputs.outputs.preset }}
+      timeout: ${{ steps.set-inputs.outputs.timeout }}
+    steps:
+      - name: Set inputs
+        id: set-inputs
+        run: |
+          # Set defaults based on event type
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "preset=${{ inputs.preset }}" >> $GITHUB_OUTPUT
+            echo "timeout=${{ inputs.timeout }}" >> $GITHUB_OUTPUT
+            SOURCES="${{ inputs.sources }}"
+          else
+            echo "preset=small" >> $GITHUB_OUTPUT
+            echo "timeout=600" >> $GITHUB_OUTPUT
+            SOURCES="kafka,mysql,postgresql,mongodb,neo4j"
+          fi
+          echo "sources=$SOURCES" >> $GITHUB_OUTPUT
+
+      - name: Create matrix
+        id: set-matrix
+        run: |
+          SOURCES="${{ steps.set-inputs.outputs.sources }}"
+          # Convert comma-separated list to JSON array
+          JSON_ARRAY=$(echo "$SOURCES" | tr ',' '\n' | jq -R . | jq -s -c .)
+          echo "matrix={\"source\":$JSON_ARRAY}" >> $GITHUB_OUTPUT
+
+  # Build the release binary once
+  build:
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-action@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-release-
+
+      - name: Build release binary
+        run: cargo build --release
+
+      - name: Build Docker image
+        run: docker build -t surreal-sync:latest -f Dockerfile .
+
+      - name: Save Docker image
+        run: docker save surreal-sync:latest | gzip > surreal-sync-image.tar.gz
+
+      - name: Upload Docker image
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: surreal-sync-image.tar.gz
+          retention-days: 1
+
+  # Run loadtest for each source
+  loadtest:
+    needs: [setup, build]
+    runs-on: ubuntu-latest-16-cores
+    strategy:
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Docker image
+        run: gunzip -c surreal-sync-image.tar.gz | docker load
+
+      - name: Run loadtest
+        id: loadtest
+        run: |
+          cd loadtest
+          python3 ./scripts/run_ci.py \
+            --source ${{ matrix.source }} \
+            --preset ${{ needs.setup.outputs.preset }} \
+            --timeout ${{ needs.setup.outputs.timeout }} \
+            --skip-build \
+            --no-preserve-on-failure
+        continue-on-error: true
+
+      - name: Upload metrics
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-${{ matrix.source }}
+          path: loadtest/output/metrics.json
+          retention-days: 90
+
+      - name: Upload logs on failure
+        if: steps.loadtest.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ matrix.source }}
+          path: loadtest/output/
+          retention-days: 7
+
+  # Generate summary and compare with baseline
+  summary:
+    needs: [setup, loadtest]
+    runs-on: ubuntu-latest
+    if: always() && needs.setup.result == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all metrics artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: metrics-*
+          path: metrics/
+
+      - name: Download baseline artifacts (if exists)
+        id: download-baseline
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          workflow: loadtest.yml
+          branch: main
+          name: baseline-metrics
+          path: baseline/
+          if_no_artifact_found: warn
+        continue-on-error: true
+
+      - name: Generate summary
+        run: |
+          echo "## Load Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Preset:** ${{ needs.setup.outputs.preset }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Process each source
+          for metrics_dir in metrics/metrics-*/; do
+            if [ -d "$metrics_dir" ]; then
+              source=$(basename "$metrics_dir" | sed 's/metrics-//')
+              metrics_file="$metrics_dir/metrics.json"
+              baseline_file="baseline/$source/metrics.json"
+
+              if [ -f "$metrics_file" ]; then
+                echo "### Source: $source" >> $GITHUB_STEP_SUMMARY
+
+                # Run comparison if baseline exists
+                if [ -f "$baseline_file" ]; then
+                  python3 loadtest/scripts/compare_metrics.py \
+                    "$metrics_file" \
+                    "$baseline_file" \
+                    >> $GITHUB_STEP_SUMMARY 2>&1 || true
+                else
+                  python3 loadtest/scripts/compare_metrics.py \
+                    "$metrics_file" \
+                    >> $GITHUB_STEP_SUMMARY 2>&1 || true
+                fi
+
+                echo "" >> $GITHUB_STEP_SUMMARY
+              fi
+            fi
+          done
+
+      - name: Check for regressions
+        id: check-regressions
+        run: |
+          regression_found=false
+          for metrics_dir in metrics/metrics-*/; do
+            if [ -d "$metrics_dir" ]; then
+              source=$(basename "$metrics_dir" | sed 's/metrics-//')
+              metrics_file="$metrics_dir/metrics.json"
+              baseline_file="baseline/$source/metrics.json"
+
+              if [ -f "$metrics_file" ] && [ -f "$baseline_file" ]; then
+                if ! python3 loadtest/scripts/compare_metrics.py \
+                    "$metrics_file" \
+                    "$baseline_file" \
+                    > /dev/null 2>&1; then
+                  echo "Regression detected for source: $source"
+                  regression_found=true
+                fi
+              fi
+            fi
+          done
+
+          if [ "$regression_found" = true ]; then
+            echo "regression=true" >> $GITHUB_OUTPUT
+          else
+            echo "regression=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Prepare baseline update
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          mkdir -p new-baseline
+          for metrics_dir in metrics/metrics-*/; do
+            if [ -d "$metrics_dir" ]; then
+              source=$(basename "$metrics_dir" | sed 's/metrics-//')
+              mkdir -p "new-baseline/$source"
+              cp "$metrics_dir/metrics.json" "new-baseline/$source/" || true
+            fi
+          done
+
+      - name: Upload new baseline
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-metrics
+          path: new-baseline/
+          retention-days: 90
+
+      - name: Fail on regression
+        if: steps.check-regressions.outputs.regression == 'true' && github.event_name == 'pull_request'
+        run: |
+          echo "Performance regression detected. Check the summary for details."
+          exit 1
+
+# NOTE: Kubernetes-based loadtests (make k8s-run) can be added as a separate
+# workflow in the future if needed. This would require kind cluster setup
+# and longer timeouts due to cluster initialization overhead.

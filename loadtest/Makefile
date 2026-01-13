@@ -70,10 +70,10 @@ SHELL := /bin/bash
 #     --namespace loadtest --database test
 #
 
-.PHONY: docker-build generate run run-detached clean logs logs-verify logs-sync logs-populate status help \
+.PHONY: docker-build generate run run-ci run-detached clean clean-all logs logs-verify logs-sync logs-populate status help \
 	test-dry-run-docker-compose test-dry-run-kubernetes \
 	kind-create kind-delete kind-load kind-load-source-image k8s-run k8s-clean k8s-wait-for-completion \
-	verify-aggregator test-all-sources down wait-for-completion wait-for-start
+	verify-aggregator test-all-sources down wait-for-completion wait-for-start test-scripts
 
 # Configuration (override with environment variables)
 SCHEMA ?= ./config/schema.yaml
@@ -98,9 +98,12 @@ help:
 	@echo "  docker-build   Build the surreal-sync Docker image"
 	@echo "  generate       Generate Docker Compose configuration"
 	@echo "  run            Run the load test with monitoring (detects failures early)"
+	@echo "  run-ci         Run load test via CI script with JSON metrics output"
 	@echo "  run-detached   Run in background without monitoring"
 	@echo "  down           Stop and remove all containers"
 	@echo "  clean          Clean up containers, volumes, and generated files"
+	@echo "  clean-all      Force cleanup of all loadtest resources (use after failed run-ci)"
+	@echo "  test-scripts   Run unit tests for CI scripts (no external deps)"
 	@echo ""
 	@echo "Debugging Targets:"
 	@echo "  logs           Show logs from all containers (follow mode)"
@@ -160,6 +163,16 @@ run: docker-build generate
 	cd $(OUTPUT_DIR) && docker-compose -f docker-compose.loadtest.yml up -d --build
 	@echo "Containers started. Monitoring for completion or failure..."
 	@$(MAKE) -s wait-for-completion TIMEOUT=$(TIMEOUT) POLL_INTERVAL=$(POLL_INTERVAL)
+
+# CI target - delegates to Python script for JSON metrics output
+# Usage: make run-ci SOURCE=kafka ROW_COUNT=100 TIMEOUT=300
+run-ci:
+	python3 ./scripts/run_ci.py \
+		--source $(SOURCE) \
+		--preset $(PRESET) \
+		--row-count $(ROW_COUNT) \
+		--workers $(WORKERS) \
+		--timeout $(TIMEOUT)
 
 # Wait for completion with early failure detection
 # This monitors containers and exits immediately when any container fails
@@ -660,3 +673,19 @@ test-all-sources:
 	$(MAKE) verify-aggregator
 	$(MAKE) clean
 	@echo "=== All source tests PASSED ==="
+
+# =============================================================================
+# Script testing (no external dependencies)
+# =============================================================================
+
+# Test CI scripts without external dependencies (no docker, no cargo)
+# Uses sample JSON files to verify script logic
+test-scripts:
+	@echo "Running script unit tests..."
+	./scripts/test-scripts.sh
+
+# Clean up all loadtest resources (containers, volumes, networks)
+# Use this to clean up after a failed run-ci test
+clean-all:
+	@echo "Cleaning up all loadtest resources..."
+	./scripts/cleanup.sh --force
