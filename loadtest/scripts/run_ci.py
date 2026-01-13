@@ -40,6 +40,40 @@ from pathlib import Path
 from typing import Callable, Optional
 
 
+def parse_docker_memory(mem_str: str) -> int:
+    """Parse docker memory string like '256MiB' to MB.
+
+    Args:
+        mem_str: Memory string from docker stats (e.g., "256MiB", "1.5GiB", "512KiB")
+
+    Returns:
+        Memory in MB (integer), 0 if cannot parse
+    """
+    mem_str = mem_str.strip()
+    if not mem_str:
+        return 0
+
+    # Extract numeric value and unit
+    match = re.match(r'([\d.]+)\s*([KMGT]i?B)', mem_str, re.IGNORECASE)
+    if not match:
+        return 0
+
+    value = float(match.group(1))
+    unit = match.group(2).upper()
+
+    # Convert to MB
+    if unit in ('KIB', 'KB'):
+        return int(value / 1024)
+    elif unit in ('MIB', 'MB'):
+        return int(value)
+    elif unit in ('GIB', 'GB'):
+        return int(value * 1024)
+    elif unit in ('TIB', 'TB'):
+        return int(value * 1024 * 1024)
+
+    return 0
+
+
 def check_prerequisites() -> list[str]:
     """Check that required binaries are available.
 
@@ -90,19 +124,6 @@ class Config:
     image_name: str = "surreal-sync:latest"
     project_root: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent)
     loadtest_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent)
-
-
-@dataclass
-class Timing:
-    """Timing information for different phases."""
-    start: float = 0
-    populate_start: float = 0
-    populate_end: float = 0
-    sync_start: float = 0
-    sync_end: float = 0
-    verify_start: float = 0
-    verify_end: float = 0
-    end: float = 0
 
 
 @dataclass
@@ -228,61 +249,6 @@ def parse_container_status(ps_output: str, workers: int, expected_sync: int) -> 
     return status
 
 
-def calculate_durations(timing: Timing) -> dict:
-    """Calculate duration values from timing data.
-
-    Args:
-        timing: Timing object with phase timestamps
-
-    Returns:
-        Dictionary with duration values
-
-    Raises:
-        ValueError: If timing data is invalid (e.g., start time is 0)
-    """
-    # Validate essential timing fields
-    if timing.start == 0:
-        raise ValueError("timing.start is 0 - timing was not properly initialized")
-    if timing.end == 0:
-        raise ValueError("timing.end is 0 - timing was not properly recorded")
-    if timing.end < timing.start:
-        raise ValueError(f"timing.end ({timing.end}) is before timing.start ({timing.start})")
-
-    # Calculate with proper fallbacks
-    populate_start = timing.populate_start if timing.populate_start else timing.start
-    populate_end = timing.populate_end if timing.populate_end else timing.end
-
-    # Sync phase: starts when populate ends, ends when sync containers finish
-    sync_start = timing.sync_start if timing.sync_start else populate_end
-    sync_end = timing.sync_end if timing.sync_end else timing.end
-
-    # Verify phase: starts when sync ends
-    verify_start = timing.verify_start if timing.verify_start else sync_end
-    verify_end = timing.verify_end if timing.verify_end else timing.end
-
-    total_duration = int(timing.end - timing.start)
-    populate_duration = int(populate_end - populate_start)
-    sync_duration = int(sync_end - sync_start)
-    verify_duration = int(verify_end - verify_start)
-
-    # Validate durations make sense
-    if sync_duration == 0 and populate_duration > 0:
-        # Sync duration of 0 is suspicious if populate took time
-        # This could happen if sync containers weren't tracked properly
-        # Log a warning but don't fail - use a fallback calculation
-        # Estimate sync as: total - populate - verify (minimum 1 second if positive result expected)
-        estimated_sync = total_duration - populate_duration - verify_duration
-        if estimated_sync > 0:
-            sync_duration = estimated_sync
-
-    return {
-        "total": total_duration,
-        "populate": populate_duration,
-        "sync": sync_duration,
-        "verify": verify_duration
-    }
-
-
 def calculate_throughput(row_count: int, durations: dict) -> float:
     """Calculate throughput in rows per second.
 
@@ -347,7 +313,7 @@ def exit_code_to_status(exit_code: int) -> str:
 
 def build_metrics(
     config: Config,
-    timing: Timing,
+    durations: dict,
     exit_code: int,
     verification: VerificationStats,
     resources: ResourceStats
@@ -356,7 +322,7 @@ def build_metrics(
 
     Args:
         config: Configuration object
-        timing: Timing object
+        durations: Pre-computed durations from timeline (total, populate, sync, verify)
         exit_code: Exit code from the test
         verification: Verification statistics
         resources: Resource usage statistics
@@ -364,7 +330,6 @@ def build_metrics(
     Returns:
         Metrics dictionary ready for JSON serialization
     """
-    durations = calculate_durations(timing)
     git_sha, git_ref = get_git_info()
 
     return {
@@ -417,10 +382,11 @@ class CIRunner:
     def __init__(self, config: Config, runner: Optional[CommandRunner] = None):
         self.config = config
         self.runner = runner or CommandRunner()
-        self.timing = Timing()
         self.test_failed = False
         self.expected_sync_containers = get_expected_sync_containers(config.source)
         self.compose_file = config.output_dir / "docker-compose.loadtest.yml"
+        self._start_time: float = 0  # Track test start time for duration logging
+        self._peak_memory_mb = 0  # Track peak memory across all samples
 
     def log(self, message: str):
         """Log a message with timestamp."""
@@ -574,8 +540,10 @@ class CIRunner:
         verify_containers = [c for c in all_containers if 'verify' in c.lower()]
 
         if not verify_containers:
-            self.log_error("No verification containers found")
-            return []
+            raise RuntimeError(
+                "No verification containers found. Expected containers with 'verify' in name. "
+                f"Available containers: {all_containers}"
+            )
 
         all_logs = []
         for container_name in verify_containers:
@@ -620,15 +588,6 @@ class CIRunner:
         while True:
             elapsed = int(time.time() - start_time)
             status = self.get_container_status()
-
-            # Track phase transitions
-            if not self.timing.populate_end and status.populate_done >= self.config.workers:
-                self.timing.populate_end = time.time()
-                self.timing.sync_start = time.time()
-
-            if not self.timing.sync_end and status.sync_done >= self.expected_sync_containers:
-                self.timing.sync_end = time.time()
-                self.timing.verify_start = time.time()
 
             # Check for failures
             if status.failed_containers:
@@ -680,7 +639,6 @@ class CIRunner:
             # Check for completion
             if (status.sync_done >= self.expected_sync_containers and
                 status.verify_done >= self.config.workers):
-                self.timing.verify_end = time.time()
                 print()  # Newline after progress
 
                 # Capture verification stats and check results
@@ -708,6 +666,9 @@ class CIRunner:
                 verification = self.get_verification_stats()
                 return 1, verification
 
+            # Collect resource stats periodically (every poll)
+            self.collect_resource_stats()
+
             time.sleep(self.config.poll_interval)
 
     def get_verification_stats(self) -> VerificationStats:
@@ -717,12 +678,13 @@ class CIRunner:
             VerificationStats object with aggregated stats from all verify containers
 
         Raises:
-            RuntimeError: If logs are available but no stats could be parsed
+            RuntimeError: If logs are empty or no stats could be parsed
         """
         verify_logs = self.get_verification_logs()
         if not verify_logs:
-            self.log_error("No verification logs found - containers may not have run")
-            return VerificationStats()
+            raise RuntimeError(
+                "No verification logs found - containers may not have produced output"
+            )
 
         stats = aggregate_verification_stats(verify_logs)
 
@@ -734,7 +696,10 @@ class CIRunner:
             self.log("First 20 log lines:")
             for line in verify_logs[:20]:
                 print(f"  {line}")
-            # Don't raise - return empty stats but user will see the warning
+            raise RuntimeError(
+                f"Failed to parse verification stats from {len(verify_logs)} log lines. "
+                "Check log format matches expected pattern."
+            )
 
         return stats
 
@@ -852,6 +817,42 @@ class CIRunner:
             for c in failed:
                 print(f"  - {c['name']}: exit_code={c['exit_code']}, type={c['type']}")
 
+    def collect_resource_stats(self) -> ResourceStats:
+        """Collect resource usage from running containers via docker stats.
+
+        Updates the internal peak memory tracker and returns current stats.
+
+        Returns:
+            ResourceStats with current peak memory (tracked across all calls)
+        """
+        try:
+            result = self.runner.run(
+                ["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}"],
+                capture_output=True, text=True
+            )
+
+            if result.returncode != 0:
+                return ResourceStats(peak_memory_mb=self._peak_memory_mb)
+
+            # Parse memory values from each container
+            # Format: "256MiB / 8GiB" - we want the first part (used memory)
+            max_current_memory = 0
+            for line in result.stdout.strip().splitlines():
+                if "/" in line:
+                    used_mem = line.split("/")[0].strip()
+                    mem_mb = parse_docker_memory(used_mem)
+                    max_current_memory = max(max_current_memory, mem_mb)
+
+            # Update peak if current is higher
+            if max_current_memory > self._peak_memory_mb:
+                self._peak_memory_mb = max_current_memory
+
+        except Exception:
+            # Don't fail the test run if stats collection fails
+            pass
+
+        return ResourceStats(peak_memory_mb=self._peak_memory_mb)
+
     def build_timeline(self) -> dict:
         """Build container timeline from containers.json.
 
@@ -882,8 +883,11 @@ class CIRunner:
                     start_times.append(
                         datetime.fromisoformat(c["started_at"].replace("Z", "+00:00"))
                     )
-                except ValueError:
-                    continue
+                except ValueError as e:
+                    raise RuntimeError(
+                        f"Failed to parse started_at timestamp for container "
+                        f"'{c.get('name', 'unknown')}': {c.get('started_at')} - {e}"
+                    )
 
         if not start_times:
             return {}
@@ -896,15 +900,20 @@ class CIRunner:
             finished = c.get("finished_at", "")
 
             start_rel = 0.0
-            end_rel = 0.0
-            duration = 0.0
+            end_rel = None  # None for running containers
+            duration = None  # None for running containers
+
+            container_name = c.get("name", "unknown")
 
             if started:
                 try:
                     start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
                     start_rel = (start_dt - baseline).total_seconds()
-                except ValueError:
-                    pass
+                except ValueError as e:
+                    raise RuntimeError(
+                        f"Failed to parse started_at timestamp for container "
+                        f"'{container_name}': {started} - {e}"
+                    )
 
             if finished and not finished.startswith("0001-01-01"):
                 # Skip zero timestamps (Docker returns 0001-01-01 for running containers)
@@ -912,15 +921,25 @@ class CIRunner:
                     end_dt = datetime.fromisoformat(finished.replace("Z", "+00:00"))
                     end_rel = (end_dt - baseline).total_seconds()
                     duration = end_rel - start_rel
-                except ValueError:
-                    pass
+                except ValueError as e:
+                    raise RuntimeError(
+                        f"Failed to parse finished_at timestamp for container "
+                        f"'{container_name}': {finished} - {e}"
+                    )
+
+            # Strip Docker Compose project prefix from container name for cleaner display
+            # e.g., "output-kafka-1" -> "kafka-1" when output_dir is "output"
+            name = c.get("name", "unknown")
+            project_prefix = self.config.output_dir.name + "-"
+            if name.startswith(project_prefix):
+                name = name[len(project_prefix):]
 
             timeline.append({
-                "name": c.get("name", "unknown"),
+                "name": name,
                 "type": c.get("type", "unknown"),
                 "start_sec": round(start_rel, 1),
-                "end_sec": round(end_rel, 1),
-                "duration_sec": round(duration, 1),
+                "end_sec": round(end_rel, 1) if end_rel is not None else None,
+                "duration_sec": round(duration, 1) if duration is not None else None,
                 "exit_code": c.get("exit_code", -1)
             })
 
@@ -929,6 +948,75 @@ class CIRunner:
 
         return {"containers": timeline}
 
+    def get_durations_from_timeline(self, timeline: dict) -> dict:
+        """Calculate duration values from timeline container timestamps.
+
+        Uses actual container start/end times for accurate duration calculation.
+
+        Args:
+            timeline: Dictionary from build_timeline() with 'containers' list
+
+        Returns:
+            Dictionary with duration values (total, populate, sync, verify)
+
+        Raises:
+            RuntimeError: If timeline data is missing or incomplete
+        """
+        containers = timeline.get("containers", [])
+        if not containers:
+            raise RuntimeError("No container timeline data available for duration calculation")
+
+        # Separate containers by type
+        populate_containers = [c for c in containers if c["type"] == "populate"]
+        sync_containers = [c for c in containers if c["type"] == "sync"]
+        verify_containers = [c for c in containers if c["type"] == "verify"]
+
+        # Need sync containers to calculate sync duration
+        if not sync_containers:
+            raise RuntimeError("No sync containers found in timeline")
+
+        # Get populate end time
+        populate_end = 0.0
+        for c in populate_containers:
+            if c["end_sec"] is not None:
+                populate_end = max(populate_end, c["end_sec"])
+
+        # Get sync start/end times
+        sync_start = float('inf')
+        sync_end = 0.0
+        for c in sync_containers:
+            sync_start = min(sync_start, c["start_sec"])
+            if c["end_sec"] is not None:
+                sync_end = max(sync_end, c["end_sec"])
+
+        # If sync_end is still 0, sync containers haven't finished
+        if sync_end == 0:
+            raise RuntimeError("Sync containers have not finished - cannot compute duration")
+
+        # Sync duration = time from first sync start to last sync end
+        sync_duration = sync_end - sync_start
+
+        # Verify duration (if available)
+        verify_duration = 0.0
+        if verify_containers:
+            verify_start = min(c["start_sec"] for c in verify_containers)
+            verify_ends = [c["end_sec"] for c in verify_containers if c["end_sec"] is not None]
+            if verify_ends:
+                verify_end = max(verify_ends)
+                verify_duration = verify_end - verify_start
+
+        # Total duration from first container start to last container end
+        all_end_times = [c["end_sec"] for c in containers if c["end_sec"] is not None]
+        total_end = max(all_end_times) if all_end_times else 0.0
+        total_duration = total_end  # baseline is 0
+
+        return {
+            "total": total_duration,
+            "populate": populate_end,
+            "sync": sync_duration,
+            "verify": verify_duration
+        }
+
     def write_metrics(self, exit_code: int, verification: VerificationStats):
         """Write metrics to JSON file.
 
@@ -936,18 +1024,26 @@ class CIRunner:
             exit_code: Exit code from the test
             verification: Verification statistics captured before cleanup
         """
-        resources = ResourceStats()  # TODO: Implement resource stats collection
+        # Get final resource stats (peak memory tracked during polling)
+        resources = self.collect_resource_stats()
 
+        # Build timeline first (used for both display and duration calculation)
+        timeline = self.build_timeline()
+
+        # Get durations from timeline (raises RuntimeError if incomplete)
+        durations = self.get_durations_from_timeline(timeline)
+
+        # Build metrics with timeline-based durations
         metrics = build_metrics(
             self.config,
-            self.timing,
+            durations,
             exit_code,
             verification,
             resources
         )
 
-        # Add timeline data from containers.json
-        metrics["timeline"] = self.build_timeline()
+        # Add timeline data
+        metrics["timeline"] = timeline
 
         metrics_file = self.config.output_dir / "metrics.json"
         with open(metrics_file, 'w') as f:
@@ -1020,9 +1116,8 @@ class CIRunner:
             self.build_docker_image()
             self.generate_config()
 
-            # Start timing
-            self.timing.start = time.time()
-            self.timing.populate_start = self.timing.start
+            # Start timing (for duration logging only - actual durations from container timeline)
+            self._start_time = time.time()
 
             # Start containers
             self.start_containers()
@@ -1031,7 +1126,7 @@ class CIRunner:
             self.log("Monitoring for completion...")
             exit_code, verification = self.wait_for_completion()
 
-            self.timing.end = time.time()
+            end_time = time.time()
 
             # Collect container logs before cleanup (for debugging)
             self.collect_container_logs()
@@ -1042,7 +1137,7 @@ class CIRunner:
             # Show summary
             self.log("=== Load Test Complete ===")
             self.log(f"Exit code: {exit_code}")
-            self.log(f"Duration: {int(self.timing.end - self.timing.start)}s")
+            self.log(f"Duration: {int(end_time - self._start_time)}s")
 
             metrics_file = self.config.output_dir / "metrics.json"
             if metrics_file.exists():

@@ -396,7 +396,8 @@ class TestGenerateTimelineTable(unittest.TestCase):
 
         self.assertIn("output-sync-1", result)
         self.assertIn("unknown", result)  # Default type
-        self.assertIn(":x:", result)  # Default exit_code -1 is non-zero
+        self.assertIn(":hourglass:", result)  # Missing end_sec treated as running
+        self.assertIn("running", result)  # Shows "running" text for end time
 
 
 if __name__ == "__main__":

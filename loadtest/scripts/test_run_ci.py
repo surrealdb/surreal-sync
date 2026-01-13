@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 
 from run_ci import (
     Config,
-    Timing,
     VerificationStats,
     ResourceStats,
     ContainerStatus,
@@ -18,10 +17,10 @@ from run_ci import (
     parse_verification_line,
     aggregate_verification_stats,
     parse_container_status,
-    calculate_durations,
     calculate_throughput,
     exit_code_to_status,
     build_metrics,
+    parse_docker_memory,
     CommandRunner,
     CIRunner,
 )
@@ -221,95 +220,6 @@ output-verify-2-1            Exited (0) 3 minutes ago
         self.assertEqual(result.verify_done, 2)
 
 
-class TestCalculateDurations(unittest.TestCase):
-    """Tests for calculate_durations function."""
-
-    def test_complete_timing(self):
-        """Calculate durations with all timing data."""
-        timing = Timing(
-            start=1000,
-            populate_start=1000,
-            populate_end=1010,
-            sync_start=1010,
-            sync_end=1040,
-            verify_start=1040,
-            verify_end=1045,
-            end=1045
-        )
-        result = calculate_durations(timing)
-        self.assertEqual(result["total"], 45)
-        self.assertEqual(result["populate"], 10)
-        self.assertEqual(result["sync"], 30)
-        self.assertEqual(result["verify"], 5)
-
-    def test_missing_populate_end(self):
-        """Calculate durations when populate_end is missing."""
-        timing = Timing(
-            start=1000,
-            populate_start=1000,
-            end=1045
-        )
-        result = calculate_durations(timing)
-        self.assertEqual(result["total"], 45)
-        # When populate_end is missing, it uses end time
-        self.assertEqual(result["populate"], 45)
-
-    def test_zero_sync_duration_with_populate(self):
-        """When sync duration is 0 but populate took time, estimate sync from remaining time."""
-        timing = Timing(
-            start=1000,
-            populate_start=1000,
-            populate_end=1010,
-            sync_start=1010,
-            sync_end=1010,  # Same as sync_start - suspicious
-            verify_start=1010,
-            verify_end=1045,
-            end=1045
-        )
-        result = calculate_durations(timing)
-        # total=45, populate=10, verify=35
-        # estimated_sync = 45 - 10 - 35 = 0, so sync stays 0
-        self.assertEqual(result["sync"], 0)
-
-    def test_zero_sync_duration_estimated(self):
-        """When sync duration is 0, estimate from total - populate - verify."""
-        timing = Timing(
-            start=1000,
-            populate_start=1000,
-            populate_end=1010,
-            sync_start=1010,
-            sync_end=1010,  # Same as sync_start - suspicious
-            verify_start=1010,
-            verify_end=1015,
-            end=1045
-        )
-        result = calculate_durations(timing)
-        # total=45, populate=10, verify=5
-        # estimated_sync = 45 - 10 - 5 = 30
-        self.assertEqual(result["sync"], 30)
-
-    def test_raises_on_zero_start(self):
-        """Raise ValueError if timing.start is 0."""
-        timing = Timing(start=0, end=1045)
-        with self.assertRaises(ValueError) as ctx:
-            calculate_durations(timing)
-        self.assertIn("timing.start is 0", str(ctx.exception))
-
-    def test_raises_on_zero_end(self):
-        """Raise ValueError if timing.end is 0."""
-        timing = Timing(start=1000, end=0)
-        with self.assertRaises(ValueError) as ctx:
-            calculate_durations(timing)
-        self.assertIn("timing.end is 0", str(ctx.exception))
-
-    def test_raises_on_end_before_start(self):
-        """Raise ValueError if timing.end is before timing.start."""
-        timing = Timing(start=1045, end=1000)
-        with self.assertRaises(ValueError) as ctx:
-            calculate_durations(timing)
-        self.assertIn("before timing.start", str(ctx.exception))
-
-
 class TestCalculateThroughput(unittest.TestCase):
     """Tests for calculate_throughput function."""
 
@@ -371,20 +281,16 @@ class TestBuildMetrics(unittest.TestCase):
             row_count=100,
             workers=1
         )
-        timing = Timing(
-            start=1000,
-            populate_start=1000,
-            populate_end=1010,
-            sync_start=1010,
-            sync_end=1040,
-            verify_start=1040,
-            verify_end=1045,
-            end=1045
-        )
+        durations = {
+            "total": 45.0,
+            "populate": 10.0,
+            "sync": 30.0,
+            "verify": 5.0
+        }
         verification = VerificationStats(matched=400, mismatched=0, missing=0)
         resources = ResourceStats(peak_memory_mb=512, avg_cpu_percent=45.2)
 
-        result = build_metrics(config, timing, 0, verification, resources)
+        result = build_metrics(config, durations, 0, verification, resources)
 
         self.assertEqual(result["source"], "kafka")
         self.assertEqual(result["preset"], "small")
@@ -392,7 +298,7 @@ class TestBuildMetrics(unittest.TestCase):
         self.assertEqual(result["workers"], 1)
         self.assertEqual(result["results"]["status"], "success")
         self.assertEqual(result["results"]["exit_code"], 0)
-        self.assertEqual(result["results"]["total_duration_seconds"], 45)
+        self.assertEqual(result["results"]["total_duration_seconds"], 45.0)
         self.assertEqual(result["verification"]["matched"], 400)
         self.assertEqual(result["verification"]["mismatched"], 0)
         self.assertEqual(result["resources"]["peak_memory_mb"], 512)
@@ -400,11 +306,16 @@ class TestBuildMetrics(unittest.TestCase):
     def test_failure_metrics(self):
         """Build metrics for failed run."""
         config = Config(source="mysql", row_count=50)
-        timing = Timing(start=1000, end=1100)
+        durations = {
+            "total": 100.0,
+            "populate": 0.0,
+            "sync": 0.0,
+            "verify": 0.0
+        }
         verification = VerificationStats(matched=100, mismatched=50, missing=50)
         resources = ResourceStats()
 
-        result = build_metrics(config, timing, 3, verification, resources)
+        result = build_metrics(config, durations, 3, verification, resources)
 
         self.assertEqual(result["results"]["status"], "verification_failed")
         self.assertEqual(result["verification"]["mismatched"], 50)
@@ -718,7 +629,7 @@ class TestBuildTimeline(unittest.TestCase):
             shutil.rmtree(self.test_dir)
 
     def test_build_timeline_with_valid_containers(self):
-        """build_timeline returns sorted timeline with relative times."""
+        """build_timeline returns sorted timeline with relative times and stripped prefix."""
         logs_dir = self.test_dir / "logs"
         logs_dir.mkdir(parents=True)
 
@@ -758,7 +669,9 @@ class TestBuildTimeline(unittest.TestCase):
         containers = result["containers"]
         self.assertEqual(len(containers), 3)
 
-        # Should be sorted by start time
+        # Should be sorted by start time, with "output-" prefix stripped
+        # (output_dir is self.test_dir which has "test_timeline_" prefix, not "output")
+        # So names should retain full name since prefix doesn't match
         self.assertEqual(containers[0]["name"], "output-kafka-1")
         self.assertEqual(containers[0]["start_sec"], 0.0)
 
@@ -771,6 +684,57 @@ class TestBuildTimeline(unittest.TestCase):
         self.assertEqual(containers[2]["name"], "output-sync-users")
         self.assertEqual(containers[2]["start_sec"], 31.0)
         self.assertEqual(containers[2]["duration_sec"], 4.0)
+
+    def test_build_timeline_strips_project_prefix(self):
+        """build_timeline strips Docker Compose project prefix from container names."""
+        # Create a test dir named "output" to match the prefix
+        output_dir = Path(tempfile.mkdtemp(prefix="")) / "output"
+        output_dir.mkdir(parents=True)
+        logs_dir = output_dir / "logs"
+        logs_dir.mkdir()
+
+        config = Config(
+            source="kafka",
+            output_dir=output_dir,
+            skip_build=True,
+            skip_cleanup=True
+        )
+
+        containers_data = {
+            "containers": [
+                {
+                    "name": "output-kafka-1",
+                    "type": "kafka",
+                    "started_at": "2026-01-13T00:00:00Z",
+                    "finished_at": "2026-01-13T00:01:00Z",
+                    "exit_code": 0
+                },
+                {
+                    "name": "output-sync-users",
+                    "type": "sync",
+                    "started_at": "2026-01-13T00:00:30Z",
+                    "finished_at": "2026-01-13T00:00:35Z",
+                    "exit_code": 0
+                }
+            ]
+        }
+
+        with open(logs_dir / "containers.json", 'w') as f:
+            json.dump(containers_data, f)
+
+        runner = CIRunner(config, self.mock_runner)
+        result = runner.build_timeline()
+
+        # Prefix "output-" should be stripped since output_dir.name is "output"
+        names = [c["name"] for c in result["containers"]]
+        self.assertIn("kafka-1", names)
+        self.assertIn("sync-users", names)
+        self.assertNotIn("output-kafka-1", names)
+        self.assertNotIn("output-sync-users", names)
+
+        # Cleanup
+        import shutil
+        shutil.rmtree(output_dir.parent)
 
     def test_build_timeline_no_containers_file(self):
         """build_timeline returns empty dict if containers.json missing."""
@@ -824,11 +788,11 @@ class TestBuildTimeline(unittest.TestCase):
         containers = result["containers"]
         self.assertEqual(len(containers), 2)
 
-        # Container with missing timestamps should have 0 values
+        # Container with missing timestamps should have None for end_sec and duration_sec
         missing_container = next(c for c in containers if c["name"] == "output-missing-1")
         self.assertEqual(missing_container["start_sec"], 0.0)
-        self.assertEqual(missing_container["end_sec"], 0.0)
-        self.assertEqual(missing_container["duration_sec"], 0.0)
+        self.assertIsNone(missing_container["end_sec"])
+        self.assertIsNone(missing_container["duration_sec"])
 
     def test_build_timeline_preserves_exit_code(self):
         """build_timeline preserves exit_code from container info."""
@@ -854,6 +818,397 @@ class TestBuildTimeline(unittest.TestCase):
         result = runner.build_timeline()
 
         self.assertEqual(result["containers"][0]["exit_code"], 1)
+
+
+class TestParseDockerMemory(unittest.TestCase):
+    """Tests for parse_docker_memory function."""
+
+    def test_parse_mib(self):
+        """Parse MiB memory string."""
+        self.assertEqual(parse_docker_memory("256MiB"), 256)
+        self.assertEqual(parse_docker_memory("1024MiB"), 1024)
+
+    def test_parse_gib(self):
+        """Parse GiB memory string and convert to MB."""
+        self.assertEqual(parse_docker_memory("1GiB"), 1024)
+        self.assertEqual(parse_docker_memory("1.5GiB"), 1536)
+        self.assertEqual(parse_docker_memory("2GiB"), 2048)
+
+    def test_parse_kib(self):
+        """Parse KiB memory string and convert to MB."""
+        self.assertEqual(parse_docker_memory("1024KiB"), 1)
+        self.assertEqual(parse_docker_memory("512KiB"), 0)  # < 1 MB rounds to 0
+
+    def test_parse_with_spaces(self):
+        """Parse memory string with extra spaces."""
+        self.assertEqual(parse_docker_memory("  256MiB  "), 256)
+        self.assertEqual(parse_docker_memory("1 GiB"), 1024)
+
+    def test_parse_lowercase(self):
+        """Parse lowercase memory units."""
+        self.assertEqual(parse_docker_memory("256mib"), 256)
+        self.assertEqual(parse_docker_memory("1gib"), 1024)
+
+    def test_parse_empty(self):
+        """Return 0 for empty string."""
+        self.assertEqual(parse_docker_memory(""), 0)
+        self.assertEqual(parse_docker_memory("   "), 0)
+
+    def test_parse_invalid(self):
+        """Return 0 for invalid format."""
+        self.assertEqual(parse_docker_memory("invalid"), 0)
+        self.assertEqual(parse_docker_memory("256"), 0)
+        self.assertEqual(parse_docker_memory("MB"), 0)
+
+
+class TestCollectResourceStats(unittest.TestCase):
+    """Tests for CIRunner.collect_resource_stats method."""
+
+    def setUp(self):
+        self.test_dir = Path(tempfile.mkdtemp(prefix="test_resources_"))
+        self.config = Config(
+            source="kafka",
+            output_dir=self.test_dir,
+            skip_build=True,
+            skip_cleanup=True
+        )
+
+    def tearDown(self):
+        import shutil
+        if self.test_dir.exists():
+            shutil.rmtree(self.test_dir)
+
+    def test_collect_resource_stats_parses_memory(self):
+        """collect_resource_stats correctly parses docker stats output."""
+        mock_runner = MockCommandRunner()
+        mock_runner.set_result(
+            "docker stats",
+            subprocess.CompletedProcess(
+                [], 0,
+                stdout="256MiB / 8GiB\n512MiB / 8GiB\n",
+                stderr=""
+            )
+        )
+
+        runner = CIRunner(self.config, mock_runner)
+        result = runner.collect_resource_stats()
+
+        # Peak should be 512 MB (highest among containers)
+        self.assertEqual(result.peak_memory_mb, 512)
+
+    def test_collect_resource_stats_handles_gib(self):
+        """collect_resource_stats correctly converts GiB to MB."""
+        mock_runner = MockCommandRunner()
+        mock_runner.set_result(
+            "docker stats",
+            subprocess.CompletedProcess(
+                [], 0,
+                stdout="1.5GiB / 8GiB\n",
+                stderr=""
+            )
+        )
+
+        runner = CIRunner(self.config, mock_runner)
+        result = runner.collect_resource_stats()
+
+        # 1.5 GiB = 1536 MB
+        self.assertEqual(result.peak_memory_mb, 1536)
+
+    def test_collect_resource_stats_handles_empty_output(self):
+        """collect_resource_stats returns 0 when no containers running."""
+        mock_runner = MockCommandRunner()
+        mock_runner.set_result(
+            "docker stats",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+
+        runner = CIRunner(self.config, mock_runner)
+        result = runner.collect_resource_stats()
+
+        self.assertEqual(result.peak_memory_mb, 0)
+
+    def test_collect_resource_stats_handles_command_failure(self):
+        """collect_resource_stats returns 0 on docker stats failure."""
+        mock_runner = MockCommandRunner()
+        mock_runner.set_result(
+            "docker stats",
+            subprocess.CompletedProcess(
+                [], 1,
+                stdout="",
+                stderr="Error: no containers running"
+            )
+        )
+
+        runner = CIRunner(self.config, mock_runner)
+        result = runner.collect_resource_stats()
+
+        self.assertEqual(result.peak_memory_mb, 0)
+
+    def test_collect_resource_stats_tracks_peak_across_calls(self):
+        """Peak memory is tracked across multiple collection calls."""
+        mock_runner = MockCommandRunner()
+        runner = CIRunner(self.config, mock_runner)
+
+        # First call: 256 MB
+        mock_runner.set_result(
+            "docker stats",
+            subprocess.CompletedProcess([], 0, stdout="256MiB / 8GiB\n", stderr="")
+        )
+        runner.collect_resource_stats()
+
+        # Second call: 512 MB (new peak)
+        mock_runner.results.clear()
+        mock_runner.set_result(
+            "docker stats",
+            subprocess.CompletedProcess([], 0, stdout="512MiB / 8GiB\n", stderr="")
+        )
+        runner.collect_resource_stats()
+
+        # Third call: 128 MB (lower, shouldn't change peak)
+        mock_runner.results.clear()
+        mock_runner.set_result(
+            "docker stats",
+            subprocess.CompletedProcess([], 0, stdout="128MiB / 8GiB\n", stderr="")
+        )
+        result = runner.collect_resource_stats()
+
+        # Peak should still be 512 MB
+        self.assertEqual(result.peak_memory_mb, 512)
+
+
+class TestBuildTimelineErrors(unittest.TestCase):
+    """Tests for CIRunner.build_timeline error handling."""
+
+    def setUp(self):
+        self.test_dir = Path(tempfile.mkdtemp(prefix="test_timeline_errors_"))
+        self.config = Config(
+            source="kafka",
+            output_dir=self.test_dir,
+            skip_build=True,
+            skip_cleanup=True
+        )
+        self.mock_runner = MockCommandRunner()
+
+    def tearDown(self):
+        import shutil
+        if self.test_dir.exists():
+            shutil.rmtree(self.test_dir)
+
+    def test_build_timeline_raises_on_invalid_started_at(self):
+        """build_timeline raises RuntimeError on invalid started_at timestamp."""
+        logs_dir = self.test_dir / "logs"
+        logs_dir.mkdir(parents=True)
+
+        containers_data = {
+            "containers": [
+                {
+                    "name": "output-kafka-1",
+                    "type": "kafka",
+                    "started_at": "invalid-timestamp",
+                    "finished_at": "2026-01-13T00:01:00Z",
+                    "exit_code": 0
+                }
+            ]
+        }
+
+        with open(logs_dir / "containers.json", 'w') as f:
+            json.dump(containers_data, f)
+
+        runner = CIRunner(self.config, self.mock_runner)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            runner.build_timeline()
+
+        self.assertIn("output-kafka-1", str(ctx.exception))
+        self.assertIn("started_at", str(ctx.exception))
+
+    def test_build_timeline_raises_on_invalid_finished_at(self):
+        """build_timeline raises RuntimeError on invalid finished_at timestamp."""
+        logs_dir = self.test_dir / "logs"
+        logs_dir.mkdir(parents=True)
+
+        containers_data = {
+            "containers": [
+                {
+                    "name": "output-kafka-1",
+                    "type": "kafka",
+                    "started_at": "2026-01-13T00:00:00Z",
+                    "finished_at": "not-a-valid-date",
+                    "exit_code": 0
+                }
+            ]
+        }
+
+        with open(logs_dir / "containers.json", 'w') as f:
+            json.dump(containers_data, f)
+
+        runner = CIRunner(self.config, self.mock_runner)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            runner.build_timeline()
+
+        self.assertIn("output-kafka-1", str(ctx.exception))
+        self.assertIn("finished_at", str(ctx.exception))
+
+
+class TestGetDurationsFromTimeline(unittest.TestCase):
+    """Tests for CIRunner.get_durations_from_timeline method."""
+
+    def setUp(self):
+        self.test_dir = Path(tempfile.mkdtemp(prefix="test_timeline_dur_"))
+        self.config = Config(
+            source="kafka",
+            output_dir=self.test_dir,
+            skip_build=True,
+            skip_cleanup=True
+        )
+        self.mock_runner = MockCommandRunner()
+
+    def tearDown(self):
+        import shutil
+        if self.test_dir.exists():
+            shutil.rmtree(self.test_dir)
+
+    def test_calculates_sync_duration_from_containers(self):
+        """Sync duration is calculated from first sync start to last sync end."""
+        runner = CIRunner(self.config, self.mock_runner)
+        timeline = {
+            "containers": [
+                {"name": "populate-1", "type": "populate", "start_sec": 0.0, "end_sec": 5.0, "exit_code": 0},
+                {"name": "sync-users", "type": "sync", "start_sec": 5.1, "end_sec": 6.7, "exit_code": 0},
+                {"name": "sync-orders", "type": "sync", "start_sec": 5.2, "end_sec": 7.5, "exit_code": 0},
+            ]
+        }
+        result = runner.get_durations_from_timeline(timeline)
+
+        # Sync duration = 7.5 - 5.1 = 2.4 seconds
+        self.assertIsNotNone(result)
+        self.assertAlmostEqual(result["sync"], 2.4, places=1)
+
+    def test_raises_on_running_sync_containers(self):
+        """Raises RuntimeError when sync containers haven't finished."""
+        runner = CIRunner(self.config, self.mock_runner)
+        timeline = {
+            "containers": [
+                {"name": "populate-1", "type": "populate", "start_sec": 0.0, "end_sec": 5.0, "exit_code": 0},
+                {"name": "sync-users", "type": "sync", "start_sec": 5.1, "end_sec": None, "exit_code": -1},
+            ]
+        }
+
+        with self.assertRaises(RuntimeError) as ctx:
+            runner.get_durations_from_timeline(timeline)
+
+        self.assertIn("have not finished", str(ctx.exception))
+
+    def test_raises_on_empty_timeline(self):
+        """Raises RuntimeError when timeline has no containers."""
+        runner = CIRunner(self.config, self.mock_runner)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            runner.get_durations_from_timeline({})
+
+        self.assertIn("No container timeline data", str(ctx.exception))
+
+    def test_raises_on_no_sync_containers(self):
+        """Raises RuntimeError when there are no sync containers."""
+        runner = CIRunner(self.config, self.mock_runner)
+        timeline = {
+            "containers": [
+                {"name": "populate-1", "type": "populate", "start_sec": 0.0, "end_sec": 5.0, "exit_code": 0},
+            ]
+        }
+
+        with self.assertRaises(RuntimeError) as ctx:
+            runner.get_durations_from_timeline(timeline)
+
+        self.assertIn("No sync containers", str(ctx.exception))
+
+    def test_calculates_all_duration_phases(self):
+        """All duration phases are calculated correctly."""
+        runner = CIRunner(self.config, self.mock_runner)
+        timeline = {
+            "containers": [
+                {"name": "kafka-1", "type": "kafka", "start_sec": 0.0, "end_sec": 60.0, "exit_code": 0},
+                {"name": "populate-1", "type": "populate", "start_sec": 1.0, "end_sec": 10.0, "exit_code": 0},
+                {"name": "sync-users", "type": "sync", "start_sec": 10.5, "end_sec": 20.0, "exit_code": 0},
+                {"name": "verify-1", "type": "verify", "start_sec": 20.5, "end_sec": 25.0, "exit_code": 0},
+            ]
+        }
+        result = runner.get_durations_from_timeline(timeline)
+
+        self.assertEqual(result["total"], 60.0)  # Last container end
+        self.assertEqual(result["populate"], 10.0)  # populate end_sec
+        self.assertAlmostEqual(result["sync"], 9.5, places=1)  # 20.0 - 10.5
+        self.assertAlmostEqual(result["verify"], 4.5, places=1)  # 25.0 - 20.5
+
+
+class TestBuildTimelineRunningContainers(unittest.TestCase):
+    """Tests for running container handling in build_timeline."""
+
+    def setUp(self):
+        self.test_dir = Path(tempfile.mkdtemp(prefix="test_running_"))
+        self.logs_dir = self.test_dir / "logs"
+        self.logs_dir.mkdir(parents=True)
+        self.config = Config(
+            source="kafka",
+            output_dir=self.test_dir,
+            skip_build=True,
+            skip_cleanup=True
+        )
+        self.mock_runner = MockCommandRunner()
+
+    def tearDown(self):
+        import shutil
+        if self.test_dir.exists():
+            shutil.rmtree(self.test_dir)
+
+    def test_running_container_has_none_end_time(self):
+        """Running containers have None for end_sec and duration_sec."""
+        # Create containers.json with running container (Docker's zero timestamp)
+        containers_data = {
+            "containers": [
+                {
+                    "name": "output-sync-1",
+                    "type": "sync",
+                    "started_at": "2024-01-15T10:00:00Z",
+                    "finished_at": "0001-01-01T00:00:00Z",  # Docker's "still running" value
+                    "exit_code": -1
+                }
+            ]
+        }
+        with open(self.logs_dir / "containers.json", "w") as f:
+            json.dump(containers_data, f)
+
+        runner = CIRunner(self.config, self.mock_runner)
+        timeline = runner.build_timeline()
+
+        self.assertEqual(len(timeline["containers"]), 1)
+        container = timeline["containers"][0]
+        self.assertIsNone(container["end_sec"])
+        self.assertIsNone(container["duration_sec"])
+
+    def test_completed_container_has_numeric_end_time(self):
+        """Completed containers have numeric end_sec and duration_sec."""
+        containers_data = {
+            "containers": [
+                {
+                    "name": "output-sync-1",
+                    "type": "sync",
+                    "started_at": "2024-01-15T10:00:00Z",
+                    "finished_at": "2024-01-15T10:00:30Z",
+                    "exit_code": 0
+                }
+            ]
+        }
+        with open(self.logs_dir / "containers.json", "w") as f:
+            json.dump(containers_data, f)
+
+        runner = CIRunner(self.config, self.mock_runner)
+        timeline = runner.build_timeline()
+
+        container = timeline["containers"][0]
+        self.assertEqual(container["end_sec"], 30.0)
+        self.assertEqual(container["duration_sec"], 30.0)
 
 
 if __name__ == "__main__":

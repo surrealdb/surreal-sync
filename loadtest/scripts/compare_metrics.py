@@ -301,11 +301,26 @@ def generate_timeline_table(current: dict) -> str:
     ]
 
     for c in containers:
-        status = ":white_check_mark:" if c.get("exit_code", -1) == 0 else ":x:"
+        # Format end time - show "running" if None
+        end_sec = c.get('end_sec')
+        end_str = f"{end_sec}s" if end_sec is not None else "running"
+
+        # Format duration - show "-" if None
+        duration_sec = c.get('duration_sec')
+        duration_str = f"{duration_sec}s" if duration_sec is not None else "-"
+
+        # Status - show running emoji if container hasn't finished
+        if end_sec is None:
+            status = ":hourglass:"  # Running
+        elif c.get("exit_code", -1) == 0:
+            status = ":white_check_mark:"
+        else:
+            status = ":x:"
+
         lines.append(
             f"| {c.get('name', 'unknown')} | {c.get('type', 'unknown')} | "
-            f"{c.get('start_sec', 0)}s | {c.get('end_sec', 0)}s | "
-            f"{c.get('duration_sec', 0)}s | {status} |"
+            f"{c.get('start_sec', 0)}s | {end_str} | "
+            f"{duration_str} | {status} |"
         )
 
     lines.append("")
