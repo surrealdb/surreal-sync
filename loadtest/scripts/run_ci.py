@@ -852,6 +852,83 @@ class CIRunner:
             for c in failed:
                 print(f"  - {c['name']}: exit_code={c['exit_code']}, type={c['type']}")
 
+    def build_timeline(self) -> dict:
+        """Build container timeline from containers.json.
+
+        Parses container timestamps and computes relative times from the
+        earliest container start.
+
+        Returns:
+            Dictionary with 'containers' list, or empty dict if no data
+        """
+        logs_dir = self.config.output_dir / "logs"
+        containers_file = logs_dir / "containers.json"
+
+        if not containers_file.exists():
+            return {}
+
+        with open(containers_file) as f:
+            data = json.load(f)
+
+        containers = data.get("containers", [])
+        if not containers:
+            return {}
+
+        # Find earliest start time as baseline
+        start_times = []
+        for c in containers:
+            if c.get("started_at"):
+                try:
+                    start_times.append(
+                        datetime.fromisoformat(c["started_at"].replace("Z", "+00:00"))
+                    )
+                except ValueError:
+                    continue
+
+        if not start_times:
+            return {}
+
+        baseline = min(start_times)
+
+        timeline = []
+        for c in containers:
+            started = c.get("started_at", "")
+            finished = c.get("finished_at", "")
+
+            start_rel = 0.0
+            end_rel = 0.0
+            duration = 0.0
+
+            if started:
+                try:
+                    start_dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                    start_rel = (start_dt - baseline).total_seconds()
+                except ValueError:
+                    pass
+
+            if finished and not finished.startswith("0001-01-01"):
+                # Skip zero timestamps (Docker returns 0001-01-01 for running containers)
+                try:
+                    end_dt = datetime.fromisoformat(finished.replace("Z", "+00:00"))
+                    end_rel = (end_dt - baseline).total_seconds()
+                    duration = end_rel - start_rel
+                except ValueError:
+                    pass
+
+            timeline.append({
+                "name": c.get("name", "unknown"),
+                "type": c.get("type", "unknown"),
+                "start_sec": round(start_rel, 1),
+                "end_sec": round(end_rel, 1),
+                "duration_sec": round(duration, 1),
+                "exit_code": c.get("exit_code", -1)
+            })
+
+        # Sort by start time, then by name
+        timeline.sort(key=lambda x: (x["start_sec"], x["name"]))
+
+        return {"containers": timeline}
+
     def write_metrics(self, exit_code: int, verification: VerificationStats):
         """Write metrics to JSON file.
 
@@ -868,6 +945,9 @@ class CIRunner:
             verification,
             resources
         )
+
+        # Add timeline data from containers.json
+        metrics["timeline"] = self.build_timeline()
 
         metrics_file = self.config.output_dir / "metrics.json"
         with open(metrics_file, 'w') as f:

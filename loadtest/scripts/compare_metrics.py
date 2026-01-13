@@ -270,6 +270,45 @@ def generate_markdown(
 
     lines.append("")
 
+    # Add timeline table if available
+    timeline_table = generate_timeline_table(current)
+    if timeline_table:
+        lines.append(timeline_table)
+
+    return "\n".join(lines)
+
+
+def generate_timeline_table(current: dict) -> str:
+    """Generate timeline table from metrics.
+
+    Args:
+        current: Current metrics dict containing timeline data
+
+    Returns:
+        Markdown formatted timeline table, or empty string if no data
+    """
+    timeline = current.get("timeline", {})
+    containers = timeline.get("containers", [])
+
+    if not containers:
+        return ""
+
+    lines = [
+        "### Container Timeline",
+        "",
+        "| Container | Type | Start | End | Duration | Status |",
+        "|-----------|------|-------|-----|----------|--------|",
+    ]
+
+    for c in containers:
+        status = ":white_check_mark:" if c.get("exit_code", -1) == 0 else ":x:"
+        lines.append(
+            f"| {c.get('name', 'unknown')} | {c.get('type', 'unknown')} | "
+            f"{c.get('start_sec', 0)}s | {c.get('end_sec', 0)}s | "
+            f"{c.get('duration_sec', 0)}s | {status} |"
+        )
+
+    lines.append("")
     return "\n".join(lines)
 
 

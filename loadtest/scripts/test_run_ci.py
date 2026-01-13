@@ -697,5 +697,164 @@ class TestCollectContainerLogs(unittest.TestCase):
         self.assertFalse((logs_dir / "containers.json").exists())
 
 
+class TestBuildTimeline(unittest.TestCase):
+    """Tests for CIRunner.build_timeline method."""
+
+    def setUp(self):
+        # Use unique temp directory for each test
+        self.test_dir = Path(tempfile.mkdtemp(prefix="test_timeline_"))
+        self.config = Config(
+            source="kafka",
+            output_dir=self.test_dir,
+            skip_build=True,
+            skip_cleanup=True
+        )
+        self.mock_runner = MockCommandRunner()
+
+    def tearDown(self):
+        # Clean up temp directory after each test
+        import shutil
+        if self.test_dir.exists():
+            shutil.rmtree(self.test_dir)
+
+    def test_build_timeline_with_valid_containers(self):
+        """build_timeline returns sorted timeline with relative times."""
+        logs_dir = self.test_dir / "logs"
+        logs_dir.mkdir(parents=True)
+
+        containers_data = {
+            "containers": [
+                {
+                    "name": "output-populate-1",
+                    "type": "populate",
+                    "started_at": "2026-01-13T00:00:05Z",
+                    "finished_at": "2026-01-13T00:00:30Z",
+                    "exit_code": 0
+                },
+                {
+                    "name": "output-kafka-1",
+                    "type": "kafka",
+                    "started_at": "2026-01-13T00:00:00Z",  # Earliest
+                    "finished_at": "2026-01-13T00:01:00Z",
+                    "exit_code": 0
+                },
+                {
+                    "name": "output-sync-users",
+                    "type": "sync",
+                    "started_at": "2026-01-13T00:00:31Z",
+                    "finished_at": "2026-01-13T00:00:35Z",
+                    "exit_code": 0
+                }
+            ]
+        }
+
+        with open(logs_dir / "containers.json", 'w') as f:
+            json.dump(containers_data, f)
+
+        runner = CIRunner(self.config, self.mock_runner)
+        result = runner.build_timeline()
+
+        self.assertIn("containers", result)
+        containers = result["containers"]
+        self.assertEqual(len(containers), 3)
+
+        # Should be sorted by start time
+        self.assertEqual(containers[0]["name"], "output-kafka-1")
+        self.assertEqual(containers[0]["start_sec"], 0.0)
+
+        # Populate started 5s after kafka
+        self.assertEqual(containers[1]["name"], "output-populate-1")
+        self.assertEqual(containers[1]["start_sec"], 5.0)
+        self.assertEqual(containers[1]["duration_sec"], 25.0)
+
+        # Sync started 31s after kafka
+        self.assertEqual(containers[2]["name"], "output-sync-users")
+        self.assertEqual(containers[2]["start_sec"], 31.0)
+        self.assertEqual(containers[2]["duration_sec"], 4.0)
+
+    def test_build_timeline_no_containers_file(self):
+        """build_timeline returns empty dict if containers.json missing."""
+        runner = CIRunner(self.config, self.mock_runner)
+        result = runner.build_timeline()
+        self.assertEqual(result, {})
+
+    def test_build_timeline_empty_containers(self):
+        """build_timeline returns empty dict if no containers."""
+        logs_dir = self.test_dir / "logs"
+        logs_dir.mkdir(parents=True)
+
+        with open(logs_dir / "containers.json", 'w') as f:
+            json.dump({"containers": []}, f)
+
+        runner = CIRunner(self.config, self.mock_runner)
+        result = runner.build_timeline()
+        self.assertEqual(result, {})
+
+    def test_build_timeline_handles_missing_timestamps(self):
+        """build_timeline handles containers with missing timestamps."""
+        logs_dir = self.test_dir / "logs"
+        logs_dir.mkdir(parents=True)
+
+        containers_data = {
+            "containers": [
+                {
+                    "name": "output-kafka-1",
+                    "type": "kafka",
+                    "started_at": "2026-01-13T00:00:00Z",
+                    "finished_at": "2026-01-13T00:01:00Z",
+                    "exit_code": 0
+                },
+                {
+                    "name": "output-missing-1",
+                    "type": "unknown",
+                    "started_at": "",  # Missing
+                    "finished_at": "",  # Missing
+                    "exit_code": 0
+                }
+            ]
+        }
+
+        with open(logs_dir / "containers.json", 'w') as f:
+            json.dump(containers_data, f)
+
+        runner = CIRunner(self.config, self.mock_runner)
+        result = runner.build_timeline()
+
+        self.assertIn("containers", result)
+        containers = result["containers"]
+        self.assertEqual(len(containers), 2)
+
+        # Container with missing timestamps should have 0 values
+        missing_container = next(c for c in containers if c["name"] == "output-missing-1")
+        self.assertEqual(missing_container["start_sec"], 0.0)
+        self.assertEqual(missing_container["end_sec"], 0.0)
+        self.assertEqual(missing_container["duration_sec"], 0.0)
+
+    def test_build_timeline_preserves_exit_code(self):
+        """build_timeline preserves exit_code from container info."""
+        logs_dir = self.test_dir / "logs"
+        logs_dir.mkdir(parents=True)
+
+        containers_data = {
+            "containers": [
+                {
+                    "name": "output-failed-1",
+                    "type": "sync",
+                    "started_at": "2026-01-13T00:00:00Z",
+                    "finished_at": "2026-01-13T00:00:10Z",
+                    "exit_code": 1
+                }
+            ]
+        }
+
+        with open(logs_dir / "containers.json", 'w') as f:
+            json.dump(containers_data, f)
+
+        runner = CIRunner(self.config, self.mock_runner)
+        result = runner.build_timeline()
+
+        self.assertEqual(result["containers"][0]["exit_code"], 1)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -19,6 +19,7 @@ from compare_metrics import (
     get_nested,
     compare_metrics,
     generate_markdown,
+    generate_timeline_table,
     MetricComparison,
 )
 
@@ -330,6 +331,72 @@ class TestGenerateMarkdown(unittest.TestCase):
         result = generate_markdown(current, baseline, comparisons, has_baseline=True)
 
         self.assertIn(":warning:", result)
+
+
+class TestGenerateTimelineTable(unittest.TestCase):
+    """Tests for generate_timeline_table function."""
+
+    def test_generates_table_with_containers(self):
+        """Returns markdown table when timeline data exists."""
+        metrics = {
+            "timeline": {
+                "containers": [
+                    {"name": "output-kafka-1", "type": "kafka",
+                     "start_sec": 0.0, "end_sec": 60.0, "duration_sec": 60.0, "exit_code": 0},
+                    {"name": "output-populate-1", "type": "populate",
+                     "start_sec": 5.0, "end_sec": 30.0, "duration_sec": 25.0, "exit_code": 0},
+                    {"name": "output-sync-users", "type": "sync",
+                     "start_sec": 31.0, "end_sec": 32.0, "duration_sec": 1.0, "exit_code": 0}
+                ]
+            }
+        }
+        result = generate_timeline_table(metrics)
+
+        self.assertIn("### Container Timeline", result)
+        self.assertIn("| Container |", result)
+        self.assertIn("output-kafka-1", result)
+        self.assertIn("output-populate-1", result)
+        self.assertIn("output-sync-users", result)
+        self.assertIn(":white_check_mark:", result)
+
+    def test_shows_failure_status_for_nonzero_exit(self):
+        """Shows :x: for containers with non-zero exit code."""
+        metrics = {
+            "timeline": {
+                "containers": [
+                    {"name": "output-sync-1", "type": "sync",
+                     "start_sec": 0.0, "end_sec": 10.0, "duration_sec": 10.0, "exit_code": 1}
+                ]
+            }
+        }
+        result = generate_timeline_table(metrics)
+
+        self.assertIn(":x:", result)
+
+    def test_returns_empty_string_when_no_timeline(self):
+        """Returns empty string when timeline key is missing."""
+        result = generate_timeline_table({})
+        self.assertEqual(result, "")
+
+    def test_returns_empty_string_when_no_containers(self):
+        """Returns empty string when containers list is empty."""
+        result = generate_timeline_table({"timeline": {"containers": []}})
+        self.assertEqual(result, "")
+
+    def test_handles_missing_fields_gracefully(self):
+        """Handles containers with missing fields using defaults."""
+        metrics = {
+            "timeline": {
+                "containers": [
+                    {"name": "output-sync-1"}  # Missing most fields
+                ]
+            }
+        }
+        result = generate_timeline_table(metrics)
+
+        self.assertIn("output-sync-1", result)
+        self.assertIn("unknown", result)  # Default type
+        self.assertIn(":x:", result)  # Default exit_code -1 is non-zero
 
 
 if __name__ == "__main__":
