@@ -17,8 +17,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY src ./src
 
-# Build the binary in release mode
-RUN cargo build --release --bin surreal-sync
+# Build the binary in release mode and strip debug symbols
+RUN cargo build --release --bin surreal-sync && \
+    strip /app/target/release/surreal-sync
 
 # Runtime stage
 FROM debian:bookworm-slim
