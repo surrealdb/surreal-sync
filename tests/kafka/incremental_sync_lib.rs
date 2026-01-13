@@ -127,6 +127,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         table_name: Some("all_types_users".to_string()),
         use_message_key_as_id: false,
         id_field: "id".to_string(),
+        max_messages: None,
     };
 
     // Run sync with a short deadline (just enough to consume existing messages)
@@ -185,6 +186,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         table_name: Some("all_types_posts".to_string()),
         use_message_key_as_id: false,
         id_field: "id".to_string(),
+        max_messages: None,
     };
 
     let deadline = Utc::now() + chrono::Duration::seconds(5);
@@ -233,6 +235,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         table_name: Some("authored_by".to_string()),
         use_message_key_as_id: false,
         id_field: "id".to_string(),
+        max_messages: None,
     };
 
     let deadline = Utc::now() + chrono::Duration::seconds(5);

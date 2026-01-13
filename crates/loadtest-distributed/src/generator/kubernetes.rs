@@ -1088,11 +1088,13 @@ fn to_pascal_case(s: &str) -> String {
 
 /// Generate Kafka sync jobs - one job per topic/table.
 /// Each job reads from a Kafka topic and syncs to SurrealDB.
+/// Uses --max-messages to enable early exit once all expected messages are consumed.
 fn generate_kafka_sync_jobs(config: &ClusterConfig) -> String {
-    let tables: Vec<String> = config
+    // Collect tables with their row counts from containers
+    let tables_with_counts: Vec<(String, u64)> = config
         .containers
         .iter()
-        .flat_map(|c| c.tables.clone())
+        .flat_map(|c| c.tables.iter().map(|t| (t.clone(), c.row_count)))
         .collect();
 
     let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
@@ -1122,7 +1124,7 @@ fn generate_kafka_sync_jobs(config: &ClusterConfig) -> String {
 
     let mut jobs = Vec::new();
 
-    for table_name in &tables {
+    for (table_name, row_count) in &tables_with_counts {
         let message_type = to_pascal_case(table_name);
         // Convert table name to valid K8s name (replace underscores with dashes)
         let k8s_name = table_name.replace('_', "-");
@@ -1176,6 +1178,8 @@ spec:
         - '30000'
         - --kafka-batch-size
         - '100'
+        - --max-messages
+        - '{row_count}'
         - --timeout
         - '3m'
         - --to-namespace
@@ -1219,6 +1223,7 @@ spec:
             k8s_name = k8s_name,
             table_name = table_name,
             message_type = message_type,
+            row_count = row_count,
             ns = config.surrealdb.namespace,
             database = config.surrealdb.database,
             dry_run_flag = dry_run_flag,

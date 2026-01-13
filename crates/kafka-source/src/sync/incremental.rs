@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use sync_core::TableDefinition;
 use tokio::time::{sleep, Duration};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use crate::consumer::ConsumerConfig;
 use crate::Client;
@@ -75,6 +75,12 @@ pub struct Config {
     /// Field name to use as record ID when use_message_key_as_id is false (default: "id")
     #[clap(long, default_value = "id")]
     pub id_field: String,
+    /// Maximum number of messages to process before exiting.
+    /// When set, the sync will exit immediately after processing this many messages
+    /// instead of waiting for the deadline. Useful for loadtest scenarios where
+    /// the exact message count is known.
+    #[clap(long)]
+    pub max_messages: Option<u64>,
 }
 
 /// Run incremental sync from Kafka to SurrealDB.
@@ -196,30 +202,39 @@ pub async fn run_incremental_sync(
     };
 
     let num_consumers = config.num_consumers;
+    let max_messages = config.max_messages;
     info!("Spawning {num_consumers} consumers in the same consumer group...");
+    if let Some(max) = max_messages {
+        info!("Will exit early after processing {max} messages");
+    }
     let handles = client.spawn_batch_consumer_group(
         config.num_consumers,
         config.kafka_batch_size,
         processor,
     )?;
 
-    // Calculate how long to wait until deadline
-    let duration_until_deadline = deadline.signed_duration_since(Utc::now());
-    let timeout_duration = if duration_until_deadline.num_seconds() > 0 {
-        Duration::from_secs(duration_until_deadline.num_seconds() as u64)
-    } else {
-        warn!("Deadline already passed, using minimal timeout");
-        Duration::from_secs(1)
-    };
+    // Polling loop: check for completion conditions (max_messages or deadline)
+    loop {
+        sleep(Duration::from_millis(100)).await;
 
-    info!(
-        "Consumers running for {} seconds until deadline...",
-        timeout_duration.as_secs()
-    );
+        let current_count = processed_count.load(Ordering::SeqCst);
 
-    // Wait for deadline to pass
-    sleep(timeout_duration).await;
-    info!("Deadline reached, aborting consumer tasks");
+        // Exit if max_messages reached
+        if let Some(max) = max_messages {
+            if current_count >= max {
+                info!(
+                    "Reached max_messages limit ({max}), completing sync after processing {current_count} messages"
+                );
+                break;
+            }
+        }
+
+        // Exit if deadline reached
+        if Utc::now() >= deadline {
+            info!("Deadline reached, aborting consumer tasks");
+            break;
+        }
+    }
 
     // Abort all consumer tasks
     for (i, handle) in handles.into_iter().enumerate() {

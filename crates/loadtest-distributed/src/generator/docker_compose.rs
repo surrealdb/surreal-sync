@@ -59,7 +59,8 @@ impl ConfigGenerator for DockerComposeGenerator {
         if config.source_type == SourceType::Kafka {
             for (idx, container) in config.containers.iter().enumerate() {
                 for table in &container.tables {
-                    let sync_service = generate_kafka_sync_service(config, table, idx + 1);
+                    let sync_service =
+                        generate_kafka_sync_service(config, table, container.row_count, idx + 1);
                     services.insert(Value::String(format!("sync-{table}")), sync_service);
                 }
             }
@@ -577,9 +578,11 @@ fn generate_sync_service(config: &ClusterConfig) -> Value {
 ///
 /// Kafka needs one sync service per topic because the CLI handles one topic at a time.
 /// Each sync service reads from a shared proto volume and consumes from its assigned topic.
+/// The `row_count` parameter enables early exit when all expected messages are consumed.
 fn generate_kafka_sync_service(
     config: &ClusterConfig,
     table_name: &str,
+    row_count: u64,
     container_idx: usize,
 ) -> Value {
     let mut service = Mapping::new();
@@ -601,7 +604,8 @@ fn generate_kafka_sync_service(
 
     // Kafka sync command - reads from topic, uses proto file for schema
     // Message type is pascal case of table name (e.g., "users" -> "Users")
-    // Timeout is set to 1 minute (60s) - enough time to consume populated messages for small datasets
+    // Timeout is set to 1 minute (60s) as a safety limit
+    // --max-messages enables early exit once all expected messages are consumed
     let message_type = to_pascal_case(table_name);
     let command = format!(
         "from kafka \
@@ -613,6 +617,7 @@ fn generate_kafka_sync_service(
         --buffer-size 1000 \
         --session-timeout-ms 30000 \
         --kafka-batch-size 100 \
+        --max-messages {row_count} \
         --timeout '1m' \
         --to-namespace {} \
         --to-database {} \

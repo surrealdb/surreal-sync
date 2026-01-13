@@ -178,6 +178,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             table_name: Some(table_name.clone()),
             use_message_key_as_id: false,
             id_field: "id".to_string(),
+            max_messages: None,
         };
 
         // Run sync with a deadline
