@@ -1,6 +1,20 @@
 use crate::Change;
+use std::time::Duration;
 use surrealdb::Surreal;
 use surrealdb_types::{RecordWithSurrealValues as Record, Relation};
+use tokio::time::sleep;
+
+/// Maximum number of retries for retriable transaction errors
+const MAX_RETRIES: u32 = 5;
+/// Base delay between retries (will be multiplied by retry attempt for backoff)
+const RETRY_BASE_DELAY_MS: u64 = 100;
+
+/// Check if an error is a retriable transaction conflict
+fn is_retriable_transaction_error(error: &surrealdb::Error) -> bool {
+    let error_str = error.to_string();
+    error_str.contains("This transaction can be retried")
+        || error_str.contains("Failed to commit transaction due to a read or write conflict")
+}
 
 // Apply a single change event to SurrealDB
 pub async fn apply_change(
@@ -47,7 +61,7 @@ pub async fn apply_change(
     Ok(())
 }
 
-// Write a single record to SurrealDB using UPSERT
+// Write a single record to SurrealDB using UPSERT with retry for transaction conflicts
 pub async fn write_record(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     document: &Record,
@@ -67,51 +81,95 @@ pub async fn write_record(
         tracing::debug!("Binding document to SurrealDB query for record {document:?}",);
     }
 
-    // Build query with proper parameter binding
-    let mut q = surreal.query(query);
-    q = q.bind(("record_id", record_id.clone()));
-    q = q.bind(("content", upsert_content.clone()));
-
-    let mut response: surrealdb::Response = q.await.map_err(|e| {
-        tracing::error!(
-            "SurrealDB query execution failed for record {:?}: {}",
-            record_id,
-            e
-        );
-        if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-            tracing::error!("Failed query content: {upsert_content:?}");
-        }
-        e
-    })?;
-
-    let result: Result<Vec<surrealdb::sql::Thing>, surrealdb::Error> =
-        response.take("id").map_err(|e| {
-            tracing::error!(
-                "SurrealDB response.take() failed for record {:?}: {}",
+    // Retry loop for handling transaction conflicts
+    let mut last_error: Option<surrealdb::Error> = None;
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            let delay_ms = RETRY_BASE_DELAY_MS * (1 << (attempt - 1).min(4)); // Exponential backoff, max 1.6s
+            tracing::warn!(
+                "Retrying write_record for {:?} (attempt {}/{}), waiting {}ms",
                 record_id,
-                e
+                attempt,
+                MAX_RETRIES,
+                delay_ms
             );
-            e
-        });
-
-    match result {
-        Ok(res) => {
-            if res.is_empty() {
-                tracing::warn!("Failed to create record: {:?}", record_id);
-            } else {
-                tracing::trace!("Successfully created record: {:?}", record_id);
-            }
+            sleep(Duration::from_millis(delay_ms)).await;
         }
-        Err(e) => {
-            tracing::error!("Error creating record {:?}: {}", record_id, e);
-            if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                tracing::error!("Problematic document: {:?}", document);
+
+        // Build query with proper parameter binding
+        let mut q = surreal.query(query.clone());
+        q = q.bind(("record_id", record_id.clone()));
+        q = q.bind(("content", upsert_content.clone()));
+
+        let response_result: Result<surrealdb::Response, surrealdb::Error> = q.await;
+
+        match response_result {
+            Ok(mut response) => {
+                let result: Result<Vec<surrealdb::sql::Thing>, surrealdb::Error> =
+                    response.take("id").map_err(|e| {
+                        tracing::error!(
+                            "SurrealDB response.take() failed for record {:?}: {}",
+                            record_id,
+                            e
+                        );
+                        e
+                    });
+
+                match result {
+                    Ok(res) => {
+                        if res.is_empty() {
+                            tracing::warn!("Failed to create record: {:?}", record_id);
+                        } else {
+                            tracing::trace!("Successfully created record: {:?}", record_id);
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        if is_retriable_transaction_error(&e) {
+                            tracing::warn!(
+                                "Retriable transaction error for record {:?}: {}",
+                                record_id,
+                                e
+                            );
+                            last_error = Some(e);
+                            continue;
+                        }
+                        tracing::error!("Error creating record {:?}: {}", record_id, e);
+                        if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                            tracing::error!("Problematic document: {:?}", document);
+                        }
+                        return Err(e.into());
+                    }
+                }
             }
-            return Err(e.into());
+            Err(e) => {
+                if is_retriable_transaction_error(&e) {
+                    tracing::warn!(
+                        "Retriable transaction error for record {:?}: {}",
+                        record_id,
+                        e
+                    );
+                    last_error = Some(e);
+                    continue;
+                }
+                tracing::error!(
+                    "SurrealDB query execution failed for record {:?}: {}",
+                    record_id,
+                    e
+                );
+                if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                    tracing::error!("Failed query content: {upsert_content:?}");
+                }
+                return Err(e.into());
+            }
         }
     }
 
-    Ok(())
+    // All retries exhausted
+    let error_msg =
+        format!("Failed to write record {record_id:?} after {MAX_RETRIES} retries. Last error: {last_error:?}");
+    tracing::error!("{error_msg}");
+    Err(anyhow::anyhow!(error_msg))
 }
 
 // Write a batch of records to SurrealDB using UPSERT
@@ -160,55 +218,102 @@ async fn write_relation(
         );
     }
 
-    // Build query with proper parameter binding
-    let mut q = surreal.query(query);
-    q = q.bind(("in", r.get_in()));
-    q = q.bind(("out", r.get_out()));
-    q = q.bind(("content", r.get_relate_content()));
-
-    let mut response: surrealdb::Response = q.await.map_err(|e| {
-        tracing::error!(
-            "SurrealDB query execution failed for record {:?}: {}",
-            record_id,
-            e
-        );
-        if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-            tracing::error!("Failed query content: {:?}", r.get_relate_content());
-        }
-        e
-    })?;
-
-    let result: Result<Vec<surrealdb::sql::Thing>, surrealdb::Error> =
-        response.take("id").map_err(|e| {
-            tracing::error!(
-                "SurrealDB response.take() failed for record {:?}: {}",
+    // Retry loop for handling transaction conflicts
+    let mut last_error: Option<surrealdb::Error> = None;
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            let delay_ms = RETRY_BASE_DELAY_MS * (1 << (attempt - 1).min(4)); // Exponential backoff, max 1.6s
+            tracing::warn!(
+                "Retrying write_relation for {:?} (attempt {}/{}), waiting {}ms",
                 record_id,
-                e
+                attempt,
+                MAX_RETRIES,
+                delay_ms
             );
-            if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                tracing::error!("Response take error content: {:?}", r.get_relate_content());
-            }
-            e
-        });
-
-    match result {
-        Ok(res) => {
-            if res.is_empty() {
-                tracing::warn!("Failed to create record: {:?}", record_id);
-            } else {
-                tracing::trace!("Successfully created record: {:?}", record_id);
-            }
+            sleep(Duration::from_millis(delay_ms)).await;
         }
-        Err(e) => {
-            tracing::error!("Error creating record {:?}: {}", record_id, e);
-            if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                tracing::error!("Problematic document: {:?}", r);
+
+        // Build query with proper parameter binding
+        let mut q = surreal.query(query.clone());
+        q = q.bind(("in", r.get_in()));
+        q = q.bind(("out", r.get_out()));
+        q = q.bind(("content", r.get_relate_content()));
+
+        let response_result: Result<surrealdb::Response, surrealdb::Error> = q.await;
+
+        match response_result {
+            Ok(mut response) => {
+                let result: Result<Vec<surrealdb::sql::Thing>, surrealdb::Error> =
+                    response.take("id").map_err(|e| {
+                        tracing::error!(
+                            "SurrealDB response.take() failed for record {:?}: {}",
+                            record_id,
+                            e
+                        );
+                        if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                            tracing::error!(
+                                "Response take error content: {:?}",
+                                r.get_relate_content()
+                            );
+                        }
+                        e
+                    });
+
+                match result {
+                    Ok(res) => {
+                        if res.is_empty() {
+                            tracing::warn!("Failed to create record: {:?}", record_id);
+                        } else {
+                            tracing::trace!("Successfully created record: {:?}", record_id);
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        if is_retriable_transaction_error(&e) {
+                            tracing::warn!(
+                                "Retriable transaction error for relation {:?}: {}",
+                                record_id,
+                                e
+                            );
+                            last_error = Some(e);
+                            continue;
+                        }
+                        tracing::error!("Error creating record {:?}: {}", record_id, e);
+                        if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                            tracing::error!("Problematic document: {:?}", r);
+                        }
+                        return Err(e.into());
+                    }
+                }
             }
-            return Err(e.into());
+            Err(e) => {
+                if is_retriable_transaction_error(&e) {
+                    tracing::warn!(
+                        "Retriable transaction error for relation {:?}: {}",
+                        record_id,
+                        e
+                    );
+                    last_error = Some(e);
+                    continue;
+                }
+                tracing::error!(
+                    "SurrealDB query execution failed for record {:?}: {}",
+                    record_id,
+                    e
+                );
+                if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                    tracing::error!("Failed query content: {:?}", r.get_relate_content());
+                }
+                return Err(e.into());
+            }
         }
     }
 
-    Ok(())
+    // All retries exhausted
+    let error_msg =
+        format!("Failed to write relation {record_id:?} after {MAX_RETRIES} retries. Last error: {last_error:?}");
+    tracing::error!("{error_msg}");
+    Err(anyhow::anyhow!(error_msg))
 }
 
 pub async fn write_relations(
