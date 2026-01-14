@@ -67,8 +67,8 @@ setup_test_data() {
     "populate_duration_seconds": 10,
     "sync_duration_seconds": 30,
     "verify_duration_seconds": 5,
-    "rows_synced": 4000,
-    "throughput_rows_per_sec": 100.0
+    "total_rows_synced": 4000,
+    "throughput_total_rows_per_sec": 100.0
   },
   "resources": {
     "peak_memory_mb": 500,
@@ -101,8 +101,8 @@ EOF
     "populate_duration_seconds": 10,
     "sync_duration_seconds": 29,
     "verify_duration_seconds": 5,
-    "rows_synced": 4000,
-    "throughput_rows_per_sec": 102.0
+    "total_rows_synced": 4000,
+    "throughput_total_rows_per_sec": 102.0
   },
   "resources": {
     "peak_memory_mb": 490,
@@ -135,8 +135,8 @@ EOF
     "populate_duration_seconds": 10,
     "sync_duration_seconds": 40,
     "verify_duration_seconds": 5,
-    "rows_synced": 4000,
-    "throughput_rows_per_sec": 80.0
+    "total_rows_synced": 4000,
+    "throughput_total_rows_per_sec": 80.0
   },
   "resources": {
     "peak_memory_mb": 600,

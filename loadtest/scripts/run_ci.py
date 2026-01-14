@@ -1377,7 +1377,8 @@ Suggested actions:
                     metrics = json.load(f)
                 self.log("Metrics summary:")
                 print(f"  Status: {metrics['results']['status']}")
-                print(f"  Throughput: {metrics['results']['throughput_rows_per_sec']} rows/sec")
+                print(f"  Total rows synced: {metrics['results']['total_rows_synced']}")
+                print(f"  Throughput: {metrics['results']['throughput_total_rows_per_sec']} rows/sec")
                 print(f"  Verification: {metrics['verification']['matched']} matched, "
                       f"{metrics['verification']['mismatched']} mismatched")
 

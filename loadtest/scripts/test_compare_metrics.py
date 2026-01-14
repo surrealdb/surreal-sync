@@ -202,7 +202,7 @@ class TestCompareMetrics(unittest.TestCase):
     def setUp(self):
         self.baseline = {
             "results": {
-                "throughput_rows_per_sec": 100,
+                "throughput_total_rows_per_sec": 100,
                 "total_duration_seconds": 45,
                 "sync_duration_seconds": 30,
             },
@@ -214,7 +214,7 @@ class TestCompareMetrics(unittest.TestCase):
     def test_no_regression(self):
         current = {
             "results": {
-                "throughput_rows_per_sec": 102,
+                "throughput_total_rows_per_sec": 102,
                 "total_duration_seconds": 44,
                 "sync_duration_seconds": 29,
             },
@@ -228,7 +228,7 @@ class TestCompareMetrics(unittest.TestCase):
     def test_throughput_regression(self):
         current = {
             "results": {
-                "throughput_rows_per_sec": 80,  # -20%
+                "throughput_total_rows_per_sec": 80,  # -20%
                 "total_duration_seconds": 45,
                 "sync_duration_seconds": 30,
             },
@@ -242,7 +242,7 @@ class TestCompareMetrics(unittest.TestCase):
     def test_duration_regression(self):
         current = {
             "results": {
-                "throughput_rows_per_sec": 100,
+                "throughput_total_rows_per_sec": 100,
                 "total_duration_seconds": 55,  # +22%
                 "sync_duration_seconds": 30,
             },
@@ -256,7 +256,7 @@ class TestCompareMetrics(unittest.TestCase):
     def test_no_baseline(self):
         current = {
             "results": {
-                "throughput_rows_per_sec": 80,
+                "throughput_total_rows_per_sec": 80,
                 "total_duration_seconds": 55,
                 "sync_duration_seconds": 40,
             },
@@ -276,7 +276,7 @@ class TestGenerateMarkdown(unittest.TestCase):
             "source": "kafka",
             "results": {
                 "status": "success",
-                "throughput_rows_per_sec": 100,
+                "throughput_total_rows_per_sec": 100,
             },
             "verification": {
                 "matched": 1000,
@@ -304,7 +304,7 @@ class TestGenerateMarkdown(unittest.TestCase):
             "source": "kafka",
             "results": {
                 "status": "success",
-                "throughput_rows_per_sec": 80,
+                "throughput_total_rows_per_sec": 80,
             },
             "verification": {
                 "matched": 1000,
@@ -315,7 +315,7 @@ class TestGenerateMarkdown(unittest.TestCase):
             "source": "kafka",
             "results": {
                 "status": "success",
-                "throughput_rows_per_sec": 100,
+                "throughput_total_rows_per_sec": 100,
             }
         }
         comparisons = [

@@ -163,7 +163,7 @@ def compare_metrics(
 
     # Define metrics to compare: (name, json_path, higher_is_better, decimals)
     metrics = [
-        ("Throughput (rows/sec)", ("results", "throughput_rows_per_sec"), True, 1),
+        ("Throughput (rows/sec)", ("results", "throughput_total_rows_per_sec"), True, 1),
         ("Duration (sec)", ("results", "total_duration_seconds"), False, 0),
         ("Sync Duration (sec)", ("results", "sync_duration_seconds"), False, 0),
         ("Peak Memory (MB)", ("resources", "peak_memory_mb"), False, 0),
