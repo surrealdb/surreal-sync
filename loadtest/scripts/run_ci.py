@@ -648,9 +648,6 @@ class CIRunner:
 
             # Check for failures
             if status.failed_containers:
-                # Capture verification stats before processing
-                verification = self.get_verification_stats()
-
                 # Distinguish between verify container failures (expected when data mismatches)
                 # and other container failures (unexpected infrastructure issues)
                 verify_failures = [c for c in status.failed_containers if 'verify' in c]
@@ -658,19 +655,16 @@ class CIRunner:
 
                 if other_failures:
                     # Populate or sync containers failed - this is a real infrastructure failure
-                    self.log_error("Container(s) exited with unexpected non-zero status:")
-                    for name in other_failures[:5]:
-                        print(f"  - {name}")
-                        result = self.runner.run(
-                            ["docker", "logs", name, "--tail", "50"],
-                            capture_output=True, text=True
-                        )
-                        self.log(f"Logs from: {name}")
-                        print(result.stdout + result.stderr)
+                    print()  # Newline after progress
+                    self.log_error("FAILURE: Container(s) exited with non-zero status")
+                    self._report_container_failure(other_failures, status)
                     self.test_failed = True
-                    return 2, verification
+                    # Return empty verification stats - verify containers may not have run
+                    return 2, VerificationStats()
 
                 if verify_failures:
+                    # Capture verification stats - verify containers ran but found mismatches
+                    verification = self.get_verification_stats()
                     # Verify container failed - this means data verification failed
                     # This is expected behavior when there are missing/mismatched rows
                     print()  # Newline after progress
@@ -713,20 +707,195 @@ class CIRunner:
             if elapsed >= self.config.timeout:
                 print()  # Newline after progress
                 self.log_error(f"TIMEOUT: Test did not complete within {self.config.timeout} seconds")
-                self.log(
-                    f"Progress at timeout: Populate: {status.populate_done}/{self.config.workers}, "
-                    f"Sync: {status.sync_done}/{self.expected_sync_containers}, "
-                    f"Verify: {status.verify_done}/{self.config.workers}"
-                )
+                self._report_timeout_failure(status)
                 self.test_failed = True
-                # Try to capture verification stats even on timeout
-                verification = self.get_verification_stats()
-                return 1, verification
+                # Return empty verification stats - verify containers may not have completed
+                return 1, VerificationStats()
 
             # Collect resource stats periodically (every poll)
             self.collect_resource_stats()
 
             time.sleep(self.config.poll_interval)
+
+    def _report_container_failure(self, failed_containers: list[str], status: ContainerStatus):
+        """Report detailed information about container failures.
+
+        Args:
+            failed_containers: List of failed container names
+            status: Current container status
+        """
+        print()
+        print("=" * 70)
+        print("CONTAINER FAILURE REPORT")
+        print("=" * 70)
+
+        # Test configuration
+        print(f"\nTest configuration:")
+        print(f"  Source: {self.config.source}")
+        print(f"  Preset: {self.config.preset}")
+        if self.generator_config:
+            print(f"  Row count per table: {self.generator_config.row_count}")
+            print(f"  Tables: {self.generator_config.tables}")
+
+        # Progress summary
+        print(f"\nProgress at failure:")
+        print(f"  Populate: {status.populate_done}/{self.config.workers}")
+        print(f"  Sync: {status.sync_done}/{self.expected_sync_containers}")
+        print(f"  Verify: {status.verify_done}/{self.config.workers}")
+
+        # Check infrastructure containers (database, surrealdb)
+        print("\nInfrastructure container status:")
+        ps_result = self.docker_compose("ps", "-a", "--format", "{{.Names}}|{{.Status}}",
+                                         capture_output=True)
+        for line in ps_result.stdout.strip().splitlines():
+            if "|" in line:
+                name, container_status = line.split("|", 1)
+                # Check for infrastructure containers
+                if any(x in name.lower() for x in [self.config.source, "surrealdb", "kafka", "mysql",
+                                                    "postgresql", "mongodb", "neo4j"]):
+                    print(f"  {name}: {container_status}")
+
+        # Failed containers detail
+        print(f"\nFailed containers ({len(failed_containers)}):")
+        for name in failed_containers:
+            # Get exit code
+            inspect_result = self.runner.run(
+                ["docker", "inspect", name, "--format",
+                 "{{.State.ExitCode}}|{{.State.Status}}|{{.State.OOMKilled}}"],
+                capture_output=True, text=True
+            )
+            exit_code = "unknown"
+            oom_killed = False
+            if inspect_result.returncode == 0:
+                parts = inspect_result.stdout.strip().split("|")
+                if len(parts) >= 3:
+                    exit_code = parts[0]
+                    oom_killed = parts[2].lower() == "true"
+
+            oom_note = " (OOM KILLED)" if oom_killed else ""
+            print(f"\n  Container: {name}")
+            print(f"  Exit code: {exit_code}{oom_note}")
+
+            # Get last 100 lines of logs
+            result = self.runner.run(
+                ["docker", "logs", name, "--tail", "100"],
+                capture_output=True, text=True
+            )
+
+            print(f"  Last 100 lines of logs:")
+            print("  " + "-" * 60)
+            combined_output = (result.stdout or "") + (result.stderr or "")
+            for line in combined_output.strip().split("\n")[-100:]:
+                print(f"    {line}")
+            print("  " + "-" * 60)
+
+        # Debugging guidance
+        print("\n" + "=" * 70)
+        print("DEBUGGING GUIDANCE")
+        print("=" * 70)
+        print("""
+To investigate further:
+1. Check the full container logs in the 'container-logs-<source>' artifact
+2. Look for OOM kills: containers may need more memory for large datasets
+3. Check database connectivity: source/SurrealDB may have failed to start
+4. Review the docker-compose.loadtest.yml for configuration issues
+
+Common failure causes:
+- OOM (Out of Memory): Increase memory limits or reduce row_count
+- Connection timeout: Database containers may need longer startup time
+- Schema mismatch: Check populate container logs for DDL errors
+- Disk space: Large datasets may exhaust tmpfs storage
+""")
+        print("=" * 70)
+
+    def _report_timeout_failure(self, status: ContainerStatus):
+        """Report detailed information about timeout failures.
+
+        Args:
+            status: Current container status at timeout
+        """
+        print()
+        print("=" * 70)
+        print("TIMEOUT FAILURE REPORT")
+        print("=" * 70)
+
+        # Progress summary
+        print(f"\nProgress at timeout (after {self.config.timeout}s):")
+        print(f"  Populate: {status.populate_done}/{self.config.workers}")
+        print(f"  Sync: {status.sync_done}/{self.expected_sync_containers}")
+        print(f"  Verify: {status.verify_done}/{self.config.workers}")
+
+        # Determine which phase timed out
+        if status.populate_done < self.config.workers:
+            stuck_phase = "populate"
+            print("\n  ⚠ STUCK IN: Populate phase")
+        elif status.sync_done < self.expected_sync_containers:
+            stuck_phase = "sync"
+            print("\n  ⚠ STUCK IN: Sync phase")
+        else:
+            stuck_phase = "verify"
+            print("\n  ⚠ STUCK IN: Verify phase")
+
+        # Get running containers
+        ps_result = self.docker_compose("ps", "--filter", "status=running",
+                                         "--format", "{{.Names}}", capture_output=True)
+        running = [c.strip() for c in ps_result.stdout.strip().splitlines() if c.strip()]
+
+        if running:
+            print(f"\nStill running containers ({len(running)}):")
+            for name in running[:10]:
+                # Get resource usage
+                stats_result = self.runner.run(
+                    ["docker", "stats", name, "--no-stream",
+                     "--format", "{{.CPUPerc}}|{{.MemUsage}}"],
+                    capture_output=True, text=True
+                )
+                cpu = mem = "unknown"
+                if stats_result.returncode == 0 and stats_result.stdout.strip():
+                    parts = stats_result.stdout.strip().split("|")
+                    if len(parts) >= 2:
+                        cpu = parts[0]
+                        mem = parts[1]
+
+                print(f"\n  Container: {name}")
+                print(f"  CPU: {cpu}, Memory: {mem}")
+
+                # Get last 50 lines of logs
+                result = self.runner.run(
+                    ["docker", "logs", name, "--tail", "50"],
+                    capture_output=True, text=True
+                )
+                print(f"  Last 50 lines of logs:")
+                print("  " + "-" * 60)
+                combined_output = (result.stdout or "") + (result.stderr or "")
+                for line in combined_output.strip().split("\n")[-50:]:
+                    print(f"    {line}")
+                print("  " + "-" * 60)
+
+        # Debugging guidance
+        print("\n" + "=" * 70)
+        print("DEBUGGING GUIDANCE")
+        print("=" * 70)
+        print(f"""
+The test timed out during the {stuck_phase} phase.
+
+To investigate further:
+1. Check the full container logs in the 'container-logs-<source>' artifact
+2. Review the resource usage above - high CPU may indicate processing
+3. Low CPU with no progress may indicate a deadlock or waiting condition
+
+Common timeout causes:
+- Large dataset with insufficient timeout: Increase --timeout value
+- Database performance: Source or SurrealDB may be slow
+- Network issues: Container communication problems
+- Resource contention: CPU/memory limits may be too restrictive
+
+Suggested actions:
+- For {stuck_phase} timeout: Check {stuck_phase} container logs
+- Try reducing row_count or increasing timeout
+- Check if database containers are healthy
+""")
+        print("=" * 70)
 
     def get_verification_stats(self) -> VerificationStats:
         """Get verification statistics from logs.

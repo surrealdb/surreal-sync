@@ -1254,5 +1254,497 @@ class TestBuildTimelineRunningContainers(unittest.TestCase):
         self.assertEqual(container["duration_sec"], 30.0)
 
 
+class TestReportTimeoutFailure(unittest.TestCase):
+    """Tests for CIRunner._report_timeout_failure method."""
+
+    def setUp(self):
+        self.test_dir = Path(tempfile.mkdtemp(prefix="test_timeout_report_"))
+        self.config = Config(
+            source="postgresql",
+            preset="small",
+            timeout=300,
+            output_dir=self.test_dir,
+            skip_build=True,
+            skip_cleanup=True
+        )
+        self.mock_runner = MockCommandRunner()
+
+    def tearDown(self):
+        import shutil
+        if self.test_dir.exists():
+            shutil.rmtree(self.test_dir)
+
+    def test_identifies_populate_phase_stuck(self):
+        """Correctly identifies when stuck in populate phase."""
+        # Mock docker compose ps for running containers
+        self.mock_runner.set_result(
+            "docker compose",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+
+        runner = CIRunner(self.config, self.mock_runner)
+        runner.compose_file = self.test_dir / "docker-compose.yml"
+
+        # Status with incomplete populate
+        status = ContainerStatus(
+            populate_done=0,
+            sync_done=0,
+            verify_done=0,
+            failed_containers=[]
+        )
+
+        # Capture stdout
+        import io
+        import sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            runner._report_timeout_failure(status)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        self.assertIn("TIMEOUT FAILURE REPORT", output)
+        self.assertIn("STUCK IN: Populate phase", output)
+        self.assertIn("Populate: 0/1", output)
+
+    def test_identifies_sync_phase_stuck(self):
+        """Correctly identifies when stuck in sync phase."""
+        self.mock_runner.set_result(
+            "docker compose",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+
+        runner = CIRunner(self.config, self.mock_runner)
+        runner.compose_file = self.test_dir / "docker-compose.yml"
+
+        # Status with complete populate but incomplete sync
+        status = ContainerStatus(
+            populate_done=1,
+            sync_done=0,
+            verify_done=0,
+            failed_containers=[]
+        )
+
+        import io
+        import sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            runner._report_timeout_failure(status)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        self.assertIn("STUCK IN: Sync phase", output)
+
+    def test_identifies_verify_phase_stuck(self):
+        """Correctly identifies when stuck in verify phase."""
+        self.mock_runner.set_result(
+            "docker compose",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+
+        runner = CIRunner(self.config, self.mock_runner)
+        runner.compose_file = self.test_dir / "docker-compose.yml"
+
+        # Status with complete populate and sync but incomplete verify
+        status = ContainerStatus(
+            populate_done=1,
+            sync_done=1,
+            verify_done=0,
+            failed_containers=[]
+        )
+
+        import io
+        import sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            runner._report_timeout_failure(status)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        self.assertIn("STUCK IN: Verify phase", output)
+
+    def test_shows_running_containers_with_stats(self):
+        """Shows running containers with resource usage."""
+        # Mock docker compose ps to return running containers
+        self.mock_runner.set_result(
+            "docker compose",
+            subprocess.CompletedProcess([], 0, stdout="output-sync-1\n", stderr="")
+        )
+        # Mock docker stats
+        self.mock_runner.set_result(
+            "docker stats",
+            subprocess.CompletedProcess([], 0, stdout="25.5%|512MiB / 2GiB", stderr="")
+        )
+        # Mock docker logs
+        self.mock_runner.set_result(
+            "docker logs",
+            subprocess.CompletedProcess([], 0, stdout="Processing row 1000...", stderr="")
+        )
+
+        runner = CIRunner(self.config, self.mock_runner)
+        runner.compose_file = self.test_dir / "docker-compose.yml"
+
+        status = ContainerStatus(
+            populate_done=1,
+            sync_done=0,
+            verify_done=0,
+            failed_containers=[]
+        )
+
+        import io
+        import sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            runner._report_timeout_failure(status)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        self.assertIn("Still running containers", output)
+        self.assertIn("output-sync-1", output)
+
+    def test_includes_debugging_guidance(self):
+        """Report includes debugging guidance section."""
+        self.mock_runner.set_result(
+            "docker compose",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+
+        runner = CIRunner(self.config, self.mock_runner)
+        runner.compose_file = self.test_dir / "docker-compose.yml"
+
+        status = ContainerStatus(
+            populate_done=1,
+            sync_done=0,
+            verify_done=0,
+            failed_containers=[]
+        )
+
+        import io
+        import sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            runner._report_timeout_failure(status)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        self.assertIn("DEBUGGING GUIDANCE", output)
+        self.assertIn("timed out during the sync phase", output)
+
+
+class TestReportContainerFailure(unittest.TestCase):
+    """Tests for CIRunner._report_container_failure method."""
+
+    def setUp(self):
+        self.test_dir = Path(tempfile.mkdtemp(prefix="test_failure_report_"))
+        self.config = Config(
+            source="mysql",
+            preset="medium",
+            output_dir=self.test_dir,
+            skip_build=True,
+            skip_cleanup=True
+        )
+        self.mock_runner = MockCommandRunner()
+
+    def tearDown(self):
+        import shutil
+        if self.test_dir.exists():
+            shutil.rmtree(self.test_dir)
+
+    def test_shows_test_configuration(self):
+        """Report shows test configuration details."""
+        self.mock_runner.set_result(
+            "docker inspect",
+            subprocess.CompletedProcess([], 0, stdout="1|exited|false", stderr="")
+        )
+        self.mock_runner.set_result(
+            "docker logs",
+            subprocess.CompletedProcess([], 0, stdout="Error: connection refused", stderr="")
+        )
+        self.mock_runner.set_result(
+            "docker compose",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+
+        runner = CIRunner(self.config, self.mock_runner)
+        runner.compose_file = self.test_dir / "docker-compose.yml"
+        runner.generator_config = GeneratorConfig(
+            row_count=100000,
+            batch_size=1000,
+            num_containers=1,
+            tables=["users", "orders"]
+        )
+
+        status = ContainerStatus(
+            populate_done=1,
+            sync_done=0,
+            verify_done=0,
+            failed_containers=["output-sync-1"]
+        )
+
+        import io
+        import sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            runner._report_container_failure(["output-sync-1"], status)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        self.assertIn("CONTAINER FAILURE REPORT", output)
+        self.assertIn("Source: mysql", output)
+        self.assertIn("Preset: medium", output)
+        self.assertIn("Row count per table: 100000", output)
+        self.assertIn("users", output)
+
+    def test_shows_progress_at_failure(self):
+        """Report shows progress at time of failure."""
+        self.mock_runner.set_result(
+            "docker inspect",
+            subprocess.CompletedProcess([], 0, stdout="1|exited|false", stderr="")
+        )
+        self.mock_runner.set_result(
+            "docker logs",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+        self.mock_runner.set_result(
+            "docker compose",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+
+        runner = CIRunner(self.config, self.mock_runner)
+        runner.compose_file = self.test_dir / "docker-compose.yml"
+
+        status = ContainerStatus(
+            populate_done=1,
+            sync_done=0,
+            verify_done=0,
+            failed_containers=["output-sync-1"]
+        )
+
+        import io
+        import sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            runner._report_container_failure(["output-sync-1"], status)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        self.assertIn("Progress at failure", output)
+        self.assertIn("Populate: 1/1", output)
+        self.assertIn("Sync: 0/1", output)
+
+    def test_detects_oom_killed(self):
+        """Report detects and shows OOM killed containers."""
+        # Mock docker inspect to return OOM killed
+        self.mock_runner.results["docker inspect output-sync-1"] = subprocess.CompletedProcess(
+            [], 0, stdout="137|exited|true", stderr=""
+        )
+        self.mock_runner.set_result(
+            "docker logs",
+            subprocess.CompletedProcess([], 0, stdout="Processing...", stderr="")
+        )
+        self.mock_runner.set_result(
+            "docker compose",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+
+        runner = CIRunner(self.config, self.mock_runner)
+        runner.compose_file = self.test_dir / "docker-compose.yml"
+
+        status = ContainerStatus(
+            populate_done=1,
+            sync_done=0,
+            verify_done=0,
+            failed_containers=["output-sync-1"]
+        )
+
+        import io
+        import sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            runner._report_container_failure(["output-sync-1"], status)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        self.assertIn("OOM KILLED", output)
+        self.assertIn("Exit code: 137", output)
+
+    def test_shows_container_logs(self):
+        """Report shows last 100 lines of logs from failed container."""
+        self.mock_runner.set_result(
+            "docker inspect",
+            subprocess.CompletedProcess([], 0, stdout="1|exited|false", stderr="")
+        )
+        self.mock_runner.set_result(
+            "docker logs",
+            subprocess.CompletedProcess(
+                [], 0,
+                stdout="Error: Failed to connect to database\nConnection timeout after 30s",
+                stderr=""
+            )
+        )
+        self.mock_runner.set_result(
+            "docker compose",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+
+        runner = CIRunner(self.config, self.mock_runner)
+        runner.compose_file = self.test_dir / "docker-compose.yml"
+
+        status = ContainerStatus(
+            populate_done=1,
+            sync_done=0,
+            verify_done=0,
+            failed_containers=["output-sync-1"]
+        )
+
+        import io
+        import sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            runner._report_container_failure(["output-sync-1"], status)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        self.assertIn("Last 100 lines of logs", output)
+        self.assertIn("Failed to connect to database", output)
+        self.assertIn("Connection timeout", output)
+
+    def test_shows_infrastructure_status(self):
+        """Report shows status of infrastructure containers."""
+        self.mock_runner.set_result(
+            "docker inspect",
+            subprocess.CompletedProcess([], 0, stdout="1|exited|false", stderr="")
+        )
+        self.mock_runner.set_result(
+            "docker logs",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+        # Mock docker compose ps for infrastructure
+        self.mock_runner.results["docker compose"] = subprocess.CompletedProcess(
+            [], 0,
+            stdout="output-mysql-1|Up 2 minutes\noutput-surrealdb-1|Up 2 minutes\n",
+            stderr=""
+        )
+
+        runner = CIRunner(self.config, self.mock_runner)
+        runner.compose_file = self.test_dir / "docker-compose.yml"
+
+        status = ContainerStatus(
+            populate_done=1,
+            sync_done=0,
+            verify_done=0,
+            failed_containers=["output-sync-1"]
+        )
+
+        import io
+        import sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            runner._report_container_failure(["output-sync-1"], status)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        self.assertIn("Infrastructure container status", output)
+
+    def test_includes_debugging_guidance(self):
+        """Report includes debugging guidance section."""
+        self.mock_runner.set_result(
+            "docker inspect",
+            subprocess.CompletedProcess([], 0, stdout="1|exited|false", stderr="")
+        )
+        self.mock_runner.set_result(
+            "docker logs",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+        self.mock_runner.set_result(
+            "docker compose",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+
+        runner = CIRunner(self.config, self.mock_runner)
+        runner.compose_file = self.test_dir / "docker-compose.yml"
+
+        status = ContainerStatus(
+            populate_done=1,
+            sync_done=0,
+            verify_done=0,
+            failed_containers=["output-sync-1"]
+        )
+
+        import io
+        import sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            runner._report_container_failure(["output-sync-1"], status)
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        self.assertIn("DEBUGGING GUIDANCE", output)
+        self.assertIn("Common failure causes", output)
+        self.assertIn("OOM", output)
+
+    def test_handles_multiple_failed_containers(self):
+        """Report handles multiple failed containers."""
+        self.mock_runner.set_result(
+            "docker inspect",
+            subprocess.CompletedProcess([], 0, stdout="1|exited|false", stderr="")
+        )
+        self.mock_runner.set_result(
+            "docker logs",
+            subprocess.CompletedProcess([], 0, stdout="Error log", stderr="")
+        )
+        self.mock_runner.set_result(
+            "docker compose",
+            subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        )
+
+        runner = CIRunner(self.config, self.mock_runner)
+        runner.compose_file = self.test_dir / "docker-compose.yml"
+
+        status = ContainerStatus(
+            populate_done=0,
+            sync_done=0,
+            verify_done=0,
+            failed_containers=["output-populate-1", "output-populate-2"]
+        )
+
+        import io
+        import sys
+        captured = io.StringIO()
+        sys.stdout = captured
+        try:
+            runner._report_container_failure(
+                ["output-populate-1", "output-populate-2"], status
+            )
+        finally:
+            sys.stdout = sys.__stdout__
+
+        output = captured.getvalue()
+        self.assertIn("Failed containers (2)", output)
+        self.assertIn("output-populate-1", output)
+        self.assertIn("output-populate-2", output)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
