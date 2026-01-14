@@ -22,6 +22,10 @@ on:
         type: string
         description: 'Timeout in seconds per source'
         default: '600'
+      row_count:
+        type: string
+        description: 'Override rows per table (omit to use preset default)'
+        required: false
   pull_request:
     types: [labeled]
 
@@ -45,6 +49,7 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
       preset: ${{ steps.set-inputs.outputs.preset }}
       timeout: ${{ steps.set-inputs.outputs.timeout }}
+      row_count: ${{ steps.set-inputs.outputs.row_count }}
     steps:
       - name: Set inputs
         id: set-inputs
@@ -54,6 +59,10 @@ jobs:
             echo "preset=${{ inputs.preset }}" >> $GITHUB_OUTPUT
             echo "timeout=${{ inputs.timeout }}" >> $GITHUB_OUTPUT
             SOURCES="${{ inputs.sources }}"
+            # Only set row_count if explicitly provided
+            if [ -n "${{ inputs.row_count }}" ]; then
+              echo "row_count=${{ inputs.row_count }}" >> $GITHUB_OUTPUT
+            fi
           else
             echo "preset=small" >> $GITHUB_OUTPUT
             echo "timeout=600" >> $GITHUB_OUTPUT
@@ -111,10 +120,16 @@ jobs:
         id: loadtest
         run: |
           cd loadtest
+          # Build row count flag only if specified
+          ROW_COUNT_FLAG=""
+          if [ -n "${{ needs.setup.outputs.row_count }}" ]; then
+            ROW_COUNT_FLAG="--row-count ${{ needs.setup.outputs.row_count }}"
+          fi
           python3 ./scripts/run_ci.py \
             --source ${{ matrix.source }} \
             --preset ${{ needs.setup.outputs.preset }} \
             --timeout ${{ needs.setup.outputs.timeout }} \
+            $ROW_COUNT_FLAG \
             --skip-build \
             --no-preserve-on-failure
         continue-on-error: true

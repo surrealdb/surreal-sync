@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 from run_ci import (
     Config,
+    GeneratorConfig,
     VerificationStats,
     ResourceStats,
     ContainerStatus,
@@ -58,6 +59,24 @@ class TestGetExpectedSyncContainers(unittest.TestCase):
         """Unknown sources default to 1 sync container."""
         result = get_expected_sync_containers("unknown")
         self.assertEqual(result, 1)
+
+
+class TestGeneratorConfig(unittest.TestCase):
+    """Tests for GeneratorConfig dataclass."""
+
+    def test_create_generator_config(self):
+        """Create a GeneratorConfig with all fields."""
+        config = GeneratorConfig(
+            row_count=10000,
+            batch_size=500,
+            num_containers=2,
+            tables=["users", "products", "orders", "order_items"]
+        )
+        self.assertEqual(config.row_count, 10000)
+        self.assertEqual(config.batch_size, 500)
+        self.assertEqual(config.num_containers, 2)
+        self.assertEqual(config.tables, ["users", "products", "orders", "order_items"])
+        self.assertEqual(len(config.tables), 4)
 
 
 class TestParseVerificationLine(unittest.TestCase):
@@ -226,29 +245,39 @@ class TestCalculateThroughput(unittest.TestCase):
     def test_normal_throughput(self):
         """Calculate normal throughput."""
         durations = {"total": 100, "sync": 40, "verify": 10, "populate": 50}
-        result = calculate_throughput(row_count=100, durations=durations)
+        result = calculate_throughput(row_count=100, num_tables=4, durations=durations)
         # 400 rows / 40 seconds = 10 rows/sec
         self.assertEqual(result, 10.0)
 
     def test_zero_sync_uses_total(self):
         """When sync is 0, use total duration."""
         durations = {"total": 100, "sync": 0, "verify": 10, "populate": 50}
-        result = calculate_throughput(row_count=100, durations=durations)
+        result = calculate_throughput(row_count=100, num_tables=4, durations=durations)
         # 400 rows / 100 seconds = 4 rows/sec
         self.assertEqual(result, 4.0)
 
     def test_zero_total_returns_zero(self):
         """When both are 0, return 0."""
         durations = {"total": 0, "sync": 0, "verify": 0, "populate": 0}
-        result = calculate_throughput(row_count=100, durations=durations)
+        result = calculate_throughput(row_count=100, num_tables=4, durations=durations)
         self.assertEqual(result, 0.0)
 
     def test_high_throughput(self):
         """Calculate high throughput."""
         durations = {"total": 10, "sync": 2, "verify": 1, "populate": 7}
-        result = calculate_throughput(row_count=1000, durations=durations)
+        result = calculate_throughput(row_count=1000, num_tables=4, durations=durations)
         # 4000 rows / 2 seconds = 2000 rows/sec
         self.assertEqual(result, 2000.0)
+
+    def test_different_num_tables(self):
+        """Test with different number of tables."""
+        durations = {"total": 10, "sync": 5, "verify": 1, "populate": 4}
+        # 2 tables: 100 * 2 = 200 rows / 5 sec = 40 rows/sec
+        result = calculate_throughput(row_count=100, num_tables=2, durations=durations)
+        self.assertEqual(result, 40.0)
+        # 10 tables: 100 * 10 = 1000 rows / 5 sec = 200 rows/sec
+        result = calculate_throughput(row_count=100, num_tables=10, durations=durations)
+        self.assertEqual(result, 200.0)
 
 
 class TestExitCodeToStatus(unittest.TestCase):
@@ -278,8 +307,11 @@ class TestBuildMetrics(unittest.TestCase):
         config = Config(
             source="kafka",
             preset="small",
-            row_count=100,
             workers=1
+        )
+        tables = ["users", "products", "orders", "order_items"]
+        generator_config = GeneratorConfig(
+            row_count=100, batch_size=500, num_containers=1, tables=tables
         )
         durations = {
             "total": 45.0,
@@ -290,22 +322,30 @@ class TestBuildMetrics(unittest.TestCase):
         verification = VerificationStats(matched=400, mismatched=0, missing=0)
         resources = ResourceStats(peak_memory_mb=512, avg_cpu_percent=45.2)
 
-        result = build_metrics(config, durations, 0, verification, resources)
+        result = build_metrics(config, generator_config, durations, 0, verification, resources)
 
         self.assertEqual(result["source"], "kafka")
         self.assertEqual(result["preset"], "small")
-        self.assertEqual(result["row_count"], 100)
+        self.assertEqual(result["row_count_per_table"], 100)
+        self.assertEqual(result["num_tables"], 4)
+        self.assertEqual(result["tables"], tables)
         self.assertEqual(result["workers"], 1)
         self.assertEqual(result["results"]["status"], "success")
         self.assertEqual(result["results"]["exit_code"], 0)
         self.assertEqual(result["results"]["total_duration_seconds"], 45.0)
+        self.assertEqual(result["results"]["total_rows_synced"], 400)
+        self.assertAlmostEqual(result["results"]["throughput_total_rows_per_sec"], 13.3, places=1)
         self.assertEqual(result["verification"]["matched"], 400)
         self.assertEqual(result["verification"]["mismatched"], 0)
         self.assertEqual(result["resources"]["peak_memory_mb"], 512)
 
     def test_failure_metrics(self):
         """Build metrics for failed run."""
-        config = Config(source="mysql", row_count=50)
+        config = Config(source="mysql")
+        tables = ["users", "products"]
+        generator_config = GeneratorConfig(
+            row_count=50, batch_size=500, num_containers=1, tables=tables
+        )
         durations = {
             "total": 100.0,
             "populate": 0.0,
@@ -315,9 +355,12 @@ class TestBuildMetrics(unittest.TestCase):
         verification = VerificationStats(matched=100, mismatched=50, missing=50)
         resources = ResourceStats()
 
-        result = build_metrics(config, durations, 3, verification, resources)
+        result = build_metrics(config, generator_config, durations, 3, verification, resources)
 
         self.assertEqual(result["results"]["status"], "verification_failed")
+        self.assertEqual(result["row_count_per_table"], 50)
+        self.assertEqual(result["num_tables"], 2)
+        self.assertEqual(result["results"]["total_rows_synced"], 100)
         self.assertEqual(result["verification"]["mismatched"], 50)
         self.assertEqual(result["verification"]["missing"], 50)
 

@@ -2178,6 +2178,10 @@ async fn run_loadtest_generate(args: GenerateArgs) -> anyhow::Result<()> {
         }
     }
 
+    // Output ClusterConfig as JSON for CI tooling (single line, easy to parse)
+    // This allows run_ci.py to get the effective row_count used by the generator
+    println!("{}", serde_json::to_string(&config)?);
+
     // Create output directory
     let output_dir = &args.output_dir;
     std::fs::create_dir_all(output_dir)

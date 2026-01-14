@@ -7,7 +7,7 @@ Usage: ./scripts/run_ci.py [OPTIONS]
 Options:
   --source SOURCE       Data source (default: kafka)
   --preset PRESET       Size preset: small, medium, large (default: small)
-  --row-count COUNT     Number of rows per table (default: 100)
+  --row-count COUNT     Number of rows per table (default: from preset)
   --workers COUNT       Number of worker containers (default: 1)
   --timeout SECONDS     Timeout in seconds (default: 300)
   --output-dir DIR      Output directory (default: ./output)
@@ -110,10 +110,10 @@ def check_prerequisites() -> list[str]:
 
 @dataclass
 class Config:
-    """Configuration for the CI runner."""
+    """Input configuration for the CI runner (from CLI arguments)."""
     source: str = "kafka"
     preset: str = "small"
-    row_count: int = 100
+    row_count: Optional[int] = None  # None means use preset default
     workers: int = 1
     timeout: int = 300
     output_dir: Path = field(default_factory=lambda: Path("./output"))
@@ -124,6 +124,15 @@ class Config:
     image_name: str = "surreal-sync:latest"
     project_root: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent)
     loadtest_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent)
+
+
+@dataclass
+class GeneratorConfig:
+    """Resolved configuration from the generator (what was actually used)."""
+    row_count: int
+    batch_size: int
+    num_containers: int
+    tables: list  # List of table names from ClusterConfig
 
 
 @dataclass
@@ -249,17 +258,18 @@ def parse_container_status(ps_output: str, workers: int, expected_sync: int) -> 
     return status
 
 
-def calculate_throughput(row_count: int, durations: dict) -> float:
+def calculate_throughput(row_count: int, num_tables: int, durations: dict) -> float:
     """Calculate throughput in rows per second.
 
     Args:
         row_count: Number of rows per table
+        num_tables: Number of tables
         durations: Dictionary with duration values
 
     Returns:
-        Throughput in rows per second
+        Throughput in rows per second (total rows / sync duration)
     """
-    total_rows = row_count * 4  # 4 tables
+    total_rows = row_count * num_tables
     # Use sync_duration if available, otherwise total_duration
     effective_duration = durations["sync"] if durations["sync"] > 0 else durations["total"]
     if effective_duration > 0:
@@ -313,6 +323,7 @@ def exit_code_to_status(exit_code: int) -> str:
 
 def build_metrics(
     config: Config,
+    generator_config: GeneratorConfig,
     durations: dict,
     exit_code: int,
     verification: VerificationStats,
@@ -321,7 +332,8 @@ def build_metrics(
     """Build the metrics dictionary.
 
     Args:
-        config: Configuration object
+        config: Input configuration from CLI arguments
+        generator_config: Resolved configuration from the generator
         durations: Pre-computed durations from timeline (total, populate, sync, verify)
         exit_code: Exit code from the test
         verification: Verification statistics
@@ -332,13 +344,18 @@ def build_metrics(
     """
     git_sha, git_ref = get_git_info()
 
+    num_tables = len(generator_config.tables)
+    total_rows = generator_config.row_count * num_tables
+
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "git_sha": git_sha,
         "git_ref": git_ref,
         "source": config.source,
         "preset": config.preset,
-        "row_count": config.row_count,
+        "row_count_per_table": generator_config.row_count,
+        "num_tables": num_tables,
+        "tables": generator_config.tables,
         "workers": config.workers,
         "platform": "docker-compose",
         "runner": os.environ.get("GITHUB_RUNNER", "local"),
@@ -349,8 +366,10 @@ def build_metrics(
             "populate_duration_seconds": durations["populate"],
             "sync_duration_seconds": durations["sync"],
             "verify_duration_seconds": durations["verify"],
-            "rows_synced": config.row_count * 4,
-            "throughput_rows_per_sec": calculate_throughput(config.row_count, durations)
+            "total_rows_synced": total_rows,
+            "throughput_total_rows_per_sec": calculate_throughput(
+                generator_config.row_count, num_tables, durations
+            )
         },
         "resources": {
             "peak_memory_mb": resources.peak_memory_mb,
@@ -387,6 +406,7 @@ class CIRunner:
         self.compose_file = config.output_dir / "docker-compose.loadtest.yml"
         self._start_time: float = 0  # Track test start time for duration logging
         self._peak_memory_mb = 0  # Track peak memory across all samples
+        self.generator_config: Optional[GeneratorConfig] = None  # Set after generate_config()
 
     def log(self, message: str):
         """Log a message with timestamp."""
@@ -492,11 +512,48 @@ class CIRunner:
             "--schema", "/config/schema.yaml",
             "--output-dir", "/output",
             "--workers", str(self.config.workers),
-            "--row-count", str(self.config.row_count)
         ]
-        result = self.runner.run(cmd)
+        # Only add --row-count if explicitly specified (otherwise use preset default)
+        if self.config.row_count is not None:
+            cmd.extend(["--row-count", str(self.config.row_count)])
+
+        result = self.runner.run(cmd, capture_output=True)
         if result.returncode != 0:
+            # Log stderr on failure before raising
+            if result.stderr:
+                self.log(f"Generator stderr: {result.stderr}")
             raise RuntimeError("Failed to generate configuration")
+
+        # Parse JSON output from generator to create GeneratorConfig
+        try:
+            # The generator outputs ClusterConfig JSON on the first line of stdout
+            stdout = result.stdout.decode("utf-8") if result.stdout else ""
+            for line in stdout.split('\n'):
+                line = line.strip()
+                if line.startswith('{'):
+                    config_json = json.loads(line)
+                    # Extract values from containers (all containers have same row_count/batch_size)
+                    if config_json.get("containers"):
+                        container = config_json["containers"][0]
+                        # Collect all unique table names from all containers
+                        all_tables = []
+                        for c in config_json["containers"]:
+                            all_tables.extend(c.get("tables", []))
+                        # Remove duplicates while preserving order
+                        tables = list(dict.fromkeys(all_tables))
+                        self.generator_config = GeneratorConfig(
+                            row_count=container["row_count"],
+                            batch_size=container.get("batch_size", 1000),
+                            num_containers=len(config_json["containers"]),
+                            tables=tables
+                        )
+                        self.log(f"Generator config: row_count={self.generator_config.row_count}, "
+                                f"batch_size={self.generator_config.batch_size}, "
+                                f"num_containers={self.generator_config.num_containers}, "
+                                f"tables={self.generator_config.tables}")
+                    break
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            self.log(f"Warning: Could not parse generator output: {e}")
 
         # Verify output files were created
         compose_file = self.config.output_dir / "docker-compose.loadtest.yml"
@@ -1034,8 +1091,13 @@ class CIRunner:
         durations = self.get_durations_from_timeline(timeline)
 
         # Build metrics with timeline-based durations
+        # Ensure generator_config is available (should always be set after generate_config())
+        if self.generator_config is None:
+            raise RuntimeError("Generator config not available - generate_config() must be called first")
+
         metrics = build_metrics(
             self.config,
+            self.generator_config,
             durations,
             exit_code,
             verification,
@@ -1099,7 +1161,8 @@ class CIRunner:
         self.log("=== Starting CI Load Test ===")
         self.log(f"Source: {self.config.source}")
         self.log(f"Preset: {self.config.preset}")
-        self.log(f"Row count: {self.config.row_count}")
+        row_count_desc = str(self.config.row_count) if self.config.row_count is not None else "(from preset)"
+        self.log(f"Row count: {row_count_desc}")
         self.log(f"Workers: {self.config.workers}")
         self.log(f"Timeout: {self.config.timeout}s")
         self.log(f"Expected sync containers: {self.expected_sync_containers}")
@@ -1168,8 +1231,8 @@ def parse_args() -> Config:
     parser.add_argument("--preset", default="small",
                         choices=["small", "medium", "large"],
                         help="Size preset (default: small)")
-    parser.add_argument("--row-count", type=int, default=100,
-                        help="Number of rows per table (default: 100)")
+    parser.add_argument("--row-count", type=int, default=None,
+                        help="Number of rows per table (default: from preset)")
     parser.add_argument("--workers", type=int, default=1,
                         help="Number of worker containers (default: 1)")
     parser.add_argument("--timeout", type=int, default=300,
