@@ -573,7 +573,7 @@ class CIRunner:
     def start_containers(self):
         """Start the docker-compose containers."""
         self.log("Starting containers...")
-        self.docker_compose("up", "-d", "--build")
+        self.docker_compose("up", "-d")
 
     def get_container_status(self) -> ContainerStatus:
         """Get the current status of containers."""
