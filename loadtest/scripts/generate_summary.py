@@ -23,16 +23,14 @@ Expected directory structures:
 
   baseline-dir (downloaded from previous run artifact):
     baseline/
-      kafka/
+      metrics-kafka/
         metrics.json
-      mysql/
+      metrics-mysql/
         metrics.json
-      postgresql/
+      metrics-postgresql/
         metrics.json
 
-  Note: metrics-dir uses "metrics-<source>" subdirs, baseline-dir uses "<source>" subdirs.
-  This matches the GitHub Actions artifact structure where metrics are uploaded per-source
-  and baseline is organized by source name only.
+  Both directories use the same "metrics-<source>" subdirectory structure for consistency.
 
 Examples:
   # Compare current metrics against baseline with preset validation
@@ -120,11 +118,11 @@ def generate_summary(
         lines.append(f"### Source: {source}")
         lines.append("")
 
-        # Check for baseline
+        # Check for baseline (uses same metrics-<source> directory structure)
         baseline_file: Optional[Path] = None
         baseline_preset: Optional[str] = None
         if baseline_dir:
-            candidate = baseline_dir / source / "metrics.json"
+            candidate = baseline_dir / source_dir.name / "metrics.json"
             if candidate.exists():
                 baseline_file = candidate
                 baseline_preset = get_preset_from_metrics(candidate)

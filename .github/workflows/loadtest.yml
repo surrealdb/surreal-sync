@@ -226,9 +226,10 @@ jobs:
           mkdir -p new-baseline
           for metrics_dir in metrics/metrics-*/; do
             if [ -d "$metrics_dir" ]; then
-              source=$(basename "$metrics_dir" | sed 's/metrics-//')
-              mkdir -p "new-baseline/$source"
-              cp "$metrics_dir/metrics.json" "new-baseline/$source/" || true
+              # Keep the metrics-<source> directory name for consistency
+              dir_name=$(basename "$metrics_dir")
+              mkdir -p "new-baseline/$dir_name"
+              cp "$metrics_dir/metrics.json" "new-baseline/$dir_name/" || true
             fi
           done
 

@@ -10,7 +10,7 @@ Compares current run against baseline and outputs:
 
 Examples:
   # Compare current metrics against baseline
-  ./scripts/compare_metrics.py metrics/metrics-kafka/metrics.json baseline/kafka/metrics.json
+  ./scripts/compare_metrics.py metrics/metrics-kafka/metrics.json baseline/metrics-kafka/metrics.json
 
   # Generate summary without baseline (shows "-" for baseline columns)
   ./scripts/compare_metrics.py metrics/metrics-mysql/metrics.json
