@@ -9,6 +9,7 @@ license = "MIT"
 sync-core = { path = "../sync-core" }
 loadtest-generator = { path = "../loadtest-generator" }
 loadtest-populate = { path = "../loadtest-populate" }
+loadtest-distributed = { path = "../loadtest-distributed" }
 json-types = { path = "../json-types" }
 
 clap = { version = "4.5", features = ["derive", "env"] }

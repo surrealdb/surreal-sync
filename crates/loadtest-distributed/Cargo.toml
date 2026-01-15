@@ -13,17 +13,9 @@ name = "loadtest_distributed"
 path = "src/lib.rs"
 
 [dependencies]
-# Existing loadtest crates
-loadtest-generator = { path = "../loadtest-generator" }
-loadtest-populate-mysql = { path = "../loadtest-populate-mysql" }
-loadtest-populate-postgresql = { path = "../loadtest-populate-postgresql" }
-loadtest-populate-mongodb = { path = "../loadtest-populate-mongodb" }
-loadtest-populate-neo4j = { path = "../loadtest-populate-neo4j" }
-loadtest-populate-csv = { path = "../loadtest-populate-csv" }
-loadtest-populate-jsonl = { path = "../loadtest-populate-jsonl" }
-loadtest-populate-kafka = { path = "../loadtest-populate-kafka" }
-loadtest-verify = { path = "../loadtest-verify" }
+# Schema and generator (needed for generating loadtest configurations)
 sync-core = { path = "../sync-core" }
+loadtest-generator = { path = "../loadtest-generator" }
 
 # CLI and serialization
 clap = { version = "4", features = ["derive", "env"] }
@@ -46,3 +38,6 @@ anyhow = "1"
 
 # Table formatting for aggregation output
 comfy-table = "7"
+
+# UUID for container ID generation
+uuid = { version = "1", features = ["v4"] }

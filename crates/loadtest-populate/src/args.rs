@@ -32,4 +32,8 @@ pub struct CommonPopulateArgs {
     /// Dry-run mode: validate schema and configuration without actual database operations
     #[arg(long)]
     pub dry_run: bool,
+
+    /// Aggregator server URL for HTTP-based metrics collection (e.g., http://aggregator:9090)
+    #[arg(long)]
+    pub aggregator_url: Option<String>,
 }

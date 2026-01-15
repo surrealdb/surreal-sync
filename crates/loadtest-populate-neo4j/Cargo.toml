@@ -9,6 +9,7 @@ description = "Neo4j populator for surreal-sync loadtests"
 sync-core = { path = "../sync-core" }
 loadtest-generator = { path = "../loadtest-generator" }
 loadtest-populate = { path = "../loadtest-populate" }
+loadtest-distributed = { path = "../loadtest-distributed" }
 
 # CLI argument parsing
 clap = { version = "4.5", features = ["derive", "env"] }

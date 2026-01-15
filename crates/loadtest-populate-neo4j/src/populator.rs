@@ -32,6 +32,17 @@ impl PopulateMetrics {
             0.0
         }
     }
+
+    /// Convert to aggregated metrics format for loadtest-distributed.
+    pub fn to_aggregated(&self) -> loadtest_distributed::metrics::PopulateMetrics {
+        loadtest_distributed::metrics::PopulateMetrics {
+            rows_processed: self.rows_inserted,
+            duration_ms: self.total_duration.as_millis() as u64,
+            batch_count: self.batch_count,
+            rows_per_second: self.rows_per_second(),
+            bytes_written: None,
+        }
+    }
 }
 
 /// Neo4j populator that generates and inserts test data.

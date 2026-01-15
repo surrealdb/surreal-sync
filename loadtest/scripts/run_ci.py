@@ -897,37 +897,110 @@ Suggested actions:
 """)
         print("=" * 70)
 
-    def get_verification_stats(self) -> VerificationStats:
-        """Get verification statistics from logs.
+    def get_aggregator_logs(self) -> str:
+        """Get logs from the aggregator container.
 
         Returns:
-            VerificationStats object with aggregated stats from all verify containers
+            String containing full aggregator logs
 
         Raises:
-            RuntimeError: If logs are empty or no stats could be parsed
+            RuntimeError: If aggregator container not found or logs unavailable
         """
-        verify_logs = self.get_verification_logs()
-        if not verify_logs:
-            raise RuntimeError(
-                "No verification logs found - containers may not have produced output"
-            )
+        # Find aggregator container name
+        ps_result = self.docker_compose("ps", "-a", "--format", "{{.Names}}", capture_output=True)
+        all_containers = [c.strip() for c in ps_result.stdout.strip().splitlines() if c.strip()]
 
-        stats = aggregate_verification_stats(verify_logs)
+        aggregator_container = None
+        for container_name in all_containers:
+            if "aggregator" in container_name.lower():
+                aggregator_container = container_name
+                break
 
-        # Validate that we actually got some stats if logs exist
+        if not aggregator_container:
+            raise RuntimeError("Aggregator container not found")
+
+        # Get aggregator logs
+        log_result = self.runner.run(
+            ["docker", "logs", aggregator_container],
+            capture_output=True, text=True
+        )
+
+        if log_result.returncode != 0:
+            raise RuntimeError(f"Failed to get aggregator logs: {log_result.stderr}")
+
+        return log_result.stdout
+
+    def parse_aggregator_jsonl(self, logs: str) -> dict:
+        """Parse JSONL events from aggregator logs and extract final report.
+
+        Args:
+            logs: Raw aggregator logs containing JSONL events
+
+        Returns:
+            Dictionary containing the final aggregated report
+
+        Raises:
+            RuntimeError: If no final_report event found or JSON parsing failed
+        """
+        final_report = None
+
+        for line in logs.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                event = json.loads(line)
+
+                # Look for final_report event
+                if isinstance(event, dict) and event.get("event") == "final_report":
+                    final_report = event.get("report")
+                    if final_report:
+                        break
+
+            except json.JSONDecodeError:
+                # Skip non-JSON lines (shouldn't happen with JSONL-only aggregator, but be defensive)
+                continue
+
+        if final_report is None:
+            raise RuntimeError("No final_report event found in aggregator logs")
+
+        return final_report
+
+    def get_verification_stats(self) -> VerificationStats:
+        """Get verification statistics from aggregator logs.
+
+        Returns:
+            VerificationStats object with aggregated stats from aggregator's final report
+
+        Raises:
+            RuntimeError: If aggregator logs unavailable, corrupted, or no final report found
+        """
+        # Get aggregator logs and parse JSONL
+        logs = self.get_aggregator_logs()
+        report = self.parse_aggregator_jsonl(logs)
+
+        # Extract verification summary from aggregated report
+        # The report structure matches loadtest_distributed::metrics::AggregatedReport
+        verification_summary = report.get("verification_summary", {})
+
+        stats = VerificationStats(
+            matched=verification_summary.get("total_matched", 0),
+            missing=verification_summary.get("total_missing", 0),
+            mismatched=verification_summary.get("total_mismatched", 0)
+        )
+
+        # Validate that we got meaningful stats
         total_checked = stats.matched + stats.missing + stats.mismatched
         if total_checked == 0:
-            # Log the first few lines to help debug
-            self.log_error("Failed to parse verification stats from logs")
-            self.log("First 20 log lines:")
-            for line in verify_logs[:20]:
-                print(f"  {line}")
             raise RuntimeError(
-                f"Failed to parse verification stats from {len(verify_logs)} log lines. "
-                "Check log format matches expected pattern."
+                "Aggregator report exists but contains no verification data. "
+                "This indicates containers did not POST metrics successfully to the aggregator. "
+                "Check populate/verify container logs for network errors."
             )
 
         return stats
+
 
     def collect_container_logs(self):
         """Collect logs and status info from all containers.

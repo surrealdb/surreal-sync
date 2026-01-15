@@ -44,6 +44,17 @@ impl PopulateMetrics {
             0.0
         }
     }
+
+    /// Convert to aggregated metrics format for loadtest-distributed.
+    pub fn to_aggregated(&self) -> loadtest_distributed::metrics::PopulateMetrics {
+        loadtest_distributed::metrics::PopulateMetrics {
+            rows_processed: self.messages_published,
+            duration_ms: self.total_duration.as_millis() as u64,
+            batch_count: self.batch_count,
+            rows_per_second: self.messages_per_second(),
+            bytes_written: None,
+        }
+    }
 }
 
 /// Kafka populator that generates and publishes test data.

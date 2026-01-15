@@ -590,7 +590,9 @@ spec:
         - '{seed}'
         - --batch-size
         - '{batch_size}'
-        {connection_args}{dry_run_flag}
+        {connection_args}
+        - --aggregator-url
+        - http://aggregator:9090{dry_run_flag}
         env:
         - name: CONTAINER_ID
           value: "populate-{job_index}"
@@ -1027,7 +1029,9 @@ spec:
         - --seed
         - '{seed}'
         - --row-count
-        - '{row_count}'{dry_run_flag}
+        - '{row_count}'
+        - --aggregator-url
+        - http://aggregator:9090{dry_run_flag}
         env:
         - name: CONTAINER_ID
           value: "verify-{job_index}"

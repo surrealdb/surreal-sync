@@ -114,7 +114,7 @@ enum Commands {
     /// Load testing utilities for populating and verifying test data
     Loadtest {
         #[command(subcommand)]
-        command: LoadtestCommand,
+        command: Box<LoadtestCommand>,
     },
 }
 
@@ -865,7 +865,7 @@ async fn run() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::From { source } => handle_from_command(*source).await?,
-        Commands::Loadtest { command } => handle_loadtest_command(command).await?,
+        Commands::Loadtest { command } => handle_loadtest_command(*command).await?,
     }
 
     Ok(())
@@ -1586,6 +1586,115 @@ fn mask_connection_password(conn_str: &str) -> String {
     conn_str.to_string()
 }
 
+/// Post ContainerMetrics to the aggregator server via HTTP POST with retry logic.
+///
+/// This function uses std::net::TcpStream to avoid external HTTP client dependencies.
+/// It sends a simple HTTP/1.1 POST request with JSON body and validates the response.
+///
+/// Retries up to 3 times with 2-second delays to handle transient network issues.
+fn post_metrics_to_aggregator(
+    url: &str,
+    metrics: &loadtest_distributed::metrics::ContainerMetrics,
+) -> anyhow::Result<()> {
+    use std::thread;
+    use std::time::Duration;
+
+    const MAX_RETRIES: u32 = 3;
+    const RETRY_DELAY: Duration = Duration::from_secs(2);
+
+    let mut last_error = None;
+
+    for attempt in 1..=MAX_RETRIES {
+        match try_post_metrics(url, metrics) {
+            Ok(()) => {
+                if attempt > 1 {
+                    tracing::info!(
+                        "Successfully posted metrics to aggregator after {attempt} attempts"
+                    );
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                last_error = Some(e);
+                if attempt < MAX_RETRIES {
+                    tracing::warn!(
+                        "Failed to POST metrics to aggregator (attempt {}/{}): {}. Retrying in {:?}...",
+                        attempt,
+                        MAX_RETRIES,
+                        last_error.as_ref().unwrap(),
+                        RETRY_DELAY
+                    );
+                    thread::sleep(RETRY_DELAY);
+                }
+            }
+        }
+    }
+
+    Err(last_error.unwrap()).context(format!(
+        "Failed to POST metrics to aggregator after {MAX_RETRIES} attempts"
+    ))
+}
+
+/// Single attempt to POST metrics to aggregator.
+fn try_post_metrics(
+    url: &str,
+    metrics: &loadtest_distributed::metrics::ContainerMetrics,
+) -> anyhow::Result<()> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    // Parse URL to extract host:port and path
+    let url = url.strip_prefix("http://").unwrap_or(url);
+    let (host, path) = if let Some(pos) = url.find('/') {
+        (&url[..pos], &url[pos..])
+    } else {
+        (url, "/metrics")
+    };
+
+    // Connect to aggregator
+    let mut stream = TcpStream::connect(host)
+        .with_context(|| format!("Failed to connect to aggregator at {host}"))?;
+
+    // Serialize metrics to JSON
+    let json =
+        serde_json::to_string(metrics).context("Failed to serialize ContainerMetrics to JSON")?;
+
+    // Build HTTP POST request
+    let request = format!(
+        "POST {} HTTP/1.1\r\n\
+         Host: {}\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\
+         \r\n\
+         {}",
+        path,
+        host,
+        json.len(),
+        json
+    );
+
+    // Send request
+    stream
+        .write_all(request.as_bytes())
+        .context("Failed to write HTTP request")?;
+    stream.flush().context("Failed to flush HTTP request")?;
+
+    // Read response
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .context("Failed to read HTTP response")?;
+
+    // Validate response status
+    if !response.starts_with("HTTP/1.1 200") {
+        let status_line = response.lines().next().unwrap_or("(no status line)");
+        anyhow::bail!("Aggregator returned non-200 response: {status_line}");
+    }
+
+    Ok(())
+}
+
 /// Run populate command to fill source database with deterministic test data
 async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
     match source {
@@ -1599,6 +1708,13 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.tables.iter().map(|s| s.as_str()).collect()
             };
 
+            // Create metrics builder to track container start/stop state
+            let tables_vec: Vec<String> = tables.iter().map(|s| s.to_string()).collect();
+            let metrics_builder = loadtest_distributed::metrics::ContainerMetricsBuilder::start(
+                loadtest_distributed::metrics::Operation::Populate,
+                tables_vec.clone(),
+            )?;
+
             if args.common.dry_run {
                 tracing::info!(
                     "[DRY-RUN] Would populate MySQL with {} rows per table (seed={})",
@@ -1611,6 +1727,17 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 );
                 tracing::info!("[DRY-RUN] Tables: {:?}", tables);
                 tracing::info!("[DRY-RUN] Schema validated successfully");
+
+                // Even in dry-run mode, create and POST metrics to test aggregator integration
+                let container_metrics = metrics_builder.finish_dry_run();
+                if let Some(url) = &args.common.aggregator_url {
+                    if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                        tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                    } else {
+                        tracing::info!("Successfully posted dry-run metrics to aggregator");
+                    }
+                }
+
                 return Ok(());
             }
 
@@ -1619,6 +1746,12 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.row_count,
                 args.common.seed
             );
+
+            // Accumulate metrics from all tables
+            let mut total_rows = 0u64;
+            let mut total_batch_count = 0u64;
+            let mut total_duration = std::time::Duration::ZERO;
+            let mut errors = Vec::new();
 
             for table_name in &tables {
                 // Create a fresh populator (and thus a fresh DataGenerator) for each table.
@@ -1643,22 +1776,70 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 .context("Failed to connect to MySQL")?
                 .with_batch_size(args.common.batch_size);
 
-                populator
-                    .create_table(table_name)
-                    .await
-                    .with_context(|| format!("Failed to create table '{table_name}'"))?;
+                if let Err(e) = populator.create_table(table_name).await {
+                    let error_msg = format!("Failed to create table '{table_name}': {e}");
+                    tracing::error!("{}", error_msg);
+                    errors.push(error_msg);
+                    continue;
+                }
 
-                let metrics = populator
-                    .populate(table_name, args.common.row_count)
-                    .await
-                    .with_context(|| format!("Failed to populate table '{table_name}'"))?;
+                match populator.populate(table_name, args.common.row_count).await {
+                    Ok(metrics) => {
+                        total_rows += metrics.rows_inserted;
+                        total_batch_count += metrics.batch_count;
+                        total_duration += metrics.total_duration;
 
-                tracing::info!(
-                    "Populated {}: {} rows in {:?}",
-                    table_name,
-                    metrics.rows_inserted,
-                    metrics.total_duration
-                );
+                        tracing::info!(
+                            "Populated {}: {} rows in {:?}",
+                            table_name,
+                            metrics.rows_inserted,
+                            metrics.total_duration
+                        );
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Failed to populate table '{table_name}': {e}");
+                        tracing::error!("{}", error_msg);
+                        errors.push(error_msg);
+                    }
+                }
+            }
+
+            // Finalize container metrics
+            let success = errors.is_empty();
+            let populate_metrics = if total_rows > 0 {
+                let duration_ms = total_duration.as_millis() as u64;
+                let rows_per_second = if duration_ms > 0 {
+                    (total_rows as f64) / (duration_ms as f64 / 1000.0)
+                } else {
+                    0.0
+                };
+
+                Some(loadtest_distributed::metrics::PopulateMetrics {
+                    rows_processed: total_rows,
+                    duration_ms,
+                    batch_count: total_batch_count,
+                    rows_per_second,
+                    bytes_written: None, // MySQL doesn't track bytes written
+                })
+            } else {
+                None
+            };
+
+            let container_metrics =
+                metrics_builder.finish_populate(populate_metrics, errors.clone(), success);
+
+            // POST to aggregator if URL provided
+            if let Some(url) = &args.common.aggregator_url {
+                if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                    tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                } else {
+                    tracing::info!("Successfully posted metrics to aggregator");
+                }
+            }
+
+            // Fail if there were any errors
+            if !success {
+                anyhow::bail!("Populate failed with {} error(s)", errors.len());
             }
         }
         PopulateSource::PostgreSQL { args } => {
@@ -1670,6 +1851,13 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             } else {
                 args.common.tables.iter().map(|s| s.as_str()).collect()
             };
+
+            // Create metrics builder
+            let tables_vec: Vec<String> = tables.iter().map(|s| s.to_string()).collect();
+            let metrics_builder = loadtest_distributed::metrics::ContainerMetricsBuilder::start(
+                loadtest_distributed::metrics::Operation::Populate,
+                tables_vec.clone(),
+            )?;
 
             if args.common.dry_run {
                 tracing::info!(
@@ -1683,6 +1871,16 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 );
                 tracing::info!("[DRY-RUN] Tables: {:?}", tables);
                 tracing::info!("[DRY-RUN] Schema validated successfully");
+
+                let container_metrics = metrics_builder.finish_dry_run();
+                if let Some(url) = &args.common.aggregator_url {
+                    if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                        tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                    } else {
+                        tracing::info!("Successfully posted dry-run metrics to aggregator");
+                    }
+                }
+
                 return Ok(());
             }
 
@@ -1691,6 +1889,11 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.row_count,
                 args.common.seed
             );
+
+            let mut total_rows = 0u64;
+            let mut total_batch_count = 0u64;
+            let mut total_duration = std::time::Duration::ZERO;
+            let mut errors = Vec::new();
 
             for table_name in &tables {
                 // Create a fresh populator (and thus a fresh DataGenerator) for each table.
@@ -1704,22 +1907,67 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 .context("Failed to connect to PostgreSQL")?
                 .with_batch_size(args.common.batch_size);
 
-                populator
-                    .create_table(table_name)
-                    .await
-                    .with_context(|| format!("Failed to create table '{table_name}'"))?;
+                if let Err(e) = populator.create_table(table_name).await {
+                    let error_msg = format!("Failed to create table '{table_name}': {e}");
+                    tracing::error!("{}", error_msg);
+                    errors.push(error_msg);
+                    continue;
+                }
 
-                let metrics = populator
-                    .populate(table_name, args.common.row_count)
-                    .await
-                    .with_context(|| format!("Failed to populate table '{table_name}'"))?;
+                match populator.populate(table_name, args.common.row_count).await {
+                    Ok(metrics) => {
+                        total_rows += metrics.rows_inserted;
+                        total_batch_count += metrics.batch_count;
+                        total_duration += metrics.total_duration;
 
-                tracing::info!(
-                    "Populated {}: {} rows in {:?}",
-                    table_name,
-                    metrics.rows_inserted,
-                    metrics.total_duration
-                );
+                        tracing::info!(
+                            "Populated {}: {} rows in {:?}",
+                            table_name,
+                            metrics.rows_inserted,
+                            metrics.total_duration
+                        );
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Failed to populate table '{table_name}': {e}");
+                        tracing::error!("{}", error_msg);
+                        errors.push(error_msg);
+                    }
+                }
+            }
+
+            let success = errors.is_empty();
+            let populate_metrics = if total_rows > 0 {
+                let duration_ms = total_duration.as_millis() as u64;
+                let rows_per_second = if duration_ms > 0 {
+                    (total_rows as f64) / (duration_ms as f64 / 1000.0)
+                } else {
+                    0.0
+                };
+
+                Some(loadtest_distributed::metrics::PopulateMetrics {
+                    rows_processed: total_rows,
+                    duration_ms,
+                    batch_count: total_batch_count,
+                    rows_per_second,
+                    bytes_written: None,
+                })
+            } else {
+                None
+            };
+
+            let container_metrics =
+                metrics_builder.finish_populate(populate_metrics, errors.clone(), success);
+
+            if let Some(url) = &args.common.aggregator_url {
+                if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                    tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                } else {
+                    tracing::info!("Successfully posted metrics to aggregator");
+                }
+            }
+
+            if !success {
+                anyhow::bail!("Populate failed with {} error(s)", errors.len());
             }
         }
         PopulateSource::MongoDB { args } => {
@@ -1731,6 +1979,13 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             } else {
                 args.common.tables.iter().map(|s| s.as_str()).collect()
             };
+
+            // Create metrics builder
+            let tables_vec: Vec<String> = tables.iter().map(|s| s.to_string()).collect();
+            let metrics_builder = loadtest_distributed::metrics::ContainerMetricsBuilder::start(
+                loadtest_distributed::metrics::Operation::Populate,
+                tables_vec.clone(),
+            )?;
 
             if args.common.dry_run {
                 tracing::info!(
@@ -1745,6 +2000,16 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 tracing::info!("[DRY-RUN] Database: {}", args.mongodb_database);
                 tracing::info!("[DRY-RUN] Collections: {:?}", tables);
                 tracing::info!("[DRY-RUN] Schema validated successfully");
+
+                let container_metrics = metrics_builder.finish_dry_run();
+                if let Some(url) = &args.common.aggregator_url {
+                    if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                        tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                    } else {
+                        tracing::info!("Successfully posted dry-run metrics to aggregator");
+                    }
+                }
+
                 return Ok(());
             }
 
@@ -1753,6 +2018,11 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.row_count,
                 args.common.seed
             );
+
+            let mut total_rows = 0u64;
+            let mut total_batch_count = 0u64;
+            let mut total_duration = std::time::Duration::ZERO;
+            let mut errors = Vec::new();
 
             for table_name in &tables {
                 // Create a fresh populator (and thus a fresh DataGenerator) for each table.
@@ -1767,17 +2037,61 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 .context("Failed to connect to MongoDB")?
                 .with_batch_size(args.common.batch_size);
 
-                let metrics = populator
-                    .populate(table_name, args.common.row_count)
-                    .await
-                    .with_context(|| format!("Failed to populate collection '{table_name}'"))?;
+                match populator.populate(table_name, args.common.row_count).await {
+                    Ok(metrics) => {
+                        total_rows += metrics.rows_inserted;
+                        total_batch_count += metrics.batch_count;
+                        total_duration += metrics.total_duration;
 
-                tracing::info!(
-                    "Populated {}: {} documents in {:?}",
-                    table_name,
-                    metrics.rows_inserted,
-                    metrics.total_duration
-                );
+                        tracing::info!(
+                            "Populated {}: {} documents in {:?}",
+                            table_name,
+                            metrics.rows_inserted,
+                            metrics.total_duration
+                        );
+                    }
+                    Err(e) => {
+                        let error_msg =
+                            format!("Failed to populate collection '{table_name}': {e}");
+                        tracing::error!("{}", error_msg);
+                        errors.push(error_msg);
+                    }
+                }
+            }
+
+            let success = errors.is_empty();
+            let populate_metrics = if total_rows > 0 {
+                let duration_ms = total_duration.as_millis() as u64;
+                let rows_per_second = if duration_ms > 0 {
+                    (total_rows as f64) / (duration_ms as f64 / 1000.0)
+                } else {
+                    0.0
+                };
+
+                Some(loadtest_distributed::metrics::PopulateMetrics {
+                    rows_processed: total_rows,
+                    duration_ms,
+                    batch_count: total_batch_count,
+                    rows_per_second,
+                    bytes_written: None,
+                })
+            } else {
+                None
+            };
+
+            let container_metrics =
+                metrics_builder.finish_populate(populate_metrics, errors.clone(), success);
+
+            if let Some(url) = &args.common.aggregator_url {
+                if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                    tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                } else {
+                    tracing::info!("Successfully posted metrics to aggregator");
+                }
+            }
+
+            if !success {
+                anyhow::bail!("Populate failed with {} error(s)", errors.len());
             }
         }
         PopulateSource::Csv { args } => {
@@ -1790,6 +2104,13 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.tables.iter().map(|s| s.as_str()).collect()
             };
 
+            // Create metrics builder
+            let tables_vec: Vec<String> = tables.iter().map(|s| s.to_string()).collect();
+            let metrics_builder = loadtest_distributed::metrics::ContainerMetricsBuilder::start(
+                loadtest_distributed::metrics::Operation::Populate,
+                tables_vec.clone(),
+            )?;
+
             if args.common.dry_run {
                 tracing::info!(
                     "[DRY-RUN] Would generate CSV files with {} rows per table (seed={})",
@@ -1799,6 +2120,16 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 tracing::info!("[DRY-RUN] Output directory: {:?}", args.output_dir);
                 tracing::info!("[DRY-RUN] Tables: {:?}", tables);
                 tracing::info!("[DRY-RUN] Schema validated successfully");
+
+                // POST dry-run metrics to aggregator
+                let container_metrics = metrics_builder.finish_dry_run();
+                if let Some(url) = &args.common.aggregator_url {
+                    if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                        tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                    } else {
+                        tracing::info!("Successfully posted dry-run metrics to aggregator");
+                    }
+                }
                 return Ok(());
             }
 
@@ -1808,9 +2139,26 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.seed
             );
 
-            std::fs::create_dir_all(&args.output_dir).with_context(|| {
-                format!("Failed to create output directory {:?}", args.output_dir)
-            })?;
+            if let Err(e) = std::fs::create_dir_all(&args.output_dir) {
+                let error_msg = format!(
+                    "Failed to create output directory {:?}: {}",
+                    args.output_dir, e
+                );
+                tracing::error!("{}", error_msg);
+                let container_metrics =
+                    metrics_builder.finish_populate(None, vec![error_msg.clone()], false);
+                if let Some(url) = &args.common.aggregator_url {
+                    if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                        tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                    }
+                }
+                anyhow::bail!(error_msg);
+            }
+
+            let mut total_rows = 0u64;
+            let mut total_bytes = 0u64;
+            let mut total_duration = std::time::Duration::ZERO;
+            let mut errors = Vec::new();
 
             for table_name in &tables {
                 // Create a fresh populator (and thus a fresh DataGenerator) for each table.
@@ -1819,16 +2167,63 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                     loadtest_populate_csv::CSVPopulator::new(schema.clone(), args.common.seed);
 
                 let output_path = args.output_dir.join(format!("{table_name}.csv"));
-                let metrics = populator
-                    .populate(table_name, &output_path, args.common.row_count)
-                    .with_context(|| format!("Failed to generate CSV for '{table_name}'"))?;
 
-                tracing::info!(
-                    "Generated {:?}: {} rows in {:?}",
-                    output_path,
-                    metrics.rows_written,
-                    metrics.total_duration
-                );
+                match populator.populate(table_name, &output_path, args.common.row_count) {
+                    Ok(metrics) => {
+                        total_rows += metrics.rows_written;
+                        total_bytes += metrics.file_size_bytes;
+                        total_duration += metrics.total_duration;
+
+                        tracing::info!(
+                            "Generated {:?}: {} rows in {:?}",
+                            output_path,
+                            metrics.rows_written,
+                            metrics.total_duration
+                        );
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Failed to generate CSV for '{table_name}': {e}");
+                        tracing::error!("{}", error_msg);
+                        errors.push(error_msg);
+                    }
+                }
+            }
+
+            // Construct aggregated metrics
+            let success = errors.is_empty();
+            let populate_metrics = if total_rows > 0 {
+                let duration_ms = total_duration.as_millis() as u64;
+                let rows_per_second = if duration_ms > 0 {
+                    (total_rows as f64) / (duration_ms as f64 / 1000.0)
+                } else {
+                    0.0
+                };
+
+                Some(loadtest_distributed::metrics::PopulateMetrics {
+                    rows_processed: total_rows,
+                    duration_ms,
+                    batch_count: 0, // CSV writes all rows at once
+                    rows_per_second,
+                    bytes_written: Some(total_bytes),
+                })
+            } else {
+                None
+            };
+
+            let container_metrics =
+                metrics_builder.finish_populate(populate_metrics, errors.clone(), success);
+
+            // POST metrics to aggregator
+            if let Some(url) = &args.common.aggregator_url {
+                if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                    tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                } else {
+                    tracing::info!("Successfully posted metrics to aggregator");
+                }
+            }
+
+            if !success {
+                anyhow::bail!("Populate failed with {} error(s)", errors.len());
             }
         }
         PopulateSource::Jsonl { args } => {
@@ -1841,6 +2236,13 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.tables.iter().map(|s| s.as_str()).collect()
             };
 
+            // Create metrics builder
+            let tables_vec: Vec<String> = tables.iter().map(|s| s.to_string()).collect();
+            let metrics_builder = loadtest_distributed::metrics::ContainerMetricsBuilder::start(
+                loadtest_distributed::metrics::Operation::Populate,
+                tables_vec.clone(),
+            )?;
+
             if args.common.dry_run {
                 tracing::info!(
                     "[DRY-RUN] Would generate JSONL files with {} rows per table (seed={})",
@@ -1850,6 +2252,16 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 tracing::info!("[DRY-RUN] Output directory: {:?}", args.output_dir);
                 tracing::info!("[DRY-RUN] Tables: {:?}", tables);
                 tracing::info!("[DRY-RUN] Schema validated successfully");
+
+                // POST dry-run metrics to aggregator
+                let container_metrics = metrics_builder.finish_dry_run();
+                if let Some(url) = &args.common.aggregator_url {
+                    if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                        tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                    } else {
+                        tracing::info!("Successfully posted dry-run metrics to aggregator");
+                    }
+                }
                 return Ok(());
             }
 
@@ -1859,9 +2271,26 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.seed
             );
 
-            std::fs::create_dir_all(&args.output_dir).with_context(|| {
-                format!("Failed to create output directory {:?}", args.output_dir)
-            })?;
+            if let Err(e) = std::fs::create_dir_all(&args.output_dir) {
+                let error_msg = format!(
+                    "Failed to create output directory {:?}: {}",
+                    args.output_dir, e
+                );
+                tracing::error!("{}", error_msg);
+                let container_metrics =
+                    metrics_builder.finish_populate(None, vec![error_msg.clone()], false);
+                if let Some(url) = &args.common.aggregator_url {
+                    if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                        tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                    }
+                }
+                anyhow::bail!(error_msg);
+            }
+
+            let mut total_rows = 0u64;
+            let mut total_bytes = 0u64;
+            let mut total_duration = std::time::Duration::ZERO;
+            let mut errors = Vec::new();
 
             for table_name in &tables {
                 // Create a fresh populator (and thus a fresh DataGenerator) for each table.
@@ -1870,16 +2299,63 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                     loadtest_populate_jsonl::JsonlPopulator::new(schema.clone(), args.common.seed);
 
                 let output_path = args.output_dir.join(format!("{table_name}.jsonl"));
-                let metrics = populator
-                    .populate(table_name, &output_path, args.common.row_count)
-                    .with_context(|| format!("Failed to generate JSONL for '{table_name}'"))?;
 
-                tracing::info!(
-                    "Generated {:?}: {} rows in {:?}",
-                    output_path,
-                    metrics.rows_written,
-                    metrics.total_duration
-                );
+                match populator.populate(table_name, &output_path, args.common.row_count) {
+                    Ok(metrics) => {
+                        total_rows += metrics.rows_written;
+                        total_bytes += metrics.file_size_bytes;
+                        total_duration += metrics.total_duration;
+
+                        tracing::info!(
+                            "Generated {:?}: {} rows in {:?}",
+                            output_path,
+                            metrics.rows_written,
+                            metrics.total_duration
+                        );
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Failed to generate JSONL for '{table_name}': {e}");
+                        tracing::error!("{}", error_msg);
+                        errors.push(error_msg);
+                    }
+                }
+            }
+
+            // Construct aggregated metrics
+            let success = errors.is_empty();
+            let populate_metrics = if total_rows > 0 {
+                let duration_ms = total_duration.as_millis() as u64;
+                let rows_per_second = if duration_ms > 0 {
+                    (total_rows as f64) / (duration_ms as f64 / 1000.0)
+                } else {
+                    0.0
+                };
+
+                Some(loadtest_distributed::metrics::PopulateMetrics {
+                    rows_processed: total_rows,
+                    duration_ms,
+                    batch_count: 0, // JSONL writes all rows at once
+                    rows_per_second,
+                    bytes_written: Some(total_bytes),
+                })
+            } else {
+                None
+            };
+
+            let container_metrics =
+                metrics_builder.finish_populate(populate_metrics, errors.clone(), success);
+
+            // POST metrics to aggregator
+            if let Some(url) = &args.common.aggregator_url {
+                if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                    tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                } else {
+                    tracing::info!("Successfully posted metrics to aggregator");
+                }
+            }
+
+            if !success {
+                anyhow::bail!("Populate failed with {} error(s)", errors.len());
             }
         }
         PopulateSource::Kafka { args } => {
@@ -1892,6 +2368,13 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.tables.iter().map(|s| s.as_str()).collect()
             };
 
+            // Create metrics builder
+            let tables_vec: Vec<String> = tables.iter().map(|s| s.to_string()).collect();
+            let metrics_builder = loadtest_distributed::metrics::ContainerMetricsBuilder::start(
+                loadtest_distributed::metrics::Operation::Populate,
+                tables_vec.clone(),
+            )?;
+
             if args.common.dry_run {
                 tracing::info!(
                     "[DRY-RUN] Would populate Kafka topics with {} messages per topic (seed={})",
@@ -1901,6 +2384,16 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 tracing::info!("[DRY-RUN] Brokers: {}", args.kafka_brokers);
                 tracing::info!("[DRY-RUN] Topics: {:?}", tables);
                 tracing::info!("[DRY-RUN] Schema validated successfully");
+
+                // POST dry-run metrics to aggregator
+                let container_metrics = metrics_builder.finish_dry_run();
+                if let Some(url) = &args.common.aggregator_url {
+                    if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                        tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                    } else {
+                        tracing::info!("Successfully posted dry-run metrics to aggregator");
+                    }
+                }
                 return Ok(());
             }
 
@@ -1910,44 +2403,105 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.seed
             );
 
+            let mut total_rows = 0u64;
+            let mut total_batch_count = 0u64;
+            let mut total_duration = std::time::Duration::ZERO;
+            let mut errors = Vec::new();
+
             for table_name in &tables {
                 // Create a fresh populator (and thus a fresh DataGenerator) for each table.
                 // See MySQL populator comment above for detailed explanation.
-                let mut populator = loadtest_populate_kafka::KafkaPopulator::new(
+                let mut populator = match loadtest_populate_kafka::KafkaPopulator::new(
                     &args.kafka_brokers,
                     schema.clone(),
                     args.common.seed,
                 )
                 .await
-                .context("Failed to create Kafka populator")?
-                .with_batch_size(args.common.batch_size);
+                {
+                    Ok(p) => p.with_batch_size(args.common.batch_size),
+                    Err(e) => {
+                        let error_msg =
+                            format!("Failed to create Kafka populator for '{table_name}': {e}");
+                        tracing::error!("{}", error_msg);
+                        errors.push(error_msg);
+                        continue;
+                    }
+                };
 
                 // Prepare table (generates .proto file)
-                let proto_path = populator
-                    .prepare_table(table_name)
-                    .with_context(|| format!("Failed to prepare proto for '{table_name}'"))?;
-
-                tracing::info!("Generated proto file: {:?}", proto_path);
+                if let Err(e) = populator.prepare_table(table_name) {
+                    let error_msg = format!("Failed to prepare proto for '{table_name}': {e}");
+                    tracing::error!("{}", error_msg);
+                    errors.push(error_msg);
+                    continue;
+                }
 
                 // Create topic
-                populator
-                    .create_topic(table_name)
-                    .await
-                    .with_context(|| format!("Failed to create topic '{table_name}'"))?;
+                if let Err(e) = populator.create_topic(table_name).await {
+                    let error_msg = format!("Failed to create topic '{table_name}': {e}");
+                    tracing::error!("{}", error_msg);
+                    errors.push(error_msg);
+                    continue;
+                }
 
                 // Populate
-                let metrics = populator
-                    .populate(table_name, args.common.row_count)
-                    .await
-                    .with_context(|| format!("Failed to populate topic '{table_name}'"))?;
+                match populator.populate(table_name, args.common.row_count).await {
+                    Ok(metrics) => {
+                        total_rows += metrics.messages_published;
+                        total_batch_count += metrics.batch_count;
+                        total_duration += metrics.total_duration;
 
-                tracing::info!(
-                    "Populated '{}': {} messages in {:?} ({:.2} msg/sec)",
-                    table_name,
-                    metrics.messages_published,
-                    metrics.total_duration,
-                    metrics.messages_per_second()
-                );
+                        tracing::info!(
+                            "Populated '{}': {} messages in {:?} ({:.2} msg/sec)",
+                            table_name,
+                            metrics.messages_published,
+                            metrics.total_duration,
+                            metrics.messages_per_second()
+                        );
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Failed to populate topic '{table_name}': {e}");
+                        tracing::error!("{}", error_msg);
+                        errors.push(error_msg);
+                    }
+                }
+            }
+
+            // Construct aggregated metrics
+            let success = errors.is_empty();
+            let populate_metrics = if total_rows > 0 {
+                let duration_ms = total_duration.as_millis() as u64;
+                let rows_per_second = if duration_ms > 0 {
+                    (total_rows as f64) / (duration_ms as f64 / 1000.0)
+                } else {
+                    0.0
+                };
+
+                Some(loadtest_distributed::metrics::PopulateMetrics {
+                    rows_processed: total_rows,
+                    duration_ms,
+                    batch_count: total_batch_count,
+                    rows_per_second,
+                    bytes_written: None, // Kafka doesn't track bytes written
+                })
+            } else {
+                None
+            };
+
+            let container_metrics =
+                metrics_builder.finish_populate(populate_metrics, errors.clone(), success);
+
+            // POST metrics to aggregator
+            if let Some(url) = &args.common.aggregator_url {
+                if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                    tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                } else {
+                    tracing::info!("Successfully posted metrics to aggregator");
+                }
+            }
+
+            if !success {
+                anyhow::bail!("Populate failed with {} error(s)", errors.len());
             }
         }
         PopulateSource::Neo4j { args } => {
@@ -1959,6 +2513,13 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
             } else {
                 args.common.tables.iter().map(|s| s.as_str()).collect()
             };
+
+            // Create metrics builder
+            let tables_vec: Vec<String> = tables.iter().map(|s| s.to_string()).collect();
+            let metrics_builder = loadtest_distributed::metrics::ContainerMetricsBuilder::start(
+                loadtest_distributed::metrics::Operation::Populate,
+                tables_vec.clone(),
+            )?;
 
             if args.common.dry_run {
                 tracing::info!(
@@ -1973,6 +2534,16 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 tracing::info!("[DRY-RUN] Database: {}", args.neo4j_database);
                 tracing::info!("[DRY-RUN] Labels: {:?}", tables);
                 tracing::info!("[DRY-RUN] Schema validated successfully");
+
+                // POST dry-run metrics to aggregator
+                let container_metrics = metrics_builder.finish_dry_run();
+                if let Some(url) = &args.common.aggregator_url {
+                    if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                        tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                    } else {
+                        tracing::info!("Successfully posted dry-run metrics to aggregator");
+                    }
+                }
                 return Ok(());
             }
 
@@ -1982,10 +2553,15 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 args.common.seed
             );
 
+            let mut total_rows = 0u64;
+            let mut total_batch_count = 0u64;
+            let mut total_duration = std::time::Duration::ZERO;
+            let mut errors = Vec::new();
+
             for table_name in &tables {
                 // Create a fresh populator (and thus a fresh DataGenerator) for each table.
                 // See MySQL populator comment above for detailed explanation.
-                let mut populator = loadtest_populate_neo4j::Neo4jPopulator::new(
+                let mut populator = match loadtest_populate_neo4j::Neo4jPopulator::new(
                     &args.neo4j_connection_string,
                     &args.neo4j_username,
                     &args.neo4j_password,
@@ -1994,22 +2570,77 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                     args.common.seed,
                 )
                 .await
-                .context("Failed to connect to Neo4j")?
-                .with_batch_size(args.common.batch_size);
+                {
+                    Ok(p) => p.with_batch_size(args.common.batch_size),
+                    Err(e) => {
+                        let error_msg =
+                            format!("Failed to connect to Neo4j for '{table_name}': {e}");
+                        tracing::error!("{}", error_msg);
+                        errors.push(error_msg);
+                        continue;
+                    }
+                };
 
+                // Delete existing nodes (ignore errors)
                 populator.delete_nodes(table_name).await.ok();
 
-                let metrics = populator
-                    .populate(table_name, args.common.row_count)
-                    .await
-                    .with_context(|| format!("Failed to populate label '{table_name}'"))?;
+                // Populate
+                match populator.populate(table_name, args.common.row_count).await {
+                    Ok(metrics) => {
+                        total_rows += metrics.rows_inserted;
+                        total_batch_count += metrics.batch_count;
+                        total_duration += metrics.total_duration;
 
-                tracing::info!(
-                    "Populated {}: {} nodes in {:?}",
-                    table_name,
-                    metrics.rows_inserted,
-                    metrics.total_duration
-                );
+                        tracing::info!(
+                            "Populated {}: {} nodes in {:?}",
+                            table_name,
+                            metrics.rows_inserted,
+                            metrics.total_duration
+                        );
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Failed to populate label '{table_name}': {e}");
+                        tracing::error!("{}", error_msg);
+                        errors.push(error_msg);
+                    }
+                }
+            }
+
+            // Construct aggregated metrics
+            let success = errors.is_empty();
+            let populate_metrics = if total_rows > 0 {
+                let duration_ms = total_duration.as_millis() as u64;
+                let rows_per_second = if duration_ms > 0 {
+                    (total_rows as f64) / (duration_ms as f64 / 1000.0)
+                } else {
+                    0.0
+                };
+
+                Some(loadtest_distributed::metrics::PopulateMetrics {
+                    rows_processed: total_rows,
+                    duration_ms,
+                    batch_count: total_batch_count,
+                    rows_per_second,
+                    bytes_written: None, // Neo4j doesn't track bytes written
+                })
+            } else {
+                None
+            };
+
+            let container_metrics =
+                metrics_builder.finish_populate(populate_metrics, errors.clone(), success);
+
+            // POST metrics to aggregator
+            if let Some(url) = &args.common.aggregator_url {
+                if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                    tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                } else {
+                    tracing::info!("Successfully posted metrics to aggregator");
+                }
+            }
+
+            if !success {
+                anyhow::bail!("Populate failed with {} error(s)", errors.len());
             }
         }
     }
@@ -2029,6 +2660,13 @@ async fn run_verify(args: VerifyArgs) -> anyhow::Result<()> {
         args.tables.iter().map(|s| s.as_str()).collect()
     };
 
+    // Create metrics builder
+    let tables_vec: Vec<String> = tables.iter().map(|s| s.to_string()).collect();
+    let metrics_builder = loadtest_distributed::metrics::ContainerMetricsBuilder::start(
+        loadtest_distributed::metrics::Operation::Verify,
+        tables_vec.clone(),
+    )?;
+
     if args.dry_run {
         tracing::info!(
             "[DRY-RUN] Would verify {} rows per table in SurrealDB (seed={})",
@@ -2043,6 +2681,16 @@ async fn run_verify(args: VerifyArgs) -> anyhow::Result<()> {
         );
         tracing::info!("[DRY-RUN] Tables: {:?}", tables);
         tracing::info!("[DRY-RUN] Schema validated successfully");
+
+        // POST dry-run metrics to aggregator
+        let container_metrics = metrics_builder.finish_dry_run();
+        if let Some(url) = &args.aggregator_url {
+            if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+            } else {
+                tracing::info!("Successfully posted dry-run metrics to aggregator");
+            }
+        }
         return Ok(());
     }
 
@@ -2058,59 +2706,144 @@ async fn run_verify(args: VerifyArgs) -> anyhow::Result<()> {
         .replace("http://", "ws://")
         .replace("https://", "wss://");
 
-    let surreal = surrealdb::engine::any::connect(&endpoint)
-        .await
-        .context("Failed to connect to SurrealDB")?;
+    let surreal = match surrealdb::engine::any::connect(&endpoint).await {
+        Ok(s) => s,
+        Err(e) => {
+            let error_msg = format!("Failed to connect to SurrealDB: {e}");
+            tracing::error!("{}", error_msg);
+            let container_metrics =
+                metrics_builder.finish_verify(None, vec![error_msg.clone()], false);
+            if let Some(url) = &args.aggregator_url {
+                if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                    tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+                }
+            }
+            anyhow::bail!(error_msg);
+        }
+    };
 
-    surreal
+    if let Err(e) = surreal
         .signin(surrealdb::opt::auth::Root {
             username: &args.surreal_username,
             password: &args.surreal_password,
         })
         .await
-        .context("Failed to authenticate with SurrealDB")?;
+    {
+        let error_msg = format!("Failed to authenticate with SurrealDB: {e}");
+        tracing::error!("{}", error_msg);
+        let container_metrics = metrics_builder.finish_verify(None, vec![error_msg.clone()], false);
+        if let Some(url) = &args.aggregator_url {
+            if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+            }
+        }
+        anyhow::bail!(error_msg);
+    }
 
-    surreal
+    if let Err(e) = surreal
         .use_ns(&args.surreal_namespace)
         .use_db(&args.surreal_database)
         .await
-        .context("Failed to select namespace/database")?;
+    {
+        let error_msg = format!("Failed to select namespace/database: {e}");
+        tracing::error!("{}", error_msg);
+        let container_metrics = metrics_builder.finish_verify(None, vec![error_msg.clone()], false);
+        if let Some(url) = &args.aggregator_url {
+            if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+                tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+            }
+        }
+        anyhow::bail!(error_msg);
+    }
 
-    let mut all_passed = true;
+    let mut table_reports = Vec::new();
+    let mut errors = Vec::new();
 
     for table_name in &tables {
-        let mut verifier = loadtest_verify::StreamingVerifier::new(
+        let mut verifier = match loadtest_verify::StreamingVerifier::new(
             surreal.clone(),
             schema.clone(),
             args.seed,
             table_name,
-        )
-        .with_context(|| format!("Failed to create verifier for table '{table_name}'"))?;
+        ) {
+            Ok(v) => v,
+            Err(e) => {
+                let error_msg = format!("Failed to create verifier for table '{table_name}': {e}");
+                tracing::error!("{}", error_msg);
+                errors.push(error_msg);
+                continue;
+            }
+        };
 
-        let report = verifier
-            .verify_streaming(args.row_count)
-            .await
-            .with_context(|| format!("Failed to verify table '{table_name}'"))?;
-
-        if report.is_success() {
-            tracing::info!(
-                "Table '{}': {} rows verified successfully",
-                table_name,
-                report.matched
-            );
-        } else {
-            tracing::error!(
-                "Table '{}': {} matched, {} missing, {} mismatched",
-                table_name,
-                report.matched,
-                report.missing,
-                report.mismatched
-            );
-            all_passed = false;
+        match verifier.verify_streaming(args.row_count).await {
+            Ok(report) => {
+                if report.is_success() {
+                    tracing::info!(
+                        "Table '{}': {} rows verified successfully",
+                        table_name,
+                        report.matched
+                    );
+                } else {
+                    tracing::error!(
+                        "Table '{}': {} matched, {} missing, {} mismatched",
+                        table_name,
+                        report.matched,
+                        report.missing,
+                        report.mismatched
+                    );
+                }
+                table_reports.push(report);
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to verify table '{table_name}': {e}");
+                tracing::error!("{}", error_msg);
+                errors.push(error_msg);
+            }
         }
     }
 
-    if all_passed {
+    // Build combined verification report
+    let combined_report = if !table_reports.is_empty() {
+        let table_results: Vec<loadtest_distributed::metrics::VerificationResult> = tables
+            .iter()
+            .zip(table_reports.iter())
+            .map(
+                |(table_name, report)| loadtest_distributed::metrics::VerificationResult {
+                    table_name: table_name.to_string(),
+                    expected: report.expected,
+                    found: report.found,
+                    missing: report.missing,
+                    mismatched: report.mismatched,
+                    matched: report.matched,
+                },
+            )
+            .collect();
+
+        Some(loadtest_distributed::metrics::VerificationReport {
+            tables: table_results,
+            total_expected: table_reports.iter().map(|r| r.expected).sum(),
+            total_found: table_reports.iter().map(|r| r.found).sum(),
+            total_missing: table_reports.iter().map(|r| r.missing).sum(),
+            total_mismatched: table_reports.iter().map(|r| r.mismatched).sum(),
+            total_matched: table_reports.iter().map(|r| r.matched).sum(),
+        })
+    } else {
+        None
+    };
+
+    let success = errors.is_empty() && table_reports.iter().all(|r| r.is_success());
+    let container_metrics = metrics_builder.finish_verify(combined_report, errors.clone(), success);
+
+    // POST metrics to aggregator
+    if let Some(url) = &args.aggregator_url {
+        if let Err(e) = post_metrics_to_aggregator(url, &container_metrics) {
+            tracing::warn!("Failed to POST metrics to aggregator: {}", e);
+        } else {
+            tracing::info!("Successfully posted metrics to aggregator");
+        }
+    }
+
+    if success {
         tracing::info!("Verification completed successfully - all tables match expected data");
         Ok(())
     } else {
@@ -2271,12 +3004,6 @@ async fn run_loadtest_generate(args: GenerateArgs) -> anyhow::Result<()> {
 
 /// Run the aggregate server command.
 async fn run_aggregate_server(args: AggregateServerArgs) -> anyhow::Result<()> {
-    tracing::info!(
-        "Starting aggregator server on {} (expecting {} containers)",
-        args.listen,
-        args.expected_containers
-    );
-
     loadtest_distributed::run_aggregator_server(args).await
 }
 

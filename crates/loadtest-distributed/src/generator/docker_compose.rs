@@ -311,7 +311,7 @@ fn generate_populate_service(
 
     let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
     let command = format!(
-        "loadtest populate {} --schema /config/schema.yaml --tables {} --row-count {} --seed {} {} --batch-size {}{}",
+        "loadtest populate {} --schema /config/schema.yaml --tables {} --row-count {} --seed {} {} --batch-size {} --aggregator-url http://aggregator:9090{}",
         source_cmd,
         tables_arg,
         container.row_count,
@@ -734,7 +734,7 @@ fn generate_verify_service(
     let tables_arg = container.tables.join(",");
     let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
     let command = format!(
-        "loadtest verify --surreal-endpoint 'http://surrealdb:8000' --surreal-namespace {} --surreal-database {} --surreal-username root --surreal-password root --schema /config/schema.yaml --tables {tables_arg} --row-count {} --seed {}{}",
+        "loadtest verify --surreal-endpoint 'http://surrealdb:8000' --surreal-namespace {} --surreal-database {} --surreal-username root --surreal-password root --schema /config/schema.yaml --tables {tables_arg} --row-count {} --seed {} --aggregator-url http://aggregator:9090{}",
         config.surrealdb.namespace,
         config.surrealdb.database,
         container.row_count,

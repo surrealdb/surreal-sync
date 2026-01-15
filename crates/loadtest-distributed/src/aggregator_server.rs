@@ -3,15 +3,60 @@
 //! This module provides an HTTP server that collects ContainerMetrics from
 //! distributed containers, eliminating the need for shared volumes (ReadWriteMany).
 
-use crate::cli::{AggregateServerArgs, OutputFormat};
-use crate::metrics::ContainerMetrics;
-use crate::{aggregate_results_from_vec, format_markdown, format_table};
+use crate::aggregate_results_from_vec;
+use crate::cli::AggregateServerArgs;
+use crate::metrics::{AggregatedReport, ContainerMetrics};
 use anyhow::{Context, Result};
-use std::io::{BufRead, BufReader, Write};
+use serde::Serialize;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tracing::{error, info, warn};
+
+/// JSON event types for JSONL logging
+#[derive(Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+enum AggregatorEvent<'a> {
+    ServerStarted {
+        listen: &'a str,
+        expected_containers: usize,
+        timeout_seconds: u64,
+    },
+    ConnectionReceived {
+        addr: String,
+    },
+    MetricsReceived {
+        container_id: &'a str,
+        received: usize,
+        expected: usize,
+    },
+    AllMetricsCollected {
+        count: usize,
+    },
+    TimeoutReached {
+        received: usize,
+        expected: usize,
+        timeout_seconds: u64,
+    },
+    ConnectionError {
+        addr: String,
+        error: String,
+    },
+    ParseError {
+        error: String,
+    },
+    FinalReport {
+        report: &'a AggregatedReport,
+    },
+}
+
+/// Log an event as JSONL to stdout
+fn log_jsonl<T: Serialize>(event: &T) {
+    if let Ok(json) = serde_json::to_string(event) {
+        println!("{json}");
+        let _ = std::io::stdout().flush();
+    }
+}
 
 /// Collected metrics from containers.
 struct CollectedMetrics {
@@ -45,10 +90,11 @@ pub async fn run_aggregator_server(args: AggregateServerArgs) -> Result<()> {
     let timeout = parse_duration(&args.timeout)?;
     let metrics = Arc::new(Mutex::new(CollectedMetrics::new(args.expected_containers)));
 
-    info!(
-        "Aggregator server starting on {} (expecting {} containers, timeout: {:?})",
-        args.listen, args.expected_containers, timeout
-    );
+    log_jsonl(&AggregatorEvent::ServerStarted {
+        listen: &args.listen,
+        expected_containers: args.expected_containers,
+        timeout_seconds: timeout.as_secs(),
+    });
 
     let listener = TcpListener::bind(&args.listen)
         .with_context(|| format!("Failed to bind to {}", args.listen))?;
@@ -65,12 +111,11 @@ pub async fn run_aggregator_server(args: AggregateServerArgs) -> Result<()> {
         {
             let collected = metrics.lock().unwrap();
             if collected.is_complete() {
-                info!(
-                    "All {} containers reported, generating report...",
-                    args.expected_containers
-                );
+                log_jsonl(&AggregatorEvent::AllMetricsCollected {
+                    count: args.expected_containers,
+                });
                 let report = aggregate_results_from_vec(collected.containers.clone());
-                output_report(&report, args.output_format);
+                log_jsonl(&AggregatorEvent::FinalReport { report: &report });
                 return Ok(());
             }
         }
@@ -78,15 +123,14 @@ pub async fn run_aggregator_server(args: AggregateServerArgs) -> Result<()> {
         // Check timeout
         if start.elapsed() > timeout {
             let collected = metrics.lock().unwrap();
-            warn!(
-                "Timeout reached after {:?}. Received {}/{} container reports.",
-                timeout,
-                collected.count(),
-                args.expected_containers
-            );
+            log_jsonl(&AggregatorEvent::TimeoutReached {
+                received: collected.count(),
+                expected: args.expected_containers,
+                timeout_seconds: timeout.as_secs(),
+            });
             if !collected.containers.is_empty() {
                 let report = aggregate_results_from_vec(collected.containers.clone());
-                output_report(&report, args.output_format);
+                log_jsonl(&AggregatorEvent::FinalReport { report: &report });
             }
             return Err(anyhow::anyhow!(
                 "Timeout: only {}/{} containers reported",
@@ -98,9 +142,14 @@ pub async fn run_aggregator_server(args: AggregateServerArgs) -> Result<()> {
         // Try to accept a connection
         match listener.accept() {
             Ok((stream, addr)) => {
-                info!("Connection from {}", addr);
+                log_jsonl(&AggregatorEvent::ConnectionReceived {
+                    addr: addr.to_string(),
+                });
                 if let Err(e) = handle_connection(stream, &metrics) {
-                    error!("Error handling connection from {}: {}", addr, e);
+                    log_jsonl(&AggregatorEvent::ConnectionError {
+                        addr: addr.to_string(),
+                        error: e.to_string(),
+                    });
                 }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -108,7 +157,10 @@ pub async fn run_aggregator_server(args: AggregateServerArgs) -> Result<()> {
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(e) => {
-                error!("Error accepting connection: {}", e);
+                log_jsonl(&AggregatorEvent::ConnectionError {
+                    addr: "unknown".to_string(),
+                    error: e.to_string(),
+                });
             }
         }
     }
@@ -119,18 +171,17 @@ fn handle_connection(mut stream: TcpStream, metrics: &Arc<Mutex<CollectedMetrics
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     stream.set_write_timeout(Some(Duration::from_secs(30)))?;
 
-    let buf_reader = BufReader::new(&stream);
-    let mut lines = buf_reader.lines();
+    // Read headers line by line to find Content-Length
+    let mut buf_reader = BufReader::new(&stream);
+    let mut request_line = String::new();
+    buf_reader.read_line(&mut request_line)?;
+    let request_line = request_line.trim().to_string();
 
-    // Read request line
-    let request_line = lines
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("Empty request"))??;
-
-    // Parse headers to get Content-Length
     let mut content_length: usize = 0;
-    for line in lines.by_ref() {
-        let line = line?;
+    loop {
+        let mut line = String::new();
+        buf_reader.read_line(&mut line)?;
+        let line = line.trim();
         if line.is_empty() {
             break;
         }
@@ -141,25 +192,26 @@ fn handle_connection(mut stream: TcpStream, metrics: &Arc<Mutex<CollectedMetrics
 
     // Route the request
     let (status, body) = if request_line.starts_with("POST /metrics") {
-        // Read body
+        // Read body from buf_reader (which still has the stream)
         let mut body_bytes = vec![0u8; content_length];
-        std::io::Read::read_exact(&mut stream.try_clone()?, &mut body_bytes)?;
+        buf_reader.read_exact(&mut body_bytes)?;
 
         match serde_json::from_slice::<ContainerMetrics>(&body_bytes) {
             Ok(container_metrics) => {
                 let container_id = container_metrics.container_id.clone();
                 let mut collected = metrics.lock().unwrap();
                 collected.add(container_metrics);
-                info!(
-                    "Received metrics from container '{}' ({}/{})",
-                    container_id,
-                    collected.count(),
-                    collected.expected_count
-                );
+                log_jsonl(&AggregatorEvent::MetricsReceived {
+                    container_id: &container_id,
+                    received: collected.count(),
+                    expected: collected.expected_count,
+                });
                 ("200 OK", r#"{"status":"ok"}"#.to_string())
             }
             Err(e) => {
-                error!("Failed to parse ContainerMetrics: {e}");
+                log_jsonl(&AggregatorEvent::ParseError {
+                    error: e.to_string(),
+                });
                 (
                     "400 Bad Request",
                     format!(r#"{{"error":"invalid json: {e}"}}"#),
@@ -193,23 +245,6 @@ fn handle_connection(mut stream: TcpStream, metrics: &Arc<Mutex<CollectedMetrics
     stream.flush()?;
 
     Ok(())
-}
-
-/// Output the aggregated report.
-fn output_report(report: &crate::metrics::AggregatedReport, format: OutputFormat) {
-    match format {
-        OutputFormat::Json => {
-            if let Ok(json) = serde_json::to_string_pretty(report) {
-                println!("{json}");
-            }
-        }
-        OutputFormat::Table => {
-            println!("{}", format_table(report));
-        }
-        OutputFormat::Markdown => {
-            println!("{}", format_markdown(report));
-        }
-    }
 }
 
 /// Parse duration string like "30m", "1h", "90s".
