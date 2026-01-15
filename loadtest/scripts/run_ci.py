@@ -133,6 +133,8 @@ class GeneratorConfig:
     batch_size: int
     num_containers: int
     tables: list  # List of table names from ClusterConfig
+    cpu_limit: str = ""  # e.g., "0.5"
+    memory_limit: str = ""  # e.g., "512Mi"
 
 
 @dataclass
@@ -541,16 +543,24 @@ class CIRunner:
                             all_tables.extend(c.get("tables", []))
                         # Remove duplicates while preserving order
                         tables = list(dict.fromkeys(all_tables))
+                        # Extract resource limits from container config
+                        resources = container.get("resources", {})
+                        cpu_limit = resources.get("cpu_limit", "")
+                        memory_limit = resources.get("memory_limit", "")
                         self.generator_config = GeneratorConfig(
                             row_count=container["row_count"],
                             batch_size=container.get("batch_size", 1000),
                             num_containers=len(config_json["containers"]),
-                            tables=tables
+                            tables=tables,
+                            cpu_limit=cpu_limit,
+                            memory_limit=memory_limit
                         )
                         self.log(f"Generator config: row_count={self.generator_config.row_count}, "
                                 f"batch_size={self.generator_config.batch_size}, "
                                 f"num_containers={self.generator_config.num_containers}, "
-                                f"tables={self.generator_config.tables}")
+                                f"tables={self.generator_config.tables}, "
+                                f"cpu_limit={self.generator_config.cpu_limit}, "
+                                f"memory_limit={self.generator_config.memory_limit}")
                     break
         except (json.JSONDecodeError, KeyError, IndexError) as e:
             self.log(f"Warning: Could not parse generator output: {e}")
@@ -1348,6 +1358,15 @@ Suggested actions:
 
         # Add timeline data
         metrics["timeline"] = timeline
+
+        # Add config section with resource info
+        sync_containers = len([c for c in timeline.get("containers", []) if c.get("type") == "sync"])
+        metrics["config"] = {
+            "preset": self.config.preset,
+            "sync_containers": sync_containers,
+            "cpu_limit": self.generator_config.cpu_limit,
+            "memory_limit": self.generator_config.memory_limit,
+        }
 
         metrics_file = self.config.output_dir / "metrics.json"
         with open(metrics_file, 'w') as f:

@@ -197,59 +197,27 @@ jobs:
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Process each source
-          for metrics_dir in metrics/metrics-*/; do
-            if [ -d "$metrics_dir" ]; then
-              source=$(basename "$metrics_dir" | sed 's/metrics-//')
-              metrics_file="$metrics_dir/metrics.json"
-              baseline_file="baseline/$source/metrics.json"
-
-              if [ -f "$metrics_file" ]; then
-                echo "### Source: $source" >> $GITHUB_STEP_SUMMARY
-
-                # Run comparison if baseline exists
-                if [ -f "$baseline_file" ]; then
-                  python3 loadtest/scripts/compare_metrics.py \
-                    "$metrics_file" \
-                    "$baseline_file" \
-                    >> $GITHUB_STEP_SUMMARY 2>&1 || true
-                else
-                  python3 loadtest/scripts/compare_metrics.py \
-                    "$metrics_file" \
-                    >> $GITHUB_STEP_SUMMARY 2>&1 || true
-                fi
-
-                echo "" >> $GITHUB_STEP_SUMMARY
-              fi
-            fi
-          done
+          # Use generate_summary.py for preset-aware baseline comparison
+          python3 loadtest/scripts/generate_summary.py \
+            --metrics-dir metrics/ \
+            --baseline-dir baseline/ \
+            --preset "${{ needs.setup.outputs.preset }}" \
+            >> $GITHUB_STEP_SUMMARY 2>&1 || true
 
       - name: Check for regressions
         id: check-regressions
         run: |
-          regression_found=false
-          for metrics_dir in metrics/metrics-*/; do
-            if [ -d "$metrics_dir" ]; then
-              source=$(basename "$metrics_dir" | sed 's/metrics-//')
-              metrics_file="$metrics_dir/metrics.json"
-              baseline_file="baseline/$source/metrics.json"
-
-              if [ -f "$metrics_file" ] && [ -f "$baseline_file" ]; then
-                if ! python3 loadtest/scripts/compare_metrics.py \
-                    "$metrics_file" \
-                    "$baseline_file" \
-                    > /dev/null 2>&1; then
-                  echo "Regression detected for source: $source"
-                  regression_found=true
-                fi
-              fi
-            fi
-          done
-
-          if [ "$regression_found" = true ]; then
-            echo "regression=true" >> $GITHUB_OUTPUT
-          else
+          # Use generate_summary.py which handles preset matching
+          # Exit code 1 = regression detected, 0 = no regression
+          if python3 loadtest/scripts/generate_summary.py \
+              --metrics-dir metrics/ \
+              --baseline-dir baseline/ \
+              --preset "${{ needs.setup.outputs.preset }}" \
+              > /dev/null 2>&1; then
             echo "regression=false" >> $GITHUB_OUTPUT
+          else
+            echo "Regression detected"
+            echo "regression=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Prepare baseline update

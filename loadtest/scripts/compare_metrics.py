@@ -5,8 +5,59 @@ Compare loadtest metrics against baseline.
 Usage: ./scripts/compare_metrics.py <current_metrics.json> [baseline_metrics.json]
 
 Compares current run against baseline and outputs:
-- Markdown summary table
+- Markdown summary table with Configuration, Metrics, and Timeline sections
 - Exit code 0 if no regressions, 1 if regression detected
+
+Examples:
+  # Compare current metrics against baseline
+  ./scripts/compare_metrics.py metrics/metrics-kafka/metrics.json baseline/kafka/metrics.json
+
+  # Generate summary without baseline (shows "-" for baseline columns)
+  ./scripts/compare_metrics.py metrics/metrics-mysql/metrics.json
+
+  # Use custom regression threshold (15% instead of default 10%)
+  THRESHOLD=15 ./scripts/compare_metrics.py current.json baseline.json
+
+Expected metrics.json structure:
+  {
+    "source": "kafka",
+    "preset": "small",
+    "results": {
+      "throughput_total_rows_per_sec": 8333.3,
+      "total_duration_seconds": 261.9,
+      "sync_duration_seconds": 4.8
+    },
+    "resources": {
+      "peak_memory_mb": 1203
+    },
+    "verification": {
+      "matched": 40000,
+      "mismatched": 0
+    },
+    "config": {
+      "preset": "small",
+      "sync_containers": 4,
+      "cpu_limit": "0.5",
+      "memory_limit": "512Mi"
+    },
+    "timeline": {
+      "containers": [...]
+    }
+  }
+
+Output sections:
+  1. Configuration table (if config section present):
+     | Setting | Value |
+     | Preset | small |
+     | Sync Containers | 4 |
+     | CPU-Cores/Container | 0.5 |
+     | Memory/Container | 512Mi |
+
+  2. Metrics comparison table:
+     | Metric | Current | Baseline | Change | Status |
+     | Throughput (rows/sec) | 8333.3 | 8000.0 | +4.2% | :white_check_mark: |
+
+  3. Container timeline table (if timeline section present)
 
 Environment variables:
   THRESHOLD      - Regression threshold percentage (default: 10)
@@ -201,6 +252,39 @@ def compare_metrics(
     return comparisons, has_regression
 
 
+def generate_config_table(current: dict) -> str:
+    """Generate configuration table from metrics.
+
+    Args:
+        current: Current metrics dict containing config section
+
+    Returns:
+        Markdown formatted configuration table, or empty string if no config
+    """
+    config = current.get("config", {})
+    if not config:
+        return ""
+
+    preset = config.get("preset", "unknown")
+    sync_containers = config.get("sync_containers", "-")
+    cpu_limit = config.get("cpu_limit", "-")
+    memory_limit = config.get("memory_limit", "-")
+
+    lines = [
+        "### Configuration",
+        "",
+        "| Setting | Value |",
+        "|---------|-------|",
+        f"| Preset | {preset} |",
+        f"| Sync Containers | {sync_containers} |",
+        f"| CPU-Cores/Container | {cpu_limit} |",
+        f"| Memory/Container | {memory_limit} |",
+        "",
+    ]
+
+    return "\n".join(lines)
+
+
 def generate_markdown(
     current: dict,
     baseline: Optional[dict],
@@ -223,6 +307,11 @@ def generate_markdown(
         f"## Load Test Results: {source}",
         "",
     ]
+
+    # Add configuration table if available
+    config_table = generate_config_table(current)
+    if config_table:
+        lines.append(config_table)
 
     if not has_baseline:
         lines.append("_No baseline available for comparison_")
