@@ -74,7 +74,6 @@ pub mod generator;
 pub mod metrics;
 pub mod partitioner;
 pub mod preset;
-pub mod worker;
 
 pub use aggregator::*;
 pub use aggregator_server::run_aggregator_server;
@@ -85,4 +84,3 @@ pub use generator::*;
 pub use metrics::*;
 pub use partitioner::*;
 pub use preset::*;
-pub use worker::*;

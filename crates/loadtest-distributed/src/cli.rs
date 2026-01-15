@@ -26,9 +26,6 @@ pub enum Commands {
 
     /// Aggregate results from completed containers
     Aggregate(AggregateArgs),
-
-    /// Run a single task (used inside containers) - DEPRECATED, use populate/verify subcommands instead
-    Worker(TaskArgs),
 }
 
 /// Output format for aggregation.
@@ -203,66 +200,4 @@ pub struct AggregateServerArgs {
     /// Output format for the final report
     #[arg(long, short = 'f', default_value = "table")]
     pub output_format: OutputFormat,
-}
-
-/// Arguments for the task command (populate/verify inside containers).
-#[derive(Args)]
-pub struct TaskArgs {
-    /// Task/container identifier
-    #[arg(long, env = "CONTAINER_ID", alias = "worker-id")]
-    pub container_id: String,
-
-    /// Path to loadtest schema YAML file
-    #[arg(long)]
-    pub schema: PathBuf,
-
-    /// Source database type
-    #[arg(long, short = 's')]
-    pub source: SourceChoice,
-
-    /// Tables to process (comma-separated)
-    #[arg(long, short = 't', value_delimiter = ',')]
-    pub tables: Vec<String>,
-
-    /// Number of rows per table
-    #[arg(long)]
-    pub row_count: u64,
-
-    /// Random seed for deterministic data generation
-    #[arg(long)]
-    pub seed: u64,
-
-    /// Path to write metrics output JSON
-    #[arg(long, env = "METRICS_OUTPUT")]
-    pub metrics_output: PathBuf,
-
-    /// Database connection string
-    #[arg(long)]
-    pub connection_string: String,
-
-    /// Batch size for inserts
-    #[arg(long, default_value = "1000")]
-    pub batch_size: u64,
-
-    /// Run verification instead of populate
-    #[arg(long)]
-    pub verify: bool,
-
-    /// SurrealDB endpoint (for verification)
-    #[arg(long)]
-    pub surreal_endpoint: Option<String>,
-
-    /// SurrealDB namespace
-    #[arg(long, default_value = "loadtest")]
-    pub surreal_namespace: String,
-
-    /// SurrealDB database
-    #[arg(long, default_value = "test")]
-    pub surreal_database: String,
-}
-
-impl TaskArgs {
-    pub fn source_type(&self) -> SourceType {
-        self.source.into()
-    }
 }
