@@ -50,6 +50,7 @@ jobs:
       preset: ${{ steps.set-inputs.outputs.preset }}
       timeout: ${{ steps.set-inputs.outputs.timeout }}
       row_count: ${{ steps.set-inputs.outputs.row_count }}
+      runner: ${{ steps.set-runner.outputs.runner }}
     steps:
       - name: Set inputs
         id: set-inputs
@@ -78,6 +79,25 @@ jobs:
           JSON_ARRAY=$(echo "$SOURCES" | tr ',' '\n' | jq -R . | jq -s -c .)
           echo "matrix={\"source\":$JSON_ARRAY}" >> $GITHUB_OUTPUT
 
+      # Select runner based on preset to optimize cost and resource utilization.
+      # Preset definitions: crates/loadtest-distributed/src/preset.rs
+      # Schema files: loadtest/config/schemas/{small,medium,large}.yaml
+      #
+      # | Preset | Runner    | Containers | Tables | Sync CPU | DB CPU | SurrealDB CPU |
+      # |--------|-----------|------------|--------|----------|--------|---------------|
+      # | small  | 4-cores   | 2          | 2      | 1.0      | 1.0    | 1.0           |
+      # | medium | 8-cores   | 4          | 4      | 2.0      | 2.0    | 2.0           |
+      # | large  | 16-cores  | 8          | 8      | 5.0      | 5.0    | 5.0           |
+      - name: Set runner based on preset
+        id: set-runner
+        run: |
+          case "${{ steps.set-inputs.outputs.preset }}" in
+            small)  echo "runner=ubuntu-latest-4-cores" >> $GITHUB_OUTPUT ;;
+            medium) echo "runner=ubuntu-latest-8-cores" >> $GITHUB_OUTPUT ;;
+            large)  echo "runner=ubuntu-latest-16-cores" >> $GITHUB_OUTPUT ;;
+            *)      echo "runner=ubuntu-latest-4-cores" >> $GITHUB_OUTPUT ;;
+          esac
+
   # Build Docker image (Dockerfile handles cargo build internally)
   build:
     needs: setup
@@ -101,7 +121,7 @@ jobs:
   # Run loadtest for each source
   loadtest:
     needs: [setup, build]
-    runs-on: ubuntu-latest-16-cores
+    runs-on: ${{ needs.setup.outputs.runner }}
     strategy:
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
       fail-fast: false

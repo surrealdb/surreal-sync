@@ -59,6 +59,7 @@ impl Preset {
     }
 
     /// Small preset: 2 containers, 10K rows.
+    /// Optimized for 4-core runner: 2×0.5 + 1.0 + 1.0 = 3.0 cores
     pub fn small() -> Self {
         Self {
             size: PresetSize::Small,
@@ -91,18 +92,19 @@ impl Preset {
     }
 
     /// Medium preset: 4 containers, 100K rows.
+    /// Optimized for 8-core runner: 4×0.5 + 2.0 + 2.0 = 6.0 cores
     pub fn medium() -> Self {
         Self {
             size: PresetSize::Medium,
             num_containers: 4,
             container_resources: ResourceLimits {
-                cpu_limit: "1.0".to_string(),
-                memory_limit: "1Gi".to_string(),
-                cpu_request: Some("0.5".to_string()),
-                memory_request: Some("512Mi".to_string()),
+                cpu_limit: "0.5".to_string(),
+                memory_limit: "512Mi".to_string(),
+                cpu_request: Some("0.25".to_string()),
+                memory_request: Some("256Mi".to_string()),
             },
             container_tmpfs: TmpfsConfig {
-                size: "1Gi".to_string(),
+                size: "512Mi".to_string(),
                 path: "/data".to_string(),
             },
             database_resources: ResourceLimits {
@@ -123,30 +125,31 @@ impl Preset {
     }
 
     /// Large preset: 8 containers, 1M rows.
+    /// Optimized for 16-core runner: 8×0.625 + 5.0 + 5.0 = 15.0 cores
     pub fn large() -> Self {
         Self {
             size: PresetSize::Large,
             num_containers: 8,
             container_resources: ResourceLimits {
-                cpu_limit: "2.0".to_string(),
-                memory_limit: "4Gi".to_string(),
-                cpu_request: Some("1.0".to_string()),
-                memory_request: Some("2Gi".to_string()),
+                cpu_limit: "0.625".to_string(),
+                memory_limit: "512Mi".to_string(),
+                cpu_request: Some("0.3".to_string()),
+                memory_request: Some("256Mi".to_string()),
             },
             container_tmpfs: TmpfsConfig {
-                size: "4Gi".to_string(),
+                size: "512Mi".to_string(),
                 path: "/data".to_string(),
             },
             database_resources: ResourceLimits {
-                cpu_limit: "4.0".to_string(),
+                cpu_limit: "5.0".to_string(),
                 memory_limit: "8Gi".to_string(),
-                cpu_request: Some("2.0".to_string()),
+                cpu_request: Some("2.5".to_string()),
                 memory_request: Some("4Gi".to_string()),
             },
             surrealdb_resources: ResourceLimits {
-                cpu_limit: "4.0".to_string(),
+                cpu_limit: "5.0".to_string(),
                 memory_limit: "8Gi".to_string(),
-                cpu_request: Some("2.0".to_string()),
+                cpu_request: Some("2.5".to_string()),
                 memory_request: Some("4Gi".to_string()),
             },
             row_count: 1_000_000,
@@ -218,7 +221,7 @@ mod tests {
 
         assert_eq!(preset.num_containers, 6);
         assert_eq!(preset.container_resources.cpu_limit, "3.0");
-        assert_eq!(preset.container_resources.memory_limit, "1Gi"); // unchanged
+        assert_eq!(preset.container_resources.memory_limit, "512Mi"); // unchanged
         assert_eq!(preset.row_count, 500_000);
     }
 }
