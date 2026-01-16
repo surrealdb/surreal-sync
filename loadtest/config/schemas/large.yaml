@@ -1,0 +1,330 @@
+# Large preset schema: 8 tables for 8 containers
+# Each container handles 1 table for optimal distribution.
+version: 1
+
+tables:
+  - name: users
+    id:
+      type: big_int
+      generator:
+        type: sequential
+        start: 1
+    fields:
+      - name: username
+        type:
+          type: var_char
+          length: 50
+        generator:
+          type: pattern
+          pattern: "user_{index}"
+      - name: email
+        type:
+          type: var_char
+          length: 100
+        generator:
+          type: pattern
+          pattern: "user_{index}@test.com"
+      - name: created_at
+        type: date_time
+        generator:
+          type: timestamp_range
+          start: "2024-01-01T00:00:00Z"
+          end: "2024-12-31T23:59:59Z"
+      - name: is_active
+        type: bool
+        generator:
+          type: weighted_bool
+          true_weight: 0.8
+      - name: profile_data
+        type: json
+        generator:
+          type: static
+          value:
+            version: 1
+            source: "loadtest"
+
+  - name: products
+    id:
+      type: big_int
+      generator:
+        type: sequential
+        start: 1
+    fields:
+      - name: name
+        type:
+          type: var_char
+          length: 100
+        generator:
+          type: pattern
+          pattern: "Product {index}"
+      - name: description
+        type: text
+        generator:
+          type: pattern
+          pattern: "Description for product {index}"
+      - name: price
+        type:
+          type: decimal
+          precision: 10
+          scale: 2
+        generator:
+          type: decimal_range
+          min: 1.0
+          max: 1000.0
+      - name: stock_quantity
+        type: int
+        generator:
+          type: int_range
+          min: 0
+          max: 1000
+      - name: created_at
+        type: date_time
+        generator:
+          type: timestamp_range
+          start: "2024-01-01T00:00:00Z"
+          end: "2024-12-31T23:59:59Z"
+      - name: updated_at
+        type: date_time
+        generator:
+          type: timestamp_range
+          start: "2024-01-01T00:00:00Z"
+          end: "2024-12-31T23:59:59Z"
+
+  - name: orders
+    id:
+      type: big_int
+      generator:
+        type: sequential
+        start: 1
+    fields:
+      - name: user_id
+        type: big_int
+        generator:
+          type: int_range
+          min: 1
+          max: 1000
+      - name: total_amount
+        type:
+          type: decimal
+          precision: 12
+          scale: 2
+        generator:
+          type: decimal_range
+          min: 10.0
+          max: 5000.0
+      - name: status
+        type:
+          type: var_char
+          length: 20
+        generator:
+          type: one_of
+          values: ["pending", "completed", "shipped", "cancelled"]
+      - name: created_at
+        type: date_time
+        generator:
+          type: timestamp_range
+          start: "2024-01-01T00:00:00Z"
+          end: "2024-12-31T23:59:59Z"
+      - name: shipped_at
+        type: date_time
+        generator:
+          type: timestamp_range
+          start: "2024-01-01T00:00:00Z"
+          end: "2024-12-31T23:59:59Z"
+
+  - name: order_items
+    id:
+      type: big_int
+      generator:
+        type: sequential
+        start: 1
+    fields:
+      - name: order_id
+        type: big_int
+        generator:
+          type: int_range
+          min: 1
+          max: 1000
+      - name: product_id
+        type: big_int
+        generator:
+          type: int_range
+          min: 1
+          max: 1000
+      - name: quantity
+        type: int
+        generator:
+          type: int_range
+          min: 1
+          max: 10
+      - name: unit_price
+        type:
+          type: decimal
+          precision: 10
+          scale: 2
+        generator:
+          type: decimal_range
+          min: 1.0
+          max: 500.0
+
+  - name: reviews
+    id:
+      type: big_int
+      generator:
+        type: sequential
+        start: 1
+    fields:
+      - name: user_id
+        type: big_int
+        generator:
+          type: int_range
+          min: 1
+          max: 1000
+      - name: product_id
+        type: big_int
+        generator:
+          type: int_range
+          min: 1
+          max: 1000
+      - name: rating
+        type: int
+        generator:
+          type: int_range
+          min: 1
+          max: 5
+      - name: title
+        type:
+          type: var_char
+          length: 100
+        generator:
+          type: pattern
+          pattern: "Review {index}"
+      - name: content
+        type: text
+        generator:
+          type: pattern
+          pattern: "Review content for item {index}"
+      - name: created_at
+        type: date_time
+        generator:
+          type: timestamp_range
+          start: "2024-01-01T00:00:00Z"
+          end: "2024-12-31T23:59:59Z"
+
+  - name: inventory
+    id:
+      type: big_int
+      generator:
+        type: sequential
+        start: 1
+    fields:
+      - name: product_id
+        type: big_int
+        generator:
+          type: int_range
+          min: 1
+          max: 1000
+      - name: warehouse_id
+        type: int
+        generator:
+          type: int_range
+          min: 1
+          max: 10
+      - name: quantity
+        type: int
+        generator:
+          type: int_range
+          min: 0
+          max: 10000
+      - name: reserved
+        type: int
+        generator:
+          type: int_range
+          min: 0
+          max: 100
+      - name: last_restock
+        type: date_time
+        generator:
+          type: timestamp_range
+          start: "2024-01-01T00:00:00Z"
+          end: "2024-12-31T23:59:59Z"
+
+  - name: categories
+    id:
+      type: big_int
+      generator:
+        type: sequential
+        start: 1
+    fields:
+      - name: name
+        type:
+          type: var_char
+          length: 100
+        generator:
+          type: pattern
+          pattern: "Category {index}"
+      - name: description
+        type: text
+        generator:
+          type: pattern
+          pattern: "Description for category {index}"
+      - name: parent_id
+        type: big_int
+        generator:
+          type: int_range
+          min: 0
+          max: 100
+      - name: is_active
+        type: bool
+        generator:
+          type: weighted_bool
+          true_weight: 0.9
+      - name: created_at
+        type: date_time
+        generator:
+          type: timestamp_range
+          start: "2024-01-01T00:00:00Z"
+          end: "2024-12-31T23:59:59Z"
+
+  - name: payments
+    id:
+      type: big_int
+      generator:
+        type: sequential
+        start: 1
+    fields:
+      - name: order_id
+        type: big_int
+        generator:
+          type: int_range
+          min: 1
+          max: 1000
+      - name: amount
+        type:
+          type: decimal
+          precision: 12
+          scale: 2
+        generator:
+          type: decimal_range
+          min: 10.0
+          max: 5000.0
+      - name: method
+        type:
+          type: var_char
+          length: 20
+        generator:
+          type: one_of
+          values: ["credit_card", "debit_card", "paypal", "bank_transfer"]
+      - name: status
+        type:
+          type: var_char
+          length: 20
+        generator:
+          type: one_of
+          values: ["pending", "completed", "failed", "refunded"]
+      - name: processed_at
+        type: date_time
+        generator:
+          type: timestamp_range
+          start: "2024-01-01T00:00:00Z"
+          end: "2024-12-31T23:59:59Z"

@@ -490,28 +490,29 @@ class CIRunner:
             FileNotFoundError: If required input files don't exist
             RuntimeError: If configuration generation fails
         """
-        # Check input files exist
-        schema_file = self.config.loadtest_dir / "config" / "schema.yaml"
+        # Check input files exist (preset-specific schema file)
+        schema_filename = f"{self.config.preset}.yaml"
+        schema_file = self.config.loadtest_dir / "config" / "schemas" / schema_filename
         if not schema_file.exists():
             raise FileNotFoundError(f"Schema file not found: {schema_file}")
 
-        self.log("Generating docker-compose configuration using Docker...")
+        self.log(f"Generating docker-compose configuration using Docker (schema: {schema_filename})...")
 
         # Ensure output directory exists for volume mount
         self.config.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Use Docker to run config generation
-        # Mount loadtest dir (for schema.yaml) and output dir (for generated files)
+        # Mount schemas dir and output dir (for generated files)
         cmd = [
             "docker", "run", "--rm",
-            "-v", f"{self.config.loadtest_dir}/config:/config:ro",
+            "-v", f"{self.config.loadtest_dir}/config/schemas:/config/schemas:ro",
             "-v", f"{self.config.output_dir}:/output",
             self.config.image_name,
             "loadtest", "generate",
             "--platform", "docker-compose",
             "--source", self.config.source,
             "--preset", self.config.preset,
-            "--schema", "/config/schema.yaml",
+            "--schema", f"/config/schemas/{schema_filename}",
             "--output-dir", "/output",
             "--workers", str(self.config.workers),
         ]
