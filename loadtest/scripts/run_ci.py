@@ -132,6 +132,7 @@ class GeneratorConfig:
     row_count: int
     batch_size: int
     num_containers: int
+    num_sync_containers: int  # Actual count from generator (1 for most, N for Kafka)
     tables: list  # List of table names from ClusterConfig
     cpu_limit: str = ""  # e.g., "0.5"
     memory_limit: str = ""  # e.g., "512Mi"
@@ -159,23 +160,6 @@ class ContainerStatus:
     sync_done: int = 0
     verify_done: int = 0
     failed_containers: list = field(default_factory=list)
-
-
-def get_expected_sync_containers(source: str) -> int:
-    """Get the expected number of sync containers based on source type.
-
-    Kafka uses per-table sync containers (4 tables = 4 containers).
-    Other sources use a single sync container.
-
-    Args:
-        source: The data source type
-
-    Returns:
-        Number of expected sync containers
-    """
-    if source == "kafka":
-        return 4  # sync-users, sync-products, sync-orders, sync-order_items
-    return 1
 
 
 def parse_verification_line(line: str) -> Optional[VerificationStats]:
@@ -404,7 +388,7 @@ class CIRunner:
         self.config = config
         self.runner = runner or CommandRunner()
         self.test_failed = False
-        self.expected_sync_containers = get_expected_sync_containers(config.source)
+        self.expected_sync_containers = 1  # Updated after generate_config() with actual value
         self.compose_file = config.output_dir / "docker-compose.loadtest.yml"
         self._start_time: float = 0  # Track test start time for duration logging
         self._peak_memory_mb = 0  # Track peak memory across all samples
@@ -552,6 +536,7 @@ class CIRunner:
                             row_count=container["row_count"],
                             batch_size=container.get("batch_size", 1000),
                             num_containers=len(config_json["containers"]),
+                            num_sync_containers=config_json.get("num_sync_containers", 1),
                             tables=tables,
                             cpu_limit=cpu_limit,
                             memory_limit=memory_limit
@@ -559,6 +544,7 @@ class CIRunner:
                         self.log(f"Generator config: row_count={self.generator_config.row_count}, "
                                 f"batch_size={self.generator_config.batch_size}, "
                                 f"num_containers={self.generator_config.num_containers}, "
+                                f"num_sync_containers={self.generator_config.num_sync_containers}, "
                                 f"tables={self.generator_config.tables}, "
                                 f"cpu_limit={self.generator_config.cpu_limit}, "
                                 f"memory_limit={self.generator_config.memory_limit}")
@@ -1440,6 +1426,10 @@ Suggested actions:
             # Build and generate
             self.build_docker_image()
             self.generate_config()
+
+            # Update expected sync containers from generator's actual value
+            if self.generator_config:
+                self.expected_sync_containers = self.generator_config.num_sync_containers
 
             # Start timing (for duration logging only - actual durations from container timeline)
             self._start_time = time.time()

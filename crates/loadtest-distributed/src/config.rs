@@ -277,6 +277,13 @@ pub struct ClusterConfig {
     /// Dry-run mode (populate/verify won't write data)
     #[serde(default)]
     pub dry_run: bool,
+    /// Number of sync containers (1 for most sources, N for Kafka where N = table count)
+    #[serde(default = "default_num_sync_containers")]
+    pub num_sync_containers: usize,
+}
+
+fn default_num_sync_containers() -> usize {
+    1
 }
 
 fn default_network_name() -> String {
@@ -361,6 +368,11 @@ pub fn build_cluster_config(
         proto_contents: None, // Set by caller for Kafka source on Kubernetes
         network_name: default_network_name(),
         dry_run,
+        num_sync_containers: if source_type == SourceType::Kafka {
+            tables.len()
+        } else {
+            1
+        },
     })
 }
 

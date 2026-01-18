@@ -907,6 +907,7 @@ mod tests {
             proto_contents: None, // Not needed for Docker Compose (mounted as volume)
             network_name: "loadtest".to_string(),
             dry_run,
+            num_sync_containers: 1, // MySQL uses single sync container
         }
     }
 
@@ -960,6 +961,107 @@ mod tests {
         assert!(
             command.contains("--dry-run"),
             "Populate command should contain --dry-run"
+        );
+    }
+
+    #[test]
+    fn test_num_sync_containers_matches_generated_kafka_services() {
+        // Create a Kafka config with 3 tables across 2 containers
+        let config = ClusterConfig {
+            platform: Platform::DockerCompose,
+            source_type: SourceType::Kafka,
+            containers: vec![
+                ContainerConfig {
+                    id: "populate-1".to_string(),
+                    source_type: SourceType::Kafka,
+                    tables: vec!["users".to_string(), "products".to_string()],
+                    row_count: 1000,
+                    seed: 42,
+                    resources: ResourceLimits::default(),
+                    tmpfs: None,
+                    connection_string: "kafka:9092".to_string(),
+                    batch_size: 100,
+                },
+                ContainerConfig {
+                    id: "populate-2".to_string(),
+                    source_type: SourceType::Kafka,
+                    tables: vec!["orders".to_string()],
+                    row_count: 1000,
+                    seed: 43,
+                    resources: ResourceLimits::default(),
+                    tmpfs: None,
+                    connection_string: "kafka:9092".to_string(),
+                    batch_size: 100,
+                },
+            ],
+            results_volume: VolumeConfig::default(),
+            database: DatabaseConfig {
+                source_type: SourceType::Kafka,
+                image: "bitnami/kafka:latest".to_string(),
+                resources: ResourceLimits::default(),
+                tmpfs_storage: false,
+                tmpfs_size: None,
+                database_name: String::new(),
+                environment: vec![],
+                command_args: vec![],
+            },
+            surrealdb: SurrealDbConfig::default(),
+            schema_path: "schema.yaml".to_string(),
+            schema_content: None,
+            proto_contents: None,
+            network_name: "loadtest".to_string(),
+            dry_run: false,
+            num_sync_containers: 3, // 3 tables = 3 sync containers for Kafka
+        };
+
+        // Generate docker-compose YAML
+        let generator = DockerComposeGenerator;
+        let yaml = generator.generate(&config).unwrap();
+
+        // Parse YAML and count sync-* services
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let services = parsed.get("services").unwrap().as_mapping().unwrap();
+
+        let sync_service_count = services
+            .keys()
+            .filter(|k| k.as_str().map(|s| s.starts_with("sync-")).unwrap_or(false))
+            .count();
+
+        // Verify num_sync_containers matches actual sync services generated
+        assert_eq!(
+            config.num_sync_containers, sync_service_count,
+            "num_sync_containers ({}) should match actual sync services in docker-compose ({})",
+            config.num_sync_containers, sync_service_count
+        );
+    }
+
+    #[test]
+    fn test_num_sync_containers_for_non_kafka_sources() {
+        // For non-Kafka sources, num_sync_containers should be 1
+        let config = test_config(); // Uses MySQL
+
+        let generator = DockerComposeGenerator;
+        let yaml = generator.generate(&config).unwrap();
+
+        // Parse YAML and count sync services
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let services = parsed.get("services").unwrap().as_mapping().unwrap();
+
+        // Should have exactly one "sync" service (not sync-*)
+        assert!(services.contains_key(Value::String("sync".to_string())));
+
+        let sync_service_count = services
+            .keys()
+            .filter(|k| {
+                k.as_str()
+                    .map(|s| s == "sync" || s.starts_with("sync-"))
+                    .unwrap_or(false)
+            })
+            .count();
+
+        assert_eq!(
+            sync_service_count, 1,
+            "Non-Kafka sources should have exactly 1 sync service"
         );
     }
 }
