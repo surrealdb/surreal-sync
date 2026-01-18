@@ -1350,6 +1350,7 @@ mod tests {
             proto_contents: None, // Only needed for Kafka source
             network_name: "loadtest".to_string(),
             dry_run,
+            num_sync_containers: 1, // MySQL uses single sync container
         }
     }
 
