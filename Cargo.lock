@@ -3408,6 +3408,7 @@ dependencies = [
  "clap",
  "comfy-table",
  "hostname",
+ "libc",
  "loadtest-generator",
  "nix",
  "num_cpus",

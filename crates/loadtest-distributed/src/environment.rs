@@ -4,8 +4,18 @@
 //! at worker startup, including CPU, memory, tmpfs, and cgroup limits.
 
 use crate::metrics::EnvironmentInfo;
-use std::fs;
+#[cfg(target_os = "macos")]
+use std::ffi::{CStr, CString};
+#[cfg(target_os = "macos")]
+use std::mem;
 use tracing::info;
+
+#[cfg(target_os = "macos")]
+use libc::statfs as mac_statfs;
+#[cfg(target_os = "linux")]
+use nix::sys::statfs::statfs as nix_statfs;
+#[cfg(target_os = "linux")]
+use nix::sys::statfs::FsType as NixFsType;
 
 /// Log and capture runtime environment information.
 ///
@@ -61,19 +71,12 @@ fn check_tmpfs_mounts() -> (bool, Option<u64>, Option<String>) {
     let mut data_fs_type = None;
 
     for path in paths_to_check {
-        if let Ok(stat) = nix::sys::statfs::statfs(path) {
-            let fs_type = stat.filesystem_type();
-            let is_tmpfs = is_tmpfs_filesystem(fs_type);
-            let fs_name = format_fs_type(fs_type);
-
+        if let Some((is_tmpfs, size_mb, fs_name)) = statfs_info(path) {
             if path == "/data" {
                 data_fs_type = Some(fs_name.clone());
                 tmpfs_enabled = is_tmpfs;
                 if is_tmpfs {
-                    // Calculate tmpfs size in MB
-                    let block_size = stat.block_size() as u64;
-                    let total_blocks = stat.blocks();
-                    tmpfs_size_mb = Some((total_blocks * block_size) / 1024 / 1024);
+                    tmpfs_size_mb = size_mb;
                 }
             }
 
@@ -85,10 +88,9 @@ fn check_tmpfs_mounts() -> (bool, Option<u64>, Option<String>) {
             );
 
             if is_tmpfs {
-                let block_size = stat.block_size() as u64;
-                let total_blocks = stat.blocks();
-                let size_mb = (total_blocks * block_size) / 1024 / 1024;
-                info!("  tmpfs size: {} MB", size_mb);
+                if let Some(size_mb) = size_mb {
+                    info!("  tmpfs size: {} MB", size_mb);
+                }
             }
         }
     }
@@ -96,15 +98,63 @@ fn check_tmpfs_mounts() -> (bool, Option<u64>, Option<String>) {
     (tmpfs_enabled, tmpfs_size_mb, data_fs_type)
 }
 
+#[cfg(target_os = "linux")]
+fn statfs_info(path: &str) -> Option<(bool, Option<u64>, String)> {
+    let stat = nix_statfs(path).ok()?;
+    let fs_type = stat.filesystem_type();
+    let is_tmpfs = is_tmpfs_filesystem(fs_type);
+    let fs_name = format_fs_type(fs_type);
+    let size_mb = if is_tmpfs {
+        let block_size = stat.block_size() as u64;
+        let total_blocks = stat.blocks();
+        Some((total_blocks * block_size) / 1024 / 1024)
+    } else {
+        None
+    };
+
+    Some((is_tmpfs, size_mb, fs_name))
+}
+
+#[cfg(target_os = "macos")]
+fn statfs_info(path: &str) -> Option<(bool, Option<u64>, String)> {
+    let c_path = CString::new(path).ok()?;
+    let mut stat: libc::statfs = unsafe { mem::zeroed() };
+    let res = unsafe { mac_statfs(c_path.as_ptr(), &mut stat) };
+    if res != 0 {
+        return None;
+    }
+
+    let fs_name = unsafe { CStr::from_ptr(stat.f_fstypename.as_ptr()) }
+        .to_string_lossy()
+        .to_string();
+    let is_tmpfs = fs_name == "tmpfs";
+    let size_mb = if is_tmpfs {
+        let block_size = stat.f_bsize as u64;
+        let total_blocks = stat.f_blocks as u64;
+        Some((total_blocks * block_size) / 1024 / 1024)
+    } else {
+        None
+    };
+
+    Some((is_tmpfs, size_mb, fs_name))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn statfs_info(_path: &str) -> Option<(bool, Option<u64>, String)> {
+    None
+}
+
+#[cfg(target_os = "linux")]
 /// Check if the filesystem type is tmpfs.
-fn is_tmpfs_filesystem(fs_type: nix::sys::statfs::FsType) -> bool {
+fn is_tmpfs_filesystem(fs_type: NixFsType) -> bool {
     // TMPFS_MAGIC = 0x01021994
     const TMPFS_MAGIC: i64 = 0x01021994;
     fs_type.0 == TMPFS_MAGIC
 }
 
+#[cfg(target_os = "linux")]
 /// Format filesystem type to human-readable string.
-fn format_fs_type(fs_type: nix::sys::statfs::FsType) -> String {
+fn format_fs_type(fs_type: NixFsType) -> String {
     const TMPFS_MAGIC: i64 = 0x01021994;
     const EXT4_MAGIC: i64 = 0xEF53;
     const XFS_MAGIC: i64 = 0x58465342;
@@ -121,6 +171,7 @@ fn format_fs_type(fs_type: nix::sys::statfs::FsType) -> String {
     }
 }
 
+#[cfg(target_os = "linux")]
 /// Read cgroup v2 memory limit.
 fn read_cgroup_memory_limit() -> Option<u64> {
     // Try cgroup v2 first
@@ -146,6 +197,12 @@ fn read_cgroup_memory_limit() -> Option<u64> {
     None
 }
 
+#[cfg(not(target_os = "linux"))]
+fn read_cgroup_memory_limit() -> Option<u64> {
+    None
+}
+
+#[cfg(target_os = "linux")]
 /// Read cgroup v2 CPU quota.
 fn read_cgroup_cpu_quota() -> Option<String> {
     // Try cgroup v2 first
@@ -167,6 +224,11 @@ fn read_cgroup_cpu_quota() -> Option<String> {
         }
     }
 
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_cgroup_cpu_quota() -> Option<String> {
     None
 }
 
@@ -217,7 +279,7 @@ pub fn verify_expected_resources(
     warnings
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 

@@ -26,8 +26,13 @@ serde_yaml = "0.9"
 # System info for environment verification
 sysinfo = "0.32"
 num_cpus = "1.16"
-nix = { version = "0.29", features = ["fs"] }
 hostname = "0.4"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.29", features = ["fs"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
