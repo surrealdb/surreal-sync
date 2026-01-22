@@ -143,10 +143,10 @@ fn test_sync_config_default() {
     let config = SyncConfig::default();
     assert!(!config.incremental);
     assert!(config.emit_checkpoints);
-    assert_eq!(
-        config.checkpoint_dir,
-        Some(".surreal-sync-checkpoints".to_string())
-    );
+    assert!(matches!(
+        config.checkpoint_storage,
+        crate::CheckpointStorage::Filesystem { ref dir } if dir == ".surreal-sync-checkpoints"
+    ));
 }
 
 #[test]
@@ -154,7 +154,10 @@ fn test_sync_config_full_sync_with_checkpoints() {
     let config = SyncConfig::full_sync_with_checkpoints("/custom/path".to_string());
     assert!(!config.incremental);
     assert!(config.emit_checkpoints);
-    assert_eq!(config.checkpoint_dir, Some("/custom/path".to_string()));
+    assert!(matches!(
+        config.checkpoint_storage,
+        crate::CheckpointStorage::Filesystem { ref dir } if dir == "/custom/path"
+    ));
 }
 
 #[test]
@@ -162,7 +165,10 @@ fn test_sync_config_incremental() {
     let config = SyncConfig::incremental();
     assert!(config.incremental);
     assert!(!config.emit_checkpoints);
-    assert!(config.checkpoint_dir.is_none());
+    assert!(matches!(
+        config.checkpoint_storage,
+        crate::CheckpointStorage::Disabled
+    ));
 }
 
 #[test]
@@ -171,7 +177,9 @@ fn test_sync_config_should_emit_checkpoints() {
     let config1 = SyncConfig {
         incremental: false,
         emit_checkpoints: true,
-        checkpoint_dir: Some("/tmp".to_string()),
+        checkpoint_storage: crate::CheckpointStorage::Filesystem {
+            dir: "/tmp".to_string(),
+        },
     };
     assert!(config1.should_emit_checkpoints());
 
@@ -179,7 +187,9 @@ fn test_sync_config_should_emit_checkpoints() {
     let config2 = SyncConfig {
         incremental: false,
         emit_checkpoints: false,
-        checkpoint_dir: Some("/tmp".to_string()),
+        checkpoint_storage: crate::CheckpointStorage::Filesystem {
+            dir: "/tmp".to_string(),
+        },
     };
     assert!(!config2.should_emit_checkpoints());
 
@@ -187,7 +197,7 @@ fn test_sync_config_should_emit_checkpoints() {
     let config3 = SyncConfig {
         incremental: false,
         emit_checkpoints: true,
-        checkpoint_dir: None,
+        checkpoint_storage: crate::CheckpointStorage::Disabled,
     };
     assert!(!config3.should_emit_checkpoints());
 }
@@ -201,7 +211,9 @@ async fn test_sync_manager_emit_and_read() {
     let tmp = TempDir::new().unwrap();
     let config = SyncConfig {
         emit_checkpoints: true,
-        checkpoint_dir: Some(tmp.path().to_string_lossy().to_string()),
+        checkpoint_storage: crate::CheckpointStorage::Filesystem {
+            dir: tmp.path().to_string_lossy().to_string(),
+        },
         incremental: false,
     };
 
@@ -229,7 +241,9 @@ async fn test_sync_manager_emit_disabled() {
     let tmp = TempDir::new().unwrap();
     let config = SyncConfig {
         emit_checkpoints: false, // Disabled
-        checkpoint_dir: Some(tmp.path().to_string_lossy().to_string()),
+        checkpoint_storage: crate::CheckpointStorage::Filesystem {
+            dir: tmp.path().to_string_lossy().to_string(),
+        },
         incremental: false,
     };
 
@@ -255,7 +269,7 @@ async fn test_sync_manager_emit_disabled() {
 async fn test_sync_manager_no_checkpoint_dir() {
     let config = SyncConfig {
         emit_checkpoints: true,
-        checkpoint_dir: None, // Not configured
+        checkpoint_storage: crate::CheckpointStorage::Disabled, // Checkpoints not configured
         incremental: false,
     };
 
@@ -279,7 +293,9 @@ async fn test_sync_manager_reads_latest_checkpoint() {
     let tmp = TempDir::new().unwrap();
     let config = SyncConfig {
         emit_checkpoints: true,
-        checkpoint_dir: Some(tmp.path().to_string_lossy().to_string()),
+        checkpoint_storage: crate::CheckpointStorage::Filesystem {
+            dir: tmp.path().to_string_lossy().to_string(),
+        },
         incremental: false,
     };
 
@@ -322,7 +338,9 @@ async fn test_sync_manager_separate_phases() {
     let tmp = TempDir::new().unwrap();
     let config = SyncConfig {
         emit_checkpoints: true,
-        checkpoint_dir: Some(tmp.path().to_string_lossy().to_string()),
+        checkpoint_storage: crate::CheckpointStorage::Filesystem {
+            dir: tmp.path().to_string_lossy().to_string(),
+        },
         incremental: false,
     };
 

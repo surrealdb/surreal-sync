@@ -79,7 +79,9 @@ impl SyncManager {
         }
 
         match &self.config.checkpoint_storage {
-            CheckpointStorage::Disabled => Ok(()),
+            CheckpointStorage::Disabled => {
+                anyhow::bail!("No checkpoint directory configured (checkpoint storage is disabled)")
+            }
 
             CheckpointStorage::Filesystem { dir } => {
                 self.emit_checkpoint_to_filesystem(checkpoint, phase, dir)

@@ -58,7 +58,9 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     let sync_config = checkpoint::SyncConfig {
         incremental: false, // This is full sync to set up infrastructure
         emit_checkpoints: true,
-        checkpoint_storage: checkpoint::CheckpointStorage::Filesystem { dir: ".test-checkpoints".to_string() },
+        checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
+            dir: ".test-checkpoints".to_string(),
+        },
     };
 
     surreal_sync_mongodb_changestream_source::run_full_sync(

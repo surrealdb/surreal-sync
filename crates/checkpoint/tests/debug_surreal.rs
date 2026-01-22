@@ -1,8 +1,8 @@
 //! Debug test to understand SurrealDB behavior
 
+use serde::{Deserialize, Serialize};
 use surrealdb::engine::any;
 use surrealdb::sql::{Id, Thing};
-use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct TestRecord {
@@ -24,7 +24,7 @@ async fn debug_update_and_select() -> anyhow::Result<()> {
 
     // Create a Thing ID
     let thing = Thing::from(("debug_table", Id::String("test_record".to_string())));
-    println!("Thing: {:?}", thing);
+    println!("Thing: {thing:?}");
 
     // Store a record using UPDATE CONTENT
     let record = TestRecord {
@@ -39,11 +39,11 @@ async fn debug_update_and_select() -> anyhow::Result<()> {
         .bind(("content", record.clone()))
         .await?;
 
-    println!("Store result: {:?}", store_result);
+    println!("Store result: {store_result:?}");
 
     // Check what CREATE returned
     let created: Vec<TestRecord> = store_result.take(0)?;
-    println!("Created records: {:?}", created);
+    println!("Created records: {created:?}");
 
     // Try to read it back
     println!("\n=== READING RECORD ===");
@@ -53,7 +53,7 @@ async fn debug_update_and_select() -> anyhow::Result<()> {
         .await?;
 
     let records: Vec<TestRecord> = read_result.take(0)?;
-    println!("Read records: {:?}", records);
+    println!("Read records: {records:?}");
     assert_eq!(records.len(), 1, "Should have one record");
     assert_eq!(records[0], record, "Record should match");
 
@@ -69,7 +69,7 @@ async fn debug_update_and_select() -> anyhow::Result<()> {
         .content(updated_record.clone())
         .await?;
 
-    println!("Upsert result: {:?}", upsert_result);
+    println!("Upsert result: {upsert_result:?}");
 
     // Read again to verify update
     let mut read_result2 = surreal
@@ -78,7 +78,7 @@ async fn debug_update_and_select() -> anyhow::Result<()> {
         .await?;
 
     let records2: Vec<TestRecord> = read_result2.take(0)?;
-    println!("After upsert records: {:?}", records2);
+    println!("After upsert records: {records2:?}");
     assert_eq!(records2.len(), 1, "Should have one record");
     assert_eq!(records2[0], updated_record, "Record should be updated");
 

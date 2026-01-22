@@ -89,7 +89,9 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let config = SyncConfig {
             emit_checkpoints: true,
-            checkpoint_dir: Some(tmp.path().to_string_lossy().to_string()),
+            checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
+                dir: tmp.path().to_string_lossy().to_string(),
+            },
             incremental: false,
         };
 
