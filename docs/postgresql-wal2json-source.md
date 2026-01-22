@@ -195,83 +195,70 @@ surreal-sync from postgresql incremental \
 
 ## Data Type Support
 
-**LIMITATION**: Incremental sync currently has **very limited type support**. The incremental sync `upsert()` function only handles:
-- `integer` / `int4` → Integer
-- `double precision` / `float8` → Double
-- `text` → Text
-- `boolean` → Boolean
-- `NULL` → Null
-
-**All other types** (including `smallint`, `bigint`, `real`, `numeric`, `varchar`, `char`, `bytea`, `uuid`, `timestamp`, `date`, `time`, `interval`, `json`, `jsonb`, `arrays`, etc.) will cause an "Unsupported value type" error during incremental sync.
-
-See implementation limitation: [incremental_sync.rs:246-255](../crates/postgresql-wal2json-source/src/incremental_sync.rs#L246-L255)
-
-**Full sync** uses the common PostgreSQL infrastructure ([migrate_table](../crates/postgresql-wal2json-source/src/full_sync.rs#L113-L119)) and likely supports all types properly.
-
-The table below shows what the **parser** supports (for full sync), not what incremental sync supports:
+All PostgreSQL types are supported in incremental sync through the type conversion helper function at [incremental_sync.rs:convert_postgres_value_to_surreal()](../crates/postgresql-wal2json-source/src/incremental_sync.rs#L234-L308).
 
 ### Numeric Types
 
-| PostgreSQL Type | SurrealDB Representation | Notes |
-|----------------|-------------------------|-------|
-| `smallint`, `int2` | `i16` | 16-bit signed integer |
-| `integer`, `int4` | `i32` | 32-bit signed integer |
-| `bigint`, `int8` | `i64` | 64-bit signed integer |
-| `real`, `float4` | `f32` | Single-precision float |
-| `double precision`, `float8` | `f64` | Double-precision float |
-| `numeric`, `decimal` | `String` | Precision-preserving decimal representation |
+| PostgreSQL Type | SurrealDB Type | Notes |
+|----------------|----------------|-------|
+| `smallint`, `int2` | `int` | Converted from i16 to 64-bit integer |
+| `integer`, `int4` | `int` | Converted from i32 to 64-bit integer |
+| `bigint`, `int8` | `int` | Native 64-bit integer |
+| `real`, `float4` | `float` | Converted from 32-bit to 64-bit float |
+| `double precision`, `float8` | `float` | Native 64-bit float |
+| `numeric`, `decimal` | `decimal` | High-precision decimal. Falls back to `string` if parsing fails. |
 
 ### String Types
 
-| PostgreSQL Type | SurrealDB Representation |
-|----------------|-------------------------|
-| `text` | `String` |
-| `varchar`, `character varying` | `String` |
-| `char`, `character` | `String` |
+| PostgreSQL Type | SurrealDB Type |
+|----------------|----------------|
+| `text` | `string` |
+| `varchar`, `character varying` | `string` |
+| `char`, `character` | `string` |
 
 ### Boolean
 
-| PostgreSQL Type | SurrealDB Representation |
-|----------------|-------------------------|
+| PostgreSQL Type | SurrealDB Type |
+|----------------|----------------|
 | `boolean`, `bool` | `bool` |
 
 ### Binary Data
 
-| PostgreSQL Type | SurrealDB Representation | Notes |
-|----------------|-------------------------|-------|
-| `bytea` | `Vec<u8>` | Hex-decoded from wal2json output |
+| PostgreSQL Type | SurrealDB Type | Notes |
+|----------------|----------------|-------|
+| `bytea` | `bytes` | Binary data hex-decoded from wal2json output |
 
 ### UUID
 
-| PostgreSQL Type | SurrealDB Representation | Notes |
-|----------------|-------------------------|-------|
-| `uuid` | `String` (UUID format) | Validated and preserved as RFC 4122 UUID |
+| PostgreSQL Type | SurrealDB Type | Notes |
+|----------------|----------------|-------|
+| `uuid` | `uuid` | Converted to native UUID type (RFC 4122). Falls back to `string` only if UUID parsing fails. |
 
 ### Date/Time Types
 
-| PostgreSQL Type | SurrealDB Representation | Format Examples |
-|----------------|-------------------------|-----------------|
-| `timestamp`, `timestamp without time zone` | `String` | `"2024-01-15 10:30:00"`, `"1997-12-17 15:37:16.123456"` |
-| `timestamptz`, `timestamp with time zone` | `String` | `"2024-01-15 10:30:00+00"`, ISO 8601 format |
-| `date` | `String` | `"2024-01-15"` |
-| `time`, `time without time zone` | `String` | `"10:30:00"`, `"15:37:16.123456"` |
-| `timetz`, `time with time zone` | `String` | `"10:30:00+00"` |
-| `interval` | `String` | PostgreSQL interval format |
+| PostgreSQL Type | SurrealDB Type | Notes |
+|----------------|----------------|-------|
+| `timestamp`, `timestamp without time zone` | `datetime` | Parsed using PostgreSQL timestamp formats. Falls back to `string` if parsing fails. |
+| `timestamptz`, `timestamp with time zone` | `datetime` | Parsed using PostgreSQL timestamptz formats. Falls back to `string` if parsing fails. |
+| `date` | `string` | Format: `"2024-01-15"` |
+| `time`, `time without time zone` | `string` | Format: `"10:30:00"`, `"15:37:16.123456"` |
+| `timetz`, `time with time zone` | `string` | Format: `"10:30:00+00"` |
+| `interval` | `duration` | Converted to duration type. Falls back to `string` if parsing fails. |
 
 ### JSON Types
 
-| PostgreSQL Type | SurrealDB Representation | Notes |
-|----------------|-------------------------|-------|
-| `json` | Not supported in incremental sync | Parsed but not yet implemented in upsert - see [incremental_sync.rs:246-255](../crates/postgresql-wal2json-source/src/incremental_sync.rs#L246-L255) |
-| `jsonb` | Not supported in incremental sync | Parsed but not yet implemented in upsert - see [incremental_sync.rs:246-255](../crates/postgresql-wal2json-source/src/incremental_sync.rs#L246-L255) |
+| PostgreSQL Type | SurrealDB Type | Notes |
+|----------------|----------------|-------|
+| `json` | `object` / `array` | Recursively converted using [json_to_surreal()](../crates/postgresql-wal2json-source/src/incremental_sync.rs#L311-L339) |
+| `jsonb` | `object` / `array` | Recursively converted using [json_to_surreal()](../crates/postgresql-wal2json-source/src/incremental_sync.rs#L311-L339) |
 
-**Note**: While wal2json sends JSON/JSONB as strings (see [wal2json issue #221](https://github.com/eulerto/wal2json/issues/221)) and our parser successfully converts them to nested `serde_json::Value` objects, the incremental sync `upsert()` function currently only handles Integer, Double, Text, Boolean, and Null types. Attempting to sync JSON/JSONB columns will result in an "Unsupported value type" error.
+**Note**: While wal2json sends JSON/JSONB as strings (see [wal2json issue #221](https://github.com/eulerto/wal2json/issues/221)), our parser successfully converts them to nested structures, which are then recursively converted to SurrealDB objects and arrays with proper type preservation for nested values.
 
 ### Arrays
 
-| PostgreSQL Type | SurrealDB Representation | Supported Element Types |
-|----------------|-------------------------|------------------------|
-| `type[]` | `Array` | `integer[]`, `bigint[]`, `text[]`, `boolean[]`, `varchar[]` |
+| PostgreSQL Type | SurrealDB Type | Supported Element Types |
+|----------------|----------------|------------------------|
+| `type[]` | `array` | `integer[]`, `bigint[]`, `text[]`, `boolean[]`, `varchar[]` |
 
 **Array Parsing Limitations:**
 - Does NOT support nested arrays (e.g., `integer[][]`)
@@ -280,9 +267,9 @@ The table below shows what the **parser** supports (for full sync), not what inc
 
 ### NULL Values
 
-| PostgreSQL Value | SurrealDB Representation |
-|-----------------|-------------------------|
-| `NULL` | `None` / `null` |
+| PostgreSQL Value | SurrealDB Type |
+|-----------------|----------------|
+| `NULL` | `null` |
 
 ## Primary Key Handling
 
@@ -299,9 +286,21 @@ The wal2json output includes a `pk` field with primary key information:
 }
 ```
 
-### Composite Keys
+Primary key values are extracted and used as SurrealDB [record IDs](https://surrealdb.com/docs/surrealql/datamodel/ids).
 
-For tables with composite primary keys:
+### Single Primary Keys
+
+Single primary keys map directly to record IDs:
+
+| PostgreSQL Primary Key | SurrealDB Record ID | Example |
+|------------------------|---------------------|---------|
+| `id INTEGER = 123` | `tablename:123` | Numeric ID |
+| `id TEXT = 'user_abc'` | `tablename:'user_abc'` | String ID |
+| `id UUID = '550e8400...'` | `tablename:u"550e8400-e29b-41d4-a716-446655440000"` | UUID ID |
+
+### Composite Primary Keys
+
+Tables with composite primary keys use SurrealDB's array-based record IDs:
 
 ```json
 {
@@ -312,7 +311,15 @@ For tables with composite primary keys:
 }
 ```
 
-In SurrealDB, composite keys are stored as an array: `["user_123", "order_456"]`
+**Example Record IDs:**
+- PostgreSQL: `user_id = 123, order_id = 456`
+- SurrealDB: `tablename:[123, 456]`
+
+**Another Example:**
+- PostgreSQL: `tenant = 'acme', user_id = 789`
+- SurrealDB: `tablename:['acme', 789]`
+
+The composite key values are converted to a SurrealDB array and used as the record ID, preserving the order and types of the original primary key columns
 
 ### Fallback Strategy
 

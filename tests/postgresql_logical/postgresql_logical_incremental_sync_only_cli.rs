@@ -8,10 +8,10 @@ use surreal_sync::testing::postgresql::create_tables_and_indices;
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
+use surreal_sync_postgresql_wal2json_source::testing::container::PostgresContainer;
 
 /// Test PostgreSQL logical replication incremental sync CLI
 #[tokio::test]
-#[ignore = "Requires wal2json PostgreSQL extension not available in devcontainer"]
 async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -19,15 +19,22 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
         .try_init()
         .ok();
 
+    // Setup PostgreSQL container with wal2json
+    const TEST_PORT: u16 = 15441; // Use unique port
+    let container = PostgresContainer::new("test-logical-incr-cli", TEST_PORT);
+    container.build_image()?;
+    container.start()?;
+    container.wait_until_ready(30).await?;
+
     let test_id = generate_test_id();
 
     // Clean up checkpoint directory to prevent cross-test contamination
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-logical-checkpoints")?;
 
-    // Setup PostgreSQL with test data
-    let pg_config = surreal_sync::testing::postgresql::create_postgres_config();
+    // Setup PostgreSQL with test data using container
+    let connection_string = format!("postgresql://postgres:postgres@localhost:{}/testdb", TEST_PORT);
     let (pg_client, pg_connection) =
-        tokio_postgres::connect(&pg_config.get_connection_string(), tokio_postgres::NoTls).await?;
+        tokio_postgres::connect(&connection_string, tokio_postgres::NoTls).await?;
 
     tokio::spawn(async move {
         if let Err(e) = pg_connection.await {
@@ -56,7 +63,7 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
         "postgresql",
         "full",
         "--connection-string",
-        &pg_config.get_connection_string(),
+        &connection_string,
         "--slot",
         "surreal_sync_incr_test_slot",
         "--tables",
@@ -100,7 +107,7 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
         "postgresql",
         "incremental",
         "--connection-string",
-        &pg_config.get_connection_string(),
+        &connection_string,
         "--slot",
         "surreal_sync_incr_test_slot",
         "--tables",
@@ -149,6 +156,9 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
         .ok(); // Ignore errors if slot doesn't exist
 
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
+
+    // Cleanup: Stop container
+    container.stop()?;
 
     Ok(())
 }
