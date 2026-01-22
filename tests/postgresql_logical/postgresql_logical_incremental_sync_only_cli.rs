@@ -32,10 +32,7 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-logical-checkpoints")?;
 
     // Setup PostgreSQL with test data using container
-    let connection_string = format!(
-        "postgresql://postgres:postgres@localhost:{}/testdb",
-        TEST_PORT
-    );
+    let connection_string = format!("postgresql://postgres:postgres@localhost:{TEST_PORT}/testdb");
     let (pg_client, pg_connection) =
         tokio_postgres::connect(&connection_string, tokio_postgres::NoTls).await?;
 
@@ -81,7 +78,6 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
         "root",
         "--surreal-password",
         "root",
-        "--emit-checkpoints",
         "--checkpoint-dir",
         ".test-logical-checkpoints",
     ];

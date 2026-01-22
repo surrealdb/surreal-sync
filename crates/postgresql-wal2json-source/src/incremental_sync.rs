@@ -55,6 +55,7 @@ pub async fn read_t1_checkpoint_from_surrealdb(
 /// * `checkpoints_surreal_table` - Optional table name for reading checkpoint from SurrealDB
 /// * `to_checkpoint` - Optional stopping LSN position
 /// * `timeout_secs` - Maximum runtime in seconds
+#[allow(clippy::too_many_arguments)]
 pub async fn run_incremental_sync(
     from_opts: SourceOpts,
     to_namespace: String,

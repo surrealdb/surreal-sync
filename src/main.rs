@@ -1425,11 +1425,8 @@ async fn run_postgresql_logical_incremental(
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
     // Validate checkpoint parameters
-    match (&args.incremental_from, &args.checkpoints_surreal_table) {
-        (None, None) => {
-            anyhow::bail!("Must specify either --incremental-from or --checkpoints-surreal-table")
-        }
-        _ => {}
+    if let (None, None) = (&args.incremental_from, &args.checkpoints_surreal_table) {
+        anyhow::bail!("Must specify either --incremental-from or --checkpoints-surreal-table")
     }
 
     // Parse checkpoints
@@ -1967,7 +1964,10 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
 
                 // Skip data insertion in schema-only mode
                 if args.common.schema_only {
-                    tracing::info!("Skipping data insertion for '{}' (schema-only mode)", table_name);
+                    tracing::info!(
+                        "Skipping data insertion for '{}' (schema-only mode)",
+                        table_name
+                    );
                     continue;
                 }
 

@@ -113,7 +113,9 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
     let sync_config = checkpoint::SyncConfig {
         incremental: false, // This is full sync to set up infrastructure
         emit_checkpoints: true,
-        checkpoint_storage: checkpoint::CheckpointStorage::Filesystem { dir: CHECKPOINT_DIR.to_string() },
+        checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
+            dir: CHECKPOINT_DIR.to_string(),
+        },
     };
 
     surreal_sync_postgresql_trigger_source::run_full_sync(

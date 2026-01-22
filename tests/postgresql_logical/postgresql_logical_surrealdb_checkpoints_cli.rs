@@ -30,10 +30,7 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
     let test_id = generate_test_id();
 
     // Setup PostgreSQL with test data using container
-    let connection_string = format!(
-        "postgresql://postgres:postgres@localhost:{}/testdb",
-        TEST_PORT
-    );
+    let connection_string = format!("postgresql://postgres:postgres@localhost:{TEST_PORT}/testdb");
     let (pg_client, pg_connection) =
         tokio_postgres::connect(&connection_string, tokio_postgres::NoTls).await?;
 
@@ -62,7 +59,7 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
 
     // Clean up any existing checkpoints from previous test runs
     surreal
-        .query(format!("DELETE FROM {}", checkpoint_table))
+        .query(format!("DELETE FROM {checkpoint_table}"))
         .await?;
 
     // Execute CLI command for initial full sync WITH SurrealDB checkpoint storage
@@ -92,11 +89,14 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
     ];
 
     let output = execute_surreal_sync(&args)?;
-    assert_cli_success(&output, "PostgreSQL logical full sync with SurrealDB checkpoints");
+    assert_cli_success(
+        &output,
+        "PostgreSQL logical full sync with SurrealDB checkpoints",
+    );
 
     // Verify checkpoints were stored in SurrealDB (not filesystem)
     let mut response = surreal
-        .query(format!("SELECT * FROM {}", checkpoint_table))
+        .query(format!("SELECT * FROM {checkpoint_table}"))
         .await?;
 
     #[derive(serde::Deserialize, Debug)]
@@ -108,7 +108,7 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
     }
 
     let checkpoints: Vec<StoredCheckpoint> = response.take(0)?;
-    println!("Checkpoints in SurrealDB: {:?}", checkpoints);
+    println!("Checkpoints in SurrealDB: {checkpoints:?}");
 
     // Should have t1 (FullSyncStart) and t2 (FullSyncEnd) checkpoints
     assert_eq!(
@@ -130,8 +130,8 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
     assert_eq!(t1_checkpoint.database_type, "postgresql-wal2json");
     assert_eq!(t2_checkpoint.database_type, "postgresql-wal2json");
 
-    println!("t1 checkpoint: {:?}", t1_checkpoint);
-    println!("t2 checkpoint: {:?}", t2_checkpoint);
+    println!("t1 checkpoint: {t1_checkpoint:?}");
+    println!("t2 checkpoint: {t2_checkpoint:?}");
 
     // Now insert some data for incremental sync to pick up
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
@@ -196,7 +196,7 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
 
     // Cleanup checkpoints from SurrealDB
     surreal
-        .query(format!("DELETE FROM {}", checkpoint_table))
+        .query(format!("DELETE FROM {checkpoint_table}"))
         .await?;
 
     // Cleanup: Stop container
