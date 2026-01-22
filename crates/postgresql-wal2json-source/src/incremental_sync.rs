@@ -168,6 +168,20 @@ pub async fn run_incremental_sync(
                 }
             }
             Err(e) => {
+                // Error handling: Retry on transient errors
+                //
+                // pg_logical_slot_peek_changes() only returns committed transactions,
+                // so long-running transactions will NOT cause errors - they simply
+                // remain invisible until they commit.
+                //
+                // Errors here are typically:
+                // - Transient connection issues
+                // - Network timeouts
+                // - WAL parsing errors (bugs in wal2json or our code)
+                // - Data corruption
+                //
+                // We retry after 1 second to handle transient issues. The overall
+                // timeout (from the outer loop) prevents infinite retries.
                 warn!("Error peeking changes: {}", e);
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
             }

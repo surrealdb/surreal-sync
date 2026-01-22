@@ -2,6 +2,112 @@
 //!
 //! This module provides Client and Slot structs for managing PostgreSQL
 //! logical replication using regular SQL connections and wal2json.
+//!
+//! # How It Works Under the Hood
+//!
+//! ## Connection Model
+//!
+//! This implementation uses **regular SQL connections** via `tokio-postgres`
+//! rather than the PostgreSQL replication protocol. This is due to a limitation
+//! in the `tokio-postgres` library which doesn't support streaming replication
+//! connections.
+//!
+//! **What this means:**
+//! - Changes are retrieved in batches using SQL queries (`pg_logical_slot_peek_changes`)
+//! - Slot position is advanced using SQL functions (`pg_replication_slot_advance`)
+//! - Slightly higher latency compared to streaming replication
+//! - Better compatibility with connection poolers and proxies
+//! - No need for special replication connection permissions
+//!
+//! ## Transaction Handling
+//!
+//! The wal2json output includes transaction markers that ensure transactional consistency:
+//!
+//! - **BEGIN**: Starts a transaction (includes transaction ID `xid` and timestamp)
+//! - **INSERT/UPDATE/DELETE**: Data modification operations within the transaction
+//! - **COMMIT**: Commits the transaction (includes `nextlsn` for slot advancement)
+//!
+//! All changes within a transaction are processed as a batch. The slot is only
+//! advanced after the entire transaction is committed, ensuring transactional
+//! consistency and preventing partial transaction processing.
+//!
+//! **Transaction Validation:**
+//! - Each data change is validated to ensure it belongs to the current open transaction
+//! - Transaction IDs (xid) are checked for consistency across BEGIN/COMMIT/data changes
+//! - Only committed transactions are visible (in-progress transactions remain invisible)
+//!
+//! ## At-Least-Once Delivery Pattern
+//!
+//! The implementation follows a three-phase pattern to guarantee no data loss:
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │ 1. PEEK: Retrieve changes without consuming them from the slot │
+//! │    let (changes, nextlsn) = slot.peek().await?;                 │
+//! └─────────────────────────────────────────────────────────────────┘
+//!                               │
+//!                               ▼
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │ 2. PROCESS: Apply all changes to the target database            │
+//! │    for change in &changes {                                     │
+//! │        process_change_to_surrealdb(&change)?;                   │
+//! │    }                                                             │
+//! └─────────────────────────────────────────────────────────────────┘
+//!                               │
+//!                               ▼
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │ 3. ADVANCE: Only mark changes as consumed after success         │
+//! │    slot.advance(&nextlsn).await?;                               │
+//! └─────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! **Guarantees:**
+//! - If processing fails at step 2, changes remain in the slot and will be re-delivered
+//! - No data is ever lost (at-least-once delivery)
+//! - Changes may be re-delivered if processing fails (requires idempotent handling)
+//!
+//! ## LSN-Based Checkpointing
+//!
+//! PostgreSQL uses Log Sequence Numbers (LSN) to identify positions in the
+//! Write-Ahead Log. LSNs are represented as `segment/offset` (e.g., `0/1949850`).
+//!
+//! **Two-Phase Checkpoint Emission:**
+//! - **t1 checkpoint**: Captured before full sync begins (starting LSN)
+//! - **t2 checkpoint**: Captured after full sync completes (ending LSN)
+//!
+//! **Why incremental sync starts from t1, not t2:**
+//!
+//! Depending on the database isolation level, the full sync might capture:
+//! - Data exactly at t1 (with SERIALIZABLE isolation)
+//! - Mixed data between t1 and t2 (with READ COMMITTED isolation)
+//!
+//! Starting incremental sync from t1 ensures no changes are missed regardless
+//! of isolation level, following at-least-once delivery semantics. Some changes
+//! may be replayed that were already captured during full sync, but this is
+//! acceptable with idempotent processing.
+//!
+//! ## Streaming Behavior
+//!
+//! **Transaction-to-Transaction Streaming (✅ Supported):**
+//! - This implementation streams transactions continuously
+//! - As soon as a transaction commits, it becomes visible via `peek()`
+//! - Multiple transactions are processed one after another
+//! - This is the normal mode of operation for logical replication
+//!
+//! **Intra-Transaction Streaming (❌ Not Supported):**
+//! - Cannot process parts of a single large transaction before it commits
+//! - Large transactions appear atomically (all-or-nothing)
+//! - May cause memory spikes for very large transactions (millions of rows)
+//!
+//! To support intra-transaction streaming would require:
+//! - Switching from SQL functions to the streaming replication protocol
+//! - Using `pg_recvlogical` or implementing the replication protocol
+//! - Handling streaming callbacks: `stream_start_cb`, `stream_change_cb`, `stream_commit_cb`
+//! - See: https://www.postgresql.org/docs/current/logicaldecoding-streaming.html
+//!
+//! Note: wal2json itself supports both modes. The limitation is our use of the
+//! SQL function interface (`pg_logical_slot_peek_changes`), which only returns
+//! committed transactions regardless of wal2json's output format.
 
 use anyhow::{bail, Context, Result};
 use std::sync::Arc;
@@ -382,7 +488,19 @@ impl Slot {
                                         bail!("Found {action} action with xid={xid} outside of transaction");
                                     }
 
-                                    // Only include changes if they match our table filter (if any)
+                                    // Table filtering: Client-side filtering after reading from WAL
+                                    //
+                                    // IMPORTANT: All changes are read from the WAL regardless of the
+                                    // table filter. Filtering happens in-memory by checking each change's
+                                    // table name against the configured table_names list.
+                                    //
+                                    // This means:
+                                    // - Multiple processes with different table filters will read the SAME
+                                    //   WAL data (once per replication slot)
+                                    // - For parallel processing, use separate replication slots (different
+                                    //   --slot names), each maintaining its own position in the WAL
+                                    // - Each slot causes the WAL to be read again, so partitioning tables
+                                    //   across multiple processes increases WAL read load proportionally
                                     let should_include = if !self.table_names.is_empty() {
                                         self.table_names.iter().any(|t| t == &row.table)
                                     } else {
@@ -406,9 +524,24 @@ impl Slot {
             }
         }
 
-        // If we have no nextlsn, it means no complete transactions were found
+        // Missing COMMIT validation (defensive programming)
+        //
+        // According to PostgreSQL documentation, pg_logical_slot_peek_changes() only
+        // returns committed transactions. If we see changes but no COMMIT marker with
+        // nextlsn, this indicates one of:
+        //
+        // 1. Bug in wal2json output plugin
+        // 2. Data corruption in WAL
+        // 3. Logic error in our parsing code
+        //
+        // This should NOT happen during normal operation. Long-running transactions
+        // remain invisible until they commit, at which point they appear with complete
+        // BEGIN...COMMIT markers.
+        //
+        // This check is defensive programming to catch unexpected scenarios rather
+        // than silently returning incomplete data that could violate ACID guarantees.
         if last_nextlsn.is_empty() && !changes.is_empty() {
-            bail!("Found changes but no complete transaction (missing COMMIT). This may indicate a long-running transaction.");
+            bail!("Found changes but no COMMIT marker with nextlsn. This indicates a bug in wal2json, data corruption, or parsing error.");
         }
 
         Ok((changes, last_nextlsn))
