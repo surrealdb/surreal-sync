@@ -18,7 +18,7 @@ surrealdb-types = { path = "../surrealdb-types" }
 sync-core = { path = "../sync-core" }
 
 # Kafka client
-rdkafka = { version = "0.36", features = ["tokio"] }
+rdkafka = { version = "0.38", features = ["tokio"] }
 
 # Protobuf support
 protobuf = "3.5"
