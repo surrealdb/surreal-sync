@@ -225,8 +225,11 @@ def parse_container_status(ps_output: str, workers: int, expected_sync: int) -> 
                 name = line.split()[0] if line.split() else "unknown"
                 status.failed_containers.append(name)
 
-        # Check for sync containers (both patterns: sync-1 and sync-tablename)
-        if re.search(r'output-sync-', line):
+        # Check for sync containers (supports multiple patterns):
+        # - output-sync-1 (standard sync)
+        # - output-sync-tablename (Kafka per-topic sync)
+        # - output-incremental-sync-1 (PostgreSQL logical replication)
+        if re.search(r'output-(sync|incremental-sync)-', line):
             if 'Exited (0)' in line:
                 status.sync_done += 1
             elif re.search(r'Exited \([1-9]', line):
@@ -1049,6 +1052,12 @@ Suggested actions:
             container_type = "unknown"
             if "populate" in container_name.lower():
                 container_type = "populate"
+            elif "schema-init" in container_name.lower():
+                container_type = "setup"
+            elif "full-sync-setup" in container_name.lower():
+                container_type = "setup"
+            elif "incremental-sync" in container_name.lower():
+                container_type = "sync"
             elif "sync" in container_name.lower():
                 container_type = "sync"
             elif "verify" in container_name.lower():

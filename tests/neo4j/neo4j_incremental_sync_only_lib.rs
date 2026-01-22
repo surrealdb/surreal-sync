@@ -71,7 +71,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     let sync_config = checkpoint::SyncConfig {
         incremental: false, // This is full sync with empty data
         emit_checkpoints: true,
-        checkpoint_dir: Some(".test-checkpoints".to_string()),
+        checkpoint_storage: checkpoint::CheckpointStorage::Filesystem { dir: ".test-checkpoints".to_string() },
     };
 
     // Run full sync with empty data to get checkpoint (t1)

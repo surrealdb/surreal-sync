@@ -5,6 +5,7 @@
 
 use crate::checkpoint::PostgreSQLLogicalCheckpoint;
 use anyhow::{Context, Result};
+use checkpoint::{CheckpointID, CheckpointStore};
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -14,20 +15,44 @@ use tracing::{debug, error, info, warn};
 
 use crate::full_sync::SourceOpts;
 
+/// Read t1 checkpoint from SurrealDB
+///
+/// Reads the full_sync_start checkpoint from the specified table.
+pub async fn read_t1_checkpoint_from_surrealdb(
+    surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
+    table_name: &str,
+) -> Result<PostgreSQLLogicalCheckpoint> {
+    let store = CheckpointStore::new(surreal.clone(), table_name.to_string());
+
+    let id = CheckpointID {
+        database_type: "postgresql-wal2json".to_string(),
+        phase: "full_sync_start".to_string(),
+    };
+
+    let stored = store.read_checkpoint(&id).await?.ok_or_else(|| {
+        anyhow::anyhow!("No t1 checkpoint found in SurrealDB table '{table_name}'")
+    })?;
+
+    let checkpoint: PostgreSQLLogicalCheckpoint = serde_json::from_str(&stored.checkpoint_data)?;
+    Ok(checkpoint)
+}
+
 /// Run incremental sync from PostgreSQL to SurrealDB
 ///
 /// This function:
-/// 1. Connects to PostgreSQL
-/// 2. Starts logical replication from the given checkpoint position
-/// 3. Streams and applies changes to SurrealDB
-/// 4. Stops when timeout is reached or target checkpoint is hit
+/// 1. Connects to SurrealDB and PostgreSQL
+/// 2. Reads starting checkpoint (from parameter or SurrealDB)
+/// 3. Starts logical replication from the checkpoint position
+/// 4. Streams and applies changes to SurrealDB
+/// 5. Stops when timeout is reached or target checkpoint is hit
 ///
 /// # Arguments
 /// * `from_opts` - PostgreSQL source options
 /// * `to_namespace` - Target SurrealDB namespace
 /// * `to_database` - Target SurrealDB database
 /// * `to_opts` - SurrealDB connection options
-/// * `from_checkpoint` - Starting LSN position
+/// * `from_checkpoint` - Optional starting LSN position (if None, reads from SurrealDB)
+/// * `checkpoints_surreal_table` - Optional table name for reading checkpoint from SurrealDB
 /// * `to_checkpoint` - Optional stopping LSN position
 /// * `timeout_secs` - Maximum runtime in seconds
 pub async fn run_incremental_sync(
@@ -35,10 +60,39 @@ pub async fn run_incremental_sync(
     to_namespace: String,
     to_database: String,
     to_opts: surreal_sync_postgresql::SurrealOpts,
-    from_checkpoint: PostgreSQLLogicalCheckpoint,
+    from_checkpoint: Option<PostgreSQLLogicalCheckpoint>,
+    checkpoints_surreal_table: Option<String>,
     to_checkpoint: Option<PostgreSQLLogicalCheckpoint>,
     timeout_secs: u64,
 ) -> Result<()> {
+    // Connect to SurrealDB first (needed if reading checkpoint from SurrealDB)
+    let surreal_endpoint = to_opts
+        .surreal_endpoint
+        .replace("http://", "ws://")
+        .replace("https://", "wss://");
+    let surreal = surrealdb::engine::any::connect(surreal_endpoint).await?;
+
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: &to_opts.surreal_username,
+            password: &to_opts.surreal_password,
+        })
+        .await?;
+
+    surreal.use_ns(&to_namespace).use_db(&to_database).await?;
+
+    // Determine starting checkpoint
+    let from_checkpoint = match (from_checkpoint, checkpoints_surreal_table) {
+        (Some(cp), _) => cp,
+        (None, Some(table)) => {
+            info!("Reading t1 checkpoint from SurrealDB table: {}", table);
+            read_t1_checkpoint_from_surrealdb(&surreal, &table).await?
+        }
+        (None, None) => {
+            anyhow::bail!("Must provide either from_checkpoint or checkpoints_surreal_table")
+        }
+    };
+
     info!(
         "Starting PostgreSQL logical replication incremental sync from LSN: {}",
         from_checkpoint.lsn
@@ -58,22 +112,6 @@ pub async fn run_incremental_sync(
             error!("PostgreSQL connection error: {e}");
         }
     });
-
-    // Connect to SurrealDB
-    let surreal_endpoint = to_opts
-        .surreal_endpoint
-        .replace("http://", "ws://")
-        .replace("https://", "wss://");
-    let surreal = surrealdb::engine::any::connect(surreal_endpoint).await?;
-
-    surreal
-        .signin(surrealdb::opt::auth::Root {
-            username: &to_opts.surreal_username,
-            password: &to_opts.surreal_password,
-        })
-        .await?;
-
-    surreal.use_ns(&to_namespace).use_db(&to_database).await?;
 
     // Create logical replication client
     let pg_client = crate::Client::new(client, from_opts.tables.clone());
@@ -304,10 +342,8 @@ fn convert_postgres_value_to_surreal(value: &crate::Value) -> Result<Value> {
 
         // Arrays - recursive conversion
         crate::Value::Array(arr) => {
-            let converted: Result<Vec<Value>> = arr
-                .iter()
-                .map(convert_postgres_value_to_surreal)
-                .collect();
+            let converted: Result<Vec<Value>> =
+                arr.iter().map(convert_postgres_value_to_surreal).collect();
             Ok(Value::Array(Array::from(converted?)))
         }
 
@@ -401,10 +437,8 @@ async fn upsert(
         },
         crate::Value::Array(arr) => {
             // Composite primary key - convert array
-            let converted: Result<Vec<Value>> = arr
-                .iter()
-                .map(convert_postgres_value_to_surreal)
-                .collect();
+            let converted: Result<Vec<Value>> =
+                arr.iter().map(convert_postgres_value_to_surreal).collect();
             Value::Array(Array::from(converted?))
         }
         _ => anyhow::bail!(
@@ -445,10 +479,8 @@ async fn delete(
         },
         crate::Value::Array(arr) => {
             // Composite primary key - convert array
-            let converted: Result<Vec<Value>> = arr
-                .iter()
-                .map(convert_postgres_value_to_surreal)
-                .collect();
+            let converted: Result<Vec<Value>> =
+                arr.iter().map(convert_postgres_value_to_surreal).collect();
             Value::Array(Array::from(converted?))
         }
         _ => anyhow::bail!(

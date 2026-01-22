@@ -102,7 +102,7 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t1 (before full sync starts) if configured
     let _checkpoint_t1 = if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone(), None);
 
         // Get current resume token from MongoDB before creating source
         let initial_resume_token =
@@ -286,7 +286,7 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t2 (after full sync completes) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone(), None);
 
         // Get current checkpoint after migration
         let database_name = from_opts

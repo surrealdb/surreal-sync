@@ -36,4 +36,12 @@ pub struct CommonPopulateArgs {
     /// Aggregator server URL for HTTP-based metrics collection (e.g., http://aggregator:9090)
     #[arg(long)]
     pub aggregator_url: Option<String>,
+
+    /// Schema-only mode: create tables without inserting any data
+    #[arg(long, conflicts_with = "data_only")]
+    pub schema_only: bool,
+
+    /// Data-only mode: insert data without creating tables (tables must already exist)
+    #[arg(long, conflicts_with = "schema_only")]
+    pub data_only: bool,
 }

@@ -59,6 +59,8 @@ impl PlatformChoice {
 pub enum SourceChoice {
     Mysql,
     Postgresql,
+    #[value(name = "postgresql-wal2json")]
+    PostgresqlWal2Json,
     Mongodb,
     Neo4j,
     Kafka,
@@ -71,6 +73,7 @@ impl From<SourceChoice> for SourceType {
         match choice {
             SourceChoice::Mysql => SourceType::MySQL,
             SourceChoice::Postgresql => SourceType::PostgreSQL,
+            SourceChoice::PostgresqlWal2Json => SourceType::PostgreSQLLogical,
             SourceChoice::Mongodb => SourceType::MongoDB,
             SourceChoice::Neo4j => SourceType::Neo4j,
             SourceChoice::Kafka => SourceType::Kafka,

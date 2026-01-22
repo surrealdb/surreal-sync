@@ -1,5 +1,20 @@
 //! Sync configuration for checkpoint operations.
 
+/// Checkpoint storage backend
+#[derive(Debug, Clone)]
+pub enum CheckpointStorage {
+    /// No checkpoint storage
+    Disabled,
+    /// Filesystem storage at specified directory
+    Filesystem { dir: String },
+    /// SurrealDB storage in specified table
+    SurrealDB {
+        table_name: String,
+        namespace: String,
+        database: String,
+    },
+}
+
 /// Configuration for sync operations.
 ///
 /// Controls checkpoint emission and storage behavior.
@@ -14,18 +29,11 @@ pub struct SyncConfig {
 
     /// Whether to emit checkpoints during sync.
     ///
-    /// When `true`, checkpoints are written to disk at:
-    /// - Start of full sync (t1)
-    /// - End of full sync (t2)
+    /// When `true`, checkpoints are written according to `checkpoint_storage`.
     pub emit_checkpoints: bool,
 
-    /// Path to write checkpoint files.
-    ///
-    /// Checkpoint files are named with the pattern:
-    /// `checkpoint_{phase}_{timestamp}.json`
-    ///
-    /// If `None`, checkpoint emission is disabled even if `emit_checkpoints` is `true`.
-    pub checkpoint_dir: Option<String>,
+    /// Checkpoint storage backend configuration
+    pub checkpoint_storage: CheckpointStorage,
 }
 
 impl Default for SyncConfig {
@@ -33,7 +41,9 @@ impl Default for SyncConfig {
         Self {
             incremental: false,
             emit_checkpoints: true,
-            checkpoint_dir: Some(".surreal-sync-checkpoints".to_string()),
+            checkpoint_storage: CheckpointStorage::Filesystem {
+                dir: ".surreal-sync-checkpoints".to_string(),
+            },
         }
     }
 }
@@ -44,12 +54,31 @@ impl SyncConfig {
         Self::default()
     }
 
-    /// Create a config for full sync with checkpoint emission.
+    /// Create a config for full sync with filesystem checkpoint emission.
     pub fn full_sync_with_checkpoints(checkpoint_dir: String) -> Self {
         Self {
             incremental: false,
             emit_checkpoints: true,
-            checkpoint_dir: Some(checkpoint_dir),
+            checkpoint_storage: CheckpointStorage::Filesystem {
+                dir: checkpoint_dir,
+            },
+        }
+    }
+
+    /// Create a config for full sync with SurrealDB checkpoint emission.
+    pub fn full_sync_with_surrealdb_checkpoints(
+        table_name: String,
+        namespace: String,
+        database: String,
+    ) -> Self {
+        Self {
+            incremental: false,
+            emit_checkpoints: true,
+            checkpoint_storage: CheckpointStorage::SurrealDB {
+                table_name,
+                namespace,
+                database,
+            },
         }
     }
 
@@ -58,12 +87,12 @@ impl SyncConfig {
         Self {
             incremental: true,
             emit_checkpoints: false,
-            checkpoint_dir: None,
+            checkpoint_storage: CheckpointStorage::Disabled,
         }
     }
 
     /// Check if checkpoint emission is enabled and configured.
     pub fn should_emit_checkpoints(&self) -> bool {
-        self.emit_checkpoints && self.checkpoint_dir.is_some()
+        self.emit_checkpoints && !matches!(self.checkpoint_storage, CheckpointStorage::Disabled)
     }
 }

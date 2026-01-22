@@ -57,28 +57,7 @@ pub async fn run_full_sync(
         }
     });
 
-    // Create logical replication client and ensure slot exists
-    let pg_client = crate::Client::new(client, from_opts.tables.clone());
-    pg_client.create_slot(&from_opts.slot_name).await?;
-
-    // Emit checkpoint t1 (before full sync starts) if configured
-    if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone());
-
-        // Get current WAL LSN position - this is where incremental sync will start
-        let checkpoint = pg_client.get_current_wal_lsn_checkpoint().await?;
-
-        sync_manager
-            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
-            .await?;
-
-        info!(
-            "Emitted full sync start checkpoint (t1): {}",
-            checkpoint.lsn
-        );
-    }
-
-    // Connect to SurrealDB
+    // Connect to SurrealDB early (needed for checkpoint storage)
     let surreal_endpoint = to_opts
         .surreal_endpoint
         .replace("http://", "ws://")
@@ -93,6 +72,27 @@ pub async fn run_full_sync(
         .await?;
 
     surreal.use_ns(&to_namespace).use_db(&to_database).await?;
+
+    // Create logical replication client and ensure slot exists
+    let pg_client = crate::Client::new(client, from_opts.tables.clone());
+    pg_client.create_slot(&from_opts.slot_name).await?;
+
+    // Emit checkpoint t1 (before full sync starts) if configured
+    if let Some(ref config) = sync_config {
+        let sync_manager = SyncManager::new(config.clone(), Some(surreal.clone()));
+
+        // Get current WAL LSN position - this is where incremental sync will start
+        let checkpoint = pg_client.get_current_wal_lsn_checkpoint().await?;
+
+        sync_manager
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
+            .await?;
+
+        info!(
+            "Emitted full sync start checkpoint (t1): {}",
+            checkpoint.lsn
+        );
+    }
 
     // Get list of tables to migrate
     let tables = if from_opts.tables.is_empty() {
@@ -124,7 +124,7 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t2 (after full sync completes) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone(), Some(surreal.clone()));
 
         // Get final WAL LSN position
         let checkpoint = pg_client.get_current_wal_lsn_checkpoint().await?;

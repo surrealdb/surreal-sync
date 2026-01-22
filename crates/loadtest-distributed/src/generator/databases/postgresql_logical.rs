@@ -13,9 +13,22 @@ use serde_yaml::Value;
 /// This configuration enables WAL-based logical replication by:
 /// - Setting wal_level=logical (required for logical replication)
 /// - Setting max_wal_senders and max_replication_slots for replication connections
-/// - Using the debezium/postgres image which includes wal2json extension
+/// - Building a custom postgres:16 image with wal2json extension
 pub fn generate_postgresql_logical_docker_service(config: &DatabaseConfig) -> Value {
     let mut service = create_base_docker_service(&config.image, &config.resources, "loadtest");
+
+    // Build custom image with wal2json extension
+    // Context is parent directory since docker-compose runs from output/
+    let mut build = serde_yaml::Mapping::new();
+    build.insert(
+        Value::String("context".to_string()),
+        Value::String("..".to_string()),
+    );
+    build.insert(
+        Value::String("dockerfile".to_string()),
+        Value::String("Dockerfile.postgres16.wal2json".to_string()),
+    );
+    service.insert(Value::String("build".to_string()), Value::Mapping(build));
 
     // Environment variables for PostgreSQL
     add_environment(
@@ -229,7 +242,7 @@ mod tests {
     fn test_config() -> DatabaseConfig {
         DatabaseConfig {
             source_type: SourceType::PostgreSQLLogical,
-            image: "debezium/postgres:16".to_string(),
+            image: "postgres-wal2json:latest".to_string(),
             resources: ResourceLimits::default(),
             tmpfs_storage: false,
             tmpfs_size: None,
@@ -245,7 +258,8 @@ mod tests {
         let service = generate_postgresql_logical_docker_service(&config);
         let yaml = serde_yaml::to_string(&service).unwrap();
 
-        assert!(yaml.contains("debezium/postgres:16"));
+        assert!(yaml.contains("postgres-wal2json:latest"));
+        assert!(yaml.contains("Dockerfile.postgres16.wal2json"));
         assert!(yaml.contains("POSTGRES_PASSWORD=postgres"));
         // Verify logical replication settings
         assert!(yaml.contains("wal_level=logical"));
@@ -260,7 +274,7 @@ mod tests {
 
         assert!(statefulset.contains("kind: StatefulSet"));
         assert!(statefulset.contains("namespace: loadtest"));
-        assert!(statefulset.contains("debezium/postgres:16"));
+        assert!(statefulset.contains("postgres-wal2json:latest"));
         // Verify logical replication settings
         assert!(statefulset.contains("wal_level=logical"));
         assert!(statefulset.contains("max_wal_senders=10"));

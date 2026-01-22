@@ -1,0 +1,50 @@
+
+# Dockerfile for PostgreSQL 16 with wal2json extension
+#
+# This image is a minimal PostgreSQL 16 setup that can be used to test surreal-sync's
+# logical replication capabilities using the wal2json output plugin.
+#
+# To build this image, run:
+#   docker build -t postgres-16-wal2json:dev -f ./crates/postgresql/Dockerfile.postgres16.wal2json ./crates/postgresql
+#
+# To run a Postgres container with wal2json enabled, run:
+#   docker run --name postgres1 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=testdb -it --rm postgres-16-wal2json:dev postgres -c wal_level=logical -c max_wal_senders=10 -c max_replication_slots=10 -c track_commit_timestamp=on
+#
+# To connect to the database, use:
+#   docker run --network=container:postgres1 -it --rm -e POSTGRES_PASSWORD=postgres postgres:16 psql --user postgres -h localhost
+#
+# In psql, create a replication slot with:
+#   SELECT pg_create_logical_replication_slot('test_slot', 'wal2json');
+#
+# Create a sample table and insert some data:
+#    CREATE table test (id int primary key);
+#    INSERT INTO test (id) VALUES (1), (2), (3);
+#
+# To peek at the changes, run:
+#   SELECT * FROM pg_logical_slot_peek_changes('test_slot', NULL, NULL);
+#
+# To advance the slot and consume the changes, run:
+#   SELECT pg_replication_slot_advance('test_slot', '0/19A9AB8');
+#
+# Now insert more data and see only the new changes are returned by peek_changes.
+#   INSERT INTO test (id) VALUES (4), (5), (6);
+#   SELECT * FROM pg_logical_slot_peek_changes('test_slot', NULL, NULL);
+#
+# SELECT * FROM pg_logical_slot_peek_changes('test_slot', NULL, NULL, 'format-version', '2', 'include-transaction', 'false', 'include-pk', 'true', 'add-tables', 'public.test,public.test2');
+#     lsn    | xid |                                                                    data                                                                     
+# -----------+-----+---------------------------------------------------------------------------------------------------------------------------------------------
+#  0/19A9AF0 | 760 | {"action":"I","schema":"public","table":"test","columns":[{"name":"id","type":"integer","value":4}],"pk":[{"name":"id","type":"integer"}]}
+#  0/19A9F60 | 762 | {"action":"I","schema":"public","table":"test","columns":[{"name":"id","type":"integer","value":5}],"pk":[{"name":"id","type":"integer"}]}
+#
+# To clean up, drop the replication slot:
+#   SELECT pg_drop_replication_slot('test_slot');
+#
+# At this point, you are sure that the wal2json output plugin is working correctly with PostgreSQL 16.
+# Run surreal-sync pointing to this database to test logical replication.
+
+FROM postgres:16
+
+# Install wal2json extension
+RUN apt-get update && \
+    apt-get install -y postgresql-16-wal2json && \
+    rm -rf /var/lib/apt/lists/*

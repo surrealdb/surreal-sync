@@ -69,7 +69,7 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t1 (before full sync starts) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone(), None);
 
         // Set up triggers and audit table FIRST to establish incremental sync infrastructure
         super::change_tracking::setup_mysql_change_tracking(&mut conn, &database_name).await?;
@@ -119,7 +119,7 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t2 (after full sync completes) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone(), None);
 
         // Get current checkpoint after migration
         let checkpoint = super::checkpoint::get_current_checkpoint(&mut conn).await?;

@@ -122,7 +122,7 @@ mod tests {
             incremental: false,
         };
 
-        let manager = SyncManager::new(config);
+        let manager = SyncManager::new(config, None);
         let original = MySQLCheckpoint {
             sequence_id: 42,
             timestamp: Utc::now(),
