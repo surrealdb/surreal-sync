@@ -40,7 +40,7 @@ tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_j
 rust_decimal = { version = "^1.23", features = ["db-tokio-postgres"] }
 mysql_async = { version = "0.34" }
 uuid = { version = "1.10", features = ["v4"] }
-rand = "0.8"
+rand = "0.9"
 futures = "0.3"
 log = "0.4"
 
