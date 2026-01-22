@@ -3416,7 +3416,7 @@ name = "loadtest-generator"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "rand 0.8.5",
+ "rand 0.9.1",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -6220,7 +6220,7 @@ dependencies = [
  "neo4j-types",
  "neo4rs",
  "postgresql-types",
- "rand 0.8.5",
+ "rand 0.9.1",
  "rust_decimal",
  "serde",
  "serde_json",
@@ -6393,7 +6393,7 @@ dependencies = [
  "log",
  "mysql-types",
  "mysql_async",
- "rand 0.8.5",
+ "rand 0.9.1",
  "serde",
  "serde_json",
  "surreal-sync-surreal",
