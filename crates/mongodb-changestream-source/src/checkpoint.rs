@@ -181,7 +181,7 @@ mod tests {
             incremental: false,
         };
 
-        let manager = SyncManager::new(config);
+        let manager = SyncManager::new(config, None);
         let original = MongoDBCheckpoint {
             resume_token: vec![100, 200, 255],
             timestamp: Utc::now(),

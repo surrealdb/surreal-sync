@@ -192,12 +192,12 @@ wait-for-completion:
 		\
 		populate_done=$$(echo "$$ps_output" | grep -E "output-populate-[0-9]+-1" | grep -c "Exited (0)" 2>/dev/null); \
 		populate_done=$${populate_done:-0}; \
-		sync_done=$$(echo "$$ps_output" | grep -E "output-sync-1" | grep -c "Exited (0)" 2>/dev/null); \
+		sync_done=$$(echo "$$ps_output" | grep -E "output-(sync|incremental-sync)-1" | grep -c "Exited (0)" 2>/dev/null); \
 		sync_done=$${sync_done:-0}; \
 		verify_done=$$(echo "$$ps_output" | grep -E "output-verify-[0-9]+-1" | grep -c "Exited (0)" 2>/dev/null); \
 		verify_done=$${verify_done:-0}; \
 		\
-		failed=$$(echo "$$ps_output" | grep -E "output-(populate|sync|verify)-[0-9]*-?1" | grep -E "Exited \([1-9]" | awk '{print $$1}' | head -5); \
+		failed=$$(echo "$$ps_output" | grep -E "output-(schema-init|full-sync-setup|populate|sync|incremental-sync|verify)-[0-9]*-?1" | grep -E "Exited \([1-9]" | awk '{print $$1}' | head -5); \
 		if [ -n "$$failed" ]; then \
 			echo ""; \
 			echo ""; \
@@ -273,8 +273,8 @@ wait-for-completion:
 			elif [ "$$sync_done" -lt "1" ]; then \
 				echo "BLOCKED AT: Sync stage - data synchronization not complete"; \
 				echo ""; \
-				echo "─── sync (last 50 lines) ───"; \
-				docker-compose -f docker-compose.loadtest.yml logs --tail=50 sync 2>/dev/null || echo "(no logs)"; \
+				echo "─── sync / incremental-sync (last 50 lines) ───"; \
+				docker-compose -f docker-compose.loadtest.yml logs --tail=50 sync incremental-sync 2>/dev/null || echo "(no logs)"; \
 			else \
 				echo "BLOCKED AT: Verify stage - verification not complete"; \
 				echo ""; \

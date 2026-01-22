@@ -48,34 +48,115 @@ impl ConfigGenerator for DockerComposeGenerator {
         let surrealdb_service = generate_surrealdb_service(config);
         services.insert(Value::String("surrealdb".to_string()), surrealdb_service);
 
-        // Add populate container services
-        for container in &config.containers {
-            let populate_service = generate_populate_service(config, container);
-            services.insert(Value::String(container.id.clone()), populate_service);
-        }
+        // PostgreSQL Logical replication requires a special container sequence
+        if config.source_type == SourceType::PostgreSQLLogical {
+            // 1. Add schema-init container (creates empty tables)
+            let schema_init_service = generate_postgresql_logical_schema_init_service(config);
+            services.insert(
+                Value::String("schema-init".to_string()),
+                schema_init_service,
+            );
 
-        // Add sync service(s)
-        // For Kafka, we need one sync service per topic (table) since Kafka CLI handles one topic at a time
-        if config.source_type == SourceType::Kafka {
-            for (idx, container) in config.containers.iter().enumerate() {
-                for table in &container.tables {
-                    let sync_service =
-                        generate_kafka_sync_service(config, table, container.row_count, idx + 1);
-                    services.insert(Value::String(format!("sync-{table}")), sync_service);
+            // 2. Add full-sync-setup container (creates slot, runs full sync, emits checkpoints)
+            let full_sync_setup_service =
+                generate_postgresql_logical_full_sync_setup_service(config);
+            services.insert(
+                Value::String("full-sync-setup".to_string()),
+                full_sync_setup_service,
+            );
+
+            // 3. Add populate containers (depend on full-sync-setup)
+            for container in &config.containers {
+                let mut populate_service = generate_populate_service(config, container);
+
+                // Update dependencies to wait for full-sync-setup
+                if let Some(Value::Mapping(depends_on)) =
+                    populate_service.get_mut(Value::String("depends_on".to_string()))
+                {
+                    let mut setup_dep = Mapping::new();
+                    setup_dep.insert(
+                        Value::String("condition".to_string()),
+                        Value::String("service_completed_successfully".to_string()),
+                    );
+                    depends_on.insert(
+                        Value::String("full-sync-setup".to_string()),
+                        Value::Mapping(setup_dep),
+                    );
                 }
+
+                services.insert(Value::String(container.id.clone()), populate_service);
+            }
+
+            // 4. Add incremental-sync container (reads checkpoint from SurrealDB, processes populate changes)
+            let incremental_sync_service =
+                generate_postgresql_logical_incremental_sync_service(config);
+            services.insert(
+                Value::String("incremental-sync".to_string()),
+                incremental_sync_service,
+            );
+
+            // 5. Add verify containers (depend on incremental-sync)
+            for container in &config.containers {
+                let mut verify_service = generate_verify_service(config, container);
+
+                // Update dependencies to wait for incremental-sync instead of sync
+                if let Some(Value::Mapping(depends_on)) =
+                    verify_service.get_mut(Value::String("depends_on".to_string()))
+                {
+                    // Remove the "sync" dependency if it exists
+                    depends_on.remove(Value::String("sync".to_string()));
+
+                    // Add incremental-sync dependency
+                    let mut sync_dep = Mapping::new();
+                    sync_dep.insert(
+                        Value::String("condition".to_string()),
+                        Value::String("service_completed_successfully".to_string()),
+                    );
+                    depends_on.insert(
+                        Value::String("incremental-sync".to_string()),
+                        Value::Mapping(sync_dep),
+                    );
+                }
+
+                let verify_id = container.id.replace("populate-", "verify-");
+                services.insert(Value::String(verify_id), verify_service);
             }
         } else {
-            // For other sources, a single sync service handles all tables
-            let sync_service = generate_sync_service(config);
-            services.insert(Value::String("sync".to_string()), sync_service);
-        }
+            // Standard flow for other sources
 
-        // Add verify container services (run after sync completes)
-        for container in &config.containers {
-            let verify_service = generate_verify_service(config, container);
-            // Use verify-N naming to match populate-N
-            let verify_id = container.id.replace("populate-", "verify-");
-            services.insert(Value::String(verify_id), verify_service);
+            // Add populate container services
+            for container in &config.containers {
+                let populate_service = generate_populate_service(config, container);
+                services.insert(Value::String(container.id.clone()), populate_service);
+            }
+
+            // Add sync service(s)
+            // For Kafka, we need one sync service per topic (table) since Kafka CLI handles one topic at a time
+            if config.source_type == SourceType::Kafka {
+                for (idx, container) in config.containers.iter().enumerate() {
+                    for table in &container.tables {
+                        let sync_service = generate_kafka_sync_service(
+                            config,
+                            table,
+                            container.row_count,
+                            idx + 1,
+                        );
+                        services.insert(Value::String(format!("sync-{table}")), sync_service);
+                    }
+                }
+            } else {
+                // For other sources, a single sync service handles all tables
+                let sync_service = generate_sync_service(config);
+                services.insert(Value::String("sync".to_string()), sync_service);
+            }
+
+            // Add verify container services (run after sync completes)
+            for container in &config.containers {
+                let verify_service = generate_verify_service(config, container);
+                // Use verify-N naming to match populate-N
+                let verify_id = container.id.replace("populate-", "verify-");
+                services.insert(Value::String(verify_id), verify_service);
+            }
         }
 
         // Add aggregator service (HTTP-based metrics collection)
@@ -310,15 +391,22 @@ fn generate_populate_service(
     };
 
     let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
+    // For PostgreSQLLogical, populate runs AFTER schema-init creates tables, so use --data-only
+    let data_only_flag = if config.source_type == SourceType::PostgreSQLLogical {
+        " --data-only"
+    } else {
+        ""
+    };
     let command = format!(
-        "loadtest populate {} --schema /config/schema.yaml --tables {} --row-count {} --seed {} {} --batch-size {} --aggregator-url http://aggregator:9090{}",
+        "loadtest populate {} --schema /config/schema.yaml --tables {} --row-count {} --seed {} {} --batch-size {} --aggregator-url http://aggregator:9090{}{}",
         source_cmd,
         tables_arg,
         container.row_count,
         container.seed,
         connection_args,
         container.batch_size,
-        dry_run_flag
+        dry_run_flag,
+        data_only_flag
     );
     service.insert(Value::String("command".to_string()), Value::String(command));
 
@@ -862,6 +950,255 @@ fn generate_aggregator_service(config: &ClusterConfig) -> Value {
     // Other containers use service_started condition for dependency.
 
     // No dependencies - aggregator starts first, other containers depend on it
+
+    Value::Mapping(service)
+}
+
+/// Generate schema-init service for PostgreSQL Logical (creates empty tables).
+fn generate_postgresql_logical_schema_init_service(config: &ClusterConfig) -> Value {
+    let mut service = Mapping::new();
+
+    service.insert(
+        Value::String("image".to_string()),
+        Value::String("surreal-sync:latest".to_string()),
+    );
+
+    // Labels
+    let mut labels = Mapping::new();
+    labels.insert(
+        Value::String("com.surreal-loadtest".to_string()),
+        Value::String("true".to_string()),
+    );
+    service.insert(Value::String("labels".to_string()), Value::Mapping(labels));
+
+    // Command - populate with --schema-only flag
+    let tables: Vec<String> = config
+        .containers
+        .iter()
+        .flat_map(|c| c.tables.clone())
+        .collect();
+    let tables_arg = tables.join(",");
+
+    let command = format!(
+        "loadtest populate postgresql --schema /config/schema.yaml --tables {} --row-count 0 --schema-only --postgresql-connection-string 'postgresql://postgres:postgres@postgresql:5432/{}' --aggregator-url http://aggregator:9090",
+        tables_arg, config.database.database_name
+    );
+    service.insert(Value::String("command".to_string()), Value::String(command));
+
+    // Environment
+    let environment = vec![Value::String("RUST_LOG=info".to_string())];
+    service.insert(
+        Value::String("environment".to_string()),
+        Value::Sequence(environment),
+    );
+
+    // Volumes
+    let volumes = vec![Value::String("./config:/config:ro".to_string())];
+    service.insert(
+        Value::String("volumes".to_string()),
+        Value::Sequence(volumes),
+    );
+
+    // Networks
+    let networks = vec![Value::String(config.network_name.clone())];
+    service.insert(
+        Value::String("networks".to_string()),
+        Value::Sequence(networks),
+    );
+
+    // Dependencies - wait for PostgreSQL and aggregator
+    let mut depends_on = Mapping::new();
+
+    let mut db_dep = Mapping::new();
+    db_dep.insert(
+        Value::String("condition".to_string()),
+        Value::String("service_healthy".to_string()),
+    );
+    depends_on.insert(
+        Value::String("postgresql".to_string()),
+        Value::Mapping(db_dep),
+    );
+
+    let mut agg_dep = Mapping::new();
+    agg_dep.insert(
+        Value::String("condition".to_string()),
+        Value::String("service_started".to_string()),
+    );
+    depends_on.insert(
+        Value::String("aggregator".to_string()),
+        Value::Mapping(agg_dep),
+    );
+
+    service.insert(
+        Value::String("depends_on".to_string()),
+        Value::Mapping(depends_on),
+    );
+
+    Value::Mapping(service)
+}
+
+/// Generate full-sync-setup service for PostgreSQL Logical (creates slot, runs full sync, stores checkpoints).
+fn generate_postgresql_logical_full_sync_setup_service(config: &ClusterConfig) -> Value {
+    let mut service = Mapping::new();
+
+    service.insert(
+        Value::String("image".to_string()),
+        Value::String("surreal-sync:latest".to_string()),
+    );
+
+    // Labels
+    let mut labels = Mapping::new();
+    labels.insert(
+        Value::String("com.surreal-loadtest".to_string()),
+        Value::String("true".to_string()),
+    );
+    service.insert(Value::String("labels".to_string()), Value::Mapping(labels));
+
+    // Command - full sync with SurrealDB checkpoint storage
+    let tables: Vec<String> = config
+        .containers
+        .iter()
+        .flat_map(|c| c.tables.clone())
+        .collect();
+    let tables_arg = tables.join(",");
+
+    let command = format!(
+        "from postgresql full --connection-string 'postgresql://postgres:postgres@postgresql:5432/{}' --slot 'surreal_sync_loadtest' --tables '{}' --checkpoints-surreal-table surreal_sync_checkpoints --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root",
+        config.database.database_name,
+        tables_arg,
+        config.surrealdb.namespace,
+        config.surrealdb.database
+    );
+    service.insert(Value::String("command".to_string()), Value::String(command));
+
+    // Environment
+    let environment = vec![Value::String("RUST_LOG=info".to_string())];
+    service.insert(
+        Value::String("environment".to_string()),
+        Value::Sequence(environment),
+    );
+
+    // Networks
+    let networks = vec![Value::String(config.network_name.clone())];
+    service.insert(
+        Value::String("networks".to_string()),
+        Value::Sequence(networks),
+    );
+
+    // Dependencies - wait for schema-init and SurrealDB
+    let mut depends_on = Mapping::new();
+
+    let mut schema_dep = Mapping::new();
+    schema_dep.insert(
+        Value::String("condition".to_string()),
+        Value::String("service_completed_successfully".to_string()),
+    );
+    depends_on.insert(
+        Value::String("schema-init".to_string()),
+        Value::Mapping(schema_dep),
+    );
+
+    let mut surreal_dep = Mapping::new();
+    surreal_dep.insert(
+        Value::String("condition".to_string()),
+        Value::String("service_healthy".to_string()),
+    );
+    depends_on.insert(
+        Value::String("surrealdb".to_string()),
+        Value::Mapping(surreal_dep),
+    );
+
+    service.insert(
+        Value::String("depends_on".to_string()),
+        Value::Mapping(depends_on),
+    );
+
+    Value::Mapping(service)
+}
+
+/// Generate incremental-sync service for PostgreSQL Logical (reads from checkpoint in SurrealDB).
+fn generate_postgresql_logical_incremental_sync_service(config: &ClusterConfig) -> Value {
+    let mut service = Mapping::new();
+
+    service.insert(
+        Value::String("image".to_string()),
+        Value::String("surreal-sync:latest".to_string()),
+    );
+
+    // Labels
+    let mut labels = Mapping::new();
+    labels.insert(
+        Value::String("com.surreal-loadtest".to_string()),
+        Value::String("true".to_string()),
+    );
+    service.insert(Value::String("labels".to_string()), Value::Mapping(labels));
+
+    // Command - incremental sync reading t1 checkpoint from SurrealDB
+    let tables: Vec<String> = config
+        .containers
+        .iter()
+        .flat_map(|c| c.tables.clone())
+        .collect();
+    let tables_arg = tables.join(",");
+
+    let command = format!(
+        "from postgresql incremental --connection-string 'postgresql://postgres:postgres@postgresql:5432/{}' --slot 'surreal_sync_loadtest' --tables '{}' --checkpoints-surreal-table surreal_sync_checkpoints --timeout 60 --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root",
+        config.database.database_name,
+        tables_arg,
+        config.surrealdb.namespace,
+        config.surrealdb.database
+    );
+    service.insert(Value::String("command".to_string()), Value::String(command));
+
+    // Environment
+    let environment = vec![Value::String("RUST_LOG=info".to_string())];
+    service.insert(
+        Value::String("environment".to_string()),
+        Value::Sequence(environment),
+    );
+
+    // Networks
+    let networks = vec![Value::String(config.network_name.clone())];
+    service.insert(
+        Value::String("networks".to_string()),
+        Value::Sequence(networks),
+    );
+
+    // Dependencies - wait for ALL populate containers and databases
+    let mut depends_on = Mapping::new();
+
+    // Wait for all populate containers to complete
+    for container in &config.containers {
+        let mut container_dep = Mapping::new();
+        container_dep.insert(
+            Value::String("condition".to_string()),
+            Value::String("service_completed_successfully".to_string()),
+        );
+        depends_on.insert(
+            Value::String(container.id.clone()),
+            Value::Mapping(container_dep),
+        );
+    }
+
+    // Wait for databases to be healthy
+    let mut db_dep = Mapping::new();
+    db_dep.insert(
+        Value::String("condition".to_string()),
+        Value::String("service_healthy".to_string()),
+    );
+    depends_on.insert(
+        Value::String("postgresql".to_string()),
+        Value::Mapping(db_dep.clone()),
+    );
+    depends_on.insert(
+        Value::String("surrealdb".to_string()),
+        Value::Mapping(db_dep),
+    );
+
+    service.insert(
+        Value::String("depends_on".to_string()),
+        Value::Mapping(depends_on),
+    );
 
     Value::Mapping(service)
 }

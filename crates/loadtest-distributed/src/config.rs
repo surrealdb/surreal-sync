@@ -405,8 +405,8 @@ fn get_default_database_image(source_type: SourceType) -> String {
         SourceType::MySQL => "mysql:8.0".to_string(),
         SourceType::PostgreSQL => "postgres:16".to_string(),
         // PostgreSQL logical replication requires wal2json extension
-        // Using debezium/postgres image which includes wal2json
-        SourceType::PostgreSQLLogical => "debezium/postgres:16".to_string(),
+        // Built from custom Dockerfile (Dockerfile.postgres16.wal2json)
+        SourceType::PostgreSQLLogical => "postgres-wal2json:latest".to_string(),
         SourceType::MongoDB => "mongo:7".to_string(),
         SourceType::Neo4j => "neo4j:5".to_string(),
         SourceType::Kafka => "apache/kafka:latest".to_string(),

@@ -19,7 +19,7 @@ pub struct PostgreSQLLogicalCheckpoint {
 }
 
 impl checkpoint::Checkpoint for PostgreSQLLogicalCheckpoint {
-    const DATABASE_TYPE: &'static str = "postgresql-logical";
+    const DATABASE_TYPE: &'static str = "postgresql-wal2json";
 
     fn to_cli_string(&self) -> String {
         // Just the LSN - timestamp is optional metadata
@@ -119,7 +119,7 @@ mod tests {
             incremental: false,
         };
 
-        let manager = SyncManager::new(config);
+        let manager = SyncManager::new(config, None);
         let original = PostgreSQLLogicalCheckpoint {
             lsn: "0/12345678".to_string(),
             timestamp: Utc::now(),
@@ -160,7 +160,7 @@ mod tests {
     fn test_postgresql_logical_checkpoint_database_type() {
         assert_eq!(
             PostgreSQLLogicalCheckpoint::DATABASE_TYPE,
-            "postgresql-logical"
+            "postgresql-wal2json"
         );
     }
 

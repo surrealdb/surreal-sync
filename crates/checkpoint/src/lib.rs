@@ -17,14 +17,16 @@ mod config;
 mod file;
 mod manager;
 mod phase;
+pub mod store;
 
 #[cfg(test)]
 mod tests;
 
-pub use config::SyncConfig;
+pub use config::{CheckpointStorage, SyncConfig};
 pub use file::CheckpointFile;
 pub use manager::SyncManager;
 pub use phase::SyncPhase;
+pub use store::{CheckpointID, CheckpointStore, StoredCheckpoint};
 
 /// Trait that database-specific checkpoints must implement.
 ///

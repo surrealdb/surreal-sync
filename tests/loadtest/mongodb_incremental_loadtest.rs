@@ -99,7 +99,7 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
     let sync_config = checkpoint::SyncConfig {
         incremental: false, // This is full sync to capture resume token
         emit_checkpoints: true,
-        checkpoint_dir: Some(CHECKPOINT_DIR.to_string()),
+        checkpoint_storage: checkpoint::CheckpointStorage::Filesystem { dir: CHECKPOINT_DIR.to_string() },
     };
 
     surreal_sync_mongodb_changestream_source::run_full_sync(

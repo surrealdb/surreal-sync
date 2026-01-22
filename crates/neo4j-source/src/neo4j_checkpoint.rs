@@ -93,7 +93,7 @@ mod tests {
             incremental: false,
         };
 
-        let manager = SyncManager::new(config);
+        let manager = SyncManager::new(config, None);
         let original = Neo4jCheckpoint {
             timestamp: Utc::now(),
         };

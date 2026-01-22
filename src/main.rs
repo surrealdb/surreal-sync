@@ -587,13 +587,13 @@ struct PostgreSQLLogicalFullArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
-    /// Emit checkpoints for incremental sync coordination
-    #[arg(long)]
-    emit_checkpoints: bool,
-
-    /// Directory to store checkpoint files
-    #[arg(long, value_name = "DIR")]
+    /// Directory to store checkpoint files (filesystem storage)
+    #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
     checkpoint_dir: Option<String>,
+
+    /// SurrealDB table name for storing checkpoints (e.g., "surreal_sync_checkpoints")
+    #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
+    checkpoints_surreal_table: Option<String>,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -630,8 +630,14 @@ struct PostgreSQLLogicalIncrementalArgs {
     schema_file: Option<PathBuf>,
 
     /// Start incremental sync from this checkpoint (LSN format, e.g., "0/1949850")
+    /// If not specified, reads from SurrealDB using --checkpoints-surreal-table
     #[arg(long)]
-    incremental_from: String,
+    incremental_from: Option<String>,
+
+    /// SurrealDB table name for reading t1 checkpoint (e.g., "surreal_sync_checkpoints")
+    /// Used when --incremental-from is not specified
+    #[arg(long, value_name = "TABLE")]
+    checkpoints_surreal_table: Option<String>,
 
     /// Stop incremental sync at this checkpoint (optional)
     #[arg(long)]
@@ -926,7 +932,9 @@ async fn run_mongodb_full(args: MongoDBFullArgs) -> anyhow::Result<()> {
         Some(checkpoint::SyncConfig {
             incremental: false,
             emit_checkpoints: true,
-            checkpoint_dir: Some(args.checkpoint_dir),
+            checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
+                dir: args.checkpoint_dir,
+            },
         })
     } else {
         None
@@ -1037,7 +1045,9 @@ async fn run_neo4j_full(args: Neo4jFullArgs) -> anyhow::Result<()> {
         Some(checkpoint::SyncConfig {
             incremental: false,
             emit_checkpoints: true,
-            checkpoint_dir: Some(args.checkpoint_dir),
+            checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
+                dir: args.checkpoint_dir,
+            },
         })
     } else {
         None
@@ -1154,7 +1164,9 @@ async fn run_postgresql_trigger_full(args: PostgreSQLTriggerFullArgs) -> anyhow:
         Some(checkpoint::SyncConfig {
             incremental: false,
             emit_checkpoints: true,
-            checkpoint_dir: Some(args.checkpoint_dir),
+            checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
+                dir: args.checkpoint_dir,
+            },
         })
     } else {
         None
@@ -1258,7 +1270,9 @@ async fn run_mysql_full(args: MySQLFullArgs) -> anyhow::Result<()> {
         Some(checkpoint::SyncConfig {
             incremental: false,
             emit_checkpoints: true,
-            checkpoint_dir: Some(args.checkpoint_dir),
+            checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
+                dir: args.checkpoint_dir,
+            },
         })
     } else {
         None
@@ -1348,14 +1362,35 @@ async fn run_postgresql_logical_full(args: PostgreSQLLogicalFullArgs) -> anyhow:
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
     // Build sync config for checkpoint emission
-    let sync_config = if args.emit_checkpoints {
-        Some(checkpoint::SyncConfig {
-            emit_checkpoints: true,
-            checkpoint_dir: args.checkpoint_dir.clone(),
-            incremental: false,
-        })
-    } else {
-        None
+    let sync_config = match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
+        (Some(dir), None) => {
+            // Filesystem checkpoint storage
+            Some(checkpoint::SyncConfig {
+                emit_checkpoints: true,
+                checkpoint_storage: checkpoint::CheckpointStorage::Filesystem { dir: dir.clone() },
+                incremental: false,
+            })
+        }
+        (None, Some(table)) => {
+            // SurrealDB checkpoint storage
+            Some(checkpoint::SyncConfig {
+                emit_checkpoints: true,
+                checkpoint_storage: checkpoint::CheckpointStorage::SurrealDB {
+                    table_name: table.clone(),
+                    namespace: args.to_namespace.clone(),
+                    database: args.to_database.clone(),
+                },
+                incremental: false,
+            })
+        }
+        (None, None) => {
+            // No checkpoint storage
+            None
+        }
+        (Some(_), Some(_)) => {
+            // Should be prevented by clap's conflicts_with
+            anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
+        }
     };
 
     let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
@@ -1389,11 +1424,23 @@ async fn run_postgresql_logical_incremental(
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
+    // Validate checkpoint parameters
+    match (&args.incremental_from, &args.checkpoints_surreal_table) {
+        (None, None) => {
+            anyhow::bail!("Must specify either --incremental-from or --checkpoints-surreal-table")
+        }
+        _ => {}
+    }
+
     // Parse checkpoints
-    let from_checkpoint =
-        surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint::from_cli_string(
-            &args.incremental_from,
-        )?;
+    let from_checkpoint = args
+        .incremental_from
+        .map(|s| {
+            surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint::from_cli_string(
+                &s,
+            )
+        })
+        .transpose()?;
 
     let to_checkpoint = args
         .incremental_to
@@ -1423,6 +1470,7 @@ async fn run_postgresql_logical_incremental(
         args.to_database,
         surreal_sync_postgresql::SurrealOpts::from(&args.surreal),
         from_checkpoint,
+        args.checkpoints_surreal_table,
         to_checkpoint,
         timeout_secs,
     )
@@ -1907,10 +1955,19 @@ async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 .context("Failed to connect to PostgreSQL")?
                 .with_batch_size(args.common.batch_size);
 
-                if let Err(e) = populator.create_table(table_name).await {
-                    let error_msg = format!("Failed to create table '{table_name}': {e}");
-                    tracing::error!("{}", error_msg);
-                    errors.push(error_msg);
+                // Skip table creation in data-only mode (tables must already exist)
+                if !args.common.data_only {
+                    if let Err(e) = populator.create_table(table_name).await {
+                        let error_msg = format!("Failed to create table '{table_name}': {e}");
+                        tracing::error!("{}", error_msg);
+                        errors.push(error_msg);
+                        continue;
+                    }
+                }
+
+                // Skip data insertion in schema-only mode
+                if args.common.schema_only {
+                    tracing::info!("Skipping data insertion for '{}' (schema-only mode)", table_name);
                     continue;
                 }
 

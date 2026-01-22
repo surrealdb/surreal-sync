@@ -106,7 +106,7 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
     let sync_config = checkpoint::SyncConfig {
         incremental: false, // This is full sync to set up infrastructure
         emit_checkpoints: true,
-        checkpoint_dir: Some(CHECKPOINT_DIR.to_string()),
+        checkpoint_storage: checkpoint::CheckpointStorage::Filesystem { dir: CHECKPOINT_DIR.to_string() },
     };
 
     let surreal_conn_opts = surreal_sync_surreal::SurrealOpts {

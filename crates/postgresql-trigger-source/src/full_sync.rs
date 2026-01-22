@@ -33,7 +33,7 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t1 (before full sync starts) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone(), None);
 
         // Set up triggers on user tables so changes during full sync are captured
         let tables = surreal_sync_postgresql::get_user_tables(
@@ -106,7 +106,7 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t2 (after full sync completes) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone());
+        let sync_manager = SyncManager::new(config.clone(), None);
 
         // For trigger-based sync, checkpoint reflects the current state
         let checkpoint = super::checkpoint::PostgreSQLCheckpoint {

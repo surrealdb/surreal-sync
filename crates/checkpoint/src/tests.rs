@@ -205,7 +205,7 @@ async fn test_sync_manager_emit_and_read() {
         incremental: false,
     };
 
-    let manager = SyncManager::new(config);
+    let manager = SyncManager::new(config, None);
     let cp = TestCheckpoint {
         value: 123,
         timestamp: Utc::now(),
@@ -233,7 +233,7 @@ async fn test_sync_manager_emit_disabled() {
         incremental: false,
     };
 
-    let manager = SyncManager::new(config);
+    let manager = SyncManager::new(config, None);
     let cp = TestCheckpoint {
         value: 456,
         timestamp: Utc::now(),
@@ -259,7 +259,7 @@ async fn test_sync_manager_no_checkpoint_dir() {
         incremental: false,
     };
 
-    let manager = SyncManager::new(config);
+    let manager = SyncManager::new(config, None);
     let cp = TestCheckpoint {
         value: 789,
         timestamp: Utc::now(),
@@ -283,7 +283,7 @@ async fn test_sync_manager_reads_latest_checkpoint() {
         incremental: false,
     };
 
-    let manager = SyncManager::new(config);
+    let manager = SyncManager::new(config, None);
 
     // Write first checkpoint
     let cp1 = TestCheckpoint {
@@ -326,7 +326,7 @@ async fn test_sync_manager_separate_phases() {
         incremental: false,
     };
 
-    let manager = SyncManager::new(config);
+    let manager = SyncManager::new(config, None);
 
     // Write start checkpoint
     let cp_start = TestCheckpoint {
