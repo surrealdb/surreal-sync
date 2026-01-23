@@ -130,7 +130,21 @@ jobs:
 
       - name: Generate checksums
         run: |
-          sha256sum surreal-sync-*.tar.gz surreal-sync-*.zip > checksums.txt
+          # Generate checksums only for files that exist
+          for file in surreal-sync-*.tar.gz surreal-sync-*.zip; do
+            if [ -e "$file" ]; then
+              sha256sum "$file" >> checksums.txt
+            fi
+          done
+
+          # Ensure at least one archive exists
+          if [ ! -s checksums.txt ]; then
+            echo "Error: No archives found to generate checksums"
+            exit 1
+          fi
+
+          echo "Generated checksums for:"
+          cat checksums.txt
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -138,9 +152,19 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
+
+          # Collect all available archives
+          ARCHIVES=""
+          for file in surreal-sync-*.tar.gz surreal-sync-*.zip checksums.txt; do
+            if [ -e "$file" ]; then
+              ARCHIVES="$ARCHIVES $file"
+            fi
+          done
+
+          echo "Publishing release $TAG with artifacts:"
+          echo "$ARCHIVES"
+
           gh release create "$TAG" \
             --title "Release $TAG" \
             --notes "Release $TAG" \
-            surreal-sync-*.tar.gz \
-            surreal-sync-*.zip \
-            checksums.txt
+            $ARCHIVES
