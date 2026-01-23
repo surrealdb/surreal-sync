@@ -28,6 +28,7 @@ That's because the incremental sync relies on database triggers to capture chang
 You can start a full sync via the `surreal-sync from postgresql-trigger full` command like below:
 
 ```bash
+# Note: Database name must be included in the connection string (e.g., /myapp at the end)
 export CONNECTION_STRING="postgresql://postgres:postgres@postgresql:5432/myapp"
 export SURREAL_ENDPOINT="ws://localhost:8000"
 
@@ -35,7 +36,6 @@ export SURREAL_ENDPOINT="ws://localhost:8000"
 surreal-sync from postgresql-trigger full \
   # Source = PostgreSQL settings
   --connection-string "$CONNECTION_STRING" \
-  --database "myapp" \
   # Target = SurrealDB settings
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \
@@ -50,9 +50,11 @@ surreal-sync from postgresql-trigger full \
 A `surreal-sync` with the `emit-checkpoints` flag will produce logs like the below:
 
 ```
-INFO surreal_sync::postgresql: Emitted full sync start checkpoint (t1): postgresql:sequence:0
-INFO surreal_sync::postgresql: Emitted full sync end checkpoint (t2): postgresql:sequence:123
+INFO surreal_sync::postgresql_trigger_source: Emitted full sync start checkpoint (t1): 0
+INFO surreal_sync::postgresql_trigger_source: Emitted full sync end checkpoint (t2): 123
 ```
+
+The checkpoint format is just the sequence ID number (e.g., `"123"`), not a prefixed string.
 
 To continue incremental sync after this full sync, you need to specify t1 (not t2) as the starting point for incremental sync.
 
@@ -69,8 +71,14 @@ You must run full sync first to generate the checkpoint and set up the necessary
 ls ./.surreal-sync-checkpoints/checkpoint_full_sync_start_*.json
 
 # Extract sequence ID for incremental sync
-NUM=$(cat ./.surreal-sync-checkpoints/checkpoint_full_sync_start_*.json | jq -r '.checkpoint.PostgreSQL.sequence')
-CHECKPOINT="postgresql:sequence:$NUM"
+# The checkpoint file structure is:
+# {
+#   "database_type": "postgresql",
+#   "checkpoint": { "sequence_id": 123, "timestamp": "..." },
+#   "phase": "FullSyncStart",
+#   "created_at": "..."
+# }
+CHECKPOINT=$(cat ./.surreal-sync-checkpoints/checkpoint_full_sync_start_*.json | jq -r '.checkpoint.sequence_id')
 ```
 
 With the proper checkpoint, an incremental sync can be triggered via `surreal-sync from postgresql-trigger incremental`:
@@ -79,21 +87,45 @@ With the proper checkpoint, an incremental sync can be triggered via `surreal-sy
 surreal-sync from postgresql-trigger incremental \
   # Source = PostgreSQL settings
   --connection-string "$CONNECTION_STRING" \
-  --database "myapp" \
   # Target = SurrealDB settings
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \
   --surreal-password "root" \
   --to-namespace "production" \
   --to-database "migrated_data" \
-  # Using the checkpoint from full sync
+  # Using the checkpoint from full sync (just the sequence ID number)
   --incremental-from "$CHECKPOINT" \
-  --timeout 1m
+  --timeout 60
 ```
 
-The `incremental-from` specifies the t1 checkpoint explained previously, and `timeout` specifies when the incremental sync should stop.
+### Command-Line Options
 
-The `timeout` is necessary when you want to run incremental sync in batches, or run it periodically rather than in a persistent process. Depending on how you want to keep incremental sync running, you should put surreal-sync under a process manager or under a container orchestration system that handles automatic retries, with or without the specific `timeout`.
+#### Full Sync Options
+
+- `--connection-string`: PostgreSQL connection string (must include database, e.g., `postgresql://user:pass@host:5432/mydb`)
+- `--to-namespace`: Target SurrealDB namespace
+- `--to-database`: Target SurrealDB database
+- `--emit-checkpoints`: Emit checkpoint files for coordinating with incremental sync (boolean flag)
+- `--checkpoint-dir`: Directory to write checkpoint files (default: `.surreal-sync-checkpoints`)
+- `--schema-file`: Optional schema file for type-aware conversion
+- Plus standard SurrealDB options: `--surreal-endpoint`, `--surreal-username`, `--surreal-password`, `--batch-size`, `--dry-run`
+
+#### Incremental Sync Options
+
+- `--connection-string`: PostgreSQL connection string (must include database)
+- `--to-namespace`: Target SurrealDB namespace
+- `--to-database`: Target SurrealDB database
+- `--incremental-from`: Start checkpoint (sequence ID number, e.g., `"123"`)
+- `--incremental-to`: Optional stop checkpoint (sequence ID number)
+- `--timeout`: Maximum time to run in seconds (default: 3600 = 1 hour)
+- `--schema-file`: Optional schema file for type-aware conversion
+- Plus standard SurrealDB options
+
+### Understanding Timeouts
+
+The `--incremental-from` specifies the t1 checkpoint explained previously, and `--timeout` specifies when the incremental sync should stop.
+
+The `--timeout` parameter is in **seconds** (default: 3600 = 1 hour). It's necessary when you want to run incremental sync in batches, or run it periodically rather than in a persistent process. Depending on how you want to keep incremental sync running, you should put surreal-sync under a process manager or under a container orchestration system that handles automatic retries, with or without the specific `timeout`.
 
 While the incremental sync is running, your application can continue writing to PostgreSQL.
 Doing incremental sync does not necessarily incur downtime to your application, as long as the source PostgreSQL database can serve the entire workloads.
