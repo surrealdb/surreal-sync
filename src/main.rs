@@ -2951,6 +2951,7 @@ async fn run_loadtest_generate(args: GenerateArgs) -> anyhow::Result<()> {
         Some(args.schema.clone()),
         &tables,
         args.dry_run,
+        args.surrealdb_image.clone(),
     )?;
 
     // Set schema content for Kubernetes ConfigMap embedding

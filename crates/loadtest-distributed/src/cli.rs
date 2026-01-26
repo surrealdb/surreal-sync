@@ -167,6 +167,10 @@ pub struct GenerateArgs {
     /// Generate configs in dry-run mode (populate/verify won't write data)
     #[arg(long)]
     pub dry_run: bool,
+
+    /// SurrealDB Docker image (e.g., "surrealdb/surrealdb:v2.0.0")
+    #[arg(long)]
+    pub surrealdb_image: Option<String>,
 }
 
 /// Arguments for the aggregate command (file-based - deprecated in favor of aggregate-server).

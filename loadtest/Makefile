@@ -85,6 +85,7 @@ OUTPUT_DIR ?= ./output
 IMAGE_NAME ?= surreal-sync:latest
 KIND_CLUSTER ?= loadtest
 PLATFORM ?= docker-compose
+SURREALDB_IMAGE ?= surrealdb/surrealdb:latest
 
 # Timeout and polling configuration
 TIMEOUT ?= 300
@@ -120,6 +121,7 @@ help:
 	@echo "  ROW_COUNT=$(ROW_COUNT)"
 	@echo "  OUTPUT_DIR=$(OUTPUT_DIR)"
 	@echo "  IMAGE_NAME=$(IMAGE_NAME)"
+	@echo "  SURREALDB_IMAGE=$(SURREALDB_IMAGE)"
 	@echo "  TIMEOUT=$(TIMEOUT) (seconds)"
 	@echo "  POLL_INTERVAL=$(POLL_INTERVAL) (seconds)"
 	@echo ""
@@ -145,7 +147,8 @@ generate: $(SCHEMA)
 		--schema $(SCHEMA) \
 		--output-dir $(OUTPUT_DIR) \
 		$(if $(WORKERS),--workers $(WORKERS)) \
-		$(if $(ROW_COUNT),--row-count $(ROW_COUNT))
+		$(if $(ROW_COUNT),--row-count $(ROW_COUNT)) \
+		$(if $(SURREALDB_IMAGE),--surrealdb-image $(SURREALDB_IMAGE))
 
 # Stop and remove containers
 down:
@@ -432,9 +435,9 @@ kind-load: docker-build
 	@echo "Loading busybox image for init containers..."
 	docker pull busybox:latest 2>/dev/null || true
 	kind load docker-image busybox:latest --name $(KIND_CLUSTER) 2>/dev/null || true
-	@echo "Loading SurrealDB image..."
-	docker pull surrealdb/surrealdb:latest 2>/dev/null || true
-	kind load docker-image surrealdb/surrealdb:latest --name $(KIND_CLUSTER) 2>/dev/null || true
+	@echo "Loading SurrealDB image ($(SURREALDB_IMAGE))..."
+	docker pull $(SURREALDB_IMAGE) 2>/dev/null || true
+	kind load docker-image $(SURREALDB_IMAGE) --name $(KIND_CLUSTER) 2>/dev/null || true
 	@echo "Loading source-specific image for $(SOURCE)..."
 	@$(MAKE) -s kind-load-source-image SOURCE=$(SOURCE)
 
