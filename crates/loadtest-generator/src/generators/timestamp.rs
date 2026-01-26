@@ -27,7 +27,7 @@ pub fn generate_timestamp_range<R: Rng>(rng: &mut R, start: &str, end: &str) -> 
             if start_ts >= end_ts {
                 UniversalValue::LocalDateTime(start)
             } else {
-                let random_ts = rng.gen_range(start_ts..=end_ts);
+                let random_ts = rng.random_range(start_ts..=end_ts);
                 let dt = DateTime::from_timestamp(random_ts, 0).unwrap_or(start);
                 UniversalValue::LocalDateTime(dt)
             }

@@ -5,19 +5,19 @@ use sync_core::UniversalValue;
 
 /// Generate a random integer in the given range (inclusive).
 pub fn generate_int_range<R: Rng>(rng: &mut R, min: i64, max: i64) -> UniversalValue {
-    UniversalValue::Int64(rng.gen_range(min..=max))
+    UniversalValue::Int64(rng.random_range(min..=max))
 }
 
 /// Generate a random float in the given range (inclusive).
 pub fn generate_float_range<R: Rng>(rng: &mut R, min: f64, max: f64) -> UniversalValue {
-    UniversalValue::Float64(rng.gen_range(min..=max))
+    UniversalValue::Float64(rng.random_range(min..=max))
 }
 
 /// Generate a random decimal in the given range.
 ///
 /// The decimal is stored as a string with 2 decimal places.
 pub fn generate_decimal_range<R: Rng>(rng: &mut R, min: f64, max: f64) -> UniversalValue {
-    let value = rng.gen_range(min..=max);
+    let value = rng.random_range(min..=max);
     // Format with 2 decimal places by default
     UniversalValue::Decimal {
         value: format!("{value:.2}"),
@@ -32,7 +32,7 @@ pub fn generate_duration_range<R: Rng>(
     min_secs: u64,
     max_secs: u64,
 ) -> UniversalValue {
-    let secs = rng.gen_range(min_secs..=max_secs);
+    let secs = rng.random_range(min_secs..=max_secs);
     UniversalValue::Duration(std::time::Duration::from_secs(secs))
 }
 
