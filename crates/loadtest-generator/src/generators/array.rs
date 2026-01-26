@@ -1,6 +1,6 @@
 //! Array value generators.
 
-use rand::seq::SliceRandom;
+use rand::seq::{IndexedRandom, SliceRandom};
 use rand::Rng;
 use sync_core::{UniversalType, UniversalValue};
 
@@ -89,7 +89,7 @@ pub fn generate_sample_array_typed<R: Rng>(
         };
     }
 
-    let length = rng.gen_range(min_length..=max_length);
+    let length = rng.random_range(min_length..=max_length);
 
     // Randomly select `length` items from the pool (with potential duplicates)
     let items: Vec<UniversalValue> = (0..length)
@@ -123,7 +123,7 @@ pub fn generate_unique_sample_array<R: Rng>(
     let effective_max = max_length.min(pool.len());
     let effective_min = min_length.min(effective_max);
 
-    let length = rng.gen_range(effective_min..=effective_max);
+    let length = rng.random_range(effective_min..=effective_max);
 
     // Shuffle and take first `length` items
     let mut shuffled = pool.to_vec();

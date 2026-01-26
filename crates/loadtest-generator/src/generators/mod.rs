@@ -55,14 +55,14 @@ pub fn generate_value_typed<R: Rng>(
         GeneratorConfig::TimestampNow => timestamp::generate_timestamp_now(),
 
         GeneratorConfig::WeightedBool { true_weight } => {
-            UniversalValue::Bool(rng.gen_bool(*true_weight))
+            UniversalValue::Bool(rng.random_bool(*true_weight))
         }
 
         GeneratorConfig::OneOf { values } => {
             if values.is_empty() {
                 UniversalValue::Null
             } else {
-                let idx = rng.gen_range(0..values.len());
+                let idx = rng.random_range(0..values.len());
                 static_value::yaml_to_generated_value(&values[idx])
             }
         }

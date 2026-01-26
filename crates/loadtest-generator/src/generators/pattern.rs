@@ -50,11 +50,11 @@ fn generate_random_digits<R: Rng>(rng: &mut R, digits: usize) -> String {
     let mut result = String::with_capacity(digits);
 
     // First digit should be 1-9 to avoid leading zeros
-    result.push(char::from_digit(rng.gen_range(1..10), 10).unwrap());
+    result.push(char::from_digit(rng.random_range(1..10), 10).unwrap());
 
     // Remaining digits can be 0-9
     for _ in 1..digits {
-        result.push(char::from_digit(rng.gen_range(0..10), 10).unwrap());
+        result.push(char::from_digit(rng.random_range(0..10), 10).unwrap());
     }
 
     result
