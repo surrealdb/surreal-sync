@@ -112,7 +112,7 @@ jobs:
         run: docker save surreal-sync:latest | gzip > surreal-sync-image.tar.gz
 
       - name: Upload Docker image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: docker-image
           path: surreal-sync-image.tar.gz
@@ -155,7 +155,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload metrics
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: metrics-${{ matrix.source }}
           path: loadtest/output/metrics.json
@@ -163,7 +163,7 @@ jobs:
 
       - name: Upload container logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: container-logs-${{ matrix.source }}
           path: |
@@ -173,7 +173,7 @@ jobs:
 
       - name: Upload full output on failure
         if: steps.loadtest.outcome == 'failure'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: full-output-${{ matrix.source }}
           path: loadtest/output/
@@ -255,7 +255,7 @@ jobs:
 
       - name: Upload new baseline
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: baseline-metrics
           path: new-baseline/
