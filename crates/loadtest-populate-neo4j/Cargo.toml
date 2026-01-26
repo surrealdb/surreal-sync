@@ -18,7 +18,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 neo4rs = "0.9.0-rc.8"
 
 # Async runtime
-tokio = { version = "1.47", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 async-trait = "0.1"
 
 # Error handling

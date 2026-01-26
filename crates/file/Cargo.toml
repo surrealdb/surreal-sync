@@ -14,7 +14,7 @@ aws-sdk-s3 = "1.54"
 aws-config = "1.5"
 
 # Async runtime
-tokio = { version = "1.47", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 tokio-util = { version = "0.7", features = ["io-util"] }
 
 # Error handling

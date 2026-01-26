@@ -22,7 +22,7 @@ sync-core = { path = "../sync-core" }
 checkpoint = { path = "../checkpoint" }
 
 # Async runtime
-tokio = { version = "1.47", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 tokio-stream = "0.1"
 
 # Error handling & utilities

@@ -29,4 +29,4 @@ uuid = "1.17"
 hex = "0.4"
 
 [dev-dependencies]
-tokio = { version = "1.47", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
