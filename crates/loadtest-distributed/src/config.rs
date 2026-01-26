@@ -310,6 +310,7 @@ pub fn build_cluster_config(
     schema_path: Option<PathBuf>,
     tables: &[String],
     dry_run: bool,
+    surrealdb_image_override: Option<String>,
 ) -> Result<ClusterConfig> {
     // Get base preset
     let preset = Preset::by_size(preset_size).with_overrides(
@@ -350,6 +351,7 @@ pub fn build_cluster_config(
 
     // Build SurrealDB configuration
     let surrealdb = SurrealDbConfig {
+        image: surrealdb_image_override.unwrap_or_else(default_surrealdb_image),
         resources: preset.surrealdb_resources,
         ..Default::default()
     };
