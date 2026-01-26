@@ -14,7 +14,7 @@ mysql-types = { path = "../mysql-types" }
 
 clap = { version = "4.5", features = ["derive", "env"] }
 mysql_async = { version = "0.34" }
-tokio = { version = "1.0", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 async-trait = "0.1"
 thiserror = "1.0"
 tracing = "0.1"

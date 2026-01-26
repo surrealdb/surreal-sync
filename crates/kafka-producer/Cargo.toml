@@ -21,7 +21,7 @@ rdkafka = { version = "0.38", features = ["tokio"] }
 protobuf = "3.5"
 
 # Async runtime
-tokio = { version = "1.47", features = ["full"] }
+tokio = { version = "1.49", features = ["full"] }
 
 # Error handling
 anyhow = { version = "1.0.100", features = ["backtrace"] }
