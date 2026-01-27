@@ -192,6 +192,24 @@ impl From<UniversalValue> for SurrealValue {
             UniversalValue::Duration(d) => {
                 SurrealValue(Value::Duration(surrealdb::sql::Duration::from(d)))
             }
+
+            // Thing - record reference
+            UniversalValue::Thing { table, id } => {
+                // Convert the ID to a SurrealDB ID type
+                let surreal_id = match id.as_ref() {
+                    UniversalValue::Text(s) => surrealdb::sql::Id::String(s.clone()),
+                    UniversalValue::Int32(i) => surrealdb::sql::Id::Number(*i as i64),
+                    UniversalValue::Int64(i) => surrealdb::sql::Id::Number(*i),
+                    UniversalValue::Uuid(u) => {
+                        surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u))
+                    }
+                    UniversalValue::Ulid(u) => surrealdb::sql::Id::String(u.to_string()),
+                    // For unsupported types, convert to string representation
+                    other => surrealdb::sql::Id::String(format!("{other:?}")),
+                };
+                let thing = surrealdb::sql::Thing::from((table.as_str(), surreal_id));
+                SurrealValue(Value::Thing(thing))
+            }
         }
     }
 }

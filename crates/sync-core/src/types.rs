@@ -159,6 +159,10 @@ pub enum UniversalType {
     // Duration
     /// Time duration (seconds + nanoseconds)
     Duration,
+
+    // Record reference
+    /// Record reference/link (e.g., SurrealDB Thing)
+    Thing,
 }
 
 /// Geometry type variants for spatial data.
@@ -263,6 +267,7 @@ impl Serialize for UniversalType {
                 map.end()
             }
             Self::Duration => serializer.serialize_str("duration"),
+            Self::Thing => serializer.serialize_str("thing"),
         }
     }
 }
@@ -308,6 +313,7 @@ impl<'de> Deserialize<'de> for UniversalType {
                     "json" => Ok(UniversalType::Json),
                     "jsonb" => Ok(UniversalType::Jsonb),
                     "duration" => Ok(UniversalType::Duration),
+                    "thing" => Ok(UniversalType::Thing),
                     _ => Err(E::custom(format!("unknown simple type: {value}"))),
                 }
             }
@@ -351,6 +357,7 @@ impl<'de> Deserialize<'de> for UniversalType {
                     "json" => Ok(UniversalType::Json),
                     "jsonb" => Ok(UniversalType::Jsonb),
                     "duration" => Ok(UniversalType::Duration),
+                    "thing" => Ok(UniversalType::Thing),
 
                     // Complex types
                     "tiny_int" | "tinyint" => {

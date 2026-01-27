@@ -399,6 +399,25 @@ pub fn csv_string_to_typed_value(
                 })
             }
         }
+
+        // Thing - parse "table:id" format
+        UniversalType::Thing => {
+            if let Some((table, id_part)) = value.split_once(':') {
+                Ok(TypedValue {
+                    sync_type: UniversalType::Thing,
+                    value: UniversalValue::Thing {
+                        table: table.to_string(),
+                        id: Box::new(UniversalValue::Text(id_part.to_string())),
+                    },
+                })
+            } else {
+                Err(CsvParseError {
+                    message: "Invalid thing format, expected table:id".to_string(),
+                    value: value.to_string(),
+                    expected_type: "Thing".to_string(),
+                })
+            }
+        }
     }
 }
 
