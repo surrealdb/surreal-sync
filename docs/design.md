@@ -2,7 +2,7 @@
 
 This document explains the design principles and architecture of surreal-sync for both full and incremental synchronization.
 
-## What's surreal-sync?
+## What is surreal-sync?
 
 `surreal-sync` is a database synchronization tool that enables both full and incremental data synchronization from various source databases to SurrealDB.
 
@@ -31,16 +31,15 @@ since t2.
 
 ## Consistency Guarantee
 
-`surreal-sync` is designed to provide consistent sync results even though the source database is not even configured to use Snapshot Isolation or greater.
+`surreal-sync` is designed to provide consistent sync results even when the source database is not even configured to use Snapshot Isolation or greater.
 
-If the source database is not SI or greater, the full sync dump would
-contain inconsistent snapshot of the source that mixes data between t1 and t2. Even so, `surreal-sync` can provide consistent result with t2 and later.
+If the source database is not SI or greater, the full sync dump would contain inconsistent snapshot of the source that mixes data between t1 and t2. Even in this case, `surreal-sync` can provide consistent results with t2 and later.
 
-It does so by setting up the incremental sync infrastructure BEFORE the initial full sync begins, and tries to incremental-sync changes from t1 until t2, to provide the consistent result at t2.
+It does so by setting up the incremental sync infrastructure BEFORE the initial full sync begins, attempting to incrementally sync changes from t1 until t2, to provide the consistent result at t2.
 
-Note that t1 is occasionally "before full sync start" because it is not always possible to obtain the exact starting time (for example GTID of the transaction) of the full sync.
+Note that t1 will occasionally occur before the start of a full sync because it is not always possible to obtain the exact starting time (for example, the GTID of the transaction) of the full sync.
 
-Similarly, t2 is occasionally "after full sync end" because it is not always possible to obtain the exact ending time of the full sync.
+Similarly, t2 will occasionally occur after the termination of full sync because it is not always possible to obtain the exact ending time of the full sync.
 
 ## Database-Specific Implementations
 
@@ -54,17 +53,17 @@ Currently, our MongoDB source uses MongoDB Change Streams for incremental syncs.
 
 ### Trigger-Based CDC
 
-`surreal-sync` uses trigger-based approaches whenever a native CDC feature is nowhere, or considered not appropriate for various reasons.
+`surreal-sync` uses trigger-based approaches whenever a native CDC feature is nonexistent, or considered not appropriate for various reasons.
 
-Currently, our PostgreSQL and MySQL sources use triggers and audit tables updated via the triggers. It turned out to be enough for providing sequence-based checkpoints to full and incremental sync results and reproduce consistent snapshots onto the target SurrealDB tables.
+Currently, our PostgreSQL and MySQL sources use triggers and audit tables updated via the triggers. It turned out to be sufficient to provide sequence-based checkpoints to full and incremental sync results and reproduce consistent snapshots onto the target SurrealDB tables.
 
 ### Timestamp-Based
 
-`surreal-sync` uses logical, timestamp-based approach whenever any of the above is not possible.
+`surreal-sync` uses a logical, timestamp-based approach whenever any of the above is not possible.
 
-This basically means that the original data in the source database has timestamp-fields like `updated_at` populated by the defaulting or the application code.
+This refers to when the original data in the source database has timestamp-fields such as `updated_at` populated by the defaulting or the application code.
 
-Currently, our Neo4j source does this. It's mainly because Neo4j's CDC feature seems to be present only with Enterprise subscription which we didn't want to rely on "for now".
+This is the approach currently used with our Neo4j source. This is mainly because Neo4j's CDC feature seems to be present only with an Enterprise subscription which we didn't want to rely on for now.
 
 ## Source-Specific Details
 

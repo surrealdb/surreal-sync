@@ -8,14 +8,16 @@ It supports inconsistent full syncs and consistent incremental syncs, and togeth
 
 `surreal-sync from postgresql-trigger` supports two types of syncs, `full` and `incremental`.
 
-The full sync uses standard PostgreSQL queries to dump the table rows. As you might already know,
-it does not guarantee something like "snapshot isolation at the table or the database level".
+The full sync uses standard PostgreSQL queries to dump the table rows. As you may already know, it does not guarantee something like "snapshot isolation at the table or the database level".
+
 A full sync result can contain various versions of rows contained in the source PostgreSQL tables, from the starting time to the ending time of the full sync.
 
 The incremental sync uses a trigger-based approach with an audit table to capture changes. It provides a resumable change capture by tracking changes in a separate table and using sequence-based checkpointing.
+
 A potential alternative to this approach is to read and parse WAL and reply changes recorded in the WAL.
-We opted to use the trigger-based approach believing it's more reliable from the application perspective because
-you don't need to explore less mature WAL reading/parsing libraries/code/etc.
+
+We opted to use the trigger-based approach believing it's more reliable from the application perspective because you don't need to explore less mature WAL reading/parsing libraries/code/etc.
+
 But we may build an alternative PostgreSQL incremental sync backend that relies on WAL.
 
 ## Prerequisites
@@ -45,7 +47,7 @@ surreal-sync from postgresql-trigger full \
   --emit-checkpoints
 ```
 
-`--emit-checkpoints` is optional but necessary when you want to start incremental syncs after the full sync to enable the command to know "where to continue the sync".
+`--emit-checkpoints` is optional but necessary when you want to start incremental syncs after the full sync to enable the command to know where to continue the sync.
 
 A `surreal-sync` with the `emit-checkpoints` flag will produce logs like the below:
 
@@ -58,7 +60,7 @@ The checkpoint format is just the sequence ID number (e.g., `"123"`), not a pref
 
 To continue incremental sync after this full sync, you need to specify t1 (not t2) as the starting point for incremental sync.
 
-This corresponds to the fact that the `surreal-sync from postgresql-trigger`'s full sync produces inconsistent snapshot of the PostgreSQL tables, due to the nature of PostgreSQL's isolation guarantee.
+This corresponds to the fact that the `surreal-sync from postgresql-trigger`'s full sync produces an inconsistent snapshot of the PostgreSQL tables, due to the nature of PostgreSQL's isolation guarantee.
 
 By reading and applying changes made since t1 instead of t2, when the incremental sync writes all the changes up to t2, the target SurrealDB tables can be viewed as consistent with the source tables at t2.
 
@@ -128,6 +130,7 @@ The `--incremental-from` specifies the t1 checkpoint explained previously, and `
 The `--timeout` parameter is in **seconds** (default: 3600 = 1 hour). It's necessary when you want to run incremental sync in batches, or run it periodically rather than in a persistent process. Depending on how you want to keep incremental sync running, you should put surreal-sync under a process manager or under a container orchestration system that handles automatic retries, with or without the specific `timeout`.
 
 While the incremental sync is running, your application can continue writing to PostgreSQL.
+
 Doing incremental sync does not necessarily incur downtime to your application, as long as the source PostgreSQL database can serve the entire workloads.
 
 ## Troubleshooting

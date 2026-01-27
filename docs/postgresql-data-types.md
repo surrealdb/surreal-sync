@@ -83,7 +83,7 @@ PostgreSQL geometric types are converted to objects that preserve coordinate dat
 
 ### Type Conversion Notes
 
-- **SERIAL/BIGSERIAL**: Auto-increment behavior is lost, becomes regular integer
+- **SERIAL/BIGSERIAL**: Auto-increment behavior is lost, becomes regular integer. Consider [defining a sequence](https://surrealdb.com/docs/surrealql/statements/define/sequence) or a [SurrealQL function](https://surrealdb.com/docs/surrealql/datamodel/ids#auto-incrementing-ids) to create record IDs if incrementing behaviour is desired.
 - **MONEY**: Currency formatting lost, converted to numeric value
 - **TIME**: Converted to string since SurrealDB lacks pure time type
 - **Geometric Types**: Lose PostgreSQL-specific geometric functions
@@ -92,7 +92,7 @@ PostgreSQL geometric types are converted to objects that preserve coordinate dat
 ### Special Limitations
 
 - **Custom Types**: User-defined types converted based on underlying representation
-- **Enum Types**: Converted to string values, lose enum constraints
+- **Enum Types**: Converted to string values, lose enum constraints. To restore constraints and validation after import, consider defining a field that holds a [literal value](https://surrealdb.com/docs/surrealql/datamodel/literals).
 - **Range Types**: Not directly supported, would need custom handling
 - **Composite Types**: Converted as JSON objects, lose type structure
 

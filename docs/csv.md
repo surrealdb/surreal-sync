@@ -1,6 +1,6 @@
 # CSV Import
 
-The CSV source in surreal-sync imports CSV files in the local filesystem or S3 buckets into a SurrealDB table with automatic type detection and optional record ID generation.
+The CSV source in surreal-sync imports CSV files in the local filesystem or S3 buckets into a SurrealDB table with automatic type detection and optional [record ID](https://surrealdb.com/docs/surrealql/datamodel/ids) generation.
 
 ## Usage
 

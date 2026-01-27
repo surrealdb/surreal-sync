@@ -27,7 +27,7 @@ surreal-sync converts MongoDB documents to SurrealDB records by processing data 
 | **Timestamp**             | Timestamp               | `{"$timestamp": {"t": 1672531200, "i": 1}}`                                                                | ✅ **Fully Supported**     | `datetime`        | Converted using timestamp seconds, increment as nanoseconds                       |
 | **64-bit integer**        | Int64                   | `{"$numberLong": "123"}`                                                                                   | ✅ **Fully Supported**     | `int`             | Direct conversion                                                                 |
 | **Decimal128**            | Decimal128              | `{"$numberDecimal": "123.45"}`                                                                             | ✅ **Fully Supported**     | `number`          | Converted to SurrealDB Number type with full precision                            |
-| **DBRef**                 | Document                | `{"$ref": "users", "$id": "123"}`                                                                          | ✅ **Fully Supported**     | `thing`           | Converted to SurrealDB record reference                                           |
+| **DBRef**                 | Document                | `{"$ref": "users", "$id": "123"}`                                                                          | ✅ **Fully Supported**     | `thing`           | Converted to SurrealDB record link                                           |
 | **Min key**               | MinKey                  | `{"$minKey": 1}`                                                                                           | 🔶 **Partially Supported** | `object`          | Stored as `{"$minKey": 1}` object, loses special ordering                         |
 | **Max key**               | MaxKey                  | `{"$maxKey": 1}`                                                                                           | 🔶 **Partially Supported** | `object`          | Stored as `{"$maxKey": 1}` object, loses special ordering                         |
 
@@ -41,7 +41,7 @@ surreal-sync converts MongoDB documents to SurrealDB records by processing data 
 
 ### Type Conversion Notes
 
-- **JavaScript Code**: Preserved as string but loses executable nature
+- **JavaScript Code**: Preserved as string but loses executable nature. This can then be manually added to SurrealQL statements which allow [scripting](https://surrealdb.com/docs/surrealql/functions/script) if the capability [is enabled](https://surrealdb.com/docs/surrealdb/cli/start#enabling-capabilities).
 - **JavaScript with Scope**: Preserved as an object containing code and scope but loses executable nature
 - **Special Keys (MinKey/MaxKey)**: Converted to special marker objects, lose their ordering behavior
 - **DBPointer**: Deprecated MongoDB type, stored as marker string, loses its content
@@ -49,8 +49,8 @@ surreal-sync converts MongoDB documents to SurrealDB records by processing data 
 
 ### Special Limitations
 
-- **DBRef**: When the document contains both `$ref` and `$id` fields, it's converted to a SurrealDB Thing (record reference). Otherwise treated as a regular document.
-- **Decimal128**: Conversion may fail if the decimal string cannot be parsed as a SurrealDB Number
+- **DBRef**: When the document contains both `$ref` and `$id` fields, it is converted to a SurrealDB RecordID. Otherwise treated as a regular document.
+- **Decimal128**: Conversion may fail if the decimal string cannot be parsed as a SurrealDB Number.
 
 ## Testing and Validation
 

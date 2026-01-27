@@ -10,20 +10,20 @@ It supports inconsistent full syncs and consistent incremental syncs, and togeth
 
 The full sync uses standard Neo4j Cypher queries to dump the nodes and relationships. As you might already know,
 it does not guarantee something like "snapshot isolation at the graph or the database level".
+
 A full sync result can contain various versions of nodes and relationships contained in the source Neo4j graph, from the starting time to the ending time of the full sync.
 
 The incremental sync uses timestamp-based tracking to capture changes. It queries for nodes and relationships that have been updated after a specific timestamp. This approach requires that your Neo4j data includes timestamp properties (like `updated_at`) on nodes and relationships.
 
 ## Prerequisites
 
-You need to ensure your Neo4j nodes and relationships have timestamp properties for incremental syncs.
-That's because the incremental sync relies on timestamp tracking to identify changed data.
+You need to ensure your Neo4j nodes and relationships have timestamp properties for incremental syncs, because the incremental sync relies on timestamp tracking to identify changed data.
 
-Neo4j incremental sync cannot detect deletions for now. Deleted nodes and relationships will remain in SurrealDB after incremental sync. Consider using soft deletes in your application and Neo4j nodes, or periodic full syncs to handle deletions (although the periodic cleanup and re-full-sync may make sense only when you are using the target SurrealDB intermittently)
+Neo4j incremental sync cannot detect deletions for now. Deleted nodes and relationships will remain in SurrealDB after incremental sync. Consider using soft deletes in your application and Neo4j nodes, or periodic full syncs to handle deletions (although the periodic cleanup and re-full-sync may make sense only when you are using the target SurrealDB intermittently).
 
 ## Full Sync
 
-You can start a full sync via the `surreal-sync from neo4j full` command like below:
+You can start a full sync via the `surreal-sync from neo4j full` command as below:
 
 ```bash
 export CONNECTION_STRING="bolt://neo4j:7687"
@@ -47,9 +47,9 @@ surreal-sync from neo4j full \
   --emit-checkpoints
 ```
 
-`--emit-checkpoints` is optional but necessary when you want to start incremental syncs after the full sync to enable the command to know "where to continue the sync".
+`--emit-checkpoints` is optional but necessary when you want to start incremental syncs after the full sync to enable the command to know where to continue the sync.
 
-A `surreal-sync` with the `emit-checkpoints` flag will produce logs like the below:
+A `surreal-sync` with the `emit-checkpoints` flag will produce logs like those below:
 
 ```
 INFO surreal_sync::neo4j: Emitted full sync start checkpoint (t1): neo4j:2024-01-15T10:30:00Z
@@ -58,7 +58,7 @@ INFO surreal_sync::neo4j: Emitted full sync end checkpoint (t2): neo4j:2024-01-1
 
 To continue incremental sync after this full sync, you need to specify t1 (not t2) as the starting point for incremental sync.
 
-This corresponds to the fact that the `surreal-sync from neo4j`'s full sync produces inconsistent snapshot of the Neo4j graph, due to the nature of Neo4j's isolation guarantee.
+This corresponds to the fact that the `surreal-sync from neo4j`'s full sync produces an inconsistent snapshot of the Neo4j graph, due to the nature of Neo4j's isolation guarantee.
 
 By reading and applying changes made since t1 instead of t2, when the incremental sync writes all the changes up to t2, the target SurrealDB tables can be viewed as consistent with the source graph at t2.
 
@@ -102,6 +102,7 @@ The `incremental-from` specifies the t1 checkpoint explained previously, and `ti
 The `timeout` is necessary when you want to run incremental sync in batches, or run it periodically rather than in a persistent process. Depending on how you want to keep incremental sync running, you should put surreal-sync under a process manager or under a container orchestration system that handles automatic retries, with or without the specific `timeout`.
 
 While the incremental sync is running, your application can continue writing to Neo4j.
+
 Doing incremental sync does not necessarily incur downtime to your application, as long as the source Neo4j database can serve the entire workloads.
 
 Remember that incremental sync will NOT sync deletions. Deleted nodes and relationships will remain in SurrealDB.

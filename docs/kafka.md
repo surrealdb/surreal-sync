@@ -90,7 +90,7 @@ surreal-sync from kafka \
 | `--timeout <DURATION>` | "1h" | How long to consume messages (e.g., "1h", "30m", "300s") before stopping |
 | `--table-name <NAME>` | (topic name) | Table name in SurrealDB (defaults to topic name if not specified) |
 | `--schema-file <PATH>` | (none) | Optional schema file for type-aware conversion |
-| `--max-messages <COUNT>` | (none) | Maximum messages to process before exiting (useful for load testing) |
+| `--max-messages <COUNT>` | (none) | Maximum number of messages to process before exiting (useful for load testing) |
 
 ### ID Strategy Settings
 
@@ -105,7 +105,7 @@ These settings control how record IDs are determined for deduplication:
 
 ### Why ID Strategy Matters
 
-SurrealDB uses record IDs for upsert behavior. When a record with the same ID already exists, it gets updated instead of creating a duplicate. This is critical for deduplication when importing change logs or event streams.
+SurrealDB uses record IDs for [upsert](https://surrealdb.com/docs/surrealql/statements/upsert) behavior. When a record with the same ID already exists, it gets updated instead of creating a duplicate. This is critical for deduplication when importing change logs or event streams.
 
 ### Two Approaches
 
@@ -367,9 +367,9 @@ For production deployments that need continuous consumption:
      ```
 
 **Important notes:**
-- Reprocessing causes duplicate writes to SurrealDB (though upsert behavior prevents duplicates, it's still wasteful)
+- Reprocessing causes duplicate writes to SurrealDB (while upsert behavior prevents duplicates, it's still wasteful)
 - Consumer groups (specified via `--group-id`) track offsets per group - reusing a group ID resumes from last committed offset
-- surreal-sync internally configures Kafka consumers with `auto.offset.reset=earliest`, so new groups without committed offsets start from the beginning
+- As, surreal-sync internally configures Kafka consumers with `auto.offset.reset=earliest`, new groups without committed offsets start from the beginning
 
 ### Protobuf Schema Errors
 
@@ -424,7 +424,7 @@ For production deployments that need continuous consumption:
 
 **Solutions:**
 - Ensure the field specified by `--id-field` exists in ALL messages
-- Check message payload structure using dry-run mode
+- Check message payload structure using dry run mode
 - Verify field name spelling (case-sensitive)
 - If field name varies, consider using message keys instead
 
