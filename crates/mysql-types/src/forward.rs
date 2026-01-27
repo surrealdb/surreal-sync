@@ -152,6 +152,17 @@ impl From<UniversalValue> for MySQLValue {
                 };
                 MySQLValue(Value::Bytes(format!("{table}:{id_str}").into_bytes()))
             }
+
+            // Object - nested document as JSON
+            UniversalValue::Object(map) => {
+                let obj: serde_json::Map<String, serde_json::Value> = map
+                    .into_iter()
+                    .map(|(k, v)| (k, generated_to_json(v)))
+                    .collect();
+                let json_str =
+                    serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default();
+                MySQLValue(Value::Bytes(json_str.into_bytes()))
+            }
         }
     }
 }
@@ -234,6 +245,13 @@ fn generated_to_json(gv: UniversalValue) -> serde_json::Value {
                 ),
             };
             serde_json::Value::String(format!("{table}:{id_str}"))
+        }
+        UniversalValue::Object(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .into_iter()
+                .map(|(k, v)| (k, generated_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
         }
     }
 }

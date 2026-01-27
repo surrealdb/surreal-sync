@@ -1,8 +1,12 @@
 use crate::Change;
+use std::collections::HashMap;
 use std::time::Duration;
 use surrealdb::Surreal;
-use surrealdb_types::{RecordWithSurrealValues as Record, Relation};
+use surrealdb_types::{RecordWithSurrealValues as Record, Relation, SurrealValue};
+use sync_core::{UniversalChange, UniversalChangeOp};
 use tokio::time::sleep;
+
+use crate::rows::universal_value_to_surreal_id;
 
 /// Maximum number of retries for retriable transaction errors
 const MAX_RETRIES: u32 = 5;
@@ -57,6 +61,57 @@ pub async fn apply_change(
     }
 
     tracing::debug!("Successfully applied {change:?}");
+
+    Ok(())
+}
+
+/// Apply a UniversalChange event to SurrealDB.
+///
+/// Converts UniversalChange to the appropriate SurrealDB operation and executes it.
+pub async fn apply_universal_change(
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+    change: &UniversalChange,
+) -> anyhow::Result<()> {
+    // Convert ID from UniversalValue to SurrealDB ID
+    let surreal_id = universal_value_to_surreal_id(&change.id)?;
+    let thing = surrealdb::sql::Thing::from((change.table.as_str(), surreal_id));
+
+    match change.operation {
+        UniversalChangeOp::Create | UniversalChangeOp::Update => {
+            // Convert data from HashMap<String, UniversalValue> to HashMap<String, surrealdb::sql::Value>
+            let data = change.data.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Create/Update change must have data, but found None for table '{}'",
+                    change.table
+                )
+            })?;
+
+            let surreal_data: HashMap<String, surrealdb::sql::Value> = data
+                .iter()
+                .map(|(k, v)| {
+                    let sv = SurrealValue::from(v.clone());
+                    (k.clone(), sv.into_inner())
+                })
+                .collect();
+
+            let record = Record::new(thing.clone(), surreal_data);
+            write_record(surreal, &record).await?;
+
+            tracing::trace!("Successfully upserted record: {thing:?}");
+        }
+        UniversalChangeOp::Delete => {
+            let query = "DELETE $record_id".to_string();
+            tracing::trace!("Executing SurrealDB query: {}", query);
+
+            let mut q = surreal.query(query);
+            q = q.bind(("record_id", thing.clone()));
+            q.await?;
+
+            tracing::trace!("Successfully deleted record: {thing:?}");
+        }
+    }
+
+    tracing::debug!("Successfully applied universal change for {}", change.table);
 
     Ok(())
 }
@@ -197,7 +252,7 @@ pub async fn write_records(
     Ok(())
 }
 
-async fn write_relation(
+pub async fn write_relation(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     r: &Relation,
 ) -> anyhow::Result<()> {

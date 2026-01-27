@@ -14,7 +14,6 @@ kafka-types = { path = "../kafka-types" }
 
 # For sync functionality
 surreal-sync-surreal = { path = "../surreal" }
-surrealdb-types = { path = "../surrealdb-types" }
 sync-core = { path = "../sync-core" }
 
 # Kafka client

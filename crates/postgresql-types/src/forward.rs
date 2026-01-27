@@ -165,6 +165,15 @@ impl From<UniversalValue> for PostgreSQLValue {
                 };
                 PostgreSQLValue::Text(format!("{table}:{id_str}"))
             }
+
+            // Object - nested document as JSONB
+            UniversalValue::Object(map) => {
+                let obj: serde_json::Map<String, serde_json::Value> = map
+                    .into_iter()
+                    .map(|(k, v)| (k, universal_value_to_json(v)))
+                    .collect();
+                PostgreSQLValue::Json(serde_json::Value::Object(obj))
+            }
         }
     }
 }
@@ -320,8 +329,20 @@ fn generated_to_json(gv: UniversalValue) -> serde_json::Value {
         UniversalValue::Decimal { value, .. } => serde_json::Value::String(value),
         UniversalValue::Array { elements, .. } => generated_array_to_json(elements),
         UniversalValue::Json(json_val) => *json_val,
+        UniversalValue::Object(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .into_iter()
+                .map(|(k, v)| (k, generated_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
         _ => serde_json::Value::String(format!("{gv:?}")),
     }
+}
+
+/// Convert UniversalValue by reference to serde_json::Value for Object conversion.
+fn universal_value_to_json(value: UniversalValue) -> serde_json::Value {
+    generated_to_json(value)
 }
 
 #[cfg(test)]

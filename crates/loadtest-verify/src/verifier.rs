@@ -466,6 +466,11 @@ impl StreamingVerifier {
                 let val: Option<surrealdb::sql::Thing> = response.take((0, field_name))?;
                 Ok(val.map(SurrealValue::Thing))
             }
+            UniversalType::Object => {
+                // Object - stored as native Object in SurrealDB
+                let val: Option<serde_json::Value> = response.take((0, field_name))?;
+                Ok(val.map(|v| json_value_to_surreal(&v)))
+            }
         }
     }
 

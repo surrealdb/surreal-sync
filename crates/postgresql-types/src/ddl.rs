@@ -92,6 +92,9 @@ impl ToDdl for PostgreSQLDdl {
 
             // Thing - record reference stored as TEXT (table:id format)
             UniversalType::Thing => "TEXT".to_string(),
+
+            // Object - nested document stored as JSONB
+            UniversalType::Object => "JSONB".to_string(),
         }
     }
 

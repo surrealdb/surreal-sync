@@ -221,6 +221,17 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
             };
             format!("'{table}:{id_str}'")
         }
+
+        // Object - serialize as JSON string
+        UniversalValue::Object(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), universal_to_json(v)))
+                .collect();
+            let json_str = serde_json::to_string(&serde_json::Value::Object(obj))
+                .unwrap_or_else(|_| "{}".to_string());
+            escape_neo4j_string(&json_str)
+        }
     }
 }
 
@@ -235,6 +246,74 @@ fn generated_to_neo4j_literal(value: &UniversalValue, parent_type: &UniversalTyp
     let typed = TypedValue::try_with_type(element_type, value.clone())
         .expect("generator produced invalid type-value combination for array element");
     typed_to_neo4j_literal(&typed)
+}
+
+/// Convert a UniversalValue to a serde_json::Value for Object serialization.
+fn universal_to_json(value: &UniversalValue) -> serde_json::Value {
+    match value {
+        UniversalValue::Null => serde_json::Value::Null,
+        UniversalValue::Bool(b) => serde_json::json!(*b),
+        UniversalValue::Int8 { value, .. } => serde_json::json!(*value),
+        UniversalValue::Int16(i) => serde_json::json!(*i),
+        UniversalValue::Int32(i) => serde_json::json!(*i),
+        UniversalValue::Int64(i) => serde_json::json!(*i),
+        UniversalValue::Float32(f) => serde_json::json!(*f),
+        UniversalValue::Float64(f) => serde_json::json!(*f),
+        UniversalValue::Text(s) => serde_json::json!(s),
+        UniversalValue::Char { value, .. } => serde_json::json!(value),
+        UniversalValue::VarChar { value, .. } => serde_json::json!(value),
+        UniversalValue::Uuid(u) => serde_json::json!(u.to_string()),
+        UniversalValue::Ulid(u) => serde_json::json!(u.to_string()),
+        UniversalValue::LocalDateTime(dt)
+        | UniversalValue::LocalDateTimeNano(dt)
+        | UniversalValue::ZonedDateTime(dt) => serde_json::json!(dt.to_rfc3339()),
+        UniversalValue::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
+        UniversalValue::Time(dt) => serde_json::json!(dt.format("%H:%M:%S").to_string()),
+        UniversalValue::Bytes(b) | UniversalValue::Blob(b) => {
+            serde_json::json!(b
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>())
+        }
+        UniversalValue::Json(j) | UniversalValue::Jsonb(j) => (**j).clone(),
+        UniversalValue::Decimal { value, .. } => serde_json::json!(value),
+        UniversalValue::Enum { value, .. } => serde_json::json!(value),
+        UniversalValue::Set { elements, .. } => serde_json::json!(elements),
+        UniversalValue::Array { elements, .. } => {
+            serde_json::Value::Array(elements.iter().map(universal_to_json).collect())
+        }
+        UniversalValue::Geometry { data, .. } => {
+            use sync_core::GeometryData;
+            let GeometryData(json) = data;
+            json.clone()
+        }
+        UniversalValue::Duration(d) => {
+            let secs = d.as_secs();
+            let nanos = d.subsec_nanos();
+            if nanos == 0 {
+                serde_json::json!(format!("PT{secs}S"))
+            } else {
+                serde_json::json!(format!("PT{secs}.{nanos:09}S"))
+            }
+        }
+        UniversalValue::Thing { table, id } => {
+            let id_str = match id.as_ref() {
+                UniversalValue::Text(s) => s.clone(),
+                UniversalValue::Int32(i) => i.to_string(),
+                UniversalValue::Int64(i) => i.to_string(),
+                UniversalValue::Uuid(u) => u.to_string(),
+                _ => "unknown".to_string(),
+            };
+            serde_json::json!(format!("{table}:{id_str}"))
+        }
+        UniversalValue::Object(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), universal_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+    }
 }
 
 /// Escape a string for Neo4j Cypher.

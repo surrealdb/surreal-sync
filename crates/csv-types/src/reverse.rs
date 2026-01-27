@@ -418,6 +418,33 @@ pub fn csv_string_to_typed_value(
                 })
             }
         }
+
+        // Object - parse JSON object
+        UniversalType::Object => {
+            let json: serde_json::Value =
+                serde_json::from_str(value).map_err(|e| CsvParseError {
+                    message: format!("Invalid JSON for Object: {e}"),
+                    value: value.to_string(),
+                    expected_type: "Object".to_string(),
+                })?;
+
+            if let serde_json::Value::Object(obj) = json {
+                let map: std::collections::HashMap<String, UniversalValue> = obj
+                    .into_iter()
+                    .map(|(k, v)| (k, json_to_generated_value(&v)))
+                    .collect();
+                Ok(TypedValue {
+                    sync_type: UniversalType::Object,
+                    value: UniversalValue::Object(map),
+                })
+            } else {
+                Err(CsvParseError {
+                    message: "Expected JSON object".to_string(),
+                    value: value.to_string(),
+                    expected_type: "Object".to_string(),
+                })
+            }
+        }
     }
 }
 

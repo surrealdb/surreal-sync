@@ -163,6 +163,13 @@ pub enum UniversalType {
     // Record reference
     /// Record reference/link (e.g., SurrealDB Thing)
     Thing,
+
+    // Nested object/document
+    /// Nested object/document (e.g., MongoDB embedded documents, SurrealDB objects)
+    ///
+    /// This differs from Json/Jsonb which are serialized JSON storage types.
+    /// Object represents a structured nested document with typed fields.
+    Object,
 }
 
 /// Geometry type variants for spatial data.
@@ -268,6 +275,7 @@ impl Serialize for UniversalType {
             }
             Self::Duration => serializer.serialize_str("duration"),
             Self::Thing => serializer.serialize_str("thing"),
+            Self::Object => serializer.serialize_str("object"),
         }
     }
 }
@@ -314,6 +322,7 @@ impl<'de> Deserialize<'de> for UniversalType {
                     "jsonb" => Ok(UniversalType::Jsonb),
                     "duration" => Ok(UniversalType::Duration),
                     "thing" => Ok(UniversalType::Thing),
+                    "object" => Ok(UniversalType::Object),
                     _ => Err(E::custom(format!("unknown simple type: {value}"))),
                 }
             }
@@ -358,6 +367,7 @@ impl<'de> Deserialize<'de> for UniversalType {
                     "jsonb" => Ok(UniversalType::Jsonb),
                     "duration" => Ok(UniversalType::Duration),
                     "thing" => Ok(UniversalType::Thing),
+                    "object" => Ok(UniversalType::Object),
 
                     // Complex types
                     "tiny_int" | "tinyint" => {

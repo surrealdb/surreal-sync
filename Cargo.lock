@@ -3206,6 +3206,7 @@ dependencies = [
 name = "json-types"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "chrono",
  "serde",
@@ -6345,7 +6346,6 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sync-surreal",
- "surrealdb-types",
  "sync-core",
  "tempfile",
  "thiserror 1.0.69",
@@ -6398,7 +6398,6 @@ dependencies = [
  "serde_json",
  "surreal-sync-surreal",
  "surrealdb",
- "surrealdb-types",
  "sync-core",
  "tempfile",
  "tokio",
@@ -6426,7 +6425,6 @@ dependencies = [
  "serde_json",
  "surreal-sync-surreal",
  "surrealdb",
- "surrealdb-types",
  "sync-core",
  "tempfile",
  "tokio",
@@ -6477,7 +6475,6 @@ dependencies = [
  "surreal-sync-postgresql",
  "surreal-sync-surreal",
  "surrealdb",
- "surrealdb-types",
  "sync-core",
  "tempfile",
  "tokio",

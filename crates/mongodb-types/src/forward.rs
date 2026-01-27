@@ -202,6 +202,15 @@ impl From<UniversalValue> for BsonValue {
                 };
                 BsonValue(Bson::String(format!("{table}:{id_str}")))
             }
+
+            // Object - convert to BSON document
+            UniversalValue::Object(map) => {
+                let mut doc = bson::Document::new();
+                for (k, v) in map {
+                    doc.insert(k, BsonValue::from(v).into_inner());
+                }
+                BsonValue(Bson::Document(doc))
+            }
         }
     }
 }
@@ -305,6 +314,13 @@ fn generated_value_to_bson(value: &UniversalValue) -> Bson {
                 ),
             };
             Bson::String(format!("{table}:{id_str}"))
+        }
+        UniversalValue::Object(map) => {
+            let mut doc = bson::Document::new();
+            for (k, v) in map {
+                doc.insert(k.clone(), generated_value_to_bson(v));
+            }
+            Bson::Document(doc)
         }
     }
 }

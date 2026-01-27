@@ -204,6 +204,20 @@ pub fn universal_to_cypher_literal(
             };
             Ok(format!("'{table}:{id_str}'"))
         }
+
+        // Object - nested document, convert to JSON-like map syntax for Neo4j
+        UniversalValue::Object(map) => {
+            let entries: Vec<String> = map
+                .iter()
+                .map(|(k, v)| {
+                    let key_escaped = k.replace('`', "``");
+                    let val =
+                        universal_to_cypher_literal(v, None).unwrap_or_else(|_| "null".to_string());
+                    format!("`{key_escaped}`: {val}")
+                })
+                .collect();
+            Ok(format!("{{{}}}", entries.join(", ")))
+        }
     }
 }
 

@@ -4,11 +4,11 @@
 
 use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
+use std::collections::HashMap;
 use std::time::Duration;
-use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Thing, Value};
-use surrealdb_types::RecordWithSurrealValues as Record;
+use sync_core::{UniversalRow, UniversalType, UniversalValue};
 
-use surreal_sync_surreal::{surreal_connect, write_records, SurrealOpts as SurrealConnOpts};
+use surreal_sync_surreal::{surreal_connect, write_universal_rows, SurrealOpts as SurrealConnOpts};
 
 /// Source database connection options (MongoDB-specific, library type without clap)
 #[derive(Clone, Debug)]
@@ -137,27 +137,6 @@ pub async fn run_full_sync(
         surreal_password: to_opts.surreal_password.clone(),
     };
     let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
-
-    tracing::debug!(
-        "Signing in to SurrealDB with username: {}",
-        to_opts.surreal_username
-    );
-    surreal
-        .signin(surrealdb::opt::auth::Root {
-            username: &to_opts.surreal_username,
-            password: &to_opts.surreal_password,
-        })
-        .await?;
-    tracing::debug!("SurrealDB signin successful");
-
-    tracing::debug!(
-        "Using SurrealDB namespace: {} and database: {}",
-        to_namespace,
-        to_database
-    );
-    surreal.use_ns(&to_namespace).use_db(&to_database).await?;
-    tracing::debug!("SurrealDB namespace and database selected");
-
     tracing::info!("Connected to both MongoDB and SurrealDB");
 
     // Get list of collections from MongoDB
@@ -194,7 +173,7 @@ pub async fn run_full_sync(
             "Cursor created successfully for collection: {}",
             collection_name
         );
-        let mut batch: Vec<Record> = Vec::new();
+        let mut batch: Vec<UniversalRow> = Vec::new();
         let mut processed = 0;
 
         tracing::debug!(
@@ -222,8 +201,9 @@ pub async fn run_full_sync(
                 tracing::debug!("BSON document: {:?}", doc_owned);
             }
 
-            // Convert BSON document to surreal record and add Thing as id
-            let surreal_record = convert_bson_document_to_record(doc_owned, &collection_name)?;
+            // Convert BSON document to UniversalRow
+            let surreal_record =
+                convert_bson_document_to_record(doc_owned, &collection_name, processed as u64)?;
 
             if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
                 tracing::debug!("Final document for SurrealDB: {surreal_record:?}",);
@@ -239,7 +219,7 @@ pub async fn run_full_sync(
                 );
                 if !to_opts.dry_run {
                     tracing::debug!("Migrating batch of {} documents to SurrealDB", batch.len());
-                    write_records(&surreal, &collection_name, &batch).await?;
+                    write_universal_rows(&surreal, &batch).await?;
                     tracing::debug!("Batch migration completed");
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
@@ -268,7 +248,7 @@ pub async fn run_full_sync(
                     "Migrating final batch of {} documents to SurrealDB",
                     batch.len()
                 );
-                write_records(&surreal, &collection_name, &batch).await?;
+                write_universal_rows(&surreal, &batch).await?;
                 tracing::debug!("Final batch migration completed");
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");
@@ -322,34 +302,40 @@ pub async fn run_full_sync(
     Ok(())
 }
 
-/// Convert BSON values directly to surrealdb::sql::Value
-pub fn convert_bson_to_surreal_value(bson_value: mongodb::bson::Bson) -> anyhow::Result<Value> {
+/// Convert BSON values directly to UniversalValue
+pub fn convert_bson_to_universal_value(
+    bson_value: mongodb::bson::Bson,
+) -> anyhow::Result<UniversalValue> {
     use mongodb::bson::Bson;
 
     match bson_value {
-        Bson::Double(f) => Ok(Value::Number(Number::Float(f))),
+        Bson::Double(f) => Ok(UniversalValue::Float64(f)),
         Bson::String(s) => {
             // Auto-detect ISO 8601 duration strings (PTxxxS format) and convert to Duration
             if let Some(duration) = try_parse_iso8601_duration(&s) {
-                Ok(Value::Duration(surrealdb::sql::Duration::from(duration)))
+                Ok(UniversalValue::Duration(duration))
             } else {
-                Ok(Value::Strand(Strand::from(s)))
+                Ok(UniversalValue::Text(s))
             }
         }
         Bson::Array(arr) => {
             let mut vs = Vec::new();
             for item in arr {
-                let v = convert_bson_to_surreal_value(item)?;
+                let v = convert_bson_to_universal_value(item)?;
                 vs.push(v);
             }
-            Ok(Value::Array(Array::from(vs)))
+            // Use Json as element type since BSON arrays can contain mixed types
+            Ok(UniversalValue::Array {
+                elements: vs,
+                element_type: Box::new(UniversalType::Json),
+            })
         }
         Bson::Document(doc) => {
             // Check if this document is a DBRef
             if let (Some(Bson::String(ref_collection)), Some(ref_id)) =
                 (doc.get("$ref"), doc.get("$id"))
             {
-                // This is a DBRef - convert to SurrealDB Thing
+                // This is a DBRef - convert to Thing reference
                 let id_string = match ref_id {
                     Bson::String(s) => s.clone(),
                     Bson::ObjectId(oid) => oid.to_string(),
@@ -363,120 +349,128 @@ pub fn convert_bson_to_surreal_value(bson_value: mongodb::bson::Bson) -> anyhow:
                     }
                     _ => ref_id.to_string(),
                 };
-                let thing = Thing::from((ref_collection.clone(), id_string));
-                Ok(Value::Thing(thing))
+                Ok(UniversalValue::Thing {
+                    table: ref_collection.clone(),
+                    id: Box::new(UniversalValue::Text(id_string)),
+                })
             } else {
                 // Regular document - convert recursively
-                let mut obj = std::collections::BTreeMap::new();
+                let mut obj = HashMap::new();
                 for (key, val) in doc {
-                    let v = convert_bson_to_surreal_value(val)?;
+                    let v = convert_bson_to_universal_value(val)?;
                     obj.insert(key, v);
                 }
-                Ok(Value::Object(Object::from(obj)))
+                Ok(UniversalValue::Object(obj))
             }
         }
-        Bson::Boolean(b) => Ok(Value::Bool(b)),
-        Bson::Null => Ok(Value::Null),
+        Bson::Boolean(b) => Ok(UniversalValue::Bool(b)),
+        Bson::Null => Ok(UniversalValue::Null),
         Bson::RegularExpression(regex) => {
             // We assume SurrealDB's regex always use Rust's regex crate under the hood,
             // so we can say (?OPTIONS)PATTERN in SurrealDB whereas it is /PATTERN/OPTIONS in MongoDB.
             // Note that the regex crate does not support the /PATTERN/OPTIONS style.
             // See https://docs.rs/regex/latest/regex/#grouping-and-flags
-            Ok(Value::Strand(Strand::from(format!(
+            Ok(UniversalValue::Text(format!(
                 "(?{}){}",
                 regex.options, regex.pattern
-            ))))
+            )))
         }
-        Bson::JavaScriptCode(code) => Ok(Value::Strand(Strand::from(code))),
+        Bson::JavaScriptCode(code) => Ok(UniversalValue::Text(code)),
         Bson::JavaScriptCodeWithScope(code_with_scope) => {
-            let mut scope_obj = std::collections::BTreeMap::new();
+            let mut scope_obj = HashMap::new();
             for (key, val) in code_with_scope.scope {
-                let v = convert_bson_to_surreal_value(val)?;
+                let v = convert_bson_to_universal_value(val)?;
                 scope_obj.insert(key, v);
             }
-            let scope = Value::Object(Object::from(scope_obj));
-            let code = Value::Strand(Strand::from(code_with_scope.code));
-            let mut result_obj = std::collections::BTreeMap::new();
+            let scope = UniversalValue::Object(scope_obj);
+            let code = UniversalValue::Text(code_with_scope.code);
+            let mut result_obj = HashMap::new();
             result_obj.insert("$code".to_string(), code);
             result_obj.insert("$scope".to_string(), scope);
-            Ok(Value::Object(Object::from(result_obj)))
+            Ok(UniversalValue::Object(result_obj))
         }
-        Bson::Int32(i) => Ok(Value::Number(Number::Int(i as i64))),
-        Bson::Int64(i) => Ok(Value::Number(Number::Int(i))),
+        Bson::Int32(i) => Ok(UniversalValue::Int64(i as i64)),
+        Bson::Int64(i) => Ok(UniversalValue::Int64(i)),
         Bson::Timestamp(ts) => {
             // MongoDB Timestamp.time is seconds since Unix epoch
             let seconds = ts.time as i64;
             // To keep the ordering across timestamps, we exploit the increment component as the nanoseconds.
             let assumed_ns = ts.increment;
             if let Some(datetime) = chrono::DateTime::from_timestamp(seconds, assumed_ns) {
-                Ok(Value::Datetime(Datetime::from(datetime)))
+                // MongoDB timestamps are in UTC, so use ZonedDateTime
+                Ok(UniversalValue::ZonedDateTime(datetime))
             } else {
                 Err(anyhow::anyhow!(
                     "Failed to convert MongoDB timestamp to datetime"
                 ))
             }
         }
-        Bson::Binary(binary) => Ok(Value::Bytes(surrealdb::sql::Bytes::from(binary.bytes))),
-        Bson::ObjectId(oid) => Ok(Value::Strand(Strand::from(oid.to_string()))),
-        Bson::DateTime(dt) => Ok(Value::Datetime(Datetime::from(dt.to_chrono()))),
-        Bson::Symbol(s) => Ok(Value::Strand(Strand::from(s))),
+        Bson::Binary(binary) => Ok(UniversalValue::Bytes(binary.bytes)),
+        Bson::ObjectId(oid) => Ok(UniversalValue::Text(oid.to_string())),
+        Bson::DateTime(dt) => Ok(UniversalValue::ZonedDateTime(dt.to_chrono())),
+        Bson::Symbol(s) => Ok(UniversalValue::Text(s)),
         Bson::Decimal128(d) => {
             let decimal_str = d.to_string();
-            match Number::try_from(decimal_str.as_str()) {
-                Ok(decimal_num) => Ok(Value::Number(decimal_num)),
+            // Try to parse as float64
+            match decimal_str.parse::<f64>() {
+                Ok(f) => Ok(UniversalValue::Float64(f)),
                 Err(e) => {
                     tracing::warn!("Failed to parse BSON Decimal128 '{}': {:?}", decimal_str, e);
                     Err(anyhow::anyhow!("Failed to parse BSON Decimal128"))
                 }
             }
         }
-        Bson::Undefined => Ok(Value::None), // Map undefined to null
+        Bson::Undefined => Ok(UniversalValue::Null), // Map undefined to null
         Bson::MaxKey => {
-            let mut mk = std::collections::BTreeMap::new();
-            mk.insert("$maxKey".to_string(), Value::Number(Number::Int(1)));
-            Ok(Value::Object(Object::from(mk)))
+            let mut mk = HashMap::new();
+            mk.insert("$maxKey".to_string(), UniversalValue::Int64(1));
+            Ok(UniversalValue::Object(mk))
         }
         Bson::MinKey => {
-            let mut mk = std::collections::BTreeMap::new();
-            mk.insert("$minKey".to_string(), Value::Number(Number::Int(1)));
-            Ok(Value::Object(Object::from(mk)))
+            let mut mk = HashMap::new();
+            mk.insert("$minKey".to_string(), UniversalValue::Int64(1));
+            Ok(UniversalValue::Object(mk))
         }
         Bson::DbPointer(_db_pointer) => {
             // DBPointer is deprecated and fields are private
             // Store as a special string to preserve the information
-            Ok(Value::Strand(Strand::from("$dbPointer".to_string())))
+            Ok(UniversalValue::Text("$dbPointer".to_string()))
         }
     }
 }
 
-// Converts a BSON document containing _id to a surreal record, mapping _id to SurrealDB Thing
+/// Converts a BSON document containing _id to a UniversalRow
 fn convert_bson_document_to_record(
     doc: mongodb::bson::Document,
     collection_name: &str,
-) -> anyhow::Result<Record> {
-    // Extract MongoDB ObjectId and create Thing
-    let id = if let Some(id_value) = doc.get("_id") {
-        match id_value {
-            mongodb::bson::Bson::ObjectId(oid) => surrealdb::sql::Id::from(oid.to_string()),
-            mongodb::bson::Bson::String(s) => surrealdb::sql::Id::from(s),
-            mongodb::bson::Bson::Int32(i) => surrealdb::sql::Id::from(*i),
-            mongodb::bson::Bson::Int64(i) => surrealdb::sql::Id::from(*i),
-            _ => anyhow::bail!("Unsupported _id type in MongoDB document: ${id_value:?}"),
+    row_index: u64,
+) -> anyhow::Result<UniversalRow> {
+    // Extract MongoDB _id and convert to UniversalValue
+    let id_value = if let Some(id_bson) = doc.get("_id") {
+        match id_bson {
+            mongodb::bson::Bson::ObjectId(oid) => UniversalValue::Text(oid.to_string()),
+            mongodb::bson::Bson::String(s) => UniversalValue::Text(s.clone()),
+            mongodb::bson::Bson::Int32(i) => UniversalValue::Int64(*i as i64),
+            mongodb::bson::Bson::Int64(i) => UniversalValue::Int64(*i),
+            _ => anyhow::bail!("Unsupported _id type in MongoDB document: {id_bson:?}"),
         }
     } else {
         anyhow::bail!("Document is missing _id field");
     };
 
-    // Remove _id field before conversion
-    let mut data = std::collections::HashMap::new();
+    // Convert remaining fields (excluding _id)
+    let mut fields = HashMap::new();
     for (key, value) in doc {
         if key != "_id" {
-            let v = convert_bson_to_surreal_value(value)?;
-            data.insert(key, v);
+            let v = convert_bson_to_universal_value(value)?;
+            fields.insert(key, v);
         }
     }
 
-    let id = surrealdb::sql::Thing::from((collection_name, id));
-
-    Ok(Record::new(id, data))
+    Ok(UniversalRow::new(
+        collection_name.to_string(),
+        row_index,
+        id_value,
+        fields,
+    ))
 }
