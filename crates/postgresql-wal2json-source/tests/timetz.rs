@@ -151,11 +151,13 @@ async fn test_timetz_replication_formats() -> Result<()> {
                     .get("event_time")
                     .context("Should have event_time column")?;
 
-                // Verify it's a ZonedDateTime value (timetz values are converted to DateTime<Utc>)
+                // Verify it's a TimeTz value (string) - preserving original format
+                // Note: TIMETZ must be stored as String, NOT DateTime.
+                // Time and datetime are fundamentally different types - datetime implies a specific
+                // point in time, while TIMETZ represents a daily recurring time in a specific timezone.
                 match event_time {
-                    UniversalValue::ZonedDateTime(dt) => {
-                        let time_str = dt.format("%H:%M:%S%.f").to_string();
-                        info!("TimeTz value: {} (DateTime: {})", time_str, dt);
+                    UniversalValue::TimeTz(time_str) => {
+                        info!("TimeTz value: {}", time_str);
 
                         // Get the ID to verify specific expected values
                         let id = match row.primary_key {
@@ -163,7 +165,7 @@ async fn test_timetz_replication_formats() -> Result<()> {
                             _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
                         };
 
-                        // Verify timetz values contain expected time components
+                        // Verify timetz values preserve the original format
                         match id {
                             1 => {
                                 assert!(
@@ -173,18 +175,18 @@ async fn test_timetz_replication_formats() -> Result<()> {
                                 );
                             }
                             2 => {
-                                // 04:05:06+05:30 -> 22:35:06 UTC (previous day)
+                                // Original format is preserved: 04:05:06+05:30
                                 assert!(
-                                    time_str.contains("22:35:06"),
-                                    "TimeTz for id=2 should contain 22:35:06 (UTC), got {}",
+                                    time_str.contains("04:05:06"),
+                                    "TimeTz for id=2 should contain 04:05:06, got {}",
                                     time_str
                                 );
                             }
                             3 => {
-                                // 15:37:16-08:00 -> 23:37:16 UTC
+                                // Original format is preserved: 15:37:16-08:00
                                 assert!(
-                                    time_str.contains("23:37:16"),
-                                    "TimeTz for id=3 should contain 23:37:16 (UTC), got {}",
+                                    time_str.contains("15:37:16"),
+                                    "TimeTz for id=3 should contain 15:37:16, got {}",
                                     time_str
                                 );
                             }
@@ -206,7 +208,7 @@ async fn test_timetz_replication_formats() -> Result<()> {
                         }
                     }
                     _ => panic!(
-                        "Expected ZonedDateTime value for timetz, got {:?}",
+                        "Expected TimeTz (String) value, NOT ZonedDateTime. Got {:?}",
                         event_time
                     ),
                 }
@@ -246,19 +248,21 @@ async fn test_timetz_replication_formats() -> Result<()> {
                 .get("event_time")
                 .context("Should have event_time column in UPDATE")?;
 
+            // Note: TIMETZ must be stored as String, NOT DateTime.
+            // Time and datetime are fundamentally different types - datetime implies a specific
+            // point in time, while TIMETZ represents a daily recurring time in a specific timezone.
             match event_time {
-                UniversalValue::ZonedDateTime(dt) => {
-                    let time_str = dt.format("%H:%M:%S").to_string();
-                    info!("UPDATE timetz value: {} (DateTime: {})", time_str, dt);
-                    // 18:30:00-05:00 -> 23:30:00 UTC
+                UniversalValue::TimeTz(time_str) => {
+                    info!("UPDATE TimeTz value: {}", time_str);
+                    // Original format preserved: 18:30:00-05:00
                     assert!(
-                        time_str.contains("23:30:00"),
-                        "Updated timetz should contain 23:30:00 (UTC), got {}",
+                        time_str.contains("18:30:00"),
+                        "Updated timetz should contain 18:30:00, got {}",
                         time_str
                     );
                 }
                 _ => panic!(
-                    "Expected ZonedDateTime value in UPDATE, got {:?}",
+                    "Expected TimeTz (String) value in UPDATE, NOT ZonedDateTime. Got {:?}",
                     event_time
                 ),
             }

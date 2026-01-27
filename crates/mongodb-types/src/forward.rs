@@ -104,8 +104,8 @@ impl From<UniversalValue> for BsonValue {
                 BsonValue(Bson::String(dt.format("%Y-%m-%d").to_string()))
             }
             UniversalValue::Time(dt) => {
-                // Store time as string in HH:MM:SS format
-                BsonValue(Bson::String(dt.format("%H:%M:%S").to_string()))
+                // Store time as string with fractional seconds preserved
+                BsonValue(Bson::String(dt.format("%H:%M:%S%.f").to_string()))
             }
             UniversalValue::LocalDateTime(dt) => {
                 BsonValue(Bson::DateTime(BsonDateTime::from_chrono(dt)))
@@ -117,6 +117,8 @@ impl From<UniversalValue> for BsonValue {
             UniversalValue::ZonedDateTime(dt) => {
                 BsonValue(Bson::DateTime(BsonDateTime::from_chrono(dt)))
             }
+            // TimeTz - store as string to preserve timezone format
+            UniversalValue::TimeTz(s) => BsonValue(Bson::String(s)),
 
             // UUID - MongoDB has native UUID binary subtype
             UniversalValue::Uuid(u) => BsonValue(Bson::Binary(bson::Binary {
@@ -272,11 +274,12 @@ fn generated_value_to_bson(value: &UniversalValue) -> Bson {
             bytes: u.as_bytes().to_vec(),
         }),
         UniversalValue::Ulid(u) => Bson::String(u.to_string()),
-        UniversalValue::Date(dt)
-        | UniversalValue::Time(dt)
-        | UniversalValue::LocalDateTime(dt)
+        UniversalValue::Date(dt) => Bson::String(dt.format("%Y-%m-%d").to_string()),
+        UniversalValue::Time(dt) => Bson::String(dt.format("%H:%M:%S%.f").to_string()),
+        UniversalValue::LocalDateTime(dt)
         | UniversalValue::LocalDateTimeNano(dt)
         | UniversalValue::ZonedDateTime(dt) => Bson::DateTime(BsonDateTime::from_chrono(*dt)),
+        UniversalValue::TimeTz(s) => Bson::String(s.clone()),
         UniversalValue::Decimal { value, .. } => Bson::String(value.clone()),
         UniversalValue::Array { elements, .. } => {
             Bson::Array(elements.iter().map(generated_value_to_bson).collect())

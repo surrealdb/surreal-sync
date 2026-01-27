@@ -95,6 +95,9 @@ impl ToDdl for PostgreSQLDdl {
 
             // Object - nested document stored as JSONB
             UniversalType::Object => "JSONB".to_string(),
+
+            // TimeTz - time with timezone
+            UniversalType::TimeTz => "TIMETZ".to_string(),
         }
     }
 

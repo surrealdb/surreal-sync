@@ -122,6 +122,15 @@ pub enum UniversalValue {
     /// Timestamp with timezone → `UniversalType::ZonedDateTime`
     ZonedDateTime(DateTime<Utc>),
 
+    /// Time with timezone (stored as string to preserve original format)
+    /// → `UniversalType::TimeTz`
+    ///
+    /// Note: We intentionally use String instead of DateTime because time and datetime
+    /// are fundamentally different types. DateTime implies a specific point in time,
+    /// while time with timezone represents a daily recurring time in a specific timezone.
+    /// Using DateTime to represent time would misrepresent the semantics.
+    TimeTz(String),
+
     // === Special types ===
     /// UUID (128-bit) → `UniversalType::Uuid`
     Uuid(Uuid),
@@ -401,6 +410,7 @@ impl UniversalValue {
             Self::LocalDateTime(_) => "LocalDateTime",
             Self::LocalDateTimeNano(_) => "LocalDateTimeNano",
             Self::ZonedDateTime(_) => "ZonedDateTime",
+            Self::TimeTz(_) => "TimeTz",
             Self::Uuid(_) => "Uuid",
             Self::Ulid(_) => "Ulid",
             Self::Json(_) => "Json",
@@ -468,6 +478,7 @@ impl UniversalValue {
             Self::LocalDateTime(_) => UniversalType::LocalDateTime,
             Self::LocalDateTimeNano(_) => UniversalType::LocalDateTimeNano,
             Self::ZonedDateTime(_) => UniversalType::ZonedDateTime,
+            Self::TimeTz(_) => UniversalType::TimeTz,
             Self::Uuid(_) => UniversalType::Uuid,
             Self::Ulid(_) => UniversalType::Ulid,
             Self::Json(_) => UniversalType::Json,
@@ -592,6 +603,7 @@ impl TypedValue {
             (UniversalType::LocalDateTime, UniversalValue::LocalDateTime(_)) => true,
             (UniversalType::LocalDateTimeNano, UniversalValue::LocalDateTimeNano(_)) => true,
             (UniversalType::ZonedDateTime, UniversalValue::ZonedDateTime(_)) => true,
+            (UniversalType::TimeTz, UniversalValue::TimeTz(_)) => true,
 
             // UUID
             (UniversalType::Uuid, UniversalValue::Uuid(_)) => true,
@@ -652,6 +664,7 @@ impl TypedValue {
             UniversalType::LocalDateTime => "LocalDateTime".to_string(),
             UniversalType::LocalDateTimeNano => "LocalDateTimeNano".to_string(),
             UniversalType::ZonedDateTime => "ZonedDateTime".to_string(),
+            UniversalType::TimeTz => "TimeTz".to_string(),
             UniversalType::Uuid => "Uuid".to_string(),
             UniversalType::Ulid => "Ulid".to_string(),
             UniversalType::Json => "Json".to_string(),

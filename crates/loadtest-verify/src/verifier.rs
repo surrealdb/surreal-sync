@@ -471,6 +471,11 @@ impl StreamingVerifier {
                 let val: Option<serde_json::Value> = response.take((0, field_name))?;
                 Ok(val.map(|v| json_value_to_surreal(&v)))
             }
+            UniversalType::TimeTz => {
+                // TimeTz - stored as string in SurrealDB
+                let val: Option<String> = response.take((0, field_name))?;
+                Ok(val.map(|s| SurrealValue::Strand(surrealdb::sql::Strand::from(s))))
+            }
         }
     }
 

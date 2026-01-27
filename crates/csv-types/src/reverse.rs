@@ -445,6 +445,15 @@ pub fn csv_string_to_typed_value(
                 })
             }
         }
+
+        // TimeTz - stored as string to preserve timezone format
+        // Note: We intentionally use String instead of DateTime because time and datetime
+        // are fundamentally different types. DateTime implies a specific point in time,
+        // while time with timezone represents a daily recurring time in a specific timezone.
+        UniversalType::TimeTz => Ok(TypedValue {
+            sync_type: UniversalType::TimeTz,
+            value: UniversalValue::TimeTz(value.to_string()),
+        }),
     }
 }
 

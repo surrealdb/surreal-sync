@@ -141,14 +141,23 @@ impl From<UniversalValue> for SurrealValue {
             UniversalValue::Date(dt) => SurrealValue(Value::Strand(Strand::from(
                 dt.format("%Y-%m-%d").to_string(),
             ))),
+            // Note: Using "%H:%M:%S%.f" to preserve fractional seconds from PostgreSQL TIME type.
+            // While SurrealDB doesn't have a native TIME type, storing as string with full precision
+            // ensures no data loss during sync.
             UniversalValue::Time(dt) => SurrealValue(Value::Strand(Strand::from(
-                dt.format("%H:%M:%S").to_string(),
+                dt.format("%H:%M:%S%.f").to_string(),
             ))),
             UniversalValue::LocalDateTime(dt) => SurrealValue(Value::Datetime(Datetime::from(dt))),
             UniversalValue::LocalDateTimeNano(dt) => {
                 SurrealValue(Value::Datetime(Datetime::from(dt)))
             }
             UniversalValue::ZonedDateTime(dt) => SurrealValue(Value::Datetime(Datetime::from(dt))),
+            // TIMETZ - stored as string to preserve timezone format.
+            // Note: We intentionally do NOT use Datetime here because time and datetime
+            // are fundamentally different types. Datetime implies a specific point in time,
+            // while TIMETZ represents a daily recurring time in a specific timezone.
+            // Misusing Datetime to represent time would lose semantic meaning.
+            UniversalValue::TimeTz(s) => SurrealValue(Value::Strand(Strand::from(s))),
 
             // UUID
             UniversalValue::Uuid(u) => SurrealValue(Value::Uuid(surrealdb::sql::Uuid::from(u))),

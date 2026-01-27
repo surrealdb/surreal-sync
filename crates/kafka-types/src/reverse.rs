@@ -202,10 +202,11 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
         UniversalValue::Uuid(u) => serde_json::json!(u.to_string()),
         UniversalValue::Ulid(u) => serde_json::json!(u.to_string()),
         UniversalValue::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
-        UniversalValue::Time(dt) => serde_json::json!(dt.format("%H:%M:%S").to_string()),
+        UniversalValue::Time(dt) => serde_json::json!(dt.format("%H:%M:%S%.f").to_string()),
         UniversalValue::LocalDateTime(dt)
         | UniversalValue::LocalDateTimeNano(dt)
         | UniversalValue::ZonedDateTime(dt) => serde_json::json!(dt.to_rfc3339()),
+        UniversalValue::TimeTz(s) => serde_json::json!(s),
         UniversalValue::Decimal { value, .. } => serde_json::json!(value),
         UniversalValue::Array { elements, .. } => {
             serde_json::json!(elements

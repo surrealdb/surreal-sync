@@ -102,6 +102,11 @@ impl ToDdl for MySQLDdl {
 
             // Object - nested document stored as JSON
             UniversalType::Object => "JSON".to_string(),
+
+            // TimeTz - MySQL doesn't have native TIMETZ, store as VARCHAR
+            // Note: We intentionally use VARCHAR instead of TIME because MySQL TIME
+            // doesn't support timezone offsets. Storing as string preserves the original format.
+            UniversalType::TimeTz => "VARCHAR(32)".to_string(),
         }
     }
 

@@ -117,6 +117,11 @@ impl From<UniversalValue> for PostgreSQLValue {
             // Timestamp with timezone
             UniversalValue::ZonedDateTime(dt) => PostgreSQLValue::TimestampTz(dt),
 
+            // TimeTz - store as text to preserve timezone format
+            // Note: We intentionally do NOT use a datetime type because time and datetime
+            // are fundamentally different types.
+            UniversalValue::TimeTz(s) => PostgreSQLValue::Text(s),
+
             // JSON
             UniversalValue::Json(json_val) => PostgreSQLValue::Json((*json_val).clone()),
             UniversalValue::Jsonb(json_val) => PostgreSQLValue::Json((*json_val).clone()),
