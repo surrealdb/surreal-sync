@@ -1,4 +1,7 @@
-.PHONY: test check fmt clippy build clean help install-tools
+.PHONY: test check fmt clippy build clean clean-logs help install-tools
+
+# Log directory for test output
+LOGS_DIR := logs/test
 
 # Default target
 help:
@@ -10,6 +13,7 @@ help:
 	@echo "Development:"
 	@echo "  build         - Build the release binary"
 	@echo "  clean         - Clean build artifacts"
+	@echo "  clean-logs    - Clean test log files"
 	@echo "  install-tools - Install required Rust toolchain components"
 
 # Install required Rust toolchain components
@@ -50,23 +54,32 @@ clean:
 
 # Depends on build because cli tests need the binary
 test: fmt check clippy build
-	@echo "📊 Unit tests..."
-	@if ! cargo test --workspace --no-fail-fast --lib; then \
-		echo "❌ Unit tests failed"; \
+	@mkdir -p $(LOGS_DIR)
+	@echo "Test logs will be written to: $(LOGS_DIR)/"
+
+	@echo "Running unit tests..."
+	@if ! cargo test --workspace --no-fail-fast --lib > $(LOGS_DIR)/unit.log 2>&1; then \
+		echo "Unit tests failed. See: $(LOGS_DIR)/unit.log"; \
 		exit 1; \
 	fi
+	@echo "Unit tests passed"
 
-	@echo "🔗 Integration tests..."
-	@echo "   Running all integration tests with database isolation..."
-	@if ! RUST_TEST_THREADS=1 cargo test --workspace --no-fail-fast --tests; then \
-		echo "❌ Integration tests failed"; \
+	@echo "Running integration tests..."
+	@if ! RUST_TEST_THREADS=1 cargo test --workspace --no-fail-fast --tests > $(LOGS_DIR)/integration.log 2>&1; then \
+		echo "Integration tests failed. See: $(LOGS_DIR)/integration.log"; \
 		exit 1; \
 	fi
+	@echo "Integration tests passed"
 
-	@echo "📖 Documentation tests..."
-	@if ! cargo test --workspace --no-fail-fast --doc; then \
-		echo "❌ Documentation tests failed"; \
+	@echo "Running documentation tests..."
+	@if ! cargo test --workspace --no-fail-fast --doc > $(LOGS_DIR)/doc.log 2>&1; then \
+		echo "Documentation tests failed. See: $(LOGS_DIR)/doc.log"; \
 		exit 1; \
 	fi
+	@echo "Documentation tests passed"
 
-	@echo "✅ All the tests passed"
+	@echo "All tests passed. Logs: $(LOGS_DIR)/"
+
+# Clean test logs
+clean-logs:
+	rm -rf logs/test/
