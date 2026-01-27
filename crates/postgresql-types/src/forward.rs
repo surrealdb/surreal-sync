@@ -101,6 +101,9 @@ impl From<UniversalValue> for PostgreSQLValue {
             // UUID
             UniversalValue::Uuid(u) => PostgreSQLValue::Uuid(u),
 
+            // ULID - convert to text
+            UniversalValue::Ulid(u) => PostgreSQLValue::Text(u.to_string()),
+
             // Date
             UniversalValue::Date(dt) => PostgreSQLValue::Date(dt.date_naive()),
 

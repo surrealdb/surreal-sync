@@ -75,6 +75,9 @@ impl From<UniversalValue> for JsonValue {
             // UUID
             UniversalValue::Uuid(u) => JsonValue(json!(u.to_string())),
 
+            // ULID
+            UniversalValue::Ulid(u) => JsonValue(json!(u.to_string())),
+
             // JSON types - already serde_json::Value
             UniversalValue::Json(payload) => JsonValue((*payload).clone()),
             UniversalValue::Jsonb(payload) => JsonValue((*payload).clone()),
@@ -155,6 +158,7 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
             json!(encoded)
         }
         UniversalValue::Uuid(u) => json!(u.to_string()),
+        UniversalValue::Ulid(u) => json!(u.to_string()),
         UniversalValue::Date(dt) => json!(dt.format("%Y-%m-%d").to_string()),
         UniversalValue::Time(dt) => json!(dt.format("%H:%M:%S").to_string()),
         UniversalValue::LocalDateTime(dt)

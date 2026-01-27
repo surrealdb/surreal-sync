@@ -126,6 +126,9 @@ pub enum UniversalValue {
     /// UUID (128-bit) → `UniversalType::Uuid`
     Uuid(Uuid),
 
+    /// ULID (128-bit sortable identifier) → `UniversalType::Ulid`
+    Ulid(ulid::Ulid),
+
     /// JSON document → `UniversalType::Json`
     Json(Box<serde_json::Value>),
 
@@ -334,6 +337,14 @@ impl UniversalValue {
         }
     }
 
+    /// Try to get this value as a ULID.
+    pub fn as_ulid(&self) -> Option<&ulid::Ulid> {
+        match self {
+            Self::Ulid(u) => Some(u),
+            _ => None,
+        }
+    }
+
     /// Try to get this value as a DateTime.
     pub fn as_datetime(&self) -> Option<&DateTime<Utc>> {
         match self {
@@ -376,6 +387,7 @@ impl UniversalValue {
             Self::LocalDateTimeNano(_) => "LocalDateTimeNano",
             Self::ZonedDateTime(_) => "ZonedDateTime",
             Self::Uuid(_) => "Uuid",
+            Self::Ulid(_) => "Ulid",
             Self::Json(_) => "Json",
             Self::Jsonb(_) => "Jsonb",
             Self::Array { .. } => "Array",
@@ -440,6 +452,7 @@ impl UniversalValue {
             Self::LocalDateTimeNano(_) => UniversalType::LocalDateTimeNano,
             Self::ZonedDateTime(_) => UniversalType::ZonedDateTime,
             Self::Uuid(_) => UniversalType::Uuid,
+            Self::Ulid(_) => UniversalType::Ulid,
             Self::Json(_) => UniversalType::Json,
             Self::Jsonb(_) => UniversalType::Jsonb,
             Self::Array { element_type, .. } => UniversalType::Array {
@@ -618,6 +631,7 @@ impl TypedValue {
             UniversalType::LocalDateTimeNano => "LocalDateTimeNano".to_string(),
             UniversalType::ZonedDateTime => "ZonedDateTime".to_string(),
             UniversalType::Uuid => "Uuid".to_string(),
+            UniversalType::Ulid => "Ulid".to_string(),
             UniversalType::Json => "Json".to_string(),
             UniversalType::Jsonb => "Jsonb".to_string(),
             UniversalType::Array { .. } => "Array".to_string(),
@@ -678,6 +692,11 @@ impl TypedValue {
     /// Create a UUID typed value.
     pub fn uuid(value: Uuid) -> Self {
         Self::new(UniversalType::Uuid, UniversalValue::Uuid(value))
+    }
+
+    /// Create a ULID typed value.
+    pub fn ulid(value: ulid::Ulid) -> Self {
+        Self::new(UniversalType::Ulid, UniversalValue::Ulid(value))
     }
 
     /// Create a datetime typed value.

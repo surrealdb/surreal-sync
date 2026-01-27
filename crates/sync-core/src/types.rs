@@ -120,6 +120,9 @@ pub enum UniversalType {
     /// UUID (128-bit)
     Uuid,
 
+    /// ULID (Universally Unique Lexicographically Sortable Identifier)
+    Ulid,
+
     /// JSON document
     Json,
 
@@ -205,6 +208,7 @@ impl Serialize for UniversalType {
             Self::LocalDateTimeNano => serializer.serialize_str("date_time_nano"),
             Self::ZonedDateTime => serializer.serialize_str("timestamp_tz"),
             Self::Uuid => serializer.serialize_str("uuid"),
+            Self::Ulid => serializer.serialize_str("ulid"),
             Self::Json => serializer.serialize_str("json"),
             Self::Jsonb => serializer.serialize_str("jsonb"),
 
@@ -300,6 +304,7 @@ impl<'de> Deserialize<'de> for UniversalType {
                     "date_time_nano" | "datetime_nano" => Ok(UniversalType::LocalDateTimeNano),
                     "timestamp_tz" | "timestamptz" => Ok(UniversalType::ZonedDateTime),
                     "uuid" => Ok(UniversalType::Uuid),
+                    "ulid" => Ok(UniversalType::Ulid),
                     "json" => Ok(UniversalType::Json),
                     "jsonb" => Ok(UniversalType::Jsonb),
                     "duration" => Ok(UniversalType::Duration),
@@ -342,6 +347,7 @@ impl<'de> Deserialize<'de> for UniversalType {
                     "date_time_nano" | "datetime_nano" => Ok(UniversalType::LocalDateTimeNano),
                     "timestamp_tz" | "timestamptz" => Ok(UniversalType::ZonedDateTime),
                     "uuid" => Ok(UniversalType::Uuid),
+                    "ulid" => Ok(UniversalType::Ulid),
                     "json" => Ok(UniversalType::Json),
                     "jsonb" => Ok(UniversalType::Jsonb),
                     "duration" => Ok(UniversalType::Duration),

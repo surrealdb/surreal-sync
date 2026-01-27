@@ -7,9 +7,7 @@ use csv_types::{csv_string_to_typed_value, csv_string_to_typed_value_inferred};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};
-use surrealdb::sql::{Id, Thing};
-use surrealdb_types::{typed_values_to_surreal_map, RecordWithSurrealValues};
-use sync_core::{Schema, TypedValue, UniversalType};
+use sync_core::{Schema, TypedValue, UniversalRow, UniversalType, UniversalValue};
 use tracing::{debug, info, warn};
 
 /// Configuration for CSV import
@@ -121,7 +119,7 @@ fn parse_value_with_schema(value: &str, schema_type: Option<&UniversalType>) -> 
 /// This function handles all CSV parsing, data conversion, and SurrealDB insertion
 /// for a single CSV source (file, S3, or HTTP).
 async fn process_csv_reader(
-    surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
+    surreal: &surreal_sync_surreal::Surreal<surreal_sync_surreal::SurrealEngine>,
     config: &Config,
     reader: Box<dyn std::io::Read + Send>,
     source_name: &str,
@@ -167,7 +165,7 @@ async fn process_csv_reader(
         // Process all the records we just read
         let mut total_processed = 0;
         let mut record_count = 0;
-        let mut batch: Vec<RecordWithSurrealValues> = Vec::new();
+        let mut batch: Vec<UniversalRow> = Vec::new();
 
         for record in all_records {
             // Validate column count matches
@@ -187,8 +185,8 @@ async fn process_csv_reader(
                 .as_ref()
                 .and_then(|s| s.get_table(&config.table));
 
-            // Convert CSV record to SurrealDB Record
-            let mut data = HashMap::new();
+            // Convert CSV record to typed data
+            let mut data: HashMap<String, TypedValue> = HashMap::new();
 
             for (i, value) in record.iter().enumerate() {
                 if i < headers.len() {
@@ -205,36 +203,29 @@ async fn process_csv_reader(
             }
 
             // Create the ID for the record
-            let id = if let Some(ref id_field) = config.id_field {
+            let id_value = if let Some(ref id_field) = config.id_field {
                 // Use specified field as ID
-                if let Some(id_value) = data.get(id_field) {
-                    match &id_value.value {
-                        sync_core::UniversalValue::Text(s) => Id::String(s.clone()),
-                        sync_core::UniversalValue::Int32(n) => Id::Number(*n as i64),
-                        sync_core::UniversalValue::Int64(n) => Id::Number(*n),
-                        _ => Id::ulid(), // Fallback to ULID
-                    }
-                } else {
-                    Id::ulid()
-                }
+                data.get(id_field)
+                    .map(|tv| tv.value.clone())
+                    .unwrap_or_else(|| UniversalValue::Ulid(ulid::Ulid::new()))
             } else {
-                Id::ulid()
+                UniversalValue::Ulid(ulid::Ulid::new())
             };
 
-            // Convert TypedValue data to surrealdb::sql::Value
-            let surreal_data = typed_values_to_surreal_map(data);
-            let surreal_record = RecordWithSurrealValues::new(
-                Thing::from((config.table.as_str(), id)),
-                surreal_data,
-            );
+            // Convert HashMap<String, TypedValue> to HashMap<String, UniversalValue>
+            let fields: HashMap<String, UniversalValue> =
+                data.into_iter().map(|(k, tv)| (k, tv.value)).collect();
 
-            batch.push(surreal_record);
+            let row =
+                UniversalRow::new(config.table.clone(), record_count as u64, id_value, fields);
+
+            batch.push(row);
             record_count += 1;
 
             // Process batch when it reaches the configured size
             if batch.len() >= config.batch_size {
                 if !config.dry_run {
-                    surreal_sync_surreal::write_records(surreal, &config.table, &batch).await?;
+                    surreal_sync_surreal::write_universal_rows(surreal, &batch).await?;
                     total_processed += batch.len();
                 } else {
                     debug!("Dry run: Would insert batch of {} records", batch.len());
@@ -253,7 +244,7 @@ async fn process_csv_reader(
         // Process remaining records
         if !batch.is_empty() {
             if !config.dry_run {
-                surreal_sync_surreal::write_records(surreal, &config.table, &batch).await?;
+                surreal_sync_surreal::write_universal_rows(surreal, &batch).await?;
                 total_processed += batch.len();
             } else {
                 debug!(
@@ -286,7 +277,7 @@ async fn process_csv_reader(
         .and_then(|s| s.get_table(&config.table));
 
     // Process records in batches
-    let mut batch: Vec<RecordWithSurrealValues> = Vec::new();
+    let mut batch: Vec<UniversalRow> = Vec::new();
     let mut total_processed = 0;
     let mut record_count = 0;
 
@@ -304,8 +295,8 @@ async fn process_csv_reader(
             );
         }
 
-        // Convert CSV record to SurrealDB Record
-        let mut data = HashMap::new();
+        // Convert CSV record to typed data
+        let mut data: HashMap<String, TypedValue> = HashMap::new();
 
         for (i, value) in record.iter().enumerate() {
             if i < headers.len() {
@@ -322,34 +313,28 @@ async fn process_csv_reader(
         }
 
         // Create the ID for the record
-        let id = if let Some(ref id_field) = config.id_field {
+        let id_value = if let Some(ref id_field) = config.id_field {
             // Use specified field as ID
-            if let Some(id_value) = data.get(id_field) {
-                match &id_value.value {
-                    sync_core::UniversalValue::Text(s) => Id::String(s.clone()),
-                    sync_core::UniversalValue::Int32(n) => Id::Number(*n as i64),
-                    sync_core::UniversalValue::Int64(n) => Id::Number(*n),
-                    _ => Id::ulid(), // Fallback to ULID
-                }
-            } else {
-                Id::ulid()
-            }
+            data.get(id_field)
+                .map(|tv| tv.value.clone())
+                .unwrap_or_else(|| UniversalValue::Ulid(ulid::Ulid::new()))
         } else {
-            Id::ulid()
+            UniversalValue::Ulid(ulid::Ulid::new())
         };
 
-        // Convert TypedValue data to surrealdb::sql::Value
-        let surreal_data = typed_values_to_surreal_map(data);
-        let surreal_record =
-            RecordWithSurrealValues::new(Thing::from((config.table.as_str(), id)), surreal_data);
+        // Convert HashMap<String, TypedValue> to HashMap<String, UniversalValue>
+        let fields: HashMap<String, UniversalValue> =
+            data.into_iter().map(|(k, tv)| (k, tv.value)).collect();
 
-        batch.push(surreal_record);
+        let row = UniversalRow::new(config.table.clone(), record_count as u64, id_value, fields);
+
+        batch.push(row);
         record_count += 1;
 
         // Process batch when it reaches the configured size
         if batch.len() >= config.batch_size {
             if !config.dry_run {
-                surreal_sync_surreal::write_records(surreal, &config.table, &batch).await?;
+                surreal_sync_surreal::write_universal_rows(surreal, &batch).await?;
                 total_processed += batch.len();
             } else {
                 debug!("Dry run: Would insert batch of {} records", batch.len());
@@ -368,7 +353,7 @@ async fn process_csv_reader(
     // Process remaining records
     if !batch.is_empty() {
         if !config.dry_run {
-            surreal_sync_surreal::write_records(surreal, &config.table, &batch).await?;
+            surreal_sync_surreal::write_universal_rows(surreal, &batch).await?;
             total_processed += batch.len();
         } else {
             debug!(

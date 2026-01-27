@@ -60,6 +60,7 @@ impl ToDdl for PostgreSQLDdl {
 
             // Special types
             UniversalType::Uuid => "UUID".to_string(),
+            UniversalType::Ulid => "TEXT".to_string(), // ULID stored as string in PostgreSQL
             UniversalType::Json => "JSON".to_string(),
             UniversalType::Jsonb => "JSONB".to_string(),
 

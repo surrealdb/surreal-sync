@@ -200,6 +200,7 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
             serde_json::json!(encoded)
         }
         UniversalValue::Uuid(u) => serde_json::json!(u.to_string()),
+        UniversalValue::Ulid(u) => serde_json::json!(u.to_string()),
         UniversalValue::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
         UniversalValue::Time(dt) => serde_json::json!(dt.format("%H:%M:%S").to_string()),
         UniversalValue::LocalDateTime(dt)

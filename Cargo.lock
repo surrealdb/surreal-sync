@@ -1722,6 +1722,7 @@ dependencies = [
  "sync-core",
  "thiserror 1.0.69",
  "tokio",
+ "ulid",
  "uuid",
 ]
 
@@ -6267,7 +6268,6 @@ dependencies = [
  "surreal-sync-file",
  "surreal-sync-surreal",
  "surrealdb",
- "surrealdb-types",
  "sync-core",
  "tempfile",
  "tokio",
@@ -6275,6 +6275,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "ulid",
  "uuid",
 ]
 
@@ -6518,8 +6519,11 @@ dependencies = [
  "log",
  "surrealdb",
  "surrealdb-types",
+ "sync-core",
  "tokio",
  "tracing",
+ "ulid",
+ "uuid",
 ]
 
 [[package]]
@@ -6672,6 +6676,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "ulid",
  "uuid",
 ]
 
@@ -6726,6 +6731,7 @@ dependencies = [
  "serde_yaml",
  "thiserror 1.0.69",
  "tokio-test",
+ "ulid",
  "uuid",
 ]
 

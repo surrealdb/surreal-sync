@@ -695,6 +695,9 @@ fn universal_value_to_surreal_value(value: sync_core::UniversalValue) -> anyhow:
         // UUID → Strand
         UniversalValue::Uuid(u) => Ok(Value::Strand(Strand::from(u.to_string()))),
 
+        // ULID → Strand
+        UniversalValue::Ulid(u) => Ok(Value::Strand(Strand::from(u.to_string()))),
+
         // DateTime types → Datetime
         UniversalValue::Date(dt) => Ok(Value::Datetime(Datetime::from(dt))),
         UniversalValue::Time(dt) => Ok(Value::Datetime(Datetime::from(dt))),
