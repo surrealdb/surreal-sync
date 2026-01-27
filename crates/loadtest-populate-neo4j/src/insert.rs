@@ -121,6 +121,9 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
 
         UniversalValue::Uuid(u) => escape_neo4j_string(&u.to_string()),
 
+        // ULID - encode as string
+        UniversalValue::Ulid(u) => escape_neo4j_string(&u.to_string()),
+
         // DateTime types - strict 1:1 matching
         UniversalValue::LocalDateTime(dt) => {
             format!("datetime('{}')", dt.format("%Y-%m-%dT%H:%M:%S%.fZ"))

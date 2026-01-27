@@ -124,6 +124,9 @@ impl From<UniversalValue> for BsonValue {
                 bytes: u.as_bytes().to_vec(),
             })),
 
+            // ULID - store as string in MongoDB
+            UniversalValue::Ulid(u) => BsonValue(Bson::String(u.to_string())),
+
             // JSON types - convert to BSON document
             UniversalValue::Json(json_val) => {
                 let bson_val = json_value_to_bson(&json_val);
@@ -244,6 +247,7 @@ fn generated_value_to_bson(value: &UniversalValue) -> Bson {
             subtype: bson::spec::BinarySubtype::Uuid,
             bytes: u.as_bytes().to_vec(),
         }),
+        UniversalValue::Ulid(u) => Bson::String(u.to_string()),
         UniversalValue::Date(dt)
         | UniversalValue::Time(dt)
         | UniversalValue::LocalDateTime(dt)

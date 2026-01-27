@@ -388,6 +388,11 @@ impl StreamingVerifier {
                     }
                 }
             }
+            UniversalType::Ulid => {
+                // ULIDs are stored as strings in SurrealDB
+                let val: Option<String> = response.take((0, field_name))?;
+                Ok(val.map(|v| SurrealValue::Strand(surrealdb::sql::Strand::from(v))))
+            }
             UniversalType::LocalDateTime
             | UniversalType::LocalDateTimeNano
             | UniversalType::ZonedDateTime => {

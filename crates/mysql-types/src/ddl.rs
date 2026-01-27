@@ -60,6 +60,7 @@ impl ToDdl for MySQLDdl {
 
             // Special types
             UniversalType::Uuid => "CHAR(36)".to_string(),
+            UniversalType::Ulid => "CHAR(26)".to_string(), // ULID is 26 chars in string form
             UniversalType::Json => "JSON".to_string(),
             UniversalType::Jsonb => "JSON".to_string(), // MySQL doesn't have binary JSON
 

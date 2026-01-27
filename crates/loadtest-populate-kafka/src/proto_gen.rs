@@ -138,6 +138,12 @@ fn sync_type_to_proto_type(sync_type: &UniversalType) -> ProtoTypeInfo {
             requires_timestamp_import: false,
         },
 
+        // ULID -> string
+        UniversalType::Ulid => ProtoTypeInfo {
+            type_name: "string".to_string(),
+            requires_timestamp_import: false,
+        },
+
         // JSON types -> string (serialized JSON)
         UniversalType::Json | UniversalType::Jsonb => ProtoTypeInfo {
             type_name: "string".to_string(),

@@ -279,6 +279,16 @@ pub fn csv_string_to_typed_value(
             }),
         },
 
+        // ULID
+        UniversalType::Ulid => match ulid::Ulid::from_string(value) {
+            Ok(ulid) => Ok(TypedValue::ulid(ulid)),
+            Err(_) => Err(CsvParseError {
+                message: "Invalid ULID".to_string(),
+                value: value.to_string(),
+                expected_type: "Ulid".to_string(),
+            }),
+        },
+
         // JSON types - parse JSON string
         UniversalType::Json | UniversalType::Jsonb => {
             match serde_json::from_str::<serde_json::Value>(value) {

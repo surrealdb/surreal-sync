@@ -88,6 +88,9 @@ pub fn universal_to_cypher_literal(
         // UUID
         UniversalValue::Uuid(u) => Ok(escape_neo4j_string(&u.to_string())),
 
+        // ULID
+        UniversalValue::Ulid(u) => Ok(escape_neo4j_string(&u.to_string())),
+
         // DateTime types - use Neo4j datetime() function
         UniversalValue::LocalDateTime(dt) => Ok(format!(
             "datetime('{}')",

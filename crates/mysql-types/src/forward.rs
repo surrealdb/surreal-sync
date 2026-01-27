@@ -63,6 +63,9 @@ impl From<UniversalValue> for MySQLValue {
             // UUID - MySQL stores as CHAR(36)
             UniversalValue::Uuid(u) => MySQLValue(Value::Bytes(u.to_string().into_bytes())),
 
+            // ULID - MySQL stores as CHAR(26)
+            UniversalValue::Ulid(u) => MySQLValue(Value::Bytes(u.to_string().into_bytes())),
+
             // Date - MySQL DATE (only date part, no time)
             UniversalValue::Date(dt) => MySQLValue(Value::Date(
                 dt.year() as u16,
@@ -173,6 +176,7 @@ fn generated_to_json(gv: UniversalValue) -> serde_json::Value {
         UniversalValue::Blob(b) => serde_json::Value::String(BASE64.encode(&b)),
         UniversalValue::Bytes(b) => serde_json::Value::String(BASE64.encode(&b)),
         UniversalValue::Uuid(u) => serde_json::Value::String(u.to_string()),
+        UniversalValue::Ulid(u) => serde_json::Value::String(u.to_string()),
         UniversalValue::Date(dt)
         | UniversalValue::Time(dt)
         | UniversalValue::LocalDateTime(dt)

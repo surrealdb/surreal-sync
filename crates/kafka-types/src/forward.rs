@@ -187,6 +187,13 @@ pub fn encode_generated_value(
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
 
+        UniversalValue::Ulid(u) => {
+            // Encode ULID as string
+            stream
+                .write_string(field_number, &u.to_string())
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
+
         // DateTime types - strict 1:1 matching
         UniversalValue::LocalDateTime(dt)
         | UniversalValue::LocalDateTimeNano(dt)
@@ -337,6 +344,7 @@ pub fn get_proto_type(sync_type: &UniversalType) -> &'static str {
         | UniversalType::VarChar { .. }
         | UniversalType::Text
         | UniversalType::Uuid
+        | UniversalType::Ulid
         | UniversalType::Enum { .. } => "string",
         UniversalType::Bytes | UniversalType::Blob => "bytes",
         UniversalType::LocalDateTime

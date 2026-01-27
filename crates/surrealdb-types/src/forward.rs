@@ -153,6 +153,9 @@ impl From<UniversalValue> for SurrealValue {
             // UUID
             UniversalValue::Uuid(u) => SurrealValue(Value::Uuid(surrealdb::sql::Uuid::from(u))),
 
+            // ULID - convert to string since SurrealDB doesn't have native ULID ID type
+            UniversalValue::Ulid(u) => SurrealValue(Value::Strand(Strand::from(u.to_string()))),
+
             // JSON types
             UniversalValue::Json(json_val) => SurrealValue(json_to_surreal(&json_val)),
             UniversalValue::Jsonb(json_val) => SurrealValue(json_to_surreal(&json_val)),
@@ -249,15 +252,21 @@ fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
 }
 
 /// Create a SurrealDB Thing (record ID).
-pub fn create_thing(table: &str, id: &UniversalValue) -> Option<Thing> {
+///
+/// Returns an error for unsupported ID types.
+pub fn create_thing(table: &str, id: &UniversalValue) -> anyhow::Result<Thing> {
     let id_part = match id {
         UniversalValue::Text(s) => surrealdb::sql::Id::String(s.clone()),
         UniversalValue::Int32(i) => surrealdb::sql::Id::Number(*i as i64),
         UniversalValue::Int64(i) => surrealdb::sql::Id::Number(*i),
         UniversalValue::Uuid(u) => surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u)),
-        _ => return None,
+        UniversalValue::Ulid(u) => surrealdb::sql::Id::String(u.to_string()),
+        other => anyhow::bail!(
+            "Unsupported UniversalValue type for SurrealDB ID: {other:?}. \
+             Supported types: Text, Int32, Int64, Uuid, Ulid"
+        ),
     };
-    Some(Thing::from((table, id_part)))
+    Ok(Thing::from((table, id_part)))
 }
 
 /// Convert a complete row to a SurrealDB Object for insertion.
@@ -604,29 +613,39 @@ mod tests {
     #[test]
     fn test_create_thing_string() {
         let id = UniversalValue::Text("user123".to_string());
-        let thing = create_thing("users", &id);
-        assert!(thing.is_some());
-        let t = thing.unwrap();
-        assert_eq!(t.tb, "users");
+        let thing = create_thing("users", &id).unwrap();
+        assert_eq!(thing.tb, "users");
     }
 
     #[test]
     fn test_create_thing_int() {
         let id = UniversalValue::Int64(42);
-        let thing = create_thing("users", &id);
-        assert!(thing.is_some());
-        let t = thing.unwrap();
-        assert_eq!(t.tb, "users");
+        let thing = create_thing("users", &id).unwrap();
+        assert_eq!(thing.tb, "users");
     }
 
     #[test]
     fn test_create_thing_uuid() {
         let u = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let id = UniversalValue::Uuid(u);
-        let thing = create_thing("users", &id);
-        assert!(thing.is_some());
-        let t = thing.unwrap();
-        assert_eq!(t.tb, "users");
+        let thing = create_thing("users", &id).unwrap();
+        assert_eq!(thing.tb, "users");
+    }
+
+    #[test]
+    fn test_create_thing_ulid() {
+        let u = ulid::Ulid::new();
+        let id = UniversalValue::Ulid(u);
+        let thing = create_thing("users", &id).unwrap();
+        assert_eq!(thing.tb, "users");
+    }
+
+    #[test]
+    fn test_create_thing_unsupported_type() {
+        let id = UniversalValue::Float64(1.23);
+        let result = create_thing("users", &id);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unsupported"));
     }
 
     #[test]

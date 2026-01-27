@@ -8,7 +8,10 @@ license = "MIT"
 [dependencies]
 surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
 surrealdb-types = { path = "../surrealdb-types" }
+sync-core = { path = "../sync-core" }
 anyhow = "1.0.100"
 tracing = "0.1"
 log = "0.4"
 tokio = { version = "1", features = ["time"] }
+ulid = { version = "1.1", features = ["serde"] }
+uuid = { version = "1.10", features = ["v4"] }

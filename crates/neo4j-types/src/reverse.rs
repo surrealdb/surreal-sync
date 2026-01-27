@@ -407,6 +407,7 @@ fn infer_element_type(value: &UniversalValue) -> UniversalType {
         UniversalValue::Blob(_) => UniversalType::Blob,
         UniversalValue::Bytes(_) => UniversalType::Bytes,
         UniversalValue::Uuid(_) => UniversalType::Uuid,
+        UniversalValue::Ulid(_) => UniversalType::Ulid,
         UniversalValue::Date(_) => UniversalType::Date,
         UniversalValue::Time(_) => UniversalType::Time,
         UniversalValue::LocalDateTime(_) => UniversalType::LocalDateTime,
@@ -453,6 +454,7 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
             serde_json::Value::String(hex::encode(b))
         }
         UniversalValue::Uuid(u) => serde_json::Value::String(u.to_string()),
+        UniversalValue::Ulid(u) => serde_json::Value::String(u.to_string()),
         UniversalValue::Date(dt)
         | UniversalValue::Time(dt)
         | UniversalValue::LocalDateTime(dt)
