@@ -7,6 +7,7 @@
 use anyhow::Result;
 use checkpoint::{SyncConfig, SyncManager, SyncPhase};
 use surreal_sync_postgresql::SurrealOpts;
+use surreal_sync_surreal::{surreal_connect, SurrealOpts as SurrealConnOpts};
 use tokio_postgres::NoTls;
 use tracing::info;
 
@@ -58,20 +59,12 @@ pub async fn run_full_sync(
     });
 
     // Connect to SurrealDB early (needed for checkpoint storage)
-    let surreal_endpoint = to_opts
-        .surreal_endpoint
-        .replace("http://", "ws://")
-        .replace("https://", "wss://");
-    let surreal = surrealdb::engine::any::connect(surreal_endpoint).await?;
-
-    surreal
-        .signin(surrealdb::opt::auth::Root {
-            username: &to_opts.surreal_username,
-            password: &to_opts.surreal_password,
-        })
-        .await?;
-
-    surreal.use_ns(&to_namespace).use_db(&to_database).await?;
+    let surreal_conn_opts = SurrealConnOpts {
+        surreal_endpoint: to_opts.surreal_endpoint.clone(),
+        surreal_username: to_opts.surreal_username.clone(),
+        surreal_password: to_opts.surreal_password.clone(),
+    };
+    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
 
     // Create logical replication client and ensure slot exists
     let pg_client = crate::Client::new(client, from_opts.tables.clone());

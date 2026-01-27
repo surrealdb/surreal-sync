@@ -4,8 +4,8 @@
 //! the initial full snapshot has been completed.
 
 use anyhow::Result;
-use rust_decimal::prelude::ToPrimitive;
-use surrealdb::sql::{Number, Strand, Value};
+use surreal_sync_surreal::apply_universal_change;
+use sync_core::{UniversalChange, UniversalChangeOp};
 use tokio_postgres::NoTls;
 use tracing::{debug, error, info};
 
@@ -96,19 +96,22 @@ async fn stream_changes(
                                     debug!("INSERT: schema={}, table={}, primary_key={:?}, columns={:?}",
                                         row.schema, row.table, row.primary_key, row.columns);
 
-                                    upsert(surreal, row).await?;
+                                    let universal_change = row_to_universal_change(row, UniversalChangeOp::Create);
+                                    apply_universal_change(surreal, &universal_change).await?;
                                 }
                                 crate::Action::Update(row) => {
                                     debug!("UPDATE: schema={}, table={}, primary_key={:?}, columns={:?}",
                                         row.schema, row.table, row.primary_key, row.columns);
 
-                                    upsert(surreal, row).await?;
+                                    let universal_change = row_to_universal_change(row, UniversalChangeOp::Update);
+                                    apply_universal_change(surreal, &universal_change).await?;
                                 }
                                 crate::Action::Delete(row) => {
                                     debug!("DELETE: schema={}, table={}, primary_key={:?}",
                                         row.schema, row.table, row.primary_key);
 
-                                    delete(surreal, row).await?;
+                                    let universal_change = row_to_universal_change(row, UniversalChangeOp::Delete);
+                                    apply_universal_change(surreal, &universal_change).await?;
                                 }
                                 crate::Action::Begin { xid, timestamp } => {
                                     debug!("BEGIN: xid={}, timestamp={:?}", xid, timestamp);
@@ -162,73 +165,12 @@ fn setup_shutdown_handler() -> tokio::sync::broadcast::Receiver<()> {
     shutdown_rx
 }
 
-async fn upsert(
-    surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
-    row: &crate::Row,
-) -> Result<()> {
-    let mut surrealql = String::from("UPSERT type::thing($tb, $id) SET ");
-
-    for (i, (col, _)) in row.columns.iter().enumerate() {
-        if i > 0 {
-            surrealql.push_str(", ");
-        }
-        surrealql.push_str(&format!("{col} = ${col}{i}"));
-    }
-
-    let mut query = surreal.query(surrealql);
-
-    for (i, (col, val)) in row.columns.iter().enumerate() {
-        let field = format!("{col}{i}");
-        let surreal_value: Value = match val {
-            crate::Value::Integer(v) => Value::Number(Number::Int(v.to_i64().unwrap())),
-            crate::Value::Double(v) => Value::Number(Number::Float(*v)),
-            crate::Value::Text(v) => Value::Strand(Strand::from(v.to_owned())),
-            crate::Value::Boolean(v) => Value::Bool(*v),
-            crate::Value::Null => Value::None,
-            v => {
-                anyhow::bail!("Unsupported value type for upsert {v:?}");
-            }
-        };
-
-        query = query.bind((field.clone(), surreal_value));
-    }
-
-    let id: Value = match &row.primary_key {
-        crate::Value::Integer(v) => Value::Number(Number::Int(v.to_i64().unwrap())),
-        crate::Value::Text(v) => Value::Strand(Strand::from(v.to_owned())),
-        _ => anyhow::bail!(
-            "Unsupported primary key type for upsert: {:?}",
-            row.primary_key
-        ),
+/// Convert a Row to UniversalChange
+fn row_to_universal_change(row: &crate::Row, op: UniversalChangeOp) -> UniversalChange {
+    let data = if op == UniversalChangeOp::Delete {
+        None
+    } else {
+        Some(row.columns.clone())
     };
-
-    let _ = query
-        .bind(("tb", row.table.clone()))
-        .bind(("id", id))
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to upsert data into {}: {}", &row.table, e))?;
-
-    Ok(())
-}
-
-async fn delete(
-    surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
-    row: &crate::Row,
-) -> Result<()> {
-    let id: Value = match &row.primary_key {
-        crate::Value::Integer(v) => Value::Number(Number::Int(v.to_i64().unwrap())),
-        crate::Value::Text(v) => Value::Strand(Strand::from(v.to_owned())),
-        _ => anyhow::bail!(
-            "Unsupported primary key type for delete: {:?}",
-            row.primary_key
-        ),
-    };
-
-    surreal
-        .query("DELETE type::thing($tb, $id)")
-        .bind(("tb", row.table.clone()))
-        .bind(("id", id))
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to delete data from {}: {}", row.table, e))?;
-    Ok(())
+    UniversalChange::new(op, row.table.clone(), row.primary_key.clone(), data)
 }

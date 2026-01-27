@@ -1,10 +1,12 @@
 //! Integration tests for INTERVAL replication with various interval formats
+#![allow(clippy::uninlined_format_args)]
 
 use anyhow::{Context, Result};
 use std::time::Duration;
 use surreal_sync_postgresql_wal2json_source::{
-    testing::container::PostgresContainer, Action, Client, Value,
+    testing::container::PostgresContainer, Action, Client,
 };
+use sync_core::UniversalValue;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -186,70 +188,63 @@ async fn test_interval_replication_formats() -> Result<()> {
                     .get("duration")
                     .context("Should have duration column")?;
 
-                // Verify it's an Interval value
-                match duration_field {
-                    Value::Interval(interval_val) => {
-                        info!("Raw interval value: {}", interval_val.0);
+                // Get the ID to verify specific expected values
+                let id = match row.primary_key {
+                    UniversalValue::Int32(i) => i,
+                    _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
+                };
 
-                        // Convert to Duration
-                        let duration = interval_val.to_duration().map_err(|e| {
-                            anyhow::anyhow!(
-                                "Failed to convert interval to Duration: {} - {}",
-                                interval_val.0,
-                                e
-                            )
-                        })?;
+                // Verify it's a Duration value (intervals are converted to Duration in UniversalValue)
+                let duration = match duration_field {
+                    UniversalValue::Duration(d) => d,
+                    _ => panic!(
+                        "Expected Duration value for interval, got {:?}",
+                        duration_field
+                    ),
+                };
 
-                        info!(
-                            "Successfully converted to Duration: {:?} ({} seconds)",
-                            duration,
-                            duration.as_secs()
-                        );
+                info!(
+                    "Duration value for id={}: {:?} ({} seconds)",
+                    id,
+                    duration,
+                    duration.as_secs()
+                );
 
-                        // Verify specific values based on ID
-                        let id = match row.primary_key {
-                            Value::Integer(i) => i,
-                            _ => panic!("Expected integer primary key"),
-                        };
-
-                        match id {
-                            1 => {
-                                // 30 seconds
-                                assert_eq!(duration, Duration::from_secs(30));
-                            }
-                            2 => {
-                                // 5 minutes = 300 seconds
-                                assert_eq!(duration, Duration::from_secs(300));
-                            }
-                            3 => {
-                                // 2 hours = 7200 seconds
-                                assert_eq!(duration, Duration::from_secs(7200));
-                            }
-                            4 => {
-                                // 3 days = 259200 seconds
-                                assert_eq!(duration, Duration::from_secs(259200));
-                            }
-                            5 => {
-                                // 2 weeks = 1209600 seconds
-                                assert_eq!(duration, Duration::from_secs(1209600));
-                            }
-                            6 => {
-                                // 1 month (approximated to 30 days) = 2592000 seconds
-                                assert_eq!(duration, Duration::from_secs(2592000));
-                            }
-                            7 => {
-                                // 1 year (approximated to 360 days) = 31104000 seconds
-                                assert_eq!(duration, Duration::from_secs(31104000));
-                            }
-                            8 | 9 => {
-                                // 1 day 2 hours 30 minutes = 95400 seconds
-                                // Both the traditional and ISO 8601 formats should produce the same result
-                                assert_eq!(duration, Duration::from_secs(95400));
-                            }
-                            _ => panic!("Unexpected id: {id}"),
-                        }
+                match id {
+                    1 => {
+                        // 30 seconds
+                        assert_eq!(*duration, Duration::from_secs(30));
                     }
-                    _ => panic!("Expected Interval value, got {duration_field:?}"),
+                    2 => {
+                        // 5 minutes = 300 seconds
+                        assert_eq!(*duration, Duration::from_secs(300));
+                    }
+                    3 => {
+                        // 2 hours = 7200 seconds
+                        assert_eq!(*duration, Duration::from_secs(7200));
+                    }
+                    4 => {
+                        // 3 days = 259200 seconds
+                        assert_eq!(*duration, Duration::from_secs(259200));
+                    }
+                    5 => {
+                        // 2 weeks = 1209600 seconds
+                        assert_eq!(*duration, Duration::from_secs(1209600));
+                    }
+                    6 => {
+                        // 1 month (approximated to 30 days) = 2592000 seconds
+                        assert_eq!(*duration, Duration::from_secs(2592000));
+                    }
+                    7 => {
+                        // 1 year (approximated to 360 days) = 31104000 seconds
+                        assert_eq!(*duration, Duration::from_secs(31104000));
+                    }
+                    8 | 9 => {
+                        // 1 day 2 hours 30 minutes = 95400 seconds
+                        // Both the traditional and ISO 8601 formats should produce the same result
+                        assert_eq!(*duration, Duration::from_secs(95400));
+                    }
+                    _ => panic!("Unexpected id: {id}"),
                 }
             }
             _ => panic!("Expected Insert action, got {change}"),
@@ -287,28 +282,23 @@ async fn test_interval_replication_formats() -> Result<()> {
                 .get("duration")
                 .context("Should have duration column in UPDATE")?;
 
-            match duration_field {
-                Value::Interval(interval_val) => {
-                    let duration = interval_val.to_duration().map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to convert updated interval: {} - {}",
-                            interval_val.0,
-                            e
-                        )
-                    })?;
+            let duration = match duration_field {
+                UniversalValue::Duration(d) => d,
+                _ => panic!(
+                    "Expected Duration value in UPDATE, got {:?}",
+                    duration_field
+                ),
+            };
 
-                    info!(
-                        "UPDATE interval successfully converted: {:?} ({} seconds)",
-                        duration,
-                        duration.as_secs()
-                    );
+            info!(
+                "UPDATE interval successfully converted: {:?} ({} seconds)",
+                duration,
+                duration.as_secs()
+            );
 
-                    // Verify the updated value
-                    // 5 hours 30 minutes = 19800 seconds
-                    assert_eq!(duration, Duration::from_secs(19800));
-                }
-                _ => panic!("Expected Interval value in UPDATE"),
-            }
+            // Verify the updated value
+            // 5 hours 30 minutes = 19800 seconds
+            assert_eq!(*duration, Duration::from_secs(19800));
         }
         _ => panic!("Expected Update action"),
     }

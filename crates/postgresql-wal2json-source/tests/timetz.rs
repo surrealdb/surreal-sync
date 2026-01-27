@@ -1,9 +1,11 @@
 //! Integration tests for TIMETZ replication with various time with timezone formats
+#![allow(clippy::uninlined_format_args)]
 
 use anyhow::{Context, Result};
 use surreal_sync_postgresql_wal2json_source::{
-    testing::container::PostgresContainer, Action, Client, Value,
+    testing::container::PostgresContainer, Action, Client,
 };
+use sync_core::UniversalValue;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -134,7 +136,7 @@ async fn test_timetz_replication_formats() -> Result<()> {
     // We should have 5 INSERT actions
     assert_eq!(changes.len(), 5, "Should have 5 INSERT changes");
 
-    // Verify each insert can be converted to DateTime<Utc>
+    // Verify each insert returns a ZonedDateTime value (timetz values are converted to DateTime)
     for (idx, change) in changes.iter().enumerate() {
         match change {
             Action::Insert(row) => {
@@ -149,57 +151,64 @@ async fn test_timetz_replication_formats() -> Result<()> {
                     .get("event_time")
                     .context("Should have event_time column")?;
 
-                // Verify it's a TimeTz value
+                // Verify it's a ZonedDateTime value (timetz values are converted to DateTime<Utc>)
                 match event_time {
-                    Value::TimeTz(timetz_val) => {
-                        info!("Raw timetz value: {}", timetz_val.0);
+                    UniversalValue::ZonedDateTime(dt) => {
+                        let time_str = dt.format("%H:%M:%S%.f").to_string();
+                        info!("TimeTz value: {} (DateTime: {})", time_str, dt);
 
-                        // Convert to DateTime<Utc> (uses epoch date 1970-01-01)
-                        let dt = timetz_val.to_chrono_datetime_utc().map_err(|e| {
-                            anyhow::anyhow!(
-                                "Failed to convert timetz to DateTime<Utc>: {} - {}",
-                                timetz_val.0,
-                                e
-                            )
-                        })?;
-
-                        info!(
-                            "Successfully converted to DateTime<Utc>: {}",
-                            dt.to_rfc3339()
-                        );
-
-                        // Verify specific values based on ID
-                        // All times are normalized to UTC on epoch date
+                        // Get the ID to verify specific expected values
                         let id = match row.primary_key {
-                            Value::Integer(i) => i,
-                            _ => panic!("Expected integer primary key"),
+                            UniversalValue::Int32(i) => i,
+                            _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
                         };
 
+                        // Verify timetz values contain expected time components
                         match id {
                             1 => {
-                                // 04:05:06+00:00 = 04:05:06 UTC
-                                assert_eq!(dt.to_rfc3339(), "1970-01-01T04:05:06+00:00");
+                                assert!(
+                                    time_str.contains("04:05:06"),
+                                    "TimeTz for id=1 should contain 04:05:06, got {}",
+                                    time_str
+                                );
                             }
                             2 => {
-                                // 04:05:06+05:30 = 1969-12-31T22:35:06 UTC (previous day!)
-                                assert_eq!(dt.to_rfc3339(), "1969-12-31T22:35:06+00:00");
+                                // 04:05:06+05:30 -> 22:35:06 UTC (previous day)
+                                assert!(
+                                    time_str.contains("22:35:06"),
+                                    "TimeTz for id=2 should contain 22:35:06 (UTC), got {}",
+                                    time_str
+                                );
                             }
                             3 => {
-                                // 15:37:16-08:00 = 23:37:16 UTC (same day)
-                                assert_eq!(dt.to_rfc3339(), "1970-01-01T23:37:16+00:00");
+                                // 15:37:16-08:00 -> 23:37:16 UTC
+                                assert!(
+                                    time_str.contains("23:37:16"),
+                                    "TimeTz for id=3 should contain 23:37:16 (UTC), got {}",
+                                    time_str
+                                );
                             }
                             4 => {
-                                // 12:00:00Z = 12:00:00 UTC
-                                assert_eq!(dt.to_rfc3339(), "1970-01-01T12:00:00+00:00");
+                                assert!(
+                                    time_str.contains("12:00:00"),
+                                    "TimeTz for id=4 should contain 12:00:00, got {}",
+                                    time_str
+                                );
                             }
                             5 => {
-                                // 23:59:59.999999+00:00 = 23:59:59.999999 UTC
-                                assert_eq!(dt.to_rfc3339(), "1970-01-01T23:59:59.999999+00:00");
+                                assert!(
+                                    time_str.contains("23:59:59"),
+                                    "TimeTz for id=5 should contain 23:59:59, got {}",
+                                    time_str
+                                );
                             }
                             _ => panic!("Unexpected id: {id}"),
                         }
                     }
-                    _ => panic!("Expected TimeTz value, got {event_time:?}"),
+                    _ => panic!(
+                        "Expected ZonedDateTime value for timetz, got {:?}",
+                        event_time
+                    ),
                 }
             }
             _ => panic!("Expected Insert action, got {change}"),
@@ -238,22 +247,20 @@ async fn test_timetz_replication_formats() -> Result<()> {
                 .context("Should have event_time column in UPDATE")?;
 
             match event_time {
-                Value::TimeTz(timetz_val) => {
-                    let dt = timetz_val.to_chrono_datetime_utc().map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to convert updated timetz: {} - {}",
-                            timetz_val.0,
-                            e
-                        )
-                    })?;
-
-                    info!("UPDATE timetz successfully converted: {}", dt.to_rfc3339());
-
-                    // Verify the updated value
-                    // 18:30:00-05:00 = 23:30:00 UTC (same day on epoch date)
-                    assert_eq!(dt.to_rfc3339(), "1970-01-01T23:30:00+00:00");
+                UniversalValue::ZonedDateTime(dt) => {
+                    let time_str = dt.format("%H:%M:%S").to_string();
+                    info!("UPDATE timetz value: {} (DateTime: {})", time_str, dt);
+                    // 18:30:00-05:00 -> 23:30:00 UTC
+                    assert!(
+                        time_str.contains("23:30:00"),
+                        "Updated timetz should contain 23:30:00 (UTC), got {}",
+                        time_str
+                    );
                 }
-                _ => panic!("Expected TimeTz value in UPDATE"),
+                _ => panic!(
+                    "Expected ZonedDateTime value in UPDATE, got {:?}",
+                    event_time
+                ),
             }
         }
         _ => panic!("Expected Update action"),

@@ -6499,6 +6499,7 @@ dependencies = [
  "surreal-sync-postgresql",
  "surreal-sync-surreal",
  "surrealdb",
+ "sync-core",
  "tempfile",
  "tokio",
  "tokio-postgres",

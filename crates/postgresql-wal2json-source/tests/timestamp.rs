@@ -1,10 +1,12 @@
 //! Integration tests for TIMESTAMP replication with various timestamp formats
+#![allow(clippy::uninlined_format_args)]
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use surreal_sync_postgresql_wal2json_source::{
-    testing::container::PostgresContainer, Action, Client, Value,
+    testing::container::PostgresContainer, Action, Client,
 };
+use sync_core::UniversalValue;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -151,29 +153,15 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                     .get("event_time")
                     .context("Should have event_time column")?;
 
-                // Verify it's a Timestamp value
+                // Verify it's a LocalDateTime value (TIMESTAMP without timezone)
                 match event_time {
-                    Value::Timestamp(ts) => {
-                        info!("Raw timestamp value: {}", ts.0);
-
-                        // Convert to DateTime<Utc>
-                        let dt = ts.to_chrono_datetime_utc().map_err(|e| {
-                            anyhow::anyhow!(
-                                "Failed to convert timestamp to DateTime<Utc>: {} - {}",
-                                ts.0,
-                                e
-                            )
-                        })?;
-
-                        info!(
-                            "Successfully converted to DateTime<Utc>: {}",
-                            dt.to_rfc3339()
-                        );
+                    UniversalValue::LocalDateTime(dt) => {
+                        info!("Successfully got LocalDateTime: {}", dt.to_rfc3339());
 
                         // Verify the timestamp makes sense (not in the future, not before 1990)
                         let now = Utc::now();
                         assert!(
-                            dt < now,
+                            dt < &now,
                             "Timestamp should be in the past: {}",
                             dt.to_rfc3339()
                         );
@@ -181,7 +169,7 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                         let min_time =
                             DateTime::parse_from_rfc3339("1990-01-01T00:00:00Z").unwrap();
                         assert!(
-                            dt > min_time.with_timezone(&Utc),
+                            dt > &min_time.with_timezone(&Utc),
                             "Timestamp should be after 1990: {}",
                             dt.to_rfc3339()
                         );
@@ -190,8 +178,8 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                         // Note: TIMESTAMP without timezone doesn't preserve timezone info,
                         // so we just verify that parsing succeeded
                         let id = match row.primary_key {
-                            Value::Integer(i) => i,
-                            _ => panic!("Expected integer primary key"),
+                            UniversalValue::Int32(i) => i,
+                            _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
                         };
 
                         info!(
@@ -200,7 +188,7 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                             dt.to_rfc3339()
                         );
                     }
-                    _ => panic!("Expected Timestamp value, got {event_time:?}"),
+                    _ => panic!("Expected LocalDateTime value, got {:?}", event_time),
                 }
             }
             _ => panic!("Expected Insert action, got {change}"),
@@ -239,20 +227,19 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                 .context("Should have event_time column in UPDATE")?;
 
             match event_time {
-                Value::Timestamp(ts) => {
-                    let dt = ts.to_chrono_datetime_utc().map_err(|e| {
-                        anyhow::anyhow!("Failed to convert updated timestamp: {} - {}", ts.0, e)
-                    })?;
-
+                UniversalValue::LocalDateTime(dt) => {
                     info!(
                         "UPDATE timestamp successfully converted: {}",
                         dt.to_rfc3339()
                     );
 
                     // Verify it's a valid timestamp
-                    assert!(dt > Utc::now() - chrono::Duration::days(365 * 2));
+                    assert!(dt > &(Utc::now() - chrono::Duration::days(365 * 2)));
                 }
-                _ => panic!("Expected Timestamp value in UPDATE"),
+                _ => panic!(
+                    "Expected LocalDateTime value in UPDATE, got {:?}",
+                    event_time
+                ),
             }
         }
         _ => panic!("Expected Update action"),

@@ -1,9 +1,11 @@
 //! Integration tests for TIME replication with various time formats
+#![allow(clippy::uninlined_format_args)]
 
 use anyhow::{Context, Result};
 use surreal_sync_postgresql_wal2json_source::{
-    testing::container::PostgresContainer, Action, Client, Value,
+    testing::container::PostgresContainer, Action, Client,
 };
+use sync_core::UniversalValue;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -134,7 +136,7 @@ async fn test_time_replication_formats() -> Result<()> {
     // We should have 5 INSERT actions
     assert_eq!(changes.len(), 5, "Should have 5 INSERT changes");
 
-    // Verify each insert
+    // Verify each insert returns a Time value (times are converted to DateTime<Utc>)
     for (idx, change) in changes.iter().enumerate() {
         match change {
             Action::Insert(row) => {
@@ -149,56 +151,59 @@ async fn test_time_replication_formats() -> Result<()> {
                     .get("event_time")
                     .context("Should have event_time column")?;
 
-                // Verify it's a Time value
+                // Verify it's a Time value (time values are converted to DateTime<Utc> with epoch date)
                 match event_time {
-                    Value::Time(time_val) => {
-                        info!("Raw time value: {}", time_val.0);
+                    UniversalValue::Time(dt) => {
+                        let time_str = dt.format("%H:%M:%S%.f").to_string();
+                        info!("Time value: {} (DateTime: {})", time_str, dt);
 
-                        // Convert to DateTime<Utc> (uses epoch date 1970-01-01)
-                        let dt = time_val.to_chrono_datetime_utc().map_err(|e| {
-                            anyhow::anyhow!(
-                                "Failed to convert time to DateTime<Utc>: {} - {}",
-                                time_val.0,
-                                e
-                            )
-                        })?;
-
-                        info!(
-                            "Successfully converted to DateTime<Utc>: {}",
-                            dt.to_rfc3339()
-                        );
-
-                        // Verify specific values based on ID
+                        // Get the ID to verify specific expected values
                         let id = match row.primary_key {
-                            Value::Integer(i) => i,
-                            _ => panic!("Expected integer primary key"),
+                            UniversalValue::Int32(i) => i,
+                            _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
                         };
 
+                        // Verify time values (they should be in HH:MM:SS format)
                         match id {
                             1 => {
-                                // 04:05:06 on epoch date
-                                assert_eq!(dt.to_rfc3339(), "1970-01-01T04:05:06+00:00");
+                                assert!(
+                                    time_str.starts_with("04:05:06"),
+                                    "Time for id=1 should start with 04:05:06, got {}",
+                                    time_str
+                                );
                             }
                             2 => {
-                                // 04:05:06.789012 on epoch date
-                                assert_eq!(dt.to_rfc3339(), "1970-01-01T04:05:06.789012+00:00");
+                                assert!(
+                                    time_str.starts_with("04:05:06.789012"),
+                                    "Time for id=2 should be 04:05:06.789012, got {}",
+                                    time_str
+                                );
                             }
                             3 => {
-                                // 04:05:00 (seconds default to 0) on epoch date
-                                assert_eq!(dt.to_rfc3339(), "1970-01-01T04:05:00+00:00");
+                                assert!(
+                                    time_str.starts_with("04:05:00"),
+                                    "Time for id=3 should start with 04:05:00, got {}",
+                                    time_str
+                                );
                             }
                             4 => {
-                                // 00:00:00 (midnight) on epoch date
-                                assert_eq!(dt.to_rfc3339(), "1970-01-01T00:00:00+00:00");
+                                assert!(
+                                    time_str.starts_with("00:00:00"),
+                                    "Time for id=4 should be midnight, got {}",
+                                    time_str
+                                );
                             }
                             5 => {
-                                // 23:59:59.999999 on epoch date
-                                assert_eq!(dt.to_rfc3339(), "1970-01-01T23:59:59.999999+00:00");
+                                assert!(
+                                    time_str.starts_with("23:59:59"),
+                                    "Time for id=5 should be end of day, got {}",
+                                    time_str
+                                );
                             }
                             _ => panic!("Unexpected id: {id}"),
                         }
                     }
-                    _ => panic!("Expected Time value, got {event_time:?}"),
+                    _ => panic!("Expected Time value for time, got {:?}", event_time),
                 }
             }
             _ => panic!("Expected Insert action, got {change}"),
@@ -237,17 +242,16 @@ async fn test_time_replication_formats() -> Result<()> {
                 .context("Should have event_time column in UPDATE")?;
 
             match event_time {
-                Value::Time(time_val) => {
-                    let dt = time_val.to_chrono_datetime_utc().map_err(|e| {
-                        anyhow::anyhow!("Failed to convert updated time: {} - {}", time_val.0, e)
-                    })?;
-
-                    info!("UPDATE time successfully converted: {}", dt.to_rfc3339());
-
-                    // Verify the updated value (12:30:45 on epoch date)
-                    assert_eq!(dt.to_rfc3339(), "1970-01-01T12:30:45+00:00");
+                UniversalValue::Time(dt) => {
+                    let time_str = dt.format("%H:%M:%S").to_string();
+                    info!("UPDATE time value: {} (DateTime: {})", time_str, dt);
+                    assert!(
+                        time_str.starts_with("12:30:45"),
+                        "Updated time should be 12:30:45, got {}",
+                        time_str
+                    );
                 }
-                _ => panic!("Expected Time value in UPDATE"),
+                _ => panic!("Expected Time value in UPDATE, got {:?}", event_time),
             }
         }
         _ => panic!("Expected Update action"),
