@@ -4,7 +4,7 @@
 //! Change Streams, which provide real-time change notifications.
 
 use crate::checkpoint::MongoDBCheckpoint;
-use crate::{SourceOpts, SurrealOpts};
+use crate::{convert_bson_to_universal_value, SourceOpts, SurrealOpts};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use bson::Document;
@@ -19,28 +19,31 @@ use mongodb::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use surreal_sync_surreal::{
-    apply_change, surreal_connect, Change, ChangeOp, SurrealOpts as SurrealConnOpts,
+    apply_universal_change, surreal_connect, SurrealOpts as SurrealConnOpts,
 };
+use sync_core::{UniversalChange, UniversalChangeOp, UniversalValue};
 use tokio::sync::Mutex;
 
 /// Trait for a stream of changes from MongoDB
 #[async_trait]
 pub trait ChangeStream: Send + Sync {
     /// Get the next change event from the stream
-    async fn next(&mut self) -> Option<Result<Change>>;
+    async fn next(&mut self) -> Option<Result<UniversalChange>>;
 
     /// Get the current checkpoint of the stream
     fn checkpoint(&self) -> Option<MongoDBCheckpoint>;
 }
 
-/// Convert a BSON document directly to a surrealdb::sql::Value map
-fn bson_doc_to_keys_and_surreal_values(
-    doc: Document,
-) -> Result<HashMap<String, surrealdb::sql::Value>> {
+/// Convert a BSON document directly to a UniversalValue map
+fn bson_doc_to_universal_values(doc: Document) -> Result<HashMap<String, UniversalValue>> {
     let mut map = HashMap::new();
 
     for (key, value) in doc {
-        let v = crate::convert_bson_to_surreal_value(value)?;
+        // Skip _id field - it's used as the record ID
+        if key == "_id" {
+            continue;
+        }
+        let v = convert_bson_to_universal_value(value)?;
         map.insert(key, v);
     }
 
@@ -143,7 +146,8 @@ impl MongodbIncrementalSource {
     async fn start_change_stream(
         &self,
         checkpoint: Option<MongoDBCheckpoint>,
-    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>>> {
+    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<UniversalChange>> + Send>>>
+    {
         let database = self.client.database(&self.database);
 
         // Build change stream options
@@ -198,18 +202,19 @@ impl MongodbIncrementalSource {
             .buffer_unordered(1);
 
         // Box the stream with Send bound
-        let boxed_stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>> =
-            Box::pin(stream);
+        let boxed_stream: std::pin::Pin<
+            Box<dyn futures::Stream<Item = Result<UniversalChange>> + Send>,
+        > = Box::pin(stream);
 
         Ok(boxed_stream)
     }
 
-    /// Convert MongoDB change event to our universal ChangeEvent
+    /// Convert MongoDB change event to our UniversalChange
     async fn convert_change_event(
         event: ChangeStreamEvent<Document>,
         _database_name: &str,
         resume_token: Arc<Mutex<Vec<u8>>>,
-    ) -> Result<Change> {
+    ) -> Result<UniversalChange> {
         // Extract and store the resume token from the event's _id field
         // The _id field contains the resume token for this specific event
         if let Ok(token_bytes) = bson::to_vec(&event.id) {
@@ -218,10 +223,10 @@ impl MongodbIncrementalSource {
 
         // Determine operation type
         let operation = match event.operation_type {
-            mongodb::change_stream::event::OperationType::Insert => ChangeOp::Create,
-            mongodb::change_stream::event::OperationType::Update => ChangeOp::Update,
-            mongodb::change_stream::event::OperationType::Replace => ChangeOp::Update,
-            mongodb::change_stream::event::OperationType::Delete => ChangeOp::Delete,
+            mongodb::change_stream::event::OperationType::Insert => UniversalChangeOp::Create,
+            mongodb::change_stream::event::OperationType::Update => UniversalChangeOp::Update,
+            mongodb::change_stream::event::OperationType::Replace => UniversalChangeOp::Update,
+            mongodb::change_stream::event::OperationType::Delete => UniversalChangeOp::Delete,
             op => {
                 // Skip other operation types (like invalidate, drop, etc.)
                 return Err(anyhow!("Unsupported operation type: {op:?}"));
@@ -234,15 +239,15 @@ impl MongodbIncrementalSource {
             .and_then(|ns| ns.coll)
             .unwrap_or_else(|| "unknown".to_string());
 
-        // Get document ID
-        let id = if let Some(id) = event.document_key {
-            // Convert BSON document key to string ID
+        // Get document ID as UniversalValue
+        let id_value = if let Some(id) = event.document_key {
+            // Convert BSON document key to UniversalValue
             if let Ok(oid) = id.get_object_id("_id") {
-                surrealdb::sql::Thing::from((collection.clone(), oid.to_hex()))
+                UniversalValue::Text(oid.to_hex())
             } else if let Ok(s) = id.get_str("_id") {
-                surrealdb::sql::Thing::from((collection.clone(), s.to_string()))
+                UniversalValue::Text(s.to_string())
             } else if let Ok(i) = id.get_i64("_id") {
-                surrealdb::sql::Thing::from((collection.clone(), surrealdb::sql::Id::from(i)))
+                UniversalValue::Int64(i)
             } else {
                 return Err(anyhow!(
                     "Unsupported _id type in document key: {:?}",
@@ -254,20 +259,20 @@ impl MongodbIncrementalSource {
         };
 
         let data = match operation {
-            ChangeOp::Delete => HashMap::new(),
+            UniversalChangeOp::Delete => None,
             _ => {
                 let d = event.full_document.unwrap();
-                bson_doc_to_keys_and_surreal_values(d)?
+                Some(bson_doc_to_universal_values(d)?)
             }
         };
 
-        Ok(Change::record(operation, id, data))
+        Ok(UniversalChange::new(operation, collection, id_value, data))
     }
 }
 
 // Type alias for complex MongoDB change stream type
 type MongoStreamType =
-    Arc<Mutex<std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>>>>;
+    Arc<Mutex<std::pin::Pin<Box<dyn futures::Stream<Item = Result<UniversalChange>> + Send>>>>;
 
 /// A change stream wrapper for MongoDB incremental sync
 pub struct MongoChangeStream {
@@ -278,7 +283,7 @@ pub struct MongoChangeStream {
 
 impl MongoChangeStream {
     pub fn new(
-        stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>>,
+        stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<UniversalChange>> + Send>>,
         initial_resume_token: Vec<u8>,
     ) -> Self {
         Self {
@@ -293,7 +298,7 @@ impl MongoChangeStream {
 
 #[async_trait]
 impl ChangeStream for MongoChangeStream {
-    async fn next(&mut self) -> Option<Result<Change>> {
+    async fn next(&mut self) -> Option<Result<UniversalChange>> {
         let mut stream = self.stream.lock().await;
         stream.next().await
     }
@@ -348,17 +353,6 @@ pub async fn run_incremental_sync(
     };
     let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
 
-    // Authenticate
-    surreal
-        .signin(surrealdb::opt::auth::Root {
-            username: &to_opts.surreal_username,
-            password: &to_opts.surreal_password,
-        })
-        .await?;
-
-    // Use namespace and database
-    surreal.use_ns(&to_namespace).use_db(&to_database).await?;
-
     // Get change stream
     let mut stream = source.get_changes().await?;
 
@@ -384,7 +378,7 @@ pub async fn run_incremental_sync(
             Ok(change) => {
                 debug!("Received change: {change:?}");
 
-                apply_change(&surreal, &change).await?;
+                apply_universal_change(&surreal, &change).await?;
 
                 change_count += 1;
                 if change_count % 100 == 0 {

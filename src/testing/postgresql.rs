@@ -252,7 +252,20 @@ pub async fn inject_test_table_postgresql(
         }
 
         let columns: Vec<String> = pg_doc.keys().cloned().collect();
-        let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${i}")).collect();
+
+        // Build placeholders, using explicit type cast for array values
+        // This ensures PostgreSQL correctly interprets the parameter as TEXT[]
+        let placeholders: Vec<String> = columns
+            .iter()
+            .enumerate()
+            .map(|(i, col)| {
+                let param_num = i + 1;
+                match &pg_doc[col] {
+                    PostgreSQLValue::Array(_) => format!("${param_num}::TEXT[]"),
+                    _ => format!("${param_num}"),
+                }
+            })
+            .collect();
 
         let insert_sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",

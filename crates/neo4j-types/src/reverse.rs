@@ -429,6 +429,7 @@ fn infer_element_type(value: &UniversalValue) -> UniversalType {
         },
         UniversalValue::Duration(_) => UniversalType::Duration,
         UniversalValue::Thing { .. } => UniversalType::Thing,
+        UniversalValue::Object(_) => UniversalType::Object,
     }
 }
 
@@ -492,6 +493,13 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
                 ),
             };
             serde_json::json!(format!("{table}:{id_str}"))
+        }
+        UniversalValue::Object(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), universal_value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
         }
     }
 }

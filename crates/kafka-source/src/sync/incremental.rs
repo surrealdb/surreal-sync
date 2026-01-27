@@ -7,12 +7,14 @@
 //! to break the circular dependency between kafka and kafka-types.
 
 use anyhow::Result;
+use base64::Engine;
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use kafka_types::Message;
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use sync_core::TableDefinition;
+use sync_core::{TableDefinition, TypedValue, UniversalRow, UniversalValue};
 use tokio::time::{sleep, Duration};
 use tracing::{debug, info};
 
@@ -166,29 +168,17 @@ pub async fn run_incremental_sync(
                     let typed_values =
                         kafka_types::message_to_typed_values(message, table_schema.as_ref())?;
 
-                    // Create record using appropriate ID strategy
-                    let record = if use_message_key_as_id {
-                        // Use message key as ID (base64 encoded to handle arbitrary bytes)
-                        let key_bytes = message_key.ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "use_message_key_as_id is enabled but message has no key"
-                            )
-                        })?;
-                        surrealdb_types::typed_values_to_record_with_bytes_id(
-                            typed_values,
-                            &key_bytes,
-                            &table_name,
-                        )?
-                    } else {
-                        // Use specified field as ID (default: "id")
-                        surrealdb_types::typed_values_to_record_using_field_as_id(
-                            typed_values,
-                            &id_field,
-                            &table_name,
-                        )?
-                    };
+                    // Create UniversalRow using appropriate ID strategy
+                    let row = typed_values_to_universal_row(
+                        typed_values,
+                        &table_name,
+                        use_message_key_as_id,
+                        message_key.as_deref(),
+                        &id_field,
+                        counter.load(Ordering::SeqCst),
+                    )?;
 
-                    surreal_sync_surreal::write_record(&surreal, &record).await?;
+                    surreal_sync_surreal::write_universal_rows(&surreal, &[row]).await?;
 
                     let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
                     if count % 100 == 0 {
@@ -252,4 +242,45 @@ pub async fn run_incremental_sync(
     );
 
     Ok(())
+}
+
+/// Convert typed values to UniversalRow.
+///
+/// Either uses the message key (base64 encoded) as ID, or extracts the ID from a specified field.
+fn typed_values_to_universal_row(
+    mut typed_values: HashMap<String, TypedValue>,
+    table_name: &str,
+    use_message_key_as_id: bool,
+    message_key: Option<&[u8]>,
+    id_field: &str,
+    record_index: u64,
+) -> Result<UniversalRow> {
+    // Determine the ID value
+    let id_value = if use_message_key_as_id {
+        // Use message key as ID (base64 encoded to handle arbitrary bytes)
+        let key_bytes = message_key.ok_or_else(|| {
+            anyhow::anyhow!("use_message_key_as_id is enabled but message has no key")
+        })?;
+        let base64_str = base64::engine::general_purpose::STANDARD.encode(key_bytes);
+        UniversalValue::Text(base64_str)
+    } else {
+        // Extract ID from specified field (default: "id")
+        let id_typed_value = typed_values
+            .remove(id_field)
+            .ok_or_else(|| anyhow::anyhow!("Message has no '{id_field}' field"))?;
+        id_typed_value.value
+    };
+
+    // Convert remaining typed values to UniversalValue map
+    let fields: HashMap<String, UniversalValue> = typed_values
+        .into_iter()
+        .map(|(k, tv)| (k, tv.value))
+        .collect();
+
+    Ok(UniversalRow::new(
+        table_name.to_string(),
+        record_index,
+        id_value,
+        fields,
+    ))
 }

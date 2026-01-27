@@ -11,13 +11,14 @@ use sync_core::{ColumnDefinition, DatabaseSchema, TableDefinition, UniversalType
 ///
 /// Returns a `DatabaseSchema` with proper `UniversalType` mapping.
 /// This function also queries primary key information for each table.
-#[allow(dead_code)]
 pub async fn collect_postgresql_database_schema(
     client: &tokio_postgres::Client,
 ) -> anyhow::Result<DatabaseSchema> {
     // First, collect all columns with their types
+    // Note: For array types, data_type returns 'ARRAY' but udt_name contains the actual type
+    // like '_text' for text[], '_int4' for integer[]. We use udt_name for proper array handling.
     let columns_query = "
-        SELECT table_name, column_name, data_type, numeric_precision, numeric_scale
+        SELECT table_name, column_name, data_type, udt_name, numeric_precision, numeric_scale
         FROM information_schema.columns
         WHERE table_schema = 'public'
         ORDER BY table_name, ordinal_position";
@@ -53,14 +54,23 @@ pub async fn collect_postgresql_database_schema(
         let table_name: String = row.get(0);
         let column_name: String = row.get(1);
         let data_type: String = row.get(2);
-        let precision: Option<i32> = row.get(3);
-        let scale: Option<i32> = row.get(4);
+        let udt_name: String = row.get(3);
+        let precision: Option<i32> = row.get(4);
+        let scale: Option<i32> = row.get(5);
 
         // Convert i32 to u32 for precision/scale
         let precision = precision.map(|p| p as u32);
         let scale = scale.map(|s| s as u32);
 
-        let universal_type = postgresql_column_to_universal_type(&data_type, precision, scale);
+        // For array types, data_type is 'ARRAY' but udt_name contains the internal type
+        // like '_text' for text[], '_int4' for integer[]. Use udt_name for proper handling.
+        let effective_type = if data_type.to_lowercase() == "array" {
+            &udt_name
+        } else {
+            &data_type
+        };
+
+        let universal_type = postgresql_column_to_universal_type(effective_type, precision, scale);
 
         table_columns
             .entry(table_name)
@@ -100,4 +110,51 @@ pub async fn collect_postgresql_database_schema(
     }
 
     Ok(DatabaseSchema::new(tables))
+}
+
+/// Determine the effective type string to use for type mapping.
+/// For array types, PostgreSQL's information_schema returns 'ARRAY' as data_type
+/// but the actual type (like '_text' for text[]) is in udt_name.
+#[inline]
+pub fn get_effective_type<'a>(data_type: &'a str, udt_name: &'a str) -> &'a str {
+    if data_type.to_lowercase() == "array" {
+        udt_name
+    } else {
+        data_type
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_effective_type_for_array() {
+        // PostgreSQL returns data_type='ARRAY' and udt_name='_text' for TEXT[]
+        assert_eq!(get_effective_type("ARRAY", "_text"), "_text");
+        assert_eq!(get_effective_type("array", "_text"), "_text");
+        assert_eq!(get_effective_type("ARRAY", "_int4"), "_int4");
+    }
+
+    #[test]
+    fn test_get_effective_type_for_non_array() {
+        // Non-array types should use data_type directly
+        assert_eq!(get_effective_type("integer", "int4"), "integer");
+        assert_eq!(get_effective_type("text", "text"), "text");
+        assert_eq!(get_effective_type("boolean", "bool"), "boolean");
+    }
+
+    #[test]
+    fn test_array_type_maps_to_universal_array() {
+        // Verify the full flow: ARRAY + _text -> UniversalType::Array<Text>
+        let effective_type = get_effective_type("ARRAY", "_text");
+        let universal_type = postgresql_column_to_universal_type(effective_type, None, None);
+
+        match universal_type {
+            UniversalType::Array { element_type } => {
+                assert_eq!(*element_type, UniversalType::Text);
+            }
+            other => panic!("Expected Array<Text>, got {other:?}"),
+        }
+    }
 }

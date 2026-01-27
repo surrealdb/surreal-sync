@@ -181,6 +181,13 @@ pub enum UniversalValue {
         id: Box<UniversalValue>,
     },
 
+    /// Nested object/document (e.g., MongoDB embedded documents, SurrealDB objects)
+    /// → `UniversalType::Object`
+    ///
+    /// This differs from Json/Jsonb which are serialized JSON storage types.
+    /// Object represents a structured nested document with typed fields.
+    Object(HashMap<String, UniversalValue>),
+
     /// Null value (can be any nullable type)
     Null,
 }
@@ -404,6 +411,7 @@ impl UniversalValue {
             Self::Geometry { .. } => "Geometry",
             Self::Duration(_) => "Duration",
             Self::Thing { .. } => "Thing",
+            Self::Object(_) => "Object",
             Self::Null => "Null",
         }
     }
@@ -478,6 +486,7 @@ impl UniversalValue {
             },
             Self::Duration(_) => UniversalType::Duration,
             Self::Thing { .. } => UniversalType::Thing,
+            Self::Object(_) => UniversalType::Object,
             // Null doesn't have a single type - this is a special case
             // We use Text as a placeholder, but callers should handle Null explicitly
             Self::Null => UniversalType::Text,
@@ -604,6 +613,9 @@ impl TypedValue {
             // Duration
             (UniversalType::Duration, UniversalValue::Duration(_)) => true,
 
+            // Object
+            (UniversalType::Object, UniversalValue::Object(_)) => true,
+
             // All other combinations are invalid
             _ => false,
         };
@@ -650,6 +662,7 @@ impl TypedValue {
             UniversalType::Geometry { .. } => "Geometry".to_string(),
             UniversalType::Duration => "Duration".to_string(),
             UniversalType::Thing => "Thing".to_string(),
+            UniversalType::Object => "Object".to_string(),
         }
     }
 
@@ -981,6 +994,140 @@ impl<'a> RowConverter<'a> {
     /// Create a new row converter.
     pub fn new(row: UniversalRow, schema: &'a Schema) -> Self {
         Self { row, schema }
+    }
+}
+
+// ============================================================================
+// Universal Change Type (for incremental sync)
+// ============================================================================
+
+/// Operation type for incremental sync changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum UniversalChangeOp {
+    /// Create a new record
+    Create,
+    /// Update an existing record
+    Update,
+    /// Delete a record
+    Delete,
+}
+
+/// A database-agnostic change event for incremental sync.
+///
+/// This type represents a change (INSERT/UPDATE/DELETE) from a source database
+/// in a universal format that can be converted to any target database format.
+#[derive(Debug, Clone)]
+pub struct UniversalChange {
+    /// The operation type (Create/Update/Delete)
+    pub operation: UniversalChangeOp,
+    /// The table name
+    pub table: String,
+    /// The record ID
+    pub id: UniversalValue,
+    /// The record data (None for Delete operations)
+    pub data: Option<HashMap<String, UniversalValue>>,
+}
+
+impl UniversalChange {
+    /// Create a new change.
+    pub fn new(
+        operation: UniversalChangeOp,
+        table: impl Into<String>,
+        id: UniversalValue,
+        data: Option<HashMap<String, UniversalValue>>,
+    ) -> Self {
+        Self {
+            operation,
+            table: table.into(),
+            id,
+            data,
+        }
+    }
+
+    /// Create a CREATE change.
+    pub fn create(
+        table: impl Into<String>,
+        id: UniversalValue,
+        data: HashMap<String, UniversalValue>,
+    ) -> Self {
+        Self::new(UniversalChangeOp::Create, table, id, Some(data))
+    }
+
+    /// Create an UPDATE change.
+    pub fn update(
+        table: impl Into<String>,
+        id: UniversalValue,
+        data: HashMap<String, UniversalValue>,
+    ) -> Self {
+        Self::new(UniversalChangeOp::Update, table, id, Some(data))
+    }
+
+    /// Create a DELETE change.
+    pub fn delete(table: impl Into<String>, id: UniversalValue) -> Self {
+        Self::new(UniversalChangeOp::Delete, table, id, None)
+    }
+}
+
+// ============================================================================
+// Universal Relation Type (for graph database relationships)
+// ============================================================================
+
+/// A database-agnostic graph relation/edge.
+///
+/// This type represents a relationship between two nodes (records) in graph databases
+/// like Neo4j and SurrealDB. It contains the relation type, IDs for both endpoints,
+/// and optional properties on the relation itself.
+#[derive(Debug, Clone)]
+pub struct UniversalRelation {
+    /// The relation type (table name in SurrealDB terms)
+    pub relation_type: String,
+    /// The relation's own ID
+    pub id: UniversalValue,
+    /// The source node reference (table name + id)
+    pub input: UniversalThingRef,
+    /// The target node reference (table name + id)
+    pub output: UniversalThingRef,
+    /// Properties on the relation itself
+    pub data: HashMap<String, UniversalValue>,
+}
+
+/// A reference to a record/node in a specific table.
+///
+/// This is used to identify the endpoints of a relation.
+#[derive(Debug, Clone)]
+pub struct UniversalThingRef {
+    /// The table/collection name
+    pub table: String,
+    /// The record ID
+    pub id: UniversalValue,
+}
+
+impl UniversalThingRef {
+    /// Create a new thing reference.
+    pub fn new(table: impl Into<String>, id: UniversalValue) -> Self {
+        Self {
+            table: table.into(),
+            id,
+        }
+    }
+}
+
+impl UniversalRelation {
+    /// Create a new relation.
+    pub fn new(
+        relation_type: impl Into<String>,
+        id: UniversalValue,
+        input: UniversalThingRef,
+        output: UniversalThingRef,
+        data: HashMap<String, UniversalValue>,
+    ) -> Self {
+        Self {
+            relation_type: relation_type.into(),
+            id,
+            input,
+            output,
+            data,
+        }
     }
 }
 

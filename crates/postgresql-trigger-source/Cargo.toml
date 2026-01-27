@@ -9,9 +9,7 @@ description = "PostgreSQL trigger-based sync for surreal-sync"
 surreal-sync-postgresql = { path = "../postgresql" }
 
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1", "with-geo-types-0_7"] }
-surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
 surreal-sync-surreal = { path = "../surreal" }
-surrealdb-types = { path = "../surrealdb-types" }
 sync-core = { path = "../sync-core" }
 checkpoint = { path = "../checkpoint" }
 postgresql-types = { path = "../postgresql-types" }
@@ -34,3 +32,4 @@ chrono-tz = "0.10"
 
 [dev-dependencies]
 tempfile = "3.0"
+surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }

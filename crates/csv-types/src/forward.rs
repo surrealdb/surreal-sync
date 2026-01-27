@@ -134,6 +134,15 @@ impl From<UniversalValue> for CsvValue {
                 };
                 CsvValue(format!("{table}:{id_str}"))
             }
+
+            // Object - nested document, serialize as JSON
+            UniversalValue::Object(map) => {
+                let obj: serde_json::Map<String, serde_json::Value> = map
+                    .into_iter()
+                    .map(|(k, v)| (k, generated_value_to_json(&v)))
+                    .collect();
+                CsvValue(serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default())
+            }
         }
     }
 }
@@ -199,6 +208,13 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
                 ),
             };
             serde_json::json!(format!("{table}:{id_str}"))
+        }
+        UniversalValue::Object(map) => {
+            let obj: serde_json::Map<String, serde_json::Value> = map
+                .iter()
+                .map(|(k, v)| (k.clone(), generated_value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
         }
     }
 }

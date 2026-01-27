@@ -99,6 +99,9 @@ impl ToDdl for MySQLDdl {
 
             // Thing - record reference stored as VARCHAR (table:id format)
             UniversalType::Thing => "VARCHAR(255)".to_string(),
+
+            // Object - nested document stored as JSON
+            UniversalType::Object => "JSON".to_string(),
         }
     }
 

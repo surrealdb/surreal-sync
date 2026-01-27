@@ -20,15 +20,26 @@ use async_trait::async_trait;
 use chrono::Utc;
 use neo4rs::{Graph, Query};
 use std::collections::HashMap;
-use surreal_sync_surreal::{apply_change, surreal_connect, Change, SurrealOpts as SurrealConnOpts};
-use surrealdb::sql::{Array, Number, Strand, Value};
-use surrealdb_types::RecordWithSurrealValues as Record;
+use surreal_sync_surreal::{
+    surreal_connect, write_universal_relations, write_universal_rows, Surreal, SurrealEngine,
+    SurrealOpts as SurrealConnOpts,
+};
+use sync_core::{UniversalRelation, UniversalRow, UniversalType, UniversalValue};
+
+/// A change from Neo4j (either a node or a relationship)
+#[derive(Debug, Clone)]
+pub enum IncrementalChange {
+    /// A node upsert
+    Node(UniversalRow),
+    /// A relationship upsert (boxed to reduce enum size variance)
+    Relation(Box<UniversalRelation>),
+}
 
 /// Trait for a stream of changes from Neo4j
 #[async_trait]
 pub trait ChangeStream: Send + Sync {
     /// Get the next change event from the stream
-    async fn next(&mut self) -> Option<anyhow::Result<Change>>;
+    async fn next(&mut self) -> Option<anyhow::Result<IncrementalChange>>;
 
     /// Get the current checkpoint of the stream
     fn checkpoint(&self) -> Option<Neo4jCheckpoint>;
@@ -105,7 +116,7 @@ pub struct Neo4jChangeStream {
     /// Conversion context with timezone and JSON-to-object configuration
     ctx: Neo4jConversionContext,
     /// Buffer for batched changes
-    change_buffer: Vec<Change>,
+    change_buffer: Vec<IncrementalChange>,
     /// Whether we've finished reading all changes
     finished: bool,
 }
@@ -151,7 +162,7 @@ impl Neo4jChangeStream {
         let mut result = self.graph.execute(node_query).await?;
         let mut batch_changes = Vec::new();
         let mut max_checkpoint = self.current_checkpoint;
-        let mut record_id: surrealdb::sql::Id;
+        let mut record_id: UniversalValue;
 
         while let Some(row) = result.next().await? {
             let node: neo4rs::Node = row.get("n")?;
@@ -172,19 +183,21 @@ impl Neo4jChangeStream {
 
             max_checkpoint = max_checkpoint.max(node_checkpoint);
 
-            // Convert node to surreal data
-            let mut keys_and_surreal_values: HashMap<String, Value> = HashMap::new();
-            keys_and_surreal_values
-                .insert("neo4j_id".to_string(), Value::Number(Number::Int(node_id)));
-            record_id = surrealdb::sql::Id::from(node_id);
+            // Convert node to universal data
+            let mut fields: HashMap<String, UniversalValue> = HashMap::new();
+            fields.insert("neo4j_id".to_string(), UniversalValue::Int64(node_id));
+            record_id = UniversalValue::Int64(node_id);
 
-            let surreal_labels: Vec<Value> = labels
+            let universal_labels: Vec<UniversalValue> = labels
                 .iter()
-                .map(|s| Value::Strand(Strand::from(s.clone())))
+                .map(|s| UniversalValue::Text(s.clone()))
                 .collect();
-            keys_and_surreal_values.insert(
+            fields.insert(
                 "labels".to_string(),
-                Value::Array(Array::from(surreal_labels)),
+                UniversalValue::Array {
+                    elements: universal_labels,
+                    element_type: Box::new(UniversalType::Text),
+                },
             );
 
             // Add all node properties with field renaming
@@ -193,31 +206,31 @@ impl Neo4jChangeStream {
                     // Determine label for JSON-to-object check
                     let should_parse_json = self.ctx.should_parse_json(label, key);
 
-                    if let Ok(v) = crate::convert_neo4j_type_to_surreal_value(
+                    if let Ok(v) = crate::convert_neo4j_type_to_universal_value(
                         value,
                         &self.ctx.timezone,
                         should_parse_json,
                     ) {
                         // Rename 'id' field to 'neo4j_original_id' to avoid conflict with SurrealDB record ID
                         let field_name = if key == "id" {
-                            // Extract ID from the Value
+                            // Extract ID from the UniversalValue
                             record_id = match &v {
-                                Value::Number(Number::Int(n)) => surrealdb::sql::Id::Number(*n),
-                                Value::Strand(s) => {
+                                UniversalValue::Int64(n) => UniversalValue::Int64(*n),
+                                UniversalValue::Text(s) => {
                                     // Try to parse as integer first (common case: numeric strings)
-                                    if let Ok(n) = s.as_str().parse::<i64>() {
-                                        surrealdb::sql::Id::Number(n)
+                                    if let Ok(n) = s.parse::<i64>() {
+                                        UniversalValue::Int64(n)
                                     } else {
-                                        surrealdb::sql::Id::String(s.as_str().to_string())
+                                        UniversalValue::Text(s.clone())
                                     }
                                 }
-                                _ => surrealdb::sql::Id::from(node_id),
+                                _ => UniversalValue::Int64(node_id),
                             };
                             "neo4j_original_id".to_string()
                         } else {
                             key.to_string()
                         };
-                        keys_and_surreal_values.insert(field_name, v);
+                        fields.insert(field_name, v);
                     }
                 }
             }
@@ -227,9 +240,11 @@ impl Neo4jChangeStream {
                 .map(|s| s.to_lowercase())
                 .unwrap_or_else(|| "node".to_string());
 
-            batch_changes.push(Change::UpsertRecord(Record::new(
-                surrealdb::sql::Thing::from((table, record_id)),
-                keys_and_surreal_values,
+            batch_changes.push(IncrementalChange::Node(UniversalRow::new(
+                table,
+                node_id as u64,
+                record_id,
+                fields,
             )));
         }
 
@@ -250,13 +265,15 @@ impl Neo4jChangeStream {
         let mut rel_result = self.graph.execute(rel_query).await?;
 
         while let Some(row) = rel_result.next().await? {
-            // Convert relationship to surreal data
+            // Convert relationship to universal data
             let r =
                 crate::row_to_relation(&row, None, Some(self.change_tracking_property.clone()))?;
 
             max_checkpoint = max_checkpoint.max(r.updated_at);
 
-            batch_changes.push(Change::UpsertRelation(r.to_relation(&self.ctx)?));
+            batch_changes.push(IncrementalChange::Relation(Box::new(
+                r.to_universal_relation(&self.ctx)?,
+            )));
         }
 
         if batch_changes.is_empty() {
@@ -272,7 +289,7 @@ impl Neo4jChangeStream {
 
 #[async_trait]
 impl ChangeStream for Neo4jChangeStream {
-    async fn next(&mut self) -> Option<anyhow::Result<Change>> {
+    async fn next(&mut self) -> Option<anyhow::Result<IncrementalChange>> {
         // If buffer is empty, fetch next batch
         if self.change_buffer.is_empty() && !self.finished {
             if let Err(e) = self.fetch_next_batch().await {
@@ -293,27 +310,45 @@ impl ChangeStream for Neo4jChangeStream {
 
 /// Apply incremental changes to SurrealDB
 pub async fn apply_incremental_changes(
-    surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
-    changes: Vec<Change>,
+    surreal: &Surreal<SurrealEngine>,
+    changes: Vec<IncrementalChange>,
     dry_run: bool,
 ) -> anyhow::Result<usize> {
-    let mut applied_count = 0;
+    // Separate nodes and relations for batch processing
+    let mut nodes = Vec::new();
+    let mut relations = Vec::new();
 
     for change in changes {
-        tracing::debug!("Applying {change:?}",);
-
-        if dry_run {
-            tracing::info!("DRY RUN: Would apply {change:?}",);
-            applied_count += 1;
-            continue;
+        match change {
+            IncrementalChange::Node(row) => nodes.push(row),
+            IncrementalChange::Relation(rel) => relations.push(*rel),
         }
-
-        apply_change(surreal, &change).await?;
-
-        applied_count += 1;
     }
 
-    Ok(applied_count)
+    let total_count = nodes.len() + relations.len();
+
+    if dry_run {
+        tracing::info!(
+            "DRY RUN: Would apply {} nodes and {} relations",
+            nodes.len(),
+            relations.len()
+        );
+        return Ok(total_count);
+    }
+
+    // Apply nodes
+    if !nodes.is_empty() {
+        tracing::debug!("Applying {} node changes", nodes.len());
+        write_universal_rows(surreal, &nodes).await?;
+    }
+
+    // Apply relations
+    if !relations.is_empty() {
+        tracing::debug!("Applying {} relation changes", relations.len());
+        write_universal_relations(surreal, &relations).await?;
+    }
+
+    Ok(total_count)
 }
 
 /// Run incremental sync from Neo4j to SurrealDB
@@ -360,15 +395,6 @@ pub async fn run_incremental_sync(
         surreal_password: to_opts.surreal_password.clone(),
     };
     let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
-
-    surreal
-        .signin(surrealdb::opt::auth::Root {
-            username: &to_opts.surreal_username,
-            password: &to_opts.surreal_password,
-        })
-        .await?;
-
-    surreal.use_ns(&to_namespace).use_db(&to_database).await?;
 
     // Start reading changes
     let mut stream = source.get_changes().await?;

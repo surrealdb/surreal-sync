@@ -6,9 +6,7 @@ description = "MySQL trigger-based sync for surreal-sync"
 
 [dependencies]
 mysql_async = "0.34"
-surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
 surreal-sync-surreal = { path = "../surreal" }
-surrealdb-types = { path = "../surrealdb-types" }
 sync-core = { path = "../sync-core" }
 checkpoint = { path = "../checkpoint" }
 mysql-types = { path = "../mysql-types" }
@@ -27,3 +25,4 @@ log = "0.4"
 
 [dev-dependencies]
 tempfile = "3.0"
+surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }

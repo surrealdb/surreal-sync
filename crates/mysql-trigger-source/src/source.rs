@@ -25,13 +25,12 @@ use super::checkpoint::MySQLCheckpoint;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::Utc;
-use json_types::JsonValueWithSchema;
+use json_types::{convert_id_to_universal_with_database_schema, JsonValueWithSchema};
 use log::info;
 use mysql_async::{prelude::*, Conn, Pool, Row, Value};
-use surreal_sync_surreal::{Change, ChangeOp};
-use surrealdb_types::convert_id_with_database_schema;
-use surrealdb_types::typed_values_to_surreal_map;
-use sync_core::{DatabaseSchema, TypedValue, UniversalType};
+use sync_core::{
+    DatabaseSchema, TypedValue, UniversalChange, UniversalChangeOp, UniversalType, UniversalValue,
+};
 
 // ============================================================================
 // Traits for MySQL incremental sync
@@ -69,7 +68,7 @@ pub trait IncrementalSource: Send + Sync {
 pub trait ChangeStream: Send + Sync {
     /// Get the next change event from the stream
     /// Returns None when no more changes are available
-    async fn next(&mut self) -> Option<Result<Change>>;
+    async fn next(&mut self) -> Option<Result<UniversalChange>>;
 
     /// Get the current checkpoint of the stream
     /// This can be used to resume from this position later
@@ -151,7 +150,7 @@ pub struct MySQLChangeStream {
     connection: Option<Conn>,
     #[allow(dead_code)]
     server_id: u32,
-    buffer: Vec<Change>,
+    buffer: Vec<UniversalChange>,
     last_sequence_id: i64,
     database_schema: Option<DatabaseSchema>,
 }
@@ -255,7 +254,7 @@ impl MySQLChangeStream {
         Ok(result)
     }
 
-    async fn fetch_changes(&mut self) -> Result<Vec<Change>> {
+    async fn fetch_changes(&mut self) -> Result<Vec<UniversalChange>> {
         let conn = self
             .connection
             .as_mut()
@@ -293,16 +292,16 @@ impl MySQLChangeStream {
             let new_data: Option<Value> = row.get(5);
 
             let op = match operation.as_str() {
-                "INSERT" => ChangeOp::Create,
-                "UPDATE" => ChangeOp::Update,
-                "DELETE" => ChangeOp::Delete,
+                "INSERT" => UniversalChangeOp::Create,
+                "UPDATE" => UniversalChangeOp::Update,
+                "DELETE" => UniversalChangeOp::Delete,
                 _ => {
                     return Err(anyhow!("Unknown operation type: {operation}"));
                 }
             };
 
-            // Convert JSON data to surrealdb::sql::Value map using TypedValue conversion flow
-            let surreal_data = match operation.as_str() {
+            // Convert JSON data to UniversalValue map using TypedValue conversion flow
+            let universal_data: Option<HashMap<String, UniversalValue>> = match operation.as_str() {
                 "INSERT" | "UPDATE" => {
                     if let Some(Value::Bytes(json_data)) = new_data {
                         if let Ok(json_value) =
@@ -331,8 +330,13 @@ impl MySQLChangeStream {
                                         &row_id,
                                     )?;
 
-                                    // Step 2: HashMap<String, TypedValue> → HashMap<String, surrealdb::sql::Value>
-                                    typed_values_to_surreal_map(typed_values)
+                                    // Step 2: HashMap<String, TypedValue> → HashMap<String, UniversalValue>
+                                    let universal_map: HashMap<String, UniversalValue> =
+                                        typed_values
+                                            .into_iter()
+                                            .map(|(k, tv)| (k, tv.value))
+                                            .collect();
+                                    Some(universal_map)
                                 }
                                 _ => {
                                     anyhow::bail!(
@@ -347,24 +351,27 @@ impl MySQLChangeStream {
                         anyhow::bail!("Missing new_data for INSERT/UPDATE in table '{table_name}'");
                     }
                 }
-                "DELETE" => HashMap::new(), // No data for deletes
+                "DELETE" => None, // No data for deletes
                 _ => anyhow::bail!("Unknown operation type: {operation}"),
             };
 
-            // Convert the string row_id to the proper type using schema information
+            // Convert the string row_id to UniversalValue using schema information
             // This ensures that BIGINT IDs are stored as numbers, UUIDs as UUIDs, etc.
-            let record_id = if let Some(schema) = &self.database_schema {
+            let record_id: UniversalValue = if let Some(schema) = &self.database_schema {
                 // Use schema-aware conversion to get proper ID type
-                let surreal_id =
-                    convert_id_with_database_schema(&row_id, &table_name, "id", schema)?;
-                surrealdb::sql::Thing::from((table_name.clone(), surreal_id))
+                convert_id_to_universal_with_database_schema(&row_id, &table_name, "id", schema)?
             } else {
                 // Fallback to string ID if no schema available (shouldn't happen)
-                surrealdb::sql::Thing::from((table_name.clone(), row_id))
+                UniversalValue::Text(row_id.clone())
             };
 
-            // Create change record using unified path
-            changes.push(Change::record(op, record_id, surreal_data));
+            // Create change record using universal types
+            changes.push(UniversalChange::new(
+                op,
+                table_name.clone(),
+                record_id,
+                universal_data,
+            ));
 
             self.last_sequence_id = sequence_id;
         }
@@ -375,7 +382,7 @@ impl MySQLChangeStream {
 
 #[async_trait]
 impl ChangeStream for MySQLChangeStream {
-    async fn next(&mut self) -> Option<Result<Change>> {
+    async fn next(&mut self) -> Option<Result<UniversalChange>> {
         // Return buffered changes first
         if !self.buffer.is_empty() {
             return Some(Ok(self.buffer.remove(0)));

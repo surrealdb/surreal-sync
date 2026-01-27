@@ -265,8 +265,12 @@ fn surreal_value_to_generated(value: &Value) -> UniversalValue {
             }
         }
         Value::Object(obj) => {
-            let json_val = object_to_serde_json(obj);
-            UniversalValue::Json(Box::new(json_val))
+            // Convert SurrealDB Object to UniversalValue::Object
+            let mut map = std::collections::HashMap::new();
+            for (k, v) in obj.iter() {
+                map.insert(k.clone(), surreal_value_to_generated(v));
+            }
+            UniversalValue::Object(map)
         }
         // Thing (record ID) - convert to UniversalValue::Thing
         Value::Thing(thing) => {

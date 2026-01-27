@@ -8,7 +8,7 @@ pub mod neo4j_checkpoint;
 mod neo4j_client;
 
 pub use full_sync::{
-    convert_neo4j_type_to_surreal_value, row_to_relation, run_full_sync, Neo4jConversionContext,
+    convert_neo4j_type_to_universal_value, row_to_relation, run_full_sync, Neo4jConversionContext,
     Neo4jJsonProperty, Relation, SourceOpts, SurrealOpts,
 };
 pub use incremental_sync::{run_incremental_sync, Neo4jChangeStream, Neo4jIncrementalSource};

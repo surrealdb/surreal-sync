@@ -1,7 +1,7 @@
 //! MySQL full sync implementation using TypedValue conversion path.
 //!
 //! This module uses the unified type conversion flow:
-//! MySQL Row → TypedValue (mysql-types) → surrealdb::sql::Value (surrealdb-types)
+//! MySQL Row → TypedValue (mysql-types) → UniversalRow (sync-core) → SurrealDB (surreal crate)
 
 use crate::{SourceOpts, SurrealOpts};
 use anyhow::Result;
@@ -9,9 +9,8 @@ use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
 use mysql_async::{prelude::*, Pool, Row};
 use mysql_types::{row_to_typed_values_with_config, JsonConversionConfig, RowConversionConfig};
 use std::collections::HashMap;
-use surrealdb_types::typed_values_to_surreal_map;
-use surrealdb_types::RecordWithSurrealValues;
-use sync_core::{TypedValue, UniversalValue};
+use surreal_sync_surreal::write_universal_rows;
+use sync_core::{TypedValue, UniversalRow, UniversalValue};
 use tracing::{debug, info};
 
 /// Sanitize connection string for logging (hide password)
@@ -34,7 +33,7 @@ pub async fn run_full_sync(
     from_opts: &SourceOpts,
     to_opts: &SurrealOpts,
     sync_config: Option<SyncConfig>,
-    surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
+    surreal: &surreal_sync_surreal::Surreal<surreal_sync_surreal::SurrealEngine>,
 ) -> Result<()> {
     info!("Starting MySQL migration to SurrealDB");
 
@@ -245,7 +244,7 @@ async fn get_user_tables(conn: &mut mysql_async::Conn, database: &str) -> Result
 /// Migrate a single table from MySQL to SurrealDB
 async fn migrate_table(
     conn: &mut mysql_async::Conn,
-    surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
+    surreal: &surreal_sync_surreal::Surreal<surreal_sync_surreal::SurrealEngine>,
     table_name: &str,
     to_opts: &SurrealOpts,
     boolean_paths: &Option<Vec<String>>,
@@ -270,8 +269,9 @@ async fn migrate_table(
     let mut batch = Vec::new();
     let mut total_processed = 0;
 
-    for row in rows {
-        let record = convert_row_to_record(&row, &pk_columns, table_name, &row_config)?;
+    for (row_index, row) in rows.iter().enumerate() {
+        let record =
+            convert_row_to_record(row, &pk_columns, table_name, &row_config, row_index as u64)?;
         batch.push(record);
 
         // Process batch when it reaches the configured size
@@ -279,7 +279,7 @@ async fn migrate_table(
             let batch_size = batch.len();
 
             if !to_opts.dry_run {
-                write_records_with_surreal_values(surreal, table_name, &batch).await?;
+                write_universal_rows_batch(surreal, table_name, &batch).await?;
             } else {
                 debug!(
                     "Dry-run: Would insert {} records into {}",
@@ -297,7 +297,7 @@ async fn migrate_table(
         let batch_size = batch.len();
 
         if !to_opts.dry_run {
-            write_records_with_surreal_values(surreal, table_name, &batch).await?;
+            write_universal_rows_batch(surreal, table_name, &batch).await?;
         } else {
             debug!(
                 "Dry-run: Would insert {} records into {}",
@@ -350,13 +350,14 @@ fn build_row_conversion_config(
     config
 }
 
-/// Convert a MySQL row to a RecordWithSurrealValues using the unified type conversion path
+/// Convert a MySQL row to an UniversalRow using the unified type conversion path
 fn convert_row_to_record(
     row: &Row,
     pk_columns: &[String],
     table_name: &str,
     row_config: &RowConversionConfig,
-) -> Result<RecordWithSurrealValues> {
+    row_index: u64,
+) -> Result<UniversalRow> {
     // Step 1: Convert MySQL Row → HashMap<String, TypedValue>
     let typed_values = row_to_typed_values_with_config(row, row_config)
         .map_err(|e| anyhow::anyhow!("MySQL conversion error: {e}"))?;
@@ -370,29 +371,33 @@ fn convert_row_to_record(
         data_values.remove(&pk_columns[0]);
     }
 
-    // Step 4: Convert HashMap<String, TypedValue> → HashMap<String, surrealdb::sql::Value>
-    let surreal_data = typed_values_to_surreal_map(data_values);
+    // Step 4: Convert HashMap<String, TypedValue> → HashMap<String, UniversalValue>
+    let universal_data: HashMap<String, UniversalValue> = data_values
+        .into_iter()
+        .map(|(k, tv)| (k, tv.value))
+        .collect();
 
-    Ok(RecordWithSurrealValues {
+    Ok(UniversalRow::new(
+        table_name.to_string(),
+        row_index,
         id,
-        data: surreal_data,
-    })
+        universal_data,
+    ))
 }
 
 /// Extract record ID from typed values based on primary key columns
 fn extract_record_id(
     typed_values: &HashMap<String, TypedValue>,
     pk_columns: &[String],
-    table_name: &str,
-) -> Result<surrealdb::sql::Thing> {
+    _table_name: &str,
+) -> Result<UniversalValue> {
     if pk_columns.is_empty() || (pk_columns.len() == 1 && pk_columns[0] == "id") {
         // Single primary key named 'id'
         let id_value = typed_values
             .get("id")
             .ok_or_else(|| anyhow::anyhow!("MySQL record must have an 'id' field"))?;
 
-        let id = typed_value_to_id(id_value)?;
-        Ok(surrealdb::sql::Thing::from((table_name.to_string(), id)))
+        typed_value_to_id(id_value)
     } else if pk_columns.len() == 1 {
         // Single primary key with different name
         let pk_col = &pk_columns[0];
@@ -400,8 +405,7 @@ fn extract_record_id(
             .get(pk_col)
             .ok_or_else(|| anyhow::anyhow!("Primary key column '{pk_col}' not found"))?;
 
-        let id = typed_value_to_id(id_value)?;
-        Ok(surrealdb::sql::Thing::from((table_name.to_string(), id)))
+        typed_value_to_id(id_value)
     } else {
         // Composite primary key - concatenate values
         let parts: Vec<String> = pk_columns
@@ -411,42 +415,39 @@ fn extract_record_id(
             .collect();
 
         let composite_id = parts.join("_");
-        Ok(surrealdb::sql::Thing::from((
-            table_name.to_string(),
-            surrealdb::sql::Id::from(composite_id),
-        )))
+        Ok(UniversalValue::Text(composite_id))
     }
 }
 
-/// Convert a TypedValue to a SurrealDB ID
-fn typed_value_to_id(tv: &TypedValue) -> Result<surrealdb::sql::Id> {
+/// Convert a TypedValue to a UniversalValue for use as an ID
+fn typed_value_to_id(tv: &TypedValue) -> Result<UniversalValue> {
     match &tv.value {
-        UniversalValue::Int32(i) => Ok(surrealdb::sql::Id::from(*i as i64)),
-        UniversalValue::Int64(i) => Ok(surrealdb::sql::Id::from(*i)),
+        UniversalValue::Int32(i) => Ok(UniversalValue::Int64(*i as i64)),
+        UniversalValue::Int64(i) => Ok(UniversalValue::Int64(*i)),
         UniversalValue::Text(s) => {
             // Try to parse as integer first for numeric IDs stored as strings
             if let Ok(n) = s.parse::<i64>() {
-                Ok(surrealdb::sql::Id::from(n))
+                Ok(UniversalValue::Int64(n))
             } else {
-                Ok(surrealdb::sql::Id::from(s.clone()))
+                Ok(UniversalValue::Text(s.clone()))
             }
         }
         // VarChar and Char are strict 1:1 type-value variants that map to string IDs
         UniversalValue::VarChar { value: s, .. } => {
             if let Ok(n) = s.parse::<i64>() {
-                Ok(surrealdb::sql::Id::from(n))
+                Ok(UniversalValue::Int64(n))
             } else {
-                Ok(surrealdb::sql::Id::from(s.clone()))
+                Ok(UniversalValue::Text(s.clone()))
             }
         }
         UniversalValue::Char { value: s, .. } => {
             if let Ok(n) = s.parse::<i64>() {
-                Ok(surrealdb::sql::Id::from(n))
+                Ok(UniversalValue::Int64(n))
             } else {
-                Ok(surrealdb::sql::Id::from(s.clone()))
+                Ok(UniversalValue::Text(s.clone()))
             }
         }
-        UniversalValue::Uuid(u) => Ok(surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u))),
+        UniversalValue::Uuid(u) => Ok(UniversalValue::Uuid(*u)),
         _ => Err(anyhow::anyhow!("Unsupported ID type: {:?}", tv.sync_type)),
     }
 }
@@ -469,11 +470,11 @@ fn typed_value_to_string(tv: &TypedValue) -> String {
     }
 }
 
-/// Write a batch of records to SurrealDB using RecordWithSurrealValues
-async fn write_records_with_surreal_values(
-    surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
+/// Write a batch of records to SurrealDB using UniversalRow
+async fn write_universal_rows_batch(
+    surreal: &surreal_sync_surreal::Surreal<surreal_sync_surreal::SurrealEngine>,
     table_name: &str,
-    batch: &[RecordWithSurrealValues],
+    batch: &[UniversalRow],
 ) -> Result<()> {
     tracing::debug!(
         "Starting migration batch for table '{}' with {} records",
@@ -481,10 +482,7 @@ async fn write_records_with_surreal_values(
         batch.len()
     );
 
-    for (i, record) in batch.iter().enumerate() {
-        tracing::trace!("Processing record {}/{}", i + 1, batch.len());
-        surreal_sync_surreal::write_record(surreal, record).await?;
-    }
+    write_universal_rows(surreal, batch).await?;
 
     tracing::debug!(
         "Completed migration batch for table '{}' with {} records",

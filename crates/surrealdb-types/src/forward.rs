@@ -210,6 +210,15 @@ impl From<UniversalValue> for SurrealValue {
                 let thing = surrealdb::sql::Thing::from((table.as_str(), surreal_id));
                 SurrealValue(Value::Thing(thing))
             }
+
+            // Object - nested document
+            UniversalValue::Object(map) => {
+                let mut obj = BTreeMap::new();
+                for (k, v) in map {
+                    obj.insert(k.clone(), generated_value_to_surreal(&v));
+                }
+                SurrealValue(Value::Object(Object::from(obj)))
+            }
         }
     }
 }

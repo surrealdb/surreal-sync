@@ -64,6 +64,6 @@ pub use schema::{
 pub type LoadTestSchema = Schema;
 pub use types::{GeometryType, ToDdl, UniversalType};
 pub use values::{
-    GeometryData, RowConverter, TypedValue, TypedValueError, UniversalRow, UniversalRowBuilder,
-    UniversalValue,
+    GeometryData, RowConverter, TypedValue, TypedValueError, UniversalChange, UniversalChangeOp,
+    UniversalRelation, UniversalRow, UniversalRowBuilder, UniversalThingRef, UniversalValue,
 };

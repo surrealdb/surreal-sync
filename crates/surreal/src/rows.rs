@@ -1,12 +1,12 @@
 //! Row-level operations for converting and writing UniversalRow to SurrealDB.
 
-use crate::write::write_record;
+use crate::write::{write_record, write_relation};
 use anyhow::{bail, Result};
 use std::collections::HashMap;
 use surrealdb::sql::{Id, Thing, Value};
 use surrealdb::Surreal;
-use surrealdb_types::{RecordWithSurrealValues, SurrealValue};
-use sync_core::{UniversalRow, UniversalValue};
+use surrealdb_types::{RecordWithSurrealValues, Relation, SurrealValue};
+use sync_core::{UniversalRelation, UniversalRow, UniversalValue};
 
 /// Convert UniversalValue ID to SurrealDB Id.
 ///
@@ -58,6 +58,55 @@ pub async fn write_universal_rows(
     for row in rows {
         let record = universal_row_to_surreal_record(row)?;
         write_record(surreal, &record).await?;
+    }
+    Ok(())
+}
+
+/// Convert UniversalRelation to SurrealDB Relation.
+///
+/// Returns an error if any ID type is not supported.
+pub fn universal_relation_to_surreal_relation(rel: &UniversalRelation) -> Result<Relation> {
+    // Convert the relation's own ID
+    let id = universal_value_to_surreal_id(&rel.id)?;
+    let thing_id = Thing::from((rel.relation_type.as_str(), id));
+
+    // Convert input (source) Thing
+    let input_id = universal_value_to_surreal_id(&rel.input.id)?;
+    let input_thing = Thing::from((rel.input.table.as_str(), input_id));
+
+    // Convert output (target) Thing
+    let output_id = universal_value_to_surreal_id(&rel.output.id)?;
+    let output_thing = Thing::from((rel.output.table.as_str(), output_id));
+
+    // Convert data
+    let data: HashMap<String, SurrealValue> = rel
+        .data
+        .iter()
+        .map(|(k, v)| {
+            let typed = v.clone().to_typed_value();
+            let surreal_val: SurrealValue = typed.into();
+            (k.clone(), surreal_val)
+        })
+        .collect();
+
+    Ok(Relation {
+        id: thing_id,
+        input: input_thing,
+        output: output_thing,
+        data,
+    })
+}
+
+/// Write a batch of UniversalRelations to SurrealDB.
+///
+/// Returns an error if any relation has an unsupported ID type.
+pub async fn write_universal_relations(
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+    relations: &[UniversalRelation],
+) -> Result<()> {
+    for rel in relations {
+        let surreal_rel = universal_relation_to_surreal_relation(rel)?;
+        write_relation(surreal, &surreal_rel).await?;
     }
     Ok(())
 }

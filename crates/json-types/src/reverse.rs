@@ -333,9 +333,10 @@ fn json_object_to_geojson_hashmap(
     map
 }
 
-/// Convert a JSON value to UniversalValue.
-#[allow(dead_code)]
-fn json_value_to_universal(value: &serde_json::Value) -> UniversalValue {
+/// Convert a JSON value to UniversalValue (without schema information).
+///
+/// This performs a generic conversion without type hints, inferring types from the JSON values.
+pub fn json_value_to_universal(value: &serde_json::Value) -> UniversalValue {
     match value {
         serde_json::Value::Null => UniversalValue::Null,
         serde_json::Value::Bool(b) => UniversalValue::Bool(*b),
@@ -622,6 +623,97 @@ pub fn parse_jsonl_line(
 ) -> Result<HashMap<String, TypedValue>, serde_json::Error> {
     let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(line)?;
     Ok(json_object_to_typed_values(&obj, schema))
+}
+
+// ============================================================================
+// Schema-aware conversion functions for source crates
+// These replace surrealdb_types functions to enable decoupling from SurrealDB
+// ============================================================================
+
+/// Convert JSON value to UniversalValue using table schema for type lookup.
+///
+/// This is the universal equivalent of `surrealdb_types::json_to_surreal_with_table_schema`.
+/// Returns UniversalValue instead of surrealdb::sql::Value.
+pub fn json_to_universal_with_table_schema(
+    value: serde_json::Value,
+    field_name: &str,
+    schema: &sync_core::TableDefinition,
+) -> anyhow::Result<UniversalValue> {
+    // Look up the column type for this field
+    let column_type = schema.get_column_type(field_name);
+
+    match column_type {
+        Some(sync_type) => {
+            let jv = JsonValueWithSchema::new(value, sync_type.clone());
+            let tv = TypedValue::from(jv);
+            Ok(tv.value)
+        }
+        None => {
+            // No schema info for this field, use generic conversion
+            Ok(json_value_to_universal(&value))
+        }
+    }
+}
+
+/// Convert a string ID value to UniversalValue based on schema-defined type.
+///
+/// This is the universal equivalent of `surrealdb_types::convert_id_with_database_schema`.
+/// Returns UniversalValue instead of surrealdb::sql::Id.
+pub fn convert_id_to_universal_with_database_schema(
+    id_str: &str,
+    table_name: &str,
+    id_column: &str,
+    schema: &sync_core::DatabaseSchema,
+) -> anyhow::Result<UniversalValue> {
+    // Look up the table schema
+    let table_schema = schema
+        .get_table(table_name)
+        .ok_or_else(|| anyhow::anyhow!("Table '{table_name}' not found in schema"))?;
+
+    // Look up the ID column type
+    let id_type = table_schema.get_column_type(id_column).ok_or_else(|| {
+        anyhow::anyhow!("Column '{id_column}' not found in table '{table_name}' schema")
+    })?;
+
+    // Convert based on the schema-defined type
+    convert_id_to_universal_value(id_str, table_name, id_type)
+}
+
+/// Convert a string ID value to UniversalValue using UniversalType.
+pub fn convert_id_to_universal_value(
+    id_str: &str,
+    table_name: &str,
+    id_type: &UniversalType,
+) -> anyhow::Result<UniversalValue> {
+    match id_type {
+        UniversalType::Int8 { .. }
+        | UniversalType::Int16
+        | UniversalType::Int32
+        | UniversalType::Int64 => {
+            let id_int: i64 = id_str.parse().map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to parse ID '{id_str}' as integer for table '{table_name}': {e}"
+                )
+            })?;
+            Ok(UniversalValue::Int64(id_int))
+        }
+        UniversalType::Uuid => {
+            let uuid = uuid::Uuid::parse_str(id_str).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to parse ID '{id_str}' as UUID for table '{table_name}': {e}"
+                )
+            })?;
+            Ok(UniversalValue::Uuid(uuid))
+        }
+        UniversalType::Text | UniversalType::VarChar { .. } | UniversalType::Char { .. } => {
+            Ok(UniversalValue::Text(id_str.to_string()))
+        }
+        other => {
+            anyhow::bail!(
+                "Unsupported ID type {other:?} for table '{table_name}'. Supported types: Int8-64, Uuid, Text, VarChar, Char."
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1027,5 +1119,83 @@ mod tests {
         let jv = JsonValueWithSchema::new(json!("not a duration"), UniversalType::Duration);
         let tv = TypedValue::from(jv);
         assert!(matches!(tv.value, UniversalValue::Null));
+    }
+
+    #[test]
+    fn test_json_to_universal_with_table_schema_array() {
+        // Test that json_to_universal_with_table_schema correctly converts JSON arrays
+        // when the schema defines the field as Array<Text>
+        use sync_core::{ColumnDefinition, TableDefinition};
+
+        // Create a table schema with an array column
+        let pk = ColumnDefinition::new("id", UniversalType::Text);
+        let columns = vec![ColumnDefinition::new(
+            "tags",
+            UniversalType::Array {
+                element_type: Box::new(UniversalType::Text),
+            },
+        )];
+        let table_schema = TableDefinition::new("test_table", pk, columns);
+
+        // Test converting a JSON array to UniversalValue::Array
+        let json_array = json!(["tag1", "tag2", "tag3"]);
+        let result =
+            json_to_universal_with_table_schema(json_array, "tags", &table_schema).unwrap();
+
+        match result {
+            UniversalValue::Array { elements, .. } => {
+                assert_eq!(elements.len(), 3);
+                assert!(matches!(&elements[0], UniversalValue::Text(s) if s == "tag1"));
+                assert!(matches!(&elements[1], UniversalValue::Text(s) if s == "tag2"));
+                assert!(matches!(&elements[2], UniversalValue::Text(s) if s == "tag3"));
+            }
+            other => panic!("Expected Array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_json_to_universal_with_table_schema_null_array() {
+        // Test that null JSON values become UniversalValue::Null even for array columns
+        use sync_core::{ColumnDefinition, TableDefinition};
+
+        let pk = ColumnDefinition::new("id", UniversalType::Text);
+        let columns = vec![ColumnDefinition::new(
+            "tags",
+            UniversalType::Array {
+                element_type: Box::new(UniversalType::Text),
+            },
+        )];
+        let table_schema = TableDefinition::new("test_table", pk, columns);
+
+        let json_null = json!(null);
+        let result = json_to_universal_with_table_schema(json_null, "tags", &table_schema).unwrap();
+
+        assert!(
+            matches!(result, UniversalValue::Null),
+            "Expected Null, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_json_to_universal_with_table_schema_unknown_field() {
+        // Test that unknown fields fall back to generic conversion
+        use sync_core::{ColumnDefinition, TableDefinition};
+
+        let pk = ColumnDefinition::new("id", UniversalType::Text);
+        let columns = vec![];
+        let table_schema = TableDefinition::new("test_table", pk, columns);
+
+        // Unknown field with JSON array should still convert using generic conversion
+        let json_array = json!(["a", "b"]);
+        let result =
+            json_to_universal_with_table_schema(json_array, "unknown_field", &table_schema)
+                .unwrap();
+
+        match result {
+            UniversalValue::Array { elements, .. } => {
+                assert_eq!(elements.len(), 2);
+            }
+            other => panic!("Expected Array from generic conversion, got {other:?}"),
+        }
     }
 }

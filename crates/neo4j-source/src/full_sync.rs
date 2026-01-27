@@ -3,10 +3,13 @@
 //! This module provides full synchronization from Neo4j to SurrealDB.
 
 use neo4rs::{ConfigBuilder, Graph, Query};
+use std::collections::HashMap;
 use std::collections::HashSet;
-use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Value};
-use surrealdb::{engine::any::connect, Surreal};
-use surrealdb_types::{RecordWithSurrealValues as Record, Relation as SurrealRelation};
+use surreal_sync_surreal::{
+    surreal_connect, write_universal_relations, write_universal_rows, Surreal, SurrealEngine,
+    SurrealOpts as SurrealConnOpts,
+};
+use sync_core::{UniversalRelation, UniversalRow, UniversalThingRef, UniversalValue};
 
 use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
 
@@ -153,34 +156,12 @@ pub async fn run_full_sync(
     };
 
     // Connect to SurrealDB
-    let surreal_endpoint = to_opts
-        .surreal_endpoint
-        .replace("http://", "ws://")
-        .replace("https://", "wss://");
-    tracing::debug!("Connecting to SurrealDB at: {}", surreal_endpoint);
-    let surreal = connect(surreal_endpoint).await?;
-    tracing::debug!("SurrealDB connection established");
-
-    tracing::debug!(
-        "Signing in to SurrealDB with username: {}",
-        to_opts.surreal_username
-    );
-    surreal
-        .signin(surrealdb::opt::auth::Root {
-            username: &to_opts.surreal_username,
-            password: &to_opts.surreal_password,
-        })
-        .await?;
-    tracing::debug!("SurrealDB signin successful");
-
-    tracing::debug!(
-        "Using SurrealDB namespace: {} and database: {}",
-        to_namespace,
-        to_database
-    );
-    surreal.use_ns(&to_namespace).use_db(&to_database).await?;
-    tracing::debug!("SurrealDB namespace and database selected");
-
+    let surreal_conn_opts = SurrealConnOpts {
+        surreal_endpoint: to_opts.surreal_endpoint.clone(),
+        surreal_username: to_opts.surreal_username.clone(),
+        surreal_password: to_opts.surreal_password.clone(),
+    };
+    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
     tracing::info!("Connected to both Neo4j and SurrealDB");
 
     // Create conversion context with JSON-to-object configuration
@@ -225,7 +206,7 @@ pub async fn run_full_sync(
 /// Migrate all nodes from Neo4j to SurrealDB
 async fn migrate_neo4j_nodes(
     graph: &Graph,
-    surreal: &Surreal<surrealdb::engine::any::Any>,
+    surreal: &Surreal<SurrealEngine>,
     to_opts: &SurrealOpts,
     ctx: &Neo4jConversionContext,
 ) -> anyhow::Result<usize> {
@@ -258,17 +239,17 @@ async fn migrate_neo4j_nodes(
         .param("label", label.clone());
         let mut node_result = graph.execute(node_query).await?;
 
-        let mut batch: Vec<Record> = Vec::new();
+        let mut batch: Vec<UniversalRow> = Vec::new();
         let mut processed = 0;
 
         while let Some(row) = node_result.next().await? {
-            let surreal_record = convert_neo4j_row_to_record(&row, &label, ctx)?;
+            let universal_row = convert_neo4j_row_to_universal_row(&row, &label, ctx)?;
 
             if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                tracing::debug!("Converted Neo4j node to SurrealDB record {surreal_record:?}",);
+                tracing::debug!("Converted Neo4j node to UniversalRow {universal_row:?}",);
             }
 
-            batch.push(surreal_record);
+            batch.push(universal_row);
 
             if batch.len() >= to_opts.batch_size {
                 tracing::debug!(
@@ -277,8 +258,7 @@ async fn migrate_neo4j_nodes(
                     label
                 );
                 if !to_opts.dry_run {
-                    surreal_sync_surreal::write_records(surreal, &label.to_lowercase(), &batch)
-                        .await?;
+                    write_universal_rows(surreal, &batch).await?;
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
                 }
@@ -297,7 +277,7 @@ async fn migrate_neo4j_nodes(
                 label
             );
             if !to_opts.dry_run {
-                surreal_sync_surreal::write_records(surreal, &label.to_lowercase(), &batch).await?;
+                write_universal_rows(surreal, &batch).await?;
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");
             }
@@ -322,7 +302,7 @@ async fn migrate_neo4j_nodes(
 /// Migrate all relationships from Neo4j to SurrealDB
 async fn migrate_neo4j_relationships(
     graph: &Graph,
-    surreal: &Surreal<surrealdb::engine::any::Any>,
+    surreal: &Surreal<SurrealEngine>,
     to_opts: &SurrealOpts,
     ctx: &Neo4jConversionContext,
 ) -> anyhow::Result<usize> {
@@ -356,23 +336,22 @@ async fn migrate_neo4j_relationships(
         .param("rel_type", rel_type.clone());
         let mut rel_result = graph.execute(rel_query).await?;
 
-        let mut batch: Vec<SurrealRelation> = Vec::new();
+        let mut batch: Vec<UniversalRelation> = Vec::new();
         let mut processed = 0;
 
         while let Some(row) = rel_result.next().await? {
             let r = row_to_relation(&row, Some(rel_type.clone()), None)?;
 
-            let surreal_relation = r.to_relation(ctx)?;
+            let universal_relation = r.to_universal_relation(ctx)?;
 
             if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
                 tracing::debug!(
-                    "Converted Neo4j relationship to SurrealDB record (rel_id: {}): {:?}",
+                    "Converted Neo4j relationship to UniversalRelation (rel_id: {})",
                     r.id,
-                    r.surreal_record_id(),
                 );
             }
 
-            batch.push(surreal_relation);
+            batch.push(universal_relation);
 
             if batch.len() >= to_opts.batch_size {
                 tracing::debug!(
@@ -381,12 +360,7 @@ async fn migrate_neo4j_relationships(
                     rel_type
                 );
                 if !to_opts.dry_run {
-                    surreal_sync_surreal::write_relations(
-                        surreal,
-                        &rel_type.to_lowercase(),
-                        &batch,
-                    )
-                    .await?;
+                    write_universal_relations(surreal, &batch).await?;
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
                 }
@@ -409,8 +383,7 @@ async fn migrate_neo4j_relationships(
                 rel_type
             );
             if !to_opts.dry_run {
-                surreal_sync_surreal::write_relations(surreal, &rel_type.to_lowercase(), &batch)
-                    .await?;
+                write_universal_relations(surreal, &batch).await?;
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");
             }
@@ -432,38 +405,34 @@ async fn migrate_neo4j_relationships(
     Ok(total_migrated)
 }
 
-// Convert Neo4j node row to surreal record
-fn convert_neo4j_row_to_record(
+// Convert Neo4j node row to UniversalRow
+fn convert_neo4j_row_to_universal_row(
     row: &neo4rs::Row,
     label: &str,
     ctx: &Neo4jConversionContext,
-) -> anyhow::Result<Record> {
+) -> anyhow::Result<UniversalRow> {
     let node: neo4rs::Node = row.get("n")?;
     let node_id: i64 = row.get("node_id")?;
 
     // TODO make this configurable
     let id_property = "id"; // Use 'id' property as the SurrealDB record ID if present
 
-    // Convert Neo4j node to SurrealDB format
-    let mut data = convert_neo4j_node_to_surreal_kvs(node, node_id, label, ctx)?;
-    // Create proper SurrealDB Thing for the record
+    // Convert Neo4j node to universal format
+    let mut data = convert_neo4j_node_to_universal_kvs(node, node_id, label, ctx)?;
+    // Create proper ID for the record
     // Neo4j stores all properties as bolt types - integers are preserved as Integer,
-    // strings as String, etc. We convert each type to the appropriate SurrealDB ID type.
+    // strings as String, etc. We convert each type to the appropriate ID type.
     let id = match data.remove(id_property) {
-        Some(Value::Strand(s)) => {
+        Some(UniversalValue::Text(s)) => {
             // String ID - try to parse as integer first (common case: numeric strings)
-            let s_str = s.as_str();
-            if let Ok(n) = s_str.parse::<i64>() {
-                surrealdb::sql::Thing::from((label.to_lowercase(), surrealdb::sql::Id::Number(n)))
+            if let Ok(n) = s.parse::<i64>() {
+                UniversalValue::Int64(n)
             } else {
                 // Keep as string ID
-                surrealdb::sql::Thing::from((label.to_lowercase(), s_str.to_string()))
+                UniversalValue::Text(s)
             }
         }
-        Some(Value::Number(Number::Int(n))) => {
-            // Integer ID - use Number ID type directly
-            surrealdb::sql::Thing::from((label.to_lowercase(), surrealdb::sql::Id::Number(n)))
-        }
+        Some(UniversalValue::Int64(n)) => UniversalValue::Int64(n),
         Some(other) => {
             return Err(anyhow::anyhow!(
                 "Node with label '{label}' and id '{node_id}' has unsupported 'id' property type: {other:?}. \
@@ -471,36 +440,41 @@ fn convert_neo4j_row_to_record(
             ));
         }
         None => {
-            // No 'id' property - use Neo4j's internal node_id as string
-            // Note: Could be improved to use Number ID if desired
-            surrealdb::sql::Thing::from((label.to_lowercase(), node_id.to_string()))
+            // No 'id' property - use Neo4j's internal node_id
+            UniversalValue::Int64(node_id)
         }
     };
 
-    anyhow::Ok(Record::new(id, data))
+    Ok(UniversalRow::new(
+        label.to_lowercase(),
+        node_id as u64,
+        id,
+        data,
+    ))
 }
 
-/// Convert Neo4j node to keys and surreal values
-fn convert_neo4j_node_to_surreal_kvs(
+/// Convert Neo4j node to keys and universal values
+fn convert_neo4j_node_to_universal_kvs(
     node: neo4rs::Node,
     node_id: i64,
     label: &str,
     ctx: &Neo4jConversionContext,
-) -> anyhow::Result<std::collections::HashMap<String, Value>> {
-    let mut kvs = std::collections::HashMap::new();
+) -> anyhow::Result<HashMap<String, UniversalValue>> {
+    let mut kvs = HashMap::new();
 
     // Add neo4j_id as a field (preserve original Neo4j ID)
-    kvs.insert("neo4j_id".to_string(), Value::Number(Number::Int(node_id)));
+    kvs.insert("neo4j_id".to_string(), UniversalValue::Int64(node_id));
 
     // Add labels as an array
     let labels: Vec<String> = node.labels().into_iter().map(|s| s.to_string()).collect();
-    let labels_surreal_values: Vec<Value> = labels
-        .into_iter()
-        .map(|s| Value::Strand(Strand::from(s)))
-        .collect();
+    let labels_universal_values: Vec<UniversalValue> =
+        labels.into_iter().map(UniversalValue::Text).collect();
     kvs.insert(
         "labels".to_string(),
-        Value::Array(Array::from(labels_surreal_values)),
+        UniversalValue::Array {
+            elements: labels_universal_values,
+            element_type: Box::new(sync_core::UniversalType::Text),
+        },
     );
 
     // Convert all properties
@@ -515,7 +489,7 @@ fn convert_neo4j_node_to_surreal_kvs(
             label,
             should_parse_json
         );
-        let val = convert_neo4j_type_to_surreal_value(value, &ctx.timezone, should_parse_json)?;
+        let val = convert_neo4j_type_to_universal_value(value, &ctx.timezone, should_parse_json)?;
 
         kvs.insert(key.to_string(), val);
     }
@@ -535,48 +509,43 @@ pub struct Relation {
 }
 
 impl Relation {
-    pub fn to_relation(&self, ctx: &Neo4jConversionContext) -> anyhow::Result<SurrealRelation> {
-        let id = surrealdb::sql::Thing::from((
-            self.rel_type.to_lowercase(),
-            surrealdb::sql::Id::from(self.id),
-        ));
+    pub fn to_universal_relation(
+        &self,
+        ctx: &Neo4jConversionContext,
+    ) -> anyhow::Result<UniversalRelation> {
+        let id = UniversalValue::Int64(self.id);
 
-        let input = surrealdb::sql::Thing::from((
+        let input = UniversalThingRef::new(
             self.start_labels
                 .first()
                 .map(|s| s.to_lowercase())
                 .unwrap_or_else(|| "node".to_string()),
-            surrealdb::sql::Id::from(self.start_node_id),
-        ));
+            UniversalValue::Int64(self.start_node_id),
+        );
 
-        let output = surrealdb::sql::Thing::from((
+        let output = UniversalThingRef::new(
             self.end_labels
                 .first()
                 .map(|s| s.to_lowercase())
                 .unwrap_or_else(|| "node".to_string()),
-            surrealdb::sql::Id::from(self.end_node_id),
-        ));
+            UniversalValue::Int64(self.end_node_id),
+        );
 
-        let mut data = std::collections::HashMap::new();
+        let mut data = HashMap::new();
         for k in self.relationship.keys() {
             let value = self.relationship.get::<neo4rs::BoltType>(k)?;
             // Relationships don't have labels, so we can't use JSON-to-object for them
-            let v = convert_neo4j_type_to_surreal_value(value, &ctx.timezone, false)?;
-            // Wrap the Value in SurrealValue for the Relation struct
-            data.insert(k.to_string(), surrealdb_types::SurrealValue(v));
+            let v = convert_neo4j_type_to_universal_value(value, &ctx.timezone, false)?;
+            data.insert(k.to_string(), v);
         }
 
-        Ok(SurrealRelation {
+        Ok(UniversalRelation::new(
+            self.rel_type.to_lowercase(),
             id,
             input,
             output,
             data,
-        })
-    }
-
-    pub fn surreal_record_id(&self) -> surrealdb::sql::Thing {
-        let id = surrealdb::sql::Id::from(self.id).to_string();
-        surrealdb::sql::Thing::from((self.rel_type.to_lowercase(), id))
+        ))
     }
 }
 
@@ -627,20 +596,17 @@ pub fn row_to_relation(
     })
 }
 
-/// Convert Neo4j BoltType to surrealdb::sql::Value
+/// Convert Neo4j BoltType to UniversalValue
 ///
 /// The timezone parameter specifies which timezone to use when converting Neo4j local datetime and time values.
 /// This should be an IANA timezone name (e.g., "America/New_York", "Europe/London", "UTC").
 ///
 /// If should_parse_json is true and the value is a String, attempt to parse it as JSON and convert to Object.
-///
-/// This function uses the `neo4j-types` crate for BoltType → UniversalValue conversion,
-/// then converts UniversalValue to surrealdb::sql::Value.
-pub fn convert_neo4j_type_to_surreal_value(
+pub fn convert_neo4j_type_to_universal_value(
     value: neo4rs::BoltType,
     timezone: &str,
     should_parse_json: bool,
-) -> anyhow::Result<Value> {
+) -> anyhow::Result<UniversalValue> {
     use neo4j_types::reverse::ConversionConfig;
 
     // Create conversion config
@@ -650,141 +616,7 @@ pub fn convert_neo4j_type_to_surreal_value(
     };
 
     // Convert BoltType → UniversalValue using neo4j-types
-    let universal_value = neo4j_types::convert_bolt_to_universal_value(value, &config)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-
-    // Convert UniversalValue → surrealdb::sql::Value
-    universal_value_to_surreal_value(universal_value)
-}
-
-/// Convert UniversalValue to surrealdb::sql::Value.
-///
-/// This bridges from sync-core's UniversalValue to surrealdb's native Value type.
-fn universal_value_to_surreal_value(value: sync_core::UniversalValue) -> anyhow::Result<Value> {
-    use sync_core::UniversalValue;
-
-    match value {
-        UniversalValue::Null => Ok(Value::None),
-        UniversalValue::Bool(b) => Ok(Value::Bool(b)),
-
-        // Integer types → Number::Int
-        UniversalValue::Int8 { value, .. } => Ok(Value::Number(Number::Int(value as i64))),
-        UniversalValue::Int16(i) => Ok(Value::Number(Number::Int(i as i64))),
-        UniversalValue::Int32(i) => Ok(Value::Number(Number::Int(i as i64))),
-        UniversalValue::Int64(i) => Ok(Value::Number(Number::Int(i))),
-
-        // Float types → Number::Float
-        UniversalValue::Float32(f) => Ok(Value::Number(Number::Float(f as f64))),
-        UniversalValue::Float64(f) => Ok(Value::Number(Number::Float(f))),
-
-        // Decimal → Number::Float (best effort)
-        UniversalValue::Decimal { value, .. } => match value.parse::<f64>() {
-            Ok(f) => Ok(Value::Number(Number::Float(f))),
-            Err(_) => Ok(Value::Strand(Strand::from(value))),
-        },
-
-        // String types → Strand
-        UniversalValue::Char { value, .. } => Ok(Value::Strand(Strand::from(value))),
-        UniversalValue::VarChar { value, .. } => Ok(Value::Strand(Strand::from(value))),
-        UniversalValue::Text(s) => Ok(Value::Strand(Strand::from(s))),
-
-        // Binary types → Bytes
-        UniversalValue::Blob(b) => Ok(Value::Bytes(surrealdb::sql::Bytes::from(b))),
-        UniversalValue::Bytes(b) => Ok(Value::Bytes(surrealdb::sql::Bytes::from(b))),
-
-        // UUID → Strand
-        UniversalValue::Uuid(u) => Ok(Value::Strand(Strand::from(u.to_string()))),
-
-        // ULID → Strand
-        UniversalValue::Ulid(u) => Ok(Value::Strand(Strand::from(u.to_string()))),
-
-        // DateTime types → Datetime
-        UniversalValue::Date(dt) => Ok(Value::Datetime(Datetime::from(dt))),
-        UniversalValue::Time(dt) => Ok(Value::Datetime(Datetime::from(dt))),
-        UniversalValue::LocalDateTime(dt) => Ok(Value::Datetime(Datetime::from(dt))),
-        UniversalValue::LocalDateTimeNano(dt) => Ok(Value::Datetime(Datetime::from(dt))),
-        UniversalValue::ZonedDateTime(dt) => Ok(Value::Datetime(Datetime::from(dt))),
-
-        // JSON types → Object (via helper function)
-        UniversalValue::Json(json_val) => json_value_to_surreal_value(&json_val),
-        UniversalValue::Jsonb(json_val) => json_value_to_surreal_value(&json_val),
-
-        // Array → Array
-        UniversalValue::Array { elements, .. } => {
-            let mut arr = Vec::new();
-            for elem in elements {
-                arr.push(universal_value_to_surreal_value(elem)?);
-            }
-            Ok(Value::Array(Array::from(arr)))
-        }
-
-        // Set → Array of strings
-        UniversalValue::Set { elements, .. } => {
-            let arr: Vec<Value> = elements
-                .into_iter()
-                .map(|s| Value::Strand(Strand::from(s)))
-                .collect();
-            Ok(Value::Array(Array::from(arr)))
-        }
-
-        // Enum → Strand
-        UniversalValue::Enum { value, .. } => Ok(Value::Strand(Strand::from(value))),
-
-        // Geometry → Object (via GeoJSON-like structure)
-        UniversalValue::Geometry { data, .. } => {
-            use sync_core::values::GeometryData;
-            let GeometryData(json_val) = data;
-            json_value_to_surreal_value(&json_val)
-        }
-
-        // Duration → Duration
-        UniversalValue::Duration(d) => Ok(Value::Duration(surrealdb::sql::Duration::from(d))),
-
-        // Thing → Thing (record reference)
-        UniversalValue::Thing { table, id } => {
-            let surreal_id = match id.as_ref() {
-                UniversalValue::Text(s) => surrealdb::sql::Id::String(s.clone()),
-                UniversalValue::Int32(i) => surrealdb::sql::Id::Number(*i as i64),
-                UniversalValue::Int64(i) => surrealdb::sql::Id::Number(*i),
-                UniversalValue::Uuid(u) => surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u)),
-                other => surrealdb::sql::Id::String(format!("{other:?}")),
-            };
-            let thing = surrealdb::sql::Thing::from((table.as_str(), surreal_id));
-            Ok(Value::Thing(thing))
-        }
-    }
-}
-
-/// Convert a serde_json::Value to surrealdb::sql::Value.
-fn json_value_to_surreal_value(value: &serde_json::Value) -> anyhow::Result<Value> {
-    match value {
-        serde_json::Value::Null => Ok(Value::None),
-        serde_json::Value::Bool(b) => Ok(Value::Bool(*b)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(Value::Number(Number::Int(i)))
-            } else if let Some(f) = n.as_f64() {
-                Ok(Value::Number(Number::Float(f)))
-            } else {
-                Ok(Value::None)
-            }
-        }
-        serde_json::Value::String(s) => Ok(Value::Strand(Strand::from(s.clone()))),
-        serde_json::Value::Array(arr) => {
-            let mut result = Vec::new();
-            for item in arr {
-                result.push(json_value_to_surreal_value(item)?);
-            }
-            Ok(Value::Array(Array::from(result)))
-        }
-        serde_json::Value::Object(obj) => {
-            let mut result = std::collections::BTreeMap::new();
-            for (key, val) in obj {
-                result.insert(key.clone(), json_value_to_surreal_value(val)?);
-            }
-            Ok(Value::Object(Object::from(result)))
-        }
-    }
+    neo4j_types::convert_bolt_to_universal_value(value, &config).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 #[cfg(test)]
@@ -800,10 +632,11 @@ mod tests {
         let bolt_type = neo4rs::BoltType::Date(date);
 
         // Convert with UTC timezone
-        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
+        let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
+        // Neo4j Date converts to LocalDateTime (midnight in the configured timezone)
         match result {
-            Value::Datetime(dt) => {
+            UniversalValue::LocalDateTime(dt) => {
                 // Date should be at midnight UTC on 2024-01-15
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -812,7 +645,7 @@ mod tests {
                 assert_eq!(dt.minute(), 0);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected Datetime, got {result:?}"),
+            _ => panic!("Expected LocalDateTime, got {result:?}"),
         }
     }
 
@@ -824,10 +657,11 @@ mod tests {
 
         // Convert with America/New_York timezone
         let result =
-            convert_neo4j_type_to_surreal_value(bolt_type, "America/New_York", false).unwrap();
+            convert_neo4j_type_to_universal_value(bolt_type, "America/New_York", false).unwrap();
 
+        // Neo4j Date converts to LocalDateTime (midnight in the configured timezone, then converted to UTC)
         match result {
-            Value::Datetime(dt) => {
+            UniversalValue::LocalDateTime(dt) => {
                 // Date at midnight in New York (EST = UTC-5) should be 5 AM UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -836,7 +670,7 @@ mod tests {
                 assert_eq!(dt.minute(), 0);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected Datetime, got {result:?}"),
+            _ => panic!("Expected LocalDateTime, got {result:?}"),
         }
     }
 
@@ -851,10 +685,10 @@ mod tests {
         let bolt_type = neo4rs::BoltType::LocalDateTime(local_dt);
 
         // Convert with UTC timezone
-        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
+        let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            Value::Datetime(dt) => {
+            UniversalValue::LocalDateTime(dt) => {
                 // Should be same time in UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -863,7 +697,7 @@ mod tests {
                 assert_eq!(dt.minute(), 30);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected Datetime, got {result:?}"),
+            _ => panic!("Expected LocalDateTime, got {result:?}"),
         }
     }
 
@@ -878,10 +712,10 @@ mod tests {
         let bolt_type = neo4rs::BoltType::LocalDateTime(local_dt);
 
         // Convert with Asia/Tokyo timezone
-        let result = convert_neo4j_type_to_surreal_value(bolt_type, "Asia/Tokyo", false).unwrap();
+        let result = convert_neo4j_type_to_universal_value(bolt_type, "Asia/Tokyo", false).unwrap();
 
         match result {
-            Value::Datetime(dt) => {
+            UniversalValue::LocalDateTime(dt) => {
                 // 14:30 in Tokyo (JST = UTC+9) should be 05:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -890,7 +724,7 @@ mod tests {
                 assert_eq!(dt.minute(), 30);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected Datetime, got {result:?}"),
+            _ => panic!("Expected LocalDateTime, got {result:?}"),
         }
     }
 
@@ -900,7 +734,7 @@ mod tests {
         let bolt_type = neo4rs::BoltType::Date(date);
 
         // Try with invalid timezone
-        let result = convert_neo4j_type_to_surreal_value(bolt_type, "Invalid/Timezone", false);
+        let result = convert_neo4j_type_to_universal_value(bolt_type, "Invalid/Timezone", false);
 
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -918,12 +752,12 @@ mod tests {
         let bolt_type = neo4rs::BoltType::LocalDateTime(local_dt);
 
         // Convert with America/New_York timezone - this should handle the DST gap
-        let result = convert_neo4j_type_to_surreal_value(bolt_type, "America/New_York", false);
+        let result = convert_neo4j_type_to_universal_value(bolt_type, "America/New_York", false);
 
         // The conversion should either succeed with an adjusted time or fail gracefully
         // depending on how chrono-tz handles DST gaps
         match result {
-            Ok(Value::Datetime(_)) => {
+            Ok(UniversalValue::LocalDateTime(_)) => {
                 // If it succeeds, that's fine - chrono-tz adjusted the time
             }
             Err(e) => {
@@ -945,11 +779,11 @@ mod tests {
         let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "UTC"));
         let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
 
-        // Convert to surreal value
-        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
+        // Convert to universal value
+        let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            Value::Datetime(dt) => {
+            UniversalValue::ZonedDateTime(dt) => {
                 // Should be same time in UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -958,7 +792,7 @@ mod tests {
                 assert_eq!(dt.minute(), 30);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected Datetime, got {result:?}"),
+            _ => panic!("Expected ZonedDateTime, got {result:?}"),
         }
     }
 
@@ -973,11 +807,11 @@ mod tests {
         let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "America/New_York"));
         let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
 
-        // Convert to surreal value
-        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
+        // Convert to universal value
+        let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            Value::Datetime(dt) => {
+            UniversalValue::ZonedDateTime(dt) => {
                 // 14:30 EST (UTC-5) should be 19:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -986,7 +820,7 @@ mod tests {
                 assert_eq!(dt.minute(), 30);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected Datetime, got {result:?}"),
+            _ => panic!("Expected ZonedDateTime, got {result:?}"),
         }
     }
 
@@ -1001,11 +835,11 @@ mod tests {
         let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "Asia/Tokyo"));
         let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
 
-        // Convert to surreal value
-        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
+        // Convert to universal value
+        let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            Value::Datetime(dt) => {
+            UniversalValue::ZonedDateTime(dt) => {
                 // 14:30 JST (UTC+9) should be 05:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -1014,7 +848,7 @@ mod tests {
                 assert_eq!(dt.minute(), 30);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected Datetime, got {result:?}"),
+            _ => panic!("Expected ZonedDateTime, got {result:?}"),
         }
     }
 
@@ -1029,11 +863,11 @@ mod tests {
         let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "Europe/London"));
         let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
 
-        // Convert to surreal value
-        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
+        // Convert to universal value
+        let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            Value::Datetime(dt) => {
+            UniversalValue::ZonedDateTime(dt) => {
                 // 14:30 BST (UTC+1) should be 13:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 7);
@@ -1042,7 +876,7 @@ mod tests {
                 assert_eq!(dt.minute(), 30);
                 assert_eq!(dt.second(), 0);
             }
-            _ => panic!("Expected Datetime, got {result:?}"),
+            _ => panic!("Expected ZonedDateTime, got {result:?}"),
         }
     }
 
@@ -1057,11 +891,11 @@ mod tests {
         let datetime_zone_id = BoltDateTimeZoneId::from((naive_dt, "Pacific/Honolulu"));
         let bolt_type = neo4rs::BoltType::DateTimeZoneId(datetime_zone_id);
 
-        // Convert to surreal value
-        let result = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
+        // Convert to universal value
+        let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            Value::Datetime(dt) => {
+            UniversalValue::ZonedDateTime(dt) => {
                 // 08:15:30 HST (UTC-10) should be 18:15:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 6);
@@ -1070,49 +904,52 @@ mod tests {
                 assert_eq!(dt.minute(), 15);
                 assert_eq!(dt.second(), 30);
             }
-            _ => panic!("Expected Datetime, got {result:?}"),
+            _ => panic!("Expected ZonedDateTime, got {result:?}"),
         }
     }
 
     #[test]
     fn test_json_string_conversion() {
-        // Test JSON string parsed as object
+        // Test JSON string parsed as Json type
         let json_string = r#"{"preferences":{"theme":"dark","language":"en"},"tags":["premium","verified"],"settings":{"notifications":true,"privacy":"strict"}}"#;
         let bolt_type = neo4rs::BoltType::String(neo4rs::BoltString::new(json_string));
 
         // Convert with JSON parsing enabled
-        let result = convert_neo4j_type_to_surreal_value(bolt_type.clone(), "UTC", true).unwrap();
+        let result = convert_neo4j_type_to_universal_value(bolt_type.clone(), "UTC", true).unwrap();
 
+        // neo4j-types returns UniversalValue::Json when JSON parsing is enabled
         match result {
-            Value::Object(obj) => {
+            UniversalValue::Json(json_val) => {
                 // Verify the JSON was parsed correctly
+                let obj = json_val.as_object().expect("Expected JSON object");
                 assert!(obj.contains_key("preferences"));
                 assert!(obj.contains_key("tags"));
                 assert!(obj.contains_key("settings"));
 
                 // Verify nested structure
-                if let Some(Value::Object(prefs)) = obj.get("preferences") {
-                    assert_eq!(
-                        prefs.get("theme"),
-                        Some(&Value::Strand(Strand::from("dark".to_string())))
-                    );
-                }
+                let prefs = obj.get("preferences").and_then(|v| v.as_object());
+                assert!(prefs.is_some());
+                assert_eq!(
+                    prefs.unwrap().get("theme").and_then(|v| v.as_str()),
+                    Some("dark")
+                );
 
                 // Verify array
-                if let Some(Value::Array(tags)) = obj.get("tags") {
-                    assert_eq!(tags.len(), 2);
-                }
+                let tags = obj.get("tags").and_then(|v| v.as_array());
+                assert!(tags.is_some());
+                assert_eq!(tags.unwrap().len(), 2);
             }
-            _ => panic!("Expected Object, got {result:?}"),
+            _ => panic!("Expected Json, got {result:?}"),
         }
 
         // Test that without JSON parsing, it remains a string
-        let result_no_parse = convert_neo4j_type_to_surreal_value(bolt_type, "UTC", false).unwrap();
+        let result_no_parse =
+            convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
         match result_no_parse {
-            Value::Strand(s) => {
-                assert_eq!(s.as_str(), json_string);
+            UniversalValue::Text(s) => {
+                assert_eq!(s, json_string);
             }
-            _ => panic!("Expected Strand, got {result_no_parse:?}"),
+            _ => panic!("Expected Text, got {result_no_parse:?}"),
         }
     }
 
