@@ -739,6 +739,19 @@ fn universal_value_to_surreal_value(value: sync_core::UniversalValue) -> anyhow:
 
         // Duration → Duration
         UniversalValue::Duration(d) => Ok(Value::Duration(surrealdb::sql::Duration::from(d))),
+
+        // Thing → Thing (record reference)
+        UniversalValue::Thing { table, id } => {
+            let surreal_id = match id.as_ref() {
+                UniversalValue::Text(s) => surrealdb::sql::Id::String(s.clone()),
+                UniversalValue::Int32(i) => surrealdb::sql::Id::Number(*i as i64),
+                UniversalValue::Int64(i) => surrealdb::sql::Id::Number(*i),
+                UniversalValue::Uuid(u) => surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u)),
+                other => surrealdb::sql::Id::String(format!("{other:?}")),
+            };
+            let thing = surrealdb::sql::Thing::from((table.as_str(), surreal_id));
+            Ok(Value::Thing(thing))
+        }
     }
 }
 

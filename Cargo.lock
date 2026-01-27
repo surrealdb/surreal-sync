@@ -6306,7 +6306,6 @@ dependencies = [
  "surreal-sync-file",
  "surreal-sync-surreal",
  "surrealdb",
- "surrealdb-types",
  "sync-core",
  "tokio",
  "tokio-test",

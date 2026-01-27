@@ -176,6 +176,12 @@ fn sync_type_to_proto_type(sync_type: &UniversalType) -> ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
+
+        // Thing -> string (table:id format)
+        UniversalType::Thing => ProtoTypeInfo {
+            type_name: "string".to_string(),
+            requires_timestamp_import: false,
+        },
     }
 }
 

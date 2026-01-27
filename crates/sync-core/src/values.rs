@@ -173,6 +173,14 @@ pub enum UniversalValue {
     /// Duration type → `UniversalType::Duration`
     Duration(std::time::Duration),
 
+    /// Record reference/link (e.g., SurrealDB Thing) → `UniversalType::Thing`
+    Thing {
+        /// The target table/collection name
+        table: String,
+        /// The record ID (can be string, int, uuid, etc.)
+        id: Box<UniversalValue>,
+    },
+
     /// Null value (can be any nullable type)
     Null,
 }
@@ -395,6 +403,7 @@ impl UniversalValue {
             Self::Enum { .. } => "Enum",
             Self::Geometry { .. } => "Geometry",
             Self::Duration(_) => "Duration",
+            Self::Thing { .. } => "Thing",
             Self::Null => "Null",
         }
     }
@@ -468,6 +477,7 @@ impl UniversalValue {
                 geometry_type: geometry_type.clone(),
             },
             Self::Duration(_) => UniversalType::Duration,
+            Self::Thing { .. } => UniversalType::Thing,
             // Null doesn't have a single type - this is a special case
             // We use Text as a placeholder, but callers should handle Null explicitly
             Self::Null => UniversalType::Text,
@@ -639,6 +649,7 @@ impl TypedValue {
             UniversalType::Enum { .. } => "Enum".to_string(),
             UniversalType::Geometry { .. } => "Geometry".to_string(),
             UniversalType::Duration => "Duration".to_string(),
+            UniversalType::Thing => "Thing".to_string(),
         }
     }
 

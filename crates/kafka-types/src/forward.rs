@@ -285,6 +285,24 @@ pub fn encode_generated_value(
                 .write_string(field_number, &duration_str)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
+
+        // Thing - encode as string in "table:id" format
+        UniversalValue::Thing { table, id } => {
+            let id_str = match id.as_ref() {
+                UniversalValue::Text(s) => s.clone(),
+                UniversalValue::Int32(i) => i.to_string(),
+                UniversalValue::Int64(i) => i.to_string(),
+                UniversalValue::Uuid(u) => u.to_string(),
+                other => panic!(
+                    "Unsupported Thing ID type for Kafka: {other:?}. \
+                     Supported types: Text, Int32, Int64, Uuid"
+                ),
+            };
+            let thing_str = format!("{table}:{id_str}");
+            stream
+                .write_string(field_number, &thing_str)
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
     }
     Ok(())
 }
@@ -357,6 +375,7 @@ pub fn get_proto_type(sync_type: &UniversalType) -> &'static str {
         UniversalType::Set { .. } => "repeated",                // Encode as repeated
         UniversalType::Geometry { .. } => "string",             // GeoJSON string
         UniversalType::Duration => "string",                    // ISO 8601 duration string
+        UniversalType::Thing => "string",                       // Record reference as table:id
     }
 }
 

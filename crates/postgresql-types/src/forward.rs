@@ -150,6 +150,21 @@ impl From<UniversalValue> for PostgreSQLValue {
                     PostgreSQLValue::Text(format!("PT{secs}.{nanos:09}S"))
                 }
             }
+
+            // Thing - record reference as "table:id" format
+            UniversalValue::Thing { table, id } => {
+                let id_str = match id.as_ref() {
+                    UniversalValue::Text(s) => s.clone(),
+                    UniversalValue::Int32(i) => i.to_string(),
+                    UniversalValue::Int64(i) => i.to_string(),
+                    UniversalValue::Uuid(u) => u.to_string(),
+                    other => panic!(
+                        "Unsupported Thing ID type: {other:?}. \
+                         Supported types: Text, Int32, Int64, Uuid"
+                    ),
+                };
+                PostgreSQLValue::Text(format!("{table}:{id_str}"))
+            }
         }
     }
 }

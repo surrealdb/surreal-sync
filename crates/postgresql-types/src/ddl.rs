@@ -89,6 +89,9 @@ impl ToDdl for PostgreSQLDdl {
             // Duration - stored as TEXT with ISO 8601 duration format
             // (PostgreSQL INTERVAL requires native type support which adds complexity)
             UniversalType::Duration => "TEXT".to_string(),
+
+            // Thing - record reference stored as TEXT (table:id format)
+            UniversalType::Thing => "TEXT".to_string(),
         }
     }
 

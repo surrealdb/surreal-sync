@@ -56,7 +56,10 @@ fn build_create_node_query(
         UniversalValue::Char { value, .. } => value.clone(),
         UniversalValue::VarChar { value, .. } => value.clone(),
         UniversalValue::Uuid(u) => u.to_string(),
-        other => format!("{other:?}"),
+        other => panic!(
+            "Unsupported ID type for Neo4j node: {other:?}. \
+             Supported types: Int8, Int16, Int32, Int64, Text, Char, VarChar, Uuid"
+        ),
     };
     props.push(format!("id: '{}'", id_string.replace('\'', "\\'")));
 
@@ -202,6 +205,21 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
             } else {
                 format!("duration('PT{secs}.{nanos:09}S')")
             }
+        }
+
+        // Thing - record reference as string in "table:id" format
+        UniversalValue::Thing { table, id } => {
+            let id_str = match id.as_ref() {
+                UniversalValue::Text(s) => s.clone(),
+                UniversalValue::Int32(i) => i.to_string(),
+                UniversalValue::Int64(i) => i.to_string(),
+                UniversalValue::Uuid(u) => u.to_string(),
+                other => panic!(
+                    "Unsupported Thing ID type for Neo4j: {other:?}. \
+                     Supported types: Text, Int32, Int64, Uuid"
+                ),
+            };
+            format!("'{table}:{id_str}'")
         }
     }
 }

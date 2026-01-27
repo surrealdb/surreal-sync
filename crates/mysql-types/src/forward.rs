@@ -137,6 +137,21 @@ impl From<UniversalValue> for MySQLValue {
                 };
                 MySQLValue(Value::Bytes(duration_str.into_bytes()))
             }
+
+            // Thing - record reference as "table:id" format
+            UniversalValue::Thing { table, id } => {
+                let id_str = match id.as_ref() {
+                    UniversalValue::Text(s) => s.clone(),
+                    UniversalValue::Int32(i) => i.to_string(),
+                    UniversalValue::Int64(i) => i.to_string(),
+                    UniversalValue::Uuid(u) => u.to_string(),
+                    other => panic!(
+                        "Unsupported Thing ID type for MySQL: {other:?}. \
+                         Supported types: Text, Int32, Int64, Uuid"
+                    ),
+                };
+                MySQLValue(Value::Bytes(format!("{table}:{id_str}").into_bytes()))
+            }
         }
     }
 }
@@ -206,6 +221,19 @@ fn generated_to_json(gv: UniversalValue) -> serde_json::Value {
             } else {
                 serde_json::Value::String(format!("PT{secs}.{nanos:09}S"))
             }
+        }
+        UniversalValue::Thing { table, id } => {
+            let id_str = match id.as_ref() {
+                UniversalValue::Text(s) => s.clone(),
+                UniversalValue::Int32(i) => i.to_string(),
+                UniversalValue::Int64(i) => i.to_string(),
+                UniversalValue::Uuid(u) => u.to_string(),
+                other => panic!(
+                    "Unsupported Thing ID type for MySQL JSON: {other:?}. \
+                     Supported types: Text, Int32, Int64, Uuid"
+                ),
+            };
+            serde_json::Value::String(format!("{table}:{id_str}"))
         }
     }
 }

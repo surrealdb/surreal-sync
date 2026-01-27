@@ -428,6 +428,7 @@ fn infer_element_type(value: &UniversalValue) -> UniversalType {
             geometry_type: geometry_type.clone(),
         },
         UniversalValue::Duration(_) => UniversalType::Duration,
+        UniversalValue::Thing { .. } => UniversalType::Thing,
     }
 }
 
@@ -479,6 +480,19 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
             "secs": d.as_secs(),
             "nanos": d.subsec_nanos()
         }),
+        UniversalValue::Thing { table, id } => {
+            let id_str = match id.as_ref() {
+                UniversalValue::Text(s) => s.clone(),
+                UniversalValue::Int32(i) => i.to_string(),
+                UniversalValue::Int64(i) => i.to_string(),
+                UniversalValue::Uuid(u) => u.to_string(),
+                other => panic!(
+                    "Unsupported Thing ID type for Neo4j: {other:?}. \
+                     Supported types: Text, Int32, Int64, Uuid"
+                ),
+            };
+            serde_json::json!(format!("{table}:{id_str}"))
+        }
     }
 }
 

@@ -96,6 +96,9 @@ impl ToDdl for MySQLDdl {
 
             // Duration - store as VARCHAR for ISO 8601 duration string
             UniversalType::Duration => "VARCHAR(64)".to_string(),
+
+            // Thing - record reference stored as VARCHAR (table:id format)
+            UniversalType::Thing => "VARCHAR(255)".to_string(),
         }
     }
 

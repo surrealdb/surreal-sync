@@ -205,6 +205,24 @@ impl From<SurrealValueWithSchema> for TypedValue {
                 }
             }
 
+            // Thing - record reference
+            (UniversalType::Thing, Value::Thing(thing)) => {
+                let table = thing.tb.to_string();
+                let id = match &thing.id {
+                    surrealdb::sql::Id::String(s) => UniversalValue::Text(s.clone()),
+                    surrealdb::sql::Id::Number(n) => UniversalValue::Int64(*n),
+                    surrealdb::sql::Id::Uuid(u) => UniversalValue::Uuid(u.0),
+                    _ => UniversalValue::Text(thing.id.to_string()),
+                };
+                TypedValue {
+                    sync_type: UniversalType::Thing,
+                    value: UniversalValue::Thing {
+                        table,
+                        id: Box::new(id),
+                    },
+                }
+            }
+
             // Fallback
             (sync_type, _) => TypedValue::null(sync_type.clone()),
         }
@@ -250,8 +268,20 @@ fn surreal_value_to_generated(value: &Value) -> UniversalValue {
             let json_val = object_to_serde_json(obj);
             UniversalValue::Json(Box::new(json_val))
         }
-        // Thing (record ID) - convert to string
-        Value::Thing(thing) => UniversalValue::Text(thing.to_string()),
+        // Thing (record ID) - convert to UniversalValue::Thing
+        Value::Thing(thing) => {
+            let table = thing.tb.to_string();
+            let id = match &thing.id {
+                surrealdb::sql::Id::String(s) => UniversalValue::Text(s.clone()),
+                surrealdb::sql::Id::Number(n) => UniversalValue::Int64(*n),
+                surrealdb::sql::Id::Uuid(u) => UniversalValue::Uuid(u.0),
+                _ => UniversalValue::Text(thing.id.to_string()),
+            };
+            UniversalValue::Thing {
+                table,
+                id: Box::new(id),
+            }
+        }
         // Duration - convert to string
         Value::Duration(dur) => UniversalValue::Text(dur.to_string()),
         // Geometry - convert to object
