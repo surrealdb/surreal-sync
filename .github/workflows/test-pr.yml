@@ -32,6 +32,7 @@ jobs:
       uses: actions/checkout@0c366fd6a839edf440554fa01a7085ccba70ac98 # v4.3.1
 
     - name: Run cargo tests in dev container
+      id: test
       uses: devcontainers/ci@8bf61b26e9c3a98f69cb6ce2f88d24ff59b785c6 # v0.3.1900000417
       with:
         runCmd: |
@@ -40,3 +41,17 @@ jobs:
         cacheFrom: ghcr.io/surrealdb/surreal-sync-devcontainer
         push: never
         configFile: .devcontainer/surreal-sync/devcontainer.json
+      continue-on-error: true
+
+    - name: Upload test logs on failure
+      if: steps.test.outcome == 'failure'
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      with:
+        name: test-logs
+        path: logs/test/
+        retention-days: 7
+        if-no-files-found: ignore
+
+    - name: Fail if tests failed
+      if: steps.test.outcome == 'failure'
+      run: exit 1
