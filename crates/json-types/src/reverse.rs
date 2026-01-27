@@ -44,6 +44,18 @@ fn parse_datetime_string(s: &str) -> Option<DateTime<Utc>> {
         return Some(dt.with_timezone(&Utc));
     }
 
+    // Try PostgreSQL to_jsonb() format for TIMESTAMP columns (ISO 8601 without timezone)
+    // Format: "2024-11-13T20:15:33" (T separator, no timezone suffix)
+    if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+        return Some(Utc.from_utc_datetime(&naive));
+    }
+
+    // Try PostgreSQL to_jsonb() format with microseconds
+    // Format: "2024-11-13T20:15:33.123456"
+    if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f") {
+        return Some(Utc.from_utc_datetime(&naive));
+    }
+
     // Try MySQL timestamp format without microseconds
     if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
         return Some(Utc.from_utc_datetime(&naive));
@@ -719,7 +731,7 @@ pub fn convert_id_to_universal_value(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{Datelike, TimeZone, Utc};
+    use chrono::{Datelike, TimeZone, Timelike, Utc};
     use serde_json::json;
     use sync_core::GeometryType;
 
@@ -867,6 +879,48 @@ mod tests {
         } else {
             panic!("Expected DateTime");
         }
+    }
+
+    /// Test that PostgreSQL's to_jsonb() timestamp format is correctly parsed.
+    /// PostgreSQL produces timestamps WITHOUT timezone like "2024-11-13T20:15:33"
+    /// when using `to_jsonb(row)` on TIMESTAMP (without time zone) columns.
+    #[test]
+    fn test_datetime_postgresql_to_jsonb_format() {
+        // This is the exact format PostgreSQL's to_jsonb() produces for TIMESTAMP columns
+        let json_str = "2024-11-13T20:15:33";
+        let jv = JsonValueWithSchema::new(json!(json_str), UniversalType::LocalDateTime);
+        let tv = TypedValue::from(jv);
+
+        // This MUST NOT return null - PostgreSQL timestamps must be parseable
+        match &tv.value {
+            UniversalValue::LocalDateTime(dt) => {
+                assert_eq!(dt.year(), 2024);
+                assert_eq!(dt.month(), 11);
+                assert_eq!(dt.day(), 13);
+                assert_eq!(dt.hour(), 20);
+                assert_eq!(dt.minute(), 15);
+                assert_eq!(dt.second(), 33);
+            }
+            UniversalValue::Null => {
+                panic!(
+                    "PostgreSQL timestamp format '{json_str}' was not parsed! parse_datetime_string failed."
+                );
+            }
+            other => {
+                panic!("Expected LocalDateTime, got {other:?}");
+            }
+        }
+    }
+
+    /// Test parse_datetime_string directly with PostgreSQL format
+    #[test]
+    fn test_parse_datetime_string_postgresql_format() {
+        // PostgreSQL to_jsonb format for TIMESTAMP columns
+        let result = parse_datetime_string("2024-11-13T20:15:33");
+        assert!(
+            result.is_some(),
+            "parse_datetime_string must handle PostgreSQL to_jsonb format '2024-11-13T20:15:33'"
+        );
     }
 
     #[test]

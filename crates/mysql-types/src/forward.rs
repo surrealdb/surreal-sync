@@ -100,6 +100,11 @@ impl From<UniversalValue> for MySQLValue {
                 dt.nanosecond() / 1000, // MySQL uses microseconds
             )),
 
+            // TimeTz - MySQL doesn't have native TIMETZ, store as VARCHAR
+            // Note: We intentionally do NOT use a datetime type because time and datetime
+            // are fundamentally different types.
+            UniversalValue::TimeTz(s) => MySQLValue(Value::Bytes(s.into_bytes())),
+
             // JSON - MySQL JSON type
             UniversalValue::Json(json_val) | UniversalValue::Jsonb(json_val) => {
                 MySQLValue(Value::Bytes(json_val.to_string().into_bytes()))
@@ -203,11 +208,12 @@ fn generated_to_json(gv: UniversalValue) -> serde_json::Value {
         UniversalValue::Bytes(b) => serde_json::Value::String(BASE64.encode(&b)),
         UniversalValue::Uuid(u) => serde_json::Value::String(u.to_string()),
         UniversalValue::Ulid(u) => serde_json::Value::String(u.to_string()),
-        UniversalValue::Date(dt)
-        | UniversalValue::Time(dt)
-        | UniversalValue::LocalDateTime(dt)
+        UniversalValue::Date(dt) => serde_json::Value::String(dt.format("%Y-%m-%d").to_string()),
+        UniversalValue::Time(dt) => serde_json::Value::String(dt.format("%H:%M:%S%.f").to_string()),
+        UniversalValue::LocalDateTime(dt)
         | UniversalValue::LocalDateTimeNano(dt)
         | UniversalValue::ZonedDateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
+        UniversalValue::TimeTz(s) => serde_json::Value::String(s),
         UniversalValue::Decimal { value, .. } => serde_json::Value::String(value),
         UniversalValue::Array { elements, .. } => generated_array_to_json(elements),
         UniversalValue::Set { elements, .. } => {

@@ -108,8 +108,14 @@ pub fn universal_to_cypher_literal(
         // Date - use Neo4j date() function
         UniversalValue::Date(dt) => Ok(format!("date('{}')", dt.format("%Y-%m-%d"))),
 
-        // Time - use Neo4j time() function
-        UniversalValue::Time(dt) => Ok(format!("time('{}')", dt.format("%H:%M:%S"))),
+        // Time - use Neo4j time() function with fractional seconds
+        UniversalValue::Time(dt) => Ok(format!("time('{}')", dt.format("%H:%M:%S%.f"))),
+
+        // TimeTz - store as string to preserve timezone format
+        // Note: We intentionally do NOT use datetime here because time and datetime
+        // are fundamentally different types. Datetime implies a specific point in time,
+        // while TIMETZ represents a daily recurring time in a specific timezone.
+        UniversalValue::TimeTz(s) => Ok(escape_neo4j_string(s)),
 
         // Binary types - store as hex string (Neo4j doesn't have native bytes)
         UniversalValue::Bytes(b) => {

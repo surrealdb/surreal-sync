@@ -116,6 +116,13 @@ pub enum UniversalType {
     /// Timestamp with timezone
     ZonedDateTime,
 
+    /// Time with timezone (stored as string to preserve original format)
+    ///
+    /// Note: We intentionally use String instead of DateTime because time and datetime
+    /// are fundamentally different types. DateTime implies a specific point in time,
+    /// while time with timezone represents a daily recurring time in a specific timezone.
+    TimeTz,
+
     // Special types
     /// UUID (128-bit)
     Uuid,
@@ -218,6 +225,7 @@ impl Serialize for UniversalType {
             Self::LocalDateTime => serializer.serialize_str("date_time"),
             Self::LocalDateTimeNano => serializer.serialize_str("date_time_nano"),
             Self::ZonedDateTime => serializer.serialize_str("timestamp_tz"),
+            Self::TimeTz => serializer.serialize_str("time_tz"),
             Self::Uuid => serializer.serialize_str("uuid"),
             Self::Ulid => serializer.serialize_str("ulid"),
             Self::Json => serializer.serialize_str("json"),
@@ -316,6 +324,7 @@ impl<'de> Deserialize<'de> for UniversalType {
                     "date_time" | "datetime" => Ok(UniversalType::LocalDateTime),
                     "date_time_nano" | "datetime_nano" => Ok(UniversalType::LocalDateTimeNano),
                     "timestamp_tz" | "timestamptz" => Ok(UniversalType::ZonedDateTime),
+                    "time_tz" | "timetz" => Ok(UniversalType::TimeTz),
                     "uuid" => Ok(UniversalType::Uuid),
                     "ulid" => Ok(UniversalType::Ulid),
                     "json" => Ok(UniversalType::Json),
@@ -361,6 +370,7 @@ impl<'de> Deserialize<'de> for UniversalType {
                     "date_time" | "datetime" => Ok(UniversalType::LocalDateTime),
                     "date_time_nano" | "datetime_nano" => Ok(UniversalType::LocalDateTimeNano),
                     "timestamp_tz" | "timestamptz" => Ok(UniversalType::ZonedDateTime),
+                    "time_tz" | "timetz" => Ok(UniversalType::TimeTz),
                     "uuid" => Ok(UniversalType::Uuid),
                     "ulid" => Ok(UniversalType::Ulid),
                     "json" => Ok(UniversalType::Json),

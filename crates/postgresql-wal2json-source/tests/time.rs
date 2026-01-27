@@ -163,40 +163,47 @@ async fn test_time_replication_formats() -> Result<()> {
                             _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
                         };
 
-                        // Verify time values (they should be in HH:MM:SS format)
+                        // Verify time values preserve fractional seconds properly.
+                        // Note: We use exact assertions to ensure no precision is lost.
+                        // The format %.f prints fractional seconds without trailing zeros.
                         match id {
                             1 => {
-                                assert!(
-                                    time_str.starts_with("04:05:06"),
-                                    "Time for id=1 should start with 04:05:06, got {}",
+                                // "04:05:06" - no fractional seconds
+                                assert_eq!(
+                                    time_str, "04:05:06",
+                                    "Time for id=1 should be exactly 04:05:06, got {}",
                                     time_str
                                 );
                             }
                             2 => {
-                                assert!(
-                                    time_str.starts_with("04:05:06.789012"),
-                                    "Time for id=2 should be 04:05:06.789012, got {}",
+                                // "04:05:06.789012" - microseconds must be preserved
+                                assert_eq!(
+                                    time_str, "04:05:06.789012",
+                                    "Time for id=2 must preserve fractional seconds: expected 04:05:06.789012, got {}",
                                     time_str
                                 );
                             }
                             3 => {
-                                assert!(
-                                    time_str.starts_with("04:05:00"),
-                                    "Time for id=3 should start with 04:05:00, got {}",
+                                // "04:05" becomes "04:05:00"
+                                assert_eq!(
+                                    time_str, "04:05:00",
+                                    "Time for id=3 should be exactly 04:05:00, got {}",
                                     time_str
                                 );
                             }
                             4 => {
-                                assert!(
-                                    time_str.starts_with("00:00:00"),
-                                    "Time for id=4 should be midnight, got {}",
+                                // Midnight
+                                assert_eq!(
+                                    time_str, "00:00:00",
+                                    "Time for id=4 should be exactly 00:00:00 (midnight), got {}",
                                     time_str
                                 );
                             }
                             5 => {
-                                assert!(
-                                    time_str.starts_with("23:59:59"),
-                                    "Time for id=5 should be end of day, got {}",
+                                // "23:59:59.999999" - microseconds must be preserved
+                                assert_eq!(
+                                    time_str, "23:59:59.999999",
+                                    "Time for id=5 must preserve fractional seconds: expected 23:59:59.999999, got {}",
                                     time_str
                                 );
                             }
@@ -243,11 +250,12 @@ async fn test_time_replication_formats() -> Result<()> {
 
             match event_time {
                 UniversalValue::Time(dt) => {
-                    let time_str = dt.format("%H:%M:%S").to_string();
+                    // Use %.f format to show fractional seconds if present
+                    let time_str = dt.format("%H:%M:%S%.f").to_string();
                     info!("UPDATE time value: {} (DateTime: {})", time_str, dt);
-                    assert!(
-                        time_str.starts_with("12:30:45"),
-                        "Updated time should be 12:30:45, got {}",
+                    assert_eq!(
+                        time_str, "12:30:45",
+                        "Updated time should be exactly 12:30:45, got {}",
                         time_str
                     );
                 }

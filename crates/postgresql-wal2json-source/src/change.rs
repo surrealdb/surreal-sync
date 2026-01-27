@@ -369,10 +369,11 @@ fn convert_postgres_wal2json_value(
         }
         "timetz" | "time with time zone" => {
             let val = value.as_str().context("Failed to parse timetz")?;
-            let dt = parse_timetz(val)
-                .map_err(|e| anyhow::anyhow!("Failed to parse timetz '{val}': {e}"))?;
-            // Use ZonedDateTime since timetz includes timezone information
-            Ok(UniversalValue::ZonedDateTime(dt))
+            // Note: We store TIMETZ as string to preserve the original format.
+            // Time and datetime are fundamentally different types - datetime implies
+            // a specific point in time, while TIMETZ represents a daily recurring time
+            // in a specific timezone. Using ZonedDateTime would misrepresent the semantics.
+            Ok(UniversalValue::TimeTz(val.to_string()))
         }
         "interval" => {
             let val = value.as_str().context("Failed to parse interval")?;
@@ -722,34 +723,6 @@ fn parse_time(s: &str) -> Result<DateTime<Utc>, String> {
         NaiveDate::from_ymd_opt(1970, 1, 1).ok_or_else(|| "Invalid epoch date".to_string())?;
     let naive_datetime = epoch_date.and_time(naive_time);
     Ok(DateTime::from_naive_utc_and_offset(naive_datetime, Utc))
-}
-
-/// Parses PostgreSQL TIMETZ (with timezone) to DateTime<Utc> (using epoch date 1970-01-01)
-fn parse_timetz(s: &str) -> Result<DateTime<Utc>, String> {
-    // Normalize timezone offset from "+00" to "+00:00" format
-    let normalized = normalize_timezone_offset(s);
-
-    // Parse as a full timestamp with epoch date
-    let datetime_str = format!("1970-01-01 {normalized}");
-    datetime_str
-        .parse::<DateTime<Utc>>()
-        .map_err(|e| format!("Failed to parse timetz: {e}"))
-}
-
-/// Normalizes timezone offset from "+00" to "+00:00" format
-fn normalize_timezone_offset(time_str: &str) -> String {
-    if let Some(plus_pos) = time_str.rfind('+') {
-        let (time_part, tz_part) = time_str.split_at(plus_pos);
-        if tz_part.len() == 3 {
-            return format!("{time_part}{tz_part}:00");
-        }
-    } else if let Some(minus_pos) = time_str.rfind('-') {
-        let (time_part, tz_part) = time_str.split_at(minus_pos);
-        if tz_part.len() == 3 {
-            return format!("{time_part}{tz_part}:00");
-        }
-    }
-    time_str.to_string()
 }
 
 /// Parses PostgreSQL INTERVAL to std::time::Duration

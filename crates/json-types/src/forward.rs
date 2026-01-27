@@ -67,10 +67,13 @@ impl From<UniversalValue> for JsonValue {
 
             // Date/time types - ISO 8601 format
             UniversalValue::Date(dt) => JsonValue(json!(dt.format("%Y-%m-%d").to_string())),
-            UniversalValue::Time(dt) => JsonValue(json!(dt.format("%H:%M:%S").to_string())),
+            // Note: Using "%H:%M:%S%.f" to preserve fractional seconds from PostgreSQL TIME type.
+            UniversalValue::Time(dt) => JsonValue(json!(dt.format("%H:%M:%S%.f").to_string())),
             UniversalValue::LocalDateTime(dt) => JsonValue(json!(dt.to_rfc3339())),
             UniversalValue::LocalDateTimeNano(dt) => JsonValue(json!(dt.to_rfc3339())),
             UniversalValue::ZonedDateTime(dt) => JsonValue(json!(dt.to_rfc3339())),
+            // TIMETZ - stored as string to preserve timezone format
+            UniversalValue::TimeTz(s) => JsonValue(json!(s)),
 
             // UUID
             UniversalValue::Uuid(u) => JsonValue(json!(u.to_string())),
@@ -184,10 +187,11 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
         UniversalValue::Uuid(u) => json!(u.to_string()),
         UniversalValue::Ulid(u) => json!(u.to_string()),
         UniversalValue::Date(dt) => json!(dt.format("%Y-%m-%d").to_string()),
-        UniversalValue::Time(dt) => json!(dt.format("%H:%M:%S").to_string()),
+        UniversalValue::Time(dt) => json!(dt.format("%H:%M:%S%.f").to_string()),
         UniversalValue::LocalDateTime(dt)
         | UniversalValue::LocalDateTimeNano(dt)
         | UniversalValue::ZonedDateTime(dt) => json!(dt.to_rfc3339()),
+        UniversalValue::TimeTz(s) => json!(s),
         UniversalValue::Decimal { value, .. } => json!(value),
         UniversalValue::Array { elements, .. } => {
             json!(elements

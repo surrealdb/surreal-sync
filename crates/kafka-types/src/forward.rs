@@ -223,9 +223,15 @@ pub fn encode_generated_value(
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
         UniversalValue::Time(dt) => {
-            // Encode time as string
+            // Encode time as string with fractional seconds preserved
             stream
-                .write_string(field_number, &dt.format("%H:%M:%S").to_string())
+                .write_string(field_number, &dt.format("%H:%M:%S%.f").to_string())
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
+        UniversalValue::TimeTz(s) => {
+            // Encode timetz as string to preserve timezone format
+            stream
+                .write_string(field_number, s)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
 
@@ -383,13 +389,14 @@ pub fn get_proto_type(sync_type: &UniversalType) -> &'static str {
         | UniversalType::ZonedDateTime
         | UniversalType::Date
         | UniversalType::Time => "google.protobuf.Timestamp",
+        UniversalType::TimeTz => "string", // TIMETZ stored as string to preserve timezone
         UniversalType::Json | UniversalType::Jsonb => "string", // JSON encoded as string
-        UniversalType::Array { .. } => "repeated",              // Caller handles element type
-        UniversalType::Set { .. } => "repeated",                // Encode as repeated
-        UniversalType::Geometry { .. } => "string",             // GeoJSON string
-        UniversalType::Duration => "string",                    // ISO 8601 duration string
-        UniversalType::Thing => "string",                       // Record reference as table:id
-        UniversalType::Object => "string",                      // Object encoded as JSON string
+        UniversalType::Array { .. } => "repeated", // Caller handles element type
+        UniversalType::Set { .. } => "repeated", // Encode as repeated
+        UniversalType::Geometry { .. } => "string", // GeoJSON string
+        UniversalType::Duration => "string", // ISO 8601 duration string
+        UniversalType::Thing => "string",  // Record reference as table:id
+        UniversalType::Object => "string", // Object encoded as JSON string
     }
 }
 
@@ -416,11 +423,12 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
         }
         UniversalValue::Uuid(u) => serde_json::json!(u.to_string()),
         UniversalValue::Ulid(u) => serde_json::json!(u.to_string()),
-        UniversalValue::Date(dt)
-        | UniversalValue::Time(dt)
-        | UniversalValue::LocalDateTime(dt)
+        UniversalValue::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
+        UniversalValue::Time(dt) => serde_json::json!(dt.format("%H:%M:%S%.f").to_string()),
+        UniversalValue::LocalDateTime(dt)
         | UniversalValue::LocalDateTimeNano(dt)
         | UniversalValue::ZonedDateTime(dt) => serde_json::json!(dt.to_rfc3339()),
+        UniversalValue::TimeTz(s) => serde_json::json!(s),
         UniversalValue::Json(v) | UniversalValue::Jsonb(v) => (**v).clone(),
         UniversalValue::Array { elements, .. } => {
             serde_json::Value::Array(elements.iter().map(universal_value_to_json).collect())

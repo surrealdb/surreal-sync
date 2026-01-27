@@ -188,6 +188,12 @@ fn sync_type_to_proto_type(sync_type: &UniversalType) -> ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
+
+        // TimeTz -> string (time with timezone preserved as string)
+        UniversalType::TimeTz => ProtoTypeInfo {
+            type_name: "string".to_string(),
+            requires_timestamp_import: false,
+        },
     }
 }
 

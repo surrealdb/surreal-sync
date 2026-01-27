@@ -430,6 +430,7 @@ fn infer_element_type(value: &UniversalValue) -> UniversalType {
         UniversalValue::Duration(_) => UniversalType::Duration,
         UniversalValue::Thing { .. } => UniversalType::Thing,
         UniversalValue::Object(_) => UniversalType::Object,
+        UniversalValue::TimeTz(_) => UniversalType::TimeTz,
     }
 }
 
@@ -501,6 +502,8 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
                 .collect();
             serde_json::Value::Object(obj)
         }
+        // TimeTz - stored as string to preserve timezone format
+        UniversalValue::TimeTz(s) => serde_json::Value::String(s.clone()),
     }
 }
 
