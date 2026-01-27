@@ -1,10 +1,11 @@
 //! Integration tests for DATE replication with various date formats
+#![allow(clippy::uninlined_format_args)]
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Timelike, Utc};
 use surreal_sync_postgresql_wal2json_source::{
-    testing::container::PostgresContainer, Action, Client, Value,
+    testing::container::PostgresContainer, Action, Client,
 };
+use sync_core::UniversalValue;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -153,7 +154,7 @@ async fn test_date_replication_formats() -> Result<()> {
     // We should have 7 INSERT actions
     assert_eq!(changes.len(), 7, "Should have 7 INSERT changes");
 
-    // Verify each insert can be converted to DateTime<Utc>
+    // Verify each insert returns a Date value (dates are converted to DateTime<Utc>)
     for (idx, change) in changes.iter().enumerate() {
         match change {
             Action::Insert(row) => {
@@ -168,71 +169,47 @@ async fn test_date_replication_formats() -> Result<()> {
                     .get("event_date")
                     .context("Should have event_date column")?;
 
-                // Verify it's a Date value
+                // Verify it's a Date value (date values are converted to DateTime<Utc> at midnight)
                 match event_date {
-                    Value::Date(date_val) => {
-                        info!("Raw date value: {}", date_val.0);
+                    UniversalValue::Date(dt) => {
+                        let date_str = dt.format("%Y-%m-%d").to_string();
+                        info!("Date value: {} (DateTime: {})", date_str, dt);
 
-                        // Convert to DateTime<Utc> (at midnight UTC)
-                        let dt = date_val.to_chrono_datetime_utc().map_err(|e| {
-                            anyhow::anyhow!(
-                                "Failed to convert date to DateTime<Utc>: {} - {}",
-                                date_val.0,
-                                e
-                            )
-                        })?;
-
-                        info!(
-                            "Successfully converted to DateTime<Utc>: {}",
-                            dt.to_rfc3339()
-                        );
-
-                        // Verify the timestamp is at midnight UTC
-                        assert_eq!(dt.hour(), 0);
-                        assert_eq!(dt.minute(), 0);
-                        assert_eq!(dt.second(), 0);
-
-                        // Verify specific values based on ID
+                        // Get the ID to verify specific expected values
                         let id = match row.primary_key {
-                            Value::Integer(i) => i,
-                            _ => panic!("Expected integer primary key"),
+                            UniversalValue::Int32(i) => i,
+                            _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
                         };
 
+                        // Verify the date format
+                        // PostgreSQL normalizes dates to YYYY-MM-DD format
                         match id {
-                            1..=3 => {
+                            1..=5 => {
                                 // All these should normalize to 1999-01-08
-                                assert_eq!(dt.to_rfc3339(), "1999-01-08T00:00:00+00:00");
-                            }
-                            4 | 5 => {
-                                // US format and month name format
-                                // 01/08/1999 (US) = January 8, 1999
-                                // 08-Jan-1999 = January 8, 1999
-                                // Both should parse to the same date
-                                assert_eq!(dt.to_rfc3339(), "1999-01-08T00:00:00+00:00");
+                                assert_eq!(
+                                    date_str, "1999-01-08",
+                                    "Date for id={} should be 1999-01-08",
+                                    id
+                                );
                             }
                             6 => {
                                 // Epoch = 1970-01-01
-                                assert_eq!(dt.to_rfc3339(), "1970-01-01T00:00:00+00:00");
+                                assert_eq!(
+                                    date_str, "1970-01-01",
+                                    "Epoch date should be 1970-01-01"
+                                );
                             }
                             7 => {
                                 // 2024-03-15
-                                assert_eq!(dt.to_rfc3339(), "2024-03-15T00:00:00+00:00");
+                                assert_eq!(
+                                    date_str, "2024-03-15",
+                                    "Recent date should be 2024-03-15"
+                                );
                             }
                             _ => panic!("Unexpected id: {id}"),
                         }
-
-                        // Verify it's in the past or reasonable range
-                        let now = Utc::now();
-                        let min_time =
-                            DateTime::parse_from_rfc3339("1960-01-01T00:00:00Z").unwrap();
-                        assert!(
-                            dt > min_time.with_timezone(&Utc),
-                            "Date should be after 1960: {}",
-                            dt.to_rfc3339()
-                        );
-                        assert!(dt < now, "Date should be in the past: {}", dt.to_rfc3339());
                     }
-                    _ => panic!("Expected Date value, got {event_date:?}"),
+                    _ => panic!("Expected Date value for date, got {:?}", event_date),
                 }
             }
             _ => panic!("Expected Insert action, got {change}"),
@@ -271,17 +248,12 @@ async fn test_date_replication_formats() -> Result<()> {
                 .context("Should have event_date column in UPDATE")?;
 
             match event_date {
-                Value::Date(date_val) => {
-                    let dt = date_val.to_chrono_datetime_utc().map_err(|e| {
-                        anyhow::anyhow!("Failed to convert updated date: {} - {}", date_val.0, e)
-                    })?;
-
-                    info!("UPDATE date successfully converted: {}", dt.to_rfc3339());
-
-                    // Verify the updated value
-                    assert_eq!(dt.to_rfc3339(), "2025-12-25T00:00:00+00:00");
+                UniversalValue::Date(dt) => {
+                    let date_str = dt.format("%Y-%m-%d").to_string();
+                    info!("UPDATE date value: {} (DateTime: {})", date_str, dt);
+                    assert_eq!(date_str, "2025-12-25", "Updated date should be 2025-12-25");
                 }
-                _ => panic!("Expected Date value in UPDATE"),
+                _ => panic!("Expected Date value in UPDATE, got {:?}", event_date),
             }
         }
         _ => panic!("Expected Update action"),

@@ -48,14 +48,13 @@ mod full_sync;
 mod incremental_sync;
 mod logical_replication;
 pub mod sync;
-mod value;
 mod wal2json;
 
 // Make testing module available for integration tests
 #[doc(hidden)]
 pub mod testing;
 
-pub use change::{Action, Row, Value};
+pub use change::{Action, Row};
 pub use checkpoint::PostgreSQLLogicalCheckpoint;
 pub use config::Config;
 pub use full_sync::{run_full_sync, SourceOpts};

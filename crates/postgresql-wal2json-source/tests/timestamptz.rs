@@ -1,10 +1,12 @@
 //! Integration tests for TIMESTAMPTZ replication with various timestamp formats
+#![allow(clippy::uninlined_format_args)]
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use surreal_sync_postgresql_wal2json_source::{
-    testing::container::PostgresContainer, Action, Client, Value,
+    testing::container::PostgresContainer, Action, Client,
 };
+use sync_core::UniversalValue;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -152,29 +154,15 @@ async fn test_timestamptz_replication_formats() -> Result<()> {
                     .get("event_time")
                     .context("Should have event_time column")?;
 
-                // Verify it's a TimestampTz value
+                // Verify it's a ZonedDateTime value (TIMESTAMPTZ)
                 match event_time {
-                    Value::TimestampTz(ts) => {
-                        info!("Raw timestamp value: {}", ts.0);
-
-                        // Convert to DateTime<Utc>
-                        let dt = ts.to_chrono_datetime_utc().map_err(|e| {
-                            anyhow::anyhow!(
-                                "Failed to convert timestamp to DateTime<Utc>: {} - {}",
-                                ts.0,
-                                e
-                            )
-                        })?;
-
-                        info!(
-                            "Successfully converted to DateTime<Utc>: {}",
-                            dt.to_rfc3339()
-                        );
+                    UniversalValue::ZonedDateTime(dt) => {
+                        info!("Successfully got ZonedDateTime: {}", dt.to_rfc3339());
 
                         // Verify the timestamp makes sense (not in the future, not before 1990)
                         let now = Utc::now();
                         assert!(
-                            dt < now,
+                            dt < &now,
                             "Timestamp should be in the past: {}",
                             dt.to_rfc3339()
                         );
@@ -182,15 +170,15 @@ async fn test_timestamptz_replication_formats() -> Result<()> {
                         let min_time =
                             DateTime::parse_from_rfc3339("1990-01-01T00:00:00Z").unwrap();
                         assert!(
-                            dt > min_time.with_timezone(&Utc),
+                            dt > &min_time.with_timezone(&Utc),
                             "Timestamp should be after 1990: {}",
                             dt.to_rfc3339()
                         );
 
                         // For known timestamps (IDs 1-5), verify specific values
                         let id = match row.primary_key {
-                            Value::Integer(i) => i,
-                            _ => panic!("Expected integer primary key"),
+                            UniversalValue::Int32(i) => i,
+                            _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
                         };
 
                         match id {
@@ -217,7 +205,7 @@ async fn test_timestamptz_replication_formats() -> Result<()> {
                             _ => panic!("Unexpected id: {id}"),
                         }
                     }
-                    _ => panic!("Expected TimestampTz value, got {event_time:?}"),
+                    _ => panic!("Expected ZonedDateTime value, got {:?}", event_time),
                 }
             }
             _ => panic!("Expected Insert action, got {change}"),
@@ -256,11 +244,7 @@ async fn test_timestamptz_replication_formats() -> Result<()> {
                 .context("Should have event_time column in UPDATE")?;
 
             match event_time {
-                Value::TimestampTz(ts) => {
-                    let dt = ts.to_chrono_datetime_utc().map_err(|e| {
-                        anyhow::anyhow!("Failed to convert updated timestamp: {} - {}", ts.0, e)
-                    })?;
-
+                UniversalValue::ZonedDateTime(dt) => {
                     info!(
                         "UPDATE timestamp successfully converted: {}",
                         dt.to_rfc3339()
@@ -269,7 +253,10 @@ async fn test_timestamptz_replication_formats() -> Result<()> {
                     // Verify the updated value
                     assert_eq!(dt.to_rfc3339(), "2025-06-01T12:00:00+00:00");
                 }
-                _ => panic!("Expected TimestampTz value in UPDATE"),
+                _ => panic!(
+                    "Expected ZonedDateTime value in UPDATE, got {:?}",
+                    event_time
+                ),
             }
         }
         _ => panic!("Expected Update action"),

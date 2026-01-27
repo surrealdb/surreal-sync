@@ -2,8 +2,9 @@
 
 use anyhow::{Context, Result};
 use surreal_sync_postgresql_wal2json_source::{
-    testing::container::PostgresContainer, Action, Client, Value,
+    testing::container::PostgresContainer, Action, Client,
 };
+use sync_core::UniversalValue;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -115,25 +116,37 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
             assert_eq!(row.table, "conversion_test");
             assert_eq!(row.schema, "public");
 
-            // Check primary key
-            assert_eq!(row.primary_key, Value::Integer(123));
+            // Check primary key (integer 123 becomes Int32)
+            assert!(
+                matches!(row.primary_key, UniversalValue::Int32(123)),
+                "Expected Int32(123), got {:?}",
+                row.primary_key
+            );
 
             // Check columns
-            assert_eq!(
-                row.columns.get("name"),
-                Some(&Value::Text("Test Name".to_string()))
+            assert!(
+                matches!(row.columns.get("name"), Some(UniversalValue::Text(s)) if s == "Test Name"),
+                "Expected Text('Test Name'), got {:?}",
+                row.columns.get("name")
             );
-            assert_eq!(row.columns.get("active"), Some(&Value::Boolean(true)));
+            assert!(
+                matches!(row.columns.get("active"), Some(UniversalValue::Bool(true))),
+                "Expected Bool(true), got {:?}",
+                row.columns.get("active")
+            );
 
-            // Check float
-            if let Some(Value::Real(score)) = row.columns.get("score") {
+            // Check float (PostgreSQL REAL maps to Float32)
+            if let Some(UniversalValue::Float32(score)) = row.columns.get("score") {
                 assert!((score - std::f32::consts::PI).abs() < 0.001);
             } else {
-                panic!("Expected Real value for score");
+                panic!(
+                    "Expected Float32 value for score, got {:?}",
+                    row.columns.get("score")
+                );
             }
 
             // Check JSON
-            if let Some(Value::Json(json_val)) = row.columns.get("data") {
+            if let Some(UniversalValue::Json(json_val)) = row.columns.get("data") {
                 assert_eq!(json_val.get("key").and_then(|v| v.as_str()), Some("value"));
                 assert_eq!(
                     json_val
@@ -143,17 +156,35 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
                     Some(42)
                 );
             } else {
-                panic!("Expected Json value for data");
+                panic!(
+                    "Expected Json value for data, got {:?}",
+                    row.columns.get("data")
+                );
             }
 
             // Check array
-            if let Some(Value::Array(tags)) = row.columns.get("tags") {
-                assert_eq!(tags.len(), 3);
-                assert_eq!(tags[0], Value::Text("tag1".to_string()));
-                assert_eq!(tags[1], Value::Text("tag2".to_string()));
-                assert_eq!(tags[2], Value::Text("tag3".to_string()));
+            if let Some(UniversalValue::Array { elements, .. }) = row.columns.get("tags") {
+                assert_eq!(elements.len(), 3);
+                assert!(
+                    matches!(&elements[0], UniversalValue::Text(s) if s == "tag1"),
+                    "Expected Text('tag1'), got {:?}",
+                    elements[0]
+                );
+                assert!(
+                    matches!(&elements[1], UniversalValue::Text(s) if s == "tag2"),
+                    "Expected Text('tag2'), got {:?}",
+                    elements[1]
+                );
+                assert!(
+                    matches!(&elements[2], UniversalValue::Text(s) if s == "tag3"),
+                    "Expected Text('tag3'), got {:?}",
+                    elements[2]
+                );
             } else {
-                panic!("Expected Array value for tags");
+                panic!(
+                    "Expected Array value for tags, got {:?}",
+                    row.columns.get("tags")
+                );
             }
 
             info!("All assertions passed for INSERT conversion");
@@ -180,12 +211,21 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
     match update_action {
         Action::Update(row) => {
             info!("Converted to Update action");
-            assert_eq!(row.primary_key, Value::Integer(123));
-            assert_eq!(
-                row.columns.get("name"),
-                Some(&Value::Text("Updated Name".to_string()))
+            assert!(
+                matches!(row.primary_key, UniversalValue::Int32(123)),
+                "Expected Int32(123), got {:?}",
+                row.primary_key
             );
-            assert_eq!(row.columns.get("active"), Some(&Value::Boolean(false)));
+            assert!(
+                matches!(row.columns.get("name"), Some(UniversalValue::Text(s)) if s == "Updated Name"),
+                "Expected Text('Updated Name'), got {:?}",
+                row.columns.get("name")
+            );
+            assert!(
+                matches!(row.columns.get("active"), Some(UniversalValue::Bool(false))),
+                "Expected Bool(false), got {:?}",
+                row.columns.get("active")
+            );
             info!("All assertions passed for UPDATE conversion");
         }
         _ => panic!("Expected Update action"),
@@ -207,7 +247,11 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
     match delete_action {
         Action::Delete(row) => {
             info!("Converted to Delete action");
-            assert_eq!(row.primary_key, Value::Integer(123));
+            assert!(
+                matches!(row.primary_key, UniversalValue::Int32(123)),
+                "Expected Int32(123), got {:?}",
+                row.primary_key
+            );
             info!("All assertions passed for DELETE conversion");
         }
         _ => panic!("Expected Delete action"),

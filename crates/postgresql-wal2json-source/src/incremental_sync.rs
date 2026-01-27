@@ -4,12 +4,10 @@
 //! using WAL-based logical replication with wal2json.
 
 use crate::checkpoint::PostgreSQLLogicalCheckpoint;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use checkpoint::{CheckpointID, CheckpointStore};
-use rust_decimal::Decimal;
-use std::collections::BTreeMap;
-use std::str::FromStr;
-use surrealdb::sql::{Array, Bytes, Datetime, Duration, Number, Object, Strand, Value};
+use surreal_sync_surreal::apply_universal_change;
+use sync_core::{UniversalChange, UniversalChangeOp};
 use tokio_postgres::NoTls;
 use tracing::{debug, error, info, warn};
 
@@ -172,7 +170,9 @@ pub async fn run_incremental_sync(
                                 "INSERT: table={}, primary_key={:?}",
                                 row.table, row.primary_key
                             );
-                            upsert(&surreal, row).await?;
+                            let universal_change =
+                                row_to_universal_change(row, UniversalChangeOp::Create);
+                            apply_universal_change(&surreal, &universal_change).await?;
                             total_changes += 1;
                         }
                         crate::Action::Update(row) => {
@@ -180,7 +180,9 @@ pub async fn run_incremental_sync(
                                 "UPDATE: table={}, primary_key={:?}",
                                 row.table, row.primary_key
                             );
-                            upsert(&surreal, row).await?;
+                            let universal_change =
+                                row_to_universal_change(row, UniversalChangeOp::Update);
+                            apply_universal_change(&surreal, &universal_change).await?;
                             total_changes += 1;
                         }
                         crate::Action::Delete(row) => {
@@ -188,7 +190,9 @@ pub async fn run_incremental_sync(
                                 "DELETE: table={}, primary_key={:?}",
                                 row.table, row.primary_key
                             );
-                            delete(&surreal, row).await?;
+                            let universal_change =
+                                row_to_universal_change(row, UniversalChangeOp::Delete);
+                            apply_universal_change(&surreal, &universal_change).await?;
                             total_changes += 1;
                         }
                         crate::Action::Begin { .. } | crate::Action::Commit { .. } => {
@@ -236,6 +240,16 @@ pub async fn run_incremental_sync(
     Ok(())
 }
 
+/// Convert a Row to UniversalChange
+fn row_to_universal_change(row: &crate::Row, op: UniversalChangeOp) -> UniversalChange {
+    let data = if op == UniversalChangeOp::Delete {
+        None
+    } else {
+        Some(row.columns.clone())
+    };
+    UniversalChange::new(op, row.table.clone(), row.primary_key.clone(), data)
+}
+
 /// Compare two LSN strings
 /// Returns: -1 if lsn1 < lsn2, 0 if equal, 1 if lsn1 > lsn2
 fn compare_lsn(lsn1: &str, lsn2: &str) -> i32 {
@@ -265,238 +279,6 @@ fn compare_lsn(lsn1: &str, lsn2: &str) -> i32 {
             lsn1.cmp(lsn2) as i32
         }
     }
-}
-
-/// Convert PostgreSQL Value enum to SurrealDB Value
-///
-/// This function handles all PostgreSQL type variants and converts them
-/// to appropriate SurrealDB Value types with proper type preservation.
-fn convert_postgres_value_to_surreal(value: &crate::Value) -> Result<Value> {
-    match value {
-        // Numeric types
-        crate::Value::SmallInt(v) => Ok(Value::Number(Number::Int(*v as i64))),
-        crate::Value::Integer(v) => Ok(Value::Number(Number::Int(*v as i64))),
-        crate::Value::BigInt(v) => Ok(Value::Number(Number::Int(*v))),
-        crate::Value::Real(v) => Ok(Value::Number(Number::Float(*v as f64))),
-        crate::Value::Double(v) => Ok(Value::Number(Number::Float(*v))),
-        crate::Value::Numeric(s) => {
-            // Parse high-precision decimal
-            match Decimal::from_str(s) {
-                Ok(dec) => Ok(Value::Number(Number::Decimal(dec))),
-                Err(_) => Ok(Value::Strand(Strand::from(s.clone()))),
-            }
-        }
-
-        // String types
-        crate::Value::Text(s) | crate::Value::Varchar(s) | crate::Value::Char(s) => {
-            Ok(Value::Strand(Strand::from(s.clone())))
-        }
-
-        // Boolean
-        crate::Value::Boolean(b) => Ok(Value::Bool(*b)),
-
-        // Binary
-        crate::Value::Bytea(bytes) => Ok(Value::Bytes(Bytes::from(bytes.clone()))),
-
-        // UUID
-        crate::Value::Uuid(uuid) => match uuid.to_uuid() {
-            Ok(u) => Ok(Value::Uuid(surrealdb::sql::Uuid::from(u))),
-            Err(_) => Ok(Value::Strand(Strand::from(uuid.0.clone()))),
-        },
-
-        // JSON types - use recursive helper
-        crate::Value::Json(j) | crate::Value::Jsonb(j) => Ok(json_to_surreal(j)),
-
-        // Date/Time types
-        crate::Value::Timestamp(ts) => match ts.to_chrono_datetime_utc() {
-            Ok(chrono_dt) => {
-                // Convert chrono DateTime to SurrealDB Datetime
-                let datetime_str = chrono_dt.to_rfc3339();
-                match Datetime::from_str(&datetime_str) {
-                    Ok(dt) => Ok(Value::Datetime(dt)),
-                    Err(_) => Ok(Value::Strand(Strand::from(ts.0.clone()))),
-                }
-            }
-            Err(_) => Ok(Value::Strand(Strand::from(ts.0.clone()))),
-        },
-        crate::Value::TimestampTz(ts) => match ts.to_chrono_datetime_utc() {
-            Ok(chrono_dt) => {
-                // Convert chrono DateTime to SurrealDB Datetime
-                let datetime_str = chrono_dt.to_rfc3339();
-                match Datetime::from_str(&datetime_str) {
-                    Ok(dt) => Ok(Value::Datetime(dt)),
-                    Err(_) => Ok(Value::Strand(Strand::from(ts.0.clone()))),
-                }
-            }
-            Err(_) => Ok(Value::Strand(Strand::from(ts.0.clone()))),
-        },
-        crate::Value::Date(d) => Ok(Value::Strand(Strand::from(d.0.clone()))),
-        crate::Value::Time(t) => Ok(Value::Strand(Strand::from(t.0.clone()))),
-        crate::Value::TimeTz(t) => Ok(Value::Strand(Strand::from(t.0.clone()))),
-        crate::Value::Interval(i) => {
-            // Try to parse as duration, fallback to string
-            match try_parse_interval_to_duration(&i.0) {
-                Ok(dur) => Ok(Value::Duration(dur)),
-                Err(_) => Ok(Value::Strand(Strand::from(i.0.clone()))),
-            }
-        }
-
-        // Arrays - recursive conversion
-        crate::Value::Array(arr) => {
-            let converted: Result<Vec<Value>> =
-                arr.iter().map(convert_postgres_value_to_surreal).collect();
-            Ok(Value::Array(Array::from(converted?)))
-        }
-
-        // Null
-        crate::Value::Null => Ok(Value::None),
-    }
-}
-
-/// Helper to convert serde_json::Value to SurrealDB Value (for JSON/JSONB)
-///
-/// Recursively converts JSON objects and arrays to SurrealDB native types.
-fn json_to_surreal(value: &serde_json::Value) -> Value {
-    match value {
-        serde_json::Value::Null => Value::None,
-        serde_json::Value::Bool(b) => Value::Bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Value::Number(Number::Int(i))
-            } else if let Some(f) = n.as_f64() {
-                Value::Number(Number::Float(f))
-            } else {
-                Value::None
-            }
-        }
-        serde_json::Value::String(s) => Value::Strand(Strand::from(s.clone())),
-        serde_json::Value::Array(arr) => Value::Array(Array::from(
-            arr.iter().map(json_to_surreal).collect::<Vec<_>>(),
-        )),
-        serde_json::Value::Object(map) => {
-            let mut obj = BTreeMap::new();
-            for (k, v) in map {
-                obj.insert(k.clone(), json_to_surreal(v));
-            }
-            Value::Object(Object::from(obj))
-        }
-    }
-}
-
-/// Helper to parse PostgreSQL interval to Duration
-///
-/// Uses the existing Interval::to_duration() method from the Interval wrapper
-/// and converts std::time::Duration to surrealdb::sql::Duration.
-fn try_parse_interval_to_duration(interval_str: &str) -> Result<Duration> {
-    let interval = crate::value::Interval(interval_str.to_string());
-    let std_duration = interval.to_duration().map_err(|e| anyhow::anyhow!(e))?;
-
-    // Convert std::time::Duration to surrealdb::sql::Duration
-    let nanos = std_duration.as_nanos();
-    Ok(Duration::from_nanos(nanos as u64))
-}
-
-async fn upsert(
-    surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
-    row: &crate::Row,
-) -> Result<()> {
-    let mut surrealql = String::from("UPSERT type::thing($tb, $id) SET ");
-
-    for (i, (col, _)) in row.columns.iter().enumerate() {
-        if i > 0 {
-            surrealql.push_str(", ");
-        }
-        surrealql.push_str(&format!("{col} = ${col}{i}"));
-    }
-
-    let mut query = surreal.query(surrealql);
-
-    for (i, (col, val)) in row.columns.iter().enumerate() {
-        let field = format!("{col}{i}");
-        let surreal_value = convert_postgres_value_to_surreal(val)
-            .with_context(|| format!("Failed to convert column '{col}' value"))?;
-
-        query = query.bind((field.clone(), surreal_value));
-    }
-
-    let id: Value = match &row.primary_key {
-        crate::Value::SmallInt(v) => Value::Number(Number::Int(*v as i64)),
-        crate::Value::Integer(v) => Value::Number(Number::Int(*v as i64)),
-        crate::Value::BigInt(v) => Value::Number(Number::Int(*v)),
-        crate::Value::Real(v) => Value::Number(Number::Float(*v as f64)),
-        crate::Value::Double(v) => Value::Number(Number::Float(*v)),
-        crate::Value::Numeric(s) => match Decimal::from_str(s) {
-            Ok(dec) => Value::Number(Number::Decimal(dec)),
-            Err(_) => Value::Strand(Strand::from(s.clone())),
-        },
-        crate::Value::Text(s) | crate::Value::Varchar(s) | crate::Value::Char(s) => {
-            Value::Strand(Strand::from(s.clone()))
-        }
-        crate::Value::Uuid(u) => match u.to_uuid() {
-            Ok(uuid) => Value::Uuid(surrealdb::sql::Uuid::from(uuid)),
-            Err(_) => Value::Strand(Strand::from(u.0.clone())),
-        },
-        crate::Value::Array(arr) => {
-            // Composite primary key - convert array
-            let converted: Result<Vec<Value>> =
-                arr.iter().map(convert_postgres_value_to_surreal).collect();
-            Value::Array(Array::from(converted?))
-        }
-        _ => anyhow::bail!(
-            "Unsupported primary key type for upsert: {:?}",
-            row.primary_key
-        ),
-    };
-
-    let _ = query
-        .bind(("tb", row.table.clone()))
-        .bind(("id", id))
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to upsert data into {}: {}", &row.table, e))?;
-
-    Ok(())
-}
-
-async fn delete(
-    surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
-    row: &crate::Row,
-) -> Result<()> {
-    let id: Value = match &row.primary_key {
-        crate::Value::SmallInt(v) => Value::Number(Number::Int(*v as i64)),
-        crate::Value::Integer(v) => Value::Number(Number::Int(*v as i64)),
-        crate::Value::BigInt(v) => Value::Number(Number::Int(*v)),
-        crate::Value::Real(v) => Value::Number(Number::Float(*v as f64)),
-        crate::Value::Double(v) => Value::Number(Number::Float(*v)),
-        crate::Value::Numeric(s) => match Decimal::from_str(s) {
-            Ok(dec) => Value::Number(Number::Decimal(dec)),
-            Err(_) => Value::Strand(Strand::from(s.clone())),
-        },
-        crate::Value::Text(s) | crate::Value::Varchar(s) | crate::Value::Char(s) => {
-            Value::Strand(Strand::from(s.clone()))
-        }
-        crate::Value::Uuid(u) => match u.to_uuid() {
-            Ok(uuid) => Value::Uuid(surrealdb::sql::Uuid::from(uuid)),
-            Err(_) => Value::Strand(Strand::from(u.0.clone())),
-        },
-        crate::Value::Array(arr) => {
-            // Composite primary key - convert array
-            let converted: Result<Vec<Value>> =
-                arr.iter().map(convert_postgres_value_to_surreal).collect();
-            Value::Array(Array::from(converted?))
-        }
-        _ => anyhow::bail!(
-            "Unsupported primary key type for delete: {:?}",
-            row.primary_key
-        ),
-    };
-
-    surreal
-        .query("DELETE type::thing($tb, $id)")
-        .bind(("tb", row.table.clone()))
-        .bind(("id", id))
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to delete data from {}: {}", row.table, e))?;
-    Ok(())
 }
 
 #[cfg(test)]

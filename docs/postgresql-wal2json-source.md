@@ -99,7 +99,7 @@ The PostgreSQL wal2json source consists of several key components:
 2. Slot that handles WAL change streaming using peek and advance operations
 3. ([wal2json Parser](../crates/postgresql-wal2json-source/src/wal2json.rs)) that parses JSON output from the wal2json plugin
 4. ([Change Converter](../crates/postgresql-wal2json-source/src/change.rs)) that transforms wal2json output into strongly-typed Action enums
-5. ([Value Converters](../crates/postgresql-wal2json-source/src/value/)) that provides PostgreSQL-specific type converters for timestamps, UUIDs, intervals, etc.
+5. Value parsing functions (in [change.rs](../crates/postgresql-wal2json-source/src/change.rs)) that convert PostgreSQL types (timestamps, UUIDs, intervals, etc.) to `UniversalValue`
 
 ### How It Works Under the Hood
 
