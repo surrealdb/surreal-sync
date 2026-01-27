@@ -33,8 +33,8 @@ Port forwarding is intentionally disabled to avoid conflicts with host services.
 
 ## Troubleshooting
 
-If you encounter connection issues, double-check that you are using service hostnames (`mongodb`, `postgresql`, etc.) not `localhost`.
+If you encounter connection issues, double check that you are using service hostnames (`mongodb`, `postgresql`, etc.) not `localhost`.
 
-Still doesn't work? Go back to your host and run `docker ps`, and see if service containers are running. If not, run `docker ps -a` and look into failed servicve container logs for debugging.
+Still not working? Go back to your host and run `docker ps`, and see if service containers are running. If not, run `docker ps -a` and look into failed servicve container logs for debugging.
 
 To restart the service containers, try `Reopen in Container` first, then `Rebuild Container` if reopening didn't work.

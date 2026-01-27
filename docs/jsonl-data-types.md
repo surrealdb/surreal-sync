@@ -2,7 +2,7 @@
 
 This document provides an overview of JSONL data type support in surreal-sync, detailing which types are supported during migration from JSON Lines files to SurrealDB.
 
-surreal-sync converts JSONL file records to SurrealDB records by processing JSON data types. The conversion handles all standard JSON data types while maintaining data integrity where possible.
+Surreal-sync converts JSONL file records to SurrealDB records by processing JSON data types. The conversion handles all standard JSON data types while maintaining data integrity wherever possible.
 
 ## Data Type Support Table
 
@@ -38,7 +38,7 @@ surreal-sync sync jsonl \
   --rule 'created_at="2024-01-15T10:00:00Z",created_at datetime:created_at'
 ```
 
-**Record Reference Conversion:**
+**Record Link Conversion:**
 ```bash
 surreal-sync sync jsonl \
   --source-uri /path/to/data \
@@ -59,7 +59,7 @@ surreal-sync sync jsonl \
 Format: `'field_name="expected_value",field_name target_type:target_value'`
 
 **Available conversions:**
-- **Record references**: `pages:page_id` → Creates SurrealDB Thing
+- **Record links**: `pages:page_id` → Creates SurrealDB RecordID
 - **Datetime**: `datetime:timestamp_field` → Converts ISO strings to datetime
 - **Numbers**: `number:numeric_field` → Converts strings to numbers
 - **Arrays**: `array:comma_separated_field` → Splits strings into arrays
@@ -75,7 +75,7 @@ Format: `'field_name="expected_value",field_name target_type:target_value'`
 ```
 
 **SurrealDB Result:**
-```sql
+```surql
 -- Table: filename (based on JSONL filename)
 -- Records:
 user1: { name: "Alice", age: 30, active: true }
@@ -101,12 +101,12 @@ surreal-sync sync jsonl \
 ```
 
 **SurrealDB Result:**
-```sql
+```surql
 -- Table: pages
 -- Records:
 page1: {
   title: "Home",
-  parent: sections:section1,  -- Record reference
+  parent: sections:section1,  -- Record link
   created: "2024-01-15T10:00:00Z"  -- Datetime
 }
 ```
@@ -115,7 +115,7 @@ page1: {
 
 ### Type Conversion Notes
 
-- **No Schema Validation**: JSON doesn't enforce types, inconsistent data may exist
+- **No Schema Validation**: As JSON does not enforce types, inconsistent data may exist
 - **String Ambiguity**: Cannot auto-detect intended types (dates, UUIDs, references)
 - **Numeric Precision**: Very large numbers may lose precision in JSON representation
 - **Nested Complexity**: Deeply nested structures preserved but may impact query performance

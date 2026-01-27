@@ -77,10 +77,10 @@ Note: Complex spatial operations specific to MySQL are not preserved.
 ### Type Conversion Notes
 
 - **AUTO_INCREMENT**: Auto-increment behavior is lost, becomes regular integer
-- **ENUM**: Converted to string values, lose enum constraints and validation
+- **ENUM**: Converted to string values, lose enum constraints and validation. To restore constraints and validation after import, consider defining a field that holds a [literal value](https://surrealdb.com/docs/surrealql/datamodel/literals).
 - **SET**: Converted to array, loses MySQL SET semantics
-- **TIME**: Converted to string since SurrealDB lacks pure time type
-- **Geometric Types**: Lose MySQL-specific spatial functions
+- **TIME**: Converted to string since SurrealDB lacks a pure time type
+- **Geometric Types**: Loses MySQL-specific spatial functions
 - **BIT**: Converted to string representation, loses bit manipulation functions
 
 ### Special Limitations

@@ -7,8 +7,8 @@ The JSONL source in surreal-sync allows you to import JSON Lines (JSONL) files i
 JSONL source is particularly useful for:
 - Importing data from APIs that export in JSON (You might use `jq` to convert JSON to JSONL)
 - Migrating from document-based systems like Notion
-- Bulk loading structured JSON data, like configuration files or logs
-- Converting references between documents into SurrealDB's record links (Things)
+- Bulk loading structured JSON data, such as configuration files or logs
+- Converting links between documents into SurrealDB's record IDs
 
 ## Basic Usage
 
@@ -61,7 +61,7 @@ Create a directory with the following JSONL files:
 
 ### Running the Import
 
-Use the following command to import the data with conversion rules for parent references:
+Use the following command to import the data with conversion rules for parent links:
 
 ```bash
 surreal-sync from jsonl \
@@ -82,7 +82,7 @@ If successful, the command will complete without output. You can verify the impo
 
 ### Understanding Conversion Rules
 
-The `--rule` flag defines how to convert JSON objects into SurrealDB record links. The format is:
+The `--rule` flag defines how to convert JSON objects into SurrealDB record IDs. The format is:
 ```
 --rule 'type="TYPE_VALUE",ID_FIELD TARGET_TABLE:ID_FIELD'
 ```
@@ -95,7 +95,7 @@ For example:
 
 ### Verifying the Results
 
-After running the import, you can verify the data using SurrealQL. You can use the SurrealDB CLI, web interface, or HTTP API to run these queries.
+After running the import, you can verify the data using SurrealQL. You can use the [SurrealDB CLI](https://surrealdb.com/docs/surrealdb/cli), [Surrealist UI](https://surrealdb.com/docs/surrealist), or HTTP API to run these queries.
 
 Using the SurrealDB CLI:
 ```bash
@@ -113,12 +113,12 @@ curl -X POST http://localhost:8000/sql \
 Here are some example queries to verify your data:
 
 1. **Check all tables**:
-```sql
+```surql
 INFO FOR DB;
 ```
 
-2. **View all databases**:
-```sql
+1. **View all databases**:
+```surql
 SELECT * FROM databases;
 ```
 
@@ -149,7 +149,7 @@ Expected output:
 ```
 
 3. **View pages with their parent references**:
-```sql
+```surql
 SELECT id, title, parent FROM pages;
 ```
 
@@ -175,12 +175,12 @@ Expected output:
 ```
 
 4. **Query pages belonging to a specific database**:
-```sql
+```surql
 SELECT * FROM pages WHERE parent = databases:db1;
 ```
 
 5. **Find all blocks in a specific page**:
-```sql
+```surql
 SELECT id, type, text FROM blocks WHERE parent = pages:page1;
 ```
 
@@ -201,7 +201,7 @@ Expected output:
 ```
 
 6. **Traverse relationships - find pages and their blocks**:
-```sql
+```surql
 -- First, find pages in a database
 SELECT * FROM pages WHERE parent = databases:db1;
 
@@ -211,10 +211,10 @@ SELECT * FROM blocks WHERE parent = pages:page1;
 
 ### Working with Relationships in SurrealDB
 
-Since we've converted the parent references to Thing types, we can work with them as relationships in SurrealDB.
+Since we've converted the parent references to record IDs, we can work with them as relationships in SurrealDB.
 
 1. **Fetch the full parent record instead of just the reference**:
-```sql
+```surql
 SELECT *, parent.* FROM pages:page2;
 ```
 
@@ -236,26 +236,26 @@ Result:
 ```
 
 2. **Fetch specific fields from the parent**:
-```sql
+```surql
 SELECT id, title, parent.name as parent_name FROM pages;
 ```
 
 3. **Find all pages with their parent database info**:
-```sql
+```surql
 SELECT id, title, parent.name as database_name 
 FROM pages 
 WHERE parent.id IN (SELECT id FROM databases);
 ```
 
 4. **Find pages and count their child blocks**:
-```sql
+```surql
 SELECT p.id, p.title, 
        count((SELECT * FROM blocks WHERE parent = p.id)) as block_count
 FROM pages p;
 ```
 
 5. **Find blocks with their parent page title**:
-```sql
+```surql
 SELECT id, type, text, parent.title as page_title 
 FROM blocks 
 WHERE parent.id IN (SELECT id FROM pages);
@@ -266,7 +266,7 @@ WHERE parent.id IN (SELECT id FROM pages);
 For more complex traversals, you can use subqueries:
 
 1. **Find all blocks in pages that belong to a specific database**:
-```sql
+```surql
 SELECT * FROM blocks 
 WHERE parent IN (
   SELECT id FROM pages WHERE parent = databases:db1
@@ -274,7 +274,7 @@ WHERE parent IN (
 ```
 
 2. **Count content at each level**:
-```sql
+```surql
 -- Count pages per database
 SELECT id, name,
        (SELECT count() FROM pages WHERE parent = databases.id) as page_count
@@ -287,7 +287,7 @@ FROM pages;
 ```
 
 3. **Find orphaned records (blocks whose parent is another block)**:
-```sql
+```surql
 SELECT b1.id, b1.type, b1.text, b2.type as parent_type
 FROM blocks b1
 WHERE b1.parent IN (SELECT id FROM blocks);
@@ -299,7 +299,7 @@ WHERE b1.parent IN (SELECT id FROM blocks);
 
 If you want to use SurrealDB's powerful graph traversal syntax, you can create explicit edges after importing:
 
-```sql
+```surql
 -- Create parent edges from pages to databases
 RELATE pages:page1->parent->databases:db1;
 RELATE pages:page3->parent->databases:db2;
@@ -318,7 +318,7 @@ RELATE blocks:block4->parent->blocks:block2;
 
 After creating edges, you can use graph traversal:
 
-```sql
+```surql
 -- Find all pages connected to a database
 SELECT ->parent->pages FROM databases:db1;
 
@@ -329,7 +329,7 @@ SELECT ->parent->blocks FROM pages:page1;
 SELECT ->parent->pages->parent->blocks FROM databases:db1;
 ```
 
-However, for most use cases, the Thing references created during import are sufficient and simpler to work with.
+However, for most use cases, the RecordID references created during import are sufficient and simpler to work with.
 
 ## Custom ID Fields
 
