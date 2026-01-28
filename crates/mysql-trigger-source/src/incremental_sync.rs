@@ -8,9 +8,7 @@ use super::source::IncrementalSource;
 use crate::{SourceOpts, SurrealOpts};
 use anyhow::Result;
 use checkpoint::Checkpoint;
-use surreal_sync_surreal::{
-    apply_universal_change, surreal_connect, SurrealOpts as SurrealConnOpts,
-};
+use surreal2_sink::{apply_universal_change, surreal_connect, SurrealOpts as SurrealConnOpts};
 use tracing::{debug, info, warn};
 
 /// Run incremental sync from MySQL to SurrealDB

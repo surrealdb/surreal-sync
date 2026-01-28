@@ -20,7 +20,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use neo4rs::{Graph, Query};
 use std::collections::HashMap;
-use surreal_sync_surreal::{
+use surreal2_sink::{
     surreal_connect, write_universal_relations, write_universal_rows, Surreal, SurrealEngine,
     SurrealOpts as SurrealConnOpts,
 };

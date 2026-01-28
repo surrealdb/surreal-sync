@@ -51,7 +51,7 @@
 //!
 //! ```ignore
 //! use kafka_types::reverse::message_to_typed_values;
-//! use surrealdb_types::typed_values_to_surreal_map;
+//! use surreal2_types::typed_values_to_surreal_map;
 //!
 //! let typed_values = message_to_typed_values(message, Some(&table_schema))?;
 //! let surreal_values = typed_values_to_surreal_map(typed_values);

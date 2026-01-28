@@ -9,7 +9,7 @@ use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
 use mysql_async::{prelude::*, Pool, Row};
 use mysql_types::{row_to_typed_values_with_config, JsonConversionConfig, RowConversionConfig};
 use std::collections::HashMap;
-use surreal_sync_surreal::write_universal_rows;
+use surreal2_sink::write_universal_rows;
 use sync_core::{TypedValue, UniversalRow, UniversalValue};
 use tracing::{debug, info};
 
@@ -33,7 +33,7 @@ pub async fn run_full_sync(
     from_opts: &SourceOpts,
     to_opts: &SurrealOpts,
     sync_config: Option<SyncConfig>,
-    surreal: &surreal_sync_surreal::Surreal<surreal_sync_surreal::SurrealEngine>,
+    surreal: &surreal2_sink::Surreal<surreal2_sink::SurrealEngine>,
 ) -> Result<()> {
     info!("Starting MySQL migration to SurrealDB");
 
@@ -244,7 +244,7 @@ async fn get_user_tables(conn: &mut mysql_async::Conn, database: &str) -> Result
 /// Migrate a single table from MySQL to SurrealDB
 async fn migrate_table(
     conn: &mut mysql_async::Conn,
-    surreal: &surreal_sync_surreal::Surreal<surreal_sync_surreal::SurrealEngine>,
+    surreal: &surreal2_sink::Surreal<surreal2_sink::SurrealEngine>,
     table_name: &str,
     to_opts: &SurrealOpts,
     boolean_paths: &Option<Vec<String>>,
@@ -472,7 +472,7 @@ fn typed_value_to_string(tv: &TypedValue) -> String {
 
 /// Write a batch of records to SurrealDB using UniversalRow
 async fn write_universal_rows_batch(
-    surreal: &surreal_sync_surreal::Surreal<surreal_sync_surreal::SurrealEngine>,
+    surreal: &surreal2_sink::Surreal<surreal2_sink::SurrealEngine>,
     table_name: &str,
     batch: &[UniversalRow],
 ) -> Result<()> {

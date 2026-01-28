@@ -3,9 +3,9 @@
 use crate::write::{write_record, write_relation};
 use anyhow::{bail, Result};
 use std::collections::HashMap;
+use surreal2_types::{RecordWithSurrealValues, Relation, SurrealValue};
 use surrealdb::sql::{Id, Thing, Value};
 use surrealdb::Surreal;
-use surrealdb_types::{RecordWithSurrealValues, Relation, SurrealValue};
 use sync_core::{UniversalRelation, UniversalRow, UniversalValue};
 
 /// Convert UniversalValue ID to SurrealDB Id.

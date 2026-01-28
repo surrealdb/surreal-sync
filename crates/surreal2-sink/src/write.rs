@@ -1,8 +1,8 @@
 use crate::Change;
 use std::collections::HashMap;
 use std::time::Duration;
+use surreal2_types::{RecordWithSurrealValues as Record, Relation, SurrealValue};
 use surrealdb::Surreal;
-use surrealdb_types::{RecordWithSurrealValues as Record, Relation, SurrealValue};
 use sync_core::{UniversalChange, UniversalChangeOp};
 use tokio::time::sleep;
 

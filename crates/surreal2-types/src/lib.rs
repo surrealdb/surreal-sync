@@ -11,7 +11,7 @@
 //! # Example
 //!
 //! ```ignore
-//! use surrealdb_types::SurrealValue;
+//! use surreal2_types::SurrealValue;
 //! use sync_core::TypedValue;
 //!
 //! // Convert TypedValue to SurrealDB value

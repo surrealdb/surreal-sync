@@ -18,9 +18,7 @@ use mongodb::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use surreal_sync_surreal::{
-    apply_universal_change, surreal_connect, SurrealOpts as SurrealConnOpts,
-};
+use surreal2_sink::{apply_universal_change, surreal_connect, SurrealOpts as SurrealConnOpts};
 use sync_core::{UniversalChange, UniversalChangeOp, UniversalValue};
 use tokio::sync::Mutex;
 

@@ -71,7 +71,7 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
         "--connection-string",
         &connection_string,
         "--slot",
-        "surreal_sync_surrealdb_test_slot",
+        "surrealdb_test_slot",
         "--tables",
         &tables_arg,
         "--surreal-endpoint",
@@ -145,7 +145,7 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
         "--connection-string",
         &connection_string,
         "--slot",
-        "surreal_sync_surrealdb_test_slot",
+        "surrealdb_test_slot",
         "--tables",
         &tables_arg,
         "--surreal-endpoint",
@@ -186,7 +186,7 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
     // Cleanup: drop the replication slot
     pg_client
         .execute(
-            "SELECT pg_drop_replication_slot('surreal_sync_surrealdb_test_slot')",
+            "SELECT pg_drop_replication_slot('surrealdb_test_slot')",
             &[],
         )
         .await

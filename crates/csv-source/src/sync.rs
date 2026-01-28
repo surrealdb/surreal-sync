@@ -39,7 +39,7 @@ pub struct Config {
     pub database: String,
 
     /// SurrealDB connection options
-    pub surreal_opts: surreal_sync_surreal::SurrealOpts,
+    pub surreal_opts: surreal2_sink::SurrealOpts,
 
     /// Whether the CSV has headers (default: true)
     pub has_headers: bool,
@@ -77,7 +77,7 @@ impl Default for Config {
             batch_size: 1000,
             namespace: "test".to_string(),
             database: "test".to_string(),
-            surreal_opts: surreal_sync_surreal::SurrealOpts {
+            surreal_opts: surreal2_sink::SurrealOpts {
                 surreal_endpoint: "ws://localhost:8000".to_string(),
                 surreal_username: "root".to_string(),
                 surreal_password: "root".to_string(),
@@ -119,7 +119,7 @@ fn parse_value_with_schema(value: &str, schema_type: Option<&UniversalType>) -> 
 /// This function handles all CSV parsing, data conversion, and SurrealDB insertion
 /// for a single CSV source (file, S3, or HTTP).
 async fn process_csv_reader(
-    surreal: &surreal_sync_surreal::Surreal<surreal_sync_surreal::SurrealEngine>,
+    surreal: &surreal2_sink::Surreal<surreal2_sink::SurrealEngine>,
     config: &Config,
     reader: Box<dyn std::io::Read + Send>,
     source_name: &str,
@@ -225,7 +225,7 @@ async fn process_csv_reader(
             // Process batch when it reaches the configured size
             if batch.len() >= config.batch_size {
                 if !config.dry_run {
-                    surreal_sync_surreal::write_universal_rows(surreal, &batch).await?;
+                    surreal2_sink::write_universal_rows(surreal, &batch).await?;
                     total_processed += batch.len();
                 } else {
                     debug!("Dry run: Would insert batch of {} records", batch.len());
@@ -244,7 +244,7 @@ async fn process_csv_reader(
         // Process remaining records
         if !batch.is_empty() {
             if !config.dry_run {
-                surreal_sync_surreal::write_universal_rows(surreal, &batch).await?;
+                surreal2_sink::write_universal_rows(surreal, &batch).await?;
                 total_processed += batch.len();
             } else {
                 debug!(
@@ -334,7 +334,7 @@ async fn process_csv_reader(
         // Process batch when it reaches the configured size
         if batch.len() >= config.batch_size {
             if !config.dry_run {
-                surreal_sync_surreal::write_universal_rows(surreal, &batch).await?;
+                surreal2_sink::write_universal_rows(surreal, &batch).await?;
                 total_processed += batch.len();
             } else {
                 debug!("Dry run: Would insert batch of {} records", batch.len());
@@ -353,7 +353,7 @@ async fn process_csv_reader(
     // Process remaining records
     if !batch.is_empty() {
         if !config.dry_run {
-            surreal_sync_surreal::write_universal_rows(surreal, &batch).await?;
+            surreal2_sink::write_universal_rows(surreal, &batch).await?;
             total_processed += batch.len();
         } else {
             debug!(
@@ -413,13 +413,10 @@ pub async fn sync(config: Config) -> Result<()> {
     };
 
     // Connect to SurrealDB using the standard connection function
-    let surreal = surreal_sync_surreal::surreal_connect(
-        &config.surreal_opts,
-        &config.namespace,
-        &config.database,
-    )
-    .await
-    .context("Failed to connect to SurrealDB")?;
+    let surreal =
+        surreal2_sink::surreal_connect(&config.surreal_opts, &config.namespace, &config.database)
+            .await
+            .context("Failed to connect to SurrealDB")?;
 
     // Get metrics collector reference for passing to process_csv_reader
     let metrics_ref = metrics_task.as_ref().map(|(collector, _)| collector);
@@ -527,7 +524,7 @@ mod tests {
             table: "test_table".to_string(),
             batch_size: 10,
             dry_run: true, // Don't actually write to DB
-            surreal_opts: surreal_sync_surreal::SurrealOpts {
+            surreal_opts: surreal2_sink::SurrealOpts {
                 surreal_endpoint: "ws://localhost:8000".to_string(),
                 surreal_username: "root".to_string(),
                 surreal_password: "root".to_string(),

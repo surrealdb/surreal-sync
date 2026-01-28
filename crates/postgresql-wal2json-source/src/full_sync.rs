@@ -6,8 +6,8 @@
 
 use anyhow::Result;
 use checkpoint::{SyncConfig, SyncManager, SyncPhase};
+use surreal2_sink::{surreal_connect, SurrealOpts as SurrealConnOpts};
 use surreal_sync_postgresql::SurrealOpts;
-use surreal_sync_surreal::{surreal_connect, SurrealOpts as SurrealConnOpts};
 use tokio_postgres::NoTls;
 use tracing::info;
 

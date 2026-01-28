@@ -7,8 +7,8 @@ use crate::SourceOpts;
 use anyhow::Result;
 use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
 use chrono::Utc;
+use surreal2_sink::{surreal_connect, SurrealOpts as SurrealConnOpts};
 use surreal_sync_postgresql::SurrealOpts;
-use surreal_sync_surreal::{surreal_connect, SurrealOpts as SurrealConnOpts};
 use tokio_postgres::NoTls;
 use tracing::info;
 

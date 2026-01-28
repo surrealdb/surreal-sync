@@ -3594,8 +3594,8 @@ dependencies = [
  "loadtest-generator",
  "serde",
  "serde_json",
+ "surreal2-types",
  "surrealdb",
- "surrealdb-types",
  "sync-core",
  "thiserror 1.0.69",
  "tokio",
@@ -6237,9 +6237,9 @@ dependencies = [
  "surreal-sync-postgresql",
  "surreal-sync-postgresql-trigger-source",
  "surreal-sync-postgresql-wal2json-source",
- "surreal-sync-surreal",
+ "surreal2-sink",
+ "surreal2-types",
  "surrealdb",
- "surrealdb-types",
  "sync-core",
  "tempfile",
  "tokio",
@@ -6267,7 +6267,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sync-file",
- "surreal-sync-surreal",
+ "surreal2-sink",
  "surrealdb",
  "sync-core",
  "tempfile",
@@ -6305,7 +6305,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sync-file",
- "surreal-sync-surreal",
+ "surreal2-sink",
  "surrealdb",
  "sync-core",
  "tokio",
@@ -6345,7 +6345,7 @@ dependencies = [
  "rdkafka",
  "serde",
  "serde_json",
- "surreal-sync-surreal",
+ "surreal2-sink",
  "sync-core",
  "tempfile",
  "thiserror 1.0.69",
@@ -6370,9 +6370,9 @@ dependencies = [
  "mongodb",
  "serde",
  "serde_json",
- "surreal-sync-surreal",
+ "surreal2-sink",
+ "surreal2-types",
  "surrealdb",
- "surrealdb-types",
  "sync-core",
  "tempfile",
  "tokio",
@@ -6396,7 +6396,7 @@ dependencies = [
  "rand 0.9.1",
  "serde",
  "serde_json",
- "surreal-sync-surreal",
+ "surreal2-sink",
  "surrealdb",
  "sync-core",
  "tempfile",
@@ -6423,7 +6423,7 @@ dependencies = [
  "neo4rs",
  "serde",
  "serde_json",
- "surreal-sync-surreal",
+ "surreal2-sink",
  "surrealdb",
  "sync-core",
  "tempfile",
@@ -6445,9 +6445,9 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
- "surreal-sync-surreal",
+ "surreal2-sink",
+ "surreal2-types",
  "surrealdb",
- "surrealdb-types",
  "tokio",
  "tokio-postgres",
  "tracing",
@@ -6473,7 +6473,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sync-postgresql",
- "surreal-sync-surreal",
+ "surreal2-sink",
  "surrealdb",
  "sync-core",
  "tempfile",
@@ -6497,7 +6497,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sync-postgresql",
- "surreal-sync-surreal",
+ "surreal2-sink",
  "surrealdb",
  "sync-core",
  "tempfile",
@@ -6509,14 +6509,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "surreal-sync-surreal"
+name = "surreal2-sink"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "log",
+ "surreal2-types",
  "surrealdb",
- "surrealdb-types",
  "sync-core",
+ "tokio",
+ "tracing",
+ "ulid",
+ "uuid",
+]
+
+[[package]]
+name = "surreal2-types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "chrono",
+ "geo-types",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "surrealdb",
+ "sync-core",
+ "thiserror 1.0.69",
  "tokio",
  "tracing",
  "ulid",
@@ -6655,26 +6675,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasmtimer",
  "ws_stream_wasm",
-]
-
-[[package]]
-name = "surrealdb-types"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "chrono",
- "geo-types",
- "rust_decimal",
- "serde",
- "serde_json",
- "surrealdb",
- "sync-core",
- "thiserror 1.0.69",
- "tokio",
- "tracing",
- "ulid",
- "uuid",
 ]
 
 [[package]]

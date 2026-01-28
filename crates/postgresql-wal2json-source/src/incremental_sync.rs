@@ -6,7 +6,7 @@
 use crate::checkpoint::PostgreSQLLogicalCheckpoint;
 use anyhow::Result;
 use checkpoint::{CheckpointID, CheckpointStore};
-use surreal_sync_surreal::apply_universal_change;
+use surreal2_sink::apply_universal_change;
 use sync_core::{UniversalChange, UniversalChangeOp};
 use tokio_postgres::NoTls;
 use tracing::{debug, error, info, warn};

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
+use surreal2_sink::SurrealOpts;
 use surreal_sync_jsonl_source::{migrate_from_jsonl, ConversionRule, SourceOpts};
-use surreal_sync_surreal::SurrealOpts;
 use surrealdb::{engine::any::connect, sql::Thing, Surreal};
 
 #[derive(Debug, Deserialize)]
