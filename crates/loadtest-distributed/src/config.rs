@@ -370,7 +370,10 @@ pub fn build_cluster_config(
         proto_contents: None, // Set by caller for Kafka source on Kubernetes
         network_name: default_network_name(),
         dry_run,
-        num_sync_containers: if source_type == SourceType::Kafka {
+        num_sync_containers: if source_type == SourceType::Kafka
+            || source_type == SourceType::Csv
+            || source_type == SourceType::Jsonl
+        {
             tables.len()
         } else {
             1
