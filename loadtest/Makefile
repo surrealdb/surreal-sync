@@ -195,12 +195,14 @@ wait-for-completion:
 		\
 		populate_done=$$(echo "$$ps_output" | grep -E "output-populate-[0-9]+-1" | grep -c "Exited (0)" 2>/dev/null); \
 		populate_done=$${populate_done:-0}; \
-		sync_done=$$(echo "$$ps_output" | grep -E "output-(sync|incremental-sync)-1" | grep -c "Exited (0)" 2>/dev/null); \
+		sync_total=$$(echo "$$ps_output" | grep -E "output-(sync|incremental-sync)(-[a-z_]+)?-1" | wc -l 2>/dev/null); \
+		sync_total=$${sync_total:-1}; \
+		sync_done=$$(echo "$$ps_output" | grep -E "output-(sync|incremental-sync)(-[a-z_]+)?-1" | grep -c "Exited (0)" 2>/dev/null); \
 		sync_done=$${sync_done:-0}; \
 		verify_done=$$(echo "$$ps_output" | grep -E "output-verify-[0-9]+-1" | grep -c "Exited (0)" 2>/dev/null); \
 		verify_done=$${verify_done:-0}; \
 		\
-		failed=$$(echo "$$ps_output" | grep -E "output-(schema-init|full-sync-setup|populate|sync|incremental-sync|verify)-[0-9]*-?1" | grep -E "Exited \([1-9]" | awk '{print $$1}' | head -5); \
+		failed=$$(echo "$$ps_output" | grep -E "output-(schema-init|full-sync-setup|populate|sync|incremental-sync|verify)(-[a-z_0-9]+)?-1" | grep -E "Exited \([1-9]" | awk '{print $$1}' | head -5); \
 		if [ -n "$$failed" ]; then \
 			echo ""; \
 			echo ""; \
@@ -223,9 +225,9 @@ wait-for-completion:
 			exit 2; \
 		fi; \
 		\
-		printf "\r[%3ds] Populate: %s/$(WORKERS), Sync: %s/1, Verify: %s/$(WORKERS)" "$$elapsed" "$$populate_done" "$$sync_done" "$$verify_done"; \
+		printf "\r[%3ds] Populate: %s/$(WORKERS), Sync: %s/%s, Verify: %s/$(WORKERS)" "$$elapsed" "$$populate_done" "$$sync_done" "$$sync_total" "$$verify_done"; \
 		\
-		if [ "$$sync_done" -ge 1 ] && [ "$$verify_done" -ge $(WORKERS) ]; then \
+		if [ "$$sync_done" -ge "$$sync_total" ] && [ "$$verify_done" -ge $(WORKERS) ]; then \
 			echo ""; \
 			echo ""; \
 			verify_logs=$$(docker-compose -f docker-compose.loadtest.yml logs verify-1 verify-2 2>&1); \
@@ -261,7 +263,7 @@ wait-for-completion:
 			echo ""; \
 			echo "Progress at timeout:"; \
 			echo "  Populate: $$populate_done/$(WORKERS) completed"; \
-			echo "  Sync:     $$sync_done/1 completed"; \
+			echo "  Sync:     $$sync_done/$$sync_total completed"; \
 			echo "  Verify:   $$verify_done/$(WORKERS) completed"; \
 			echo ""; \
 			if [ "$$populate_done" -lt "$(WORKERS)" ]; then \
@@ -273,7 +275,7 @@ wait-for-completion:
 					echo "─── populate-$$i (last 30 lines) ───"; \
 					docker-compose -f docker-compose.loadtest.yml logs --tail=30 populate-$$i 2>/dev/null || echo "(no logs)"; \
 				done; \
-			elif [ "$$sync_done" -lt "1" ]; then \
+			elif [ "$$sync_done" -lt "$$sync_total" ]; then \
 				echo "BLOCKED AT: Sync stage - data synchronization not complete"; \
 				echo ""; \
 				echo "─── sync / incremental-sync (last 50 lines) ───"; \

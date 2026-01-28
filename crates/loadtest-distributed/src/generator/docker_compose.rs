@@ -131,7 +131,7 @@ impl ConfigGenerator for DockerComposeGenerator {
             }
 
             // Add sync service(s)
-            // For Kafka, we need one sync service per topic (table) since Kafka CLI handles one topic at a time
+            // Kafka, CSV, and JSONL need one sync service per table since their CLIs handle one table at a time
             if config.source_type == SourceType::Kafka {
                 for (idx, container) in config.containers.iter().enumerate() {
                     for table in &container.tables {
@@ -141,6 +141,17 @@ impl ConfigGenerator for DockerComposeGenerator {
                             container.row_count,
                             idx + 1,
                         );
+                        services.insert(Value::String(format!("sync-{table}")), sync_service);
+                    }
+                }
+            } else if config.source_type == SourceType::Csv
+                || config.source_type == SourceType::Jsonl
+            {
+                // CSV/JSONL need one sync service per file/table
+                for (idx, container) in config.containers.iter().enumerate() {
+                    for table in &container.tables {
+                        let sync_service =
+                            generate_file_sync_service(config, table, container.row_count, idx + 1);
                         services.insert(Value::String(format!("sync-{table}")), sync_service);
                     }
                 }
@@ -198,6 +209,13 @@ impl ConfigGenerator for DockerComposeGenerator {
                     "{}_data",
                     database_service_name(config.source_type)
                 )),
+                Value::Mapping(Mapping::new()),
+            );
+        }
+        // Add shared data volume for file-based sources (CSV/JSONL)
+        if config.source_type == SourceType::Csv || config.source_type == SourceType::Jsonl {
+            volumes.insert(
+                Value::String("loadtest-data".to_string()),
                 Value::Mapping(Mapping::new()),
             );
         }
@@ -419,25 +437,33 @@ fn generate_populate_service(
         Value::Sequence(environment),
     );
 
-    // Volumes - only config volume needed (no results volume with HTTP aggregation)
-    let volumes = vec![Value::String("./config:/config:ro".to_string())];
+    // Volumes - config volume always needed, plus shared data volume for file-based sources
+    let mut volumes = vec![Value::String("./config:/config:ro".to_string())];
+
+    // For CSV/JSONL, use shared volume instead of tmpfs so sync container can read the files
+    if config.source_type == SourceType::Csv || config.source_type == SourceType::Jsonl {
+        volumes.push(Value::String("loadtest-data:/data".to_string()));
+    }
+
     service.insert(
         Value::String("volumes".to_string()),
         Value::Sequence(volumes),
     );
 
-    // tmpfs
-    if let Some(ref tmpfs) = container.tmpfs {
-        let mut tmpfs_mounts = Vec::new();
-        tmpfs_mounts.push(Value::String(format!(
-            "{}:size={}",
-            tmpfs.path,
-            normalize_memory_unit(&tmpfs.size)
-        )));
-        service.insert(
-            Value::String("tmpfs".to_string()),
-            Value::Sequence(tmpfs_mounts),
-        );
+    // tmpfs - only for non-file-based sources (file-based sources use shared volume)
+    if config.source_type != SourceType::Csv && config.source_type != SourceType::Jsonl {
+        if let Some(ref tmpfs) = container.tmpfs {
+            let mut tmpfs_mounts = Vec::new();
+            tmpfs_mounts.push(Value::String(format!(
+                "{}:size={}",
+                tmpfs.path,
+                normalize_memory_unit(&tmpfs.size)
+            )));
+            service.insert(
+                Value::String("tmpfs".to_string()),
+                Value::Sequence(tmpfs_mounts),
+            );
+        }
     }
 
     // Resources
@@ -594,8 +620,14 @@ fn generate_sync_service(config: &ClusterConfig) -> Value {
         Value::Sequence(environment),
     );
 
-    // Volumes - mount config
-    let volumes = vec![Value::String("./config:/config:ro".to_string())];
+    // Volumes - mount config, plus shared data volume for file-based sources
+    let mut volumes = vec![Value::String("./config:/config:ro".to_string())];
+
+    // For CSV/JSONL, mount the shared data volume to read files written by populate containers
+    if config.source_type == SourceType::Csv || config.source_type == SourceType::Jsonl {
+        volumes.push(Value::String("loadtest-data:/data".to_string()));
+    }
+
     service.insert(
         Value::String("volumes".to_string()),
         Value::Sequence(volumes),
@@ -798,6 +830,139 @@ fn to_pascal_case(s: &str) -> String {
         .collect()
 }
 
+/// Generate file sync service configuration for a single table (CSV/JSONL).
+///
+/// CSV/JSONL need one sync service per file since the CLI handles one table at a time.
+fn generate_file_sync_service(
+    config: &ClusterConfig,
+    table_name: &str,
+    _row_count: u64,
+    container_idx: usize,
+) -> Value {
+    let mut service = Mapping::new();
+
+    service.insert(
+        Value::String("image".to_string()),
+        Value::String("surreal-sync:latest".to_string()),
+    );
+
+    // Labels for cleanup
+    let mut labels = Mapping::new();
+    labels.insert(
+        Value::String("com.surreal-loadtest".to_string()),
+        Value::String("true".to_string()),
+    );
+    service.insert(Value::String("labels".to_string()), Value::Mapping(labels));
+
+    let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
+
+    // CSV/JSONL sync command - reads from file, imports to SurrealDB
+    // CSV and JSONL have different CLI syntax
+    let command = match config.source_type {
+        SourceType::Csv => {
+            // CSV: --files, --table, --has-headers, --id-field
+            format!(
+                "from csv \
+                --files '/data/csv/{table_name}.csv' \
+                --table '{table_name}' \
+                --has-headers \
+                --id-field id \
+                --to-namespace {} \
+                --to-database {} \
+                --surreal-endpoint 'http://surrealdb:8000' \
+                --surreal-username root \
+                --surreal-password root \
+                --schema-file /config/schema.yaml{dry_run_flag}",
+                config.surrealdb.namespace, config.surrealdb.database
+            )
+        }
+        SourceType::Jsonl => {
+            // JSONL: --path (directory or file), --id-field (defaults to id)
+            // JSONL infers table name from filename
+            format!(
+                "from jsonl \
+                --path '/data/jsonl/{table_name}.jsonl' \
+                --to-namespace {} \
+                --to-database {} \
+                --surreal-endpoint 'http://surrealdb:8000' \
+                --surreal-username root \
+                --surreal-password root \
+                --schema-file /config/schema.yaml{dry_run_flag}",
+                config.surrealdb.namespace, config.surrealdb.database
+            )
+        }
+        _ => unreachable!("generate_file_sync_service only called for CSV/JSONL"),
+    };
+    service.insert(Value::String("command".to_string()), Value::String(command));
+
+    // Environment
+    let environment = vec![Value::String("RUST_LOG=info".to_string())];
+    service.insert(
+        Value::String("environment".to_string()),
+        Value::Sequence(environment),
+    );
+
+    // Volumes - mount config and shared data volume
+    let volumes = vec![
+        Value::String("./config:/config:ro".to_string()),
+        Value::String("loadtest-data:/data".to_string()),
+    ];
+    service.insert(
+        Value::String("volumes".to_string()),
+        Value::Sequence(volumes),
+    );
+
+    // Networks
+    let networks = vec![Value::String(config.network_name.clone())];
+    service.insert(
+        Value::String("networks".to_string()),
+        Value::Sequence(networks),
+    );
+
+    // Dependencies - wait for populate container to complete
+    let mut depends_on = Mapping::new();
+
+    // Wait for the populate container that handles this table
+    let mut populate_dep = Mapping::new();
+    populate_dep.insert(
+        Value::String("condition".to_string()),
+        Value::String("service_completed_successfully".to_string()),
+    );
+    depends_on.insert(
+        Value::String(format!("populate-{container_idx}")),
+        Value::Mapping(populate_dep),
+    );
+
+    // Wait for SurrealDB to be healthy
+    let mut surreal_dep = Mapping::new();
+    surreal_dep.insert(
+        Value::String("condition".to_string()),
+        Value::String("service_healthy".to_string()),
+    );
+    depends_on.insert(
+        Value::String("surrealdb".to_string()),
+        Value::Mapping(surreal_dep),
+    );
+
+    // Wait for file-generator to be healthy (ensures shared volume is ready)
+    let mut file_gen_dep = Mapping::new();
+    file_gen_dep.insert(
+        Value::String("condition".to_string()),
+        Value::String("service_healthy".to_string()),
+    );
+    depends_on.insert(
+        Value::String("file-generator".to_string()),
+        Value::Mapping(file_gen_dep),
+    );
+
+    service.insert(
+        Value::String("depends_on".to_string()),
+        Value::Mapping(depends_on),
+    );
+
+    Value::Mapping(service)
+}
+
 /// Generate verify service configuration (runs after sync completes).
 fn generate_verify_service(
     config: &ClusterConfig,
@@ -858,8 +1023,11 @@ fn generate_verify_service(
     // Dependencies - wait for sync to complete
     let mut depends_on = Mapping::new();
 
-    // For Kafka, wait for all sync-<table> services; for other sources, wait for single "sync" service
-    if config.source_type == SourceType::Kafka {
+    // For Kafka/CSV/JSONL, wait for all sync-<table> services; for other sources, wait for single "sync" service
+    if config.source_type == SourceType::Kafka
+        || config.source_type == SourceType::Csv
+        || config.source_type == SourceType::Jsonl
+    {
         // Wait for sync services for tables this container handles
         for table in &container.tables {
             let mut sync_dep = Mapping::new();
