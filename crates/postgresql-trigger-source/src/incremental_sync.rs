@@ -11,10 +11,8 @@ use log::{error, info, warn};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
+use surreal2_sink::{apply_universal_change, surreal_connect, SurrealOpts as SurrealConnOpts};
 use surreal_sync_postgresql::SurrealOpts;
-use surreal_sync_surreal::{
-    apply_universal_change, surreal_connect, SurrealOpts as SurrealConnOpts,
-};
 use sync_core::{DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalValue};
 use tokio::sync::Mutex;
 use tokio_postgres::Client;

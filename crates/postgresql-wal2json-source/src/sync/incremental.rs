@@ -4,7 +4,7 @@
 //! the initial full snapshot has been completed.
 
 use anyhow::Result;
-use surreal_sync_surreal::apply_universal_change;
+use surreal2_sink::apply_universal_change;
 use sync_core::{UniversalChange, UniversalChangeOp};
 use tokio_postgres::NoTls;
 use tracing::{debug, error, info};

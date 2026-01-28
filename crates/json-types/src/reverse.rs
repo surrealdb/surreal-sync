@@ -639,12 +639,12 @@ pub fn parse_jsonl_line(
 
 // ============================================================================
 // Schema-aware conversion functions for source crates
-// These replace surrealdb_types functions to enable decoupling from SurrealDB
+// These replace surreal2_types functions to enable decoupling from SurrealDB
 // ============================================================================
 
 /// Convert JSON value to UniversalValue using table schema for type lookup.
 ///
-/// This is the universal equivalent of `surrealdb_types::json_to_surreal_with_table_schema`.
+/// This is the universal equivalent of `surreal2_types::json_to_surreal_with_table_schema`.
 /// Returns UniversalValue instead of surrealdb::sql::Value.
 pub fn json_to_universal_with_table_schema(
     value: serde_json::Value,
@@ -669,7 +669,7 @@ pub fn json_to_universal_with_table_schema(
 
 /// Convert a string ID value to UniversalValue based on schema-defined type.
 ///
-/// This is the universal equivalent of `surrealdb_types::convert_id_with_database_schema`.
+/// This is the universal equivalent of `surreal2_types::convert_id_with_database_schema`.
 /// Returns UniversalValue instead of surrealdb::sql::Id.
 pub fn convert_id_to_universal_with_database_schema(
     id_str: &str,

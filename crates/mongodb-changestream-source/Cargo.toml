@@ -11,7 +11,7 @@ mongodb = "3.2.4"
 bson = { version = "2.15.0", features = ["chrono-0_4"] }
 
 # SurrealDB sync layer
-surreal-sync-surreal = { path = "../surreal" }
+surreal2-sink = { path = "../surreal2-sink" }
 
 # Sync core traits
 sync-core = { path = "../sync-core" }
@@ -37,4 +37,4 @@ base64 = "0.22"
 [dev-dependencies]
 tempfile = "3.10"
 surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
-surrealdb-types = { path = "../surrealdb-types" }
+surreal2-types = { path = "../surreal2-types" }

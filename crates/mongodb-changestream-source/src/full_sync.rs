@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use sync_core::{UniversalRow, UniversalType, UniversalValue};
 
-use surreal_sync_surreal::{surreal_connect, write_universal_rows, SurrealOpts as SurrealConnOpts};
+use surreal2_sink::{surreal_connect, write_universal_rows, SurrealOpts as SurrealConnOpts};
 
 /// Source database connection options (MongoDB-specific, library type without clap)
 #[derive(Clone, Debug)]

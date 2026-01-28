@@ -7,8 +7,8 @@ use anyhow::Result;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
+use surreal2_types::RecordWithSurrealValues as Record;
 use surrealdb::sql::{Array, Datetime, Number, Strand, Value};
-use surrealdb_types::RecordWithSurrealValues as Record;
 use tokio_postgres::{Client, Row};
 use tracing::{debug, warn};
 
@@ -64,7 +64,7 @@ pub async fn migrate_table(
             let batch_size = batch.len();
 
             if !to_opts.dry_run {
-                surreal_sync_surreal::write_records(surreal, table_name, &batch).await?;
+                surreal2_sink::write_records(surreal, table_name, &batch).await?;
             } else {
                 debug!(
                     "Dry-run: Would insert {} records into {}",
@@ -82,7 +82,7 @@ pub async fn migrate_table(
         let batch_size = batch.len();
 
         if !to_opts.dry_run {
-            surreal_sync_surreal::write_records(surreal, table_name, &batch).await?;
+            surreal2_sink::write_records(surreal, table_name, &batch).await?;
         } else {
             debug!(
                 "Dry-run: Would insert {} records into {}",

@@ -13,7 +13,7 @@ authors = ["surreal-sync contributors"]
 kafka-types = { path = "../kafka-types" }
 
 # For sync functionality
-surreal-sync-surreal = { path = "../surreal" }
+surreal2-sink = { path = "../surreal2-sink" }
 sync-core = { path = "../sync-core" }
 
 # Kafka client

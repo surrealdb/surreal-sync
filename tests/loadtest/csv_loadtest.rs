@@ -86,7 +86,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
     // === PHASE 2: RUN SYNC from CSV files to SurrealDB ===
     tracing::info!("Running sync from CSV files to SurrealDB");
 
-    let surreal_opts = surreal_sync_surreal::SurrealOpts {
+    let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: surreal_config.surreal_endpoint.clone(),
         surreal_username: "root".to_string(),
         surreal_password: "root".to_string(),
@@ -235,7 +235,7 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
     let csv_path2 = temp_dir.path().join("users2.csv");
     populator2.populate("users", &csv_path2, 3)?;
 
-    let surreal_opts = surreal_sync_surreal::SurrealOpts {
+    let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: surreal_config.surreal_endpoint.clone(),
         surreal_username: "root".to_string(),
         surreal_password: "root".to_string(),

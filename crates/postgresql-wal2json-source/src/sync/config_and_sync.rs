@@ -70,12 +70,12 @@ pub async fn sync(config: Config, to_opts: SurrealOpts) -> Result<()> {
     tracing::info!("Tables: {:?}", config.tables);
     tracing::info!("Target: {}/{}", config.to_namespace, config.to_database);
 
-    let surreal_conn_opts = surreal_sync_surreal::SurrealOpts {
+    let surreal_conn_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: to_opts.surreal_endpoint.clone(),
         surreal_username: to_opts.surreal_username.clone(),
         surreal_password: to_opts.surreal_password.clone(),
     };
-    let surreal = surreal_sync_surreal::surreal_connect(
+    let surreal = surreal2_sink::surreal_connect(
         &surreal_conn_opts,
         &config.to_namespace,
         &config.to_database,

@@ -41,7 +41,7 @@ pub struct Config {
     pub database: String,
 
     /// SurrealDB connection options
-    pub surreal_opts: surreal_sync_surreal::SurrealOpts,
+    pub surreal_opts: surreal2_sink::SurrealOpts,
 
     /// Field to use as record ID (default: "id")
     pub id_field: String,
@@ -68,7 +68,7 @@ impl Default for Config {
             http_uris: vec![],
             namespace: "test".to_string(),
             database: "test".to_string(),
-            surreal_opts: surreal_sync_surreal::SurrealOpts {
+            surreal_opts: surreal2_sink::SurrealOpts {
                 surreal_endpoint: "ws://localhost:8000".to_string(),
                 surreal_username: "root".to_string(),
                 surreal_password: "root".to_string(),
@@ -87,7 +87,7 @@ impl Default for Config {
 /// This function handles all JSONL parsing, data conversion, and SurrealDB insertion
 /// for a single JSONL source (file, S3, or HTTP).
 async fn process_jsonl_reader(
-    surreal: &surreal_sync_surreal::Surreal<surreal_sync_surreal::SurrealEngine>,
+    surreal: &surreal2_sink::Surreal<surreal2_sink::SurrealEngine>,
     config: &Config,
     reader: Box<dyn std::io::Read + Send>,
     source_name: &str,
@@ -160,7 +160,7 @@ async fn process_jsonl_reader(
         // Process batch when it reaches the batch size
         if batch.len() >= config.batch_size {
             if !config.dry_run {
-                surreal_sync_surreal::write_universal_rows(surreal, &batch).await?;
+                surreal2_sink::write_universal_rows(surreal, &batch).await?;
             }
             total_migrated += batch.len();
             tracing::debug!("Migrated batch of {} documents", batch.len());
@@ -171,7 +171,7 @@ async fn process_jsonl_reader(
     // Process remaining documents
     if !batch.is_empty() {
         if !config.dry_run {
-            surreal_sync_surreal::write_universal_rows(surreal, &batch).await?;
+            surreal2_sink::write_universal_rows(surreal, &batch).await?;
         }
         total_migrated += batch.len();
         tracing::debug!("Migrated final batch of {} documents", batch.len());
@@ -216,12 +216,9 @@ pub async fn sync(config: Config) -> Result<()> {
     tracing::debug!("Parsed {} conversion rules", rules.len());
 
     // Connect to SurrealDB
-    let surreal = surreal_sync_surreal::surreal_connect(
-        &config.surreal_opts,
-        &config.namespace,
-        &config.database,
-    )
-    .await?;
+    let surreal =
+        surreal2_sink::surreal_connect(&config.surreal_opts, &config.namespace, &config.database)
+            .await?;
     tracing::info!("Connected to SurrealDB");
 
     let mut total_sources = 0;
@@ -323,7 +320,7 @@ pub async fn migrate_from_jsonl(
     from_opts: SourceOpts,
     to_namespace: String,
     to_database: String,
-    to_opts: surreal_sync_surreal::SurrealOpts,
+    to_opts: surreal2_sink::SurrealOpts,
     id_field: String,
     conversion_rules: Vec<String>,
 ) -> Result<()> {

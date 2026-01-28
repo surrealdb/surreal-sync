@@ -9,9 +9,9 @@
 
 use loadtest_populate_jsonl::JsonlPopulator;
 use loadtest_verify::StreamingVerifier;
+use surreal2_sink::SurrealOpts;
 use surreal_sync::jsonl::{sync, Config, FileSource};
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
-use surreal_sync_surreal::SurrealOpts;
 use sync_core::Schema;
 use tempfile::TempDir;
 

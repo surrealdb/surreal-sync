@@ -59,8 +59,8 @@ use anyhow::Context;
 use checkpoint::Checkpoint;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
+use surreal2_sink::surreal_connect;
 use surreal_sync::SurrealOpts;
-use surreal_sync_surreal::surreal_connect;
 
 // Database-specific sync crates (fully-qualified paths used in match arms)
 #[allow(clippy::single_component_path_imports)]
@@ -1258,7 +1258,7 @@ async fn run_mysql_full(args: MySQLFullArgs) -> anyhow::Result<()> {
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    let surreal_conn_opts = surreal_sync_surreal::SurrealOpts {
+    let surreal_conn_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
@@ -1546,7 +1546,7 @@ async fn run_csv(args: CsvArgs) -> anyhow::Result<()> {
         batch_size: args.surreal.batch_size,
         namespace: args.to_namespace,
         database: args.to_database,
-        surreal_opts: surreal_sync_surreal::SurrealOpts {
+        surreal_opts: surreal2_sink::SurrealOpts {
             surreal_endpoint: args.surreal.surreal_endpoint,
             surreal_username: args.surreal.surreal_username,
             surreal_password: args.surreal.surreal_password,
@@ -1582,7 +1582,7 @@ async fn run_jsonl(args: JsonlArgs) -> anyhow::Result<()> {
     let jsonl_from_opts = surreal_sync::jsonl::SourceOpts {
         source_uri: args.path,
     };
-    let jsonl_to_opts = surreal_sync_surreal::SurrealOpts {
+    let jsonl_to_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
         surreal_password: args.surreal.surreal_password,

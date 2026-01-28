@@ -106,12 +106,12 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         dry_run: false,
     };
 
-    let surreal_conn_opts = surreal_sync_surreal::SurrealOpts {
+    let surreal_conn_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: surreal_opts.surreal_endpoint.clone(),
         surreal_username: surreal_opts.surreal_username.clone(),
         surreal_password: surreal_opts.surreal_password.clone(),
     };
-    let surreal_for_sync = surreal_sync_surreal::surreal_connect(
+    let surreal_for_sync = surreal2_sink::surreal_connect(
         &surreal_conn_opts,
         &surreal_config.surreal_namespace,
         &surreal_config.surreal_database,
