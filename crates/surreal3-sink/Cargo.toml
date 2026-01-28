@@ -1,13 +1,13 @@
 [package]
-name = "surreal2-sink"
+name = "surreal3-sink"
 version = "0.1.0"
 edition = "2021"
-description = "SurrealDB connection and write utilities"
+description = "SurrealDB v3 connection and write utilities"
 license = "MIT"
 
 [dependencies]
-surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
-surreal2-types = { path = "../surreal2-types" }
+surrealdb = { version = "3.0.0-beta.2", features = ["protocol-ws", "kv-mem"] }
+surreal3-types = { path = "../surreal3-types" }
 surreal-sink = { path = "../surreal-sink" }
 sync-core = { path = "../sync-core" }
 anyhow = "1.0.100"

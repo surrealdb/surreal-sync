@@ -1,0 +1,12 @@
+[package]
+name = "surreal-version"
+version = "0.1.0"
+edition = "2021"
+description = "Auto-detect SurrealDB server version via HTTP"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.100"
+reqwest = { version = "0.12", features = ["json"] }
+semver = "1.0"
+tracing = "0.1"

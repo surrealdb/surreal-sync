@@ -1,6 +1,6 @@
-//! SurrealDB v2 connection and write utilities
+//! SurrealDB v3 connection and write utilities
 //!
-//! Provides functions for connecting to SurrealDB v2 and writing records/relations.
+//! Provides functions for connecting to SurrealDB v3 and writing records/relations.
 
 mod change;
 mod connect;
@@ -14,7 +14,7 @@ pub use rows::{
     universal_relation_to_surreal_relation, universal_row_to_surreal_record,
     universal_value_to_surreal_id, write_universal_relations, write_universal_rows,
 };
-pub use sink_impl::Surreal2Sink;
+pub use sink_impl::Surreal3Sink;
 pub use write::{
     apply_change, apply_universal_change, write_record, write_records, write_relation,
     write_relations,
