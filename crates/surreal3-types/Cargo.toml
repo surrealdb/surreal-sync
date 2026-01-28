@@ -1,0 +1,24 @@
+[package]
+name = "surreal3-types"
+version = "0.1.0"
+edition = "2021"
+description = "SurrealDB v3 type conversions for sync-core types"
+license = "MIT"
+
+[dependencies]
+sync-core = { path = "../sync-core" }
+surrealdb = { version = "3.0.0-beta.2", features = ["protocol-ws", "kv-mem"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+ulid = { version = "1.1", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+rust_decimal = { version = "^1.23" }
+geo-types = "0.7"
+base64 = "0.22"
+anyhow = "1.0.100"
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.49", features = ["full"] }

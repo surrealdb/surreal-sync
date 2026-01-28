@@ -1,0 +1,14 @@
+[package]
+name = "surreal2-client"
+version = "0.1.0"
+edition = "2021"
+description = "SurrealDB v2 test client implementation"
+license = "MIT"
+
+[dependencies]
+surreal-client = { path = "../surreal-client" }
+surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+anyhow = "1.0.100"
+async-trait = "0.1"
+tracing = "0.1"
+serde_json = "1.0"

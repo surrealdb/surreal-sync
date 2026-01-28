@@ -1,0 +1,11 @@
+[package]
+name = "surreal-sink"
+version = "0.1.0"
+edition = "2021"
+description = "SurrealDB sink trait abstraction for version-independent data writes"
+license = "MIT"
+
+[dependencies]
+sync-core = { path = "../sync-core" }
+anyhow = "1.0.100"
+async-trait = "0.1"
