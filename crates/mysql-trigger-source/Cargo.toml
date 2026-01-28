@@ -6,7 +6,7 @@ description = "MySQL trigger-based sync for surreal-sync"
 
 [dependencies]
 mysql_async = "0.34"
-surreal2-sink = { path = "../surreal2-sink" }
+surreal-sink = { path = "../surreal-sink" }
 sync-core = { path = "../sync-core" }
 checkpoint = { path = "../checkpoint" }
 mysql-types = { path = "../mysql-types" }

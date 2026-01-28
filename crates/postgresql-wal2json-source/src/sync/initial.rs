@@ -4,11 +4,12 @@
 //! before starting logical replication.
 
 use anyhow::Result;
+use surreal2_sink::Surreal2Sink;
+use surreal_sync_postgresql::SyncOpts;
 use tokio_postgres::NoTls;
 use tracing::error;
 
 use super::config_and_sync::Config;
-use surreal_sync_postgresql::SurrealOpts;
 
 /// Perform initial sync and return the pre-LSN
 ///
@@ -21,22 +22,25 @@ use surreal_sync_postgresql::SurrealOpts;
 /// # Arguments
 /// * `surreal` - SurrealDB client
 /// * `config` - Configuration for the sync operation
-/// * `shared_opts` - SurrealDB options (from shared crate)
+/// * `sync_opts` - Sync options (batch_size, dry_run)
 ///
 /// # Returns
 /// The pre-LSN string that marks the position before the initial sync
 pub async fn sync(
     surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
     config: &Config,
-    shared_opts: &SurrealOpts,
+    sync_opts: &SyncOpts,
 ) -> Result<String> {
     // Connect to PostgreSQL
     let (psql_client, connection) = tokio_postgres::connect(&config.connection_string, NoTls)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to connect to PostgreSQL: {e}"))?;
 
+    // Wrap the v2 SDK connection in Surreal2Sink for use with migrate_table
+    let sink = Surreal2Sink::new(surreal.clone());
+
     for tb in &config.tables {
-        surreal_sync_postgresql::migrate_table(&psql_client, surreal, tb, shared_opts).await?;
+        surreal_sync_postgresql::migrate_table(&psql_client, &sink, tb, sync_opts).await?;
     }
 
     // Spawn connection handler

@@ -19,7 +19,7 @@ sync-core = { path = "../sync-core" }
 
 # Type conversion crates
 json-types = { path = "../json-types" }
-surreal2-sink = { path = "../surreal2-sink" }
+surreal-sink = { path = "../surreal-sink" }
 
 [dev-dependencies]
 tokio-test = "0.4"

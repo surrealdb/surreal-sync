@@ -6,9 +6,8 @@ use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
 use std::collections::HashMap;
 use std::time::Duration;
+use surreal_sink::SurrealSink;
 use sync_core::{UniversalRow, UniversalType, UniversalValue};
-
-use surreal2_sink::{surreal_connect, write_universal_rows, SurrealOpts as SurrealConnOpts};
 
 /// Source database connection options (MongoDB-specific, library type without clap)
 #[derive(Clone, Debug)]
@@ -17,12 +16,9 @@ pub struct SourceOpts {
     pub source_database: Option<String>,
 }
 
-/// SurrealDB connection options (library type without clap)
+/// Sync options (non-connection related)
 #[derive(Clone, Debug)]
-pub struct SurrealOpts {
-    pub surreal_endpoint: String,
-    pub surreal_username: String,
-    pub surreal_password: String,
+pub struct SyncOpts {
     pub batch_size: usize,
     pub dry_run: bool,
 }
@@ -45,21 +41,20 @@ fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
     }
 }
 
-pub async fn migrate_from_mongodb(
+/// Simple migration entry point (no checkpoint support)
+pub async fn migrate_from_mongodb<S: SurrealSink>(
+    surreal: &S,
     from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
+    sync_opts: SyncOpts,
 ) -> anyhow::Result<()> {
-    run_full_sync(from_opts, to_namespace, to_database, to_opts, None).await
+    run_full_sync(surreal, from_opts, sync_opts, None).await
 }
 
 /// Enhanced version that supports checkpoint emission for incremental sync coordination
-pub async fn run_full_sync(
+pub async fn run_full_sync<S: SurrealSink>(
+    surreal: &S,
     from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
+    sync_opts: SyncOpts,
     sync_config: Option<SyncConfig>,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting MongoDB migration");
@@ -131,12 +126,6 @@ pub async fn run_full_sync(
         None
     };
 
-    let surreal_conn_opts = SurrealConnOpts {
-        surreal_endpoint: to_opts.surreal_endpoint.clone(),
-        surreal_username: to_opts.surreal_username.clone(),
-        surreal_password: to_opts.surreal_password.clone(),
-    };
-    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
     tracing::info!("Connected to both MongoDB and SurrealDB");
 
     // Get list of collections from MongoDB
@@ -211,15 +200,15 @@ pub async fn run_full_sync(
 
             batch.push(surreal_record);
 
-            if batch.len() >= to_opts.batch_size {
+            if batch.len() >= sync_opts.batch_size {
                 tracing::debug!(
                     "Batch size reached ({}), processing batch for collection: {}",
                     batch.len(),
                     collection_name
                 );
-                if !to_opts.dry_run {
+                if !sync_opts.dry_run {
                     tracing::debug!("Migrating batch of {} documents to SurrealDB", batch.len());
-                    write_universal_rows(&surreal, &batch).await?;
+                    surreal.write_universal_rows(&batch).await?;
                     tracing::debug!("Batch migration completed");
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
@@ -243,12 +232,12 @@ pub async fn run_full_sync(
                 batch.len(),
                 collection_name
             );
-            if !to_opts.dry_run {
+            if !sync_opts.dry_run {
                 tracing::debug!(
                     "Migrating final batch of {} documents to SurrealDB",
                     batch.len()
                 );
-                write_universal_rows(&surreal, &batch).await?;
+                surreal.write_universal_rows(&batch).await?;
                 tracing::debug!("Final batch migration completed");
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");

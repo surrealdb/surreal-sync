@@ -5,4 +5,4 @@
 
 mod incremental;
 
-pub use incremental::{run_incremental_sync, Config, SurrealOpts};
+pub use incremental::{run_incremental_sync, Config};

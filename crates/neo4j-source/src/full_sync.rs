@@ -5,10 +5,7 @@
 use neo4rs::{ConfigBuilder, Graph, Query};
 use std::collections::HashMap;
 use std::collections::HashSet;
-use surreal2_sink::{
-    surreal_connect, write_universal_relations, write_universal_rows, Surreal, SurrealEngine,
-    SurrealOpts as SurrealConnOpts,
-};
+use surreal_sink::SurrealSink;
 use sync_core::{UniversalRelation, UniversalRow, UniversalThingRef, UniversalValue};
 
 use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
@@ -24,12 +21,9 @@ pub struct SourceOpts {
     pub neo4j_json_properties: Option<Vec<String>>,
 }
 
-/// SurrealDB connection options (library type without clap)
+/// Sync options (non-connection related)
 #[derive(Clone, Debug)]
-pub struct SurrealOpts {
-    pub surreal_endpoint: String,
-    pub surreal_username: String,
-    pub surreal_password: String,
+pub struct SyncOpts {
     pub batch_size: usize,
     pub dry_run: bool,
 }
@@ -95,11 +89,10 @@ impl Neo4jConversionContext {
 }
 
 /// Enhanced version that supports checkpoint emission for incremental sync coordination
-pub async fn run_full_sync(
+pub async fn run_full_sync<S: SurrealSink>(
+    surreal: &S,
     from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
+    sync_opts: SyncOpts,
     sync_config: Option<SyncConfig>,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Neo4j migration");
@@ -155,13 +148,6 @@ pub async fn run_full_sync(
         None
     };
 
-    // Connect to SurrealDB
-    let surreal_conn_opts = SurrealConnOpts {
-        surreal_endpoint: to_opts.surreal_endpoint.clone(),
-        surreal_username: to_opts.surreal_username.clone(),
-        surreal_password: to_opts.surreal_password.clone(),
-    };
-    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
     tracing::info!("Connected to both Neo4j and SurrealDB");
 
     // Create conversion context with JSON-to-object configuration
@@ -173,10 +159,10 @@ pub async fn run_full_sync(
     let mut total_migrated = 0;
 
     // Migrate nodes first
-    total_migrated += migrate_neo4j_nodes(&graph, &surreal, &to_opts, &ctx).await?;
+    total_migrated += migrate_neo4j_nodes(&graph, surreal, &sync_opts, &ctx).await?;
 
     // Then migrate relationships
-    total_migrated += migrate_neo4j_relationships(&graph, &surreal, &to_opts, &ctx).await?;
+    total_migrated += migrate_neo4j_relationships(&graph, surreal, &sync_opts, &ctx).await?;
 
     // Emit checkpoint t2 (after full sync completes) if configured
     if let Some(ref config) = sync_config {
@@ -204,10 +190,10 @@ pub async fn run_full_sync(
 }
 
 /// Migrate all nodes from Neo4j to SurrealDB
-async fn migrate_neo4j_nodes(
+async fn migrate_neo4j_nodes<S: SurrealSink>(
     graph: &Graph,
-    surreal: &Surreal<SurrealEngine>,
-    to_opts: &SurrealOpts,
+    surreal: &S,
+    sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
 ) -> anyhow::Result<usize> {
     tracing::info!("Starting Neo4j nodes migration");
@@ -251,14 +237,14 @@ async fn migrate_neo4j_nodes(
 
             batch.push(universal_row);
 
-            if batch.len() >= to_opts.batch_size {
+            if batch.len() >= sync_opts.batch_size {
                 tracing::debug!(
                     "Batch size reached ({}), processing batch for label: {}",
                     batch.len(),
                     label
                 );
-                if !to_opts.dry_run {
-                    write_universal_rows(surreal, &batch).await?;
+                if !sync_opts.dry_run {
+                    surreal.write_universal_rows(&batch).await?;
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
                 }
@@ -276,8 +262,8 @@ async fn migrate_neo4j_nodes(
                 batch.len(),
                 label
             );
-            if !to_opts.dry_run {
-                write_universal_rows(surreal, &batch).await?;
+            if !sync_opts.dry_run {
+                surreal.write_universal_rows(&batch).await?;
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");
             }
@@ -300,10 +286,10 @@ async fn migrate_neo4j_nodes(
 }
 
 /// Migrate all relationships from Neo4j to SurrealDB
-async fn migrate_neo4j_relationships(
+async fn migrate_neo4j_relationships<S: SurrealSink>(
     graph: &Graph,
-    surreal: &Surreal<SurrealEngine>,
-    to_opts: &SurrealOpts,
+    surreal: &S,
+    sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
 ) -> anyhow::Result<usize> {
     tracing::info!("Starting Neo4j relationships migration");
@@ -353,14 +339,14 @@ async fn migrate_neo4j_relationships(
 
             batch.push(universal_relation);
 
-            if batch.len() >= to_opts.batch_size {
+            if batch.len() >= sync_opts.batch_size {
                 tracing::debug!(
                     "Batch size reached ({}), processing batch for type: {}",
                     batch.len(),
                     rel_type
                 );
-                if !to_opts.dry_run {
-                    write_universal_relations(surreal, &batch).await?;
+                if !sync_opts.dry_run {
+                    surreal.write_universal_relations(&batch).await?;
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
                 }
@@ -382,8 +368,8 @@ async fn migrate_neo4j_relationships(
                 batch.len(),
                 rel_type
             );
-            if !to_opts.dry_run {
-                write_universal_relations(surreal, &batch).await?;
+            if !sync_opts.dry_run {
+                surreal.write_universal_relations(&batch).await?;
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");
             }

@@ -6,6 +6,7 @@
 
 use anyhow::Result;
 use clap::Parser;
+use surreal_sync_postgresql::SyncOpts;
 
 /// SurrealDB connection options
 ///
@@ -46,6 +47,14 @@ pub struct Config {
     /// Target SurrealDB database
     #[arg(long)]
     pub to_database: String,
+
+    /// Batch size for data migration
+    #[arg(long, default_value = "1000")]
+    pub batch_size: usize,
+
+    /// Dry run mode - don't actually write data
+    #[arg(long, default_value = "false")]
+    pub dry_run: bool,
 }
 
 /// Run PostgreSQL logical decoding-based sync to SurrealDB
@@ -70,17 +79,24 @@ pub async fn sync(config: Config, to_opts: SurrealOpts) -> Result<()> {
     tracing::info!("Tables: {:?}", config.tables);
     tracing::info!("Target: {}/{}", config.to_namespace, config.to_database);
 
-    let surreal_conn_opts = surreal2_sink::SurrealOpts {
-        surreal_endpoint: to_opts.surreal_endpoint.clone(),
-        surreal_username: to_opts.surreal_username.clone(),
-        surreal_password: to_opts.surreal_password.clone(),
-    };
-    let surreal = surreal2_sink::surreal_connect(
-        &surreal_conn_opts,
-        &config.to_namespace,
-        &config.to_database,
-    )
-    .await?;
+    // Connect to SurrealDB using v2 SDK directly (needed for state management)
+    let surreal_endpoint = to_opts
+        .surreal_endpoint
+        .replace("http://", "ws://")
+        .replace("https://", "wss://");
+    let surreal = surrealdb::engine::any::connect(surreal_endpoint).await?;
+
+    surreal
+        .signin(surrealdb::opt::auth::Root {
+            username: &to_opts.surreal_username,
+            password: &to_opts.surreal_password,
+        })
+        .await?;
+
+    surreal
+        .use_ns(&config.to_namespace)
+        .use_db(&config.to_database)
+        .await?;
 
     let store = super::state::Store::new(surreal.clone());
     let id = super::state::StateID::from_connection_and_slot(
@@ -110,16 +126,13 @@ pub async fn sync(config: Config, to_opts: SurrealOpts) -> Result<()> {
                 "PostgreSQL logical decoding sync from Pending state is not yet implemented"
             );
 
-            // Convert SurrealOpts to shared crate type for migrate_table
-            let shared_opts = surreal_sync_postgresql::SurrealOpts {
-                surreal_endpoint: to_opts.surreal_endpoint.clone(),
-                surreal_username: to_opts.surreal_username.clone(),
-                surreal_password: to_opts.surreal_password.clone(),
-                batch_size: 1000,
-                dry_run: false,
+            // Create sync options for migrate_table
+            let sync_opts = SyncOpts {
+                batch_size: config.batch_size,
+                dry_run: config.dry_run,
             };
 
-            let pre_lsn = super::initial::sync(&surreal, &config, &shared_opts).await?;
+            let pre_lsn = super::initial::sync(&surreal, &config, &sync_opts).await?;
 
             store
                 .transition(&id, super::state::State::Initial { pre_lsn })

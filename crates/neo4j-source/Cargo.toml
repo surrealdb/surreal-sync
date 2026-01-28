@@ -9,8 +9,8 @@ license = "MIT"
 # Neo4j client
 neo4rs = "0.9.0-rc.8"
 
-# SurrealDB write utilities (handles connection and writing)
-surreal2-sink = { path = "../surreal2-sink" }
+# SurrealDB sink trait
+surreal-sink = { path = "../surreal-sink" }
 
 # Sync core traits
 sync-core = { path = "../sync-core" }

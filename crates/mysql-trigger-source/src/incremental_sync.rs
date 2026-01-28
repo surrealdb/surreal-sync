@@ -5,18 +5,16 @@
 
 use super::checkpoint::MySQLCheckpoint;
 use super::source::IncrementalSource;
-use crate::{SourceOpts, SurrealOpts};
+use crate::SourceOpts;
 use anyhow::Result;
 use checkpoint::Checkpoint;
-use surreal2_sink::{apply_universal_change, surreal_connect, SurrealOpts as SurrealConnOpts};
+use surreal_sink::SurrealSink;
 use tracing::{debug, info, warn};
 
 /// Run incremental sync from MySQL to SurrealDB
-pub async fn run_incremental_sync(
+pub async fn run_incremental_sync<S: SurrealSink>(
+    surreal: &S,
     from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
     from_checkpoint: MySQLCheckpoint,
     deadline: chrono::DateTime<chrono::Utc>,
     target_checkpoint: Option<MySQLCheckpoint>,
@@ -35,13 +33,6 @@ pub async fn run_incremental_sync(
 
     // Initialize source (schema collection, connection check)
     source.initialize().await?;
-
-    let surreal_conn_opts = SurrealConnOpts {
-        surreal_endpoint: to_opts.surreal_endpoint.clone(),
-        surreal_username: to_opts.surreal_username.clone(),
-        surreal_password: to_opts.surreal_password.clone(),
-    };
-    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
 
     // Get change stream
     let mut stream = source.get_changes().await?;
@@ -73,7 +64,7 @@ pub async fn run_incremental_sync(
                     }
                 }
 
-                apply_universal_change(&surreal, &change).await?;
+                surreal.apply_universal_change(&change).await?;
 
                 change_count += 1;
                 if change_count % 100 == 0 {

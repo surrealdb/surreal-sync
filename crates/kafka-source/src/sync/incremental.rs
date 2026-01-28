@@ -14,25 +14,13 @@ use kafka_types::Message;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use surreal_sink::SurrealSink;
 use sync_core::{TableDefinition, TypedValue, UniversalRow, UniversalValue};
 use tokio::time::{sleep, Duration};
 use tracing::{debug, info};
 
 use crate::consumer::ConsumerConfig;
 use crate::Client;
-
-/// SurrealDB connection options.
-///
-/// Defined locally to avoid dependency on main crate.
-#[derive(Clone, Debug)]
-pub struct SurrealOpts {
-    /// SurrealDB endpoint URL
-    pub surreal_endpoint: String,
-    /// SurrealDB username
-    pub surreal_username: String,
-    /// SurrealDB password
-    pub surreal_password: String,
-}
 
 /// Configuration for Kafka source.
 #[derive(Debug, Clone, Parser)]
@@ -89,11 +77,9 @@ pub struct Config {
 ///
 /// The sync will run until the deadline is reached. Once the deadline passes,
 /// the function will gracefully terminate all consumers and exit.
-pub async fn run_incremental_sync(
+pub async fn run_incremental_sync<S: SurrealSink + Send + Sync + 'static>(
+    surreal: Arc<S>,
     config: Config,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
     deadline: DateTime<Utc>,
     table_schema: Option<TableDefinition>,
 ) -> Result<()> {
@@ -104,15 +90,6 @@ pub async fn run_incremental_sync(
         config.topic,
         duration_until_deadline.num_seconds()
     );
-
-    let surreal_conn_opts = surreal2_sink::SurrealOpts {
-        surreal_endpoint: to_opts.surreal_endpoint.clone(),
-        surreal_username: to_opts.surreal_username.clone(),
-        surreal_password: to_opts.surreal_password.clone(),
-    };
-    let surreal =
-        surreal2_sink::surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
-    let surreal = Arc::new(surreal);
 
     // Determine table name: use configured table_name if provided, otherwise use topic name
     let table_name = config
@@ -177,7 +154,7 @@ pub async fn run_incremental_sync(
                         counter.load(Ordering::SeqCst),
                     )?;
 
-                    surreal2_sink::write_universal_rows(&surreal, &[row]).await?;
+                    surreal.write_universal_rows(&[row]).await?;
 
                     let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
                     if count % 100 == 0 {

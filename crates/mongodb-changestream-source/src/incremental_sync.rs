@@ -4,7 +4,7 @@
 //! Change Streams, which provide real-time change notifications.
 
 use crate::checkpoint::MongoDBCheckpoint;
-use crate::{convert_bson_to_universal_value, SourceOpts, SurrealOpts};
+use crate::{convert_bson_to_universal_value, SourceOpts};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use bson::Document;
@@ -18,7 +18,7 @@ use mongodb::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use surreal2_sink::{apply_universal_change, surreal_connect, SurrealOpts as SurrealConnOpts};
+use surreal_sink::SurrealSink;
 use sync_core::{UniversalChange, UniversalChangeOp, UniversalValue};
 use tokio::sync::Mutex;
 
@@ -313,11 +313,9 @@ impl ChangeStream for MongoChangeStream {
 /// 2. Reads changes from the specified checkpoint (resume token)
 /// 3. Applies changes to SurrealDB
 /// 4. Continues streaming changes until stopped
-pub async fn run_incremental_sync(
+pub async fn run_incremental_sync<S: SurrealSink>(
+    surreal: &S,
     from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
     from_checkpoint: MongoDBCheckpoint,
     deadline: DateTime<Utc>,
     target_checkpoint: Option<MongoDBCheckpoint>,
@@ -344,13 +342,6 @@ pub async fn run_incremental_sync(
     )
     .await?;
 
-    let surreal_conn_opts = SurrealConnOpts {
-        surreal_endpoint: to_opts.surreal_endpoint.clone(),
-        surreal_username: to_opts.surreal_username.clone(),
-        surreal_password: to_opts.surreal_password.clone(),
-    };
-    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
-
     // Get change stream
     let mut stream = source.get_changes().await?;
 
@@ -376,7 +367,7 @@ pub async fn run_incremental_sync(
             Ok(change) => {
                 debug!("Received change: {change:?}");
 
-                apply_universal_change(&surreal, &change).await?;
+                surreal.apply_universal_change(&change).await?;
 
                 change_count += 1;
                 if change_count % 100 == 0 {

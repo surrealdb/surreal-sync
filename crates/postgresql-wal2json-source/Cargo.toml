@@ -19,6 +19,7 @@ uuid = { version = "1.0", features = ["v4"] }
 # Sync dependencies
 checkpoint = { path = "../checkpoint" }
 surreal-sync-postgresql = { path = "../postgresql" }
+surreal-sink = { path = "../surreal-sink" }
 surreal2-sink = { path = "../surreal2-sink" }
 sync-core = { path = "../sync-core" }
 surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
