@@ -10,8 +10,8 @@ license = "MIT"
 mongodb = "3.2.4"
 bson = { version = "2.15.0", features = ["chrono-0_4"] }
 
-# SurrealDB sync layer
-surreal2-sink = { path = "../surreal2-sink" }
+# SurrealDB sink trait
+surreal-sink = { path = "../surreal-sink" }
 
 # Sync core traits
 sync-core = { path = "../sync-core" }

@@ -3,13 +3,13 @@
 //! This module uses the unified type conversion flow:
 //! MySQL Row → TypedValue (mysql-types) → UniversalRow (sync-core) → SurrealDB (surreal crate)
 
-use crate::{SourceOpts, SurrealOpts};
+use crate::{SourceOpts, SyncOpts};
 use anyhow::Result;
 use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
 use mysql_async::{prelude::*, Pool, Row};
 use mysql_types::{row_to_typed_values_with_config, JsonConversionConfig, RowConversionConfig};
 use std::collections::HashMap;
-use surreal2_sink::write_universal_rows;
+use surreal_sink::SurrealSink;
 use sync_core::{TypedValue, UniversalRow, UniversalValue};
 use tracing::{debug, info};
 
@@ -29,11 +29,11 @@ fn sanitize_connection_string(uri: &str) -> String {
 }
 
 /// Main entry point for MySQL to SurrealDB migration with checkpoint support
-pub async fn run_full_sync(
+pub async fn run_full_sync<S: SurrealSink>(
+    surreal: &S,
     from_opts: &SourceOpts,
-    to_opts: &SurrealOpts,
+    sync_opts: &SyncOpts,
     sync_config: Option<SyncConfig>,
-    surreal: &surreal2_sink::Surreal<surreal2_sink::SurrealEngine>,
 ) -> Result<()> {
     info!("Starting MySQL migration to SurrealDB");
 
@@ -106,7 +106,7 @@ pub async fn run_full_sync(
             &mut conn,
             surreal,
             table_name,
-            to_opts,
+            sync_opts,
             &from_opts.mysql_boolean_paths,
             schema_info.get(table_name),
         )
@@ -242,11 +242,11 @@ async fn get_user_tables(conn: &mut mysql_async::Conn, database: &str) -> Result
 }
 
 /// Migrate a single table from MySQL to SurrealDB
-async fn migrate_table(
+async fn migrate_table<S: SurrealSink>(
     conn: &mut mysql_async::Conn,
-    surreal: &surreal2_sink::Surreal<surreal2_sink::SurrealEngine>,
+    surreal: &S,
     table_name: &str,
-    to_opts: &SurrealOpts,
+    sync_opts: &SyncOpts,
     boolean_paths: &Option<Vec<String>>,
     schema_info: Option<&TableSchemaInfo>,
 ) -> Result<usize> {
@@ -275,10 +275,10 @@ async fn migrate_table(
         batch.push(record);
 
         // Process batch when it reaches the configured size
-        if batch.len() >= to_opts.batch_size {
+        if batch.len() >= sync_opts.batch_size {
             let batch_size = batch.len();
 
-            if !to_opts.dry_run {
+            if !sync_opts.dry_run {
                 write_universal_rows_batch(surreal, table_name, &batch).await?;
             } else {
                 debug!(
@@ -296,7 +296,7 @@ async fn migrate_table(
     if !batch.is_empty() {
         let batch_size = batch.len();
 
-        if !to_opts.dry_run {
+        if !sync_opts.dry_run {
             write_universal_rows_batch(surreal, table_name, &batch).await?;
         } else {
             debug!(
@@ -471,8 +471,8 @@ fn typed_value_to_string(tv: &TypedValue) -> String {
 }
 
 /// Write a batch of records to SurrealDB using UniversalRow
-async fn write_universal_rows_batch(
-    surreal: &surreal2_sink::Surreal<surreal2_sink::SurrealEngine>,
+async fn write_universal_rows_batch<S: SurrealSink>(
+    surreal: &S,
     table_name: &str,
     batch: &[UniversalRow],
 ) -> Result<()> {
@@ -482,7 +482,7 @@ async fn write_universal_rows_batch(
         batch.len()
     );
 
-    write_universal_rows(surreal, batch).await?;
+    surreal.write_universal_rows(batch).await?;
 
     tracing::debug!(
         "Completed migration batch for table '{}' with {} records",

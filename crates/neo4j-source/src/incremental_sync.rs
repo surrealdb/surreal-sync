@@ -15,15 +15,12 @@
 //! exactly matches Neo4j.
 
 use crate::neo4j_checkpoint::Neo4jCheckpoint;
-use crate::{Neo4jConversionContext, SourceOpts, SurrealOpts};
+use crate::{Neo4jConversionContext, SourceOpts, SyncOpts};
 use async_trait::async_trait;
 use chrono::Utc;
 use neo4rs::{Graph, Query};
 use std::collections::HashMap;
-use surreal2_sink::{
-    surreal_connect, write_universal_relations, write_universal_rows, Surreal, SurrealEngine,
-    SurrealOpts as SurrealConnOpts,
-};
+use surreal_sink::SurrealSink;
 use sync_core::{UniversalRelation, UniversalRow, UniversalType, UniversalValue};
 
 /// A change from Neo4j (either a node or a relationship)
@@ -309,8 +306,8 @@ impl ChangeStream for Neo4jChangeStream {
 }
 
 /// Apply incremental changes to SurrealDB
-pub async fn apply_incremental_changes(
-    surreal: &Surreal<SurrealEngine>,
+pub async fn apply_incremental_changes<S: SurrealSink>(
+    surreal: &S,
     changes: Vec<IncrementalChange>,
     dry_run: bool,
 ) -> anyhow::Result<usize> {
@@ -339,13 +336,13 @@ pub async fn apply_incremental_changes(
     // Apply nodes
     if !nodes.is_empty() {
         tracing::debug!("Applying {} node changes", nodes.len());
-        write_universal_rows(surreal, &nodes).await?;
+        surreal.write_universal_rows(&nodes).await?;
     }
 
     // Apply relations
     if !relations.is_empty() {
         tracing::debug!("Applying {} relation changes", relations.len());
-        write_universal_relations(surreal, &relations).await?;
+        surreal.write_universal_relations(&relations).await?;
     }
 
     Ok(total_count)
@@ -359,11 +356,10 @@ pub async fn apply_incremental_changes(
 /// 3. Reads changes from the specified checkpoint
 /// 4. Applies changes to SurrealDB
 /// 5. Continues until caught up with current state
-pub async fn run_incremental_sync(
+pub async fn run_incremental_sync<S: SurrealSink>(
+    surreal: &S,
     from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
+    sync_opts: SyncOpts,
     from_checkpoint: Neo4jCheckpoint,
     deadline: chrono::DateTime<chrono::Utc>,
     target_checkpoint: Option<Neo4jCheckpoint>,
@@ -388,13 +384,6 @@ pub async fn run_incremental_sync(
         None,
         initial_timestamp,
     )?;
-
-    let surreal_conn_opts = SurrealConnOpts {
-        surreal_endpoint: to_opts.surreal_endpoint.clone(),
-        surreal_username: to_opts.surreal_username.clone(),
-        surreal_password: to_opts.surreal_password.clone(),
-    };
-    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
 
     // Start reading changes
     let mut stream = source.get_changes().await?;
@@ -427,9 +416,9 @@ pub async fn run_incremental_sync(
         batch.push(change);
 
         // Apply batch when it reaches the configured size
-        if batch.len() >= to_opts.batch_size {
+        if batch.len() >= sync_opts.batch_size {
             let applied =
-                apply_incremental_changes(&surreal, batch.clone(), to_opts.dry_run).await?;
+                apply_incremental_changes(surreal, batch.clone(), sync_opts.dry_run).await?;
             total_applied += applied;
 
             tracing::info!("Applied {} changes (total: {})", applied, total_applied);
@@ -440,7 +429,7 @@ pub async fn run_incremental_sync(
 
     // Apply remaining changes
     if !batch.is_empty() {
-        let applied = apply_incremental_changes(&surreal, batch, to_opts.dry_run).await?;
+        let applied = apply_incremental_changes(surreal, batch, sync_opts.dry_run).await?;
         total_applied += applied;
     }
 
@@ -452,7 +441,7 @@ pub async fn run_incremental_sync(
     // Update the transaction tracker if not in dry run mode
     // Note: Transaction tracking update is only available for the custom tracking approach,
     // not for CDC which manages its own cursor internally
-    if !to_opts.dry_run {
+    if !sync_opts.dry_run {
         tracing::info!(
             "Incremental sync checkpoint tracking updated internally by the source implementation"
         );

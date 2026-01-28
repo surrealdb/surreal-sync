@@ -17,7 +17,7 @@ sync-core = { path = "../sync-core" }
 
 # Type conversion crates
 csv-types = { path = "../csv-types" }
-surreal2-sink = { path = "../surreal2-sink" }
+surreal-sink = { path = "../surreal-sink" }
 
 # Async runtime
 tokio = { version = "1.49", features = ["full"] }
@@ -47,7 +47,7 @@ futures = "0.3"
 # Testing
 tokio-test = "0.4"
 tempfile = "3.0"
-surreal2-sink = { path = "../surreal2-sink" }
+surreal-sink = { path = "../surreal-sink" }
 
 # SurrealDB for tests
 surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }

@@ -11,8 +11,7 @@ use log::{error, info, warn};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
-use surreal2_sink::{apply_universal_change, surreal_connect, SurrealOpts as SurrealConnOpts};
-use surreal_sync_postgresql::SurrealOpts;
+use surreal_sink::SurrealSink;
 use sync_core::{DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalValue};
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
@@ -62,11 +61,9 @@ pub trait ChangeStream: Send + Sync {
 }
 
 /// Run incremental sync from PostgreSQL to SurrealDB
-pub async fn run_incremental_sync(
+pub async fn run_incremental_sync<S: SurrealSink>(
+    surreal: &S,
     from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
     from_checkpoint: PostgreSQLCheckpoint,
     deadline: chrono::DateTime<chrono::Utc>,
     target_checkpoint: Option<PostgreSQLCheckpoint>,
@@ -113,13 +110,6 @@ pub async fn run_incremental_sync(
     source.setup_tracking(tables).await?;
     log::debug!("Tracking setup completed");
 
-    let surreal_conn_opts = SurrealConnOpts {
-        surreal_endpoint: to_opts.surreal_endpoint.clone(),
-        surreal_username: to_opts.surreal_username.clone(),
-        surreal_password: to_opts.surreal_password.clone(),
-    };
-    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
-
     // Get change stream
     log::debug!("📡 Getting change stream");
     let mut stream = source.get_changes().await?;
@@ -153,7 +143,7 @@ pub async fn run_incremental_sync(
                     }
                 }
 
-                apply_universal_change(&surreal, &change).await?;
+                surreal.apply_universal_change(&change).await?;
 
                 change_count += 1;
                 if change_count % 100 == 0 {

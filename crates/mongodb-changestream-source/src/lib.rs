@@ -7,7 +7,7 @@ mod full_sync;
 mod incremental_sync;
 
 pub use full_sync::{
-    convert_bson_to_universal_value, migrate_from_mongodb, run_full_sync, SourceOpts, SurrealOpts,
+    convert_bson_to_universal_value, migrate_from_mongodb, run_full_sync, SourceOpts, SyncOpts,
 };
 pub use incremental_sync::{run_incremental_sync, MongoChangeStream, MongodbIncrementalSource};
 

@@ -29,15 +29,9 @@ pub struct SourceOpts {
     pub mysql_boolean_paths: Option<Vec<String>>,
 }
 
-/// SurrealDB connection options
+/// Sync options (non-connection related)
 #[derive(Clone, Debug)]
-pub struct SurrealOpts {
-    /// SurrealDB endpoint URL
-    pub surreal_endpoint: String,
-    /// SurrealDB username
-    pub surreal_username: String,
-    /// SurrealDB password
-    pub surreal_password: String,
+pub struct SyncOpts {
     /// Batch size for data migration
     pub batch_size: usize,
     /// Dry run mode - don't actually write data

@@ -6,7 +6,7 @@
 use crate::checkpoint::PostgreSQLLogicalCheckpoint;
 use anyhow::Result;
 use checkpoint::{CheckpointID, CheckpointStore};
-use surreal2_sink::apply_universal_change;
+use surreal_sink::SurrealSink;
 use sync_core::{UniversalChange, UniversalChangeOp};
 use tokio_postgres::NoTls;
 use tracing::{debug, error, info, warn};
@@ -38,60 +38,24 @@ pub async fn read_t1_checkpoint_from_surrealdb(
 /// Run incremental sync from PostgreSQL to SurrealDB
 ///
 /// This function:
-/// 1. Connects to SurrealDB and PostgreSQL
-/// 2. Reads starting checkpoint (from parameter or SurrealDB)
-/// 3. Starts logical replication from the checkpoint position
-/// 4. Streams and applies changes to SurrealDB
-/// 5. Stops when timeout is reached or target checkpoint is hit
+/// 1. Connects to PostgreSQL
+/// 2. Starts logical replication from the checkpoint position
+/// 3. Streams and applies changes to SurrealDB
+/// 4. Stops when deadline is reached or target checkpoint is hit
 ///
 /// # Arguments
+/// * `surreal` - SurrealDB sink for writing data
 /// * `from_opts` - PostgreSQL source options
-/// * `to_namespace` - Target SurrealDB namespace
-/// * `to_database` - Target SurrealDB database
-/// * `to_opts` - SurrealDB connection options
-/// * `from_checkpoint` - Optional starting LSN position (if None, reads from SurrealDB)
-/// * `checkpoints_surreal_table` - Optional table name for reading checkpoint from SurrealDB
+/// * `from_checkpoint` - Starting LSN position
+/// * `deadline` - When to stop syncing
 /// * `to_checkpoint` - Optional stopping LSN position
-/// * `timeout_secs` - Maximum runtime in seconds
-#[allow(clippy::too_many_arguments)]
-pub async fn run_incremental_sync(
+pub async fn run_incremental_sync<S: SurrealSink>(
+    surreal: &S,
     from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: surreal_sync_postgresql::SurrealOpts,
-    from_checkpoint: Option<PostgreSQLLogicalCheckpoint>,
-    checkpoints_surreal_table: Option<String>,
+    from_checkpoint: PostgreSQLLogicalCheckpoint,
+    deadline: chrono::DateTime<chrono::Utc>,
     to_checkpoint: Option<PostgreSQLLogicalCheckpoint>,
-    timeout_secs: u64,
 ) -> Result<()> {
-    // Connect to SurrealDB first (needed if reading checkpoint from SurrealDB)
-    let surreal_endpoint = to_opts
-        .surreal_endpoint
-        .replace("http://", "ws://")
-        .replace("https://", "wss://");
-    let surreal = surrealdb::engine::any::connect(surreal_endpoint).await?;
-
-    surreal
-        .signin(surrealdb::opt::auth::Root {
-            username: &to_opts.surreal_username,
-            password: &to_opts.surreal_password,
-        })
-        .await?;
-
-    surreal.use_ns(&to_namespace).use_db(&to_database).await?;
-
-    // Determine starting checkpoint
-    let from_checkpoint = match (from_checkpoint, checkpoints_surreal_table) {
-        (Some(cp), _) => cp,
-        (None, Some(table)) => {
-            info!("Reading t1 checkpoint from SurrealDB table: {}", table);
-            read_t1_checkpoint_from_surrealdb(&surreal, &table).await?
-        }
-        (None, None) => {
-            anyhow::bail!("Must provide either from_checkpoint or checkpoints_surreal_table")
-        }
-    };
-
     info!(
         "Starting PostgreSQL logical replication incremental sync from LSN: {}",
         from_checkpoint.lsn
@@ -100,7 +64,11 @@ pub async fn run_incremental_sync(
     if let Some(ref target) = to_checkpoint {
         info!("Target LSN: {}", target.lsn);
     }
-    info!("Timeout: {} seconds", timeout_secs);
+    let duration_until_deadline = deadline.signed_duration_since(chrono::Utc::now());
+    info!(
+        "Deadline in {} seconds",
+        duration_until_deadline.num_seconds()
+    );
 
     // Connect to PostgreSQL
     let (client, connection) = tokio_postgres::connect(&from_opts.connection_string, NoTls).await?;
@@ -134,14 +102,13 @@ pub async fn run_incremental_sync(
         slot.advance(&from_checkpoint.lsn).await?;
     }
 
-    // Stream changes with timeout
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+    // Stream changes with deadline
     let mut total_changes = 0;
 
     loop {
-        // Check timeout
-        if std::time::Instant::now() >= deadline {
-            info!("Timeout reached, stopping incremental sync");
+        // Check deadline
+        if chrono::Utc::now() >= deadline {
+            info!("Deadline reached, stopping incremental sync");
             break;
         }
 
@@ -172,7 +139,7 @@ pub async fn run_incremental_sync(
                             );
                             let universal_change =
                                 row_to_universal_change(row, UniversalChangeOp::Create);
-                            apply_universal_change(&surreal, &universal_change).await?;
+                            surreal.apply_universal_change(&universal_change).await?;
                             total_changes += 1;
                         }
                         crate::Action::Update(row) => {
@@ -182,7 +149,7 @@ pub async fn run_incremental_sync(
                             );
                             let universal_change =
                                 row_to_universal_change(row, UniversalChangeOp::Update);
-                            apply_universal_change(&surreal, &universal_change).await?;
+                            surreal.apply_universal_change(&universal_change).await?;
                             total_changes += 1;
                         }
                         crate::Action::Delete(row) => {
@@ -192,7 +159,7 @@ pub async fn run_incremental_sync(
                             );
                             let universal_change =
                                 row_to_universal_change(row, UniversalChangeOp::Delete);
-                            apply_universal_change(&surreal, &universal_change).await?;
+                            surreal.apply_universal_change(&universal_change).await?;
                             total_changes += 1;
                         }
                         crate::Action::Begin { .. } | crate::Action::Commit { .. } => {

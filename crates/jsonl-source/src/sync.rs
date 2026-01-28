@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use surreal_sink::SurrealSink;
 use surreal_sync_file::{FileSource, DEFAULT_BUFFER_SIZE};
 use sync_core::{
     DatabaseSchema, TableDefinition, TypedValue, UniversalRow, UniversalType, UniversalValue,
@@ -34,15 +35,6 @@ pub struct Config {
     /// List of HTTP/HTTPS URLs to import (legacy, use `sources` instead)
     pub http_uris: Vec<String>,
 
-    /// Target namespace
-    pub namespace: String,
-
-    /// Target database
-    pub database: String,
-
-    /// SurrealDB connection options
-    pub surreal_opts: surreal2_sink::SurrealOpts,
-
     /// Field to use as record ID (default: "id")
     pub id_field: String,
 
@@ -66,13 +58,6 @@ impl Default for Config {
             files: vec![],
             s3_uris: vec![],
             http_uris: vec![],
-            namespace: "test".to_string(),
-            database: "test".to_string(),
-            surreal_opts: surreal2_sink::SurrealOpts {
-                surreal_endpoint: "ws://localhost:8000".to_string(),
-                surreal_username: "root".to_string(),
-                surreal_password: "root".to_string(),
-            },
             id_field: "id".to_string(),
             conversion_rules: vec![],
             batch_size: 1000,
@@ -86,8 +71,8 @@ impl Default for Config {
 ///
 /// This function handles all JSONL parsing, data conversion, and SurrealDB insertion
 /// for a single JSONL source (file, S3, or HTTP).
-async fn process_jsonl_reader(
-    surreal: &surreal2_sink::Surreal<surreal2_sink::SurrealEngine>,
+async fn process_jsonl_reader<S: SurrealSink>(
+    surreal: &S,
     config: &Config,
     reader: Box<dyn std::io::Read + Send>,
     source_name: &str,
@@ -160,7 +145,7 @@ async fn process_jsonl_reader(
         // Process batch when it reaches the batch size
         if batch.len() >= config.batch_size {
             if !config.dry_run {
-                surreal2_sink::write_universal_rows(surreal, &batch).await?;
+                surreal.write_universal_rows(&batch).await?;
             }
             total_migrated += batch.len();
             tracing::debug!("Migrated batch of {} documents", batch.len());
@@ -171,7 +156,7 @@ async fn process_jsonl_reader(
     // Process remaining documents
     if !batch.is_empty() {
         if !config.dry_run {
-            surreal2_sink::write_universal_rows(surreal, &batch).await?;
+            surreal.write_universal_rows(&batch).await?;
         }
         total_migrated += batch.len();
         tracing::debug!("Migrated final batch of {} documents", batch.len());
@@ -193,11 +178,12 @@ async fn process_jsonl_reader(
 /// The table name is derived from the filename (without .jsonl extension).
 ///
 /// # Arguments
+/// * `surreal` - SurrealDB sink for writing data
 /// * `config` - Configuration for the JSONL import operation
 ///
 /// # Returns
 /// Returns Ok(()) on successful completion, or an error if the sync fails
-pub async fn sync(config: Config) -> Result<()> {
+pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
     tracing::info!("Starting JSONL migration");
     tracing::info!("Sources to process: {:?}", config.sources);
     tracing::info!("Files to process: {:?}", config.files);
@@ -214,12 +200,6 @@ pub async fn sync(config: Config) -> Result<()> {
         rules.push(ConversionRule::parse(rule_str)?);
     }
     tracing::debug!("Parsed {} conversion rules", rules.len());
-
-    // Connect to SurrealDB
-    let surreal =
-        surreal2_sink::surreal_connect(&config.surreal_opts, &config.namespace, &config.database)
-            .await?;
-    tracing::info!("Connected to SurrealDB");
 
     let mut total_sources = 0;
 
@@ -244,7 +224,7 @@ pub async fn sync(config: Config) -> Result<()> {
                 .await
                 .with_context(|| format!("Failed to open JSONL source: {source_name}"))?;
 
-            process_jsonl_reader(&surreal, &config, reader, &source_name, &rules).await?;
+            process_jsonl_reader(surreal, &config, reader, &source_name, &rules).await?;
             total_sources += 1;
         }
     }
@@ -260,7 +240,7 @@ pub async fn sync(config: Config) -> Result<()> {
                 .open(DEFAULT_BUFFER_SIZE)
                 .await
                 .context("Failed to open JSONL file")?;
-            process_jsonl_reader(&surreal, &config, reader, &source_name, &rules).await?;
+            process_jsonl_reader(surreal, &config, reader, &source_name, &rules).await?;
             total_sources += 1;
         }
     }
@@ -276,7 +256,7 @@ pub async fn sync(config: Config) -> Result<()> {
                 .open(DEFAULT_BUFFER_SIZE)
                 .await
                 .context("Failed to open S3 JSONL file")?;
-            process_jsonl_reader(&surreal, &config, reader, &source_name, &rules).await?;
+            process_jsonl_reader(surreal, &config, reader, &source_name, &rules).await?;
             total_sources += 1;
         }
     }
@@ -292,7 +272,7 @@ pub async fn sync(config: Config) -> Result<()> {
                 .open(DEFAULT_BUFFER_SIZE)
                 .await
                 .context("Failed to open HTTP/HTTPS JSONL file")?;
-            process_jsonl_reader(&surreal, &config, reader, &source_name, &rules).await?;
+            process_jsonl_reader(surreal, &config, reader, &source_name, &rules).await?;
             total_sources += 1;
         }
     }
@@ -302,70 +282,6 @@ pub async fn sync(config: Config) -> Result<()> {
         total_sources
     );
     Ok(())
-}
-
-/// Migrate data from JSONL files to SurrealDB (legacy interface)
-///
-/// This function provides backward compatibility with the old directory-based interface.
-/// It reads all .jsonl files from a directory and imports them into SurrealDB.
-///
-/// # Arguments
-/// * `from_opts` - Source directory containing .jsonl files
-/// * `to_namespace` - Target SurrealDB namespace
-/// * `to_database` - Target SurrealDB database
-/// * `to_opts` - SurrealDB connection options
-/// * `id_field` - Field to use as record ID (default: "id")
-/// * `conversion_rules` - Rules for converting JSON objects to Thing references
-pub async fn migrate_from_jsonl(
-    from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: surreal2_sink::SurrealOpts,
-    id_field: String,
-    conversion_rules: Vec<String>,
-) -> Result<()> {
-    tracing::info!("Starting JSONL migration (legacy interface)");
-
-    // Check if source is a directory or a single file
-    let source_path = std::path::Path::new(&from_opts.source_uri);
-
-    let files = if source_path.is_dir() {
-        // Read all .jsonl files in the directory
-        let mut jsonl_files = Vec::new();
-        for entry in std::fs::read_dir(source_path)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                jsonl_files.push(path);
-            }
-        }
-        jsonl_files
-    } else if source_path.is_file() {
-        // Single file
-        vec![source_path.to_path_buf()]
-    } else {
-        return Err(anyhow!(
-            "Source path must be a file or directory containing JSONL files"
-        ));
-    };
-
-    // Use the new sync interface
-    let config = Config {
-        sources: vec![],
-        files,
-        s3_uris: vec![],
-        http_uris: vec![],
-        namespace: to_namespace,
-        database: to_database,
-        surreal_opts: to_opts,
-        id_field,
-        conversion_rules,
-        batch_size: 1000,
-        dry_run: false,
-        schema: None, // Legacy interface doesn't support schema
-    };
-
-    sync(config).await
 }
 
 fn convert_json_to_universal_row(

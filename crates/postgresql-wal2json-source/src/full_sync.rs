@@ -6,8 +6,8 @@
 
 use anyhow::Result;
 use checkpoint::{SyncConfig, SyncManager, SyncPhase};
-use surreal2_sink::{surreal_connect, SurrealOpts as SurrealConnOpts};
-use surreal_sync_postgresql::SurrealOpts;
+use surreal_sink::SurrealSink;
+use surreal_sync_postgresql::SyncOpts;
 use tokio_postgres::NoTls;
 use tracing::info;
 
@@ -34,16 +34,16 @@ pub struct SourceOpts {
 /// 5. Captures final WAL LSN position (for t2 checkpoint)
 ///
 /// # Arguments
+/// * `surreal` - SurrealDB sink for writing data
+/// * `surreal_v2` - Optional v2 SDK connection for checkpoint storage (required if sync_config is Some)
 /// * `from_opts` - PostgreSQL source options
-/// * `to_namespace` - Target SurrealDB namespace
-/// * `to_database` - Target SurrealDB database
-/// * `to_opts` - SurrealDB connection options
+/// * `sync_opts` - Sync options (batch_size, dry_run)
 /// * `sync_config` - Optional sync configuration for checkpoint emission
-pub async fn run_full_sync(
+pub async fn run_full_sync<S: SurrealSink>(
+    surreal: &S,
+    surreal_v2: Option<surrealdb::Surreal<surrealdb::engine::any::Any>>,
     from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
+    sync_opts: SyncOpts,
     sync_config: Option<SyncConfig>,
 ) -> Result<()> {
     info!("Starting PostgreSQL logical replication full sync to SurrealDB");
@@ -58,21 +58,16 @@ pub async fn run_full_sync(
         }
     });
 
-    // Connect to SurrealDB early (needed for checkpoint storage)
-    let surreal_conn_opts = SurrealConnOpts {
-        surreal_endpoint: to_opts.surreal_endpoint.clone(),
-        surreal_username: to_opts.surreal_username.clone(),
-        surreal_password: to_opts.surreal_password.clone(),
-    };
-    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
-
     // Create logical replication client and ensure slot exists
     let pg_client = crate::Client::new(client, from_opts.tables.clone());
     pg_client.create_slot(&from_opts.slot_name).await?;
 
     // Emit checkpoint t1 (before full sync starts) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone(), Some(surreal.clone()));
+        let surreal_conn = surreal_v2.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("surreal_v2 connection required for checkpoint emission")
+        })?;
+        let sync_manager = SyncManager::new(config.clone(), Some(surreal_conn.clone()));
 
         // Get current WAL LSN position - this is where incremental sync will start
         let checkpoint = pg_client.get_current_wal_lsn_checkpoint().await?;
@@ -105,9 +100,9 @@ pub async fn run_full_sync(
 
         let count = surreal_sync_postgresql::migrate_table(
             pg_client.pg_client(),
-            &surreal,
+            surreal,
             table_name,
-            &to_opts,
+            &sync_opts,
         )
         .await?;
 
@@ -117,7 +112,10 @@ pub async fn run_full_sync(
 
     // Emit checkpoint t2 (after full sync completes) if configured
     if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone(), Some(surreal.clone()));
+        let surreal_conn = surreal_v2.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("surreal_v2 connection required for checkpoint emission")
+        })?;
+        let sync_manager = SyncManager::new(config.clone(), Some(surreal_conn.clone()));
 
         // Get final WAL LSN position
         let checkpoint = pg_client.get_current_wal_lsn_checkpoint().await?;

@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use csv_types::{csv_string_to_typed_value, csv_string_to_typed_value_inferred};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use surreal_sink::SurrealSink;
 use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};
 use sync_core::{Schema, TypedValue, UniversalRow, UniversalType, UniversalValue};
 use tracing::{debug, info, warn};
@@ -31,15 +32,6 @@ pub struct Config {
 
     /// Number of rows to process in each batch
     pub batch_size: usize,
-
-    /// Target namespace
-    pub namespace: String,
-
-    /// Target database
-    pub database: String,
-
-    /// SurrealDB connection options
-    pub surreal_opts: surreal2_sink::SurrealOpts,
 
     /// Whether the CSV has headers (default: true)
     pub has_headers: bool,
@@ -75,13 +67,6 @@ impl Default for Config {
             http_uris: vec![],
             table: String::new(),
             batch_size: 1000,
-            namespace: "test".to_string(),
-            database: "test".to_string(),
-            surreal_opts: surreal2_sink::SurrealOpts {
-                surreal_endpoint: "ws://localhost:8000".to_string(),
-                surreal_username: "root".to_string(),
-                surreal_password: "root".to_string(),
-            },
             has_headers: true,
             delimiter: b',',
             id_field: None,
@@ -118,8 +103,8 @@ fn parse_value_with_schema(value: &str, schema_type: Option<&UniversalType>) -> 
 ///
 /// This function handles all CSV parsing, data conversion, and SurrealDB insertion
 /// for a single CSV source (file, S3, or HTTP).
-async fn process_csv_reader(
-    surreal: &surreal2_sink::Surreal<surreal2_sink::SurrealEngine>,
+async fn process_csv_reader<S: SurrealSink>(
+    surreal: &S,
     config: &Config,
     reader: Box<dyn std::io::Read + Send>,
     source_name: &str,
@@ -225,7 +210,7 @@ async fn process_csv_reader(
             // Process batch when it reaches the configured size
             if batch.len() >= config.batch_size {
                 if !config.dry_run {
-                    surreal2_sink::write_universal_rows(surreal, &batch).await?;
+                    surreal.write_universal_rows(&batch).await?;
                     total_processed += batch.len();
                 } else {
                     debug!("Dry run: Would insert batch of {} records", batch.len());
@@ -244,7 +229,7 @@ async fn process_csv_reader(
         // Process remaining records
         if !batch.is_empty() {
             if !config.dry_run {
-                surreal2_sink::write_universal_rows(surreal, &batch).await?;
+                surreal.write_universal_rows(&batch).await?;
                 total_processed += batch.len();
             } else {
                 debug!(
@@ -334,7 +319,7 @@ async fn process_csv_reader(
         // Process batch when it reaches the configured size
         if batch.len() >= config.batch_size {
             if !config.dry_run {
-                surreal2_sink::write_universal_rows(surreal, &batch).await?;
+                surreal.write_universal_rows(&batch).await?;
                 total_processed += batch.len();
             } else {
                 debug!("Dry run: Would insert batch of {} records", batch.len());
@@ -353,7 +338,7 @@ async fn process_csv_reader(
     // Process remaining records
     if !batch.is_empty() {
         if !config.dry_run {
-            surreal2_sink::write_universal_rows(surreal, &batch).await?;
+            surreal.write_universal_rows(&batch).await?;
             total_processed += batch.len();
         } else {
             debug!(
@@ -382,11 +367,12 @@ async fn process_csv_reader(
 /// in configurable batches.
 ///
 /// # Arguments
+/// * `surreal` - SurrealDB sink for writing data
 /// * `config` - Configuration for the CSV import operation
 ///
 /// # Returns
 /// Returns Ok(()) on successful completion, or an error if the sync fails
-pub async fn sync(config: Config) -> Result<()> {
+pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
     info!("Starting CSV sync to SurrealDB");
     info!("Target table: {}", config.table);
     info!("Sources to process: {:?}", config.sources);
@@ -411,12 +397,6 @@ pub async fn sync(config: Config) -> Result<()> {
     } else {
         None
     };
-
-    // Connect to SurrealDB using the standard connection function
-    let surreal =
-        surreal2_sink::surreal_connect(&config.surreal_opts, &config.namespace, &config.database)
-            .await
-            .context("Failed to connect to SurrealDB")?;
 
     // Get metrics collector reference for passing to process_csv_reader
     let metrics_ref = metrics_task.as_ref().map(|(collector, _)| collector);
@@ -477,7 +457,7 @@ pub async fn sync(config: Config) -> Result<()> {
             })?;
 
         process_csv_reader(
-            &surreal,
+            surreal,
             &config,
             reader,
             &resolved_source.display_name(),
@@ -499,7 +479,46 @@ pub async fn sync(config: Config) -> Result<()> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use sync_core::{UniversalChange, UniversalRelation};
     use tempfile::NamedTempFile;
+
+    /// Mock SurrealDB sink for testing
+    struct MockSink {
+        rows_written: Arc<AtomicUsize>,
+    }
+
+    impl MockSink {
+        fn new() -> Self {
+            Self {
+                rows_written: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn rows_written(&self) -> usize {
+            self.rows_written.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurrealSink for MockSink {
+        async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
+            self.rows_written.fetch_add(rows.len(), Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn write_universal_relations(
+            &self,
+            _relations: &[UniversalRelation],
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn apply_universal_change(&self, _change: &UniversalChange) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn test_config_default() {
@@ -523,21 +542,15 @@ mod tests {
             files: vec![temp_file.path().to_path_buf()],
             table: "test_table".to_string(),
             batch_size: 10,
-            dry_run: true, // Don't actually write to DB
-            surreal_opts: surreal2_sink::SurrealOpts {
-                surreal_endpoint: "ws://localhost:8000".to_string(),
-                surreal_username: "root".to_string(),
-                surreal_password: "root".to_string(),
-            },
+            dry_run: false,
             ..Default::default()
         };
 
-        // This should not panic and should process the file
-        let result = sync(config).await;
+        let mock_sink = MockSink::new();
+        let result = sync(&mock_sink, config).await;
 
-        // In dry-run mode with no real DB connection, this will fail at connection
-        // but we're mainly testing that the CSV parsing logic compiles
-        assert!(result.is_err()); // Expected to fail at DB connection in test
+        assert!(result.is_ok());
+        assert_eq!(mock_sink.rows_written(), 2); // 2 data rows
     }
 
     #[test]

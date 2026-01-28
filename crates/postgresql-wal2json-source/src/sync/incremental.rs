@@ -4,7 +4,8 @@
 //! the initial full snapshot has been completed.
 
 use anyhow::Result;
-use surreal2_sink::apply_universal_change;
+use surreal2_sink::Surreal2Sink;
+use surreal_sink::SurrealSink;
 use sync_core::{UniversalChange, UniversalChangeOp};
 use tokio_postgres::NoTls;
 use tracing::{debug, error, info};
@@ -55,16 +56,19 @@ pub async fn sync(
     // Setup signal handler for graceful shutdown
     let shutdown = setup_shutdown_handler();
 
+    // Wrap the v2 SDK connection in Surreal2Sink for use with apply_universal_change
+    let sink = Surreal2Sink::new(surreal.clone());
+
     // Stream changes and debug print them
-    stream_changes(surreal, &slot, shutdown).await?;
+    stream_changes(&sink, &slot, shutdown).await?;
 
     info!("Incremental sync completed");
     Ok(())
 }
 
 /// Streams changes from the replication slot and debug prints them
-async fn stream_changes(
-    surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
+async fn stream_changes<S: SurrealSink>(
+    surreal: &S,
     slot: &crate::Slot,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
 ) -> Result<()> {
@@ -97,21 +101,21 @@ async fn stream_changes(
                                         row.schema, row.table, row.primary_key, row.columns);
 
                                     let universal_change = row_to_universal_change(row, UniversalChangeOp::Create);
-                                    apply_universal_change(surreal, &universal_change).await?;
+                                    surreal.apply_universal_change(&universal_change).await?;
                                 }
                                 crate::Action::Update(row) => {
                                     debug!("UPDATE: schema={}, table={}, primary_key={:?}, columns={:?}",
                                         row.schema, row.table, row.primary_key, row.columns);
 
                                     let universal_change = row_to_universal_change(row, UniversalChangeOp::Update);
-                                    apply_universal_change(surreal, &universal_change).await?;
+                                    surreal.apply_universal_change(&universal_change).await?;
                                 }
                                 crate::Action::Delete(row) => {
                                     debug!("DELETE: schema={}, table={}, primary_key={:?}",
                                         row.schema, row.table, row.primary_key);
 
                                     let universal_change = row_to_universal_change(row, UniversalChangeOp::Delete);
-                                    apply_universal_change(surreal, &universal_change).await?;
+                                    surreal.apply_universal_change(&universal_change).await?;
                                 }
                                 crate::Action::Begin { xid, timestamp } => {
                                     debug!("BEGIN: xid={}, timestamp={:?}", xid, timestamp);

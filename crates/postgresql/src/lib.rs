@@ -13,4 +13,4 @@ mod full_sync;
 
 pub use autoconf::get_user_tables;
 pub use client::new_postgresql_client;
-pub use full_sync::{migrate_table, SurrealOpts};
+pub use full_sync::{migrate_table, SyncOpts};

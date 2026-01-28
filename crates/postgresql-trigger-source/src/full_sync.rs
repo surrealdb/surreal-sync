@@ -7,17 +7,16 @@ use crate::SourceOpts;
 use anyhow::Result;
 use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
 use chrono::Utc;
-use surreal2_sink::{surreal_connect, SurrealOpts as SurrealConnOpts};
-use surreal_sync_postgresql::SurrealOpts;
+use surreal_sink::SurrealSink;
+use surreal_sync_postgresql::SyncOpts;
 use tokio_postgres::NoTls;
 use tracing::info;
 
 /// Main entry point for PostgreSQL to SurrealDB migration with checkpoint support
-pub async fn run_full_sync(
+pub async fn run_full_sync<S: SurrealSink>(
+    surreal: &S,
     from_opts: SourceOpts,
-    to_namespace: String,
-    to_database: String,
-    to_opts: SurrealOpts,
+    sync_opts: SyncOpts,
     sync_config: Option<SyncConfig>,
 ) -> Result<()> {
     info!("Starting PostgreSQL migration to SurrealDB");
@@ -65,14 +64,6 @@ pub async fn run_full_sync(
         );
     }
 
-    // Connect to SurrealDB
-    let surreal_conn_opts = SurrealConnOpts {
-        surreal_endpoint: to_opts.surreal_endpoint.clone(),
-        surreal_username: to_opts.surreal_username.clone(),
-        surreal_password: to_opts.surreal_password.clone(),
-    };
-    let surreal = surreal_connect(&surreal_conn_opts, &to_namespace, &to_database).await?;
-
     // Get database name from connection string or options
     let database_name = from_opts
         .source_database
@@ -91,7 +82,8 @@ pub async fn run_full_sync(
         info!("Migrating table: {}", table_name);
 
         let count =
-            surreal_sync_postgresql::migrate_table(&client, &surreal, table_name, &to_opts).await?;
+            surreal_sync_postgresql::migrate_table(&client, surreal, table_name, &sync_opts)
+                .await?;
 
         total_migrated += count;
         info!("Migrated {} records from table {}", count, table_name);
