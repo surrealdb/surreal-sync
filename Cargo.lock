@@ -7319,6 +7319,7 @@ name = "surrealdb-multi-sdk-demo"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "rust_decimal",
  "serde",
  "serde_json",
  "surrealdb 2.3.7",
