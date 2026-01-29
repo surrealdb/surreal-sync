@@ -462,6 +462,281 @@ mod tests {
         Ok(())
     }
 
+    /// Test V2 SDK decimal deserialization behavior - comprehensive test
+    ///
+    /// This test verifies how V2 SDK handles reading decimal values with all approaches:
+    /// - as f64 (direct coercion)
+    /// - as rust_decimal::Decimal (native type)
+    /// - as String (implicit conversion)
+    /// - with SurrealQL <float> cast
+    #[tokio::test]
+    async fn test_v2_decimal_deserialization() -> anyhow::Result<()> {
+        init_logging();
+
+        let endpoint = std::env::var("SURREAL_V2_ENDPOINT")
+            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+
+        let client = v2::connect(&endpoint, "test", "demo_decimal_test").await?;
+
+        // Clean up first
+        client.query("DELETE FROM decimal_test").await?;
+
+        // Create a record with decimal value
+        client
+            .query("CREATE decimal_test:1 SET dec_val = <decimal> 123.45")
+            .await?;
+
+        eprintln!("\n=== V2 SDK Decimal Deserialization Tests ===");
+
+        // 1. Try to read the decimal value as f64
+        let mut response = client.query("SELECT dec_val FROM decimal_test:1").await?;
+        let val_f64: Result<Option<f64>, _> = response.take((0, "dec_val"));
+        eprintln!("V2 SDK: decimal as f64        = {:?}", val_f64);
+
+        // 2. Try to read the decimal value as rust_decimal::Decimal
+        let mut response2 = client.query("SELECT dec_val FROM decimal_test:1").await?;
+        let val_decimal: Result<Option<rust_decimal::Decimal>, _> = response2.take((0, "dec_val"));
+        eprintln!("V2 SDK: decimal as Decimal    = {:?}", val_decimal);
+
+        // 3. Try to read the decimal value as String
+        let mut response3 = client.query("SELECT dec_val FROM decimal_test:1").await?;
+        let val_str: Result<Option<String>, _> = response3.take((0, "dec_val"));
+        eprintln!("V2 SDK: decimal as String     = {:?}", val_str);
+
+        // 4. Try to read with <float> cast
+        let mut response4 = client.query("SELECT <float> dec_val as casted FROM decimal_test:1").await?;
+        let val_casted: Result<Option<f64>, _> = response4.take((0, "casted"));
+        eprintln!("V2 SDK: decimal <float> cast  = {:?}", val_casted);
+
+        // 5. Try to read with <string> cast
+        let mut response5 = client.query("SELECT <string> dec_val as casted FROM decimal_test:1").await?;
+        let val_str_cast: Result<Option<String>, _> = response5.take((0, "casted"));
+        eprintln!("V2 SDK: decimal <string> cast = {:?}", val_str_cast);
+
+        // Summary table
+        eprintln!("\n--- V2 SDK Summary ---");
+        eprintln!("| Approach          | Result |");
+        eprintln!("|-------------------|--------|");
+        eprintln!("| as f64            | {} |", if val_f64.is_ok() { "OK" } else { "Err" });
+        eprintln!("| as Decimal        | {} |", if val_decimal.is_ok() { "OK" } else { "Err" });
+        eprintln!("| as String         | {} |", if val_str.is_ok() { "OK" } else { "Err" });
+        eprintln!("| <float> cast      | {} |", if val_casted.is_ok() { "OK" } else { "Err" });
+        eprintln!("| <string> cast     | {} |", if val_str_cast.is_ok() { "OK" } else { "Err" });
+
+        // Cleanup
+        client.query("DELETE FROM decimal_test").await?;
+
+        Ok(())
+    }
+
+    /// Test V3 SDK decimal deserialization behavior - comprehensive test
+    ///
+    /// This test verifies how V3 SDK handles reading decimal values with all approaches:
+    /// - as f64 (direct coercion)
+    /// - as rust_decimal::Decimal (native type)
+    /// - as String (implicit conversion)
+    /// - with SurrealQL <float> cast
+    #[tokio::test]
+    async fn test_v3_decimal_deserialization() -> anyhow::Result<()> {
+        init_logging();
+
+        let endpoint = match std::env::var("SURREAL_V3_ENDPOINT") {
+            Ok(ep) => ep,
+            Err(_) => {
+                eprintln!("Skipping V3 decimal test: SURREAL_V3_ENDPOINT not set");
+                return Ok(());
+            }
+        };
+
+        let client = v3::connect(&endpoint, "test", "demo_decimal_test").await?;
+
+        // Clean up first
+        client.query("DELETE FROM decimal_test").await?;
+
+        // Create a record with decimal value
+        client
+            .query("CREATE decimal_test:1 SET dec_val = <decimal> 123.45")
+            .await?;
+
+        eprintln!("\n=== V3 SDK Decimal Deserialization Tests ===");
+
+        // 1. Try to read the decimal value as f64
+        let mut response = client.query("SELECT dec_val FROM decimal_test:1").await?;
+        let val_f64: Result<Option<f64>, _> = response.take((0, "dec_val"));
+        eprintln!("V3 SDK: decimal as f64        = {:?}", val_f64);
+
+        // 2. Try to read the decimal value as rust_decimal::Decimal
+        let mut response2 = client.query("SELECT dec_val FROM decimal_test:1").await?;
+        let val_decimal: Result<Option<rust_decimal::Decimal>, _> = response2.take((0, "dec_val"));
+        eprintln!("V3 SDK: decimal as Decimal    = {:?}", val_decimal);
+
+        // 3. Try to read the decimal value as String
+        let mut response3 = client.query("SELECT dec_val FROM decimal_test:1").await?;
+        let val_str: Result<Option<String>, _> = response3.take((0, "dec_val"));
+        eprintln!("V3 SDK: decimal as String     = {:?}", val_str);
+
+        // 4. Try to read with <float> cast
+        let mut response4 = client.query("SELECT <float> dec_val as casted FROM decimal_test:1").await?;
+        let val_casted: Result<Option<f64>, _> = response4.take((0, "casted"));
+        eprintln!("V3 SDK: decimal <float> cast  = {:?}", val_casted);
+
+        // 5. Try to read with <string> cast
+        let mut response5 = client.query("SELECT <string> dec_val as casted FROM decimal_test:1").await?;
+        let val_str_cast: Result<Option<String>, _> = response5.take((0, "casted"));
+        eprintln!("V3 SDK: decimal <string> cast = {:?}", val_str_cast);
+
+        // Summary table
+        eprintln!("\n--- V3 SDK Summary ---");
+        eprintln!("| Approach          | Result |");
+        eprintln!("|-------------------|--------|");
+        eprintln!("| as f64            | {} |", if val_f64.is_ok() { "OK" } else { "Err" });
+        eprintln!("| as Decimal        | {} |", if val_decimal.is_ok() { "OK" } else { "Err" });
+        eprintln!("| as String         | {} |", if val_str.is_ok() { "OK" } else { "Err" });
+        eprintln!("| <float> cast      | {} |", if val_casted.is_ok() { "OK" } else { "Err" });
+        eprintln!("| <string> cast     | {} |", if val_str_cast.is_ok() { "OK" } else { "Err" });
+
+        // Cleanup
+        client.query("DELETE FROM decimal_test").await?;
+
+        Ok(())
+    }
+
+    /// Test rust_decimal parsing limits locally
+    ///
+    /// rust_decimal uses 96 bits for mantissa. MAX is 79228162514264337593543950335.
+    /// This means not all 29-digit numbers can be parsed - only those <= MAX.
+    #[tokio::test]
+    async fn test_rust_decimal_parsing_limits() -> anyhow::Result<()> {
+        init_logging();
+
+        eprintln!("\n=== rust_decimal Parsing Limits ===");
+        eprintln!("MAX = {}", rust_decimal::Decimal::MAX);
+        eprintln!("MIN = {}", rust_decimal::Decimal::MIN);
+
+        // Test various values around the limit
+        let test_cases = [
+            ("rust_decimal MAX", "79228162514264337593543950335", true),
+            ("rust_decimal MAX + 1", "79228162514264337593543950336", false),
+            ("28 nines", "9999999999999999999999999999", true),  // 28 digits of 9
+            ("29 nines", "99999999999999999999999999999", false), // 29 digits of 9 > MAX
+            ("typical money", "99999999.99", true),
+            ("high precision", "123.456789012345678901234567890", true), // truncated but parseable
+        ];
+
+        for (label, value, expected_ok) in &test_cases {
+            let parsed: Result<rust_decimal::Decimal, _> = value.parse();
+            let ok = parsed.is_ok();
+            eprintln!("{}: parse={} (expected={})", label, ok, expected_ok);
+            assert_eq!(ok, *expected_ok, "Unexpected result for {}", label);
+        }
+
+        Ok(())
+    }
+
+    /// Test V2 SDK decimal storage using proper `dec` suffix
+    ///
+    /// SurrealDB types:
+    /// - `int`: 64-bit integer (i64)
+    /// - `float`: 64-bit floating point (f64)
+    /// - `decimal`: 128-bit decimal
+    ///
+    /// Use `dec` suffix to create decimal literals: `123.45dec`
+    #[tokio::test]
+    async fn test_v2_decimal_storage_with_dec_suffix() -> anyhow::Result<()> {
+        init_logging();
+
+        let endpoint = std::env::var("SURREAL_V2_ENDPOINT")
+            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+
+        let client = v2::connect(&endpoint, "test", "demo_decimal_limits").await?;
+
+        // Cleanup
+        client.query("DELETE FROM decimal_limits").await?;
+
+        eprintln!("\n=== V2 SDK Decimal Storage (using dec suffix) ===");
+
+        // Test using `dec` suffix for decimal literals
+        let test_cases = [
+            ("typical_money", "99999999.99dec"),
+            ("small_decimal", "123.45dec"),
+            ("large_integer_as_decimal", "1234567890123456789dec"),  // 19 digits
+            ("rust_decimal_max", "79228162514264337593543950335dec"),
+            ("over_rust_decimal_max", "79228162514264337593543950336dec"),
+            ("28_nines", "9999999999999999999999999999dec"),  // 28 nines
+            ("29_nines", "99999999999999999999999999999dec"), // 29 nines
+        ];
+
+        for (label, value) in &test_cases {
+            let query = format!("CREATE decimal_limits:{label} SET val = {value}");
+            let result = client.query(&query).await;
+
+            if result.is_ok() {
+                // Try to read it back as rust_decimal
+                let mut response = client.query(&format!("SELECT val FROM decimal_limits:{label}")).await?;
+                let read_result: Result<Option<rust_decimal::Decimal>, _> = response.take((0, "val"));
+                eprintln!("V2 {}: store=OK, read_as_decimal={:?}", label, read_result);
+            } else {
+                eprintln!("V2 {}: store=FAIL", label);
+            }
+        }
+
+        // Cleanup
+        client.query("DELETE FROM decimal_limits").await?;
+
+        Ok(())
+    }
+
+    /// Test V3 SDK decimal storage using proper `dec` suffix
+    #[tokio::test]
+    async fn test_v3_decimal_storage_with_dec_suffix() -> anyhow::Result<()> {
+        init_logging();
+
+        let endpoint = match std::env::var("SURREAL_V3_ENDPOINT") {
+            Ok(ep) => ep,
+            Err(_) => {
+                eprintln!("Skipping V3 decimal limits test: SURREAL_V3_ENDPOINT not set");
+                return Ok(());
+            }
+        };
+
+        let client = v3::connect(&endpoint, "test", "demo_decimal_limits").await?;
+
+        // Cleanup
+        client.query("DELETE FROM decimal_limits").await?;
+
+        eprintln!("\n=== V3 SDK Decimal Storage (using dec suffix) ===");
+
+        // Test using `dec` suffix for decimal literals
+        let test_cases = [
+            ("typical_money", "99999999.99dec"),
+            ("small_decimal", "123.45dec"),
+            ("large_integer_as_decimal", "1234567890123456789dec"),  // 19 digits
+            ("rust_decimal_max", "79228162514264337593543950335dec"),
+            ("over_rust_decimal_max", "79228162514264337593543950336dec"),
+            ("28_nines", "9999999999999999999999999999dec"),  // 28 nines
+            ("29_nines", "99999999999999999999999999999dec"), // 29 nines
+        ];
+
+        for (label, value) in &test_cases {
+            let query = format!("CREATE decimal_limits:{label} SET val = {value}");
+            let result = client.query(&query).await;
+
+            if result.is_ok() {
+                // Try to read it back as rust_decimal
+                let mut response = client.query(&format!("SELECT val FROM decimal_limits:{label}")).await?;
+                let read_result: Result<Option<rust_decimal::Decimal>, _> = response.take((0, "val"));
+                eprintln!("V3 {}: store=OK, read_as_decimal={:?}", label, read_result);
+            } else {
+                eprintln!("V3 {}: store=FAIL", label);
+            }
+        }
+
+        // Cleanup
+        client.query("DELETE FROM decimal_limits").await?;
+
+        Ok(())
+    }
+
     /// Test V3 SDK cleanup pattern with proper error handling
     ///
     /// This test demonstrates the recommended pattern for cleaning up tables
