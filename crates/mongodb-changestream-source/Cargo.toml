@@ -16,6 +16,9 @@ surreal-sink = { path = "../surreal-sink" }
 # Sync core traits
 sync-core = { path = "../sync-core" }
 
+# MongoDB types for schema-aware conversion
+mongodb-types = { path = "../mongodb-types" }
+
 # Checkpoint management
 checkpoint = { path = "../checkpoint" }
 

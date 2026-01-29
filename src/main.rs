@@ -984,7 +984,8 @@ async fn run_mongodb_full_v2(args: MongoDBFullArgs) -> anyhow::Result<()> {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
-    let _schema = load_schema_if_provided(&args.schema_file)?;
+    // Load and convert schema to DatabaseSchema for type-aware conversion
+    let schema = load_schema_if_provided(&args.schema_file)?.map(|s| s.to_database_schema());
 
     // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
@@ -1005,6 +1006,7 @@ async fn run_mongodb_full_v2(args: MongoDBFullArgs) -> anyhow::Result<()> {
     let sync_opts = surreal_sync_mongodb_changestream_source::SyncOpts {
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
+        schema,
     };
 
     if args.emit_checkpoints {
@@ -1038,7 +1040,8 @@ async fn run_mongodb_full_v3(args: MongoDBFullArgs) -> anyhow::Result<()> {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
-    let _schema = load_schema_if_provided(&args.schema_file)?;
+    // Load and convert schema to DatabaseSchema for type-aware conversion
+    let schema = load_schema_if_provided(&args.schema_file)?.map(|s| s.to_database_schema());
 
     // Connect to SurrealDB using v3 SDK
     let surreal_opts = surreal3_sink::SurrealOpts {
@@ -1059,6 +1062,7 @@ async fn run_mongodb_full_v3(args: MongoDBFullArgs) -> anyhow::Result<()> {
     let sync_opts = surreal_sync_mongodb_changestream_source::SyncOpts {
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
+        schema,
     };
 
     if args.emit_checkpoints {
@@ -2722,7 +2726,8 @@ async fn run_jsonl_v2(args: JsonlArgs) -> anyhow::Result<()> {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
-    let _schema = load_schema_if_provided(&args.schema_file)?;
+    // Load and convert schema to DatabaseSchema for type-aware JSONL conversion
+    let schema = load_schema_if_provided(&args.schema_file)?.map(|s| s.to_database_schema());
 
     // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
@@ -2745,7 +2750,7 @@ async fn run_jsonl_v2(args: JsonlArgs) -> anyhow::Result<()> {
         conversion_rules: args.conversion_rules,
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
-        schema: None,
+        schema,
     };
     surreal_sync::jsonl::sync(&sink, config).await?;
 
@@ -2761,7 +2766,8 @@ async fn run_jsonl_v3(args: JsonlArgs) -> anyhow::Result<()> {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
-    let _schema = load_schema_if_provided(&args.schema_file)?;
+    // Load and convert schema to DatabaseSchema for type-aware JSONL conversion
+    let schema = load_schema_if_provided(&args.schema_file)?.map(|s| s.to_database_schema());
 
     // Connect to SurrealDB using v3 SDK
     let surreal_opts = surreal3_sink::SurrealOpts {
@@ -2784,7 +2790,7 @@ async fn run_jsonl_v3(args: JsonlArgs) -> anyhow::Result<()> {
         conversion_rules: args.conversion_rules,
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
-        schema: None,
+        schema,
     };
     surreal_sync::jsonl::sync(&sink, config).await?;
 

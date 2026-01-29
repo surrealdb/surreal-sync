@@ -155,6 +155,17 @@ pub fn proto_to_typed_value_with_schema(
                             .to_typed_value(),
                     );
                 }
+
+                // Check if this is a Decimal field encoded as string (protobuf doesn't have native decimal)
+                if let UniversalType::Decimal { precision, scale } = &col.column_type {
+                    debug!(
+                        "Parsing string field '{}' as Decimal based on schema (precision={}, scale={})",
+                        col.name, precision, scale
+                    );
+                    // Pass through to TypedValue::decimal - actual conversion happens in the sink layer
+                    // which handles values that exceed rust_decimal's MAX by storing as Float
+                    return Ok(TypedValue::decimal(s, *precision, *scale));
+                }
             }
             Ok(TypedValue::text(&s))
         }
