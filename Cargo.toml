@@ -101,6 +101,10 @@ surreal2-types = { path = "crates/surreal2-types" }
 kafka-types = { path = "crates/kafka-types" }
 neo4j-types = { path = "crates/neo4j-types" }
 surreal2-sink = { path = "crates/surreal2-sink" }
+surreal3-sink = { path = "crates/surreal3-sink" }
+surreal3-types = { path = "crates/surreal3-types" }
+surreal-version = { path = "crates/surreal-version" }
+checkpoint-surreal3 = { path = "crates/checkpoint-surreal3" }
 
 # MongoDB source
 surreal-sync-mongodb-changestream-source = { path = "crates/mongodb-changestream-source" }
