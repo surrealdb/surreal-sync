@@ -6,7 +6,6 @@
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
-use surreal_sync::SurrealOpts;
 
 #[tokio::test]
 async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -43,32 +42,20 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
         ]),
     };
 
-    let surreal_opts = SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
+    let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
         batch_size: 1000,
         dry_run: false,
     };
 
-    let surreal_conn_opts = surreal2_sink::SurrealOpts {
-        surreal_endpoint: surreal_opts.surreal_endpoint.clone(),
-        surreal_username: surreal_opts.surreal_username.clone(),
-        surreal_password: surreal_opts.surreal_password.clone(),
-    };
-    let surreal2 = surreal2_sink::surreal_connect(
-        &surreal_conn_opts,
-        &surreal_config.surreal_namespace,
-        &surreal_config.surreal_database,
-    )
-    .await?;
+    // Create SurrealDB v2 sink
+    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
 
     // Execute full sync from MySQL to SurrealDB
-    surreal_sync_mysql_trigger_source::run_full_sync(
+    surreal_sync_mysql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+        &sink,
         &source_opts,
-        &surreal_sync_mysql_trigger_source::SurrealOpts::from(&surreal_opts),
+        &sync_opts,
         None,
-        &surreal2,
     )
     .await?;
 

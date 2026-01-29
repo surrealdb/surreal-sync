@@ -10,7 +10,6 @@
 use loadtest_populate_mysql::MySQLPopulator;
 use loadtest_verify::StreamingVerifier;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
-use surreal_sync::SurrealOpts;
 use sync_core::Schema;
 
 const SEED: u64 = 42;
@@ -98,31 +97,19 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         mysql_boolean_paths: None,
     };
 
-    let surreal_opts = SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
+    let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
         batch_size: BATCH_SIZE,
         dry_run: false,
     };
 
-    let surreal_conn_opts = surreal2_sink::SurrealOpts {
-        surreal_endpoint: surreal_opts.surreal_endpoint.clone(),
-        surreal_username: surreal_opts.surreal_username.clone(),
-        surreal_password: surreal_opts.surreal_password.clone(),
-    };
-    let surreal_for_sync = surreal2_sink::surreal_connect(
-        &surreal_conn_opts,
-        &surreal_config.surreal_namespace,
-        &surreal_config.surreal_database,
-    )
-    .await?;
+    // Create SurrealDB v2 sink
+    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
 
-    surreal_sync_mysql_trigger_source::run_full_sync(
+    surreal_sync_mysql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+        &sink,
         &source_opts,
-        &surreal_sync_mysql_trigger_source::SurrealOpts::from(&surreal_opts),
+        &sync_opts,
         None,
-        &surreal_for_sync,
     )
     .await?;
 

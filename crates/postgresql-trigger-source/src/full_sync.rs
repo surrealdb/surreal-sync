@@ -5,7 +5,7 @@
 
 use crate::SourceOpts;
 use anyhow::Result;
-use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
+use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use chrono::Utc;
 use surreal_sink::SurrealSink;
 use surreal_sync_postgresql::SyncOpts;
@@ -13,11 +13,17 @@ use tokio_postgres::NoTls;
 use tracing::info;
 
 /// Main entry point for PostgreSQL to SurrealDB migration with checkpoint support
-pub async fn run_full_sync<S: SurrealSink>(
+///
+/// # Arguments
+/// * `surreal` - SurrealDB sink for writing data
+/// * `from_opts` - Source database options
+/// * `sync_opts` - Sync configuration options
+/// * `sync_manager` - Optional sync manager for checkpoint emission
+pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     surreal: &S,
     from_opts: SourceOpts,
     sync_opts: SyncOpts,
-    sync_config: Option<SyncConfig>,
+    sync_manager: Option<&SyncManager<CS>>,
 ) -> Result<()> {
     info!("Starting PostgreSQL migration to SurrealDB");
 
@@ -32,9 +38,7 @@ pub async fn run_full_sync<S: SurrealSink>(
     });
 
     // Emit checkpoint t1 (before full sync starts) if configured
-    if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone(), None);
-
+    if let Some(manager) = sync_manager {
         // Set up triggers on user tables so changes during full sync are captured
         let tables = surreal_sync_postgresql::get_user_tables(
             &client,
@@ -54,7 +58,7 @@ pub async fn run_full_sync<S: SurrealSink>(
             timestamp: Utc::now(),
         };
 
-        sync_manager
+        manager
             .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
             .await?;
 
@@ -90,16 +94,14 @@ pub async fn run_full_sync<S: SurrealSink>(
     }
 
     // Emit checkpoint t2 (after full sync completes) if configured
-    if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone(), None);
-
+    if let Some(manager) = sync_manager {
         // For trigger-based sync, checkpoint reflects the current state
         let checkpoint = super::checkpoint::PostgreSQLCheckpoint {
             sequence_id: 0, // Full sync complete, incremental will start from audit table
             timestamp: Utc::now(),
         };
 
-        sync_manager
+        manager
             .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
             .await?;
 

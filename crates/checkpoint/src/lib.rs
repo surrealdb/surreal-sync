@@ -9,24 +9,46 @@
 //! - Defines the `Checkpoint` trait for database-specific checkpoint types
 //! - Provides `CheckpointFile` wrapper for storage-agnostic serialization
 //! - Manages checkpoint saving/loading via `SyncManager`
+//! - Supports multiple storage backends via `CheckpointStore` trait
+//!
+//! ## Storage Backends
+//!
+//! - `FilesystemStore` - Stores checkpoints as JSON files
+//! - `Surreal2Store` - Stores checkpoints in SurrealDB v2
+//! - `Surreal3Store` - Stores checkpoints in SurrealDB v3 (in checkpoint-surreal3 crate)
 //!
 //! Each database (MongoDB, Neo4j, PostgreSQL, MySQL) implements its own
 //! checkpoint type with the `Checkpoint` trait.
 
 mod config;
 mod file;
+mod filesystem;
 mod manager;
 mod phase;
 pub mod store;
+mod surreal2;
 
 #[cfg(test)]
 mod tests;
 
+// Re-export config types
 pub use config::{CheckpointStorage, SyncConfig};
+
+// Re-export file types
 pub use file::CheckpointFile;
-pub use manager::SyncManager;
+
+// Re-export manager types
+pub use manager::{CheckpointFileReader, NullStore, NullSyncManager, SyncManager};
+
+// Re-export phase types
 pub use phase::SyncPhase;
+
+// Re-export store trait and types
 pub use store::{CheckpointID, CheckpointStore, StoredCheckpoint};
+
+// Re-export storage implementations
+pub use filesystem::FilesystemStore;
+pub use surreal2::Surreal2Store;
 
 /// Trait that database-specific checkpoints must implement.
 ///
@@ -141,9 +163,19 @@ pub async fn get_checkpoint_for_phase<P: AsRef<std::path::Path>>(
         ));
     }
 
-    // Read the matching checkpoint file
+    // Read the matching checkpoint file - it's stored as StoredCheckpoint format
     let checkpoint_content = std::fs::read_to_string(checkpoint_files[0].path())?;
-    let checkpoint_file: CheckpointFile = serde_json::from_str(&checkpoint_content)?;
+    let stored: StoredCheckpoint = serde_json::from_str(&checkpoint_content)?;
+
+    // Convert StoredCheckpoint to CheckpointFile
+    // The checkpoint_data field contains the JSON-serialized checkpoint
+    let checkpoint: serde_json::Value = serde_json::from_str(&stored.checkpoint_data)?;
+    let checkpoint_file = CheckpointFile {
+        database_type: stored.database_type,
+        checkpoint,
+        phase,
+        created_at: stored.created_at,
+    };
 
     Ok(checkpoint_file)
 }
@@ -190,9 +222,30 @@ pub async fn get_first_checkpoint_from_dir<P: AsRef<std::path::Path>>(
         return Err(anyhow::anyhow!("No checkpoint files found in directory"));
     }
 
-    // Read the first checkpoint file
+    // Read the first checkpoint file - it's stored as StoredCheckpoint format
     let checkpoint_content = std::fs::read_to_string(checkpoint_files[0].path())?;
-    let checkpoint_file: CheckpointFile = serde_json::from_str(&checkpoint_content)?;
+    let stored: StoredCheckpoint = serde_json::from_str(&checkpoint_content)?;
+
+    // Parse phase string to SyncPhase enum
+    let phase = parse_sync_phase(&stored.phase)?;
+
+    // Convert StoredCheckpoint to CheckpointFile
+    let checkpoint: serde_json::Value = serde_json::from_str(&stored.checkpoint_data)?;
+    let checkpoint_file = CheckpointFile {
+        database_type: stored.database_type,
+        checkpoint,
+        phase,
+        created_at: stored.created_at,
+    };
 
     Ok(checkpoint_file)
+}
+
+/// Parse a phase string into a SyncPhase enum.
+fn parse_sync_phase(phase: &str) -> anyhow::Result<SyncPhase> {
+    match phase {
+        "full_sync_start" => Ok(SyncPhase::FullSyncStart),
+        "full_sync_end" => Ok(SyncPhase::FullSyncEnd),
+        other => Err(anyhow::anyhow!("Unknown sync phase: {other}")),
+    }
 }

@@ -9,6 +9,7 @@ use axum::{
     routing::get,
     Router,
 };
+use surreal2_sink::Surreal2Sink;
 use surreal_sync_csv_source::{sync, Config};
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
@@ -117,6 +118,7 @@ async fn test_csv_http_import() {
 
     // Reconnect after cleanup
     let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let sink = Surreal2Sink::new(surreal.clone());
 
     // Start test HTTP server
     let (base_url, server_handle) = start_test_server().await.unwrap();
@@ -133,13 +135,6 @@ async fn test_csv_http_import() {
         http_uris: vec![csv_url.clone()],
         table: table.to_string(),
         batch_size: 100,
-        namespace: namespace.to_string(),
-        database: database.to_string(),
-        surreal_opts: surreal2_sink::SurrealOpts {
-            surreal_endpoint: "ws://surrealdb:8000".to_string(),
-            surreal_username: "root".to_string(),
-            surreal_password: "root".to_string(),
-        },
         has_headers: true,
         delimiter: b',',
         id_field: Some("id".to_string()),
@@ -150,7 +145,7 @@ async fn test_csv_http_import() {
     };
 
     // Run CSV import
-    let result = sync(config).await;
+    let result = sync(&sink, config).await;
     assert!(result.is_ok(), "CSV import should succeed: {result:?}");
 
     // Verify data was imported correctly
@@ -198,7 +193,8 @@ async fn test_csv_http_import_with_path() {
     cleanup_namespace(&surreal, namespace).await.unwrap();
 
     // Reconnect after cleanup
-    let _surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let sink = Surreal2Sink::new(surreal.clone());
 
     // Start test HTTP server
     let (base_url, server_handle) = start_test_server().await.unwrap();
@@ -215,13 +211,6 @@ async fn test_csv_http_import_with_path() {
         http_uris: vec![csv_url],
         table: table.to_string(),
         batch_size: 100,
-        namespace: namespace.to_string(),
-        database: database.to_string(),
-        surreal_opts: surreal2_sink::SurrealOpts {
-            surreal_endpoint: "ws://surrealdb:8000".to_string(),
-            surreal_username: "root".to_string(),
-            surreal_password: "root".to_string(),
-        },
         has_headers: true,
         delimiter: b',',
         id_field: Some("id".to_string()), // Use id field from CSV
@@ -232,7 +221,7 @@ async fn test_csv_http_import_with_path() {
     };
 
     // Run CSV import
-    let result = sync(config).await;
+    let result = sync(&sink, config).await;
     assert!(result.is_ok(), "CSV import should succeed: {result:?}");
 
     // Reconnect to verify data (ensures we're seeing fresh data)
@@ -324,6 +313,10 @@ async fn test_csv_http_404_error() {
     // Cleanup before test
     cleanup_namespace(&surreal, namespace).await.unwrap();
 
+    // Reconnect after cleanup
+    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let sink = Surreal2Sink::new(surreal.clone());
+
     // Start test HTTP server
     let (base_url, server_handle) = start_test_server().await.unwrap();
 
@@ -337,13 +330,6 @@ async fn test_csv_http_404_error() {
         http_uris: vec![csv_url],
         table: "users".to_string(),
         batch_size: 100,
-        namespace: namespace.to_string(),
-        database: database.to_string(),
-        surreal_opts: surreal2_sink::SurrealOpts {
-            surreal_endpoint: "ws://surrealdb:8000".to_string(),
-            surreal_username: "root".to_string(),
-            surreal_password: "root".to_string(),
-        },
         has_headers: true,
         delimiter: b',',
         id_field: None,
@@ -354,7 +340,7 @@ async fn test_csv_http_404_error() {
     };
 
     // Run CSV import - should fail with HTTP 404
-    let result = sync(config).await;
+    let result = sync(&sink, config).await;
     assert!(result.is_err(), "Should fail with HTTP 404");
 
     let error_msg = format!("{:?}", result.unwrap_err());

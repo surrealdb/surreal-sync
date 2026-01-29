@@ -7,7 +7,6 @@
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
-use surreal_sync::SurrealOpts;
 
 #[tokio::test]
 async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -59,30 +58,24 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         ]),
     };
 
-    let surreal_opts = SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
+    let sync_opts = surreal_sync_neo4j_source::SyncOpts {
         batch_size: 1000,
         dry_run: false,
     };
 
-    // Create a sync config for checkpoint emission
-    let sync_config = checkpoint::SyncConfig {
-        incremental: false, // This is full sync with empty data
-        emit_checkpoints: true,
-        checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
-            dir: ".test-checkpoints".to_string(),
-        },
-    };
+    // Create SurrealDB v2 sink
+    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
+
+    // Create sync manager with filesystem checkpoint store
+    let checkpoint_store = checkpoint::FilesystemStore::new(".test-checkpoints");
+    let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
 
     // Run full sync with empty data to get checkpoint (t1)
     surreal_sync_neo4j_source::run_full_sync(
+        &sink,
         source_opts.clone(),
-        surreal_config.surreal_namespace.clone(),
-        surreal_config.surreal_database.clone(),
-        surreal_sync_neo4j_source::SurrealOpts::from(&surreal_opts),
-        Some(sync_config),
+        sync_opts.clone(),
+        Some(&sync_manager),
     )
     .await?;
 
@@ -100,10 +93,9 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Run incremental sync using the checkpoint
     let neo4j_checkpoint = surreal_sync_neo4j_source::Neo4jCheckpoint { timestamp: t1 };
     surreal_sync_neo4j_source::run_incremental_sync(
+        &sink,
         source_opts,
-        surreal_config.surreal_namespace.clone(),
-        surreal_config.surreal_database.clone(),
-        surreal_sync_neo4j_source::SurrealOpts::from(&surreal_opts),
+        sync_opts,
         neo4j_checkpoint,
         chrono::Utc::now() + chrono::Duration::hours(1), // 1 hour deadline
         None, // No target checkpoint - sync all available changes

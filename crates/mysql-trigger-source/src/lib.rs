@@ -11,6 +11,9 @@ mod incremental_sync;
 mod schema;
 mod source;
 
+/// Testing utilities for MySQL trigger source
+pub mod testing;
+
 pub use change_tracking::setup_mysql_change_tracking;
 pub use checkpoint::{get_current_checkpoint, MySQLCheckpoint};
 pub use client::new_mysql_pool;

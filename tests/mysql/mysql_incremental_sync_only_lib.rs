@@ -7,7 +7,6 @@
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
-use surreal_sync::SurrealOpts;
 
 #[tokio::test]
 async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -44,42 +43,24 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         mysql_boolean_paths: Some(vec!["all_types_posts.post_categories".to_string()]),
     };
 
-    let surreal_opts = SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
+    let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
         batch_size: 1000,
         dry_run: false,
     };
 
-    // We need to use the checkpoint-enabled version to set up triggers
-    // Create a sync config for checkpoint emission
-    let sync_config = checkpoint::SyncConfig {
-        incremental: false, // This is full sync to set up infrastructure
-        emit_checkpoints: true,
-        checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
-            dir: ".test-checkpoints".to_string(),
-        },
-    };
+    // Create SurrealDB v2 sink
+    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
 
-    let surreal_conn_opts = surreal2_sink::SurrealOpts {
-        surreal_endpoint: surreal_opts.surreal_endpoint.clone(),
-        surreal_username: surreal_opts.surreal_username.clone(),
-        surreal_password: surreal_opts.surreal_password.clone(),
-    };
-    let surreal2 = surreal2_sink::surreal_connect(
-        &surreal_conn_opts,
-        &surreal_config.surreal_namespace,
-        &surreal_config.surreal_database,
-    )
-    .await?;
+    // Create sync manager with filesystem checkpoint store
+    let checkpoint_store = checkpoint::FilesystemStore::new(".test-checkpoints");
+    let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
 
     // Run full sync to set up triggers and get checkpoint
     surreal_sync_mysql_trigger_source::run_full_sync(
+        &sink,
         &source_opts,
-        &surreal_sync_mysql_trigger_source::SurrealOpts::from(&surreal_opts),
-        Some(sync_config),
-        &surreal2,
+        &sync_opts,
+        Some(&sync_manager),
     )
     .await?;
 
@@ -103,10 +84,8 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
     // Run incremental sync using the checkpoint
     surreal_sync_mysql_trigger_source::run_incremental_sync(
+        &sink,
         source_opts,
-        surreal_config.surreal_namespace.clone(),
-        surreal_config.surreal_database.clone(),
-        surreal_sync_mysql_trigger_source::SurrealOpts::from(&surreal_opts),
         sync_checkpoint,
         chrono::Utc::now() + chrono::Duration::hours(1), // 1 hour deadline
         None, // No target checkpoint - sync all available changes

@@ -9,6 +9,7 @@
 
 use loadtest_populate_csv::CSVPopulator;
 use loadtest_verify::StreamingVerifier;
+use surreal2_sink::Surreal2Sink;
 use surreal_sync::csv::{sync, Config, FileSource};
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
 use sync_core::Schema;
@@ -86,11 +87,8 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
     // === PHASE 2: RUN SYNC from CSV files to SurrealDB ===
     tracing::info!("Running sync from CSV files to SurrealDB");
 
-    let surreal_opts = surreal2_sink::SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
-    };
+    // Create the sink for writing to SurrealDB
+    let sink = Surreal2Sink::new(surreal.clone());
 
     // Sync each CSV file to its corresponding table
     for (table_name, csv_path) in &csv_files {
@@ -101,9 +99,6 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
             http_uris: vec![],
             table: table_name.clone(),
             batch_size: BATCH_SIZE,
-            namespace: surreal_config.surreal_namespace.clone(),
-            database: surreal_config.surreal_database.clone(),
-            surreal_opts: surreal_opts.clone(),
             has_headers: true,
             delimiter: b',',
             id_field: Some("id".to_string()),
@@ -113,7 +108,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
             schema: Some(schema.clone()), // Pass schema for type-aware conversion
         };
 
-        sync(config).await?;
+        sync(&sink, config).await?;
         tracing::info!("Synced {} to SurrealDB", table_name);
     }
 
@@ -235,11 +230,8 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
     let csv_path2 = temp_dir.path().join("users2.csv");
     populator2.populate("users", &csv_path2, 3)?;
 
-    let surreal_opts = surreal2_sink::SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
-    };
+    // Create the sink for writing to SurrealDB
+    let sink = Surreal2Sink::new(surreal.clone());
 
     let config = Config {
         sources: vec![FileSource::Local(csv_path2.clone())],
@@ -248,9 +240,6 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
         http_uris: vec![],
         table: "users".to_string(),
         batch_size: BATCH_SIZE,
-        namespace: surreal_config.surreal_namespace.clone(),
-        database: surreal_config.surreal_database.clone(),
-        surreal_opts: surreal_opts.clone(),
         has_headers: true,
         delimiter: b',',
         id_field: Some("id".to_string()),
@@ -260,7 +249,7 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
         schema: Some(schema.clone()), // Pass schema for type-aware conversion
     };
 
-    sync(config).await?;
+    sync(&sink, config).await?;
 
     // Query the record directly using proper type extraction
     println!("\n=== SURREALDB FIELD EXTRACTION ===");

@@ -14,6 +14,8 @@ use sync_core::{UniversalRelation, UniversalRow, UniversalValue};
 pub fn universal_value_to_surreal_id(value: &UniversalValue) -> Result<Id> {
     match value {
         UniversalValue::Text(s) => Ok(Id::String(s.clone())),
+        UniversalValue::VarChar { value, .. } => Ok(Id::String(value.clone())),
+        UniversalValue::Char { value, .. } => Ok(Id::String(value.clone())),
         UniversalValue::Int32(n) => Ok(Id::Number(*n as i64)),
         UniversalValue::Int64(n) => Ok(Id::Number(*n)),
         UniversalValue::Uuid(u) => Ok(Id::Uuid(surrealdb::sql::Uuid::from(*u))),
@@ -23,7 +25,7 @@ pub fn universal_value_to_surreal_id(value: &UniversalValue) -> Result<Id> {
         }
         other => bail!(
             "Unsupported UniversalValue type for SurrealDB ID: {other:?}. \
-             Supported types: Text, Int32, Int64, Uuid, Ulid"
+             Supported types: Text, VarChar, Char, Int32, Int64, Uuid, Ulid"
         ),
     }
 }

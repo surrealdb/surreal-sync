@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
-use surreal2_sink::SurrealOpts;
-use surreal_sync_jsonl_source::{migrate_from_jsonl, ConversionRule, SourceOpts};
+use surreal2_sink::Surreal2Sink;
+use surreal_sync_jsonl_source::{sync, Config, ConversionRule};
 use surrealdb::{engine::any::connect, sql::Thing, Surreal};
 
 #[derive(Debug, Deserialize)]
@@ -34,7 +34,7 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
         .try_init()
         .ok();
 
-    println!("🧪 Starting JSONL to SurrealDB migration end-to-end test");
+    println!("Starting JSONL to SurrealDB migration end-to-end test");
 
     // Setup test configuration
     let surreal_endpoint = "ws://surrealdb:8000";
@@ -45,7 +45,7 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
     let test_data_dir = PathBuf::from("tests/test_data/jsonl");
 
     // Connect to SurrealDB
-    println!("🗄️  Connecting to SurrealDB...");
+    println!("Connecting to SurrealDB...");
     let surreal = connect(surreal_endpoint).await?;
     surreal
         .signin(surrealdb::opt::auth::Root {
@@ -59,20 +59,14 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
 
     // Clean up any existing test data
-    println!("🧹 Cleaning up existing test data...");
+    println!("Cleaning up existing test data...");
     cleanup_test_data(&surreal).await?;
 
-    // Run the migration using the library functions directly
-    println!("🔄 Running JSONL migration...");
-    let from_opts = SourceOpts {
-        source_uri: test_data_dir.to_string_lossy().to_string(),
-    };
+    // Create sink for the migration
+    let sink = Surreal2Sink::new(surreal.clone());
 
-    let to_opts = SurrealOpts {
-        surreal_endpoint: surreal_endpoint.to_string(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
-    };
+    // Run the migration using the library functions directly
+    println!("Running JSONL migration...");
 
     // Define conversion rules for Notion-like parent references
     let conversion_rules = vec![
@@ -81,25 +75,38 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
         r#"type="block_id",block_id blocks:block_id"#.to_string(),
     ];
 
-    // Execute the migration
-    migrate_from_jsonl(
-        from_opts,
-        surreal_namespace.to_string(),
-        surreal_database.to_string(),
-        to_opts,
-        "id".to_string(),
+    // Create config for the migration
+    let config = Config {
+        sources: vec![],
+        files: vec![],
+        s3_uris: vec![],
+        http_uris: vec![],
+        id_field: "id".to_string(),
         conversion_rules,
-    )
-    .await?;
+        batch_size: 1000,
+        dry_run: false,
+        schema: None,
+    };
+
+    // Add directory as a source (must end with / to be treated as directory)
+    let config = Config {
+        sources: vec![surreal_sync_jsonl_source::FileSource::Local(PathBuf::from(
+            format!("{}/", test_data_dir.display()),
+        ))],
+        ..config
+    };
+
+    // Execute the migration
+    sync(&sink, config).await?;
 
     // Validate the migration results
-    println!("✅ Validating migration results...");
+    println!("Validating migration results...");
     validate_migration_results(&surreal).await?;
 
     // Clean up test data after successful test
     cleanup_test_data(&surreal).await?;
 
-    println!("🎉 End-to-end test completed successfully!");
+    println!("End-to-end test completed successfully!");
     Ok(())
 }
 
@@ -120,7 +127,7 @@ async fn validate_migration_results(
     surreal: &Surreal<surrealdb::engine::any::Any>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Validate databases table
-    println!("📊 Validating databases...");
+    println!("Validating databases...");
     let query = "SELECT * FROM databases ORDER BY id";
     let mut response = surreal.query(query).await?;
     let databases: Vec<Database> = response.take(0)?;
@@ -132,7 +139,7 @@ async fn validate_migration_results(
     assert_eq!(databases[1].name, "API Docs");
 
     // Validate pages table
-    println!("📄 Validating pages...");
+    println!("Validating pages...");
     let query = "SELECT * FROM pages ORDER BY id";
     let mut response = surreal.query(query).await?;
     let pages: Vec<Page> = response.take(0)?;
@@ -147,7 +154,7 @@ async fn validate_migration_results(
     assert_eq!(pages[1].parent.to_string(), "pages:page1");
 
     // Validate blocks table
-    println!("🧱 Validating blocks...");
+    println!("Validating blocks...");
     let query = "SELECT * FROM blocks ORDER BY id";
     let mut response = surreal.query(query).await?;
     let blocks: Vec<Block> = response.take(0)?;
@@ -169,7 +176,7 @@ async fn validate_migration_results(
         ])
     );
 
-    println!("✨ All validations passed!");
+    println!("All validations passed!");
     Ok(())
 }
 
@@ -229,26 +236,25 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
         .take("id")
         .unwrap_or_default();
 
-    // Run migration with custom ID field
-    let from_opts = SourceOpts {
-        source_uri: test_dir.to_string_lossy().to_string(),
+    // Create sink for migration
+    let sink = Surreal2Sink::new(surreal.clone());
+
+    // Run migration with custom ID field (path must end with / to be treated as directory)
+    let config = Config {
+        sources: vec![surreal_sync_jsonl_source::FileSource::Local(PathBuf::from(
+            format!("{}/", test_dir.display()),
+        ))],
+        files: vec![],
+        s3_uris: vec![],
+        http_uris: vec![],
+        id_field: "item_id".to_string(), // Custom ID field
+        conversion_rules: vec![],
+        batch_size: 1000,
+        dry_run: false,
+        schema: None,
     };
 
-    let to_opts = SurrealOpts {
-        surreal_endpoint: surreal_endpoint.to_string(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
-    };
-
-    migrate_from_jsonl(
-        from_opts,
-        "test_custom_id".to_string(),
-        "test_db".to_string(),
-        to_opts,
-        "item_id".to_string(), // Custom ID field
-        vec![],
-    )
-    .await?;
+    sync(&sink, config).await?;
 
     // Validate results
     #[derive(Debug, Deserialize)]
@@ -321,27 +327,25 @@ async fn test_jsonl_with_complex_id_field() {
         .take("id")
         .unwrap_or_default();
 
-    // Run migration with custom ID field
-    let from_opts = SourceOpts {
-        source_uri: test_dir.to_string_lossy().to_string(),
+    // Create sink for migration
+    let sink = Surreal2Sink::new(surreal.clone());
+
+    // Run migration with custom ID field (path must end with / to be treated as directory)
+    let config = Config {
+        sources: vec![surreal_sync_jsonl_source::FileSource::Local(PathBuf::from(
+            format!("{}/", test_dir.display()),
+        ))],
+        files: vec![],
+        s3_uris: vec![],
+        http_uris: vec![],
+        id_field: "timestamp".to_string(), // Custom ID field
+        conversion_rules: vec![],
+        batch_size: 1000,
+        dry_run: false,
+        schema: None,
     };
 
-    let to_opts = SurrealOpts {
-        surreal_endpoint: surreal_endpoint.to_string(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
-    };
-
-    migrate_from_jsonl(
-        from_opts,
-        "test_complex_id".to_string(),
-        "test_db".to_string(),
-        to_opts,
-        "timestamp".to_string(), // Custom ID field
-        vec![],
-    )
-    .await
-    .unwrap();
+    sync(&sink, config).await.unwrap();
 
     // Validate results
     #[derive(Debug, Deserialize)]

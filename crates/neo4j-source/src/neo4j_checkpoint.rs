@@ -42,7 +42,7 @@ pub fn get_current_checkpoint() -> Neo4jCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use checkpoint::{Checkpoint, CheckpointFile, SyncConfig, SyncManager, SyncPhase};
+    use checkpoint::{Checkpoint, CheckpointFile, FilesystemStore, SyncManager, SyncPhase};
     use chrono::{Datelike, Timelike};
     use tempfile::TempDir;
 
@@ -87,15 +87,8 @@ mod tests {
     #[tokio::test]
     async fn test_neo4j_checkpoint_save_load_roundtrip() {
         let tmp = TempDir::new().unwrap();
-        let config = SyncConfig {
-            emit_checkpoints: true,
-            checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
-                dir: tmp.path().to_string_lossy().to_string(),
-            },
-            incremental: false,
-        };
-
-        let manager = SyncManager::new(config, None);
+        let store = FilesystemStore::new(tmp.path());
+        let manager = SyncManager::new(store);
         let original = Neo4jCheckpoint {
             timestamp: Utc::now(),
         };

@@ -51,21 +51,20 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
         schema: "public".to_string(),
     };
 
-    // Create SurrealDB options
-    let surreal_opts = surreal_sync_postgresql::SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
+    // Create SurrealDB sync options
+    let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: 1000,
         dry_run: false,
     };
 
+    // Create SurrealDB v2 sink
+    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
+
     // Run full sync without checkpoint emission
-    surreal_sync_postgresql_wal2json_source::run_full_sync(
+    surreal_sync_postgresql_wal2json_source::run_full_sync::<_, checkpoint::NullStore>(
+        &sink,
         source_opts,
-        surreal_config.surreal_namespace.clone(),
-        surreal_config.surreal_database.clone(),
-        surreal_opts,
+        sync_opts,
         None, // No checkpoint config
     )
     .await?;
