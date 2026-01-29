@@ -4,7 +4,7 @@
 //! that can be used across different test suites.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use surrealdb::{engine::any::connect, Surreal};
+use surrealdb2::{engine::any::connect, Surreal};
 
 // Generate unique test identifiers for parallel execution
 static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -32,12 +32,21 @@ pub struct TestConfig {
 
 impl TestConfig {
     /// Create a new test configuration with unique identifiers
+    ///
+    /// The SurrealDB endpoint can be overridden via the `SURREAL_ENDPOINT` environment
+    /// variable. This allows running tests against different SurrealDB servers (e.g., v2 vs v3).
+    ///
+    /// Default: `ws://surrealdb:8000` (DevContainer's v2 server)
     pub fn new(test_id: u64, neo4j_instance: &str) -> Self {
+        // Respect SURREAL_ENDPOINT env var, default to DevContainer's v2 server
+        let surreal_endpoint =
+            std::env::var("SURREAL_ENDPOINT").unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+
         TestConfig {
             neo4j_uri: format!("bolt://{neo4j_instance}:7687"),
             neo4j_username: "neo4j".to_string(),
             neo4j_password: "password".to_string(),
-            surreal_endpoint: "ws://surrealdb:8000".to_string(),
+            surreal_endpoint,
             surreal_namespace: format!("test_ns_{test_id}"),
             surreal_database: format!("test_db_{test_id}"),
         }
@@ -47,10 +56,10 @@ impl TestConfig {
 /// Connect to SurrealDB with the given configuration
 pub async fn connect_surrealdb(
     config: &TestConfig,
-) -> Result<Surreal<surrealdb::engine::any::Any>, Box<dyn std::error::Error>> {
+) -> Result<Surreal<surrealdb2::engine::any::Any>, Box<dyn std::error::Error>> {
     let surreal = connect(&config.surreal_endpoint).await?;
     surreal
-        .signin(surrealdb::opt::auth::Root {
+        .signin(surrealdb2::opt::auth::Root {
             username: "root",
             password: "root",
         })
@@ -64,12 +73,12 @@ pub async fn connect_surrealdb(
 
 /// Clean up test data from SurrealDB tables
 pub async fn cleanup_surrealdb_test_data(
-    surreal: &Surreal<surrealdb::engine::any::Any>,
+    surreal: &Surreal<surrealdb2::engine::any::Any>,
     tables: &[&str],
 ) -> Result<(), Box<dyn std::error::Error>> {
     for table in tables {
         let query = format!("DELETE FROM {table}");
-        let _: Vec<surrealdb::sql::Value> = surreal.query(&query).await?.take(0)?;
+        let _: Vec<surrealdb2::sql::Value> = surreal.query(&query).await?.take(0)?;
     }
     Ok(())
 }
@@ -79,7 +88,7 @@ pub async fn cleanup_surrealdb_test_data(
 /// This function extracts all table names from the dataset and deletes all data
 /// from those tables in SurrealDB.
 pub async fn cleanup_surrealdb(
-    surreal: &Surreal<surrealdb::engine::any::Any>,
+    surreal: &Surreal<surrealdb2::engine::any::Any>,
     dataset: &crate::testing::table::TestDataSet,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Extract all table names from the dataset

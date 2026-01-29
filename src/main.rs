@@ -3953,7 +3953,7 @@ async fn run_verify(args: VerifyArgs) -> anyhow::Result<()> {
         .replace("http://", "ws://")
         .replace("https://", "wss://");
 
-    let surreal = match surrealdb::engine::any::connect(&endpoint).await {
+    let surreal = match surrealdb2::engine::any::connect(&endpoint).await {
         Ok(s) => s,
         Err(e) => {
             let error_msg = format!("Failed to connect to SurrealDB: {e}");
@@ -3970,7 +3970,7 @@ async fn run_verify(args: VerifyArgs) -> anyhow::Result<()> {
     };
 
     if let Err(e) = surreal
-        .signin(surrealdb::opt::auth::Root {
+        .signin(surrealdb2::opt::auth::Root {
             username: &args.surreal_username,
             password: &args.surreal_password,
         })

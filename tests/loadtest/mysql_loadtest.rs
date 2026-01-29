@@ -45,9 +45,9 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
 
     // Connect to SurrealDB
     let surreal_config = TestConfig::new(test_id, "loadtest-mysql");
-    let surreal = surrealdb::engine::any::connect(&surreal_config.surreal_endpoint).await?;
+    let surreal = surrealdb2::engine::any::connect(&surreal_config.surreal_endpoint).await?;
     surreal
-        .signin(surrealdb::opt::auth::Root {
+        .signin(surrealdb2::opt::auth::Root {
             username: "root",
             password: "root",
         })

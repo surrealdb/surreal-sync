@@ -1,16 +1,35 @@
-//! SurrealDB validation and data export functions
+//! SurrealDB v3 SDK validation and data export functions
+//!
+//! This module provides validation functions that work with SurrealDB v3 SDK types.
+//! The v3 SDK uses different type names:
+//! - `RecordId` instead of `Thing`
+//! - `RecordIdKey` instead of `Id`
+//!
+//! These functions mirror those in `surrealdb.rs` but use v3 SDK types.
 
 #![allow(clippy::uninlined_format_args)]
 
 use crate::testing::{table::TestTable, value::SurrealDBValue};
 use std::collections::HashMap;
-use surrealdb2::{engine::any::Any, sql::Value, Surreal};
+use surrealdb3::engine::any::Any;
+use surrealdb3::types::{RecordId, RecordIdKey};
+use surrealdb3::Surreal;
 
-/// Recursively validate nested object structure using SurrealDB .take() pattern
+/// Convert a SurrealDBValue ID to a v3 RecordIdKey
+fn to_record_id_key(value: &SurrealDBValue) -> Result<RecordIdKey, Box<dyn std::error::Error>> {
+    match value {
+        SurrealDBValue::String(s) => Ok(RecordIdKey::String(s.clone())),
+        SurrealDBValue::Int64(i) => Ok(RecordIdKey::Number(*i)),
+        SurrealDBValue::Int32(i) => Ok(RecordIdKey::Number(*i as i64)),
+        _ => Err(format!("Unsupported ID type for RecordIdKey: {:?}", value).into()),
+    }
+}
+
+/// Recursively validate nested object structure using SurrealDB v3 .take() pattern
 #[allow(unused_variables, unused_mut)]
-async fn validate_nested_object(
+async fn validate_nested_object_v3(
     surreal: &Surreal<Any>,
-    record_id: &surrealdb2::sql::Thing,
+    record_id: &RecordId,
     base_field_path: &str,
     expected_obj: &HashMap<String, SurrealDBValue>,
     test_description: &str,
@@ -22,7 +41,7 @@ async fn validate_nested_object(
         match nested_expected_value {
             SurrealDBValue::Object(nested_obj) => {
                 // Recursively validate deeper nested objects
-                Box::pin(validate_nested_object(
+                Box::pin(validate_nested_object_v3(
                     surreal,
                     record_id,
                     &nested_field_path,
@@ -33,13 +52,11 @@ async fn validate_nested_object(
                 .await?;
             }
             SurrealDBValue::String(expected_str) => {
-                // SELECT the nested field explicitly with an alias
                 let query = format!("SELECT {nested_field_path} as nested_value FROM $record_id");
                 let mut response = surreal
                     .query(&query)
                     .bind(("record_id", record_id.clone()))
                     .await?;
-                // Access using the alias
                 let actual: Option<String> = response.take((0, "nested_value"))?;
                 if let Some(actual_str) = actual {
                     assert_eq!(
@@ -49,23 +66,17 @@ async fn validate_nested_object(
                     );
                 } else {
                     panic!(
-                        "{}: Document {}, Nested string field '{}' not found. Expected object structure has field '{}' but schema/sync may use different nesting. Expected object keys: {:?}",
-                        test_description,
-                        doc_number,
-                        nested_field_path,
-                        nested_field_name,
-                        expected_obj.keys().collect::<Vec<_>>()
+                        "{}: Document {}, Nested string field '{}' not found",
+                        test_description, doc_number, nested_field_path
                     );
                 }
             }
             SurrealDBValue::Bool(expected_bool) => {
-                // SELECT the nested field explicitly with an alias
                 let query = format!("SELECT {nested_field_path} as nested_value FROM $record_id");
                 let mut response = surreal
                     .query(&query)
                     .bind(("record_id", record_id.clone()))
                     .await?;
-                // Access using the alias
                 let actual: Option<bool> = response.take((0, "nested_value"))?;
                 if let Some(actual_bool) = actual {
                     assert_eq!(
@@ -75,24 +86,18 @@ async fn validate_nested_object(
                     );
                 } else {
                     panic!(
-                        "{}: Document {}, Nested bool field '{}' not found. Expected object structure has field '{}' but schema/sync may use different nesting. Expected object keys: {:?}",
-                        test_description,
-                        doc_number,
-                        nested_field_path,
-                        nested_field_name,
-                        expected_obj.keys().collect::<Vec<_>>()
+                        "{}: Document {}, Nested bool field '{}' not found",
+                        test_description, doc_number, nested_field_path
                     );
                 }
             }
             SurrealDBValue::Array(expected_array) => {
-                // SELECT the nested array field explicitly with an alias
                 let query = format!("SELECT {nested_field_path} as nested_array FROM $record_id");
                 let mut response = surreal
                     .query(&query)
                     .bind(("record_id", record_id.clone()))
                     .await?;
 
-                // Determine array element type from first element and validate
                 if let Some(first_elem) = expected_array.first() {
                     match first_elem {
                         SurrealDBValue::String(_) => {
@@ -104,38 +109,21 @@ async fn validate_nested_object(
                                         test_description, doc_number, nested_field_path
                                     )
                                 });
-                            let expected_strs = expected_array
+                            let expected_strs: Vec<String> = expected_array
                                 .iter()
                                 .filter_map(|v| {
                                     if let SurrealDBValue::String(s) = v {
-                                        Some(s.to_owned())
+                                        Some(s.clone())
                                     } else {
                                         None
                                     }
                                 })
-                                .collect::<Vec<_>>();
+                                .collect();
                             assert_eq!(
                                 actual, expected_strs,
                                 "{}: Document {}, Nested array field '{}' mismatch",
                                 test_description, doc_number, nested_field_path
                             );
-                            assert_eq!(
-                                actual.len(),
-                                expected_array.len(),
-                                "{}: Document {}, Nested array field '{}' length mismatch",
-                                test_description,
-                                doc_number,
-                                nested_field_path
-                            );
-                            for (i, expected_val) in expected_array.iter().enumerate() {
-                                if let SurrealDBValue::String(expected_str) = expected_val {
-                                    assert_eq!(
-                                        actual[i], *expected_str,
-                                        "{}: Document {}, Nested array field '{}' element {} mismatch",
-                                        test_description, doc_number, nested_field_path, i
-                                    );
-                                }
-                            }
                         }
                         SurrealDBValue::Int64(_) => {
                             let actual: Vec<i64> = response.take((0, "nested_array"))?;
@@ -160,10 +148,7 @@ async fn validate_nested_object(
                         _ => {
                             panic!(
                                 "{}: Document {}, Nested array field '{}' has unsupported element type: {:?}",
-                                test_description,
-                                doc_number,
-                                nested_field_path,
-                                first_elem
+                                test_description, doc_number, nested_field_path, first_elem
                             );
                         }
                     }
@@ -179,17 +164,18 @@ async fn validate_nested_object(
     Ok(())
 }
 
-/// Compare sync results in SurrealDB against expected data
+/// Compare sync results in SurrealDB v3 against expected data
 ///
 /// This function validates that data synced to SurrealDB matches the expected
 /// logical representation from the test dataset, field by field.
-pub async fn compare_sync_results_in_surrealdb(
+/// Uses v3 SDK types (RecordId instead of Thing).
+pub async fn compare_sync_results_in_surrealdb_v3(
     surreal: &Surreal<Any>,
     table_name: &str,
     expected_table: &TestTable,
     test_description: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // First, just validate the count to ensure basic sync worked
+    // First, validate the count
     tracing::info!(
         "{}: Validating record count in table '{}'",
         test_description,
@@ -201,7 +187,6 @@ pub async fn compare_sync_results_in_surrealdb(
     let count_result: Option<i64> = count_response.take((0, "count"))?;
     let actual_count = count_result.unwrap_or(0) as usize;
 
-    // Validate record count matches expected
     assert_eq!(
         actual_count,
         expected_table.documents.len(),
@@ -211,11 +196,11 @@ pub async fn compare_sync_results_in_surrealdb(
         actual_count
     );
 
-    // Print all the record IDs for debugging
+    // Print all record IDs for debugging
     let id_query = "SELECT id FROM type::table($tb)";
     let tb = table_name.to_string();
     let mut id_response = surreal.query(id_query).bind(("tb", tb.clone())).await?;
-    let ids: Vec<surrealdb2::sql::Thing> = id_response.take((0, "id"))?;
+    let ids: Vec<RecordId> = id_response.take((0, "id"))?;
     tracing::info!(
         "{}: Found {} records in table '{}', IDs: {:?}",
         test_description,
@@ -224,7 +209,7 @@ pub async fn compare_sync_results_in_surrealdb(
         ids
     );
 
-    // Validate each document by querying specific fields with known types
+    // Validate each document
     for (doc_idx, expected_doc) in expected_table.documents.iter().enumerate() {
         tracing::info!(
             "{}: Validating document {}/{}",
@@ -238,21 +223,15 @@ pub async fn compare_sync_results_in_surrealdb(
         // Get the ID field to query for the specific record
         if let Some(id_field) = expected_doc.get_field("id") {
             if let SurrealDBValue::Thing { table: tb, id } = &id_field.value {
-                let id_value = match id.as_ref() {
-                    SurrealDBValue::String(s) => surrealdb2::sql::Id::String(s.clone()),
-                    SurrealDBValue::Int64(i) => surrealdb2::sql::Id::Number(*i),
-                    _ => return Err("Unsupported ID type in Thing".into()),
-                };
-                let record_id = surrealdb2::sql::Thing::from((tb.clone(), id_value));
+                let id_key = to_record_id_key(id.as_ref())?;
+                let record_id = RecordId::new(tb.as_str(), id_key);
 
                 // For each field in the expected document, query it specifically
                 for (field_name, expected_value) in &expected_surrealdb_data {
-                    // Skip the ID field itself
                     if field_name == "id" {
                         continue;
                     }
 
-                    // Query the specific field for this record using proper parameter binding
                     let field_query = format!("SELECT {field_name} FROM $record_id");
 
                     tracing::info!(
@@ -272,7 +251,7 @@ pub async fn compare_sync_results_in_surrealdb(
                         expected_value
                     );
 
-                    // Get the field value with the appropriate type based on expected value
+                    // Validate based on expected type
                     match expected_value {
                         SurrealDBValue::String(_) => {
                             let actual: Option<String> =
@@ -355,8 +334,6 @@ pub async fn compare_sync_results_in_surrealdb(
                             }
                         }
                         SurrealDBValue::Decimal { value, .. } => {
-                            // Decimal fields may be stored as Number::Decimal or Number::Float
-                            // First try reading as f64 (for float storage)
                             let actual_float_result: Result<Option<f64>, _> =
                                 field_response.take((0, field_name.as_str()));
 
@@ -374,7 +351,6 @@ pub async fn compare_sync_results_in_surrealdb(
                                     actual_float
                                 );
                             } else {
-                                // Decimal stored as native Decimal type - query with cast to float
                                 let cast_query = format!(
                                     "SELECT <float> {field_name} as decimal_value FROM $record_id"
                                 );
@@ -409,8 +385,7 @@ pub async fn compare_sync_results_in_surrealdb(
                             }
                         }
                         SurrealDBValue::Object(expected_obj) => {
-                            // 2. Object-based validation: catches fields missing in actual synced object
-                            validate_nested_object(
+                            validate_nested_object_v3(
                                 surreal,
                                 &record_id,
                                 field_name,
@@ -421,7 +396,6 @@ pub async fn compare_sync_results_in_surrealdb(
                             .await?;
                         }
                         SurrealDBValue::DateTime(_) => {
-                            // For DateTime, MongoDB stores as string so validate as string
                             let actual: Option<chrono::DateTime<chrono::Utc>> =
                                 field_response.take((0, field_name.as_str())).map_err(|e| {
                                     format!(
@@ -440,14 +414,11 @@ pub async fn compare_sync_results_in_surrealdb(
                                     field_name
                                 );
                             }
-                            // If we get a string datetime, that's sufficient validation
                         }
                         SurrealDBValue::Thing {
-                            table: expected_table,
+                            table: expected_table_ref,
                             id: expected_id,
                         } => {
-                            // For Thing references, MongoDB stores as strings, so we check string value
-                            // The sync process doesn't convert foreign keys to Thing references automatically
                             let query =
                                 format!("SELECT {field_name} as thing_field FROM $record_id");
                             let mut response = surreal
@@ -455,30 +426,40 @@ pub async fn compare_sync_results_in_surrealdb(
                                 .bind(("record_id", record_id.clone()))
                                 .await?;
 
-                            // Try to get as Thing first (in case it was stored as a Thing)
-                            let actual_thing: Result<Option<surrealdb2::sql::Thing>, _> =
+                            // Try to get as RecordId first (v3 equivalent of Thing)
+                            let actual_record_id: Result<Option<RecordId>, _> =
                                 response.take((0, "thing_field"));
 
-                            if let Ok(Some(thing)) = actual_thing {
-                                // It's stored as a Thing - validate it
+                            if let Ok(Some(rid)) = actual_record_id {
                                 assert_eq!(
-                                    thing.tb, *expected_table,
-                                    "{}: Document {}, Field '{}' references wrong table. Expected '{}', got '{}'",
-                                    test_description, doc_idx + 1, field_name, expected_table, thing.tb
+                                    rid.table.to_string(),
+                                    *expected_table_ref,
+                                    "{}: Document {}, Field '{}' references wrong table",
+                                    test_description,
+                                    doc_idx + 1,
+                                    field_name
                                 );
                                 let expected_id_str = match expected_id.as_ref() {
                                     SurrealDBValue::String(s) => s.clone(),
                                     SurrealDBValue::Int64(i) => i.to_string(),
                                     _ => panic!("Unsupported ID type in expected Thing"),
                                 };
-                                let actual_id_str = thing.id.to_string();
+                                // V3 RecordIdKey doesn't implement Display, so match on variants
+                                let actual_id_str = match &rid.key {
+                                    RecordIdKey::String(s) => s.clone(),
+                                    RecordIdKey::Number(n) => n.to_string(),
+                                    _ => format!("{:?}", rid.key),
+                                };
                                 assert_eq!(
-                                    actual_id_str, expected_id_str,
-                                    "{}: Document {}, Field '{}' references wrong ID. Expected '{}', got '{}'",
-                                    test_description, doc_idx + 1, field_name, expected_id_str, actual_id_str
+                                    actual_id_str,
+                                    expected_id_str,
+                                    "{}: Document {}, Field '{}' references wrong ID",
+                                    test_description,
+                                    doc_idx + 1,
+                                    field_name
                                 );
                             } else {
-                                // MongoDB stores references as strings, check if string value matches expected ID
+                                // Check as string
                                 let query =
                                     format!("SELECT {field_name} as string_field FROM $record_id");
                                 let mut response = surreal
@@ -497,19 +478,18 @@ pub async fn compare_sync_results_in_surrealdb(
                                     })?;
 
                                 if let Some(actual_str) = actual_string {
-                                    // Validate the string ID matches what we expect
                                     let expected_id_str = match expected_id.as_ref() {
                                         SurrealDBValue::String(s) => s.clone(),
                                         SurrealDBValue::Int64(i) => i.to_string(),
                                         _ => panic!("Unsupported ID type in expected Thing"),
                                     };
                                     assert_eq!(
-                                        actual_str, expected_id_str,
-                                        "{}: Document {}, Field '{}' reference ID mismatch. Expected '{}', got '{}'",
-                                        test_description, doc_idx + 1, field_name, expected_id_str, actual_str
-                                    );
-                                    println!(
-                                        "   ✓ Field '{field_name}' references ID '{actual_str}' (stored as string)"
+                                        actual_str,
+                                        expected_id_str,
+                                        "{}: Document {}, Field '{}' reference ID mismatch",
+                                        test_description,
+                                        doc_idx + 1,
+                                        field_name
                                     );
                                 } else {
                                     panic!(
@@ -522,7 +502,6 @@ pub async fn compare_sync_results_in_surrealdb(
                             }
                         }
                         SurrealDBValue::Array(expected_array) => {
-                            // For arrays, SELECT the field explicitly with an alias
                             let query =
                                 format!("SELECT {field_name} as array_field FROM $record_id");
                             let mut response = surreal
@@ -530,7 +509,6 @@ pub async fn compare_sync_results_in_surrealdb(
                                 .bind(("record_id", record_id.clone()))
                                 .await?;
 
-                            // Determine array element type from first element and validate
                             if let Some(first_elem) = expected_array.first() {
                                 match first_elem {
                                     SurrealDBValue::String(_) => {
@@ -552,7 +530,6 @@ pub async fn compare_sync_results_in_surrealdb(
                                             doc_idx + 1,
                                             field_name
                                         );
-                                        // Verify each string element
                                         for (i, expected_val) in expected_array.iter().enumerate() {
                                             if let SurrealDBValue::String(expected_str) =
                                                 expected_val
@@ -645,19 +622,20 @@ pub async fn compare_sync_results_in_surrealdb(
                             }
                         }
                         SurrealDBValue::Bytes(expected_bytes) => {
-                            // For bytes, SELECT the field explicitly with an alias
                             let query =
                                 format!("SELECT {field_name} as bytes_field FROM $record_id");
                             let mut response = surreal
                                 .query(&query)
                                 .bind(("record_id", record_id.clone()))
                                 .await?;
-                            // Retrieve and validate bytes content
                             let actual: Vec<u8> = response.take((0, "bytes_field"))?;
                             assert_eq!(
-                                actual, *expected_bytes,
-                                "{}: Document {}, Field '{}' bytes mismatch - expected {:?}, found {:?}",
-                                test_description, doc_idx + 1, field_name, expected_bytes, actual
+                                actual,
+                                *expected_bytes,
+                                "{}: Document {}, Field '{}' bytes mismatch",
+                                test_description,
+                                doc_idx + 1,
+                                field_name
                             );
                         }
                         SurrealDBValue::Uuid(expected_uuid) => {
@@ -683,15 +661,13 @@ pub async fn compare_sync_results_in_surrealdb(
                             }
                         }
                         SurrealDBValue::Null | SurrealDBValue::None => {
-                            // For null values, we just check that the field query doesn't fail
-                            // The field may or may not exist, but if it exists it should be null-like
-                            let _actual: Option<surrealdb2::Value> =
+                            // For null values, just check that the field query doesn't fail
+                            let _actual: Option<serde_json::Value> =
                                 field_response.take((0, field_name.as_str()))?;
-                            // We accept any result for null types since they may not be stored
                         }
                         _ => {
                             return Err(format!(
-                                "{test_description}: Unsupported field validation for '{field_name}' with type {expected_value:?}. Add validation logic for this type."
+                                "{test_description}: Unsupported field validation for '{field_name}' with type {expected_value:?}"
                             ).into());
                         }
                     }
@@ -705,14 +681,13 @@ pub async fn compare_sync_results_in_surrealdb(
     Ok(())
 }
 
-/// Validate synced table data matches expected dataset (original approach)
-pub async fn validate_synced_table_in_surrealdb(
+/// Validate synced table data matches expected dataset using v3 SDK
+pub async fn validate_synced_table_in_surrealdb_v3(
     surreal: &Surreal<Any>,
     expected_table: &TestTable,
     test_description: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Use the existing field-by-field validation approach
-    compare_sync_results_in_surrealdb(
+    compare_sync_results_in_surrealdb_v3(
         surreal,
         &expected_table.name,
         expected_table,
@@ -721,20 +696,17 @@ pub async fn validate_synced_table_in_surrealdb(
     .await
 }
 
-/// Assert that all tables in a dataset have been correctly synced to SurrealDB
-///
-/// This function iterates through all tables in the dataset and validates each one
-/// to ensure data synced to SurrealDB matches the expected logical representation.
-pub async fn assert_synced(
+/// Assert that all tables in a dataset have been correctly synced to SurrealDB v3
+pub async fn assert_synced_v3(
     surreal: &Surreal<Any>,
     dataset: &crate::testing::table::TestDataSet,
     test_prefix: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Asserting all SurrealDB tables in dataset are synced correctly...");
+    println!("Asserting all SurrealDB v3 tables in dataset are synced correctly...");
 
     for table in &dataset.tables {
         tracing::info!("Validating table '{}'", table.name);
-        validate_synced_table_in_surrealdb(
+        validate_synced_table_in_surrealdb_v3(
             surreal,
             table,
             &format!("{} - {}", test_prefix, table.name),
@@ -744,59 +716,35 @@ pub async fn assert_synced(
     Ok(())
 }
 
-/// Convert SurrealDB value to test value for comparison
-pub fn surrealdb_value_to_test_value(
-    value: &surrealdb2::sql::Value,
-) -> Result<SurrealDBValue, Box<dyn std::error::Error>> {
-    match value {
-        Value::None | Value::Null => Ok(SurrealDBValue::Null),
-        Value::Bool(b) => Ok(SurrealDBValue::Bool(*b)),
-        Value::Number(n) => {
-            if n.is_int() {
-                let i = n.as_int();
-                if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
-                    Ok(SurrealDBValue::Int32(i as i32))
-                } else {
-                    Ok(SurrealDBValue::Int64(i))
-                }
-            } else if n.is_float() {
-                let f = n.as_float();
-                Ok(SurrealDBValue::Float64(f))
-            } else {
-                // Handle decimal numbers
-                Ok(SurrealDBValue::Decimal {
-                    value: n.to_string(),
-                    precision: None, // SurrealDB doesn't expose precision metadata
-                    scale: None,
-                })
-            }
-        }
-        Value::Strand(s) => Ok(SurrealDBValue::String(s.to_string())),
-        Value::Datetime(dt) => Ok(SurrealDBValue::DateTime(dt.0)),
-        Value::Array(arr) => {
-            let mut converted_array = Vec::new();
-            for item in &arr.0 {
-                converted_array.push(surrealdb_value_to_test_value(item)?);
-            }
-            Ok(SurrealDBValue::Array(converted_array))
-        }
-        Value::Object(obj) => {
-            let mut converted_object = HashMap::new();
-            for (key, val) in &obj.0 {
-                converted_object.insert(key.clone(), surrealdb_value_to_test_value(val)?);
-            }
-            Ok(SurrealDBValue::Object(converted_object))
-        }
-        Value::Thing(thing) => Ok(SurrealDBValue::Thing {
-            table: thing.tb.clone(),
-            id: Box::new(surrealdb_value_to_test_value(&thing.id.clone().into())?),
-        }),
-        Value::Bytes(bytes) => Ok(SurrealDBValue::Bytes(bytes.to_vec())),
-        Value::Duration(dur) => Ok(SurrealDBValue::Duration(dur.to_string())),
-        Value::Geometry(geom) => Ok(SurrealDBValue::Geometry(geom.to_string())),
-        _ => {
-            // For any other types, convert to string representation
-            Ok(SurrealDBValue::String(value.to_string()))
-        }
+/// Connect to SurrealDB v3 with the given configuration
+///
+/// This uses the v3 SDK (surrealdb3::) which requires the "flatbuffers" WebSocket subprotocol.
+/// V3 SDK can only connect to v3 servers.
+pub async fn connect_surrealdb_v3(
+    config: &crate::testing::test_helpers::TestConfig,
+) -> Result<Surreal<Any>, Box<dyn std::error::Error>> {
+    let surreal = surrealdb3::engine::any::connect(&config.surreal_endpoint).await?;
+    surreal
+        .signin(surrealdb3::opt::auth::Root {
+            username: "root".to_string(),
+            password: "root".to_string(),
+        })
+        .await?;
+    surreal
+        .use_ns(&config.surreal_namespace)
+        .use_db(&config.surreal_database)
+        .await?;
+    Ok(surreal)
+}
+
+/// Clean up test data from SurrealDB tables (v3 version)
+pub async fn cleanup_surrealdb_test_data_v3(
+    surreal: &Surreal<Any>,
+    tables: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    for table in tables {
+        let query = format!("DELETE FROM {table}");
+        let _: Vec<serde_json::Value> = surreal.query(&query).await?.take(0)?;
     }
+    Ok(())
 }
