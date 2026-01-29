@@ -75,6 +75,12 @@ use surreal_sync_postgresql_trigger_source;
 #[allow(clippy::single_component_path_imports)]
 use surreal_sync_postgresql_wal2json_source;
 
+// SurrealDB sink crates for v2/v3 SDK support
+#[allow(clippy::single_component_path_imports)]
+use checkpoint_surreal3;
+#[allow(clippy::single_component_path_imports)]
+use surreal3_sink;
+
 // Load testing imports
 use loadtest_populate_csv::CSVPopulateArgs;
 use loadtest_populate_jsonl::JSONLPopulateArgs;
@@ -92,6 +98,46 @@ use loadtest_distributed::{
     generator::{ConfigGenerator, DockerComposeGenerator, KubernetesGenerator},
     AggregateServerArgs, GenerateArgs, Platform, SourceType,
 };
+
+// =============================================================================
+// SDK Version Detection
+// =============================================================================
+
+/// SDK version to use for SurrealDB operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SdkVersion {
+    V2,
+    V3,
+}
+
+/// Get the SDK version to use, either from explicit user preference or auto-detection.
+async fn get_sdk_version(endpoint: &str, explicit: Option<&str>) -> anyhow::Result<SdkVersion> {
+    match explicit {
+        Some("v2") => {
+            tracing::info!("Using SurrealDB SDK v2 (explicitly specified)");
+            Ok(SdkVersion::V2)
+        }
+        Some("v3") => {
+            tracing::info!("Using SurrealDB SDK v3 (explicitly specified)");
+            Ok(SdkVersion::V3)
+        }
+        Some(other) => {
+            anyhow::bail!("Unknown SDK version: '{other}'. Valid values: v2, v3")
+        }
+        None => {
+            tracing::debug!("Auto-detecting SurrealDB server version...");
+            let detected = surreal_version::detect_server_version(endpoint).await?;
+            let version = match detected {
+                surreal_version::SurrealMajorVersion::V2 => SdkVersion::V2,
+                surreal_version::SurrealMajorVersion::V3 => SdkVersion::V3,
+            };
+            tracing::info!(
+                "Auto-detected SurrealDB server version: {detected}, using SDK {version:?}"
+            );
+            Ok(version)
+        }
+    }
+}
 
 #[derive(Parser)]
 #[command(name = "surreal-sync")]
@@ -918,7 +964,20 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
 // =============================================================================
 
 async fn run_mongodb_full(args: MongoDBFullArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting full sync from MongoDB to SurrealDB");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_mongodb_full_v2(args).await,
+        SdkVersion::V3 => run_mongodb_full_v3(args).await,
+    }
+}
+
+async fn run_mongodb_full_v2(args: MongoDBFullArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting full sync from MongoDB to SurrealDB (SDK v2)");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
 
     if args.surreal.dry_run {
@@ -927,7 +986,7 @@ async fn run_mongodb_full(args: MongoDBFullArgs) -> anyhow::Result<()> {
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
@@ -971,8 +1030,75 @@ async fn run_mongodb_full(args: MongoDBFullArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_mongodb_full_v3(args: MongoDBFullArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting full sync from MongoDB to SurrealDB (SDK v3)");
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    // Connect to SurrealDB using v3 SDK
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+
+    let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
+        source_uri: args.connection_string,
+        source_database: Some(args.database),
+    };
+
+    let sync_opts = surreal_sync_mongodb_changestream_source::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+
+    if args.emit_checkpoints {
+        let store = checkpoint::FilesystemStore::new(&args.checkpoint_dir);
+        let sync_manager = checkpoint::SyncManager::new(store);
+        surreal_sync_mongodb_changestream_source::run_full_sync(
+            &sink,
+            source_opts,
+            sync_opts,
+            Some(&sync_manager),
+        )
+        .await?;
+    } else {
+        surreal_sync_mongodb_changestream_source::migrate_from_mongodb(
+            &sink,
+            source_opts,
+            sync_opts,
+        )
+        .await?;
+    }
+
+    tracing::info!("Full sync completed successfully");
+    Ok(())
+}
+
 async fn run_mongodb_incremental(args: MongoDBIncrementalArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting incremental sync from MongoDB to SurrealDB");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_mongodb_incremental_v2(args).await,
+        SdkVersion::V3 => run_mongodb_incremental_v3(args).await,
+    }
+}
+
+async fn run_mongodb_incremental_v2(args: MongoDBIncrementalArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting incremental sync from MongoDB to SurrealDB (SDK v2)");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
     tracing::info!("Starting from checkpoint: {}", args.incremental_from);
 
@@ -986,7 +1112,7 @@ async fn run_mongodb_incremental(args: MongoDBIncrementalArgs) -> anyhow::Result
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
@@ -1031,12 +1157,85 @@ async fn run_mongodb_incremental(args: MongoDBIncrementalArgs) -> anyhow::Result
     Ok(())
 }
 
+async fn run_mongodb_incremental_v3(args: MongoDBIncrementalArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting incremental sync from MongoDB to SurrealDB (SDK v3)");
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+    tracing::info!("Starting from checkpoint: {}", args.incremental_from);
+
+    if let Some(ref to) = args.incremental_to {
+        tracing::info!("Will stop at checkpoint: {}", to);
+    }
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    // Connect to SurrealDB using v3 SDK
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+
+    let timeout_seconds: i64 = args
+        .timeout
+        .parse()
+        .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
+    let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
+
+    let mongodb_from =
+        surreal_sync_mongodb_changestream_source::MongoDBCheckpoint::from_cli_string(
+            &args.incremental_from,
+        )?;
+    let mongodb_to = args
+        .incremental_to
+        .as_ref()
+        .map(|s| surreal_sync_mongodb_changestream_source::MongoDBCheckpoint::from_cli_string(s))
+        .transpose()?;
+
+    let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
+        source_uri: args.connection_string,
+        source_database: Some(args.database),
+    };
+
+    surreal_sync_mongodb_changestream_source::run_incremental_sync(
+        &sink,
+        source_opts,
+        mongodb_from,
+        deadline,
+        mongodb_to,
+    )
+    .await?;
+
+    tracing::info!("Incremental sync completed successfully");
+    Ok(())
+}
+
 // =============================================================================
 // Neo4j Handlers
 // =============================================================================
 
 async fn run_neo4j_full(args: Neo4jFullArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting full sync from Neo4j to SurrealDB");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_neo4j_full_v2(args).await,
+        SdkVersion::V3 => run_neo4j_full_v3(args).await,
+    }
+}
+
+async fn run_neo4j_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting full sync from Neo4j to SurrealDB (SDK v2)");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
 
     if args.surreal.dry_run {
@@ -1063,7 +1262,7 @@ async fn run_neo4j_full(args: Neo4jFullArgs) -> anyhow::Result<()> {
         None
     };
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
@@ -1112,8 +1311,98 @@ async fn run_neo4j_full(args: Neo4jFullArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_neo4j_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting full sync from Neo4j to SurrealDB (SDK v3)");
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let schema = load_schema_if_provided(&args.schema_file)?;
+
+    // If json_properties not explicitly provided but schema file is, extract JSON fields from schema
+    let json_properties = if args.json_properties.is_some() {
+        args.json_properties
+    } else if let Some(ref s) = schema {
+        let json_fields = extract_json_fields_from_schema(s);
+        if !json_fields.is_empty() {
+            tracing::info!(
+                "Auto-detected JSON properties from schema: {:?}",
+                json_fields
+            );
+            Some(json_fields)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Connect to SurrealDB using v3 SDK
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+
+    let source_opts = surreal_sync_neo4j_source::SourceOpts {
+        source_uri: args.connection_string,
+        source_database: args.database,
+        source_username: args.username,
+        source_password: args.password,
+        neo4j_timezone: args.timezone,
+        neo4j_json_properties: json_properties,
+    };
+
+    let sync_opts = surreal_sync_neo4j_source::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+
+    if args.emit_checkpoints {
+        let store = checkpoint::FilesystemStore::new(&args.checkpoint_dir);
+        let sync_manager = checkpoint::SyncManager::new(store);
+        surreal_sync_neo4j_source::run_full_sync(
+            &sink,
+            source_opts,
+            sync_opts,
+            Some(&sync_manager),
+        )
+        .await?;
+    } else {
+        surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+            &sink,
+            source_opts,
+            sync_opts,
+            None,
+        )
+        .await?;
+    }
+
+    tracing::info!("Full sync completed successfully");
+    Ok(())
+}
+
 async fn run_neo4j_incremental(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting incremental sync from Neo4j to SurrealDB");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_neo4j_incremental_v2(args).await,
+        SdkVersion::V3 => run_neo4j_incremental_v3(args).await,
+    }
+}
+
+async fn run_neo4j_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting incremental sync from Neo4j to SurrealDB (SDK v2)");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
     tracing::info!("Starting from checkpoint: {}", args.incremental_from);
 
@@ -1145,7 +1434,7 @@ async fn run_neo4j_incremental(args: Neo4jIncrementalArgs) -> anyhow::Result<()>
         None
     };
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
@@ -1198,12 +1487,111 @@ async fn run_neo4j_incremental(args: Neo4jIncrementalArgs) -> anyhow::Result<()>
     Ok(())
 }
 
+async fn run_neo4j_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting incremental sync from Neo4j to SurrealDB (SDK v3)");
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+    tracing::info!("Starting from checkpoint: {}", args.incremental_from);
+
+    if let Some(ref to) = args.incremental_to {
+        tracing::info!("Will stop at checkpoint: {}", to);
+    }
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let schema = load_schema_if_provided(&args.schema_file)?;
+
+    // If json_properties not explicitly provided but schema file is, extract JSON fields from schema
+    let json_properties = if args.json_properties.is_some() {
+        args.json_properties
+    } else if let Some(ref s) = schema {
+        let json_fields = extract_json_fields_from_schema(s);
+        if !json_fields.is_empty() {
+            tracing::info!(
+                "Auto-detected JSON properties from schema: {:?}",
+                json_fields
+            );
+            Some(json_fields)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Connect to SurrealDB using v3 SDK
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+
+    let timeout_seconds: i64 = args
+        .timeout
+        .parse()
+        .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
+    let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
+
+    let neo4j_from =
+        surreal_sync_neo4j_source::Neo4jCheckpoint::from_cli_string(&args.incremental_from)?;
+    let neo4j_to = args
+        .incremental_to
+        .as_ref()
+        .map(|s| surreal_sync_neo4j_source::Neo4jCheckpoint::from_cli_string(s))
+        .transpose()?;
+
+    let source_opts = surreal_sync_neo4j_source::SourceOpts {
+        source_uri: args.connection_string,
+        source_database: args.database,
+        source_username: args.username,
+        source_password: args.password,
+        neo4j_timezone: args.timezone,
+        neo4j_json_properties: json_properties,
+    };
+
+    let sync_opts = surreal_sync_neo4j_source::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+
+    surreal_sync_neo4j_source::run_incremental_sync(
+        &sink,
+        source_opts,
+        sync_opts,
+        neo4j_from,
+        deadline,
+        neo4j_to,
+    )
+    .await?;
+
+    tracing::info!("Incremental sync completed successfully");
+    Ok(())
+}
+
 // =============================================================================
 // PostgreSQL Trigger Handlers
 // =============================================================================
 
 async fn run_postgresql_trigger_full(args: PostgreSQLTriggerFullArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting full sync from PostgreSQL (trigger-based) to SurrealDB");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_postgresql_trigger_full_v2(args).await,
+        SdkVersion::V3 => run_postgresql_trigger_full_v3(args).await,
+    }
+}
+
+async fn run_postgresql_trigger_full_v2(args: PostgreSQLTriggerFullArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting full sync from PostgreSQL (trigger-based) to SurrealDB (SDK v2)");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
 
     if args.surreal.dry_run {
@@ -1212,7 +1600,7 @@ async fn run_postgresql_trigger_full(args: PostgreSQLTriggerFullArgs) -> anyhow:
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
@@ -1258,10 +1646,83 @@ async fn run_postgresql_trigger_full(args: PostgreSQLTriggerFullArgs) -> anyhow:
     Ok(())
 }
 
+async fn run_postgresql_trigger_full_v3(args: PostgreSQLTriggerFullArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting full sync from PostgreSQL (trigger-based) to SurrealDB (SDK v3)");
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    // Connect to SurrealDB using v3 SDK
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+
+    let source_database = extract_postgresql_database(&args.connection_string);
+    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
+        source_uri: args.connection_string,
+        source_database,
+    };
+
+    let sync_opts = surreal_sync_postgresql::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+
+    if args.emit_checkpoints {
+        let store = checkpoint::FilesystemStore::new(&args.checkpoint_dir);
+        let sync_manager = checkpoint::SyncManager::new(store);
+        surreal_sync_postgresql_trigger_source::run_full_sync(
+            &sink,
+            source_opts,
+            sync_opts,
+            Some(&sync_manager),
+        )
+        .await?;
+    } else {
+        surreal_sync_postgresql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+            &sink,
+            source_opts,
+            sync_opts,
+            None,
+        )
+        .await?;
+    }
+
+    tracing::info!("Full sync completed successfully");
+    Ok(())
+}
+
 async fn run_postgresql_trigger_incremental(
     args: PostgreSQLTriggerIncrementalArgs,
 ) -> anyhow::Result<()> {
-    tracing::info!("Starting incremental sync from PostgreSQL (trigger-based) to SurrealDB");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_postgresql_trigger_incremental_v2(args).await,
+        SdkVersion::V3 => run_postgresql_trigger_incremental_v3(args).await,
+    }
+}
+
+async fn run_postgresql_trigger_incremental_v2(
+    args: PostgreSQLTriggerIncrementalArgs,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting incremental sync from PostgreSQL (trigger-based) to SurrealDB (SDK v2)"
+    );
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
     tracing::info!("Starting from checkpoint: {}", args.incremental_from);
 
@@ -1296,7 +1757,7 @@ async fn run_postgresql_trigger_incremental(
         source_database,
     };
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
@@ -1320,12 +1781,89 @@ async fn run_postgresql_trigger_incremental(
     Ok(())
 }
 
+async fn run_postgresql_trigger_incremental_v3(
+    args: PostgreSQLTriggerIncrementalArgs,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting incremental sync from PostgreSQL (trigger-based) to SurrealDB (SDK v3)"
+    );
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+    tracing::info!("Starting from checkpoint: {}", args.incremental_from);
+
+    if let Some(ref to) = args.incremental_to {
+        tracing::info!("Will stop at checkpoint: {}", to);
+    }
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    let timeout_seconds: i64 = args
+        .timeout
+        .parse()
+        .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
+    let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
+
+    let pg_from = surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint::from_cli_string(
+        &args.incremental_from,
+    )?;
+    let pg_to = args
+        .incremental_to
+        .as_ref()
+        .map(|s| surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint::from_cli_string(s))
+        .transpose()?;
+
+    let source_database = extract_postgresql_database(&args.connection_string);
+    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
+        source_uri: args.connection_string,
+        source_database,
+    };
+
+    // Connect to SurrealDB using v3 SDK
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+
+    surreal_sync_postgresql_trigger_source::run_incremental_sync(
+        &sink,
+        source_opts,
+        pg_from,
+        deadline,
+        pg_to,
+    )
+    .await?;
+
+    tracing::info!("Incremental sync completed successfully");
+    Ok(())
+}
+
 // =============================================================================
 // MySQL Handlers
 // =============================================================================
 
 async fn run_mysql_full(args: MySQLFullArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting full sync from MySQL to SurrealDB");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_mysql_full_v2(args).await,
+        SdkVersion::V3 => run_mysql_full_v3(args).await,
+    }
+}
+
+async fn run_mysql_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting full sync from MySQL to SurrealDB (SDK v2)");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
 
     if args.surreal.dry_run {
@@ -1379,8 +1917,76 @@ async fn run_mysql_full(args: MySQLFullArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_mysql_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting full sync from MySQL to SurrealDB (SDK v3)");
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+
+    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
+        source_uri: args.connection_string,
+        source_database: args.database,
+        mysql_boolean_paths: args.boolean_paths,
+    };
+
+    let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+
+    if args.emit_checkpoints {
+        let store = checkpoint::FilesystemStore::new(&args.checkpoint_dir);
+        let sync_manager = checkpoint::SyncManager::new(store);
+        surreal_sync_mysql_trigger_source::run_full_sync(
+            &sink,
+            &source_opts,
+            &sync_opts,
+            Some(&sync_manager),
+        )
+        .await?;
+    } else {
+        surreal_sync_mysql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+            &sink,
+            &source_opts,
+            &sync_opts,
+            None,
+        )
+        .await?;
+    }
+
+    tracing::info!("Full sync completed successfully");
+    Ok(())
+}
+
 async fn run_mysql_incremental(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting incremental sync from MySQL to SurrealDB");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_mysql_incremental_v2(args).await,
+        SdkVersion::V3 => run_mysql_incremental_v3(args).await,
+    }
+}
+
+async fn run_mysql_incremental_v2(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting incremental sync from MySQL to SurrealDB (SDK v2)");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
     tracing::info!("Starting from checkpoint: {}", args.incremental_from);
 
@@ -1415,7 +2021,7 @@ async fn run_mysql_incremental(args: MySQLIncrementalArgs) -> anyhow::Result<()>
         mysql_boolean_paths: args.boolean_paths,
     };
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
@@ -1439,12 +2045,87 @@ async fn run_mysql_incremental(args: MySQLIncrementalArgs) -> anyhow::Result<()>
     Ok(())
 }
 
+async fn run_mysql_incremental_v3(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting incremental sync from MySQL to SurrealDB (SDK v3)");
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+    tracing::info!("Starting from checkpoint: {}", args.incremental_from);
+
+    if let Some(ref to) = args.incremental_to {
+        tracing::info!("Will stop at checkpoint: {}", to);
+    }
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    let timeout_seconds: i64 = args
+        .timeout
+        .parse()
+        .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
+    let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
+
+    let mysql_from = surreal_sync_mysql_trigger_source::MySQLCheckpoint::from_cli_string(
+        &args.incremental_from,
+    )?;
+    let mysql_to = args
+        .incremental_to
+        .as_ref()
+        .map(|s| surreal_sync_mysql_trigger_source::MySQLCheckpoint::from_cli_string(s))
+        .transpose()?;
+
+    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
+        source_uri: args.connection_string,
+        source_database: args.database,
+        mysql_boolean_paths: args.boolean_paths,
+    };
+
+    // Connect to SurrealDB using v3 SDK
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+
+    surreal_sync_mysql_trigger_source::run_incremental_sync(
+        &sink,
+        source_opts,
+        mysql_from,
+        deadline,
+        mysql_to,
+    )
+    .await?;
+
+    tracing::info!("Incremental sync completed successfully");
+    Ok(())
+}
+
 // =============================================================================
 // PostgreSQL WAL-based Logical Replication Handlers
 // =============================================================================
 
 async fn run_postgresql_logical_full(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting full sync from PostgreSQL (logical replication) to SurrealDB");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_postgresql_logical_full_v2(args).await,
+        SdkVersion::V3 => run_postgresql_logical_full_v3(args).await,
+    }
+}
+
+async fn run_postgresql_logical_full_v2(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting full sync from PostgreSQL (logical replication) to SurrealDB (SDK v2)"
+    );
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
 
     if args.surreal.dry_run {
@@ -1453,7 +2134,7 @@ async fn run_postgresql_logical_full(args: PostgreSQLLogicalFullArgs) -> anyhow:
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
@@ -1491,8 +2172,7 @@ async fn run_postgresql_logical_full(args: PostgreSQLLogicalFullArgs) -> anyhow:
             .await?;
         }
         (None, Some(table)) => {
-            // SurrealDB checkpoint storage (currently only v2 supported)
-            // Need a separate connection for the checkpoint store
+            // SurrealDB v2 checkpoint storage
             let checkpoint_surreal = surreal2_sink::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
@@ -1528,10 +2208,107 @@ async fn run_postgresql_logical_full(args: PostgreSQLLogicalFullArgs) -> anyhow:
     Ok(())
 }
 
+async fn run_postgresql_logical_full_v3(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting full sync from PostgreSQL (logical replication) to SurrealDB (SDK v3)"
+    );
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    // Connect to SurrealDB using v3 SDK
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
+
+    let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
+        connection_string: args.connection_string,
+        slot_name: args.slot,
+        tables: args.tables,
+        schema: args.schema,
+    };
+
+    let sync_opts = surreal_sync_postgresql::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+
+    // Handle checkpoint storage
+    match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
+        (Some(dir), None) => {
+            // Filesystem checkpoint storage
+            let store = checkpoint::FilesystemStore::new(dir);
+            let sync_manager = checkpoint::SyncManager::new(store);
+            surreal_sync_postgresql_wal2json_source::run_full_sync(
+                &sink,
+                source_opts,
+                sync_opts,
+                Some(&sync_manager),
+            )
+            .await?;
+        }
+        (None, Some(table)) => {
+            // SurrealDB v3 checkpoint storage
+            let store = checkpoint_surreal3::Surreal3Store::new(surreal, table.clone());
+            let sync_manager = checkpoint::SyncManager::new(store);
+            surreal_sync_postgresql_wal2json_source::run_full_sync(
+                &sink,
+                source_opts,
+                sync_opts,
+                Some(&sync_manager),
+            )
+            .await?;
+        }
+        (None, None) => {
+            // No checkpoint storage
+            surreal_sync_postgresql_wal2json_source::run_full_sync::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+            )
+            .await?;
+        }
+        (Some(_), Some(_)) => {
+            // Should be prevented by clap's conflicts_with
+            anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
+        }
+    }
+
+    Ok(())
+}
+
 async fn run_postgresql_logical_incremental(
     args: PostgreSQLLogicalIncrementalArgs,
 ) -> anyhow::Result<()> {
-    tracing::info!("Starting incremental sync from PostgreSQL (logical replication) to SurrealDB");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_postgresql_logical_incremental_v2(args).await,
+        SdkVersion::V3 => run_postgresql_logical_incremental_v3(args).await,
+    }
+}
+
+async fn run_postgresql_logical_incremental_v2(
+    args: PostgreSQLLogicalIncrementalArgs,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting incremental sync from PostgreSQL (logical replication) to SurrealDB (SDK v2)"
+    );
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
 
     if args.surreal.dry_run {
@@ -1555,7 +2332,7 @@ async fn run_postgresql_logical_incremental(
             )?
         }
         (None, Some(table)) => {
-            // Read from SurrealDB checkpoint storage
+            // Read from SurrealDB v2 checkpoint storage
             let checkpoint_surreal = surreal2_sink::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
@@ -1592,11 +2369,102 @@ async fn run_postgresql_logical_incremental(
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_secs);
 
-    // Connect to SurrealDB for data sink
+    // Connect to SurrealDB v2 for data sink
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
+
+    let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
+        connection_string: args.connection_string.clone(),
+        slot_name: args.slot.clone(),
+        tables: args.tables.clone(),
+        schema: args.schema.clone(),
+    };
+
+    surreal_sync_postgresql_wal2json_source::run_incremental_sync(
+        &sink,
+        source_opts,
+        from_checkpoint,
+        deadline,
+        to_checkpoint,
+    )
+    .await?;
+
+    Ok(())
+}
+
+async fn run_postgresql_logical_incremental_v3(
+    args: PostgreSQLLogicalIncrementalArgs,
+) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting incremental sync from PostgreSQL (logical replication) to SurrealDB (SDK v3)"
+    );
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    // Get checkpoint from CLI arg or SurrealDB
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint.clone(),
+        surreal_username: args.surreal.surreal_username.clone(),
+        surreal_password: args.surreal.surreal_password.clone(),
+    };
+
+    let from_checkpoint = match (&args.incremental_from, &args.checkpoints_surreal_table) {
+        (Some(s), _) => {
+            // Explicit checkpoint from CLI
+            surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint::from_cli_string(
+                s,
+            )?
+        }
+        (None, Some(table)) => {
+            // Read from SurrealDB v3 checkpoint storage
+            let checkpoint_surreal = surreal3_sink::surreal_connect(
+                &surreal_opts,
+                &args.to_namespace,
+                &args.to_database,
+            )
+            .await?;
+            let store = checkpoint_surreal3::Surreal3Store::new(checkpoint_surreal, table.clone());
+            let sync_manager = checkpoint::SyncManager::new(store);
+            sync_manager
+                .read_checkpoint::<surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint>(
+                    checkpoint::SyncPhase::FullSyncStart,
+                )
+                .await
+                .with_context(|| "Failed to read t1 checkpoint from SurrealDB")?
+        }
+        (None, None) => {
+            anyhow::bail!("--incremental-from or --checkpoints-surreal-table is required")
+        }
+    };
+
+    let to_checkpoint = args
+        .incremental_to
+        .map(|s| {
+            surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint::from_cli_string(
+                &s,
+            )
+        })
+        .transpose()?;
+
+    // Parse timeout
+    let timeout_secs: i64 = args
+        .timeout
+        .parse()
+        .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
+    let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_secs);
+
+    // Connect to SurrealDB v3 for data sink
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal);
 
     let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
         connection_string: args.connection_string.clone(),
@@ -1622,7 +2490,20 @@ async fn run_postgresql_logical_incremental(
 // =============================================================================
 
 async fn run_kafka(args: KafkaArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting Kafka consumer sync");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_kafka_v2(args).await,
+        SdkVersion::V3 => run_kafka_v3(args).await,
+    }
+}
+
+async fn run_kafka_v2(args: KafkaArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting Kafka consumer sync (SDK v2)");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
     tracing::info!("Timeout: {}", args.timeout);
 
@@ -1636,7 +2517,7 @@ async fn run_kafka(args: KafkaArgs) -> anyhow::Result<()> {
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_secs);
     tracing::info!("Will consume until deadline: {}", deadline);
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
@@ -1668,12 +2549,72 @@ async fn run_kafka(args: KafkaArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_kafka_v3(args: KafkaArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting Kafka consumer sync (SDK v3)");
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+    tracing::info!("Timeout: {}", args.timeout);
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    // Parse timeout duration
+    let timeout_secs = parse_duration_to_secs(&args.timeout)
+        .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
+    let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_secs);
+    tracing::info!("Will consume until deadline: {}", deadline);
+
+    // Connect to SurrealDB using v3 SDK
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = std::sync::Arc::new(surreal3_sink::Surreal3Sink::new(surreal));
+
+    let table_schema = if let Some(schema_path) = args.schema_file {
+        let schema = Schema::from_file(&schema_path)
+            .with_context(|| format!("Failed to load sync schema from {schema_path:?}"))?;
+        let table_name = args
+            .config
+            .table_name
+            .as_ref()
+            .unwrap_or(&args.config.topic);
+        schema
+            .get_table(table_name)
+            .map(|t| t.to_table_definition())
+    } else {
+        None
+    };
+
+    surreal_sync_kafka_source::run_incremental_sync(sink, args.config, deadline, table_schema)
+        .await?;
+
+    Ok(())
+}
+
 // =============================================================================
 // CSV Handler
 // =============================================================================
 
 async fn run_csv(args: CsvArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting CSV import");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_csv_v2(args).await,
+        SdkVersion::V3 => run_csv_v3(args).await,
+    }
+}
+
+async fn run_csv_v2(args: CsvArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting CSV import (SDK v2)");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
 
     if args.surreal.dry_run {
@@ -1682,7 +2623,7 @@ async fn run_csv(args: CsvArgs) -> anyhow::Result<()> {
 
     let schema = load_schema_if_provided(&args.schema_file)?;
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
@@ -1714,12 +2655,67 @@ async fn run_csv(args: CsvArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+async fn run_csv_v3(args: CsvArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting CSV import (SDK v3)");
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let schema = load_schema_if_provided(&args.schema_file)?;
+
+    // Connect to SurrealDB using v3 SDK
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+
+    let config = surreal_sync::csv::Config {
+        sources: vec![],
+        files: args.files,
+        s3_uris: args.s3_uris,
+        http_uris: args.http_uris,
+        table: args.table,
+        batch_size: args.surreal.batch_size,
+        has_headers: args.has_headers,
+        delimiter: args.delimiter as u8,
+        id_field: args.id_field,
+        column_names: args.column_names,
+        emit_metrics: args.emit_metrics,
+        dry_run: args.surreal.dry_run,
+        schema,
+    };
+    surreal_sync::csv::sync(&sink, config).await?;
+
+    tracing::info!("CSV import completed successfully");
+    Ok(())
+}
+
 // =============================================================================
 // JSONL Handler
 // =============================================================================
 
 async fn run_jsonl(args: JsonlArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting JSONL import");
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+
+    match sdk_version {
+        SdkVersion::V2 => run_jsonl_v2(args).await,
+        SdkVersion::V3 => run_jsonl_v3(args).await,
+    }
+}
+
+async fn run_jsonl_v2(args: JsonlArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting JSONL import (SDK v2)");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
 
     if args.surreal.dry_run {
@@ -1728,7 +2724,7 @@ async fn run_jsonl(args: JsonlArgs) -> anyhow::Result<()> {
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB using v2 SDK
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
@@ -1738,6 +2734,45 @@ async fn run_jsonl(args: JsonlArgs) -> anyhow::Result<()> {
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
+
+    // Create config with file source
+    let config = surreal_sync::jsonl::Config {
+        sources: vec![],
+        files: vec![args.path.into()],
+        s3_uris: vec![],
+        http_uris: vec![],
+        id_field: args.id_field,
+        conversion_rules: args.conversion_rules,
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+        schema: None,
+    };
+    surreal_sync::jsonl::sync(&sink, config).await?;
+
+    tracing::info!("JSONL import completed successfully");
+    Ok(())
+}
+
+async fn run_jsonl_v3(args: JsonlArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting JSONL import (SDK v3)");
+    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
+
+    if args.surreal.dry_run {
+        tracing::info!("Running in dry-run mode - no data will be written");
+    }
+
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    // Connect to SurrealDB using v3 SDK
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal);
 
     // Create config with file source
     let config = surreal_sync::jsonl::Config {

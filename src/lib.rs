@@ -69,6 +69,10 @@ pub struct SurrealOpts {
     /// Dry run mode - don't actually write data
     #[arg(long)]
     pub dry_run: bool,
+
+    /// SurrealDB SDK version to use. Auto-detects from server if not specified.
+    #[arg(long, env = "SURREAL_SDK_VERSION", value_parser = ["v2", "v3"])]
+    pub surreal_sdk_version: Option<String>,
 }
 
 // CLI type → PostgreSQL logical replication library type conversions
