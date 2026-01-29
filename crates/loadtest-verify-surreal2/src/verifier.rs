@@ -4,6 +4,7 @@ use crate::compare::{compare_values, CompareResult};
 use crate::error::VerifyError;
 use crate::report::{FieldMismatch, MismatchInfo, MissingInfo, VerificationReport};
 use loadtest_generator::DataGenerator;
+use rust_decimal::Decimal;
 use std::time::{Duration, Instant};
 use surrealdb2::engine::any::Any;
 use surrealdb2::sql::Value as SurrealValue;
@@ -342,25 +343,29 @@ impl StreamingVerifier {
                 Ok(val.map(|v| SurrealValue::Number(surrealdb2::sql::Number::Float(v))))
             }
             UniversalType::Decimal { .. } => {
-                // Different sources store decimals differently:
-                // - CSV sync stores as floats
-                // - JSONL/MongoDB store as strings
-                // Try float first, then string
-                match response.take::<Option<f64>>((0, field_name)) {
-                    Ok(Some(v)) => Ok(Some(SurrealValue::Number(surrealdb2::sql::Number::Float(
-                        v,
-                    )))),
+                // Decimal fields may be stored as Number::Decimal or Number::Float
+                // Try reading as rust_decimal::Decimal first (works for both V2 and V3 SDKs)
+                match response.take::<Option<Decimal>>((0, field_name)) {
+                    Ok(Some(d)) => Ok(Some(SurrealValue::Number(
+                        surrealdb2::sql::Number::Decimal(d),
+                    ))),
                     Ok(None) => Ok(None),
                     Err(_) => {
-                        // Re-query and try as string
+                        // Not stored as Decimal - try reading as f64 (for Float storage)
                         let mut retry_response = self
                             .surreal
                             .query("SELECT * FROM $record_id")
                             .bind(("record_id", record_id.clone()))
                             .await?;
-                        let val: Option<String> =
-                            retry_response.take((0, field_name)).unwrap_or(None);
-                        Ok(val.map(|v| SurrealValue::Strand(surrealdb2::sql::Strand::from(v))))
+                        match retry_response.take::<Option<f64>>((0, field_name)) {
+                            Ok(Some(f)) => Ok(Some(SurrealValue::Number(
+                                surrealdb2::sql::Number::Float(f),
+                            ))),
+                            Ok(None) => Ok(None),
+                            Err(e) => Err(VerifyError::Query(format!(
+                                "Field '{field_name}' is neither Decimal nor Float: {e}"
+                            ))),
+                        }
                     }
                 }
             }

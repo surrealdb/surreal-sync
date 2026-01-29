@@ -504,12 +504,16 @@ mod tests {
         eprintln!("V2 SDK: decimal as String     = {:?}", val_str);
 
         // 4. Try to read with <float> cast
-        let mut response4 = client.query("SELECT <float> dec_val as casted FROM decimal_test:1").await?;
+        let mut response4 = client
+            .query("SELECT <float> dec_val as casted FROM decimal_test:1")
+            .await?;
         let val_casted: Result<Option<f64>, _> = response4.take((0, "casted"));
         eprintln!("V2 SDK: decimal <float> cast  = {:?}", val_casted);
 
         // 5. Try to read with <string> cast
-        let mut response5 = client.query("SELECT <string> dec_val as casted FROM decimal_test:1").await?;
+        let mut response5 = client
+            .query("SELECT <string> dec_val as casted FROM decimal_test:1")
+            .await?;
         let val_str_cast: Result<Option<String>, _> = response5.take((0, "casted"));
         eprintln!("V2 SDK: decimal <string> cast = {:?}", val_str_cast);
 
@@ -517,11 +521,26 @@ mod tests {
         eprintln!("\n--- V2 SDK Summary ---");
         eprintln!("| Approach          | Result |");
         eprintln!("|-------------------|--------|");
-        eprintln!("| as f64            | {} |", if val_f64.is_ok() { "OK" } else { "Err" });
-        eprintln!("| as Decimal        | {} |", if val_decimal.is_ok() { "OK" } else { "Err" });
-        eprintln!("| as String         | {} |", if val_str.is_ok() { "OK" } else { "Err" });
-        eprintln!("| <float> cast      | {} |", if val_casted.is_ok() { "OK" } else { "Err" });
-        eprintln!("| <string> cast     | {} |", if val_str_cast.is_ok() { "OK" } else { "Err" });
+        eprintln!(
+            "| as f64            | {} |",
+            if val_f64.is_ok() { "OK" } else { "Err" }
+        );
+        eprintln!(
+            "| as Decimal        | {} |",
+            if val_decimal.is_ok() { "OK" } else { "Err" }
+        );
+        eprintln!(
+            "| as String         | {} |",
+            if val_str.is_ok() { "OK" } else { "Err" }
+        );
+        eprintln!(
+            "| <float> cast      | {} |",
+            if val_casted.is_ok() { "OK" } else { "Err" }
+        );
+        eprintln!(
+            "| <string> cast     | {} |",
+            if val_str_cast.is_ok() { "OK" } else { "Err" }
+        );
 
         // Cleanup
         client.query("DELETE FROM decimal_test").await?;
@@ -576,12 +595,16 @@ mod tests {
         eprintln!("V3 SDK: decimal as String     = {:?}", val_str);
 
         // 4. Try to read with <float> cast
-        let mut response4 = client.query("SELECT <float> dec_val as casted FROM decimal_test:1").await?;
+        let mut response4 = client
+            .query("SELECT <float> dec_val as casted FROM decimal_test:1")
+            .await?;
         let val_casted: Result<Option<f64>, _> = response4.take((0, "casted"));
         eprintln!("V3 SDK: decimal <float> cast  = {:?}", val_casted);
 
         // 5. Try to read with <string> cast
-        let mut response5 = client.query("SELECT <string> dec_val as casted FROM decimal_test:1").await?;
+        let mut response5 = client
+            .query("SELECT <string> dec_val as casted FROM decimal_test:1")
+            .await?;
         let val_str_cast: Result<Option<String>, _> = response5.take((0, "casted"));
         eprintln!("V3 SDK: decimal <string> cast = {:?}", val_str_cast);
 
@@ -589,11 +612,26 @@ mod tests {
         eprintln!("\n--- V3 SDK Summary ---");
         eprintln!("| Approach          | Result |");
         eprintln!("|-------------------|--------|");
-        eprintln!("| as f64            | {} |", if val_f64.is_ok() { "OK" } else { "Err" });
-        eprintln!("| as Decimal        | {} |", if val_decimal.is_ok() { "OK" } else { "Err" });
-        eprintln!("| as String         | {} |", if val_str.is_ok() { "OK" } else { "Err" });
-        eprintln!("| <float> cast      | {} |", if val_casted.is_ok() { "OK" } else { "Err" });
-        eprintln!("| <string> cast     | {} |", if val_str_cast.is_ok() { "OK" } else { "Err" });
+        eprintln!(
+            "| as f64            | {} |",
+            if val_f64.is_ok() { "OK" } else { "Err" }
+        );
+        eprintln!(
+            "| as Decimal        | {} |",
+            if val_decimal.is_ok() { "OK" } else { "Err" }
+        );
+        eprintln!(
+            "| as String         | {} |",
+            if val_str.is_ok() { "OK" } else { "Err" }
+        );
+        eprintln!(
+            "| <float> cast      | {} |",
+            if val_casted.is_ok() { "OK" } else { "Err" }
+        );
+        eprintln!(
+            "| <string> cast     | {} |",
+            if val_str_cast.is_ok() { "OK" } else { "Err" }
+        );
 
         // Cleanup
         client.query("DELETE FROM decimal_test").await?;
@@ -616,8 +654,12 @@ mod tests {
         // Test various values around the limit
         let test_cases = [
             ("rust_decimal MAX", "79228162514264337593543950335", true),
-            ("rust_decimal MAX + 1", "79228162514264337593543950336", false),
-            ("28 nines", "9999999999999999999999999999", true),  // 28 digits of 9
+            (
+                "rust_decimal MAX + 1",
+                "79228162514264337593543950336",
+                false,
+            ),
+            ("28 nines", "9999999999999999999999999999", true), // 28 digits of 9
             ("29 nines", "99999999999999999999999999999", false), // 29 digits of 9 > MAX
             ("typical money", "99999999.99", true),
             ("high precision", "123.456789012345678901234567890", true), // truncated but parseable
@@ -659,10 +701,10 @@ mod tests {
         let test_cases = [
             ("typical_money", "99999999.99dec"),
             ("small_decimal", "123.45dec"),
-            ("large_integer_as_decimal", "1234567890123456789dec"),  // 19 digits
+            ("large_integer_as_decimal", "1234567890123456789dec"), // 19 digits
             ("rust_decimal_max", "79228162514264337593543950335dec"),
             ("over_rust_decimal_max", "79228162514264337593543950336dec"),
-            ("28_nines", "9999999999999999999999999999dec"),  // 28 nines
+            ("28_nines", "9999999999999999999999999999dec"), // 28 nines
             ("29_nines", "99999999999999999999999999999dec"), // 29 nines
         ];
 
@@ -672,8 +714,11 @@ mod tests {
 
             if result.is_ok() {
                 // Try to read it back as rust_decimal
-                let mut response = client.query(&format!("SELECT val FROM decimal_limits:{label}")).await?;
-                let read_result: Result<Option<rust_decimal::Decimal>, _> = response.take((0, "val"));
+                let mut response = client
+                    .query(format!("SELECT val FROM decimal_limits:{label}"))
+                    .await?;
+                let read_result: Result<Option<rust_decimal::Decimal>, _> =
+                    response.take((0, "val"));
                 eprintln!("V2 {}: store=OK, read_as_decimal={:?}", label, read_result);
             } else {
                 eprintln!("V2 {}: store=FAIL", label);
@@ -710,10 +755,10 @@ mod tests {
         let test_cases = [
             ("typical_money", "99999999.99dec"),
             ("small_decimal", "123.45dec"),
-            ("large_integer_as_decimal", "1234567890123456789dec"),  // 19 digits
+            ("large_integer_as_decimal", "1234567890123456789dec"), // 19 digits
             ("rust_decimal_max", "79228162514264337593543950335dec"),
             ("over_rust_decimal_max", "79228162514264337593543950336dec"),
-            ("28_nines", "9999999999999999999999999999dec"),  // 28 nines
+            ("28_nines", "9999999999999999999999999999dec"), // 28 nines
             ("29_nines", "99999999999999999999999999999dec"), // 29 nines
         ];
 
@@ -723,8 +768,11 @@ mod tests {
 
             if result.is_ok() {
                 // Try to read it back as rust_decimal
-                let mut response = client.query(&format!("SELECT val FROM decimal_limits:{label}")).await?;
-                let read_result: Result<Option<rust_decimal::Decimal>, _> = response.take((0, "val"));
+                let mut response = client
+                    .query(format!("SELECT val FROM decimal_limits:{label}"))
+                    .await?;
+                let read_result: Result<Option<rust_decimal::Decimal>, _> =
+                    response.take((0, "val"));
                 eprintln!("V3 {}: store=OK, read_as_decimal={:?}", label, read_result);
             } else {
                 eprintln!("V3 {}: store=FAIL", label);

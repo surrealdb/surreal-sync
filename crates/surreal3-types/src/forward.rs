@@ -94,18 +94,16 @@ impl From<UniversalValue> for SurrealValue {
             UniversalValue::Float32(f) => SurrealValue(Value::Number(Number::Float(f as f64))),
             UniversalValue::Float64(f) => SurrealValue(Value::Number(Number::Float(f))),
 
-            // Decimal
-            UniversalValue::Decimal {
-                value, precision, ..
-            } => {
-                if precision <= 38 {
-                    match Decimal::from_str(&value) {
-                        Ok(dec) => SurrealValue(Value::Number(Number::Decimal(dec))),
-                        Err(_) => SurrealValue(Value::String(value)),
+            // Decimal - try to parse as rust_decimal, fallback to float
+            UniversalValue::Decimal { value, .. } => {
+                match Decimal::from_str(&value) {
+                    Ok(dec) => SurrealValue(Value::Number(Number::Decimal(dec))),
+                    Err(_) => {
+                        // Can't fit in rust_decimal - convert to f64
+                        // TODO: Add option to store as String if user requests high precision preservation
+                        let f: f64 = value.parse().unwrap_or(0.0);
+                        SurrealValue(Value::Number(Number::Float(f)))
                     }
-                } else {
-                    // Store high precision as string
-                    SurrealValue(Value::String(value))
                 }
             }
 
@@ -440,13 +438,17 @@ mod tests {
 
     #[test]
     fn test_high_precision_decimal_conversion() {
-        // Precision > 38 should be stored as string
+        // Value exceeding rust_decimal MAX should be stored as float
         let tv = TypedValue::decimal("12345678901234567890123456789012345678901234567890", 50, 0);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::String(s) = surreal_val.0 {
-            assert_eq!(s, "12345678901234567890123456789012345678901234567890");
+        if let Value::Number(Number::Float(f)) = surreal_val.0 {
+            // Large numbers get converted to f64 (with precision loss)
+            assert!(f > 1e49);
         } else {
-            panic!("Expected String for high precision decimal");
+            panic!(
+                "Expected Float for high precision decimal, got {:?}",
+                surreal_val.0
+            );
         }
     }
 
