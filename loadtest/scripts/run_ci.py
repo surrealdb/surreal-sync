@@ -122,6 +122,7 @@ class Config:
     preserve_on_failure: bool = True
     poll_interval: int = 5
     image_name: str = "surreal-sync:latest"
+    surrealdb_image: Optional[str] = None  # None means use default from generator
     project_root: Path = field(default_factory=lambda: Path(__file__).parent.parent.parent)
     loadtest_dir: Path = field(default_factory=lambda: Path(__file__).parent.parent)
 
@@ -342,6 +343,7 @@ def build_metrics(
         "git_ref": git_ref,
         "source": config.source,
         "preset": config.preset,
+        "surrealdb_image": config.surrealdb_image or "surrealdb/surrealdb:latest",
         "row_count_per_table": generator_config.row_count,
         "num_tables": num_tables,
         "tables": generator_config.tables,
@@ -506,6 +508,9 @@ class CIRunner:
         # Only add --row-count if explicitly specified (otherwise use preset default)
         if self.config.row_count is not None:
             cmd.extend(["--row-count", str(self.config.row_count)])
+        # Only add --surrealdb-image if explicitly specified (otherwise use default)
+        if self.config.surrealdb_image is not None:
+            cmd.extend(["--surrealdb-image", self.config.surrealdb_image])
 
         result = self.runner.run(cmd, capture_output=True)
         if result.returncode != 0:
@@ -1422,6 +1427,8 @@ Suggested actions:
         self.log(f"Row count: {row_count_desc}")
         self.log(f"Workers: {self.config.workers}")
         self.log(f"Timeout: {self.config.timeout}s")
+        surrealdb_image_desc = self.config.surrealdb_image if self.config.surrealdb_image else "(default)"
+        self.log(f"SurrealDB image: {surrealdb_image_desc}")
         self.log(f"Expected sync containers: {self.expected_sync_containers}")
         self.log(f"Preserve on failure: {self.config.preserve_on_failure}")
 
@@ -1509,6 +1516,8 @@ def parse_args() -> Config:
                         help="Keep resources on failure for debugging (default)")
     parser.add_argument("--no-preserve-on-failure", action="store_true",
                         help="Clean up resources even on failure")
+    parser.add_argument("--surrealdb-image", type=str, default=None,
+                        help="SurrealDB Docker image (default: surrealdb/surrealdb:latest)")
 
     args = parser.parse_args()
 
@@ -1532,6 +1541,7 @@ def parse_args() -> Config:
         skip_build=args.skip_build,
         skip_cleanup=args.skip_cleanup,
         preserve_on_failure=not args.no_preserve_on_failure,
+        surrealdb_image=args.surrealdb_image,
         loadtest_dir=loadtest_dir,
         project_root=project_root
     )
