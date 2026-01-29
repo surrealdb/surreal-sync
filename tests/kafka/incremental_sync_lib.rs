@@ -20,9 +20,10 @@
 
 use chrono::Utc;
 use std::{sync::Arc, time::Duration};
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
+use surreal_sync::testing::surreal::{
+    assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 use surreal_sync_kafka_producer::{
     publish_test_posts, publish_test_relations, publish_test_users, KafkaTestProducer,
 };
@@ -55,12 +56,12 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         relations_topic
     );
 
-    // Setup SurrealDB connection
+    // Setup SurrealDB connection with auto-detection
     let surreal_config = TestConfig::new(test_id, "kafka-incremental");
-    let surreal = connect_surrealdb(&surreal_config).await?;
+    let conn = connect_auto(&surreal_config).await?;
 
     // Clean up any existing test data in SurrealDB
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     // Step 1: Setup Kafka producer and create topics
     tracing::info!("Setting up Kafka producer and topics...");
@@ -96,9 +97,6 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Step 3: Run incremental sync for users topic
     tracing::info!("Running Kafka incremental sync for users...");
 
-    // Create SurrealDB v2 sink
-    let sink = Arc::new(surreal2_sink::Surreal2Sink::new(surreal.clone()));
-
     // Create a temporary proto file for the user schema
     let proto_dir = tempfile::tempdir()?;
     let user_proto_path = proto_dir.path().join("user.proto");
@@ -127,120 +125,235 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Run sync with a short deadline (just enough to consume existing messages)
     let deadline = Utc::now() + chrono::Duration::seconds(5);
 
-    // Spawn sync task
-    let sync_handle = tokio::spawn({
-        let config = user_config.clone();
-        let sink_clone = sink.clone();
-        async move {
-            surreal_sync_kafka_source::run_incremental_sync(sink_clone, config, deadline, None)
-                .await
+    // Run all three syncs with appropriate sink based on detected version
+    match &conn {
+        SurrealConnection::V2(client) => {
+            let sink = Arc::new(surreal2_sink::Surreal2Sink::new(client.clone()));
+
+            // Sync users
+            let sync_handle = tokio::spawn({
+                let config = user_config.clone();
+                let sink_clone = sink.clone();
+                async move {
+                    surreal_sync_kafka_source::run_incremental_sync(
+                        sink_clone, config, deadline, None,
+                    )
+                    .await
+                }
+            });
+
+            let sync_result = tokio::time::timeout(Duration::from_secs(10), sync_handle).await;
+            match sync_result {
+                Ok(Ok(Ok(()))) => tracing::info!("User sync completed successfully"),
+                Ok(Ok(Err(e))) => tracing::warn!("User sync error (may be expected): {}", e),
+                Ok(Err(e)) => tracing::warn!("User sync task error: {}", e),
+                Err(_) => tracing::info!("User sync timeout (expected for test)"),
+            }
+
+            // Sync posts
+            tracing::info!("Running Kafka incremental sync for posts...");
+            let post_proto_path = proto_dir.path().join("post.proto");
+            std::fs::write(
+                &post_proto_path,
+                include_str!("../../crates/kafka-producer/proto/post.proto"),
+            )?;
+
+            let post_config = KafkaConfig {
+                proto_path: post_proto_path.to_string_lossy().to_string(),
+                brokers: vec![KAFKA_BROKER.to_string()],
+                group_id: format!("test-group-posts-{test_id}"),
+                topic: posts_topic.clone(),
+                message_type: "Post".to_string(),
+                buffer_size: 1000,
+                session_timeout_ms: "6000".to_string(),
+                num_consumers: 1,
+                kafka_batch_size: 100,
+                table_name: Some("all_types_posts".to_string()),
+                use_message_key_as_id: false,
+                id_field: "id".to_string(),
+                max_messages: None,
+            };
+
+            let deadline = Utc::now() + chrono::Duration::seconds(5);
+            let sync_handle = tokio::spawn({
+                let config = post_config;
+                let sink_clone = sink.clone();
+                async move {
+                    surreal_sync_kafka_source::run_incremental_sync(
+                        sink_clone, config, deadline, None,
+                    )
+                    .await
+                }
+            });
+
+            let sync_result = tokio::time::timeout(Duration::from_secs(10), sync_handle).await;
+            match sync_result {
+                Ok(Ok(Ok(()))) => tracing::info!("Post sync completed successfully"),
+                Ok(Ok(Err(e))) => tracing::warn!("Post sync error (may be expected): {}", e),
+                Ok(Err(e)) => tracing::warn!("Post sync task error: {}", e),
+                Err(_) => tracing::info!("Post sync timeout (expected for test)"),
+            }
+
+            // Sync relations
+            tracing::info!("Running Kafka incremental sync for relations...");
+            let relation_proto_path = proto_dir.path().join("user_post_relation.proto");
+            std::fs::write(
+                &relation_proto_path,
+                include_str!("../../crates/kafka-producer/proto/user_post_relation.proto"),
+            )?;
+
+            let relation_config = KafkaConfig {
+                proto_path: relation_proto_path.to_string_lossy().to_string(),
+                brokers: vec![KAFKA_BROKER.to_string()],
+                group_id: format!("test-group-relations-{test_id}"),
+                topic: relations_topic.clone(),
+                message_type: "UserPostRelation".to_string(),
+                buffer_size: 1000,
+                session_timeout_ms: "6000".to_string(),
+                num_consumers: 1,
+                kafka_batch_size: 100,
+                table_name: Some("authored_by".to_string()),
+                use_message_key_as_id: false,
+                id_field: "id".to_string(),
+                max_messages: None,
+            };
+
+            let deadline = Utc::now() + chrono::Duration::seconds(5);
+            let sync_handle = tokio::spawn({
+                let config = relation_config;
+                let sink_clone = sink.clone();
+                async move {
+                    surreal_sync_kafka_source::run_incremental_sync(
+                        sink_clone, config, deadline, None,
+                    )
+                    .await
+                }
+            });
+
+            let sync_result = tokio::time::timeout(Duration::from_secs(10), sync_handle).await;
+            match sync_result {
+                Ok(Ok(Ok(()))) => tracing::info!("Relation sync completed successfully"),
+                Ok(Ok(Err(e))) => tracing::warn!("Relation sync error (may be expected): {}", e),
+                Ok(Err(e)) => tracing::warn!("Relation sync task error: {}", e),
+                Err(_) => tracing::info!("Relation sync timeout (expected for test)"),
+            }
         }
-    });
+        SurrealConnection::V3(client) => {
+            let sink = Arc::new(surreal3_sink::Surreal3Sink::new(client.clone()));
 
-    // Wait for sync to complete or timeout
-    let sync_result = tokio::time::timeout(Duration::from_secs(10), sync_handle).await;
+            // Sync users
+            let sync_handle = tokio::spawn({
+                let config = user_config.clone();
+                let sink_clone = sink.clone();
+                async move {
+                    surreal_sync_kafka_source::run_incremental_sync(
+                        sink_clone, config, deadline, None,
+                    )
+                    .await
+                }
+            });
 
-    match sync_result {
-        Ok(Ok(Ok(()))) => tracing::info!("User sync completed successfully"),
-        Ok(Ok(Err(e))) => tracing::warn!("User sync error (may be expected): {}", e),
-        Ok(Err(e)) => tracing::warn!("User sync task error: {}", e),
-        Err(_) => tracing::info!("User sync timeout (expected for test)"),
-    }
+            let sync_result = tokio::time::timeout(Duration::from_secs(10), sync_handle).await;
+            match sync_result {
+                Ok(Ok(Ok(()))) => tracing::info!("User sync completed successfully"),
+                Ok(Ok(Err(e))) => tracing::warn!("User sync error (may be expected): {}", e),
+                Ok(Err(e)) => tracing::warn!("User sync task error: {}", e),
+                Err(_) => tracing::info!("User sync timeout (expected for test)"),
+            }
 
-    // Step 4: Run incremental sync for posts topic
-    tracing::info!("Running Kafka incremental sync for posts...");
+            // Sync posts
+            tracing::info!("Running Kafka incremental sync for posts...");
+            let post_proto_path = proto_dir.path().join("post.proto");
+            std::fs::write(
+                &post_proto_path,
+                include_str!("../../crates/kafka-producer/proto/post.proto"),
+            )?;
 
-    let post_proto_path = proto_dir.path().join("post.proto");
-    std::fs::write(
-        &post_proto_path,
-        include_str!("../../crates/kafka-producer/proto/post.proto"),
-    )?;
+            let post_config = KafkaConfig {
+                proto_path: post_proto_path.to_string_lossy().to_string(),
+                brokers: vec![KAFKA_BROKER.to_string()],
+                group_id: format!("test-group-posts-{test_id}"),
+                topic: posts_topic.clone(),
+                message_type: "Post".to_string(),
+                buffer_size: 1000,
+                session_timeout_ms: "6000".to_string(),
+                num_consumers: 1,
+                kafka_batch_size: 100,
+                table_name: Some("all_types_posts".to_string()),
+                use_message_key_as_id: false,
+                id_field: "id".to_string(),
+                max_messages: None,
+            };
 
-    let post_config = KafkaConfig {
-        proto_path: post_proto_path.to_string_lossy().to_string(),
-        brokers: vec![KAFKA_BROKER.to_string()],
-        group_id: format!("test-group-posts-{test_id}"),
-        topic: posts_topic.clone(),
-        message_type: "Post".to_string(),
-        buffer_size: 1000,
-        session_timeout_ms: "6000".to_string(),
-        num_consumers: 1,
-        kafka_batch_size: 100,
-        table_name: Some("all_types_posts".to_string()),
-        use_message_key_as_id: false,
-        id_field: "id".to_string(),
-        max_messages: None,
-    };
+            let deadline = Utc::now() + chrono::Duration::seconds(5);
+            let sync_handle = tokio::spawn({
+                let config = post_config;
+                let sink_clone = sink.clone();
+                async move {
+                    surreal_sync_kafka_source::run_incremental_sync(
+                        sink_clone, config, deadline, None,
+                    )
+                    .await
+                }
+            });
 
-    let deadline = Utc::now() + chrono::Duration::seconds(5);
+            let sync_result = tokio::time::timeout(Duration::from_secs(10), sync_handle).await;
+            match sync_result {
+                Ok(Ok(Ok(()))) => tracing::info!("Post sync completed successfully"),
+                Ok(Ok(Err(e))) => tracing::warn!("Post sync error (may be expected): {}", e),
+                Ok(Err(e)) => tracing::warn!("Post sync task error: {}", e),
+                Err(_) => tracing::info!("Post sync timeout (expected for test)"),
+            }
 
-    let sync_handle = tokio::spawn({
-        let config = post_config;
-        let sink_clone = sink.clone();
-        async move {
-            surreal_sync_kafka_source::run_incremental_sync(sink_clone, config, deadline, None)
-                .await
+            // Sync relations
+            tracing::info!("Running Kafka incremental sync for relations...");
+            let relation_proto_path = proto_dir.path().join("user_post_relation.proto");
+            std::fs::write(
+                &relation_proto_path,
+                include_str!("../../crates/kafka-producer/proto/user_post_relation.proto"),
+            )?;
+
+            let relation_config = KafkaConfig {
+                proto_path: relation_proto_path.to_string_lossy().to_string(),
+                brokers: vec![KAFKA_BROKER.to_string()],
+                group_id: format!("test-group-relations-{test_id}"),
+                topic: relations_topic.clone(),
+                message_type: "UserPostRelation".to_string(),
+                buffer_size: 1000,
+                session_timeout_ms: "6000".to_string(),
+                num_consumers: 1,
+                kafka_batch_size: 100,
+                table_name: Some("authored_by".to_string()),
+                use_message_key_as_id: false,
+                id_field: "id".to_string(),
+                max_messages: None,
+            };
+
+            let deadline = Utc::now() + chrono::Duration::seconds(5);
+            let sync_handle = tokio::spawn({
+                let config = relation_config;
+                let sink_clone = sink.clone();
+                async move {
+                    surreal_sync_kafka_source::run_incremental_sync(
+                        sink_clone, config, deadline, None,
+                    )
+                    .await
+                }
+            });
+
+            let sync_result = tokio::time::timeout(Duration::from_secs(10), sync_handle).await;
+            match sync_result {
+                Ok(Ok(Ok(()))) => tracing::info!("Relation sync completed successfully"),
+                Ok(Ok(Err(e))) => tracing::warn!("Relation sync error (may be expected): {}", e),
+                Ok(Err(e)) => tracing::warn!("Relation sync task error: {}", e),
+                Err(_) => tracing::info!("Relation sync timeout (expected for test)"),
+            }
         }
-    });
-
-    let sync_result = tokio::time::timeout(Duration::from_secs(10), sync_handle).await;
-
-    match sync_result {
-        Ok(Ok(Ok(()))) => tracing::info!("Post sync completed successfully"),
-        Ok(Ok(Err(e))) => tracing::warn!("Post sync error (may be expected): {}", e),
-        Ok(Err(e)) => tracing::warn!("Post sync task error: {}", e),
-        Err(_) => tracing::info!("Post sync timeout (expected for test)"),
-    }
-
-    // Step 5: Run incremental sync for relations topic
-    tracing::info!("Running Kafka incremental sync for relations...");
-
-    let relation_proto_path = proto_dir.path().join("user_post_relation.proto");
-    std::fs::write(
-        &relation_proto_path,
-        include_str!("../../crates/kafka-producer/proto/user_post_relation.proto"),
-    )?;
-
-    let relation_config = KafkaConfig {
-        proto_path: relation_proto_path.to_string_lossy().to_string(),
-        brokers: vec![KAFKA_BROKER.to_string()],
-        group_id: format!("test-group-relations-{test_id}"),
-        topic: relations_topic.clone(),
-        message_type: "UserPostRelation".to_string(),
-        buffer_size: 1000,
-        session_timeout_ms: "6000".to_string(),
-        num_consumers: 1,
-        kafka_batch_size: 100,
-        table_name: Some("authored_by".to_string()),
-        use_message_key_as_id: false,
-        id_field: "id".to_string(),
-        max_messages: None,
-    };
-
-    let deadline = Utc::now() + chrono::Duration::seconds(5);
-
-    let sync_handle = tokio::spawn({
-        let config = relation_config;
-        let sink_clone = sink.clone();
-        async move {
-            surreal_sync_kafka_source::run_incremental_sync(sink_clone, config, deadline, None)
-                .await
-        }
-    });
-
-    let sync_result = tokio::time::timeout(Duration::from_secs(10), sync_handle).await;
-
-    match sync_result {
-        Ok(Ok(Ok(()))) => tracing::info!("Relation sync completed successfully"),
-        Ok(Ok(Err(e))) => tracing::warn!("Relation sync error (may be expected): {}", e),
-        Ok(Err(e)) => tracing::warn!("Relation sync task error: {}", e),
-        Err(_) => tracing::info!("Relation sync timeout (expected for test)"),
     }
 
     // Step 6: Verify synced data in SurrealDB using standard test helper
     tracing::info!("Verifying synced data in SurrealDB...");
-    surreal_sync::testing::surrealdb::assert_synced(&surreal, &dataset, "Kafka incremental sync")
-        .await?;
+    assert_synced_auto(&conn, &dataset, "Kafka incremental sync").await?;
 
     tracing::info!("✅ Kafka incremental sync test completed successfully");
 

@@ -8,7 +8,7 @@
 //! 5. Clean up all test data
 
 use loadtest_populate_neo4j::Neo4jPopulator;
-use loadtest_verify::StreamingVerifier;
+use loadtest_verify_surreal2::StreamingVerifier;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
 use sync_core::Schema;
 

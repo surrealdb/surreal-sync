@@ -4,9 +4,8 @@
 //! data types correctly using the unified dataset.
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
-};
+use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 
 /// Test PostgreSQL CLI with data types
 #[tokio::test]
@@ -31,12 +30,12 @@ async fn test_postgresql_full_sync_cli() -> Result<(), Box<dyn std::error::Error
         }
     });
 
-    // Setup SurrealDB connection for validation
+    // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::new(test_id, "neo4j-test6");
-    let surreal = connect_surrealdb(&surreal_config).await?;
+    let conn = connect_auto(&surreal_config).await?;
 
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
     surreal_sync::testing::postgresql::create_tables_and_indices(&pg_client, &dataset).await?;
 
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
@@ -69,12 +68,7 @@ async fn test_postgresql_full_sync_cli() -> Result<(), Box<dyn std::error::Error
     println!("Error Output:");
     println!("{}", String::from_utf8_lossy(&output.stderr));
 
-    surreal_sync::testing::surrealdb::assert_synced(
-        &surreal,
-        &dataset,
-        "PostgreSQL full sync only",
-    )
-    .await?;
+    assert_synced_auto(&conn, &dataset, "PostgreSQL full sync CLI").await?;
 
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
 

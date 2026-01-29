@@ -4,9 +4,8 @@
 //! correctly, using the unified dataset.
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
-};
+use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 
 #[tokio::test]
 async fn test_mongodb_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,11 +26,11 @@ async fn test_mongodb_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> 
     surreal_sync::testing::mongodb::create_collections(&db, &dataset).await?;
     surreal_sync::testing::mongodb::insert_docs(&db, &dataset).await?;
 
-    // Setup SurrealDB connection for validation
+    // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::new(test_id, "neo4j-test8");
-    let surreal = connect_surrealdb(&surreal_config).await?;
+    let conn = connect_auto(&surreal_config).await?;
 
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     // Execute CLI command for MongoDB full sync with data
     let args = [
@@ -57,12 +56,7 @@ async fn test_mongodb_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> 
     let output = execute_surreal_sync(&args)?;
     assert_cli_success(&output, "MongoDB all-types full sync CLI");
 
-    surreal_sync::testing::surrealdb::assert_synced(
-        &surreal,
-        &dataset,
-        "MongoDB full sync - all data types",
-    )
-    .await?;
+    assert_synced_auto(&conn, &dataset, "MongoDB full sync CLI").await?;
 
     surreal_sync::testing::mongodb::cleanup_mongodb_test_data(&db).await?;
 

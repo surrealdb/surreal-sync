@@ -3,9 +3,10 @@
 //! This test validates that Neo4j full sync operations preserve all data types
 //! correctly when syncing to SurrealDB, using the unified dataset.
 
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
+use surreal_sync::testing::surreal::{
+    assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 
 #[tokio::test]
 async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,11 +30,11 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
     let graph = neo4rs::Graph::connect(graph_config)?;
 
-    // Setup SurrealDB connection
+    // Setup SurrealDB connection with auto-detection
     let surreal_config = TestConfig::new(test_id, "neo4j");
-    let surreal = connect_surrealdb(&surreal_config).await?;
+    let conn = connect_auto(&surreal_config).await?;
 
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
     surreal_sync::testing::neo4j::delete_nodes_and_relationships(&graph).await?;
 
     // Create schema and insert all test data
@@ -58,20 +59,31 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
         dry_run: false,
     };
 
-    // Create SurrealDB v2 sink
-    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
+    // Execute full sync with appropriate sink based on detected version
+    match &conn {
+        SurrealConnection::V2(client) => {
+            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+            )
+            .await?;
+        }
+        SurrealConnection::V3(client) => {
+            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+            )
+            .await?;
+        }
+    }
 
-    // Execute full sync from Neo4j to SurrealDB
-    surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
-        &sink,
-        source_opts,
-        sync_opts,
-        None,
-    )
-    .await?;
-
-    surreal_sync::testing::surrealdb::assert_synced(&surreal, &dataset, "Neo4j full sync only")
-        .await?;
+    assert_synced_auto(&conn, &dataset, "Neo4j full sync only").await?;
 
     surreal_sync::testing::neo4j::delete_nodes_and_relationships(&graph).await?;
 

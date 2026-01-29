@@ -8,7 +8,7 @@
 //! 5. Clean up all test data
 
 use loadtest_populate_csv::CSVPopulator;
-use loadtest_verify::StreamingVerifier;
+use loadtest_verify_surreal2::StreamingVerifier;
 use surreal2_sink::Surreal2Sink;
 use surreal_sync::csv::{sync, Config, FileSource};
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};

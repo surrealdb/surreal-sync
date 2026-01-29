@@ -21,7 +21,7 @@
 
 use chrono::Utc;
 use loadtest_populate_kafka::KafkaPopulator;
-use loadtest_verify::StreamingVerifier;
+use loadtest_verify_surreal2::StreamingVerifier;
 use std::{sync::Arc, time::Duration};
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
 use surreal_sync_kafka_source::Config as KafkaConfig;

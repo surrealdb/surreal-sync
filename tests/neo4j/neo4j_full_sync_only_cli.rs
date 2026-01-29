@@ -4,9 +4,8 @@
 //! correctly, using the unified dataset.
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
-};
+use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 
 #[tokio::test]
 async fn test_neo4j_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,10 +34,10 @@ async fn test_neo4j_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
     surreal_sync::testing::neo4j::create_constraints_and_indices(&graph, &dataset).await?;
     surreal_sync::testing::neo4j::create_nodes(&graph, &dataset).await?;
 
-    // Setup SurrealDB connection for validation
+    // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::new(test_id, "neo4j");
-    let surreal = connect_surrealdb(&surreal_config).await?;
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    let conn = connect_auto(&surreal_config).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     // Execute CLI command for Neo4j full sync with data
     let args = [
@@ -77,8 +76,7 @@ async fn test_neo4j_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
     println!("Error Output:");
     println!("{}", String::from_utf8_lossy(&output.stderr));
 
-    surreal_sync::testing::surrealdb::assert_synced(&surreal, &dataset, "Neo4j full sync only")
-        .await?;
+    assert_synced_auto(&conn, &dataset, "Neo4j full sync only").await?;
 
     surreal_sync::testing::neo4j::delete_nodes_and_relationships(&graph).await?;
 

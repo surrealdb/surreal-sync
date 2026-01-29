@@ -1,6 +1,6 @@
 //! Field comparison logic.
 
-use surrealdb::sql::Value as SurrealValue;
+use surrealdb2::sql::Value as SurrealValue;
 use sync_core::{GeometryData, UniversalValue};
 
 /// Result of comparing two values.
@@ -424,7 +424,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
 /// Compare a serde_json::Value to a SurrealDB Object.
 fn compare_json_to_surreal_object(
     expected: &serde_json::Value,
-    actual: &surrealdb::sql::Object,
+    actual: &surrealdb2::sql::Object,
 ) -> CompareResult {
     // Convert SurrealDB Object to serde_json::Value for comparison
     let actual_json = surreal_object_to_json(actual);
@@ -441,7 +441,7 @@ fn compare_json_to_surreal_object(
 }
 
 /// Convert a SurrealDB Object to serde_json::Value.
-fn surreal_object_to_json(obj: &surrealdb::sql::Object) -> serde_json::Value {
+fn surreal_object_to_json(obj: &surrealdb2::sql::Object) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (key, value) in obj.iter() {
         map.insert(key.clone(), surreal_value_to_json(value));
@@ -520,7 +520,7 @@ fn json_values_equal(a: &serde_json::Value, b: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use surrealdb::sql::{Number, Strand};
+    use surrealdb2::sql::{Number, Strand};
 
     #[test]
     fn test_compare_null() {
@@ -596,7 +596,7 @@ mod tests {
     #[test]
     fn test_compare_uuid() {
         let u = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let surreal_uuid = surrealdb::sql::Uuid::from(u);
+        let surreal_uuid = surrealdb2::sql::Uuid::from(u);
         assert_eq!(
             compare_values(&UniversalValue::Uuid(u), &SurrealValue::Uuid(surreal_uuid)),
             CompareResult::Match
@@ -605,7 +605,7 @@ mod tests {
 
     #[test]
     fn test_compare_array() {
-        use surrealdb::sql::Array;
+        use surrealdb2::sql::Array;
 
         let expected = UniversalValue::Array {
             elements: vec![
@@ -625,7 +625,7 @@ mod tests {
 
     #[test]
     fn test_compare_array_length_mismatch() {
-        use surrealdb::sql::Array;
+        use surrealdb2::sql::Array;
 
         let expected = UniversalValue::Array {
             elements: vec![UniversalValue::Int32(1), UniversalValue::Int32(2)],
@@ -644,7 +644,7 @@ mod tests {
 
     #[test]
     fn test_compare_json_object_match() {
-        use surrealdb::sql::Object;
+        use surrealdb2::sql::Object;
 
         let expected_json = serde_json::json!({
             "name": "test",
@@ -664,7 +664,7 @@ mod tests {
 
     #[test]
     fn test_compare_json_object_mismatch() {
-        use surrealdb::sql::Object;
+        use surrealdb2::sql::Object;
 
         let expected_json = serde_json::json!({
             "name": "test",
@@ -685,7 +685,7 @@ mod tests {
 
     #[test]
     fn test_compare_json_nested() {
-        use surrealdb::sql::{Array, Object};
+        use surrealdb2::sql::{Array, Object};
 
         let expected_json = serde_json::json!({
             "items": [1, 2, 3],
@@ -715,7 +715,7 @@ mod tests {
 
     #[test]
     fn test_compare_geometry_geojson() {
-        use surrealdb::sql::Object;
+        use surrealdb2::sql::Object;
         use sync_core::GeometryType;
 
         let geojson = serde_json::json!({
@@ -727,7 +727,7 @@ mod tests {
             geometry_type: GeometryType::Point,
         };
 
-        let mut coords = surrealdb::sql::Array::default();
+        let mut coords = surrealdb2::sql::Array::default();
         coords.push(SurrealValue::Number(Number::Float(-73.97)));
         coords.push(SurrealValue::Number(Number::Float(40.77)));
 

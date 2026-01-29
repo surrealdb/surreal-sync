@@ -3,9 +3,10 @@
 //! These tests verify that the PostgreSQL logical replication library handles
 //! full sync correctly using the unified dataset.
 
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
+use surreal_sync::testing::surreal::{
+    assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 
 /// Test PostgreSQL logical replication full sync via library
 #[tokio::test]
@@ -31,12 +32,12 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
         }
     });
 
-    // Setup SurrealDB connection for validation
+    // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::new(test_id, "postgresql-logical-lib-test1");
-    let surreal = connect_surrealdb(&surreal_config).await?;
+    let conn = connect_auto(&surreal_config).await?;
 
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
     surreal_sync::testing::postgresql::create_tables_and_indices(&pg_client, &dataset).await?;
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
 
@@ -57,25 +58,32 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
         dry_run: false,
     };
 
-    // Create SurrealDB v2 sink
-    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
-
-    // Run full sync without checkpoint emission
-    surreal_sync_postgresql_wal2json_source::run_full_sync::<_, checkpoint::NullStore>(
-        &sink,
-        source_opts,
-        sync_opts,
-        None, // No checkpoint config
-    )
-    .await?;
+    // Run full sync with appropriate sink based on detected version
+    match &conn {
+        SurrealConnection::V2(client) => {
+            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            surreal_sync_postgresql_wal2json_source::run_full_sync::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+            )
+            .await?;
+        }
+        SurrealConnection::V3(client) => {
+            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            surreal_sync_postgresql_wal2json_source::run_full_sync::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+            )
+            .await?;
+        }
+    }
 
     // Verify synced data
-    surreal_sync::testing::surrealdb::assert_synced(
-        &surreal,
-        &dataset,
-        "PostgreSQL logical full sync lib",
-    )
-    .await?;
+    assert_synced_auto(&conn, &dataset, "PostgreSQL logical full sync lib").await?;
 
     // Cleanup: drop the replication slot
     pg_client

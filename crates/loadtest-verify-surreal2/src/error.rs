@@ -11,7 +11,7 @@ pub enum VerifyError {
 
     /// SurrealDB connection error.
     #[error("SurrealDB error: {0}")]
-    SurrealDb(Box<surrealdb::Error>),
+    SurrealDb(Box<surrealdb2::Error>),
 
     /// Data generator error.
     #[error("Generator error: {0}")]
@@ -30,8 +30,8 @@ pub enum VerifyError {
     },
 }
 
-impl From<surrealdb::Error> for VerifyError {
-    fn from(err: surrealdb::Error) -> Self {
+impl From<surrealdb2::Error> for VerifyError {
+    fn from(err: surrealdb2::Error) -> Self {
         VerifyError::SurrealDb(Box::new(err))
     }
 }

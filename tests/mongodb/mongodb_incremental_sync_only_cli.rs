@@ -8,9 +8,8 @@
 //! 5. Validating all data types are preserved correctly via incremental sync
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
-};
+use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 
 #[tokio::test]
 async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,13 +27,13 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
     let mongodb_client = surreal_sync::testing::mongodb::connect_mongodb().await?;
     let db = mongodb_client.database("testdb");
 
-    // Setup SurrealDB connection for validation
+    // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::new(test_id, "mongodb-incr-cli");
-    let surreal = connect_surrealdb(&surreal_config).await?;
+    let conn = connect_auto(&surreal_config).await?;
 
     surreal_sync::testing::mongodb::cleanup(&db, &dataset).await?;
     surreal_sync::testing::mongodb::create_collections(&db, &dataset).await?;
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     // Run FULL SYNC with EMPTY MongoDB database
     // This sets up the change stream infrastructure and emits a checkpoint with resume token
@@ -125,12 +124,7 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
         "MongoDB incremental sync capturing new data",
     );
 
-    surreal_sync::testing::surrealdb::assert_synced(
-        &surreal,
-        &dataset,
-        "MongoDB incremental sync only",
-    )
-    .await?;
+    assert_synced_auto(&conn, &dataset, "MongoDB incremental sync CLI").await?;
 
     surreal_sync::testing::mongodb::cleanup_mongodb_test_data(&db).await?;
 
