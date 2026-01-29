@@ -13,6 +13,7 @@ use crate::testing::{
     table::{SourceDatabase, TestTable},
     value::SurrealDBValue,
 };
+use rust_decimal::Decimal;
 use std::collections::HashMap;
 use surrealdb3::engine::any::Any;
 use surrealdb3::types::{RecordId, RecordIdKey};
@@ -410,40 +411,43 @@ pub async fn compare_sync_results_in_surrealdb_v3(
                             }
                         }
                         SurrealDBValue::Decimal { value, .. } => {
-                            let actual_float_result: Result<Option<f64>, _> =
+                            // Decimal fields may be stored as Number::Decimal or Number::Float
+                            // Try reading as rust_decimal::Decimal first (works for both V2 and V3)
+                            let decimal_result: Result<Option<Decimal>, _> =
                                 field_response.take((0, field_name.as_str()));
 
-                            if let Ok(Some(actual_float)) = actual_float_result {
-                                let expected_float: f64 = value
-                                    .parse()
-                                    .map_err(|_| format!("Invalid decimal value: {value}"))?;
-                                assert!(
-                                    (actual_float - expected_float).abs() < 0.0001,
+                            if let Ok(Some(actual_decimal)) = decimal_result {
+                                // Successfully read as Decimal
+                                let expected_decimal: Decimal = value.parse().map_err(|_| {
+                                    format!("Invalid expected decimal value: {value}")
+                                })?;
+                                assert_eq!(
+                                    actual_decimal,
+                                    expected_decimal,
                                     "{}: Document {}, Field '{}' decimal mismatch - expected {}, found {}",
                                     test_description,
                                     doc_idx + 1,
                                     field_name,
-                                    expected_float,
-                                    actual_float
+                                    expected_decimal,
+                                    actual_decimal
                                 );
                             } else {
-                                let cast_query = format!(
-                                    "SELECT <float> {field_name} as decimal_value FROM $record_id"
-                                );
-                                let mut cast_response = surreal
-                                    .query(&cast_query)
+                                // Not stored as Decimal - try reading as f64 (for Float storage)
+                                let float_query = format!("SELECT {field_name} FROM $record_id");
+                                let mut float_response = surreal
+                                    .query(&float_query)
                                     .bind(("record_id", record_id.clone()))
                                     .await?;
-                                let actual_float: Option<f64> =
-                                    cast_response.take((0, "decimal_value"))?;
+                                let float_result: Result<Option<f64>, _> =
+                                    float_response.take((0, field_name.as_str()));
 
-                                if let Some(actual_float) = actual_float {
-                                    let expected_float: f64 = value
-                                        .parse()
-                                        .map_err(|_| format!("Invalid decimal value: {value}"))?;
+                                if let Ok(Some(actual_float)) = float_result {
+                                    let expected_float: f64 = value.parse().map_err(|_| {
+                                        format!("Invalid expected decimal value: {value}")
+                                    })?;
                                     assert!(
                                         (actual_float - expected_float).abs() < 0.0001,
-                                        "{}: Document {}, Field '{}' decimal mismatch - expected {}, found {}",
+                                        "{}: Document {}, Field '{}' decimal (as float) mismatch - expected {}, found {}",
                                         test_description,
                                         doc_idx + 1,
                                         field_name,
@@ -452,7 +456,7 @@ pub async fn compare_sync_results_in_surrealdb_v3(
                                     );
                                 } else {
                                     panic!(
-                                        "{}: Document {}, Field '{}' decimal value not found",
+                                        "{}: Document {}, Field '{}' is neither Decimal nor Float - cannot validate",
                                         test_description,
                                         doc_idx + 1,
                                         field_name
