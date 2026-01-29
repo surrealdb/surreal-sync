@@ -28,4 +28,5 @@ pub mod users;
 pub mod value;
 
 pub use full::create_unified_full_dataset;
+pub use table::SourceDatabase;
 pub use test_helpers::{connect_surrealdb, generate_test_id, TestConfig};

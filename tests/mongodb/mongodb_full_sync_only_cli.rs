@@ -5,7 +5,9 @@
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
-use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
+use surreal_sync::testing::{
+    create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
+};
 
 #[tokio::test]
 async fn test_mongodb_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
@@ -56,7 +58,13 @@ async fn test_mongodb_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> 
     let output = execute_surreal_sync(&args)?;
     assert_cli_success(&output, "MongoDB all-types full sync CLI");
 
-    assert_synced_auto(&conn, &dataset, "MongoDB full sync CLI").await?;
+    assert_synced_auto(
+        &conn,
+        &dataset,
+        "MongoDB full sync CLI",
+        SourceDatabase::MongoDB,
+    )
+    .await?;
 
     surreal_sync::testing::mongodb::cleanup_mongodb_test_data(&db).await?;
 

@@ -5,7 +5,9 @@
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
-use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
+use surreal_sync::testing::{
+    create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
+};
 
 /// Test PostgreSQL CLI with data types
 #[tokio::test]
@@ -68,7 +70,13 @@ async fn test_postgresql_full_sync_cli() -> Result<(), Box<dyn std::error::Error
     println!("Error Output:");
     println!("{}", String::from_utf8_lossy(&output.stderr));
 
-    assert_synced_auto(&conn, &dataset, "PostgreSQL full sync CLI").await?;
+    assert_synced_auto(
+        &conn,
+        &dataset,
+        "PostgreSQL full sync CLI",
+        SourceDatabase::PostgreSQL,
+    )
+    .await?;
 
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
 

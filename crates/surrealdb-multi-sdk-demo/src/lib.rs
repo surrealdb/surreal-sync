@@ -395,4 +395,119 @@ mod tests {
 
         Ok(())
     }
+
+    /// Test that V2 SDK handles DELETE on non-existent tables gracefully
+    ///
+    /// V2 SDK does not throw an error when deleting from a table that doesn't exist.
+    /// This is the expected behavior for cleanup operations.
+    #[tokio::test]
+    async fn test_v2_delete_nonexistent_table() -> anyhow::Result<()> {
+        init_logging();
+
+        let endpoint = std::env::var("SURREAL_V2_ENDPOINT")
+            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+
+        let client = v2::connect(&endpoint, "test", "demo_delete_test").await?;
+
+        // Delete from a table that definitely doesn't exist
+        let result = client
+            .query("DELETE FROM this_table_definitely_does_not_exist_12345")
+            .await;
+
+        // V2 SDK should NOT throw an error for non-existent tables
+        assert!(
+            result.is_ok(),
+            "V2 SDK should handle DELETE on non-existent table gracefully, got: {:?}",
+            result.err()
+        );
+
+        Ok(())
+    }
+
+    /// Test that V3 SDK behavior for DELETE on non-existent tables
+    ///
+    /// V3 SDK may have different behavior for deleting from non-existent tables.
+    /// This test documents the observed behavior.
+    #[tokio::test]
+    async fn test_v3_delete_nonexistent_table() -> anyhow::Result<()> {
+        init_logging();
+
+        // Only run this test if V3 endpoint is explicitly configured
+        let endpoint = match std::env::var("SURREAL_V3_ENDPOINT") {
+            Ok(ep) => ep,
+            Err(_) => {
+                eprintln!(
+                    "Skipping V3 DELETE non-existent table test: SURREAL_V3_ENDPOINT not set"
+                );
+                return Ok(());
+            }
+        };
+
+        let client = v3::connect(&endpoint, "test", "demo_delete_test").await?;
+
+        // Delete from a table that definitely doesn't exist
+        // Using RETURN NONE to avoid needing to deserialize any response
+        let result = client
+            .query("DELETE FROM this_table_definitely_does_not_exist_12345 RETURN NONE")
+            .await;
+
+        // Document V3 SDK behavior - it should also handle this gracefully
+        // If V3 throws an error, this test will fail and document that difference
+        assert!(
+            result.is_ok(),
+            "V3 SDK should handle DELETE on non-existent table gracefully, got: {:?}",
+            result.err()
+        );
+
+        Ok(())
+    }
+
+    /// Test V3 SDK cleanup pattern with proper error handling
+    ///
+    /// This test demonstrates the recommended pattern for cleaning up tables
+    /// that may or may not exist in V3 SDK.
+    #[tokio::test]
+    async fn test_v3_cleanup_pattern() -> anyhow::Result<()> {
+        init_logging();
+
+        // Only run this test if V3 endpoint is explicitly configured
+        let endpoint = match std::env::var("SURREAL_V3_ENDPOINT") {
+            Ok(ep) => ep,
+            Err(_) => {
+                eprintln!("Skipping V3 cleanup pattern test: SURREAL_V3_ENDPOINT not set");
+                return Ok(());
+            }
+        };
+
+        let client = v3::connect(&endpoint, "test", "demo_cleanup_test").await?;
+
+        // Recommended cleanup pattern: ignore "does not exist" errors
+        let tables = [
+            "nonexistent_table_1",
+            "nonexistent_table_2",
+            "nonexistent_table_3",
+        ];
+
+        for table in tables {
+            let query = format!("DELETE FROM {table} RETURN NONE");
+            match client.query(&query).await {
+                Ok(_) => {
+                    eprintln!("Cleaned up table '{}'", table);
+                }
+                Err(e) => {
+                    // Check if it's a "does not exist" error
+                    let err_str = e.to_string();
+                    if err_str.contains("does not exist") {
+                        // This is expected for cleanup operations - ignore it
+                        eprintln!("Table '{}' does not exist, skipping: {}", table, err_str);
+                    } else {
+                        // Unexpected error - fail the test
+                        panic!("Unexpected error during cleanup: {}", e);
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
 }

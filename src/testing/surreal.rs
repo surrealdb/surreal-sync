@@ -4,7 +4,11 @@
 //! SurrealDB testing functions. It auto-detects the server version and uses
 //! the appropriate SDK.
 
-use crate::testing::{surreal2, surreal3, table::TestDataSet, test_helpers::TestConfig};
+use crate::testing::{
+    surreal2, surreal3,
+    table::{SourceDatabase, TestDataSet},
+    test_helpers::TestConfig,
+};
 
 /// SurrealDB connection that can be either v2 or v3
 pub enum SurrealConnection {
@@ -91,13 +95,14 @@ pub async fn assert_synced_auto(
     conn: &SurrealConnection,
     dataset: &TestDataSet,
     test_prefix: &str,
+    source: SourceDatabase,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match conn {
         SurrealConnection::V2(client) => {
-            surreal2::assert_synced(client, dataset, test_prefix).await
+            surreal2::assert_synced(client, dataset, test_prefix, source).await
         }
         SurrealConnection::V3(client) => {
-            surreal3::assert_synced_v3(client, dataset, test_prefix).await
+            surreal3::assert_synced_v3(client, dataset, test_prefix, source).await
         }
     }
 }

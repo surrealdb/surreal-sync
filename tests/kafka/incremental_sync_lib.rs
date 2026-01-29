@@ -23,7 +23,9 @@ use std::{sync::Arc, time::Duration};
 use surreal_sync::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
-use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
+use surreal_sync::testing::{
+    create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
+};
 use surreal_sync_kafka_producer::{
     publish_test_posts, publish_test_relations, publish_test_users, KafkaTestProducer,
 };
@@ -353,7 +355,13 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
     // Step 6: Verify synced data in SurrealDB using standard test helper
     tracing::info!("Verifying synced data in SurrealDB...");
-    assert_synced_auto(&conn, &dataset, "Kafka incremental sync").await?;
+    assert_synced_auto(
+        &conn,
+        &dataset,
+        "Kafka incremental sync",
+        SourceDatabase::Kafka,
+    )
+    .await?;
 
     tracing::info!("✅ Kafka incremental sync test completed successfully");
 

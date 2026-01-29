@@ -6,7 +6,9 @@
 use surreal_sync::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
-use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
+use surreal_sync::testing::{
+    create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
+};
 
 /// Test PostgreSQL logical replication full sync via library
 #[tokio::test]
@@ -83,7 +85,13 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
     }
 
     // Verify synced data
-    assert_synced_auto(&conn, &dataset, "PostgreSQL logical full sync lib").await?;
+    assert_synced_auto(
+        &conn,
+        &dataset,
+        "PostgreSQL logical full sync lib",
+        SourceDatabase::PostgreSQL,
+    )
+    .await?;
 
     // Cleanup: drop the replication slot
     pg_client
