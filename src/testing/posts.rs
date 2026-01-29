@@ -201,12 +201,13 @@ pub fn create_posts_table() -> TestTable {
                         property_value: bolt::bool(true),
                     }),
                 // MongoDB RegularExpression field (database-specific)
+                // MongoDB regex is converted to SurrealDB/Rust regex format: (?flags)pattern
                 Field::simple(
                     "content_pattern",
-                    SurrealDBValue::String("/^[A-Za-z0-9\\s]+$/i".to_string()),
+                    SurrealDBValue::String("(?i)^[A-Za-z0-9\\s]+$".to_string()),
                 )
                 .with_mongodb(MongoDBField {
-                    field_name: "content_regex".to_string(),
+                    field_name: "content_pattern".to_string(),
                     field_value: MongoDBValue::RegularExpression {
                         pattern: "^[A-Za-z0-9\\s]+$".to_string(),
                         flags: "i".to_string(),
@@ -487,12 +488,13 @@ pub fn create_posts_table() -> TestTable {
                         property_value: bolt::bool(false),
                     }),
                 // MongoDB RegularExpression field (database-specific)
+                // MongoDB regex is converted to SurrealDB/Rust regex format: (?)pattern for empty flags
                 Field::simple(
                     "content_pattern",
-                    SurrealDBValue::String("/^\\w+$/".to_string()),
+                    SurrealDBValue::String("(?)^\\w+$".to_string()),
                 )
                 .with_mongodb(MongoDBField {
-                    field_name: "content_regex".to_string(),
+                    field_name: "content_pattern".to_string(),
                     field_value: MongoDBValue::RegularExpression {
                         pattern: "^\\w+$".to_string(),
                         flags: "".to_string(),

@@ -9,7 +9,9 @@
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
-use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
+use surreal_sync::testing::{
+    create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
+};
 
 #[tokio::test]
 async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
@@ -124,7 +126,13 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
         "MongoDB incremental sync capturing new data",
     );
 
-    assert_synced_auto(&conn, &dataset, "MongoDB incremental sync CLI").await?;
+    assert_synced_auto(
+        &conn,
+        &dataset,
+        "MongoDB incremental sync CLI",
+        SourceDatabase::MongoDB,
+    )
+    .await?;
 
     surreal_sync::testing::mongodb::cleanup_mongodb_test_data(&db).await?;
 

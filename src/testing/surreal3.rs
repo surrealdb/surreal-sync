@@ -9,7 +9,10 @@
 
 #![allow(clippy::uninlined_format_args)]
 
-use crate::testing::{table::TestTable, value::SurrealDBValue};
+use crate::testing::{
+    table::{SourceDatabase, TestTable},
+    value::SurrealDBValue,
+};
 use std::collections::HashMap;
 use surrealdb3::engine::any::Any;
 use surrealdb3::types::{RecordId, RecordIdKey};
@@ -25,6 +28,16 @@ fn to_record_id_key(value: &SurrealDBValue) -> Result<RecordIdKey, Box<dyn std::
     }
 }
 
+/// Build a SurrealQL field path, using bracket notation for fields with special characters
+fn build_field_path(base: &str, field: &str) -> String {
+    // Use bracket notation for fields starting with $ or containing special chars
+    if field.starts_with('$') || field.contains('-') || field.contains(' ') {
+        format!("{base}[\"{field}\"]")
+    } else {
+        format!("{base}.{field}")
+    }
+}
+
 /// Recursively validate nested object structure using SurrealDB v3 .take() pattern
 #[allow(unused_variables, unused_mut)]
 async fn validate_nested_object_v3(
@@ -36,7 +49,7 @@ async fn validate_nested_object_v3(
     doc_number: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     for (nested_field_name, nested_expected_value) in expected_obj {
-        let nested_field_path = format!("{base_field_path}.{nested_field_name}");
+        let nested_field_path = build_field_path(base_field_path, nested_field_name);
 
         match nested_expected_value {
             SurrealDBValue::Object(nested_obj) => {
@@ -154,6 +167,44 @@ async fn validate_nested_object_v3(
                     }
                 }
             }
+            SurrealDBValue::Int32(expected_int) => {
+                let query = format!("SELECT {nested_field_path} as nested_value FROM $record_id");
+                let mut response = surreal
+                    .query(&query)
+                    .bind(("record_id", record_id.clone()))
+                    .await?;
+                let actual: Option<i64> = response.take((0, "nested_value"))?;
+                let actual_int = actual.unwrap_or_else(|| {
+                    panic!(
+                        "{}: Document {}, Nested int field '{}' not found",
+                        test_description, doc_number, nested_field_path
+                    )
+                });
+                assert_eq!(
+                    actual_int, *expected_int as i64,
+                    "{}: Document {}, Nested field '{}' mismatch",
+                    test_description, doc_number, nested_field_path
+                );
+            }
+            SurrealDBValue::Int64(expected_int) => {
+                let query = format!("SELECT {nested_field_path} as nested_value FROM $record_id");
+                let mut response = surreal
+                    .query(&query)
+                    .bind(("record_id", record_id.clone()))
+                    .await?;
+                let actual: Option<i64> = response.take((0, "nested_value"))?;
+                let actual_int = actual.unwrap_or_else(|| {
+                    panic!(
+                        "{}: Document {}, Nested int field '{}' not found",
+                        test_description, doc_number, nested_field_path
+                    )
+                });
+                assert_eq!(
+                    actual_int, *expected_int,
+                    "{}: Document {}, Nested field '{}' mismatch",
+                    test_description, doc_number, nested_field_path
+                );
+            }
             _ => {
                 return Err(format!(
                     "{test_description}: Unsupported nested field validation for '{nested_field_path}' with type {nested_expected_value:?}"
@@ -174,6 +225,7 @@ pub async fn compare_sync_results_in_surrealdb_v3(
     table_name: &str,
     expected_table: &TestTable,
     test_description: &str,
+    source: SourceDatabase,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // First, validate the count
     tracing::info!(
@@ -218,7 +270,7 @@ pub async fn compare_sync_results_in_surrealdb_v3(
             expected_table.documents.len()
         );
 
-        let expected_surrealdb_data = expected_doc.to_surrealdb_doc();
+        let expected_surrealdb_data = expected_doc.to_surrealdb_doc_for_source(source);
 
         // Get the ID field to query for the specific record
         if let Some(id_field) = expected_doc.get_field("id") {
@@ -265,9 +317,15 @@ pub async fn compare_sync_results_in_surrealdb_v3(
                                     )
                                 })?;
 
-                            if let (Some(actual_str), SurrealDBValue::String(expected_str)) =
-                                (actual, expected_value)
-                            {
+                            let actual_str = actual.unwrap_or_else(|| {
+                                panic!(
+                                    "{}: Document {}, Field '{}' expected String but field is missing/null",
+                                    test_description,
+                                    doc_idx + 1,
+                                    field_name
+                                )
+                            });
+                            if let SurrealDBValue::String(expected_str) = expected_value {
                                 assert_eq!(
                                     actual_str,
                                     *expected_str,
@@ -286,16 +344,22 @@ pub async fn compare_sync_results_in_surrealdb_v3(
                                 SurrealDBValue::Int64(i) => *i,
                                 _ => unreachable!(),
                             };
-                            if let Some(actual_int) = actual {
-                                assert_eq!(
-                                    actual_int,
-                                    expected_int,
-                                    "{}: Document {}, Field '{}' mismatch",
+                            let actual_int = actual.unwrap_or_else(|| {
+                                panic!(
+                                    "{}: Document {}, Field '{}' expected Int but field is missing/null",
                                     test_description,
                                     doc_idx + 1,
                                     field_name
-                                );
-                            }
+                                )
+                            });
+                            assert_eq!(
+                                actual_int,
+                                expected_int,
+                                "{}: Document {}, Field '{}' mismatch",
+                                test_description,
+                                doc_idx + 1,
+                                field_name
+                            );
                         }
                         SurrealDBValue::Float32(_) | SurrealDBValue::Float64(_) => {
                             let actual: Option<f64> =
@@ -305,24 +369,36 @@ pub async fn compare_sync_results_in_surrealdb_v3(
                                 SurrealDBValue::Float64(f) => *f,
                                 _ => unreachable!(),
                             };
-                            if let Some(actual_float) = actual {
-                                assert!(
-                                    (actual_float - expected_float).abs() < 0.0001,
-                                    "{}: Document {}, Field '{}' mismatch - expected {}, found {}",
+                            let actual_float = actual.unwrap_or_else(|| {
+                                panic!(
+                                    "{}: Document {}, Field '{}' expected Float but field is missing/null",
                                     test_description,
                                     doc_idx + 1,
-                                    field_name,
-                                    expected_float,
-                                    actual_float
-                                );
-                            }
+                                    field_name
+                                )
+                            });
+                            assert!(
+                                (actual_float - expected_float).abs() < 0.0001,
+                                "{}: Document {}, Field '{}' mismatch - expected {}, found {}",
+                                test_description,
+                                doc_idx + 1,
+                                field_name,
+                                expected_float,
+                                actual_float
+                            );
                         }
                         SurrealDBValue::Bool(_) => {
                             let actual: Option<bool> =
                                 field_response.take((0, field_name.as_str()))?;
-                            if let (Some(actual_bool), SurrealDBValue::Bool(expected_bool)) =
-                                (actual, expected_value)
-                            {
+                            let actual_bool = actual.unwrap_or_else(|| {
+                                panic!(
+                                    "{}: Document {}, Field '{}' expected Bool but field is missing/null",
+                                    test_description,
+                                    doc_idx + 1,
+                                    field_name
+                                )
+                            });
+                            if let SurrealDBValue::Bool(expected_bool) = expected_value {
                                 assert_eq!(
                                     actual_bool,
                                     *expected_bool,
@@ -686,12 +762,14 @@ pub async fn validate_synced_table_in_surrealdb_v3(
     surreal: &Surreal<Any>,
     expected_table: &TestTable,
     test_description: &str,
+    source: SourceDatabase,
 ) -> Result<(), Box<dyn std::error::Error>> {
     compare_sync_results_in_surrealdb_v3(
         surreal,
         &expected_table.name,
         expected_table,
         test_description,
+        source,
     )
     .await
 }
@@ -701,6 +779,7 @@ pub async fn assert_synced_v3(
     surreal: &Surreal<Any>,
     dataset: &crate::testing::table::TestDataSet,
     test_prefix: &str,
+    source: SourceDatabase,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("Asserting all SurrealDB v3 tables in dataset are synced correctly...");
 
@@ -710,6 +789,7 @@ pub async fn assert_synced_v3(
             surreal,
             table,
             &format!("{} - {}", test_prefix, table.name),
+            source,
         )
         .await?;
     }
@@ -738,13 +818,35 @@ pub async fn connect_surrealdb_v3(
 }
 
 /// Clean up test data from SurrealDB tables (v3 version)
+///
+/// This function deletes all records from the specified tables.
+/// It gracefully handles the case where a table doesn't exist.
 pub async fn cleanup_surrealdb_test_data_v3(
     surreal: &Surreal<Any>,
     tables: &[&str],
 ) -> Result<(), Box<dyn std::error::Error>> {
     for table in tables {
-        let query = format!("DELETE FROM {table}");
-        let _: Vec<serde_json::Value> = surreal.query(&query).await?.take(0)?;
+        // Use DELETE with RETURN NONE to avoid needing to deserialize response
+        // Also catch errors for non-existent tables
+        let query = format!("DELETE FROM {table} RETURN NONE");
+        match surreal.query(&query).await {
+            Ok(_) => {
+                tracing::debug!("Cleaned up table '{}'", table);
+            }
+            Err(e) => {
+                // Ignore "table does not exist" errors during cleanup
+                let err_str = e.to_string();
+                if err_str.contains("does not exist") {
+                    tracing::debug!(
+                        "Table '{}' does not exist, skipping cleanup: {}",
+                        table,
+                        err_str
+                    );
+                } else {
+                    return Err(e.into());
+                }
+            }
+        }
     }
     Ok(())
 }

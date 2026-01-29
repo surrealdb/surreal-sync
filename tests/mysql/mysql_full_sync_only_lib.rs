@@ -6,7 +6,9 @@
 use surreal_sync::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
-use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
+use surreal_sync::testing::{
+    create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
+};
 
 #[tokio::test]
 async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -72,7 +74,13 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    assert_synced_auto(&conn, &dataset, "MySQL full sync only").await?;
+    assert_synced_auto(
+        &conn,
+        &dataset,
+        "MySQL full sync only",
+        SourceDatabase::MySQL,
+    )
+    .await?;
 
     surreal_sync::testing::mysql::cleanup_mysql_test_data(&mut mysql_conn).await?;
 

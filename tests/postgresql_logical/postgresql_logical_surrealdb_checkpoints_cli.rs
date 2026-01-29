@@ -8,7 +8,9 @@ use surreal_sync::testing::postgresql::create_tables_and_indices;
 use surreal_sync::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
-use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
+use surreal_sync::testing::{
+    create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
+};
 use surreal_sync_postgresql_wal2json_source::testing::container::PostgresContainer;
 
 /// Test PostgreSQL logical replication with SurrealDB checkpoint storage
@@ -238,6 +240,7 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
         &conn,
         &dataset,
         "PostgreSQL logical with SurrealDB checkpoints",
+        SourceDatabase::PostgreSQL,
     )
     .await?;
 

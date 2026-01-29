@@ -10,6 +10,18 @@ use crate::testing::{
 };
 use std::collections::HashMap;
 
+/// Source database types for field filtering
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceDatabase {
+    MongoDB,
+    MySQL,
+    PostgreSQL,
+    Neo4j,
+    CSV,
+    JSONL,
+    Kafka,
+}
+
 /// A test document containing multiple fields
 #[derive(Debug, Clone)]
 pub struct TestDoc {
@@ -86,17 +98,54 @@ impl TestDoc {
         doc
     }
 
-    /// Get SurrealDB representation filtered to only fields that have Neo4j representations
-    /// This is used for Neo4j validation where we only want to validate fields that were actually synced
-    pub fn to_surrealdb_doc_neo4j_filtered(&self) -> HashMap<String, SurrealDBValue> {
+    /// Get SurrealDB representation filtered by source database
+    /// Only includes fields that have explicit definitions for the specified source
+    pub fn to_surrealdb_doc_for_source(
+        &self,
+        source: SourceDatabase,
+    ) -> HashMap<String, SurrealDBValue> {
         let mut doc = HashMap::new();
         for field in &self.fields {
-            // Only include fields that have a Neo4j representation
-            if field.neo4j.is_some() {
+            let has_source_def = match source {
+                SourceDatabase::MongoDB => field.mongodb.is_some(),
+                SourceDatabase::MySQL => field.mysql.is_some(),
+                SourceDatabase::PostgreSQL => field.postgresql.is_some(),
+                SourceDatabase::Neo4j => field.neo4j.is_some(),
+                // For sources without field-level definitions (CSV, JSONL, Kafka),
+                // only include fields that have definitions for multiple databases
+                // (i.e., not single-database-specific fields). This filters out
+                // database-specific types like MongoDB's JavaScript with scope.
+                SourceDatabase::CSV | SourceDatabase::JSONL | SourceDatabase::Kafka => {
+                    // Count how many database-specific definitions this field has
+                    let def_count = [
+                        field.mongodb.is_some(),
+                        field.mysql.is_some(),
+                        field.postgresql.is_some(),
+                        field.neo4j.is_some(),
+                    ]
+                    .iter()
+                    .filter(|&&b| b)
+                    .count();
+
+                    // Include if:
+                    // - No database-specific definitions (simple universal fields), OR
+                    // - Multiple database definitions (common fields defined for several DBs)
+                    // Exclude if only ONE database has a definition (DB-specific field)
+                    def_count != 1
+                }
+            };
+            if has_source_def {
                 doc.insert(field.name.clone(), field.value.clone());
             }
         }
         doc
+    }
+
+    /// Get SurrealDB representation filtered to only fields that have Neo4j representations
+    /// This is used for Neo4j validation where we only want to validate fields that were actually synced
+    /// Deprecated: Use to_surrealdb_doc_for_source(SourceDatabase::Neo4j) instead
+    pub fn to_surrealdb_doc_neo4j_filtered(&self) -> HashMap<String, SurrealDBValue> {
+        self.to_surrealdb_doc_for_source(SourceDatabase::Neo4j)
     }
 
     /// Get field by logical name

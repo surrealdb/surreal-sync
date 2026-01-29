@@ -199,12 +199,26 @@ pub fn create_users_table() -> TestTable {
                         r#"{"preferences":{"theme":"dark","language":"en"},"tags":["premium","verified"],"settings":{"notifications":true,"privacy":"strict"}}"#
                     ),
                 }),
-                // Database-specific field that only exists in MongoDB (JavaScript code)
+                // Database-specific field that only exists in MongoDB (JavaScript code with scope)
+                // Field name matches MongoDB field name since sync preserves source field names
+                // MongoDB JavaScript with scope is stored as object: {"$code": "...", "$scope": {...}}
                 Field::simple(
-                    "validation_logic",
-                    SurrealDBValue::String(
-                        "function validate(input) { return input > threshold; }".to_string(),
-                    ),
+                    "validator",
+                    SurrealDBValue::Object(HashMap::from([
+                        (
+                            "$code".to_string(),
+                            SurrealDBValue::String(
+                                "function validate(input) { return input > threshold; }".to_string(),
+                            ),
+                        ),
+                        (
+                            "$scope".to_string(),
+                            SurrealDBValue::Object(HashMap::from([(
+                                "threshold".to_string(),
+                                SurrealDBValue::Int64(100),
+                            )])),
+                        ),
+                    ])),
                 )
                 .with_mongodb(MongoDBField {
                     field_name: "validator".to_string(),
@@ -576,8 +590,9 @@ pub fn create_users_table() -> TestTable {
                         r#"{"preferences":{"theme":"light","language":"es"},"tags":["standard","user"],"settings":{"notifications":false,"privacy":"public"}}"#
                     ),
                 }),
+                // Field name matches MongoDB field name since sync preserves source field names
                 Field::simple(
-                    "validation_logic",
+                    "validator",
                     SurrealDBValue::String("function isValid() { return true; }".to_string()),
                 )
                 .with_mongodb(MongoDBField {

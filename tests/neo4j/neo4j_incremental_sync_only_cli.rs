@@ -7,7 +7,7 @@ use surreal_sync::testing::{
     cli::{assert_cli_success, execute_surreal_sync},
     create_unified_full_dataset, generate_test_id,
     surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto},
-    TestConfig,
+    SourceDatabase, TestConfig,
 };
 
 #[tokio::test]
@@ -131,7 +131,13 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
     println!("Error Output:");
     println!("{}", String::from_utf8_lossy(&incremental_output.stderr));
 
-    assert_synced_auto(&conn, &dataset, "Neo4j incremental sync only").await?;
+    assert_synced_auto(
+        &conn,
+        &dataset,
+        "Neo4j incremental sync only",
+        SourceDatabase::Neo4j,
+    )
+    .await?;
 
     surreal_sync::testing::neo4j::delete_nodes_and_relationships(&graph).await?;
 
