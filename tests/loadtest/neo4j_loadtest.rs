@@ -8,8 +8,8 @@
 //! 5. Clean up all test data
 
 use loadtest_populate_neo4j::Neo4jPopulator;
-use loadtest_verify_surreal2::StreamingVerifier;
-use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
+use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
+use surreal_sync::testing::{generate_test_id, TestConfig};
 use sync_core::Schema;
 
 const SEED: u64 = 42;
@@ -46,19 +46,9 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .build()?;
     let graph = neo4rs::Graph::connect(graph_config)?;
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB with auto-detection of v2 or v3
     let surreal_config = TestConfig::new(test_id, "loadtest-neo4j");
-    let surreal = surrealdb2::engine::any::connect(&surreal_config.surreal_endpoint).await?;
-    surreal
-        .signin(surrealdb2::opt::auth::Root {
-            username: "root",
-            password: "root",
-        })
-        .await?;
-    surreal
-        .use_ns(&surreal_config.surreal_namespace)
-        .use_db(&surreal_config.surreal_database)
-        .await?;
+    let conn = connect_auto(&surreal_config).await?;
 
     // === CLEANUP BEFORE (ensure clean initial state) ===
     // Clean ALL schema tables (including 'products' which may be left over from other tests)
@@ -71,7 +61,22 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     }
 
     tracing::info!("Cleaning up SurrealDB tables: {:?}", all_table_names);
-    test_helpers::cleanup_surrealdb_test_data(&surreal, &all_table_names).await?;
+    match &conn {
+        SurrealConnection::V2(client) => {
+            surreal_sync::testing::test_helpers::cleanup_surrealdb_test_data(
+                client,
+                &all_table_names,
+            )
+            .await?;
+        }
+        SurrealConnection::V3(client) => {
+            surreal_sync::testing::surreal3::cleanup_surrealdb_test_data_v3(
+                client,
+                &all_table_names,
+            )
+            .await?;
+        }
+    }
 
     // === PHASE 1: POPULATE Neo4j with deterministic test data ===
     tracing::info!(
@@ -121,16 +126,29 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         dry_run: false,
     };
 
-    // Create SurrealDB v2 sink
-    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
-
-    surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
-        &sink,
-        source_opts,
-        sync_opts,
-        None,
-    )
-    .await?;
+    // Create version-appropriate sink and run sync
+    match &conn {
+        SurrealConnection::V2(client) => {
+            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+            )
+            .await?;
+        }
+        SurrealConnection::V3(client) => {
+            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+            )
+            .await?;
+        }
+    }
 
     tracing::info!("Sync completed successfully");
 
@@ -142,42 +160,92 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     );
 
     for table_name in &table_names {
-        let mut verifier =
-            StreamingVerifier::new(surreal.clone(), schema.clone(), SEED, table_name)?
+        match &conn {
+            SurrealConnection::V2(client) => {
+                let mut verifier = loadtest_verify_surreal2::StreamingVerifier::new(
+                    client.clone(),
+                    schema.clone(),
+                    SEED,
+                    table_name,
+                )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
                 .with_skip_fields(vec!["updated_at".to_string()]);
 
-        let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(ROW_COUNT).await?;
 
-        tracing::info!(
-            "Verified {}: {} matched, {} missing, {} mismatched",
-            table_name,
-            report.matched,
-            report.missing,
-            report.mismatched
-        );
+                tracing::info!(
+                    "Verified {}: {} matched, {} missing, {} mismatched",
+                    table_name,
+                    report.matched,
+                    report.missing,
+                    report.mismatched
+                );
 
-        // Print first 3 mismatches for debugging
-        for (i, mismatch) in report.mismatched_rows.iter().take(3).enumerate() {
-            tracing::warn!(
-                "Mismatch {}: record_id={}, field_mismatches={:?}",
-                i,
-                mismatch.record_id,
-                mismatch.field_mismatches
-            );
+                // Print first 3 mismatches for debugging
+                for (i, mismatch) in report.mismatched_rows.iter().take(3).enumerate() {
+                    tracing::warn!(
+                        "Mismatch {}: record_id={}, field_mismatches={:?}",
+                        i,
+                        mismatch.record_id,
+                        mismatch.field_mismatches
+                    );
+                }
+
+                assert!(
+                    report.is_success(),
+                    "Verification failed for label '{}': {} missing, {} mismatched",
+                    table_name,
+                    report.missing,
+                    report.mismatched
+                );
+                assert_eq!(
+                    report.matched, ROW_COUNT,
+                    "Not all nodes matched for label '{table_name}'"
+                );
+            }
+            SurrealConnection::V3(client) => {
+                let mut verifier = loadtest_verify_surreal3::StreamingVerifier3::new(
+                    client.clone(),
+                    schema.clone(),
+                    SEED,
+                    table_name,
+                )?
+                // Skip updated_at - it uses timestamp_now generator which is non-deterministic
+                .with_skip_fields(vec!["updated_at".to_string()]);
+
+                let report = verifier.verify_streaming(ROW_COUNT).await?;
+
+                tracing::info!(
+                    "Verified {}: {} matched, {} missing, {} mismatched",
+                    table_name,
+                    report.matched,
+                    report.missing,
+                    report.mismatched
+                );
+
+                // Print first 3 mismatches for debugging
+                for (i, mismatch) in report.mismatched_rows.iter().take(3).enumerate() {
+                    tracing::warn!(
+                        "Mismatch {}: record_id={}, field_mismatches={:?}",
+                        i,
+                        mismatch.record_id,
+                        mismatch.field_mismatches
+                    );
+                }
+
+                assert!(
+                    report.is_success(),
+                    "Verification failed for label '{}': {} missing, {} mismatched",
+                    table_name,
+                    report.missing,
+                    report.mismatched
+                );
+                assert_eq!(
+                    report.matched, ROW_COUNT,
+                    "Not all nodes matched for label '{table_name}'"
+                );
+            }
         }
-
-        assert!(
-            report.is_success(),
-            "Verification failed for label '{}': {} missing, {} mismatched",
-            table_name,
-            report.missing,
-            report.mismatched
-        );
-        assert_eq!(
-            report.matched, ROW_COUNT,
-            "Not all nodes matched for label '{table_name}'"
-        );
     }
 
     // === CLEANUP AFTER (no test artifacts remaining) ===
@@ -186,7 +254,16 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         let delete_query = format!("MATCH (n:{table_name}) DETACH DELETE n");
         graph.run(neo4rs::query(&delete_query)).await.ok();
     }
-    test_helpers::cleanup_surrealdb_test_data(&surreal, &table_names).await?;
+    match &conn {
+        SurrealConnection::V2(client) => {
+            surreal_sync::testing::test_helpers::cleanup_surrealdb_test_data(client, &table_names)
+                .await?;
+        }
+        SurrealConnection::V3(client) => {
+            surreal_sync::testing::surreal3::cleanup_surrealdb_test_data_v3(client, &table_names)
+                .await?;
+        }
+    }
 
     tracing::info!("Neo4j loadtest completed successfully!");
     Ok(())

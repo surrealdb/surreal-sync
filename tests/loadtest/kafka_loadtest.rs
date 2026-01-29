@@ -21,9 +21,9 @@
 
 use chrono::Utc;
 use loadtest_populate_kafka::KafkaPopulator;
-use loadtest_verify_surreal2::StreamingVerifier;
 use std::{sync::Arc, time::Duration};
-use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
+use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
+use surreal_sync::testing::{generate_test_id, TestConfig};
 use surreal_sync_kafka_source::Config as KafkaConfig;
 use sync_core::Schema;
 use tokio::time::sleep;
@@ -65,21 +65,20 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
 
     // Setup SurrealDB connection
     let surreal_config = TestConfig::new(test_id, "kafka-loadtest");
-    let surreal = surrealdb2::engine::any::connect(&surreal_config.surreal_endpoint).await?;
-    surreal
-        .signin(surrealdb2::opt::auth::Root {
-            username: "root",
-            password: "root",
-        })
-        .await?;
-    surreal
-        .use_ns(&surreal_config.surreal_namespace)
-        .use_db(&surreal_config.surreal_database)
-        .await?;
+    let conn = connect_auto(&surreal_config).await?;
 
     // === CLEANUP BEFORE (ensure clean initial state) ===
     tracing::info!("Cleaning up SurrealDB tables: {:?}", table_names);
-    test_helpers::cleanup_surrealdb_test_data(&surreal, &table_names).await?;
+    match &conn {
+        SurrealConnection::V2(client) => {
+            surreal_sync::testing::test_helpers::cleanup_surrealdb_test_data(client, &table_names)
+                .await?;
+        }
+        SurrealConnection::V3(client) => {
+            surreal_sync::testing::surreal3::cleanup_surrealdb_test_data_v3(client, &table_names)
+                .await?;
+        }
+    }
 
     // === PHASE 1: POPULATE Kafka topics with deterministic test data ===
     // For each table, we:
@@ -87,9 +86,6 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     // 2. Create a fresh populator (resets generator index to 0)
     // 3. Prepare table (generates .proto file)
     // 4. Create topic and populate with messages
-
-    // Create SurrealDB v2 sink
-    let sink = Arc::new(surreal2_sink::Surreal2Sink::new(surreal.clone()));
 
     // Store topic info for sync phase
     // Note: We keep the populators alive because their TempDir holds the .proto files
@@ -146,130 +142,270 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     sleep(Duration::from_millis(500)).await;
 
     // === PHASE 2: RUN SYNC from Kafka to SurrealDB ===
-    tracing::info!("Running Kafka streaming sync to SurrealDB");
-
-    for (table_name, topic_name, proto_path) in &topic_info {
-        // Capitalize first letter for message type name (e.g., "users" -> "Users")
-        let message_type = capitalize(table_name);
-
-        tracing::info!(
-            "Syncing table '{}' from topic '{}' (message type: {})",
-            table_name,
-            topic_name,
-            message_type
-        );
-
-        let config = KafkaConfig {
-            proto_path: proto_path.to_string_lossy().to_string(),
-            brokers: vec![KAFKA_BROKER.to_string()],
-            group_id: format!("loadtest-{table_name}-{test_id}"),
-            topic: topic_name.clone(),
-            message_type,
-            buffer_size: 1000,
-            session_timeout_ms: "6000".to_string(),
-            num_consumers: 1,
-            kafka_batch_size: BATCH_SIZE,
-            table_name: Some(table_name.clone()),
-            use_message_key_as_id: false,
-            id_field: "id".to_string(),
-            max_messages: None,
-        };
-
-        // Run sync with a deadline
-        let deadline = Utc::now() + chrono::Duration::seconds(SYNC_TIMEOUT_SECS);
-
-        // Get the table schema for schema-aware conversion
-        // Convert from GeneratorTableDefinition to base TableDefinition
-        let table_schema = schema
-            .get_table(table_name)
-            .map(|t| t.to_table_definition());
-
-        let sync_handle = tokio::spawn({
-            let sink_clone = sink.clone();
-            async move {
-                surreal_sync_kafka_source::run_incremental_sync(
-                    sink_clone,
-                    config,
-                    deadline,
-                    table_schema,
-                )
-                .await
-            }
-        });
-
-        // Wait for sync to complete or timeout
-        let sync_result = tokio::time::timeout(
-            Duration::from_secs((SYNC_TIMEOUT_SECS + 5) as u64),
-            sync_handle,
-        )
-        .await;
-
-        match sync_result {
-            Ok(Ok(Ok(()))) => tracing::info!("Sync for '{}' completed successfully", table_name),
-            Ok(Ok(Err(e))) => {
-                tracing::warn!("Sync for '{}' error (may be expected): {}", table_name, e)
-            }
-            Ok(Err(e)) => tracing::warn!("Sync for '{}' task error: {}", table_name, e),
-            Err(_) => tracing::info!("Sync for '{}' timeout (expected)", table_name),
-        }
-    }
-
     // === PHASE 3: VERIFY synced data matches expected values ===
-    tracing::info!(
-        "Verifying synced data ({} rows per table, seed={})",
-        ROW_COUNT,
-        SEED
-    );
+    // Both phases need to be version-aware, so we handle them inside match arms
 
-    for table_name in &table_names {
-        // Create verifier for Kafka.
-        // Schema-aware conversion in the Kafka source now handles:
-        // - JSON/Object fields: parsed from protobuf strings to native SurrealDB Objects
-        // - Missing array fields: explicitly added as empty arrays based on schema
-        let mut verifier =
-            StreamingVerifier::new(surreal.clone(), schema.clone(), SEED, table_name)?
-                // Skip updated_at - it uses timestamp_now generator which is non-deterministic
+    match &conn {
+        SurrealConnection::V2(client) => {
+            // Create SurrealDB v2 sink
+            let sink = Arc::new(surreal2_sink::Surreal2Sink::new(client.clone()));
+
+            tracing::info!("Running Kafka streaming sync to SurrealDB (v2)");
+
+            for (table_name, topic_name, proto_path) in &topic_info {
+                // Capitalize first letter for message type name (e.g., "users" -> "Users")
+                let message_type = capitalize(table_name);
+
+                tracing::info!(
+                    "Syncing table '{}' from topic '{}' (message type: {})",
+                    table_name,
+                    topic_name,
+                    message_type
+                );
+
+                let config = KafkaConfig {
+                    proto_path: proto_path.to_string_lossy().to_string(),
+                    brokers: vec![KAFKA_BROKER.to_string()],
+                    group_id: format!("loadtest-{table_name}-{test_id}"),
+                    topic: topic_name.clone(),
+                    message_type,
+                    buffer_size: 1000,
+                    session_timeout_ms: "6000".to_string(),
+                    num_consumers: 1,
+                    kafka_batch_size: BATCH_SIZE,
+                    table_name: Some(table_name.clone()),
+                    use_message_key_as_id: false,
+                    id_field: "id".to_string(),
+                    max_messages: None,
+                };
+
+                // Run sync with a deadline
+                let deadline = Utc::now() + chrono::Duration::seconds(SYNC_TIMEOUT_SECS);
+
+                // Get the table schema for schema-aware conversion
+                let table_schema = schema
+                    .get_table(table_name)
+                    .map(|t| t.to_table_definition());
+
+                let sync_handle = tokio::spawn({
+                    let sink_clone = sink.clone();
+                    async move {
+                        surreal_sync_kafka_source::run_incremental_sync(
+                            sink_clone,
+                            config,
+                            deadline,
+                            table_schema,
+                        )
+                        .await
+                    }
+                });
+
+                // Wait for sync to complete or timeout
+                let sync_result = tokio::time::timeout(
+                    Duration::from_secs((SYNC_TIMEOUT_SECS + 5) as u64),
+                    sync_handle,
+                )
+                .await;
+
+                match sync_result {
+                    Ok(Ok(Ok(()))) => {
+                        tracing::info!("Sync for '{}' completed successfully", table_name)
+                    }
+                    Ok(Ok(Err(e))) => {
+                        tracing::warn!("Sync for '{}' error (may be expected): {}", table_name, e)
+                    }
+                    Ok(Err(e)) => tracing::warn!("Sync for '{}' task error: {}", table_name, e),
+                    Err(_) => tracing::info!("Sync for '{}' timeout (expected)", table_name),
+                }
+            }
+
+            tracing::info!(
+                "Verifying synced data ({} rows per table, seed={})",
+                ROW_COUNT,
+                SEED
+            );
+
+            for table_name in &table_names {
+                let mut verifier = loadtest_verify_surreal2::StreamingVerifier::new(
+                    client.clone(),
+                    schema.clone(),
+                    SEED,
+                    table_name,
+                )?
                 .with_skip_fields(vec!["updated_at".to_string()]);
 
-        let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(ROW_COUNT).await?;
 
-        tracing::info!(
-            "Verified {}: {} matched, {} missing, {} mismatched",
-            table_name,
-            report.matched,
-            report.missing,
-            report.mismatched
-        );
+                tracing::info!(
+                    "Verified {}: {} matched, {} missing, {} mismatched",
+                    table_name,
+                    report.matched,
+                    report.missing,
+                    report.mismatched
+                );
 
-        // Debug: print mismatch details
-        if report.mismatched > 0 {
-            tracing::warn!("Mismatched rows for '{}':", table_name);
-            for mismatch in &report.mismatched_rows {
-                tracing::warn!(
-                    "  Row {}: {} - mismatches: {:?}",
-                    mismatch.index,
-                    mismatch.record_id,
-                    mismatch.field_mismatches
+                if report.mismatched > 0 {
+                    tracing::warn!("Mismatched rows for '{}':", table_name);
+                    for mismatch in &report.mismatched_rows {
+                        tracing::warn!(
+                            "  Row {}: {} - mismatches: {:?}",
+                            mismatch.index,
+                            mismatch.record_id,
+                            mismatch.field_mismatches
+                        );
+                    }
+                }
+
+                assert!(
+                    report.is_success(),
+                    "Verification failed for table '{}': {} missing, {} mismatched",
+                    table_name,
+                    report.missing,
+                    report.mismatched
+                );
+                assert_eq!(
+                    report.matched, ROW_COUNT,
+                    "Not all rows matched for table '{table_name}'"
                 );
             }
         }
+        SurrealConnection::V3(client) => {
+            // Create SurrealDB v3 sink
+            let sink = Arc::new(surreal3_sink::Surreal3Sink::new(client.clone()));
 
-        assert!(
-            report.is_success(),
-            "Verification failed for table '{}': {} missing, {} mismatched",
-            table_name,
-            report.missing,
-            report.mismatched
-        );
-        assert_eq!(
-            report.matched, ROW_COUNT,
-            "Not all rows matched for table '{table_name}'"
-        );
+            tracing::info!("Running Kafka streaming sync to SurrealDB (v3)");
+
+            for (table_name, topic_name, proto_path) in &topic_info {
+                // Capitalize first letter for message type name (e.g., "users" -> "Users")
+                let message_type = capitalize(table_name);
+
+                tracing::info!(
+                    "Syncing table '{}' from topic '{}' (message type: {})",
+                    table_name,
+                    topic_name,
+                    message_type
+                );
+
+                let config = KafkaConfig {
+                    proto_path: proto_path.to_string_lossy().to_string(),
+                    brokers: vec![KAFKA_BROKER.to_string()],
+                    group_id: format!("loadtest-{table_name}-{test_id}"),
+                    topic: topic_name.clone(),
+                    message_type,
+                    buffer_size: 1000,
+                    session_timeout_ms: "6000".to_string(),
+                    num_consumers: 1,
+                    kafka_batch_size: BATCH_SIZE,
+                    table_name: Some(table_name.clone()),
+                    use_message_key_as_id: false,
+                    id_field: "id".to_string(),
+                    max_messages: None,
+                };
+
+                // Run sync with a deadline
+                let deadline = Utc::now() + chrono::Duration::seconds(SYNC_TIMEOUT_SECS);
+
+                // Get the table schema for schema-aware conversion
+                let table_schema = schema
+                    .get_table(table_name)
+                    .map(|t| t.to_table_definition());
+
+                let sync_handle = tokio::spawn({
+                    let sink_clone = sink.clone();
+                    async move {
+                        surreal_sync_kafka_source::run_incremental_sync(
+                            sink_clone,
+                            config,
+                            deadline,
+                            table_schema,
+                        )
+                        .await
+                    }
+                });
+
+                // Wait for sync to complete or timeout
+                let sync_result = tokio::time::timeout(
+                    Duration::from_secs((SYNC_TIMEOUT_SECS + 5) as u64),
+                    sync_handle,
+                )
+                .await;
+
+                match sync_result {
+                    Ok(Ok(Ok(()))) => {
+                        tracing::info!("Sync for '{}' completed successfully", table_name)
+                    }
+                    Ok(Ok(Err(e))) => {
+                        tracing::warn!("Sync for '{}' error (may be expected): {}", table_name, e)
+                    }
+                    Ok(Err(e)) => tracing::warn!("Sync for '{}' task error: {}", table_name, e),
+                    Err(_) => tracing::info!("Sync for '{}' timeout (expected)", table_name),
+                }
+            }
+
+            tracing::info!(
+                "Verifying synced data ({} rows per table, seed={})",
+                ROW_COUNT,
+                SEED
+            );
+
+            for table_name in &table_names {
+                let mut verifier = loadtest_verify_surreal3::StreamingVerifier3::new(
+                    client.clone(),
+                    schema.clone(),
+                    SEED,
+                    table_name,
+                )?
+                .with_skip_fields(vec!["updated_at".to_string()]);
+
+                let report = verifier.verify_streaming(ROW_COUNT).await?;
+
+                tracing::info!(
+                    "Verified {}: {} matched, {} missing, {} mismatched",
+                    table_name,
+                    report.matched,
+                    report.missing,
+                    report.mismatched
+                );
+
+                if report.mismatched > 0 {
+                    tracing::warn!("Mismatched rows for '{}':", table_name);
+                    for mismatch in &report.mismatched_rows {
+                        tracing::warn!(
+                            "  Row {}: {} - mismatches: {:?}",
+                            mismatch.index,
+                            mismatch.record_id,
+                            mismatch.field_mismatches
+                        );
+                    }
+                }
+
+                assert!(
+                    report.is_success(),
+                    "Verification failed for table '{}': {} missing, {} mismatched",
+                    table_name,
+                    report.missing,
+                    report.mismatched
+                );
+                assert_eq!(
+                    report.matched, ROW_COUNT,
+                    "Not all rows matched for table '{table_name}'"
+                );
+            }
+        }
     }
 
     // === CLEANUP AFTER (no test artifacts remaining) ===
     tracing::info!("Cleaning up test data");
-    test_helpers::cleanup_surrealdb_test_data(&surreal, &table_names).await?;
+    match &conn {
+        SurrealConnection::V2(client) => {
+            surreal_sync::testing::test_helpers::cleanup_surrealdb_test_data(client, &table_names)
+                .await?;
+        }
+        SurrealConnection::V3(client) => {
+            surreal_sync::testing::surreal3::cleanup_surrealdb_test_data_v3(client, &table_names)
+                .await?;
+        }
+    }
 
     tracing::info!("Kafka loadtest completed successfully!");
     Ok(())

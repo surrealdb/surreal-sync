@@ -8,10 +8,9 @@
 //! 5. Clean up all test data
 
 use loadtest_populate_csv::CSVPopulator;
-use loadtest_verify_surreal2::StreamingVerifier;
-use surreal2_sink::Surreal2Sink;
 use surreal_sync::csv::{sync, Config, FileSource};
-use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
+use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
+use surreal_sync::testing::{generate_test_id, TestConfig};
 use sync_core::Schema;
 use tempfile::TempDir;
 
@@ -42,23 +41,22 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
     // Create temp directory for CSV files
     let temp_dir = TempDir::new()?;
 
-    // Connect to SurrealDB
+    // Connect to SurrealDB with auto-detection
     let surreal_config = TestConfig::new(test_id, "loadtest-csv");
-    let surreal = surrealdb2::engine::any::connect(&surreal_config.surreal_endpoint).await?;
-    surreal
-        .signin(surrealdb2::opt::auth::Root {
-            username: "root",
-            password: "root",
-        })
-        .await?;
-    surreal
-        .use_ns(&surreal_config.surreal_namespace)
-        .use_db(&surreal_config.surreal_database)
-        .await?;
+    let conn = connect_auto(&surreal_config).await?;
 
     // === CLEANUP BEFORE (ensure clean initial state) ===
     tracing::info!("Cleaning up SurrealDB tables: {:?}", table_names);
-    test_helpers::cleanup_surrealdb_test_data(&surreal, &table_names).await?;
+    match &conn {
+        SurrealConnection::V2(client) => {
+            surreal_sync::testing::test_helpers::cleanup_surrealdb_test_data(client, &table_names)
+                .await?;
+        }
+        SurrealConnection::V3(client) => {
+            surreal_sync::testing::surreal3::cleanup_surrealdb_test_data_v3(client, &table_names)
+                .await?;
+        }
+    }
 
     // === PHASE 1: GENERATE CSV files with deterministic test data ===
     tracing::info!(
@@ -87,10 +85,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
     // === PHASE 2: RUN SYNC from CSV files to SurrealDB ===
     tracing::info!("Running sync from CSV files to SurrealDB");
 
-    // Create the sink for writing to SurrealDB
-    let sink = Surreal2Sink::new(surreal.clone());
-
-    // Sync each CSV file to its corresponding table
+    // Sync each CSV file to its corresponding table using appropriate sink
     for (table_name, csv_path) in &csv_files {
         let config = Config {
             sources: vec![FileSource::Local(csv_path.clone())],
@@ -108,7 +103,16 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
             schema: Some(schema.clone()), // Pass schema for type-aware conversion
         };
 
-        sync(&sink, config).await?;
+        match &conn {
+            SurrealConnection::V2(client) => {
+                let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+                sync(&sink, config).await?;
+            }
+            SurrealConnection::V3(client) => {
+                let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+                sync(&sink, config).await?;
+            }
+        }
         tracing::info!("Synced {} to SurrealDB", table_name);
     }
 
@@ -122,47 +126,102 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
     );
 
     for table_name in &table_names {
-        let mut verifier =
-            StreamingVerifier::new(surreal.clone(), schema.clone(), SEED, table_name)?
+        match &conn {
+            SurrealConnection::V2(client) => {
+                let mut verifier = loadtest_verify_surreal2::StreamingVerifier::new(
+                    client.clone(),
+                    schema.clone(),
+                    SEED,
+                    table_name,
+                )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
                 .with_skip_fields(vec!["updated_at".to_string()]);
+                let report = verifier.verify_streaming(ROW_COUNT).await?;
 
-        let report = verifier.verify_streaming(ROW_COUNT).await?;
+                tracing::info!(
+                    "Verified {}: {} matched, {} missing, {} mismatched",
+                    table_name,
+                    report.matched,
+                    report.missing,
+                    report.mismatched
+                );
 
-        tracing::info!(
-            "Verified {}: {} matched, {} missing, {} mismatched",
-            table_name,
-            report.matched,
-            report.missing,
-            report.mismatched
-        );
+                for (i, mismatch) in report.mismatched_rows.iter().take(3).enumerate() {
+                    tracing::warn!(
+                        "Mismatch {}: record_id={}, field_mismatches={:?}",
+                        i,
+                        mismatch.record_id,
+                        mismatch.field_mismatches
+                    );
+                }
 
-        // Print first 3 mismatches for debugging
-        for (i, mismatch) in report.mismatched_rows.iter().take(3).enumerate() {
-            tracing::warn!(
-                "Mismatch {}: record_id={}, field_mismatches={:?}",
-                i,
-                mismatch.record_id,
-                mismatch.field_mismatches
-            );
+                assert!(
+                    report.is_success(),
+                    "Verification failed for table '{}': {} missing, {} mismatched",
+                    table_name,
+                    report.missing,
+                    report.mismatched
+                );
+                assert_eq!(
+                    report.matched, ROW_COUNT,
+                    "Not all rows matched for table '{table_name}'"
+                );
+            }
+            SurrealConnection::V3(client) => {
+                let mut verifier = loadtest_verify_surreal3::StreamingVerifier3::new(
+                    client.clone(),
+                    schema.clone(),
+                    SEED,
+                    table_name,
+                )?
+                // Skip updated_at - it uses timestamp_now generator which is non-deterministic
+                .with_skip_fields(vec!["updated_at".to_string()]);
+                let report = verifier.verify_streaming(ROW_COUNT).await?;
+
+                tracing::info!(
+                    "Verified {}: {} matched, {} missing, {} mismatched",
+                    table_name,
+                    report.matched,
+                    report.missing,
+                    report.mismatched
+                );
+
+                for (i, mismatch) in report.mismatched_rows.iter().take(3).enumerate() {
+                    tracing::warn!(
+                        "Mismatch {}: record_id={}, field_mismatches={:?}",
+                        i,
+                        mismatch.record_id,
+                        mismatch.field_mismatches
+                    );
+                }
+
+                assert!(
+                    report.is_success(),
+                    "Verification failed for table '{}': {} missing, {} mismatched",
+                    table_name,
+                    report.missing,
+                    report.mismatched
+                );
+                assert_eq!(
+                    report.matched, ROW_COUNT,
+                    "Not all rows matched for table '{table_name}'"
+                );
+            }
         }
-
-        assert!(
-            report.is_success(),
-            "Verification failed for table '{}': {} missing, {} mismatched",
-            table_name,
-            report.missing,
-            report.mismatched
-        );
-        assert_eq!(
-            report.matched, ROW_COUNT,
-            "Not all rows matched for table '{table_name}'"
-        );
     }
 
     // === CLEANUP AFTER (no test artifacts remaining) ===
     tracing::info!("Cleaning up test data");
-    test_helpers::cleanup_surrealdb_test_data(&surreal, &table_names).await?;
+    match &conn {
+        SurrealConnection::V2(client) => {
+            surreal_sync::testing::test_helpers::cleanup_surrealdb_test_data(client, &table_names)
+                .await?;
+        }
+        SurrealConnection::V3(client) => {
+            surreal_sync::testing::surreal3::cleanup_surrealdb_test_data_v3(client, &table_names)
+                .await?;
+        }
+    }
     // Temp directory is automatically cleaned up when TempDir is dropped
 
     tracing::info!("CSV loadtest completed successfully!");
@@ -211,27 +270,23 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
     // Test 3: Sync to SurrealDB and query directly
     let test_id = generate_test_id();
     let surreal_config = TestConfig::new(test_id, "debug-csv");
-    let surreal = surrealdb2::engine::any::connect(&surreal_config.surreal_endpoint).await?;
-    surreal
-        .signin(surrealdb2::opt::auth::Root {
-            username: "root",
-            password: "root",
-        })
-        .await?;
-    surreal
-        .use_ns(&surreal_config.surreal_namespace)
-        .use_db(&surreal_config.surreal_database)
-        .await?;
+    let conn = connect_auto(&surreal_config).await?;
 
-    test_helpers::cleanup_surrealdb_test_data(&surreal, &["users"]).await?;
+    match &conn {
+        SurrealConnection::V2(client) => {
+            surreal_sync::testing::test_helpers::cleanup_surrealdb_test_data(client, &["users"])
+                .await?;
+        }
+        SurrealConnection::V3(client) => {
+            surreal_sync::testing::surreal3::cleanup_surrealdb_test_data_v3(client, &["users"])
+                .await?;
+        }
+    }
 
     // Create a new CSV populator with the same seed (generator state was consumed)
     let mut populator2 = CSVPopulator::new(schema.clone(), SEED);
     let csv_path2 = temp_dir.path().join("users2.csv");
     populator2.populate("users", &csv_path2, 3)?;
-
-    // Create the sink for writing to SurrealDB
-    let sink = Surreal2Sink::new(surreal.clone());
 
     let config = Config {
         sources: vec![FileSource::Local(csv_path2.clone())],
@@ -249,34 +304,78 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
         schema: Some(schema.clone()), // Pass schema for type-aware conversion
     };
 
-    sync(&sink, config).await?;
+    match &conn {
+        SurrealConnection::V2(client) => {
+            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            sync(&sink, config).await?;
 
-    // Query the record directly using proper type extraction
-    println!("\n=== SURREALDB FIELD EXTRACTION ===");
-    let thing = surrealdb2::sql::Thing::from(("users", surrealdb2::sql::Id::Number(1)));
-    let mut response = surreal
-        .query("SELECT * FROM $record_id")
-        .bind(("record_id", thing))
-        .await?;
+            // Query the record directly using proper type extraction
+            println!("\n=== SURREALDB FIELD EXTRACTION ===");
+            let thing = surrealdb2::sql::Thing::from(("users", surrealdb2::sql::Id::Number(1)));
+            let mut response = client
+                .query("SELECT * FROM $record_id")
+                .bind(("record_id", thing))
+                .await?;
 
-    // Extract specific fields with proper types
-    let age: Option<i64> = response.take((0, "age"))?;
-    println!("age as i64: {age:?}");
-    assert_eq!(age, Some(51), "Age should be 51 for user 1");
+            // Extract specific fields with proper types
+            let age: Option<i64> = response.take((0, "age"))?;
+            println!("age as i64: {age:?}");
+            assert_eq!(age, Some(51), "Age should be 51 for user 1");
 
-    let mut response2 = surreal
-        .query("SELECT * FROM $record_id")
-        .bind((
-            "record_id",
-            surrealdb2::sql::Thing::from(("users", surrealdb2::sql::Id::Number(1))),
-        ))
-        .await?;
-    let email: Option<String> = response2.take((0, "email"))?;
-    println!("email: {email:?}");
-    assert_eq!(email, Some("user_0@test.com".to_string()));
+            let mut response2 = client
+                .query("SELECT * FROM $record_id")
+                .bind((
+                    "record_id",
+                    surrealdb2::sql::Thing::from(("users", surrealdb2::sql::Id::Number(1))),
+                ))
+                .await?;
+            let email: Option<String> = response2.take((0, "email"))?;
+            println!("email: {email:?}");
+            assert_eq!(email, Some("user_0@test.com".to_string()));
 
-    // Cleanup
-    test_helpers::cleanup_surrealdb_test_data(&surreal, &["users"]).await?;
+            // Cleanup
+            surreal_sync::testing::test_helpers::cleanup_surrealdb_test_data(client, &["users"])
+                .await?;
+        }
+        SurrealConnection::V3(client) => {
+            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            sync(&sink, config).await?;
+
+            // Query the record directly using proper type extraction
+            println!("\n=== SURREALDB FIELD EXTRACTION ===");
+            let thing = surrealdb3::types::RecordId::new(
+                "users",
+                surrealdb3::types::RecordIdKey::Number(1),
+            );
+            let mut response = client
+                .query("SELECT * FROM $record_id")
+                .bind(("record_id", thing))
+                .await?;
+
+            // Extract specific fields with proper types
+            let age: Option<i64> = response.take((0, "age"))?;
+            println!("age as i64: {age:?}");
+            assert_eq!(age, Some(51), "Age should be 51 for user 1");
+
+            let mut response2 = client
+                .query("SELECT * FROM $record_id")
+                .bind((
+                    "record_id",
+                    surrealdb3::types::RecordId::new(
+                        "users",
+                        surrealdb3::types::RecordIdKey::Number(1),
+                    ),
+                ))
+                .await?;
+            let email: Option<String> = response2.take((0, "email"))?;
+            println!("email: {email:?}");
+            assert_eq!(email, Some("user_0@test.com".to_string()));
+
+            // Cleanup
+            surreal_sync::testing::surreal3::cleanup_surrealdb_test_data_v3(client, &["users"])
+                .await?;
+        }
+    }
 
     Ok(())
 }
