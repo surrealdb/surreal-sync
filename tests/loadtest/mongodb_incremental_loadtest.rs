@@ -50,9 +50,9 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
 
     // Connect to SurrealDB
     let surreal_config = TestConfig::new(test_id, "loadtest-mongo-incr");
-    let surreal = surrealdb::engine::any::connect(&surreal_config.surreal_endpoint).await?;
+    let surreal = surrealdb2::engine::any::connect(&surreal_config.surreal_endpoint).await?;
     surreal
-        .signin(surrealdb::opt::auth::Root {
+        .signin(surrealdb2::opt::auth::Root {
             username: "root",
             password: "root",
         })

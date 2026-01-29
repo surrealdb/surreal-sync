@@ -1,0 +1,24 @@
+[package]
+name = "surrealdb-multi-sdk-demo"
+version = "0.1.0"
+edition = "2021"
+description = "Demo crate to verify both SurrealDB SDK v2 and v3 can coexist using Cargo aliasing"
+license = "MIT"
+publish = false
+
+[dependencies]
+# SurrealDB SDK v2 (aliased as surrealdb2)
+surrealdb2 = { version = "2.3.7", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
+
+# SurrealDB SDK v3 (aliased as surrealdb3)
+surrealdb3 = { version = "3.0.0-beta.2", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
+
+# Common dependencies
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[dev-dependencies]
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

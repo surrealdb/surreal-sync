@@ -44,9 +44,9 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
 
     // Connect to SurrealDB
     let surreal_config = TestConfig::new(test_id, "loadtest-csv");
-    let surreal = surrealdb::engine::any::connect(&surreal_config.surreal_endpoint).await?;
+    let surreal = surrealdb2::engine::any::connect(&surreal_config.surreal_endpoint).await?;
     surreal
-        .signin(surrealdb::opt::auth::Root {
+        .signin(surrealdb2::opt::auth::Root {
             username: "root",
             password: "root",
         })
@@ -211,9 +211,9 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
     // Test 3: Sync to SurrealDB and query directly
     let test_id = generate_test_id();
     let surreal_config = TestConfig::new(test_id, "debug-csv");
-    let surreal = surrealdb::engine::any::connect(&surreal_config.surreal_endpoint).await?;
+    let surreal = surrealdb2::engine::any::connect(&surreal_config.surreal_endpoint).await?;
     surreal
-        .signin(surrealdb::opt::auth::Root {
+        .signin(surrealdb2::opt::auth::Root {
             username: "root",
             password: "root",
         })
@@ -253,7 +253,7 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
 
     // Query the record directly using proper type extraction
     println!("\n=== SURREALDB FIELD EXTRACTION ===");
-    let thing = surrealdb::sql::Thing::from(("users", surrealdb::sql::Id::Number(1)));
+    let thing = surrealdb2::sql::Thing::from(("users", surrealdb2::sql::Id::Number(1)));
     let mut response = surreal
         .query("SELECT * FROM $record_id")
         .bind(("record_id", thing))
@@ -268,7 +268,7 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
         .query("SELECT * FROM $record_id")
         .bind((
             "record_id",
-            surrealdb::sql::Thing::from(("users", surrealdb::sql::Id::Number(1))),
+            surrealdb2::sql::Thing::from(("users", surrealdb2::sql::Id::Number(1))),
         ))
         .await?;
     let email: Option<String> = response2.take((0, "email"))?;

@@ -20,6 +20,7 @@ pub mod relations;
 pub mod schema;
 pub mod schemas_for_tests;
 pub mod surrealdb;
+pub mod surrealdb_v3;
 pub mod table;
 pub mod test_helpers;
 pub mod users;

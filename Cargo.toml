@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kafka-source", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql", "crates/postgresql-wal2json-source", "crates/postgresql-trigger-source", "crates/csv-source", "crates/jsonl-source", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/loadtest-populate", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surreal2-types", "crates/surreal3-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify", "crates/surreal-sink", "crates/surreal2-sink", "crates/surreal3-sink", "crates/surreal-client", "crates/surreal2-client", "crates/surreal3-client", "crates/surreal-version", "crates/mongodb-changestream-source", "crates/neo4j-source", "crates/checkpoint", "crates/checkpoint-surreal3", "crates/mysql-trigger-source", "crates/loadtest-distributed"]
+members = ["crates/kafka-source", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql", "crates/postgresql-wal2json-source", "crates/postgresql-trigger-source", "crates/csv-source", "crates/jsonl-source", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/loadtest-populate", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surreal2-types", "crates/surreal3-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify", "crates/surreal-sink", "crates/surreal2-sink", "crates/surreal3-sink", "crates/surreal-client", "crates/surreal2-client", "crates/surreal3-client", "crates/surreal-version", "crates/mongodb-changestream-source", "crates/neo4j-source", "crates/checkpoint", "crates/checkpoint-surreal3", "crates/mysql-trigger-source", "crates/loadtest-distributed", "crates/surrealdb-multi-sdk-demo"]
 resolver = "2"
 
 [package]
@@ -27,7 +27,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Database clients
-surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+# SurrealDB SDK v2 (aliased for coexistence with v3)
+surrealdb2 = { version = "2.3.7", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
+# SurrealDB SDK v3 (aliased for coexistence with v2)
+surrealdb3 = { version = "3.0.0-beta.2", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
 mongodb = "3.2.4"
 bson = { version = "2.15.0", features = ["chrono-0_4"] }
 chrono = "0.4.41"
