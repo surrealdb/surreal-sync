@@ -22,10 +22,9 @@
 use chrono::Utc;
 use loadtest_populate_kafka::KafkaPopulator;
 use loadtest_verify::StreamingVerifier;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
-use surreal_sync::SurrealOpts;
-use surreal_sync_kafka_source::{Config as KafkaConfig, SurrealOpts as KafkaSurrealOpts};
+use surreal_sync_kafka_source::Config as KafkaConfig;
 use sync_core::Schema;
 use tokio::time::sleep;
 
@@ -89,13 +88,8 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     // 3. Prepare table (generates .proto file)
     // 4. Create topic and populate with messages
 
-    let surreal_opts = SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
-        batch_size: BATCH_SIZE,
-        dry_run: false,
-    };
+    // Create SurrealDB v2 sink
+    let sink = Arc::new(surreal2_sink::Surreal2Sink::new(surreal.clone()));
 
     // Store topic info for sync phase
     // Note: We keep the populators alive because their TempDir holds the .proto files
@@ -190,22 +184,12 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             .get_table(table_name)
             .map(|t| t.to_table_definition());
 
-        // Convert CLI SurrealOpts to Kafka-specific SurrealOpts
-        let kafka_opts = KafkaSurrealOpts {
-            surreal_endpoint: surreal_opts.surreal_endpoint.clone(),
-            surreal_username: surreal_opts.surreal_username.clone(),
-            surreal_password: surreal_opts.surreal_password.clone(),
-        };
-
         let sync_handle = tokio::spawn({
-            let namespace = surreal_config.surreal_namespace.clone();
-            let database = surreal_config.surreal_database.clone();
+            let sink_clone = sink.clone();
             async move {
                 surreal_sync_kafka_source::run_incremental_sync(
+                    sink_clone,
                     config,
-                    namespace,
-                    database,
-                    kafka_opts,
                     deadline,
                     table_schema,
                 )

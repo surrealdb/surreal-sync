@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalRelation, UniversalRow, UniversalThingRef, UniversalValue};
 
-use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
+use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 
 /// Source database connection options (Neo4j-specific, library type without clap)
 #[derive(Clone, Debug)]
@@ -89,11 +89,17 @@ impl Neo4jConversionContext {
 }
 
 /// Enhanced version that supports checkpoint emission for incremental sync coordination
-pub async fn run_full_sync<S: SurrealSink>(
+///
+/// # Arguments
+/// * `surreal` - SurrealDB sink for writing data
+/// * `from_opts` - Source database options
+/// * `sync_opts` - Sync configuration options
+/// * `sync_manager` - Optional sync manager for checkpoint emission
+pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     surreal: &S,
     from_opts: SourceOpts,
     sync_opts: SyncOpts,
-    sync_config: Option<SyncConfig>,
+    sync_manager: Option<&SyncManager<CS>>,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting Neo4j migration");
     tracing::debug!(
@@ -127,15 +133,13 @@ pub async fn run_full_sync<S: SurrealSink>(
     tracing::debug!("Neo4j connection established");
 
     // Emit checkpoint t1 (before full sync starts) if configured
-    let _checkpoint_t1 = if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone(), None);
-
+    let _checkpoint_t1 = if let Some(manager) = sync_manager {
         // Use timestamp-based checkpoint tracking
         tracing::info!("Using timestamp-based checkpoint tracking");
         let checkpoint = crate::neo4j_checkpoint::get_current_checkpoint();
 
         // Emit the checkpoint
-        sync_manager
+        manager
             .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
             .await?;
 
@@ -165,14 +169,12 @@ pub async fn run_full_sync<S: SurrealSink>(
     total_migrated += migrate_neo4j_relationships(&graph, surreal, &sync_opts, &ctx).await?;
 
     // Emit checkpoint t2 (after full sync completes) if configured
-    if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone(), None);
-
+    if let Some(manager) = sync_manager {
         // Use timestamp-based checkpoint tracking
         let checkpoint = crate::neo4j_checkpoint::get_current_checkpoint();
 
         // Emit the checkpoint
-        sync_manager
+        manager
             .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
             .await?;
 

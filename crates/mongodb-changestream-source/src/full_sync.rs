@@ -2,7 +2,7 @@
 //!
 //! This module provides full synchronization from MongoDB to SurrealDB.
 
-use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
+use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -47,15 +47,21 @@ pub async fn migrate_from_mongodb<S: SurrealSink>(
     from_opts: SourceOpts,
     sync_opts: SyncOpts,
 ) -> anyhow::Result<()> {
-    run_full_sync(surreal, from_opts, sync_opts, None).await
+    run_full_sync::<S, checkpoint::NullStore>(surreal, from_opts, sync_opts, None).await
 }
 
 /// Enhanced version that supports checkpoint emission for incremental sync coordination
-pub async fn run_full_sync<S: SurrealSink>(
+///
+/// # Arguments
+/// * `surreal` - SurrealDB sink for writing data
+/// * `from_opts` - Source database options
+/// * `sync_opts` - Sync configuration options
+/// * `sync_manager` - Optional sync manager for checkpoint emission
+pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     surreal: &S,
     from_opts: SourceOpts,
     sync_opts: SyncOpts,
-    sync_config: Option<SyncConfig>,
+    sync_manager: Option<&SyncManager<CS>>,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting MongoDB migration");
     tracing::debug!(
@@ -96,9 +102,7 @@ pub async fn run_full_sync<S: SurrealSink>(
     let mongo_db = mongo_client.database(&source_db_name);
 
     // Emit checkpoint t1 (before full sync starts) if configured
-    let _checkpoint_t1 = if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone(), None);
-
+    let _checkpoint_t1 = if let Some(manager) = sync_manager {
         // Get current resume token from MongoDB before creating source
         let initial_resume_token =
             crate::checkpoint::get_resume_token(&mongo_client, &source_db_name).await?;
@@ -113,7 +117,7 @@ pub async fn run_full_sync<S: SurrealSink>(
         let checkpoint = source.get_checkpoint().await?;
 
         // Emit the checkpoint
-        sync_manager
+        manager
             .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
             .await?;
 
@@ -254,9 +258,7 @@ pub async fn run_full_sync<S: SurrealSink>(
     }
 
     // Emit checkpoint t2 (after full sync completes) if configured
-    if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone(), None);
-
+    if let Some(manager) = sync_manager {
         // Get current checkpoint after migration
         let database_name = from_opts
             .source_database
@@ -274,7 +276,7 @@ pub async fn run_full_sync<S: SurrealSink>(
         let checkpoint = source.get_checkpoint().await?;
 
         // Emit the checkpoint
-        sync_manager
+        manager
             .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
             .await?;
 

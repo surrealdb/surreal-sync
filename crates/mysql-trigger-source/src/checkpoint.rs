@@ -74,7 +74,7 @@ pub async fn get_current_checkpoint(conn: &mut mysql_async::Conn) -> Result<MySQ
 #[cfg(test)]
 mod tests {
     use super::*;
-    use checkpoint::{Checkpoint, CheckpointFile, SyncConfig, SyncManager, SyncPhase};
+    use checkpoint::{Checkpoint, CheckpointFile, FilesystemStore, SyncManager, SyncPhase};
     use tempfile::TempDir;
 
     #[test]
@@ -116,15 +116,9 @@ mod tests {
     #[tokio::test]
     async fn test_mysql_checkpoint_save_load_roundtrip() {
         let tmp = TempDir::new().unwrap();
-        let config = SyncConfig {
-            emit_checkpoints: true,
-            checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
-                dir: tmp.path().to_string_lossy().to_string(),
-            },
-            incremental: false,
-        };
+        let store = FilesystemStore::new(tmp.path());
+        let manager = SyncManager::new(store);
 
-        let manager = SyncManager::new(config, None);
         let original = MySQLCheckpoint {
             sequence_id: 42,
             timestamp: Utc::now(),

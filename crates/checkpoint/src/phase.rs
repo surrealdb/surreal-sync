@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 /// - Resumable synchronization (start from last known position)
 /// - Incremental sync coordination (use t1/t2 checkpoints)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SyncPhase {
     /// Checkpoint emitted before full sync begins (t1).
     ///

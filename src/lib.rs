@@ -71,69 +71,6 @@ pub struct SurrealOpts {
     pub dry_run: bool,
 }
 
-// CLI type → MongoDB library type conversions
-impl From<&SurrealOpts> for surreal_sync_mongodb_changestream_source::SurrealOpts {
-    fn from(opts: &SurrealOpts) -> Self {
-        Self {
-            surreal_endpoint: opts.surreal_endpoint.clone(),
-            surreal_username: opts.surreal_username.clone(),
-            surreal_password: opts.surreal_password.clone(),
-            batch_size: opts.batch_size,
-            dry_run: opts.dry_run,
-        }
-    }
-}
-
-// CLI type → Neo4j library type conversions
-impl From<&SurrealOpts> for surreal_sync_neo4j_source::SurrealOpts {
-    fn from(opts: &SurrealOpts) -> Self {
-        Self {
-            surreal_endpoint: opts.surreal_endpoint.clone(),
-            surreal_username: opts.surreal_username.clone(),
-            surreal_password: opts.surreal_password.clone(),
-            batch_size: opts.batch_size,
-            dry_run: opts.dry_run,
-        }
-    }
-}
-
-// CLI type → MySQL trigger library type conversions
-impl From<&SurrealOpts> for surreal_sync_mysql_trigger_source::SurrealOpts {
-    fn from(opts: &SurrealOpts) -> Self {
-        Self {
-            surreal_endpoint: opts.surreal_endpoint.clone(),
-            surreal_username: opts.surreal_username.clone(),
-            surreal_password: opts.surreal_password.clone(),
-            batch_size: opts.batch_size,
-            dry_run: opts.dry_run,
-        }
-    }
-}
-
-// CLI type → PostgreSQL shared library type conversions (used by trigger and logical-replication)
-impl From<&SurrealOpts> for surreal_sync_postgresql::SurrealOpts {
-    fn from(opts: &SurrealOpts) -> Self {
-        Self {
-            surreal_endpoint: opts.surreal_endpoint.clone(),
-            surreal_username: opts.surreal_username.clone(),
-            surreal_password: opts.surreal_password.clone(),
-            batch_size: opts.batch_size,
-            dry_run: opts.dry_run,
-        }
-    }
-}
-
-// CLI type → Kafka library type conversions
-impl From<&SurrealOpts> for surreal_sync_kafka_source::SurrealOpts {
-    fn from(opts: &SurrealOpts) -> Self {
-        Self {
-            surreal_endpoint: opts.surreal_endpoint.clone(),
-            surreal_username: opts.surreal_username.clone(),
-            surreal_password: opts.surreal_password.clone(),
-        }
-    }
-}
-
 // CLI type → PostgreSQL logical replication library type conversions
 impl From<&SurrealOpts> for surreal_sync_postgresql_wal2json_source::sync::SurrealOpts {
     fn from(opts: &SurrealOpts) -> Self {

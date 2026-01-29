@@ -1,15 +1,14 @@
-//! SurrealDB checkpoint storage backend
+//! SurrealDB checkpoint storage trait and types
 //!
-//! This module provides checkpoint storage in SurrealDB for better Kubernetes compatibility.
-//! Unlike filesystem storage, SurrealDB storage doesn't require shared volumes or PV/PVC.
+//! This module defines the CheckpointStore trait for version-agnostic
+//! checkpoint storage operations, plus shared types.
 
 use anyhow::Result;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use surrealdb::engine::any::Any;
-use surrealdb::sql::{Id, Thing};
 
-/// Checkpoint identifier for SurrealDB storage
+/// Checkpoint identifier for storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointID {
     /// Database type (e.g., "postgresql-wal2json", "mysql", "mongodb")
@@ -18,17 +17,7 @@ pub struct CheckpointID {
     pub phase: String,
 }
 
-impl CheckpointID {
-    /// Convert to SurrealDB Thing (record ID)
-    ///
-    /// Creates a record ID in the format: `{table_name}:postgresql_wal2json_full_sync_start`
-    pub fn to_thing(&self, table_name: &str) -> Thing {
-        let id_str = format!("{}_{}", self.database_type.replace('-', "_"), self.phase);
-        Thing::from((table_name, Id::String(id_str)))
-    }
-}
-
-/// Checkpoint data stored in SurrealDB
+/// Checkpoint data stored in backend
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredCheckpoint {
     /// Serialized checkpoint (e.g., LSN for PostgreSQL, resume token for MongoDB)
@@ -41,97 +30,20 @@ pub struct StoredCheckpoint {
     pub created_at: DateTime<Utc>,
 }
 
-/// Store for managing checkpoints in SurrealDB
-pub struct CheckpointStore {
-    client: surrealdb::Surreal<Any>,
-    table_name: String,
-}
+/// Trait for checkpoint storage operations.
+///
+/// This trait abstracts the storage backend for checkpoint operations,
+/// allowing the same checkpoint logic to work with:
+/// - Filesystem storage (`FilesystemStore`)
+/// - SurrealDB v2 (`Surreal2Store`)
+/// - SurrealDB v3 (`Surreal3Store` in checkpoint-surreal3 crate)
+#[async_trait]
+pub trait CheckpointStore: Send + Sync {
+    /// Store a checkpoint in the storage backend.
+    async fn store_checkpoint(&self, id: &CheckpointID, checkpoint_data: String) -> Result<()>;
 
-impl CheckpointStore {
-    /// Create a new checkpoint store
-    ///
-    /// # Arguments
-    /// * `client` - SurrealDB client (already connected to target namespace/database)
-    /// * `table_name` - Table name for storing checkpoints (e.g., "surreal_sync_checkpoints")
-    pub fn new(client: surrealdb::Surreal<Any>, table_name: String) -> Self {
-        Self { client, table_name }
-    }
-
-    /// Store a checkpoint in SurrealDB
-    ///
-    /// Uses UPSERT to create or replace the checkpoint record.
-    pub async fn store_checkpoint(&self, id: &CheckpointID, checkpoint_data: String) -> Result<()> {
-        let thing = id.to_thing(&self.table_name);
-        let stored = StoredCheckpoint {
-            checkpoint_data,
-            database_type: id.database_type.clone(),
-            phase: id.phase.clone(),
-            created_at: Utc::now(),
-        };
-
-        self.client
-            .query("UPSERT $record_id CONTENT $content")
-            .bind(("record_id", thing))
-            .bind(("content", stored))
-            .await?;
-
-        Ok(())
-    }
-
-    /// Read a checkpoint from SurrealDB
+    /// Read a checkpoint from the storage backend.
     ///
     /// Returns None if the checkpoint doesn't exist.
-    pub async fn read_checkpoint(&self, id: &CheckpointID) -> Result<Option<StoredCheckpoint>> {
-        let thing = id.to_thing(&self.table_name);
-
-        let mut response = self
-            .client
-            .query("SELECT * FROM $record_id")
-            .bind(("record_id", thing))
-            .await?;
-
-        let checkpoints: Vec<StoredCheckpoint> = response.take(0)?;
-
-        Ok(checkpoints.into_iter().next())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_checkpoint_id_to_thing() {
-        let id = CheckpointID {
-            database_type: "postgresql-wal2json".to_string(),
-            phase: "full_sync_start".to_string(),
-        };
-
-        let thing = id.to_thing("surreal_sync_checkpoints");
-
-        assert_eq!(thing.tb, "surreal_sync_checkpoints");
-        match &thing.id {
-            Id::String(s) => {
-                assert_eq!(s, "postgresql_wal2json_full_sync_start");
-            }
-            _ => panic!("Expected String ID"),
-        }
-    }
-
-    #[test]
-    fn test_checkpoint_id_to_thing_replaces_hyphens() {
-        let id = CheckpointID {
-            database_type: "my-custom-source".to_string(),
-            phase: "test_phase".to_string(),
-        };
-
-        let thing = id.to_thing("checkpoints");
-
-        match &thing.id {
-            Id::String(s) => {
-                assert_eq!(s, "my_custom_source_test_phase");
-            }
-            _ => panic!("Expected String ID"),
-        }
-    }
+    async fn read_checkpoint(&self, id: &CheckpointID) -> Result<Option<StoredCheckpoint>>;
 }

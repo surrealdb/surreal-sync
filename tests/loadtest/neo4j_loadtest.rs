@@ -10,7 +10,6 @@
 use loadtest_populate_neo4j::Neo4jPopulator;
 use loadtest_verify::StreamingVerifier;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
-use surreal_sync::SurrealOpts;
 use sync_core::Schema;
 
 const SEED: u64 = 42;
@@ -117,19 +116,18 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         neo4j_json_properties: Some(vec!["products.metadata".to_string()]),
     };
 
-    let surreal_opts = SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
+    let sync_opts = surreal_sync_neo4j_source::SyncOpts {
         batch_size: BATCH_SIZE,
         dry_run: false,
     };
 
-    surreal_sync_neo4j_source::run_full_sync(
+    // Create SurrealDB v2 sink
+    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
+
+    surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+        &sink,
         source_opts,
-        surreal_config.surreal_namespace.clone(),
-        surreal_config.surreal_database.clone(),
-        surreal_sync_neo4j_source::SurrealOpts::from(&surreal_opts),
+        sync_opts,
         None,
     )
     .await?;

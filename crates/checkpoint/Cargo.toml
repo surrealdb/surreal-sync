@@ -17,6 +17,9 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
 tracing = "0.1"
 
+# Async
+async-trait = "0.1"
+
 # SurrealDB for checkpoint storage
 surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
 

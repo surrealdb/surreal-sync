@@ -6,7 +6,6 @@
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
-use surreal_sync::SurrealOpts;
 
 #[tokio::test]
 async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -54,20 +53,19 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
         ]),
     };
 
-    let surreal_opts = SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
+    let sync_opts = surreal_sync_neo4j_source::SyncOpts {
         batch_size: 1000,
         dry_run: false,
     };
 
+    // Create SurrealDB v2 sink
+    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
+
     // Execute full sync from Neo4j to SurrealDB
-    surreal_sync_neo4j_source::run_full_sync(
+    surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+        &sink,
         source_opts,
-        surreal_config.surreal_namespace.clone(),
-        surreal_config.surreal_database.clone(),
-        surreal_sync_neo4j_source::SurrealOpts::from(&surreal_opts),
+        sync_opts,
         None,
     )
     .await?;

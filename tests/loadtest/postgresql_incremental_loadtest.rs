@@ -12,7 +12,6 @@
 use loadtest_populate_postgresql::PostgreSQLPopulator;
 use loadtest_verify::StreamingVerifier;
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
-use surreal_sync::SurrealOpts;
 use sync_core::Schema;
 use tokio_postgres::NoTls;
 
@@ -101,29 +100,23 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
         source_database: Some("public".to_string()), // PostgreSQL schema
     };
 
-    let surreal_opts = SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
+    let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: BATCH_SIZE,
         dry_run: false,
     };
 
-    // Create sync config for checkpoint emission
-    let sync_config = checkpoint::SyncConfig {
-        incremental: false, // This is full sync to set up infrastructure
-        emit_checkpoints: true,
-        checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
-            dir: CHECKPOINT_DIR.to_string(),
-        },
-    };
+    // Create SurrealDB v2 sink
+    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
+
+    // Create sync manager with filesystem checkpoint store
+    let checkpoint_store = checkpoint::FilesystemStore::new(CHECKPOINT_DIR);
+    let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
 
     surreal_sync_postgresql_trigger_source::run_full_sync(
+        &sink,
         source_opts.clone(),
-        surreal_config.surreal_namespace.clone(),
-        surreal_config.surreal_database.clone(),
-        surreal_sync_postgresql::SurrealOpts::from(&surreal_opts),
-        Some(sync_config),
+        sync_opts,
+        Some(&sync_manager),
     )
     .await?;
 
@@ -173,10 +166,8 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
     );
 
     surreal_sync_postgresql_trigger_source::run_incremental_sync(
+        &sink,
         source_opts,
-        surreal_config.surreal_namespace.clone(),
-        surreal_config.surreal_database.clone(),
-        surreal_sync_postgresql::SurrealOpts::from(&surreal_opts),
         sync_checkpoint,
         chrono::Utc::now() + chrono::Duration::hours(1), // 1 hour deadline
         None, // No target checkpoint - sync all available changes

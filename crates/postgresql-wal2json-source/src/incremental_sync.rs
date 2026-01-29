@@ -5,7 +5,7 @@
 
 use crate::checkpoint::PostgreSQLLogicalCheckpoint;
 use anyhow::Result;
-use checkpoint::{CheckpointID, CheckpointStore};
+use checkpoint::{CheckpointID, CheckpointStore, Surreal2Store};
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalChange, UniversalChangeOp};
 use tokio_postgres::NoTls;
@@ -16,11 +16,12 @@ use crate::full_sync::SourceOpts;
 /// Read t1 checkpoint from SurrealDB
 ///
 /// Reads the full_sync_start checkpoint from the specified table.
+#[allow(dead_code)]
 pub async fn read_t1_checkpoint_from_surrealdb(
     surreal: &surrealdb::Surreal<surrealdb::engine::any::Any>,
     table_name: &str,
 ) -> Result<PostgreSQLLogicalCheckpoint> {
-    let store = CheckpointStore::new(surreal.clone(), table_name.to_string());
+    let store = Surreal2Store::new(surreal.clone(), table_name.to_string());
 
     let id = CheckpointID {
         database_type: "postgresql-wal2json".to_string(),

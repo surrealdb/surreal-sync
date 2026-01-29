@@ -1,6 +1,7 @@
 //! Tests for column names feature when has_headers is false
 
 use std::io::Write;
+use surreal2_sink::Surreal2Sink;
 use surreal_sync_csv_source::{sync, Config};
 use tempfile::NamedTempFile;
 
@@ -52,6 +53,7 @@ async fn test_csv_with_custom_column_names() {
     let surreal = setup_surrealdb(namespace, database).await.unwrap();
     cleanup_namespace(&surreal, namespace).await.unwrap();
     let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let sink = Surreal2Sink::new(surreal.clone());
 
     let config = Config {
         sources: vec![],
@@ -60,13 +62,6 @@ async fn test_csv_with_custom_column_names() {
         http_uris: vec![],
         table: table.to_string(),
         batch_size: 100,
-        namespace: namespace.to_string(),
-        database: database.to_string(),
-        surreal_opts: surreal2_sink::SurrealOpts {
-            surreal_endpoint: "ws://surrealdb:8000".to_string(),
-            surreal_username: "root".to_string(),
-            surreal_password: "root".to_string(),
-        },
         has_headers: false,
         delimiter: b',',
         id_field: Some("user_id".to_string()),
@@ -81,7 +76,7 @@ async fn test_csv_with_custom_column_names() {
         schema: None,
     };
 
-    let result = sync(config).await;
+    let result = sync(&sink, config).await;
     assert!(result.is_ok(), "CSV import should succeed: {result:?}");
 
     // Verify data
@@ -126,6 +121,7 @@ async fn test_csv_column_count_mismatch_error() {
     // Setup and cleanup
     let surreal = setup_surrealdb(namespace, database).await.unwrap();
     cleanup_namespace(&surreal, namespace).await.unwrap();
+    let sink = Surreal2Sink::new(surreal.clone());
 
     let config = Config {
         sources: vec![],
@@ -134,13 +130,6 @@ async fn test_csv_column_count_mismatch_error() {
         http_uris: vec![],
         table: table.to_string(),
         batch_size: 100,
-        namespace: namespace.to_string(),
-        database: database.to_string(),
-        surreal_opts: surreal2_sink::SurrealOpts {
-            surreal_endpoint: "ws://surrealdb:8000".to_string(),
-            surreal_username: "root".to_string(),
-            surreal_password: "root".to_string(),
-        },
         has_headers: false,
         delimiter: b',',
         id_field: Some("user_id".to_string()),
@@ -156,7 +145,7 @@ async fn test_csv_column_count_mismatch_error() {
         schema: None,
     };
 
-    let result = sync(config).await;
+    let result = sync(&sink, config).await;
     assert!(result.is_err(), "Should fail with column count mismatch");
 
     let error_msg = format!("{:?}", result.unwrap_err());
@@ -188,6 +177,7 @@ async fn test_csv_without_headers_auto_generated_names() {
     let surreal = setup_surrealdb(namespace, database).await.unwrap();
     cleanup_namespace(&surreal, namespace).await.unwrap();
     let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let sink = Surreal2Sink::new(surreal.clone());
 
     let config = Config {
         sources: vec![],
@@ -196,13 +186,6 @@ async fn test_csv_without_headers_auto_generated_names() {
         http_uris: vec![],
         table: table.to_string(),
         batch_size: 100,
-        namespace: namespace.to_string(),
-        database: database.to_string(),
-        surreal_opts: surreal2_sink::SurrealOpts {
-            surreal_endpoint: "ws://surrealdb:8000".to_string(),
-            surreal_username: "root".to_string(),
-            surreal_password: "root".to_string(),
-        },
         has_headers: false,
         delimiter: b',',
         id_field: Some("column_0".to_string()),
@@ -212,7 +195,7 @@ async fn test_csv_without_headers_auto_generated_names() {
         schema: None,
     };
 
-    let result = sync(config).await;
+    let result = sync(&sink, config).await;
     assert!(result.is_ok(), "CSV import should succeed: {result:?}");
 
     // Verify data with auto-generated column names
@@ -254,6 +237,7 @@ async fn test_csv_column_count_mismatch_with_extra_columns_in_row() {
     // Setup and cleanup
     let surreal = setup_surrealdb(namespace, database).await.unwrap();
     cleanup_namespace(&surreal, namespace).await.unwrap();
+    let sink = Surreal2Sink::new(surreal.clone());
 
     let config = Config {
         sources: vec![],
@@ -262,13 +246,6 @@ async fn test_csv_column_count_mismatch_with_extra_columns_in_row() {
         http_uris: vec![],
         table: table.to_string(),
         batch_size: 100,
-        namespace: namespace.to_string(),
-        database: database.to_string(),
-        surreal_opts: surreal2_sink::SurrealOpts {
-            surreal_endpoint: "ws://surrealdb:8000".to_string(),
-            surreal_username: "root".to_string(),
-            surreal_password: "root".to_string(),
-        },
         has_headers: false,
         delimiter: b',',
         id_field: Some("id".to_string()),
@@ -282,7 +259,7 @@ async fn test_csv_column_count_mismatch_with_extra_columns_in_row() {
         schema: None,
     };
 
-    let result = sync(config).await;
+    let result = sync(&sink, config).await;
     assert!(
         result.is_err(),
         "Should fail with column count mismatch on row 2"

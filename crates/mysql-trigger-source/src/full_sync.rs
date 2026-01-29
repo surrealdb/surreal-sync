@@ -1,16 +1,16 @@
 //! MySQL full sync implementation using TypedValue conversion path.
 //!
 //! This module uses the unified type conversion flow:
-//! MySQL Row → TypedValue (mysql-types) → UniversalRow (sync-core) → SurrealDB (surreal crate)
+//! MySQL Row → TypedValue (mysql-types) → UniversalRow (sync-core) → SurrealDB (surreal sink)
 
 use crate::{SourceOpts, SyncOpts};
 use anyhow::Result;
-use checkpoint::{Checkpoint, SyncConfig, SyncManager, SyncPhase};
+use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use mysql_async::{prelude::*, Pool, Row};
-use mysql_types::{row_to_typed_values_with_config, JsonConversionConfig, RowConversionConfig};
+use mysql_types::{row_to_typed_values_with_config, RowConversionConfig};
 use std::collections::HashMap;
 use surreal_sink::SurrealSink;
-use sync_core::{TypedValue, UniversalRow, UniversalValue};
+use sync_core::{UniversalRow, UniversalType, UniversalValue};
 use tracing::{debug, info};
 
 /// Sanitize connection string for logging (hide password)
@@ -29,11 +29,17 @@ fn sanitize_connection_string(uri: &str) -> String {
 }
 
 /// Main entry point for MySQL to SurrealDB migration with checkpoint support
-pub async fn run_full_sync<S: SurrealSink>(
+///
+/// # Arguments
+/// * `surreal` - SurrealDB sink for writing data
+/// * `from_opts` - Source database options
+/// * `sync_opts` - Sync configuration options
+/// * `sync_manager` - Optional sync manager for checkpoint emission
+pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     surreal: &S,
     from_opts: &SourceOpts,
     sync_opts: &SyncOpts,
-    sync_config: Option<SyncConfig>,
+    sync_manager: Option<&SyncManager<CS>>,
 ) -> Result<()> {
     info!("Starting MySQL migration to SurrealDB");
 
@@ -67,9 +73,7 @@ pub async fn run_full_sync<S: SurrealSink>(
     conn.query_drop(format!("USE {database_name}")).await?;
 
     // Emit checkpoint t1 (before full sync starts) if configured
-    if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone(), None);
-
+    if let Some(manager) = sync_manager {
         // Set up triggers and audit table FIRST to establish incremental sync infrastructure
         super::change_tracking::setup_mysql_change_tracking(&mut conn, &database_name).await?;
         info!("Set up MySQL triggers and audit table for incremental sync");
@@ -77,7 +81,7 @@ pub async fn run_full_sync<S: SurrealSink>(
         // Get current sequence_id from the NOW-EXISTING audit table
         let checkpoint = super::checkpoint::get_current_checkpoint(&mut conn).await?;
 
-        sync_manager
+        manager
             .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
             .await?;
 
@@ -102,12 +106,13 @@ pub async fn run_full_sync<S: SurrealSink>(
     for table_name in &tables {
         info!("Migrating table: {}", table_name);
 
+        let boolean_paths = from_opts.mysql_boolean_paths.clone().unwrap_or_default();
         let count = migrate_table(
             &mut conn,
             surreal,
             table_name,
             sync_opts,
-            &from_opts.mysql_boolean_paths,
+            &boolean_paths,
             schema_info.get(table_name),
         )
         .await?;
@@ -117,13 +122,11 @@ pub async fn run_full_sync<S: SurrealSink>(
     }
 
     // Emit checkpoint t2 (after full sync completes) if configured
-    if let Some(ref config) = sync_config {
-        let sync_manager = SyncManager::new(config.clone(), None);
-
+    if let Some(manager) = sync_manager {
         // Get current checkpoint after migration
         let checkpoint = super::checkpoint::get_current_checkpoint(&mut conn).await?;
 
-        sync_manager
+        manager
             .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
             .await?;
 
@@ -149,96 +152,119 @@ pub async fn run_full_sync<S: SurrealSink>(
 struct TableSchemaInfo {
     /// Columns that should be treated as boolean (TINYINT(1))
     boolean_columns: Vec<String>,
-    /// Columns that are SET type
+    /// Columns that are SET type (comma-separated values -> array)
     set_columns: Vec<String>,
-    /// Primary key columns
-    pk_columns: Vec<String>,
 }
 
-/// Collect schema information for all tables
+/// Collect schema information for all tables in the database
 async fn collect_schema_info(
     conn: &mut mysql_async::Conn,
 ) -> Result<HashMap<String, TableSchemaInfo>> {
-    let query = "
-        SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, COLUMN_TYPE
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = DATABASE()
-        ORDER BY TABLE_NAME, ORDINAL_POSITION";
+    let mut schema_info: HashMap<String, TableSchemaInfo> = HashMap::new();
 
-    let rows: Vec<Row> = conn.query(query).await?;
-    let mut tables: HashMap<String, TableSchemaInfo> = HashMap::new();
+    // Query to find TINYINT(1) columns which are typically boolean
+    let boolean_rows: Vec<Row> = conn
+        .query(
+            r#"
+            SELECT TABLE_NAME, COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND COLUMN_TYPE = 'tinyint(1)'
+            ORDER BY TABLE_NAME, COLUMN_NAME
+            "#,
+        )
+        .await?;
 
-    for row in rows {
-        let table_name: String = row
-            .get(0)
-            .ok_or_else(|| anyhow::anyhow!("Missing table name"))?;
-        let column_name: String = row
-            .get(1)
-            .ok_or_else(|| anyhow::anyhow!("Missing column name"))?;
-        let data_type: String = row
-            .get(2)
-            .ok_or_else(|| anyhow::anyhow!("Missing data type"))?;
-        let column_type: String = row
-            .get(3)
-            .ok_or_else(|| anyhow::anyhow!("Missing column type"))?;
+    for row in boolean_rows {
+        let table_name: String = row.get("TABLE_NAME").unwrap_or_default();
+        let column_name: String = row.get("COLUMN_NAME").unwrap_or_default();
 
-        let info = tables.entry(table_name).or_insert_with(|| TableSchemaInfo {
-            boolean_columns: Vec::new(),
-            set_columns: Vec::new(),
-            pk_columns: Vec::new(),
-        });
-
-        // Detect boolean columns (TINYINT(1))
-        if data_type.to_uppercase() == "TINYINT"
-            && column_type.to_lowercase().starts_with("tinyint(1)")
-        {
-            info.boolean_columns.push(column_name.clone());
-        }
-
-        // Detect SET columns
-        if data_type.to_uppercase() == "SET" {
-            info.set_columns.push(column_name);
-        }
+        schema_info
+            .entry(table_name)
+            .or_insert_with(|| TableSchemaInfo {
+                boolean_columns: Vec::new(),
+                set_columns: Vec::new(),
+            })
+            .boolean_columns
+            .push(column_name);
     }
 
-    // Collect primary key information for each table
-    let pk_query = "
-        SELECT TABLE_NAME, COLUMN_NAME
-        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-        WHERE TABLE_SCHEMA = DATABASE()
-        AND CONSTRAINT_NAME = 'PRIMARY'
-        ORDER BY TABLE_NAME, ORDINAL_POSITION";
+    // Query to find SET columns
+    let set_rows: Vec<Row> = conn
+        .query(
+            r#"
+            SELECT TABLE_NAME, COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND DATA_TYPE = 'set'
+            ORDER BY TABLE_NAME, COLUMN_NAME
+            "#,
+        )
+        .await?;
 
-    let pk_rows: Vec<Row> = conn.query(pk_query).await?;
+    for row in set_rows {
+        let table_name: String = row.get("TABLE_NAME").unwrap_or_default();
+        let column_name: String = row.get("COLUMN_NAME").unwrap_or_default();
 
-    for row in pk_rows {
-        let table_name: String = row
-            .get(0)
-            .ok_or_else(|| anyhow::anyhow!("Missing table name"))?;
-        let column_name: String = row
-            .get(1)
-            .ok_or_else(|| anyhow::anyhow!("Missing column name"))?;
-
-        if let Some(info) = tables.get_mut(&table_name) {
-            info.pk_columns.push(column_name);
-        }
+        schema_info
+            .entry(table_name)
+            .or_insert_with(|| TableSchemaInfo {
+                boolean_columns: Vec::new(),
+                set_columns: Vec::new(),
+            })
+            .set_columns
+            .push(column_name);
     }
+
+    Ok(schema_info)
+}
+
+/// Get list of user tables (excluding system tables and our audit table)
+async fn get_user_tables(conn: &mut mysql_async::Conn, database: &str) -> Result<Vec<String>> {
+    let rows: Vec<Row> = conn
+        .query(format!(
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES \
+             WHERE TABLE_SCHEMA = '{database}' \
+             AND TABLE_TYPE = 'BASE TABLE' \
+             AND TABLE_NAME NOT IN ('surreal_sync_audit')"
+        ))
+        .await?;
+
+    let tables: Vec<String> = rows
+        .into_iter()
+        .filter_map(|row| row.get::<String, _>("TABLE_NAME"))
+        .collect();
 
     Ok(tables)
 }
 
-/// Get list of user tables from MySQL
-async fn get_user_tables(conn: &mut mysql_async::Conn, database: &str) -> Result<Vec<String>> {
-    let query = "
-        SELECT TABLE_NAME
-        FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = ?
-        AND TABLE_TYPE = 'BASE TABLE'
-        ORDER BY TABLE_NAME
-    ";
+/// Get primary key column names for a table (returns empty vec if no PK or composite PK)
+async fn get_primary_key_columns(
+    conn: &mut mysql_async::Conn,
+    database: &str,
+    table: &str,
+) -> Result<Vec<String>> {
+    let rows: Vec<Row> = conn
+        .query(format!(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
+             WHERE TABLE_SCHEMA = '{database}' AND TABLE_NAME = '{table}' \
+             AND CONSTRAINT_NAME = 'PRIMARY' \
+             ORDER BY ORDINAL_POSITION"
+        ))
+        .await?;
 
-    let tables: Vec<String> = conn.exec(query, (database,)).await?;
-    Ok(tables)
+    let pk_columns: Vec<String> = rows
+        .into_iter()
+        .filter_map(|row| row.get::<String, _>("COLUMN_NAME"))
+        .collect();
+
+    Ok(pk_columns)
+}
+
+/// Get the current database name
+async fn get_current_database(conn: &mut mysql_async::Conn) -> Result<String> {
+    let db: Option<String> = conn.query_first("SELECT DATABASE()").await?;
+    db.ok_or_else(|| anyhow::anyhow!("No database selected"))
 }
 
 /// Migrate a single table from MySQL to SurrealDB
@@ -247,39 +273,76 @@ async fn migrate_table<S: SurrealSink>(
     surreal: &S,
     table_name: &str,
     sync_opts: &SyncOpts,
-    boolean_paths: &Option<Vec<String>>,
+    _json_path_overrides: &[String],
     schema_info: Option<&TableSchemaInfo>,
 ) -> Result<usize> {
-    // Query all data from the table
-    let query = format!("SELECT * FROM {table_name}");
-    let rows: Vec<Row> = conn.query(query).await?;
+    // Get primary key columns for this table
+    let database = get_current_database(conn).await?;
+    let pk_columns = get_primary_key_columns(conn, &database, table_name).await?;
 
-    if rows.is_empty() {
-        return Ok(0);
+    debug!("Table {} primary key columns: {:?}", table_name, pk_columns);
+
+    // Extract boolean and SET columns from schema info
+    let boolean_columns: Vec<String> = schema_info
+        .map(|s| s.boolean_columns.clone())
+        .unwrap_or_default();
+    let set_columns: Vec<String> = schema_info
+        .map(|s| s.set_columns.clone())
+        .unwrap_or_default();
+
+    if !set_columns.is_empty() {
+        debug!("Table {} has SET columns: {:?}", table_name, set_columns);
     }
 
-    // Build row conversion config with boolean, SET, and JSON configuration
-    let row_config = build_row_conversion_config(boolean_paths, table_name, schema_info);
+    // Query all data from table
+    let rows: Vec<Row> = conn
+        .query(format!("SELECT * FROM {table_name}"))
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to query table {table_name}: {e}"))?;
 
-    // Get primary key columns
-    let pk_columns: Vec<String> = schema_info
-        .map(|s| s.pk_columns.clone())
-        .unwrap_or_else(|| vec!["id".to_string()]);
+    let count = rows.len();
+    debug!("Retrieved {} rows from table {}", count, table_name);
 
     let mut batch = Vec::new();
     let mut total_processed = 0;
 
+    // Build row conversion config with boolean and SET columns
+    let config = RowConversionConfig {
+        boolean_columns: boolean_columns.clone(),
+        set_columns: set_columns.clone(),
+        json_config: None,
+    };
+
+    // Process each row
     for (row_index, row) in rows.iter().enumerate() {
-        let record =
-            convert_row_to_record(row, &pk_columns, table_name, &row_config, row_index as u64)?;
-        batch.push(record);
+        // Convert MySQL row to TypedValues using schema-aware config
+        let typed_values = row_to_typed_values_with_config(row, &config)?;
+
+        // Extract UniversalValues from TypedValues
+        let values: HashMap<String, UniversalValue> = typed_values
+            .into_iter()
+            .map(|(k, tv)| (k, tv.value))
+            .collect();
+
+        // Extract primary key value for the record ID
+        let id = extract_primary_key_value(&values, &pk_columns)?;
+
+        // Build non-PK fields map
+        let fields: HashMap<String, UniversalValue> = values
+            .into_iter()
+            .filter(|(k, _)| !pk_columns.contains(k))
+            .collect();
+
+        // Create UniversalRow
+        let universal_row = UniversalRow::new(table_name.to_string(), row_index as u64, id, fields);
+        batch.push(universal_row);
 
         // Process batch when it reaches the configured size
         if batch.len() >= sync_opts.batch_size {
             let batch_size = batch.len();
 
             if !sync_opts.dry_run {
-                write_universal_rows_batch(surreal, table_name, &batch).await?;
+                surreal.write_universal_rows(&batch).await?;
             } else {
                 debug!(
                     "Dry-run: Would insert {} records into {}",
@@ -287,7 +350,6 @@ async fn migrate_table<S: SurrealSink>(
                 );
             }
             batch.clear();
-
             total_processed += batch_size;
         }
     }
@@ -297,197 +359,50 @@ async fn migrate_table<S: SurrealSink>(
         let batch_size = batch.len();
 
         if !sync_opts.dry_run {
-            write_universal_rows_batch(surreal, table_name, &batch).await?;
+            surreal.write_universal_rows(&batch).await?;
         } else {
             debug!(
                 "Dry-run: Would insert {} records into {}",
                 batch_size, table_name
             );
         }
-
         total_processed += batch_size;
     }
 
     Ok(total_processed)
 }
 
-/// Build row conversion config from boolean paths and schema
-fn build_row_conversion_config(
-    boolean_paths: &Option<Vec<String>>,
-    table_name: &str,
-    schema_info: Option<&TableSchemaInfo>,
-) -> RowConversionConfig {
-    let mut config = RowConversionConfig::default();
-
-    // Add boolean columns from schema
-    if let Some(info) = schema_info {
-        config.boolean_columns = info.boolean_columns.clone();
-        config.set_columns = info.set_columns.clone();
-    }
-
-    // Build JSON config for nested boolean paths
-    let mut json_config = JsonConversionConfig::default();
-    let mut has_json_config = false;
-
-    // Add boolean paths for this table (for JSON fields)
-    if let Some(paths) = boolean_paths {
-        for path in paths {
-            if let Some((table_col, json_path)) = path.split_once('=') {
-                if let Some((table, _col)) = table_col.split_once('.') {
-                    if table == table_name {
-                        json_config.boolean_paths.push(json_path.to_string());
-                        has_json_config = true;
-                    }
-                }
-            }
-        }
-    }
-
-    if has_json_config {
-        config.json_config = Some(json_config);
-    }
-
-    config
-}
-
-/// Convert a MySQL row to an UniversalRow using the unified type conversion path
-fn convert_row_to_record(
-    row: &Row,
+/// Extract primary key value from values map
+fn extract_primary_key_value(
+    values: &HashMap<String, UniversalValue>,
     pk_columns: &[String],
-    table_name: &str,
-    row_config: &RowConversionConfig,
-    row_index: u64,
-) -> Result<UniversalRow> {
-    // Step 1: Convert MySQL Row → HashMap<String, TypedValue>
-    let typed_values = row_to_typed_values_with_config(row, row_config)
-        .map_err(|e| anyhow::anyhow!("MySQL conversion error: {e}"))?;
-
-    // Step 2: Extract the ID from typed values
-    let id = extract_record_id(&typed_values, pk_columns, table_name)?;
-
-    // Step 3: Remove the ID column from data (it's used as record ID)
-    let mut data_values = typed_values;
-    if pk_columns.len() == 1 {
-        data_values.remove(&pk_columns[0]);
-    }
-
-    // Step 4: Convert HashMap<String, TypedValue> → HashMap<String, UniversalValue>
-    let universal_data: HashMap<String, UniversalValue> = data_values
-        .into_iter()
-        .map(|(k, tv)| (k, tv.value))
-        .collect();
-
-    Ok(UniversalRow::new(
-        table_name.to_string(),
-        row_index,
-        id,
-        universal_data,
-    ))
-}
-
-/// Extract record ID from typed values based on primary key columns
-fn extract_record_id(
-    typed_values: &HashMap<String, TypedValue>,
-    pk_columns: &[String],
-    _table_name: &str,
 ) -> Result<UniversalValue> {
-    if pk_columns.is_empty() || (pk_columns.len() == 1 && pk_columns[0] == "id") {
-        // Single primary key named 'id'
-        let id_value = typed_values
-            .get("id")
-            .ok_or_else(|| anyhow::anyhow!("MySQL record must have an 'id' field"))?;
+    if pk_columns.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Table has no primary key defined - primary key is required for sync"
+        ));
+    }
 
-        typed_value_to_id(id_value)
-    } else if pk_columns.len() == 1 {
-        // Single primary key with different name
+    if pk_columns.len() == 1 {
+        // Single primary key column
         let pk_col = &pk_columns[0];
-        let id_value = typed_values
+        values
             .get(pk_col)
-            .ok_or_else(|| anyhow::anyhow!("Primary key column '{pk_col}' not found"))?;
-
-        typed_value_to_id(id_value)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Primary key column '{pk_col}' not found in row"))
     } else {
-        // Composite primary key - concatenate values
-        let parts: Vec<String> = pk_columns
-            .iter()
-            .filter_map(|col| typed_values.get(col))
-            .map(typed_value_to_string)
-            .collect();
-
-        let composite_id = parts.join("_");
-        Ok(UniversalValue::Text(composite_id))
-    }
-}
-
-/// Convert a TypedValue to a UniversalValue for use as an ID
-fn typed_value_to_id(tv: &TypedValue) -> Result<UniversalValue> {
-    match &tv.value {
-        UniversalValue::Int32(i) => Ok(UniversalValue::Int64(*i as i64)),
-        UniversalValue::Int64(i) => Ok(UniversalValue::Int64(*i)),
-        UniversalValue::Text(s) => {
-            // Try to parse as integer first for numeric IDs stored as strings
-            if let Ok(n) = s.parse::<i64>() {
-                Ok(UniversalValue::Int64(n))
-            } else {
-                Ok(UniversalValue::Text(s.clone()))
-            }
+        // Composite primary key - create an array
+        let mut pk_values = Vec::new();
+        for col in pk_columns {
+            let v = values
+                .get(col)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("Primary key column '{col}' not found in row"))?;
+            pk_values.push(v);
         }
-        // VarChar and Char are strict 1:1 type-value variants that map to string IDs
-        UniversalValue::VarChar { value: s, .. } => {
-            if let Ok(n) = s.parse::<i64>() {
-                Ok(UniversalValue::Int64(n))
-            } else {
-                Ok(UniversalValue::Text(s.clone()))
-            }
-        }
-        UniversalValue::Char { value: s, .. } => {
-            if let Ok(n) = s.parse::<i64>() {
-                Ok(UniversalValue::Int64(n))
-            } else {
-                Ok(UniversalValue::Text(s.clone()))
-            }
-        }
-        UniversalValue::Uuid(u) => Ok(UniversalValue::Uuid(*u)),
-        _ => Err(anyhow::anyhow!("Unsupported ID type: {:?}", tv.sync_type)),
+        Ok(UniversalValue::Array {
+            elements: pk_values,
+            element_type: Box::new(UniversalType::Text),
+        })
     }
-}
-
-/// Convert a TypedValue to a string (for composite keys)
-fn typed_value_to_string(tv: &TypedValue) -> String {
-    match &tv.value {
-        UniversalValue::Int32(i) => i.to_string(),
-        UniversalValue::Int64(i) => i.to_string(),
-        UniversalValue::Text(s) => s.clone(),
-        UniversalValue::VarChar { value: s, .. } => s.clone(),
-        UniversalValue::Char { value: s, .. } => s.clone(),
-        UniversalValue::Uuid(u) => u.to_string(),
-        UniversalValue::Bool(b) => b.to_string(),
-        UniversalValue::Float64(f) => f.to_string(),
-        UniversalValue::Float32(f) => f.to_string(),
-        UniversalValue::Int8 { value: i, .. } => i.to_string(),
-        UniversalValue::Int16(i) => i.to_string(),
-        _ => "null".to_string(),
-    }
-}
-
-/// Write a batch of records to SurrealDB using UniversalRow
-async fn write_universal_rows_batch<S: SurrealSink>(
-    surreal: &S,
-    table_name: &str,
-    batch: &[UniversalRow],
-) -> Result<()> {
-    tracing::debug!(
-        "Starting migration batch for table '{}' with {} records",
-        table_name,
-        batch.len()
-    );
-
-    surreal.write_universal_rows(batch).await?;
-
-    tracing::debug!(
-        "Completed migration batch for table '{}' with {} records",
-        table_name,
-        batch.len()
-    );
-    Ok(())
 }

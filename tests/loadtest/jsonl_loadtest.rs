@@ -9,7 +9,7 @@
 
 use loadtest_populate_jsonl::JsonlPopulator;
 use loadtest_verify::StreamingVerifier;
-use surreal2_sink::SurrealOpts;
+use surreal2_sink::Surreal2Sink;
 use surreal_sync::jsonl::{sync, Config, FileSource};
 use surreal_sync::testing::{generate_test_id, test_helpers, TestConfig};
 use sync_core::Schema;
@@ -87,11 +87,8 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     // === PHASE 2: RUN SYNC from JSONL files to SurrealDB ===
     tracing::info!("Running sync from JSONL files to SurrealDB");
 
-    let surreal_opts = SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
-    };
+    // Create the sink for writing to SurrealDB
+    let sink = Surreal2Sink::new(surreal.clone());
 
     // Sync each JSONL file (table name is derived from filename)
     for (_table_name, jsonl_path) in &jsonl_files {
@@ -100,9 +97,6 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             files: vec![],
             s3_uris: vec![],
             http_uris: vec![],
-            namespace: surreal_config.surreal_namespace.clone(),
-            database: surreal_config.surreal_database.clone(),
-            surreal_opts: surreal_opts.clone(),
             id_field: "id".to_string(),
             conversion_rules: vec![],
             batch_size: BATCH_SIZE,
@@ -110,7 +104,7 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             schema: Some(schema.to_database_schema()), // Pass schema for type-aware conversion
         };
 
-        sync(config).await?;
+        sync(&sink, config).await?;
         tracing::info!("Synced {} to SurrealDB", jsonl_path.display());
     }
 

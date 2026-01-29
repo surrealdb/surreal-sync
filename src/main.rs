@@ -59,7 +59,6 @@ use anyhow::Context;
 use checkpoint::Checkpoint;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
-use surreal2_sink::surreal_connect;
 use surreal_sync::SurrealOpts;
 
 // Database-specific sync crates (fully-qualified paths used in match arms)
@@ -928,31 +927,45 @@ async fn run_mongodb_full(args: MongoDBFullArgs) -> anyhow::Result<()> {
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    let sync_config = if args.emit_checkpoints {
-        Some(checkpoint::SyncConfig {
-            incremental: false,
-            emit_checkpoints: true,
-            checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
-                dir: args.checkpoint_dir,
-            },
-        })
-    } else {
-        None
+    // Connect to SurrealDB
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
     };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
     let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
         source_uri: args.connection_string,
         source_database: Some(args.database),
     };
 
-    surreal_sync_mongodb_changestream_source::run_full_sync(
-        source_opts,
-        args.to_namespace,
-        args.to_database,
-        surreal_sync_mongodb_changestream_source::SurrealOpts::from(&args.surreal),
-        sync_config,
-    )
-    .await?;
+    let sync_opts = surreal_sync_mongodb_changestream_source::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+
+    if args.emit_checkpoints {
+        let store = checkpoint::FilesystemStore::new(&args.checkpoint_dir);
+        let sync_manager = checkpoint::SyncManager::new(store);
+        surreal_sync_mongodb_changestream_source::run_full_sync(
+            &sink,
+            source_opts,
+            sync_opts,
+            Some(&sync_manager),
+        )
+        .await?;
+    } else {
+        surreal_sync_mongodb_changestream_source::migrate_from_mongodb(
+            &sink,
+            source_opts,
+            sync_opts,
+        )
+        .await?;
+    }
 
     tracing::info!("Full sync completed successfully");
     Ok(())
@@ -972,6 +985,17 @@ async fn run_mongodb_incremental(args: MongoDBIncrementalArgs) -> anyhow::Result
     }
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    // Connect to SurrealDB
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
     let timeout_seconds: i64 = args
         .timeout
@@ -995,10 +1019,8 @@ async fn run_mongodb_incremental(args: MongoDBIncrementalArgs) -> anyhow::Result
     };
 
     surreal_sync_mongodb_changestream_source::run_incremental_sync(
+        &sink,
         source_opts,
-        args.to_namespace,
-        args.to_database,
-        surreal_sync_mongodb_changestream_source::SurrealOpts::from(&args.surreal),
         mongodb_from,
         deadline,
         mongodb_to,
@@ -1041,17 +1063,16 @@ async fn run_neo4j_full(args: Neo4jFullArgs) -> anyhow::Result<()> {
         None
     };
 
-    let sync_config = if args.emit_checkpoints {
-        Some(checkpoint::SyncConfig {
-            incremental: false,
-            emit_checkpoints: true,
-            checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
-                dir: args.checkpoint_dir,
-            },
-        })
-    } else {
-        None
+    // Connect to SurrealDB
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
     };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
@@ -1062,14 +1083,30 @@ async fn run_neo4j_full(args: Neo4jFullArgs) -> anyhow::Result<()> {
         neo4j_json_properties: json_properties,
     };
 
-    surreal_sync_neo4j_source::run_full_sync(
-        source_opts,
-        args.to_namespace,
-        args.to_database,
-        surreal_sync_neo4j_source::SurrealOpts::from(&args.surreal),
-        sync_config,
-    )
-    .await?;
+    let sync_opts = surreal_sync_neo4j_source::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+
+    if args.emit_checkpoints {
+        let store = checkpoint::FilesystemStore::new(&args.checkpoint_dir);
+        let sync_manager = checkpoint::SyncManager::new(store);
+        surreal_sync_neo4j_source::run_full_sync(
+            &sink,
+            source_opts,
+            sync_opts,
+            Some(&sync_manager),
+        )
+        .await?;
+    } else {
+        surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+            &sink,
+            source_opts,
+            sync_opts,
+            None,
+        )
+        .await?;
+    }
 
     tracing::info!("Full sync completed successfully");
     Ok(())
@@ -1108,6 +1145,17 @@ async fn run_neo4j_incremental(args: Neo4jIncrementalArgs) -> anyhow::Result<()>
         None
     };
 
+    // Connect to SurrealDB
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+
     let timeout_seconds: i64 = args
         .timeout
         .parse()
@@ -1131,11 +1179,15 @@ async fn run_neo4j_incremental(args: Neo4jIncrementalArgs) -> anyhow::Result<()>
         neo4j_json_properties: json_properties,
     };
 
+    let sync_opts = surreal_sync_neo4j_source::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+
     surreal_sync_neo4j_source::run_incremental_sync(
+        &sink,
         source_opts,
-        args.to_namespace,
-        args.to_database,
-        surreal_sync_neo4j_source::SurrealOpts::from(&args.surreal),
+        sync_opts,
         neo4j_from,
         deadline,
         neo4j_to,
@@ -1160,17 +1212,16 @@ async fn run_postgresql_trigger_full(args: PostgreSQLTriggerFullArgs) -> anyhow:
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    let sync_config = if args.emit_checkpoints {
-        Some(checkpoint::SyncConfig {
-            incremental: false,
-            emit_checkpoints: true,
-            checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
-                dir: args.checkpoint_dir,
-            },
-        })
-    } else {
-        None
+    // Connect to SurrealDB
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
     };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
     let source_database = extract_postgresql_database(&args.connection_string);
     let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
@@ -1178,14 +1229,30 @@ async fn run_postgresql_trigger_full(args: PostgreSQLTriggerFullArgs) -> anyhow:
         source_database,
     };
 
-    surreal_sync_postgresql_trigger_source::run_full_sync(
-        source_opts,
-        args.to_namespace,
-        args.to_database,
-        surreal_sync_postgresql::SurrealOpts::from(&args.surreal),
-        sync_config,
-    )
-    .await?;
+    let sync_opts = surreal_sync_postgresql::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+
+    if args.emit_checkpoints {
+        let store = checkpoint::FilesystemStore::new(&args.checkpoint_dir);
+        let sync_manager = checkpoint::SyncManager::new(store);
+        surreal_sync_postgresql_trigger_source::run_full_sync(
+            &sink,
+            source_opts,
+            sync_opts,
+            Some(&sync_manager),
+        )
+        .await?;
+    } else {
+        surreal_sync_postgresql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+            &sink,
+            source_opts,
+            sync_opts,
+            None,
+        )
+        .await?;
+    }
 
     tracing::info!("Full sync completed successfully");
     Ok(())
@@ -1229,11 +1296,20 @@ async fn run_postgresql_trigger_incremental(
         source_database,
     };
 
+    // Connect to SurrealDB
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+
     surreal_sync_postgresql_trigger_source::run_incremental_sync(
+        &sink,
         source_opts,
-        args.to_namespace,
-        args.to_database,
-        surreal_sync_postgresql::SurrealOpts::from(&args.surreal),
         pg_from,
         deadline,
         pg_to,
@@ -1258,25 +1334,15 @@ async fn run_mysql_full(args: MySQLFullArgs) -> anyhow::Result<()> {
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    let surreal_conn_opts = surreal2_sink::SurrealOpts {
-        surreal_endpoint: args.surreal.surreal_endpoint.clone(),
-        surreal_username: args.surreal.surreal_username.clone(),
-        surreal_password: args.surreal.surreal_password.clone(),
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
     };
     let surreal =
-        surreal_connect(&surreal_conn_opts, &args.to_namespace, &args.to_database).await?;
-
-    let sync_config = if args.emit_checkpoints {
-        Some(checkpoint::SyncConfig {
-            incremental: false,
-            emit_checkpoints: true,
-            checkpoint_storage: checkpoint::CheckpointStorage::Filesystem {
-                dir: args.checkpoint_dir,
-            },
-        })
-    } else {
-        None
-    };
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
     let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
         source_uri: args.connection_string,
@@ -1284,13 +1350,30 @@ async fn run_mysql_full(args: MySQLFullArgs) -> anyhow::Result<()> {
         mysql_boolean_paths: args.boolean_paths,
     };
 
-    surreal_sync_mysql_trigger_source::run_full_sync(
-        &source_opts,
-        &surreal_sync_mysql_trigger_source::SurrealOpts::from(&args.surreal),
-        sync_config,
-        &surreal,
-    )
-    .await?;
+    let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+
+    if args.emit_checkpoints {
+        let store = checkpoint::FilesystemStore::new(&args.checkpoint_dir);
+        let sync_manager = checkpoint::SyncManager::new(store);
+        surreal_sync_mysql_trigger_source::run_full_sync(
+            &sink,
+            &source_opts,
+            &sync_opts,
+            Some(&sync_manager),
+        )
+        .await?;
+    } else {
+        surreal_sync_mysql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+            &sink,
+            &source_opts,
+            &sync_opts,
+            None,
+        )
+        .await?;
+    }
 
     tracing::info!("Full sync completed successfully");
     Ok(())
@@ -1332,11 +1415,20 @@ async fn run_mysql_incremental(args: MySQLIncrementalArgs) -> anyhow::Result<()>
         mysql_boolean_paths: args.boolean_paths,
     };
 
+    // Connect to SurrealDB
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+
     surreal_sync_mysql_trigger_source::run_incremental_sync(
+        &sink,
         source_opts,
-        args.to_namespace,
-        args.to_database,
-        surreal_sync_mysql_trigger_source::SurrealOpts::from(&args.surreal),
         mysql_from,
         deadline,
         mysql_to,
@@ -1361,37 +1453,16 @@ async fn run_postgresql_logical_full(args: PostgreSQLLogicalFullArgs) -> anyhow:
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    // Build sync config for checkpoint emission
-    let sync_config = match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
-        (Some(dir), None) => {
-            // Filesystem checkpoint storage
-            Some(checkpoint::SyncConfig {
-                emit_checkpoints: true,
-                checkpoint_storage: checkpoint::CheckpointStorage::Filesystem { dir: dir.clone() },
-                incremental: false,
-            })
-        }
-        (None, Some(table)) => {
-            // SurrealDB checkpoint storage
-            Some(checkpoint::SyncConfig {
-                emit_checkpoints: true,
-                checkpoint_storage: checkpoint::CheckpointStorage::SurrealDB {
-                    table_name: table.clone(),
-                    namespace: args.to_namespace.clone(),
-                    database: args.to_database.clone(),
-                },
-                incremental: false,
-            })
-        }
-        (None, None) => {
-            // No checkpoint storage
-            None
-        }
-        (Some(_), Some(_)) => {
-            // Should be prevented by clap's conflicts_with
-            anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
-        }
+    // Connect to SurrealDB
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
     };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
     let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
         connection_string: args.connection_string,
@@ -1400,14 +1471,59 @@ async fn run_postgresql_logical_full(args: PostgreSQLLogicalFullArgs) -> anyhow:
         schema: args.schema,
     };
 
-    surreal_sync_postgresql_wal2json_source::run_full_sync(
-        source_opts,
-        args.to_namespace,
-        args.to_database,
-        surreal_sync_postgresql::SurrealOpts::from(&args.surreal),
-        sync_config,
-    )
-    .await?;
+    let sync_opts = surreal_sync_postgresql::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+
+    // Handle checkpoint storage
+    match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
+        (Some(dir), None) => {
+            // Filesystem checkpoint storage
+            let store = checkpoint::FilesystemStore::new(dir);
+            let sync_manager = checkpoint::SyncManager::new(store);
+            surreal_sync_postgresql_wal2json_source::run_full_sync(
+                &sink,
+                source_opts,
+                sync_opts,
+                Some(&sync_manager),
+            )
+            .await?;
+        }
+        (None, Some(table)) => {
+            // SurrealDB checkpoint storage (currently only v2 supported)
+            // Need a separate connection for the checkpoint store
+            let checkpoint_surreal = surreal2_sink::surreal_connect(
+                &surreal_opts,
+                &args.to_namespace,
+                &args.to_database,
+            )
+            .await?;
+            let store = checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone());
+            let sync_manager = checkpoint::SyncManager::new(store);
+            surreal_sync_postgresql_wal2json_source::run_full_sync(
+                &sink,
+                source_opts,
+                sync_opts,
+                Some(&sync_manager),
+            )
+            .await?;
+        }
+        (None, None) => {
+            // No checkpoint storage
+            surreal_sync_postgresql_wal2json_source::run_full_sync::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+            )
+            .await?;
+        }
+        (Some(_), Some(_)) => {
+            // Should be prevented by clap's conflicts_with
+            anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
+        }
+    }
 
     Ok(())
 }
@@ -1424,20 +1540,41 @@ async fn run_postgresql_logical_incremental(
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    // Validate checkpoint parameters
-    if let (None, None) = (&args.incremental_from, &args.checkpoints_surreal_table) {
-        anyhow::bail!("Must specify either --incremental-from or --checkpoints-surreal-table")
-    }
+    // Get checkpoint from CLI arg or SurrealDB
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint.clone(),
+        surreal_username: args.surreal.surreal_username.clone(),
+        surreal_password: args.surreal.surreal_password.clone(),
+    };
 
-    // Parse checkpoints
-    let from_checkpoint = args
-        .incremental_from
-        .map(|s| {
+    let from_checkpoint = match (&args.incremental_from, &args.checkpoints_surreal_table) {
+        (Some(s), _) => {
+            // Explicit checkpoint from CLI
             surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint::from_cli_string(
-                &s,
+                s,
+            )?
+        }
+        (None, Some(table)) => {
+            // Read from SurrealDB checkpoint storage
+            let checkpoint_surreal = surreal2_sink::surreal_connect(
+                &surreal_opts,
+                &args.to_namespace,
+                &args.to_database,
             )
-        })
-        .transpose()?;
+            .await?;
+            let store = checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone());
+            let sync_manager = checkpoint::SyncManager::new(store);
+            sync_manager
+                .read_checkpoint::<surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint>(
+                    checkpoint::SyncPhase::FullSyncStart,
+                )
+                .await
+                .with_context(|| "Failed to read t1 checkpoint from SurrealDB")?
+        }
+        (None, None) => {
+            anyhow::bail!("--incremental-from or --checkpoints-surreal-table is required")
+        }
+    };
 
     let to_checkpoint = args
         .incremental_to
@@ -1449,27 +1586,31 @@ async fn run_postgresql_logical_incremental(
         .transpose()?;
 
     // Parse timeout
-    let timeout_secs: u64 = args
+    let timeout_secs: i64 = args
         .timeout
         .parse()
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
+    let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_secs);
+
+    // Connect to SurrealDB for data sink
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
     let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
-        connection_string: args.connection_string,
-        slot_name: args.slot,
-        tables: args.tables,
-        schema: args.schema,
+        connection_string: args.connection_string.clone(),
+        slot_name: args.slot.clone(),
+        tables: args.tables.clone(),
+        schema: args.schema.clone(),
     };
 
     surreal_sync_postgresql_wal2json_source::run_incremental_sync(
+        &sink,
         source_opts,
-        args.to_namespace,
-        args.to_database,
-        surreal_sync_postgresql::SurrealOpts::from(&args.surreal),
         from_checkpoint,
-        args.checkpoints_surreal_table,
+        deadline,
         to_checkpoint,
-        timeout_secs,
     )
     .await?;
 
@@ -1495,6 +1636,17 @@ async fn run_kafka(args: KafkaArgs) -> anyhow::Result<()> {
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_secs);
     tracing::info!("Will consume until deadline: {}", deadline);
 
+    // Connect to SurrealDB
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = std::sync::Arc::new(surreal2_sink::Surreal2Sink::new(surreal));
+
     let table_schema = if let Some(schema_path) = args.schema_file {
         let schema = Schema::from_file(&schema_path)
             .with_context(|| format!("Failed to load sync schema from {schema_path:?}"))?;
@@ -1510,15 +1662,8 @@ async fn run_kafka(args: KafkaArgs) -> anyhow::Result<()> {
         None
     };
 
-    surreal_sync_kafka_source::run_incremental_sync(
-        args.config,
-        args.to_namespace,
-        args.to_database,
-        surreal_sync_kafka_source::SurrealOpts::from(&args.surreal),
-        deadline,
-        table_schema,
-    )
-    .await?;
+    surreal_sync_kafka_source::run_incremental_sync(sink, args.config, deadline, table_schema)
+        .await?;
 
     Ok(())
 }
@@ -1537,6 +1682,17 @@ async fn run_csv(args: CsvArgs) -> anyhow::Result<()> {
 
     let schema = load_schema_if_provided(&args.schema_file)?;
 
+    // Connect to SurrealDB
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint,
+        surreal_username: args.surreal.surreal_username,
+        surreal_password: args.surreal.surreal_password,
+    };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+
     let config = surreal_sync::csv::Config {
         sources: vec![],
         files: args.files,
@@ -1544,13 +1700,6 @@ async fn run_csv(args: CsvArgs) -> anyhow::Result<()> {
         http_uris: args.http_uris,
         table: args.table,
         batch_size: args.surreal.batch_size,
-        namespace: args.to_namespace,
-        database: args.to_database,
-        surreal_opts: surreal2_sink::SurrealOpts {
-            surreal_endpoint: args.surreal.surreal_endpoint,
-            surreal_username: args.surreal.surreal_username,
-            surreal_password: args.surreal.surreal_password,
-        },
         has_headers: args.has_headers,
         delimiter: args.delimiter as u8,
         id_field: args.id_field,
@@ -1559,7 +1708,7 @@ async fn run_csv(args: CsvArgs) -> anyhow::Result<()> {
         dry_run: args.surreal.dry_run,
         schema,
     };
-    surreal_sync::csv::sync(config).await?;
+    surreal_sync::csv::sync(&sink, config).await?;
 
     tracing::info!("CSV import completed successfully");
     Ok(())
@@ -1579,24 +1728,30 @@ async fn run_jsonl(args: JsonlArgs) -> anyhow::Result<()> {
 
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    let jsonl_from_opts = surreal_sync::jsonl::SourceOpts {
-        source_uri: args.path,
-    };
-    let jsonl_to_opts = surreal2_sink::SurrealOpts {
+    // Connect to SurrealDB
+    let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
         surreal_password: args.surreal.surreal_password,
     };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
-    surreal_sync::jsonl::migrate_from_jsonl(
-        jsonl_from_opts,
-        args.to_namespace,
-        args.to_database,
-        jsonl_to_opts,
-        args.id_field,
-        args.conversion_rules,
-    )
-    .await?;
+    // Create config with file source
+    let config = surreal_sync::jsonl::Config {
+        sources: vec![],
+        files: vec![args.path.into()],
+        s3_uris: vec![],
+        http_uris: vec![],
+        id_field: args.id_field,
+        conversion_rules: args.conversion_rules,
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+        schema: None,
+    };
+    surreal_sync::jsonl::sync(&sink, config).await?;
 
     tracing::info!("JSONL import completed successfully");
     Ok(())

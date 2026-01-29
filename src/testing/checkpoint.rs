@@ -151,8 +151,23 @@ pub fn read_t1_checkpoint<P: AsRef<Path>>(
     }
 
     // Read and parse t1 checkpoint file
+    // Note: Files are stored in StoredCheckpoint format, need to convert to CheckpointFile
     let t1_content = std::fs::read_to_string(t1_files[0].path())?;
-    let t1_checkpoint: checkpoint::CheckpointFile = serde_json::from_str(&t1_content)?;
+    let stored: checkpoint::StoredCheckpoint = serde_json::from_str(&t1_content)?;
+
+    // Convert StoredCheckpoint to CheckpointFile
+    let checkpoint_data: serde_json::Value = serde_json::from_str(&stored.checkpoint_data)?;
+    let phase = match stored.phase.as_str() {
+        "full_sync_start" => checkpoint::SyncPhase::FullSyncStart,
+        "full_sync_end" => checkpoint::SyncPhase::FullSyncEnd,
+        other => anyhow::bail!("Unknown sync phase: {other}"),
+    };
+    let t1_checkpoint = checkpoint::CheckpointFile {
+        database_type: stored.database_type,
+        checkpoint: checkpoint_data,
+        phase,
+        created_at: stored.created_at,
+    };
 
     Ok(t1_checkpoint)
 }
@@ -238,9 +253,29 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
     let t1_content = std::fs::read_to_string(t1_files[0].path())?;
     let t2_content = std::fs::read_to_string(t2_files[0].path())?;
 
-    // Parse checkpoint file format using the new CheckpointFile type
-    let t1_file: checkpoint::CheckpointFile = serde_json::from_str(&t1_content)?;
-    let t2_file: checkpoint::CheckpointFile = serde_json::from_str(&t2_content)?;
+    // Parse checkpoint file format - files are stored as StoredCheckpoint
+    let t1_stored: checkpoint::StoredCheckpoint = serde_json::from_str(&t1_content)?;
+    let t2_stored: checkpoint::StoredCheckpoint = serde_json::from_str(&t2_content)?;
+
+    // Helper to convert StoredCheckpoint to CheckpointFile
+    let stored_to_file =
+        |stored: checkpoint::StoredCheckpoint| -> anyhow::Result<checkpoint::CheckpointFile> {
+            let checkpoint_data: serde_json::Value = serde_json::from_str(&stored.checkpoint_data)?;
+            let phase = match stored.phase.as_str() {
+                "full_sync_start" => checkpoint::SyncPhase::FullSyncStart,
+                "full_sync_end" => checkpoint::SyncPhase::FullSyncEnd,
+                other => anyhow::bail!("Unknown sync phase: {other}"),
+            };
+            Ok(checkpoint::CheckpointFile {
+                database_type: stored.database_type,
+                checkpoint: checkpoint_data,
+                phase,
+                created_at: stored.created_at,
+            })
+        };
+
+    let t1_file = stored_to_file(t1_stored)?;
+    let t2_file = stored_to_file(t2_stored)?;
 
     // Verify both checkpoints are from the same database type
     assert_eq!(

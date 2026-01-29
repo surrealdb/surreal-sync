@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
-use crate::{Checkpoint, CheckpointFile, SyncConfig, SyncManager, SyncPhase};
+use crate::{Checkpoint, CheckpointFile, FilesystemStore, NullStore, SyncManager, SyncPhase};
 
 /// Test checkpoint type for unit tests.
 ///
@@ -140,7 +140,7 @@ fn test_sync_phase_serialization() {
 
 #[test]
 fn test_sync_config_default() {
-    let config = SyncConfig::default();
+    let config = crate::SyncConfig::default();
     assert!(!config.incremental);
     assert!(config.emit_checkpoints);
     assert!(matches!(
@@ -151,7 +151,7 @@ fn test_sync_config_default() {
 
 #[test]
 fn test_sync_config_full_sync_with_checkpoints() {
-    let config = SyncConfig::full_sync_with_checkpoints("/custom/path".to_string());
+    let config = crate::SyncConfig::full_sync_with_checkpoints("/custom/path".to_string());
     assert!(!config.incremental);
     assert!(config.emit_checkpoints);
     assert!(matches!(
@@ -162,7 +162,7 @@ fn test_sync_config_full_sync_with_checkpoints() {
 
 #[test]
 fn test_sync_config_incremental() {
-    let config = SyncConfig::incremental();
+    let config = crate::SyncConfig::incremental();
     assert!(config.incremental);
     assert!(!config.emit_checkpoints);
     assert!(matches!(
@@ -174,7 +174,7 @@ fn test_sync_config_incremental() {
 #[test]
 fn test_sync_config_should_emit_checkpoints() {
     // Both enabled and dir configured
-    let config1 = SyncConfig {
+    let config1 = crate::SyncConfig {
         incremental: false,
         emit_checkpoints: true,
         checkpoint_storage: crate::CheckpointStorage::Filesystem {
@@ -184,7 +184,7 @@ fn test_sync_config_should_emit_checkpoints() {
     assert!(config1.should_emit_checkpoints());
 
     // Emit disabled
-    let config2 = SyncConfig {
+    let config2 = crate::SyncConfig {
         incremental: false,
         emit_checkpoints: false,
         checkpoint_storage: crate::CheckpointStorage::Filesystem {
@@ -194,7 +194,7 @@ fn test_sync_config_should_emit_checkpoints() {
     assert!(!config2.should_emit_checkpoints());
 
     // Dir not configured
-    let config3 = SyncConfig {
+    let config3 = crate::SyncConfig {
         incremental: false,
         emit_checkpoints: true,
         checkpoint_storage: crate::CheckpointStorage::Disabled,
@@ -209,15 +209,9 @@ fn test_sync_config_should_emit_checkpoints() {
 #[tokio::test]
 async fn test_sync_manager_emit_and_read() {
     let tmp = TempDir::new().unwrap();
-    let config = SyncConfig {
-        emit_checkpoints: true,
-        checkpoint_storage: crate::CheckpointStorage::Filesystem {
-            dir: tmp.path().to_string_lossy().to_string(),
-        },
-        incremental: false,
-    };
+    let store = FilesystemStore::new(tmp.path());
+    let manager = SyncManager::new(store);
 
-    let manager = SyncManager::new(config, None);
     let cp = TestCheckpoint {
         value: 123,
         timestamp: Utc::now(),
@@ -239,15 +233,9 @@ async fn test_sync_manager_emit_and_read() {
 #[tokio::test]
 async fn test_sync_manager_emit_disabled() {
     let tmp = TempDir::new().unwrap();
-    let config = SyncConfig {
-        emit_checkpoints: false, // Disabled
-        checkpoint_storage: crate::CheckpointStorage::Filesystem {
-            dir: tmp.path().to_string_lossy().to_string(),
-        },
-        incremental: false,
-    };
+    let store = FilesystemStore::new(tmp.path());
+    let manager = SyncManager::new_without_emit(store);
 
-    let manager = SyncManager::new(config, None);
     let cp = TestCheckpoint {
         value: 456,
         timestamp: Utc::now(),
@@ -266,40 +254,32 @@ async fn test_sync_manager_emit_disabled() {
 }
 
 #[tokio::test]
-async fn test_sync_manager_no_checkpoint_dir() {
-    let config = SyncConfig {
-        emit_checkpoints: true,
-        checkpoint_storage: crate::CheckpointStorage::Disabled, // Checkpoints not configured
-        incremental: false,
-    };
+async fn test_sync_manager_null_store() {
+    let manager = SyncManager::new(NullStore);
 
-    let manager = SyncManager::new(config, None);
     let cp = TestCheckpoint {
         value: 789,
         timestamp: Utc::now(),
     };
 
-    // Should fail because no dir configured
-    let result = manager.emit_checkpoint(&cp, SyncPhase::FullSyncStart).await;
+    // Should succeed (NullStore does nothing)
+    manager
+        .emit_checkpoint(&cp, SyncPhase::FullSyncStart)
+        .await
+        .unwrap();
+
+    // Should fail to read (NullStore returns None)
+    let result: anyhow::Result<TestCheckpoint> =
+        manager.read_checkpoint(SyncPhase::FullSyncStart).await;
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("No checkpoint directory"));
+    assert!(result.unwrap_err().to_string().contains("No checkpoint"));
 }
 
 #[tokio::test]
 async fn test_sync_manager_reads_latest_checkpoint() {
     let tmp = TempDir::new().unwrap();
-    let config = SyncConfig {
-        emit_checkpoints: true,
-        checkpoint_storage: crate::CheckpointStorage::Filesystem {
-            dir: tmp.path().to_string_lossy().to_string(),
-        },
-        incremental: false,
-    };
-
-    let manager = SyncManager::new(config, None);
+    let store = FilesystemStore::new(tmp.path());
+    let manager = SyncManager::new(store);
 
     // Write first checkpoint
     let cp1 = TestCheckpoint {
@@ -336,15 +316,8 @@ async fn test_sync_manager_reads_latest_checkpoint() {
 #[tokio::test]
 async fn test_sync_manager_separate_phases() {
     let tmp = TempDir::new().unwrap();
-    let config = SyncConfig {
-        emit_checkpoints: true,
-        checkpoint_storage: crate::CheckpointStorage::Filesystem {
-            dir: tmp.path().to_string_lossy().to_string(),
-        },
-        incremental: false,
-    };
-
-    let manager = SyncManager::new(config, None);
+    let store = FilesystemStore::new(tmp.path());
+    let manager = SyncManager::new(store);
 
     // Write start checkpoint
     let cp_start = TestCheckpoint {

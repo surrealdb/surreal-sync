@@ -1,10 +1,17 @@
 //! Integration tests for checkpoint storage in SurrealDB.
 //!
-//! These tests verify that CheckpointStore correctly stores and retrieves
+//! These tests verify that Surreal2Store correctly stores and retrieves
 //! checkpoints from a real SurrealDB instance running on hostname "surrealdb".
 
-use checkpoint::{CheckpointID, CheckpointStore};
+use checkpoint::{CheckpointID, CheckpointStore, Surreal2Store};
 use surrealdb::engine::any;
+use surrealdb::sql::{Id, Thing};
+
+/// Helper to create a Thing for test cleanup
+fn make_thing(table: &str, id: &CheckpointID) -> Thing {
+    let id_str = format!("{}_{}", id.database_type.replace('-', "_"), id.phase);
+    Thing::from((table, Id::String(id_str)))
+}
 
 #[tokio::test]
 async fn test_checkpoint_store_roundtrip() -> anyhow::Result<()> {
@@ -18,7 +25,7 @@ async fn test_checkpoint_store_roundtrip() -> anyhow::Result<()> {
         .await?;
     surreal.use_ns("test").use_db("test").await?;
 
-    let store = CheckpointStore::new(surreal.clone(), "test_checkpoints".to_string());
+    let store = Surreal2Store::new(surreal.clone(), "test_checkpoints".to_string());
 
     let id = CheckpointID {
         database_type: "postgresql-wal2json".to_string(),
@@ -44,7 +51,7 @@ async fn test_checkpoint_store_roundtrip() -> anyhow::Result<()> {
     // Cleanup: delete test checkpoint
     surreal
         .query("DELETE $record_id")
-        .bind(("record_id", id.to_thing("test_checkpoints")))
+        .bind(("record_id", make_thing("test_checkpoints", &id)))
         .await?;
 
     Ok(())
@@ -62,7 +69,7 @@ async fn test_checkpoint_store_not_found() -> anyhow::Result<()> {
         .await?;
     surreal.use_ns("test").use_db("test").await?;
 
-    let store = CheckpointStore::new(surreal.clone(), "test_checkpoints".to_string());
+    let store = Surreal2Store::new(surreal.clone(), "test_checkpoints".to_string());
 
     let id = CheckpointID {
         database_type: "nonexistent-source".to_string(),
@@ -91,7 +98,7 @@ async fn test_checkpoint_store_multiple_phases() -> anyhow::Result<()> {
         .await?;
     surreal.use_ns("test").use_db("test").await?;
 
-    let store = CheckpointStore::new(surreal.clone(), "test_checkpoints".to_string());
+    let store = Surreal2Store::new(surreal.clone(), "test_checkpoints".to_string());
 
     // Store t1 checkpoint
     let id_t1 = CheckpointID {
@@ -125,8 +132,8 @@ async fn test_checkpoint_store_multiple_phases() -> anyhow::Result<()> {
     // Cleanup
     surreal
         .query("DELETE $record_id1; DELETE $record_id2;")
-        .bind(("record_id1", id_t1.to_thing("test_checkpoints")))
-        .bind(("record_id2", id_t2.to_thing("test_checkpoints")))
+        .bind(("record_id1", make_thing("test_checkpoints", &id_t1)))
+        .bind(("record_id2", make_thing("test_checkpoints", &id_t2)))
         .await?;
 
     Ok(())
@@ -144,7 +151,7 @@ async fn test_checkpoint_store_update_existing() -> anyhow::Result<()> {
         .await?;
     surreal.use_ns("test").use_db("test").await?;
 
-    let store = CheckpointStore::new(surreal.clone(), "test_checkpoints".to_string());
+    let store = Surreal2Store::new(surreal.clone(), "test_checkpoints".to_string());
 
     let id = CheckpointID {
         database_type: "postgresql-wal2json".to_string(),
@@ -171,7 +178,7 @@ async fn test_checkpoint_store_update_existing() -> anyhow::Result<()> {
     // Cleanup
     surreal
         .query("DELETE $record_id")
-        .bind(("record_id", id.to_thing("test_checkpoints")))
+        .bind(("record_id", make_thing("test_checkpoints", &id)))
         .await?;
 
     Ok(())

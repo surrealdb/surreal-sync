@@ -19,15 +19,14 @@
 //! specific sync crates (mysql-trigger, postgresql-trigger, etc.).
 
 use chrono::Utc;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use surreal_sync::testing::{
     connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
 };
-use surreal_sync::SurrealOpts;
 use surreal_sync_kafka_producer::{
     publish_test_posts, publish_test_relations, publish_test_users, KafkaTestProducer,
 };
-use surreal_sync_kafka_source::{Config as KafkaConfig, SurrealOpts as KafkaSurrealOpts};
+use surreal_sync_kafka_source::Config as KafkaConfig;
 use tokio::time::sleep;
 
 /// Kafka broker address for testing
@@ -97,13 +96,8 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Step 3: Run incremental sync for users topic
     tracing::info!("Running Kafka incremental sync for users...");
 
-    let surreal_opts = SurrealOpts {
-        surreal_endpoint: surreal_config.surreal_endpoint.clone(),
-        surreal_username: "root".to_string(),
-        surreal_password: "root".to_string(),
-        batch_size: 100,
-        dry_run: false,
-    };
+    // Create SurrealDB v2 sink
+    let sink = Arc::new(surreal2_sink::Surreal2Sink::new(surreal.clone()));
 
     // Create a temporary proto file for the user schema
     let proto_dir = tempfile::tempdir()?;
@@ -133,24 +127,13 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Run sync with a short deadline (just enough to consume existing messages)
     let deadline = Utc::now() + chrono::Duration::seconds(5);
 
-    // Convert CLI SurrealOpts to Kafka-specific SurrealOpts
-    let kafka_surreal_opts = KafkaSurrealOpts {
-        surreal_endpoint: surreal_opts.surreal_endpoint.clone(),
-        surreal_username: surreal_opts.surreal_username.clone(),
-        surreal_password: surreal_opts.surreal_password.clone(),
-    };
-
     // Spawn sync task
     let sync_handle = tokio::spawn({
         let config = user_config.clone();
-        let namespace = surreal_config.surreal_namespace.clone();
-        let database = surreal_config.surreal_database.clone();
-        let opts = kafka_surreal_opts.clone();
+        let sink_clone = sink.clone();
         async move {
-            surreal_sync_kafka_source::run_incremental_sync(
-                config, namespace, database, opts, deadline, None,
-            )
-            .await
+            surreal_sync_kafka_source::run_incremental_sync(sink_clone, config, deadline, None)
+                .await
         }
     });
 
@@ -193,14 +176,10 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
     let sync_handle = tokio::spawn({
         let config = post_config;
-        let namespace = surreal_config.surreal_namespace.clone();
-        let database = surreal_config.surreal_database.clone();
-        let opts = kafka_surreal_opts.clone();
+        let sink_clone = sink.clone();
         async move {
-            surreal_sync_kafka_source::run_incremental_sync(
-                config, namespace, database, opts, deadline, None,
-            )
-            .await
+            surreal_sync_kafka_source::run_incremental_sync(sink_clone, config, deadline, None)
+                .await
         }
     });
 
@@ -242,14 +221,10 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
     let sync_handle = tokio::spawn({
         let config = relation_config;
-        let namespace = surreal_config.surreal_namespace.clone();
-        let database = surreal_config.surreal_database.clone();
-        let opts = kafka_surreal_opts;
+        let sink_clone = sink.clone();
         async move {
-            surreal_sync_kafka_source::run_incremental_sync(
-                config, namespace, database, opts, deadline, None,
-            )
-            .await
+            surreal_sync_kafka_source::run_incremental_sync(sink_clone, config, deadline, None)
+                .await
         }
     });
 
