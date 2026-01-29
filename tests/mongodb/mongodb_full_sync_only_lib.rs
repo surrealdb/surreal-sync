@@ -44,6 +44,7 @@ async fn test_mongodb_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> 
     let sync_opts = surreal_sync_mongodb_changestream_source::SyncOpts {
         batch_size: 1000,
         dry_run: false,
+        schema: None,
     };
 
     // Execute full sync with appropriate sink based on detected version

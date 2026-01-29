@@ -46,6 +46,7 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     let sync_opts = surreal_sync_mongodb_changestream_source::SyncOpts {
         batch_size: 1000,
         dry_run: false,
+        schema: None,
     };
 
     // Run full sync on empty collection to establish baseline checkpoint
