@@ -6804,6 +6804,7 @@ dependencies = [
  "futures",
  "log",
  "mongodb",
+ "mongodb-types",
  "serde",
  "serde_json",
  "surreal-sink",

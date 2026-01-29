@@ -4,10 +4,11 @@
 
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
+use mongodb_types::BsonValueWithSchema;
 use std::collections::HashMap;
 use std::time::Duration;
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalRow, UniversalType, UniversalValue};
+use sync_core::{DatabaseSchema, UniversalRow, UniversalType, UniversalValue};
 
 /// Source database connection options (MongoDB-specific, library type without clap)
 #[derive(Clone, Debug)]
@@ -21,6 +22,8 @@ pub struct SourceOpts {
 pub struct SyncOpts {
     pub batch_size: usize,
     pub dry_run: bool,
+    /// Optional schema for type-aware conversion (e.g., Decimal fields)
+    pub schema: Option<DatabaseSchema>,
 }
 
 /// Parse an ISO 8601 duration string (PTxS or PTx.xxxxxxxxxS format).
@@ -194,9 +197,13 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
                 tracing::debug!("BSON document: {:?}", doc_owned);
             }
 
-            // Convert BSON document to UniversalRow
-            let surreal_record =
-                convert_bson_document_to_record(doc_owned, &collection_name, processed as u64)?;
+            // Convert BSON document to UniversalRow with schema-aware conversion
+            let surreal_record = convert_bson_document_to_record_with_schema(
+                doc_owned,
+                &collection_name,
+                processed as u64,
+                sync_opts.schema.as_ref(),
+            )?;
 
             if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
                 tracing::debug!("Final document for SurrealDB: {surreal_record:?}",);
@@ -293,12 +300,27 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     Ok(())
 }
 
-/// Convert BSON values directly to UniversalValue
+/// Convert BSON values directly to UniversalValue (without schema)
 pub fn convert_bson_to_universal_value(
     bson_value: mongodb::bson::Bson,
 ) -> anyhow::Result<UniversalValue> {
+    convert_bson_to_universal_value_with_schema(bson_value, None)
+}
+
+/// Convert BSON values to UniversalValue with optional schema type hint
+pub fn convert_bson_to_universal_value_with_schema(
+    bson_value: mongodb::bson::Bson,
+    field_type: Option<&UniversalType>,
+) -> anyhow::Result<UniversalValue> {
     use mongodb::bson::Bson;
 
+    // If we have schema information, use the schema-aware converter from mongodb-types
+    if let Some(sync_type) = field_type {
+        let typed_value = BsonValueWithSchema::new(bson_value, sync_type.clone()).to_typed_value();
+        return Ok(typed_value.value);
+    }
+
+    // Fall back to schema-less conversion
     match bson_value {
         Bson::Double(f) => Ok(UniversalValue::Float64(f)),
         Bson::String(s) => {
@@ -430,12 +452,16 @@ pub fn convert_bson_to_universal_value(
     }
 }
 
-/// Converts a BSON document containing _id to a UniversalRow
-fn convert_bson_document_to_record(
+/// Converts a BSON document containing _id to a UniversalRow with optional schema
+pub fn convert_bson_document_to_record_with_schema(
     doc: mongodb::bson::Document,
     collection_name: &str,
     row_index: u64,
+    schema: Option<&DatabaseSchema>,
 ) -> anyhow::Result<UniversalRow> {
+    // Get table schema for field type lookup
+    let table_def = schema.and_then(|s| s.get_table(collection_name));
+
     // Extract MongoDB _id and convert to UniversalValue
     let id_value = if let Some(id_bson) = doc.get("_id") {
         match id_bson {
@@ -449,11 +475,13 @@ fn convert_bson_document_to_record(
         anyhow::bail!("Document is missing _id field");
     };
 
-    // Convert remaining fields (excluding _id)
+    // Convert remaining fields (excluding _id) with schema-aware conversion
     let mut fields = HashMap::new();
     for (key, value) in doc {
         if key != "_id" {
-            let v = convert_bson_to_universal_value(value)?;
+            // Look up field type from schema if available
+            let field_type = table_def.and_then(|t| t.get_column_type(&key));
+            let v = convert_bson_to_universal_value_with_schema(value, field_type)?;
             fields.insert(key, v);
         }
     }
