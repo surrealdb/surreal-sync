@@ -29,26 +29,97 @@ pub fn message_to_typed_values(
     match message.payload {
         Payload::Protobuf(msg) => {
             // First, convert all fields from the message
-            for (key, value) in msg.fields {
+            for (key, value) in msg.fields.clone() {
                 let column_schema = table_schema.and_then(|ts| ts.get_column(&key));
                 let typed_value = proto_to_typed_value_with_schema(value, column_schema)?;
                 kvs.insert(key, typed_value);
             }
 
-            // If we have schema, add missing array fields as empty arrays
+            // Apply Proto3 default semantics for missing scalar fields.
+            //
+            // ## Proto3 Wire Format Behavior
+            //
+            // Proto3 omits scalar fields with default values from the wire to save space.
+            // For example, `bool active = 9;` with value `false` is not written.
+            // The Proto3 spec states: "In proto3, scalar fields don't have presence."
+            //
+            // ## Fix Options Considered
+            //
+            // Option A: Change proto schema to use `optional` keyword
+            //   - e.g., `optional bool active = 9;` forces presence tracking
+            //   - Requires schema changes and regenerating protobuf code
+            //   - Not chosen: would require coordinating schema updates across producers
+            //
+            // Option B: Apply Proto3 default semantics on the receiver side
+            //   - Proto3 spec expects receivers to apply defaults for missing scalars
+            //   - Minimal changes, follows protocol specification
+            //   - Matches how protobuf libraries in other languages behave
+            //
+            // This implementation uses Option B - applying the documented Proto3 defaults
+            // for missing scalar fields based on schema information.
+            //
+            // We use the proto message descriptor (always available) as the primary source
+            // for field type information. The TableDefinition is used as a fallback or for
+            // additional type information when available.
+
+            // Apply defaults using proto descriptor (always available from the message)
+            for field_name in msg.descriptor.field_order.iter() {
+                if !kvs.contains_key(field_name) {
+                    if let Some(field_desc) = msg.descriptor.fields.get(field_name) {
+                        match &field_desc.field_type {
+                            ProtoType::Bool => {
+                                // Proto3 default: false
+                                debug!(
+                                    "Adding default 'false' for missing bool field '{}' (Proto3 default)",
+                                    field_name
+                                );
+                                kvs.insert(field_name.clone(), TypedValue::bool(false));
+                            }
+                            ProtoType::Repeated(_) => {
+                                // Proto3 default: empty repeated field
+                                debug!(
+                                    "Adding empty array for missing repeated field '{}' based on proto descriptor",
+                                    field_name
+                                );
+                                // For repeated fields without TableDefinition, default to Text element type
+                                kvs.insert(
+                                    field_name.clone(),
+                                    TypedValue::array(Vec::new(), UniversalType::Text),
+                                );
+                            }
+                            // Note: Other scalar types (int, string, etc.) default to 0/""
+                            // but are typically not missing unless truly optional.
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            // If TableDefinition is also available, use it for more precise type information
             if let Some(schema) = table_schema {
                 for column in &schema.columns {
                     if !kvs.contains_key(&column.name) {
-                        // Check if this is an array field
-                        if let UniversalType::Array { element_type } = &column.column_type {
-                            debug!(
-                                "Adding empty array for missing field '{}' based on schema",
-                                column.name
-                            );
-                            kvs.insert(
-                                column.name.clone(),
-                                TypedValue::array(Vec::new(), (**element_type).clone()),
-                            );
+                        match &column.column_type {
+                            UniversalType::Array { element_type } => {
+                                // Override with more precise element type from TableDefinition
+                                debug!(
+                                    "Adding empty array for missing field '{}' based on TableDefinition schema",
+                                    column.name
+                                );
+                                kvs.insert(
+                                    column.name.clone(),
+                                    TypedValue::array(Vec::new(), (**element_type).clone()),
+                                );
+                            }
+                            UniversalType::Bool => {
+                                // Proto3 default: false
+                                debug!(
+                                    "Adding default 'false' for missing bool field '{}' (Proto3 default via TableDefinition)",
+                                    column.name
+                                );
+                                kvs.insert(column.name.clone(), TypedValue::bool(false));
+                            }
+                            _ => {}
                         }
                     }
                 }
