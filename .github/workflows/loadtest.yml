@@ -18,6 +18,10 @@ on:
         type: string
         description: 'Comma-separated list of sources to test'
         default: 'kafka,mysql,postgresql,mongodb,neo4j'
+      surrealdb_images:
+        type: string
+        description: 'Comma-separated list of SurrealDB images to test'
+        default: 'surrealdb/surrealdb:v2.3.7,surrealdb/surrealdb:v3.0.0-beta.2'
       timeout:
         type: string
         description: 'Timeout in seconds per source'
@@ -51,6 +55,7 @@ jobs:
       timeout: ${{ steps.set-inputs.outputs.timeout }}
       row_count: ${{ steps.set-inputs.outputs.row_count }}
       runner: ${{ steps.set-runner.outputs.runner }}
+      surrealdb_images: ${{ steps.set-inputs.outputs.surrealdb_images }}
     steps:
       - name: Set inputs
         id: set-inputs
@@ -60,6 +65,7 @@ jobs:
             echo "preset=${{ inputs.preset }}" >> $GITHUB_OUTPUT
             echo "timeout=${{ inputs.timeout }}" >> $GITHUB_OUTPUT
             SOURCES="${{ inputs.sources }}"
+            SURREALDB_IMAGES="${{ inputs.surrealdb_images }}"
             # Only set row_count if explicitly provided
             if [ -n "${{ inputs.row_count }}" ]; then
               echo "row_count=${{ inputs.row_count }}" >> $GITHUB_OUTPUT
@@ -68,16 +74,21 @@ jobs:
             echo "preset=small" >> $GITHUB_OUTPUT
             echo "timeout=600" >> $GITHUB_OUTPUT
             SOURCES="kafka,mysql,postgresql,mongodb,neo4j"
+            SURREALDB_IMAGES="surrealdb/surrealdb:v2.3.7,surrealdb/surrealdb:v3.0.0-beta.2"
           fi
           echo "sources=$SOURCES" >> $GITHUB_OUTPUT
+          echo "surrealdb_images=$SURREALDB_IMAGES" >> $GITHUB_OUTPUT
 
       - name: Create matrix
         id: set-matrix
         run: |
           SOURCES="${{ steps.set-inputs.outputs.sources }}"
-          # Convert comma-separated list to JSON array
-          JSON_ARRAY=$(echo "$SOURCES" | tr ',' '\n' | jq -R . | jq -s -c .)
-          echo "matrix={\"source\":$JSON_ARRAY}" >> $GITHUB_OUTPUT
+          SURREALDB_IMAGES="${{ steps.set-inputs.outputs.surrealdb_images }}"
+          # Convert comma-separated lists to JSON arrays
+          SOURCES_JSON=$(echo "$SOURCES" | tr ',' '\n' | jq -R . | jq -s -c .)
+          IMAGES_JSON=$(echo "$SURREALDB_IMAGES" | tr ',' '\n' | jq -R . | jq -s -c .)
+          # Matrix: source × surrealdb image
+          echo "matrix={\"source\":$SOURCES_JSON,\"surrealdb_image\":$IMAGES_JSON}" >> $GITHUB_OUTPUT
 
       # Select runner based on preset to optimize cost and resource utilization.
       # Preset definitions: crates/loadtest-distributed/src/preset.rs
@@ -149,6 +160,7 @@ jobs:
             --source ${{ matrix.source }} \
             --preset ${{ needs.setup.outputs.preset }} \
             --timeout ${{ needs.setup.outputs.timeout }} \
+            --surrealdb-image ${{ matrix.surrealdb_image }} \
             $ROW_COUNT_FLAG \
             --skip-build \
             --no-preserve-on-failure
@@ -157,7 +169,7 @@ jobs:
       - name: Upload metrics
         uses: actions/upload-artifact@v6
         with:
-          name: metrics-${{ matrix.source }}
+          name: metrics-${{ matrix.source }}-${{ matrix.surrealdb_image }}
           path: loadtest/output/metrics.json
           retention-days: 90
 
@@ -165,7 +177,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: container-logs-${{ matrix.source }}
+          name: container-logs-${{ matrix.source }}-${{ matrix.surrealdb_image }}
           path: |
             loadtest/output/logs/
           retention-days: 7
@@ -175,7 +187,7 @@ jobs:
         if: steps.loadtest.outcome == 'failure'
         uses: actions/upload-artifact@v6
         with:
-          name: full-output-${{ matrix.source }}
+          name: full-output-${{ matrix.source }}-${{ matrix.surrealdb_image }}
           path: loadtest/output/
           retention-days: 7
 
@@ -214,6 +226,7 @@ jobs:
           echo "## Load Test Results" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Preset:** ${{ needs.setup.outputs.preset }}" >> $GITHUB_STEP_SUMMARY
+          echo "**SurrealDB Images:** ${{ needs.setup.outputs.surrealdb_images }}" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
