@@ -82,7 +82,7 @@ pub mod v2 {
 pub mod v3 {
     pub use surrealdb3::engine::any::Any;
     pub use surrealdb3::opt::auth::Root;
-    pub use surrealdb3::types::{RecordId, RecordIdKey};
+    pub use surrealdb3::types::{RecordId, RecordIdKey, SurrealValue, Value};
     pub use surrealdb3::Surreal;
 
     /// Connect to a SurrealDB v3 server
@@ -302,6 +302,96 @@ mod tests {
             result.is_err(),
             "V2 SDK should NOT be able to connect to V3 server due to protocol mismatch"
         );
+
+        Ok(())
+    }
+
+    /// Test V2 SDK deserializing query results to custom struct
+    #[tokio::test]
+    async fn test_v2_query_deserialize_to_struct() -> anyhow::Result<()> {
+        init_logging();
+
+        let endpoint = std::env::var("SURREAL_V2_ENDPOINT")
+            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+
+        let client = v2::connect(&endpoint, "test", "demo_struct_test").await?;
+
+        // Create test data
+        client
+            .query("CREATE test_record:1 SET name = 'Alice', age = 30, active = true")
+            .await?;
+
+        // Define struct to deserialize into
+        #[derive(serde::Deserialize, Debug)]
+        struct TestRecord {
+            name: String,
+            age: i64,
+            active: bool,
+        }
+
+        // Query and deserialize - V2 SDK supports Deserialize trait directly
+        let mut response = client.query("SELECT * FROM test_record").await?;
+        let records: Vec<TestRecord> = response.take(0)?;
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name, "Alice");
+        assert_eq!(records[0].age, 30);
+        assert!(records[0].active);
+
+        // Cleanup
+        client.query("DELETE FROM test_record").await?;
+
+        Ok(())
+    }
+
+    /// Test V3 SDK deserializing query results to custom struct
+    ///
+    /// V3 SDK requires SurrealValue trait for .take(). Use #[derive(SurrealValue)]
+    /// on the struct to enable direct deserialization.
+    #[tokio::test]
+    async fn test_v3_query_deserialize_to_struct() -> anyhow::Result<()> {
+        init_logging();
+
+        // Only run this test if V3 endpoint is explicitly configured
+        let endpoint = match std::env::var("SURREAL_V3_ENDPOINT") {
+            Ok(ep) => ep,
+            Err(_) => {
+                eprintln!("Skipping V3 struct deserialization test: SURREAL_V3_ENDPOINT not set");
+                return Ok(());
+            }
+        };
+
+        let client = v3::connect(&endpoint, "test", "demo_struct_test").await?;
+
+        // Create test data
+        client
+            .query("CREATE test_record:1 SET name = 'Bob', age = 25, active = false")
+            .await?;
+
+        // Define struct with SurrealValue derive for V3 SDK
+        // This enables direct deserialization via .take()
+        // Use #[surreal(crate = "...")] to specify the path to surrealdb_types
+        use surrealdb3::types::SurrealValue;
+
+        #[derive(SurrealValue, Debug)]
+        #[surreal(crate = "surrealdb3::types")]
+        struct TestRecord {
+            name: String,
+            age: i64,
+            active: bool,
+        }
+
+        // Query and deserialize directly - V3 SDK uses SurrealValue trait
+        let mut response = client.query("SELECT * FROM test_record").await?;
+        let records: Vec<TestRecord> = response.take(0)?;
+
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name, "Bob");
+        assert_eq!(records[0].age, 25);
+        assert!(!records[0].active);
+
+        // Cleanup
+        client.query("DELETE FROM test_record").await?;
 
         Ok(())
     }

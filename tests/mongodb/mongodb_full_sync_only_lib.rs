@@ -3,9 +3,10 @@
 //! This test validates that MongoDB full sync operations preserve all data types
 //! correctly when syncing to SurrealDB, using the unified dataset.
 
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
+use surreal_sync::testing::surreal::{
+    assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 
 #[tokio::test]
 async fn test_mongodb_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,11 +24,11 @@ async fn test_mongodb_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> 
     let mongodb_client = surreal_sync::testing::mongodb::connect_mongodb().await?;
     let db = mongodb_client.database("testdb");
 
-    // Setup SurrealDB connection
+    // Setup SurrealDB connection with auto-detection
     let surreal_config = TestConfig::new(test_id, "neo4j-test4");
-    let surreal = connect_surrealdb(&surreal_config).await?;
+    let conn = connect_auto(&surreal_config).await?;
 
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     surreal_sync::testing::mongodb::cleanup_mongodb_test_data(&db).await?;
     surreal_sync::testing::mongodb::create_collections(&db, &dataset).await?;
@@ -43,23 +44,29 @@ async fn test_mongodb_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> 
         dry_run: false,
     };
 
-    // Create SurrealDB v2 sink
-    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
+    // Execute full sync with appropriate sink based on detected version
+    match &conn {
+        SurrealConnection::V2(client) => {
+            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            surreal_sync_mongodb_changestream_source::migrate_from_mongodb::<_>(
+                &sink,
+                source_opts,
+                sync_opts,
+            )
+            .await?;
+        }
+        SurrealConnection::V3(client) => {
+            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            surreal_sync_mongodb_changestream_source::migrate_from_mongodb::<_>(
+                &sink,
+                source_opts,
+                sync_opts,
+            )
+            .await?;
+        }
+    }
 
-    // Execute full sync from MongoDB to SurrealDB
-    surreal_sync_mongodb_changestream_source::migrate_from_mongodb::<_>(
-        &sink,
-        source_opts,
-        sync_opts,
-    )
-    .await?;
-
-    surreal_sync::testing::surrealdb::assert_synced(
-        &surreal,
-        &dataset,
-        "MongoDB full sync - all data types",
-    )
-    .await?;
+    assert_synced_auto(&conn, &dataset, "MongoDB full sync - all data types").await?;
 
     // Clean up
     surreal_sync::testing::mongodb::cleanup_mongodb_test_data(&db).await?;

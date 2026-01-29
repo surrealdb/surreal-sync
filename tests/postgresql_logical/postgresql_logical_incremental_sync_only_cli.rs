@@ -5,9 +5,8 @@
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::postgresql::create_tables_and_indices;
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
-};
+use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 use surreal_sync_postgresql_wal2json_source::testing::container::PostgresContainer;
 
 /// Test PostgreSQL logical replication incremental sync CLI
@@ -47,11 +46,11 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
     create_tables_and_indices(&pg_client, &dataset).await?;
 
-    // Setup SurrealDB connection for validation
+    // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::new(test_id, "postgresql-logical-incr-test1");
-    let surreal = connect_surrealdb(&surreal_config).await?;
+    let conn = connect_auto(&surreal_config).await?;
 
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     // Get table names from the dataset
     let table_names: Vec<String> = dataset.tables.iter().map(|t| t.name.clone()).collect();
@@ -138,12 +137,7 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
     println!("Error Output:");
     println!("{}", String::from_utf8_lossy(&incremental_output.stderr));
 
-    surreal_sync::testing::surrealdb::assert_synced(
-        &surreal,
-        &dataset,
-        "PostgreSQL logical incremental sync only",
-    )
-    .await?;
+    assert_synced_auto(&conn, &dataset, "PostgreSQL logical incremental sync CLI").await?;
 
     // Cleanup: drop the replication slot
     pg_client

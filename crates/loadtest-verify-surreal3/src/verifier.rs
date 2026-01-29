@@ -1,0 +1,651 @@
+//! Streaming verifier implementation for SurrealDB v3.
+
+use crate::compare::{compare_values, CompareResult};
+use crate::error::VerifyError;
+use crate::report::{FieldMismatch, MismatchInfo, MissingInfo, VerificationReport};
+use loadtest_generator::DataGenerator;
+use std::time::{Duration, Instant};
+use surrealdb3::engine::any::Any;
+use surrealdb3::types::Value as SurrealValue;
+use surrealdb3::Surreal;
+use sync_core::{GeneratorTableDefinition, Schema, UniversalRow};
+use tracing::{debug, info, warn};
+
+/// Streaming verifier that generates expected data and compares with SurrealDB v3.
+pub struct StreamingVerifier3 {
+    surreal: Surreal<Any>,
+    schema: Schema,
+    generator: DataGenerator,
+    table_name: String,
+    /// Fields to skip during verification.
+    ///
+    /// This is useful for non-deterministic fields like `updated_at` that use
+    /// `timestamp_now` generator - the generated value will differ from the
+    /// actual synced value since they are produced at different times.
+    skip_fields: Vec<String>,
+}
+
+/// A record result that we manually extract field-by-field
+/// since SurrealDB's Value doesn't deserialize via serde in the expected way.
+#[derive(Debug)]
+struct RecordResult {
+    #[allow(dead_code)]
+    id: surrealdb3::types::RecordId,
+    fields: std::collections::HashMap<String, SurrealValue>,
+}
+
+impl StreamingVerifier3 {
+    /// Create a new streaming verifier.
+    ///
+    /// # Arguments
+    ///
+    /// * `surreal` - Connected SurrealDB v3 client
+    /// * `schema` - Load test schema
+    /// * `seed` - Random seed (must match the seed used for data generation)
+    /// * `table_name` - Name of the table to verify
+    ///
+    /// # Design Note: Fresh Generator Per Table
+    ///
+    /// A fresh DataGenerator is created for each table. This is intentional and must match
+    /// the populate behavior, which also creates a fresh generator per table. The generator's
+    /// internal index counter starts at 0, so each table independently generates IDs starting
+    /// from the schema-defined `start` value (e.g., 1 for `sequential` with `start: 1`).
+    ///
+    /// If the populator or verifier reused a single generator across tables, the IDs would
+    /// be offset for subsequent tables (e.g., table2 would have IDs starting at 1001 after
+    /// generating 1000 rows for table1). This causes verification failures because:
+    ///
+    /// 1. The verifier looks up records by generated ID (e.g., `SELECT * FROM orders:1`)
+    /// 2. If populate used offset IDs (orders:1001-2000), the record `orders:1` doesn't exist
+    /// 3. The verifier reports these as "missing" even though the data exists at different IDs
+    ///
+    /// Both populate and verify must use the same per-table generator reset strategy.
+    pub fn new(
+        surreal: Surreal<Any>,
+        schema: Schema,
+        seed: u64,
+        table_name: &str,
+    ) -> Result<Self, VerifyError> {
+        // Validate table exists in schema
+        if schema.get_table(table_name).is_none() {
+            return Err(VerifyError::TableNotFound(table_name.to_string()));
+        }
+
+        // Fresh generator for each table - see doc comment above.
+        let generator = DataGenerator::new(schema.clone(), seed);
+        Ok(Self {
+            surreal,
+            schema,
+            generator,
+            table_name: table_name.to_string(),
+            skip_fields: Vec::new(),
+        })
+    }
+
+    /// Skip specific fields during verification.
+    ///
+    /// # When to use
+    /// Use this for non-deterministic fields like `updated_at` that use `timestamp_now`
+    /// generator. Since the generator produces the timestamp at generation time and the
+    /// actual synced value is from when the data was inserted, these will always differ.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let verifier = StreamingVerifier3::new(surreal, schema, seed, "users")?
+    ///     .with_skip_fields(vec!["updated_at".to_string()]);
+    /// ```
+    pub fn with_skip_fields(mut self, fields: Vec<String>) -> Self {
+        self.skip_fields = fields;
+        self
+    }
+
+    /// Set the starting index for verification (for incremental verification).
+    pub fn with_start_index(mut self, index: u64) -> Self {
+        self.generator = std::mem::replace(
+            &mut self.generator,
+            DataGenerator::new(self.schema.clone(), 0),
+        )
+        .with_start_index(index);
+        self
+    }
+
+    /// Get the current generator index.
+    pub fn current_index(&self) -> u64 {
+        self.generator.current_index()
+    }
+
+    /// Verify a specific number of rows using streaming comparison.
+    ///
+    /// This method generates expected rows one by one and queries SurrealDB
+    /// to verify each row matches. This approach is memory-efficient for
+    /// large datasets.
+    pub async fn verify_streaming(
+        &mut self,
+        count: u64,
+    ) -> Result<VerificationReport, VerifyError> {
+        let start_time = Instant::now();
+        let mut report = VerificationReport {
+            expected: count,
+            ..Default::default()
+        };
+
+        let table_schema = self
+            .schema
+            .get_table(&self.table_name)
+            .ok_or_else(|| VerifyError::TableNotFound(self.table_name.clone()))?
+            .clone();
+
+        info!(
+            "Starting streaming verification of {} rows for table '{}'",
+            count, self.table_name
+        );
+
+        let mut generation_time = Duration::ZERO;
+        let mut query_time = Duration::ZERO;
+        let mut compare_time = Duration::ZERO;
+
+        for i in 0..count {
+            // Generate expected row
+            let gen_start = Instant::now();
+            let expected_row = self
+                .generator
+                .next_internal_row(&self.table_name)
+                .map_err(|e| VerifyError::Generator(e.to_string()))?;
+            generation_time += gen_start.elapsed();
+
+            // Query SurrealDB for this row
+            let query_start = Instant::now();
+            let actual = self.query_row(&expected_row, &table_schema).await?;
+            query_time += query_start.elapsed();
+
+            // Compare
+            let compare_start = Instant::now();
+            match actual {
+                Some(actual_record) => {
+                    report.found += 1;
+                    let mismatches = self.compare_row(&expected_row, &actual_record, &table_schema);
+                    if mismatches.is_empty() {
+                        report.matched += 1;
+                    } else {
+                        report.mismatched += 1;
+                        report.mismatched_rows.push(MismatchInfo {
+                            record_id: format!(
+                                "{}:{}",
+                                self.table_name,
+                                format_id(&expected_row.id)
+                            ),
+                            index: i,
+                            field_mismatches: mismatches,
+                        });
+                    }
+                }
+                None => {
+                    report.missing += 1;
+                    report.missing_rows.push(MissingInfo {
+                        expected_id: format!("{}:{}", self.table_name, format_id(&expected_row.id)),
+                        index: i,
+                    });
+                }
+            }
+            compare_time += compare_start.elapsed();
+
+            if (i + 1) % 1000 == 0 {
+                debug!(
+                    "Verified {}/{} rows ({} matched, {} missing, {} mismatched)",
+                    i + 1,
+                    count,
+                    report.matched,
+                    report.missing,
+                    report.mismatched
+                );
+            }
+        }
+
+        report.total_duration = start_time.elapsed();
+        report.generation_duration = generation_time;
+        report.query_duration = query_time;
+        report.compare_duration = compare_time;
+
+        info!(
+            "Verification complete: {} rows verified in {:?} - {} matched, {} missing, {} mismatched",
+            count,
+            report.total_duration,
+            report.matched,
+            report.missing,
+            report.mismatched
+        );
+
+        Ok(report)
+    }
+
+    /// Verify a range of rows (for incremental verification).
+    pub async fn verify_range(
+        &mut self,
+        start_index: u64,
+        count: u64,
+    ) -> Result<VerificationReport, VerifyError> {
+        // Set generator to start at the specified index
+        self.generator = std::mem::replace(
+            &mut self.generator,
+            DataGenerator::new(self.schema.clone(), 0),
+        )
+        .with_start_index(start_index);
+
+        self.verify_streaming(count).await
+    }
+
+    /// Query a single row from SurrealDB by its ID.
+    async fn query_row(
+        &self,
+        expected_row: &UniversalRow,
+        table_schema: &GeneratorTableDefinition,
+    ) -> Result<Option<RecordResult>, VerifyError> {
+        use surrealdb3::types::{RecordId, RecordIdKey};
+
+        // Construct proper RecordId based on ID type to match how sync stores records
+        let record_id = match &expected_row.id {
+            sync_core::UniversalValue::Uuid(u) => RecordId::new(
+                self.table_name.as_str(),
+                RecordIdKey::Uuid(surrealdb3::types::Uuid::from(*u)),
+            ),
+            sync_core::UniversalValue::Int64(i) => {
+                RecordId::new(self.table_name.as_str(), RecordIdKey::Number(*i))
+            }
+            sync_core::UniversalValue::Int32(i) => {
+                RecordId::new(self.table_name.as_str(), RecordIdKey::Number(*i as i64))
+            }
+            sync_core::UniversalValue::Text(s) => {
+                RecordId::new(self.table_name.as_str(), RecordIdKey::String(s.clone()))
+            }
+            other => {
+                // Fallback for other types - use string representation
+                RecordId::new(
+                    self.table_name.as_str(),
+                    RecordIdKey::String(format_id(other)),
+                )
+            }
+        };
+
+        // First check if the record exists by fetching just the ID
+        let mut response = self
+            .surreal
+            .query("SELECT id FROM $record_id")
+            .bind(("record_id", record_id.clone()))
+            .await?;
+
+        let ids: Vec<surrealdb3::types::RecordId> = response.take((0, "id"))?;
+        debug!("Query result for {:?}: found {} ids", record_id, ids.len());
+        if ids.is_empty() {
+            return Ok(None);
+        }
+
+        // Record exists, now fetch all fields individually
+        let mut fields = std::collections::HashMap::new();
+        for field_schema in &table_schema.fields {
+            let field_name = &field_schema.name;
+            // Query the full record and extract the specific field
+            let mut field_response = self
+                .surreal
+                .query("SELECT * FROM $record_id")
+                .bind(("record_id", record_id.clone()))
+                .await?;
+
+            // Try to extract the field value as the appropriate SurrealDB type
+            let value = self
+                .extract_field_value(
+                    &mut field_response,
+                    field_name,
+                    &field_schema.field_type,
+                    &record_id,
+                )
+                .await
+                .map_err(|e| {
+                    warn!(
+                        "Failed to extract field '{}' (type {:?}) from record {:?}: {}",
+                        field_name, field_schema.field_type, record_id, e
+                    );
+                    e
+                })?;
+            debug!(
+                "Extracted field '{}' with type {:?}: {:?}",
+                field_name, field_schema.field_type, value
+            );
+            if let Some(v) = value {
+                fields.insert(field_name.clone(), v);
+            }
+        }
+
+        Ok(Some(RecordResult {
+            id: record_id,
+            fields,
+        }))
+    }
+
+    /// Extract a field value from a query response based on its expected type.
+    async fn extract_field_value(
+        &self,
+        response: &mut surrealdb3::IndexedResults,
+        field_name: &str,
+        data_type: &sync_core::UniversalType,
+        record_id: &surrealdb3::types::RecordId,
+    ) -> Result<Option<SurrealValue>, VerifyError> {
+        use surrealdb3::types::Number;
+        use sync_core::UniversalType;
+
+        match data_type {
+            UniversalType::Bool => {
+                let val: Option<bool> = response.take((0, field_name))?;
+                Ok(val.map(SurrealValue::Bool))
+            }
+            UniversalType::Int8 { .. }
+            | UniversalType::Int16
+            | UniversalType::Int32
+            | UniversalType::Int64 => {
+                let val: Option<i64> = response.take((0, field_name))?;
+                Ok(val.map(|v| SurrealValue::Number(Number::Int(v))))
+            }
+            UniversalType::Float32 | UniversalType::Float64 => {
+                let val: Option<f64> = response.take((0, field_name))?;
+                Ok(val.map(|v| SurrealValue::Number(Number::Float(v))))
+            }
+            UniversalType::Decimal { .. } => {
+                // Different sources store decimals differently:
+                // - CSV sync stores as floats
+                // - JSONL/MongoDB store as strings
+                // Try float first, then string
+                match response.take::<Option<f64>>((0, field_name)) {
+                    Ok(Some(v)) => Ok(Some(SurrealValue::Number(Number::Float(v)))),
+                    Ok(None) => Ok(None),
+                    Err(_) => {
+                        // Re-query and try as string
+                        let mut retry_response = self
+                            .surreal
+                            .query("SELECT * FROM $record_id")
+                            .bind(("record_id", record_id.clone()))
+                            .await?;
+                        let val: Option<String> =
+                            retry_response.take((0, field_name)).unwrap_or(None);
+                        Ok(val.map(SurrealValue::String))
+                    }
+                }
+            }
+            UniversalType::Char { .. }
+            | UniversalType::VarChar { .. }
+            | UniversalType::Text
+            | UniversalType::Enum { .. } => {
+                let val: Option<String> = response.take((0, field_name))?;
+                Ok(val.map(SurrealValue::String))
+            }
+            UniversalType::Uuid => {
+                // UUIDs can be stored as native UUID type or as string
+                // Try native UUID first, fall back to string
+                let result: Result<Option<uuid::Uuid>, _> = response.take((0, field_name));
+                match result {
+                    Ok(Some(v)) => Ok(Some(SurrealValue::Uuid(surrealdb3::types::Uuid::from(v)))),
+                    Ok(None) => Ok(None),
+                    Err(_) => {
+                        // Try as string (for JSONL which stores UUIDs as strings)
+                        let mut response2 = self
+                            .surreal
+                            .query(format!("SELECT {field_name} FROM $record_id"))
+                            .bind(("record_id", record_id.clone()))
+                            .await?;
+                        let val: Option<String> = response2.take((0, field_name))?;
+                        Ok(val.map(SurrealValue::String))
+                    }
+                }
+            }
+            UniversalType::Ulid => {
+                // ULIDs are stored as strings in SurrealDB
+                let val: Option<String> = response.take((0, field_name))?;
+                Ok(val.map(SurrealValue::String))
+            }
+            UniversalType::LocalDateTime
+            | UniversalType::LocalDateTimeNano
+            | UniversalType::ZonedDateTime => {
+                let val: Option<chrono::DateTime<chrono::Utc>> = response.take((0, field_name))?;
+                Ok(val.map(|v| SurrealValue::Datetime(surrealdb3::types::Datetime::from(v))))
+            }
+            UniversalType::Date => {
+                let val: Option<String> = response.take((0, field_name))?;
+                Ok(val.map(SurrealValue::String))
+            }
+            UniversalType::Time => {
+                let val: Option<String> = response.take((0, field_name))?;
+                Ok(val.map(SurrealValue::String))
+            }
+            UniversalType::Blob | UniversalType::Bytes => {
+                let val: Option<Vec<u8>> = response.take((0, field_name))?;
+                Ok(val.map(|v| SurrealValue::Bytes(surrealdb3::types::Bytes::from(v))))
+            }
+            UniversalType::Json | UniversalType::Jsonb => {
+                // JSON values are stored as native Objects in SurrealDB
+                // Use serde_json::Value for dynamic JSON extraction
+                let val: Option<serde_json::Value> = response.take((0, field_name))?;
+                Ok(val.map(|v| json_value_to_surreal(&v)))
+            }
+            UniversalType::Array { element_type } => {
+                // Extract array based on element type
+                match element_type.as_ref() {
+                    UniversalType::Int32 | UniversalType::Int16 | UniversalType::Int64 => {
+                        let val: Option<Vec<i64>> = response.take((0, field_name))?;
+                        Ok(val.map(|arr| {
+                            let items: Vec<SurrealValue> = arr
+                                .into_iter()
+                                .map(|i| SurrealValue::Number(Number::Int(i)))
+                                .collect();
+                            SurrealValue::Array(surrealdb3::types::Array::from(items))
+                        }))
+                    }
+                    UniversalType::Text
+                    | UniversalType::VarChar { .. }
+                    | UniversalType::Char { .. } => {
+                        let val: Option<Vec<String>> = response.take((0, field_name))?;
+                        Ok(val.map(|arr| {
+                            let items: Vec<SurrealValue> =
+                                arr.into_iter().map(SurrealValue::String).collect();
+                            SurrealValue::Array(surrealdb3::types::Array::from(items))
+                        }))
+                    }
+                    _ => {
+                        // For other element types, skip for now
+                        Ok(None)
+                    }
+                }
+            }
+            UniversalType::Set { .. } => {
+                // Sets - for now just skip complex set handling
+                Ok(None)
+            }
+            UniversalType::Geometry { .. } => {
+                // Geometry - skip for now
+                Ok(None)
+            }
+            UniversalType::Duration => {
+                // Duration - extract as SurrealDB duration
+                let val: Option<surrealdb3::types::Duration> = response.take((0, field_name))?;
+                Ok(val.map(SurrealValue::Duration))
+            }
+            UniversalType::Thing => {
+                // Thing - extract as SurrealDB RecordId
+                let val: Option<surrealdb3::types::RecordId> = response.take((0, field_name))?;
+                Ok(val.map(SurrealValue::RecordId))
+            }
+            UniversalType::Object => {
+                // Object - stored as native Object in SurrealDB
+                let val: Option<serde_json::Value> = response.take((0, field_name))?;
+                Ok(val.map(|v| json_value_to_surreal(&v)))
+            }
+            UniversalType::TimeTz => {
+                // TimeTz - stored as string in SurrealDB
+                let val: Option<String> = response.take((0, field_name))?;
+                Ok(val.map(SurrealValue::String))
+            }
+        }
+    }
+
+    /// Compare an expected row with an actual SurrealDB record.
+    fn compare_row(
+        &self,
+        expected: &UniversalRow,
+        actual: &RecordResult,
+        table_schema: &GeneratorTableDefinition,
+    ) -> Vec<FieldMismatch> {
+        let mut mismatches = Vec::new();
+
+        for field_schema in &table_schema.fields {
+            // Skip fields that are configured to be skipped (e.g., non-deterministic updated_at)
+            if self.skip_fields.contains(&field_schema.name) {
+                continue;
+            }
+
+            let expected_value = expected.get_field(&field_schema.name);
+            let actual_value = actual.fields.get(&field_schema.name);
+
+            match (expected_value, actual_value) {
+                (Some(exp), Some(act)) => {
+                    let result = compare_values(exp, act);
+                    debug!(
+                        "Field '{}' comparison: exp={:?}, act={:?}, result={:?}",
+                        field_schema.name, exp, act, result
+                    );
+                    match result {
+                        CompareResult::Match => {}
+                        CompareResult::Mismatch { expected, actual } => {
+                            mismatches.push(FieldMismatch {
+                                field: field_schema.name.clone(),
+                                expected,
+                                actual,
+                            });
+                        }
+                        CompareResult::Missing => {
+                            mismatches.push(FieldMismatch {
+                                field: field_schema.name.clone(),
+                                expected: format!("{exp:?}"),
+                                actual: "MISSING".to_string(),
+                            });
+                        }
+                    }
+                }
+                (Some(exp), None) => {
+                    // Expected field but not found in SurrealDB
+                    mismatches.push(FieldMismatch {
+                        field: field_schema.name.clone(),
+                        expected: format!("{exp:?}"),
+                        actual: "MISSING".to_string(),
+                    });
+                }
+                (None, Some(act)) => {
+                    // Extra field in SurrealDB (this is usually okay, but log it)
+                    warn!(
+                        "Extra field '{}' in SurrealDB record: {:?}",
+                        field_schema.name, act
+                    );
+                }
+                (None, None) => {
+                    // Both missing - this is fine (null field)
+                }
+            }
+        }
+
+        mismatches
+    }
+}
+
+/// Format a UniversalValue ID for display.
+fn format_id(value: &sync_core::UniversalValue) -> String {
+    match value {
+        sync_core::UniversalValue::Uuid(u) => u.to_string(),
+        sync_core::UniversalValue::Int64(i) => i.to_string(),
+        sync_core::UniversalValue::Int32(i) => i.to_string(),
+        sync_core::UniversalValue::Text(s) => s.clone(),
+        _ => format!("{value:?}"),
+    }
+}
+
+/// Convert a serde_json::Value to surrealdb3::types::Value for comparison.
+fn json_value_to_surreal(v: &serde_json::Value) -> SurrealValue {
+    use surrealdb3::types::Number;
+
+    match v {
+        serde_json::Value::Null => SurrealValue::None,
+        serde_json::Value::Bool(b) => SurrealValue::Bool(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                SurrealValue::Number(Number::Int(i))
+            } else if let Some(f) = n.as_f64() {
+                SurrealValue::Number(Number::Float(f))
+            } else {
+                SurrealValue::String(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => SurrealValue::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            let items: Vec<SurrealValue> = arr.iter().map(json_value_to_surreal).collect();
+            SurrealValue::Array(surrealdb3::types::Array::from(items))
+        }
+        serde_json::Value::Object(obj) => {
+            let mut m = std::collections::BTreeMap::new();
+            for (k, val) in obj {
+                m.insert(k.clone(), json_value_to_surreal(val));
+            }
+            SurrealValue::Object(surrealdb3::types::Object::from(m))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_schema() -> Schema {
+        let yaml = r#"
+version: 1
+seed: 42
+tables:
+  - name: users
+    id:
+      type: uuid
+      generator:
+        type: uuid_v4
+    fields:
+      - name: email
+        type:
+          type: var_char
+          length: 255
+        generator:
+          type: pattern
+          pattern: "user_{index}@example.com"
+      - name: age
+        type: int
+        generator:
+          type: int_range
+          min: 18
+          max: 80
+"#;
+        Schema::from_yaml(yaml).unwrap()
+    }
+
+    #[test]
+    fn test_table_not_found() {
+        // This test can't actually create a SurrealDB connection without async,
+        // so we just verify the schema validation logic
+        let schema = test_schema();
+        assert!(schema.get_table("nonexistent").is_none());
+        assert!(schema.get_table("users").is_some());
+    }
+
+    #[test]
+    fn test_format_id() {
+        let uuid = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        assert_eq!(
+            format_id(&sync_core::UniversalValue::Uuid(uuid)),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+        assert_eq!(format_id(&sync_core::UniversalValue::Int64(12345)), "12345");
+        assert_eq!(
+            format_id(&sync_core::UniversalValue::Text("test-id".to_string())),
+            "test-id"
+        );
+    }
+}

@@ -4,9 +4,10 @@
 //! by starting with empty collections, running full sync to generate checkpoint,
 //! then adding data and running incremental sync.
 
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
+use surreal_sync::testing::surreal::{
+    assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 
 #[tokio::test]
 async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -26,14 +27,14 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     let mongodb_client = surreal_sync::testing::mongodb::connect_mongodb().await?;
     let db = mongodb_client.database("testdb");
 
-    // Setup SurrealDB connection
+    // Setup SurrealDB connection with auto-detection
     let surreal_config = TestConfig::new(test_id, "mongodb-incremental-only");
-    let surreal = connect_surrealdb(&surreal_config).await?;
+    let conn = connect_auto(&surreal_config).await?;
 
     // Clean up any existing test data
     surreal_sync::testing::mongodb::cleanup(&db, &dataset).await?;
     surreal_sync::testing::mongodb::create_collections(&db, &dataset).await?;
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
         source_uri: "mongodb://root:root@mongodb:27017".to_string(),
@@ -51,20 +52,33 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     // Get current timestamp as checkpoint baseline
     let checkpoint_timestamp = chrono::Utc::now();
 
-    // Create SurrealDB v2 sink
-    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
-
     // Create sync manager with filesystem checkpoint store
     let checkpoint_store = checkpoint::FilesystemStore::new(".test-checkpoints");
     let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
 
-    surreal_sync_mongodb_changestream_source::run_full_sync(
-        &sink,
-        source_opts.clone(),
-        sync_opts,
-        Some(&sync_manager),
-    )
-    .await?;
+    // Run full sync with appropriate sink based on detected version
+    match &conn {
+        SurrealConnection::V2(client) => {
+            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            surreal_sync_mongodb_changestream_source::run_full_sync(
+                &sink,
+                source_opts.clone(),
+                sync_opts,
+                Some(&sync_manager),
+            )
+            .await?;
+        }
+        SurrealConnection::V3(client) => {
+            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            surreal_sync_mongodb_changestream_source::run_full_sync(
+                &sink,
+                source_opts.clone(),
+                sync_opts,
+                Some(&sync_manager),
+            )
+            .await?;
+        }
+    }
 
     // Verify checkpoint emission (t1 and t2 checkpoints)
     surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(".test-checkpoints")?;
@@ -91,21 +105,32 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
         main_checkpoint.parse()?;
 
     // Run TRUE incremental sync using the checkpoint with target timestamp
-    surreal_sync_mongodb_changestream_source::run_incremental_sync(
-        &sink,
-        source_opts,
-        sync_checkpoint,
-        deadline,
-        None, // No target checkpoint - sync until deadline
-    )
-    .await?;
+    match &conn {
+        SurrealConnection::V2(client) => {
+            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            surreal_sync_mongodb_changestream_source::run_incremental_sync(
+                &sink,
+                source_opts,
+                sync_checkpoint,
+                deadline,
+                None,
+            )
+            .await?;
+        }
+        SurrealConnection::V3(client) => {
+            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            surreal_sync_mongodb_changestream_source::run_incremental_sync(
+                &sink,
+                source_opts,
+                sync_checkpoint,
+                deadline,
+                None,
+            )
+            .await?;
+        }
+    }
 
-    surreal_sync::testing::surrealdb::assert_synced(
-        &surreal,
-        &dataset,
-        "MongoDB incremental sync only",
-    )
-    .await?;
+    assert_synced_auto(&conn, &dataset, "MongoDB incremental sync only").await?;
 
     // Clean up
     surreal_sync::testing::mongodb::cleanup_mongodb_test_data(&db).await?;

@@ -3756,7 +3756,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "loadtest-verify"
+name = "loadtest-verify-surreal2"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -3768,6 +3768,27 @@ dependencies = [
  "serde_json",
  "surreal2-types",
  "surrealdb 2.3.7",
+ "sync-core",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "loadtest-verify-surreal3"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "loadtest-generator",
+ "serde",
+ "serde_json",
+ "surreal3-types",
+ "surrealdb 3.0.0-beta.2",
  "sync-core",
  "thiserror 1.0.69",
  "tokio",
@@ -6620,7 +6641,8 @@ dependencies = [
  "loadtest-populate-mysql",
  "loadtest-populate-neo4j",
  "loadtest-populate-postgresql",
- "loadtest-verify",
+ "loadtest-verify-surreal2",
+ "loadtest-verify-surreal3",
  "log",
  "mongodb",
  "mysql-types",

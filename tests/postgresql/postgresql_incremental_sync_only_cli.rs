@@ -4,10 +4,9 @@
 //! correctly, using the unified dataset.
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
-use surreal_sync::testing::{
-    postgresql::create_tables_and_indices,
-    {connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig},
-};
+use surreal_sync::testing::postgresql::create_tables_and_indices;
+use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 
 #[tokio::test]
 async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,11 +37,11 @@ async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
     create_tables_and_indices(&pg_client, &dataset).await?;
 
-    // Setup SurrealDB connection for validation
+    // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::new(test_id, "neo4j-test6");
-    let surreal = connect_surrealdb(&surreal_config).await?;
+    let conn = connect_auto(&surreal_config).await?;
 
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     // Execute CLI command for initial full sync
     // Note: database is extracted from connection string, not passed separately
@@ -118,12 +117,7 @@ async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error
     println!("Error Output:");
     println!("{}", String::from_utf8_lossy(&incremental_output.stderr));
 
-    surreal_sync::testing::surrealdb::assert_synced(
-        &surreal,
-        &dataset,
-        "PostgreSQL incremental sync only",
-    )
-    .await?;
+    assert_synced_auto(&conn, &dataset, "PostgreSQL incremental sync CLI").await?;
 
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
 

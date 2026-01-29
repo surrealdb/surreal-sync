@@ -4,9 +4,10 @@
 //! preserve all data types correctly when syncing to SurrealDB, using the
 //! unified dataset.
 
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
+use surreal_sync::testing::surreal::{
+    assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 
 #[tokio::test]
 async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,11 +32,11 @@ async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error
     });
 
     let surreal_config = TestConfig::new(test_id, "neo4j-test2");
-    let surreal = connect_surrealdb(&surreal_config).await?;
+    let conn = connect_auto(&surreal_config).await?;
 
     // Clean up
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
     surreal_sync::testing::postgresql::create_tables_and_indices(&pg_client, &dataset).await?;
 
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
@@ -50,24 +51,31 @@ async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error
         dry_run: false,
     };
 
-    // Create SurrealDB v2 sink
-    let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
+    // Execute full sync with appropriate sink based on detected version
+    match &conn {
+        SurrealConnection::V2(client) => {
+            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            surreal_sync_postgresql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+            )
+            .await?;
+        }
+        SurrealConnection::V3(client) => {
+            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            surreal_sync_postgresql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+            )
+            .await?;
+        }
+    }
 
-    // Execute full sync for the users table
-    surreal_sync_postgresql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
-        &sink,
-        source_opts,
-        sync_opts,
-        None,
-    )
-    .await?;
-
-    surreal_sync::testing::surrealdb::assert_synced(
-        &surreal,
-        &dataset,
-        "PostgreSQL full sync only",
-    )
-    .await?;
+    assert_synced_auto(&conn, &dataset, "PostgreSQL full sync only").await?;
 
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
 

@@ -5,9 +5,9 @@ use crate::error::VerifyError;
 use crate::report::{FieldMismatch, MismatchInfo, MissingInfo, VerificationReport};
 use loadtest_generator::DataGenerator;
 use std::time::{Duration, Instant};
-use surrealdb::engine::any::Any;
-use surrealdb::sql::Value as SurrealValue;
-use surrealdb::Surreal;
+use surrealdb2::engine::any::Any;
+use surrealdb2::sql::Value as SurrealValue;
+use surrealdb2::Surreal;
 use sync_core::{GeneratorTableDefinition, Schema, UniversalRow};
 use tracing::{debug, info, warn};
 
@@ -30,7 +30,7 @@ pub struct StreamingVerifier {
 #[derive(Debug)]
 struct RecordResult {
     #[allow(dead_code)]
-    id: surrealdb::sql::Thing,
+    id: surrealdb2::sql::Thing,
     fields: std::collections::HashMap<String, SurrealValue>,
 }
 
@@ -240,13 +240,13 @@ impl StreamingVerifier {
         expected_row: &UniversalRow,
         table_schema: &GeneratorTableDefinition,
     ) -> Result<Option<RecordResult>, VerifyError> {
-        use surrealdb::sql::{Id, Thing};
+        use surrealdb2::sql::{Id, Thing};
 
         // Construct proper Thing based on ID type to match how sync stores records
         let thing = match &expected_row.id {
             sync_core::UniversalValue::Uuid(u) => Thing::from((
                 self.table_name.as_str(),
-                Id::Uuid(surrealdb::sql::Uuid::from(*u)),
+                Id::Uuid(surrealdb2::sql::Uuid::from(*u)),
             )),
             sync_core::UniversalValue::Int64(i) => {
                 Thing::from((self.table_name.as_str(), Id::Number(*i)))
@@ -270,7 +270,7 @@ impl StreamingVerifier {
             .bind(("record_id", thing.clone()))
             .await?;
 
-        let ids: Vec<surrealdb::sql::Thing> = response.take((0, "id"))?;
+        let ids: Vec<surrealdb2::sql::Thing> = response.take((0, "id"))?;
         debug!("Query result for {:?}: found {} ids", thing, ids.len());
         if ids.is_empty() {
             return Ok(None);
@@ -318,10 +318,10 @@ impl StreamingVerifier {
     /// Extract a field value from a query response based on its expected type.
     async fn extract_field_value(
         &self,
-        response: &mut surrealdb::Response,
+        response: &mut surrealdb2::Response,
         field_name: &str,
         data_type: &sync_core::UniversalType,
-        record_id: &surrealdb::sql::Thing,
+        record_id: &surrealdb2::sql::Thing,
     ) -> Result<Option<SurrealValue>, VerifyError> {
         use sync_core::UniversalType;
 
@@ -335,11 +335,11 @@ impl StreamingVerifier {
             | UniversalType::Int32
             | UniversalType::Int64 => {
                 let val: Option<i64> = response.take((0, field_name))?;
-                Ok(val.map(|v| SurrealValue::Number(surrealdb::sql::Number::Int(v))))
+                Ok(val.map(|v| SurrealValue::Number(surrealdb2::sql::Number::Int(v))))
             }
             UniversalType::Float32 | UniversalType::Float64 => {
                 let val: Option<f64> = response.take((0, field_name))?;
-                Ok(val.map(|v| SurrealValue::Number(surrealdb::sql::Number::Float(v))))
+                Ok(val.map(|v| SurrealValue::Number(surrealdb2::sql::Number::Float(v))))
             }
             UniversalType::Decimal { .. } => {
                 // Different sources store decimals differently:
@@ -347,7 +347,9 @@ impl StreamingVerifier {
                 // - JSONL/MongoDB store as strings
                 // Try float first, then string
                 match response.take::<Option<f64>>((0, field_name)) {
-                    Ok(Some(v)) => Ok(Some(SurrealValue::Number(surrealdb::sql::Number::Float(v)))),
+                    Ok(Some(v)) => Ok(Some(SurrealValue::Number(surrealdb2::sql::Number::Float(
+                        v,
+                    )))),
                     Ok(None) => Ok(None),
                     Err(_) => {
                         // Re-query and try as string
@@ -358,7 +360,7 @@ impl StreamingVerifier {
                             .await?;
                         let val: Option<String> =
                             retry_response.take((0, field_name)).unwrap_or(None);
-                        Ok(val.map(|v| SurrealValue::Strand(surrealdb::sql::Strand::from(v))))
+                        Ok(val.map(|v| SurrealValue::Strand(surrealdb2::sql::Strand::from(v))))
                     }
                 }
             }
@@ -367,14 +369,14 @@ impl StreamingVerifier {
             | UniversalType::Text
             | UniversalType::Enum { .. } => {
                 let val: Option<String> = response.take((0, field_name))?;
-                Ok(val.map(|v| SurrealValue::Strand(surrealdb::sql::Strand::from(v))))
+                Ok(val.map(|v| SurrealValue::Strand(surrealdb2::sql::Strand::from(v))))
             }
             UniversalType::Uuid => {
                 // UUIDs can be stored as native UUID type or as string
                 // Try native UUID first, fall back to string
                 let result: Result<Option<uuid::Uuid>, _> = response.take((0, field_name));
                 match result {
-                    Ok(Some(v)) => Ok(Some(SurrealValue::Uuid(surrealdb::sql::Uuid::from(v)))),
+                    Ok(Some(v)) => Ok(Some(SurrealValue::Uuid(surrealdb2::sql::Uuid::from(v)))),
                     Ok(None) => Ok(None),
                     Err(_) => {
                         // Try as string (for JSONL which stores UUIDs as strings)
@@ -384,32 +386,32 @@ impl StreamingVerifier {
                             .bind(("record_id", record_id.clone()))
                             .await?;
                         let val: Option<String> = response2.take((0, field_name))?;
-                        Ok(val.map(|v| SurrealValue::Strand(surrealdb::sql::Strand::from(v))))
+                        Ok(val.map(|v| SurrealValue::Strand(surrealdb2::sql::Strand::from(v))))
                     }
                 }
             }
             UniversalType::Ulid => {
                 // ULIDs are stored as strings in SurrealDB
                 let val: Option<String> = response.take((0, field_name))?;
-                Ok(val.map(|v| SurrealValue::Strand(surrealdb::sql::Strand::from(v))))
+                Ok(val.map(|v| SurrealValue::Strand(surrealdb2::sql::Strand::from(v))))
             }
             UniversalType::LocalDateTime
             | UniversalType::LocalDateTimeNano
             | UniversalType::ZonedDateTime => {
                 let val: Option<chrono::DateTime<chrono::Utc>> = response.take((0, field_name))?;
-                Ok(val.map(|v| SurrealValue::Datetime(surrealdb::sql::Datetime::from(v))))
+                Ok(val.map(|v| SurrealValue::Datetime(surrealdb2::sql::Datetime::from(v))))
             }
             UniversalType::Date => {
                 let val: Option<String> = response.take((0, field_name))?;
-                Ok(val.map(|v| SurrealValue::Strand(surrealdb::sql::Strand::from(v))))
+                Ok(val.map(|v| SurrealValue::Strand(surrealdb2::sql::Strand::from(v))))
             }
             UniversalType::Time => {
                 let val: Option<String> = response.take((0, field_name))?;
-                Ok(val.map(|v| SurrealValue::Strand(surrealdb::sql::Strand::from(v))))
+                Ok(val.map(|v| SurrealValue::Strand(surrealdb2::sql::Strand::from(v))))
             }
             UniversalType::Blob | UniversalType::Bytes => {
                 let val: Option<Vec<u8>> = response.take((0, field_name))?;
-                Ok(val.map(|v| SurrealValue::Bytes(surrealdb::sql::Bytes::from(v))))
+                Ok(val.map(|v| SurrealValue::Bytes(surrealdb2::sql::Bytes::from(v))))
             }
             UniversalType::Json | UniversalType::Jsonb => {
                 // JSON values are stored as native Objects in SurrealDB
@@ -425,9 +427,9 @@ impl StreamingVerifier {
                         Ok(val.map(|arr| {
                             let items: Vec<SurrealValue> = arr
                                 .into_iter()
-                                .map(|i| SurrealValue::Number(surrealdb::sql::Number::Int(i)))
+                                .map(|i| SurrealValue::Number(surrealdb2::sql::Number::Int(i)))
                                 .collect();
-                            SurrealValue::Array(surrealdb::sql::Array::from(items))
+                            SurrealValue::Array(surrealdb2::sql::Array::from(items))
                         }))
                     }
                     UniversalType::Text
@@ -437,9 +439,9 @@ impl StreamingVerifier {
                         Ok(val.map(|arr| {
                             let items: Vec<SurrealValue> = arr
                                 .into_iter()
-                                .map(|s| SurrealValue::Strand(surrealdb::sql::Strand::from(s)))
+                                .map(|s| SurrealValue::Strand(surrealdb2::sql::Strand::from(s)))
                                 .collect();
-                            SurrealValue::Array(surrealdb::sql::Array::from(items))
+                            SurrealValue::Array(surrealdb2::sql::Array::from(items))
                         }))
                     }
                     _ => {
@@ -458,12 +460,12 @@ impl StreamingVerifier {
             }
             UniversalType::Duration => {
                 // Duration - extract as SurrealDB duration
-                let val: Option<surrealdb::sql::Duration> = response.take((0, field_name))?;
+                let val: Option<surrealdb2::sql::Duration> = response.take((0, field_name))?;
                 Ok(val.map(SurrealValue::Duration))
             }
             UniversalType::Thing => {
                 // Thing - extract as SurrealDB Thing
-                let val: Option<surrealdb::sql::Thing> = response.take((0, field_name))?;
+                let val: Option<surrealdb2::sql::Thing> = response.take((0, field_name))?;
                 Ok(val.map(SurrealValue::Thing))
             }
             UniversalType::Object => {
@@ -474,7 +476,7 @@ impl StreamingVerifier {
             UniversalType::TimeTz => {
                 // TimeTz - stored as string in SurrealDB
                 let val: Option<String> = response.take((0, field_name))?;
-                Ok(val.map(|s| SurrealValue::Strand(surrealdb::sql::Strand::from(s))))
+                Ok(val.map(|s| SurrealValue::Strand(surrealdb2::sql::Strand::from(s))))
             }
         }
     }
@@ -558,33 +560,33 @@ fn format_id(value: &sync_core::UniversalValue) -> String {
     }
 }
 
-/// Convert a serde_json::Value to surrealdb::sql::Value for comparison.
+/// Convert a serde_json::Value to surrealdb2::sql::Value for comparison.
 fn json_value_to_surreal(v: &serde_json::Value) -> SurrealValue {
     match v {
         serde_json::Value::Null => SurrealValue::None,
         serde_json::Value::Bool(b) => SurrealValue::Bool(*b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                SurrealValue::Number(surrealdb::sql::Number::Int(i))
+                SurrealValue::Number(surrealdb2::sql::Number::Int(i))
             } else if let Some(f) = n.as_f64() {
-                SurrealValue::Number(surrealdb::sql::Number::Float(f))
+                SurrealValue::Number(surrealdb2::sql::Number::Float(f))
             } else {
-                SurrealValue::Strand(surrealdb::sql::Strand::from(n.to_string()))
+                SurrealValue::Strand(surrealdb2::sql::Strand::from(n.to_string()))
             }
         }
         serde_json::Value::String(s) => {
-            SurrealValue::Strand(surrealdb::sql::Strand::from(s.clone()))
+            SurrealValue::Strand(surrealdb2::sql::Strand::from(s.clone()))
         }
         serde_json::Value::Array(arr) => {
             let items: Vec<SurrealValue> = arr.iter().map(json_value_to_surreal).collect();
-            SurrealValue::Array(surrealdb::sql::Array::from(items))
+            SurrealValue::Array(surrealdb2::sql::Array::from(items))
         }
         serde_json::Value::Object(obj) => {
             let mut m = std::collections::BTreeMap::new();
             for (k, val) in obj {
                 m.insert(k.clone(), json_value_to_surreal(val));
             }
-            SurrealValue::Object(surrealdb::sql::Object::from(m))
+            SurrealValue::Object(surrealdb2::sql::Object::from(m))
         }
     }
 }

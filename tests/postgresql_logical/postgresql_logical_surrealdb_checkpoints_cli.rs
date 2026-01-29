@@ -5,9 +5,10 @@
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::postgresql::create_tables_and_indices;
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
+use surreal_sync::testing::surreal::{
+    assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 use surreal_sync_postgresql_wal2json_source::testing::container::PostgresContainer;
 
 /// Test PostgreSQL logical replication with SurrealDB checkpoint storage
@@ -45,11 +46,11 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
     create_tables_and_indices(&pg_client, &dataset).await?;
 
-    // Setup SurrealDB connection for validation
+    // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::new(test_id, "postgresql-logical-surrealdb-test1");
-    let surreal = connect_surrealdb(&surreal_config).await?;
+    let conn = connect_auto(&surreal_config).await?;
 
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     // Get table names from the dataset
     let table_names: Vec<String> = dataset.tables.iter().map(|t| t.name.clone()).collect();
@@ -58,9 +59,18 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
     let checkpoint_table = "surreal_sync_checkpoints";
 
     // Clean up any existing checkpoints from previous test runs
-    surreal
-        .query(format!("DELETE FROM {checkpoint_table}"))
-        .await?;
+    match &conn {
+        SurrealConnection::V2(client) => {
+            client
+                .query(format!("DELETE FROM {checkpoint_table}"))
+                .await?;
+        }
+        SurrealConnection::V3(client) => {
+            client
+                .query(format!("DELETE FROM {checkpoint_table}"))
+                .await?;
+        }
+    }
 
     // Execute CLI command for initial full sync WITH SurrealDB checkpoint storage
     // NOTE: The CLI subcommand is "postgresql" not "postgresql-wal2json"
@@ -95,11 +105,29 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
     );
 
     // Verify checkpoints were stored in SurrealDB (not filesystem)
-    let mut response = surreal
-        .query(format!("SELECT * FROM {checkpoint_table}"))
-        .await?;
-
+    // V2 SDK uses serde::Deserialize, V3 SDK uses SurrealValue trait
+    // We define two structs for compatibility with both SDK versions
     #[derive(serde::Deserialize, Debug)]
+    struct StoredCheckpointV2 {
+        #[allow(dead_code)]
+        checkpoint_data: String,
+        database_type: String,
+        phase: String,
+    }
+
+    // For V3, we derive SurrealValue using the crate attribute to point to surrealdb3::types
+    use surrealdb3::types::SurrealValue;
+    #[derive(SurrealValue, Debug)]
+    #[surreal(crate = "surrealdb3::types")]
+    struct StoredCheckpointV3 {
+        #[allow(dead_code)]
+        checkpoint_data: String,
+        database_type: String,
+        phase: String,
+    }
+
+    // Common struct for assertions (converted from version-specific structs)
+    #[derive(Debug)]
     struct StoredCheckpoint {
         #[allow(dead_code)]
         checkpoint_data: String,
@@ -107,7 +135,37 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
         phase: String,
     }
 
-    let checkpoints: Vec<StoredCheckpoint> = response.take(0)?;
+    let checkpoints: Vec<StoredCheckpoint> = match &conn {
+        SurrealConnection::V2(client) => {
+            let mut response = client
+                .query(format!("SELECT * FROM {checkpoint_table}"))
+                .await?;
+            let v2_checkpoints: Vec<StoredCheckpointV2> = response.take(0)?;
+            v2_checkpoints
+                .into_iter()
+                .map(|c| StoredCheckpoint {
+                    checkpoint_data: c.checkpoint_data,
+                    database_type: c.database_type,
+                    phase: c.phase,
+                })
+                .collect()
+        }
+        SurrealConnection::V3(client) => {
+            let mut response = client
+                .query(format!("SELECT * FROM {checkpoint_table}"))
+                .await?;
+            let v3_checkpoints: Vec<StoredCheckpointV3> = response.take(0)?;
+            v3_checkpoints
+                .into_iter()
+                .map(|c| StoredCheckpoint {
+                    checkpoint_data: c.checkpoint_data,
+                    database_type: c.database_type,
+                    phase: c.phase,
+                })
+                .collect()
+        }
+    };
+
     println!("Checkpoints in SurrealDB: {checkpoints:?}");
 
     // Should have t1 (FullSyncStart) and t2 (FullSyncEnd) checkpoints
@@ -176,8 +234,8 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
     println!("{}", String::from_utf8_lossy(&incremental_output.stderr));
 
     // Verify all data was synced correctly
-    surreal_sync::testing::surrealdb::assert_synced(
-        &surreal,
+    assert_synced_auto(
+        &conn,
         &dataset,
         "PostgreSQL logical with SurrealDB checkpoints",
     )
@@ -195,9 +253,18 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
 
     // Cleanup checkpoints from SurrealDB
-    surreal
-        .query(format!("DELETE FROM {checkpoint_table}"))
-        .await?;
+    match &conn {
+        SurrealConnection::V2(client) => {
+            client
+                .query(format!("DELETE FROM {checkpoint_table}"))
+                .await?;
+        }
+        SurrealConnection::V3(client) => {
+            client
+                .query(format!("DELETE FROM {checkpoint_table}"))
+                .await?;
+        }
+    }
 
     // Cleanup: Stop container
     container.stop()?;

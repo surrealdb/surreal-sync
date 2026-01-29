@@ -5,7 +5,9 @@
 
 use surreal_sync::testing::{
     cli::{assert_cli_success, execute_surreal_sync},
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
+    create_unified_full_dataset, generate_test_id,
+    surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto},
+    TestConfig,
 };
 
 #[tokio::test]
@@ -39,10 +41,10 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
     // Create schema/constraints but don't insert data yet
     surreal_sync::testing::neo4j::create_constraints_and_indices(&graph, &dataset).await?;
 
-    // Setup SurrealDB connection for validation
+    // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::new(test_id, "neo4j-incremental-cli");
-    let surreal = connect_surrealdb(&surreal_config).await?;
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    let conn = connect_auto(&surreal_config).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     // Execute CLI command for initial full sync (without data to get checkpoint)
     let full_sync_args = [
@@ -129,12 +131,7 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
     println!("Error Output:");
     println!("{}", String::from_utf8_lossy(&incremental_output.stderr));
 
-    surreal_sync::testing::surrealdb::assert_synced(
-        &surreal,
-        &dataset,
-        "Neo4j incremental sync only",
-    )
-    .await?;
+    assert_synced_auto(&conn, &dataset, "Neo4j incremental sync only").await?;
 
     surreal_sync::testing::neo4j::delete_nodes_and_relationships(&graph).await?;
 

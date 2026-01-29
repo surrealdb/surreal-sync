@@ -4,9 +4,8 @@
 //! correctly, using the unified dataset.
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
-use surreal_sync::testing::{
-    connect_surrealdb, create_unified_full_dataset, generate_test_id, TestConfig,
-};
+use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 
 #[tokio::test]
 async fn test_mysql_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
@@ -28,10 +27,10 @@ async fn test_mysql_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
     surreal_sync::testing::mysql::create_tables_and_indices(&mut mysql_conn, &dataset).await?;
     surreal_sync::testing::mysql::insert_rows(&mut mysql_conn, &dataset).await?;
 
-    // Setup SurrealDB connection for validation
+    // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::new(test_id, "neo4j-test5");
-    let surreal = connect_surrealdb(&surreal_config).await?;
-    surreal_sync::testing::test_helpers::cleanup_surrealdb(&surreal, &dataset).await?;
+    let conn = connect_auto(&surreal_config).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     // Execute CLI command for MySQL full sync with data
     let args = [
@@ -64,12 +63,7 @@ async fn test_mysql_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
     println!("Error Output:");
     println!("{}", String::from_utf8_lossy(&output.stderr));
 
-    surreal_sync::testing::surrealdb::assert_synced(
-        &surreal,
-        &dataset,
-        "PostgreSQL full sync only",
-    )
-    .await?;
+    assert_synced_auto(&conn, &dataset, "MySQL full sync CLI").await?;
 
     surreal_sync::testing::mysql::cleanup_mysql_test_data(&mut mysql_conn).await?;
 
