@@ -7,6 +7,6 @@ license = "MIT"
 
 [dependencies]
 anyhow = "1.0.100"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "native-tls"], default-features = false }
 semver = "1.0"
 tracing = "0.1"
