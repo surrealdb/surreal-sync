@@ -19,7 +19,9 @@ mod common;
 mod csv_jsonl;
 mod kafka;
 mod mongodb;
+mod mongodb_incremental;
 mod mysql;
+mod mysql_incremental;
 mod neo4j;
 mod postgresql;
 mod postgresql_trigger_incremental;
@@ -56,7 +58,9 @@ impl ConfigGenerator for DockerComposeGenerator {
         );
 
         // Add MongoDB init service if needed
-        if config.source_type == SourceType::MongoDB {
+        if config.source_type == SourceType::MongoDB
+            || config.source_type == SourceType::MongoDBIncremental
+        {
             let init_service = databases::generate_mongodb_init_service();
             services.insert(Value::String("mongodb-init".to_string()), init_service);
         }
@@ -65,11 +69,15 @@ impl ConfigGenerator for DockerComposeGenerator {
         let surrealdb_service = generate_surrealdb_service(config);
         services.insert(Value::String("surrealdb".to_string()), surrealdb_service);
 
-        // PostgreSQL incremental sync requires a special container sequence (5-stage pipeline)
-        if config.source_type == SourceType::PostgreSQLTriggerIncremental {
+        // Incremental sync sources require a special container sequence (5-stage pipeline)
+        if config.source_type == SourceType::MySQLIncremental {
+            generate_mysql_incremental_pipeline(&mut services, config);
+        } else if config.source_type == SourceType::PostgreSQLTriggerIncremental {
             generate_postgresql_trigger_incremental_pipeline(&mut services, config);
         } else if config.source_type == SourceType::PostgreSQLWal2JsonIncremental {
             generate_postgresql_wal2json_incremental_pipeline(&mut services, config);
+        } else if config.source_type == SourceType::MongoDBIncremental {
+            generate_mongodb_incremental_pipeline(&mut services, config);
         } else {
             // Standard flow for other sources (3-stage pipeline)
             generate_standard_pipeline(&mut services, config);
@@ -144,6 +152,77 @@ impl ConfigGenerator for DockerComposeGenerator {
 
     fn filename(&self) -> &str {
         "docker-compose.loadtest.yml"
+    }
+}
+
+/// Generate MySQL Incremental 5-stage pipeline.
+fn generate_mysql_incremental_pipeline(services: &mut Mapping, config: &ClusterConfig) {
+    // 1. Add schema-init container (creates empty tables)
+    let schema_init_service = mysql_incremental::generate_schema_init_service(config);
+    services.insert(
+        Value::String("schema-init".to_string()),
+        schema_init_service,
+    );
+
+    // 2. Add full-sync-setup container (creates triggers/audit table, runs full sync)
+    let full_sync_setup_service = mysql_incremental::generate_full_sync_setup_service(config);
+    services.insert(
+        Value::String("full-sync-setup".to_string()),
+        full_sync_setup_service,
+    );
+
+    // 3. Add populate containers (depend on full-sync-setup, changes captured by triggers)
+    for container in &config.containers {
+        let mut populate_service = generate_populate_service(config, container);
+
+        // Update dependencies to wait for full-sync-setup
+        if let Some(Value::Mapping(depends_on)) =
+            populate_service.get_mut(Value::String("depends_on".to_string()))
+        {
+            let mut setup_dep = Mapping::new();
+            setup_dep.insert(
+                Value::String("condition".to_string()),
+                Value::String("service_completed_successfully".to_string()),
+            );
+            depends_on.insert(
+                Value::String("full-sync-setup".to_string()),
+                Value::Mapping(setup_dep),
+            );
+        }
+
+        services.insert(Value::String(container.id.clone()), populate_service);
+    }
+
+    // 4. Add incremental-sync container (reads checkpoint from SurrealDB, syncs from audit table)
+    let incremental_sync_service = mysql_incremental::generate_incremental_sync_service(config);
+    services.insert(
+        Value::String("incremental-sync".to_string()),
+        incremental_sync_service,
+    );
+
+    // 5. Add verify containers (depend on incremental-sync)
+    for container in &config.containers {
+        let mut verify_service = generate_verify_service(config, container);
+
+        // Update dependencies to wait for incremental-sync instead of sync
+        if let Some(Value::Mapping(depends_on)) =
+            verify_service.get_mut(Value::String("depends_on".to_string()))
+        {
+            depends_on.remove(Value::String("sync".to_string()));
+
+            let mut sync_dep = Mapping::new();
+            sync_dep.insert(
+                Value::String("condition".to_string()),
+                Value::String("service_completed_successfully".to_string()),
+            );
+            depends_on.insert(
+                Value::String("incremental-sync".to_string()),
+                Value::Mapping(sync_dep),
+            );
+        }
+
+        let verify_id = container.id.replace("populate-", "verify-");
+        services.insert(Value::String(verify_id), verify_service);
     }
 }
 
@@ -299,6 +378,77 @@ fn generate_postgresql_wal2json_incremental_pipeline(
     }
 }
 
+/// Generate MongoDB Incremental 5-stage pipeline.
+fn generate_mongodb_incremental_pipeline(services: &mut Mapping, config: &ClusterConfig) {
+    // 1. Add schema-init container (creates empty collections)
+    let schema_init_service = mongodb_incremental::generate_schema_init_service(config);
+    services.insert(
+        Value::String("schema-init".to_string()),
+        schema_init_service,
+    );
+
+    // 2. Add full-sync-setup container (runs full sync, stores change stream resume token)
+    let full_sync_setup_service = mongodb_incremental::generate_full_sync_setup_service(config);
+    services.insert(
+        Value::String("full-sync-setup".to_string()),
+        full_sync_setup_service,
+    );
+
+    // 3. Add populate containers (depend on full-sync-setup, changes captured by change stream)
+    for container in &config.containers {
+        let mut populate_service = generate_populate_service(config, container);
+
+        // Update dependencies to wait for full-sync-setup
+        if let Some(Value::Mapping(depends_on)) =
+            populate_service.get_mut(Value::String("depends_on".to_string()))
+        {
+            let mut setup_dep = Mapping::new();
+            setup_dep.insert(
+                Value::String("condition".to_string()),
+                Value::String("service_completed_successfully".to_string()),
+            );
+            depends_on.insert(
+                Value::String("full-sync-setup".to_string()),
+                Value::Mapping(setup_dep),
+            );
+        }
+
+        services.insert(Value::String(container.id.clone()), populate_service);
+    }
+
+    // 4. Add incremental-sync container (reads resume token from SurrealDB, syncs from change stream)
+    let incremental_sync_service = mongodb_incremental::generate_incremental_sync_service(config);
+    services.insert(
+        Value::String("incremental-sync".to_string()),
+        incremental_sync_service,
+    );
+
+    // 5. Add verify containers (depend on incremental-sync)
+    for container in &config.containers {
+        let mut verify_service = generate_verify_service(config, container);
+
+        // Update dependencies to wait for incremental-sync instead of sync
+        if let Some(Value::Mapping(depends_on)) =
+            verify_service.get_mut(Value::String("depends_on".to_string()))
+        {
+            depends_on.remove(Value::String("sync".to_string()));
+
+            let mut sync_dep = Mapping::new();
+            sync_dep.insert(
+                Value::String("condition".to_string()),
+                Value::String("service_completed_successfully".to_string()),
+            );
+            depends_on.insert(
+                Value::String("incremental-sync".to_string()),
+                Value::Mapping(sync_dep),
+            );
+        }
+
+        let verify_id = container.id.replace("populate-", "verify-");
+        services.insert(Value::String(verify_id), verify_service);
+    }
+}
+
 /// Generate standard 3-stage pipeline for most sources.
 fn generate_standard_pipeline(services: &mut Mapping, config: &ClusterConfig) {
     // Add populate container services
@@ -345,6 +495,10 @@ fn generate_standard_pipeline(services: &mut Mapping, config: &ClusterConfig) {
 fn generate_sync_service(config: &ClusterConfig) -> Value {
     match config.source_type {
         SourceType::MySQL => mysql::generate_sync_service(config),
+        SourceType::MySQLIncremental => {
+            // MySQL incremental uses the 5-stage pipeline, this shouldn't be called directly
+            unreachable!("MySQLIncremental uses 5-stage pipeline, not single sync service")
+        }
         SourceType::PostgreSQL => postgresql::generate_sync_service(config),
         SourceType::PostgreSQLTriggerIncremental | SourceType::PostgreSQLWal2JsonIncremental => {
             // PostgreSQL incremental types use the 5-stage pipeline, this shouldn't be called directly
@@ -353,6 +507,10 @@ fn generate_sync_service(config: &ClusterConfig) -> Value {
             )
         }
         SourceType::MongoDB => mongodb::generate_sync_service(config),
+        SourceType::MongoDBIncremental => {
+            // MongoDB incremental uses the 5-stage pipeline, this shouldn't be called directly
+            unreachable!("MongoDBIncremental uses 5-stage pipeline, not single sync service")
+        }
         SourceType::Neo4j => neo4j::generate_sync_service(config),
         SourceType::Kafka => {
             unreachable!("Kafka uses per-topic sync services, not a single sync service")
@@ -472,12 +630,13 @@ fn generate_populate_service(
     // Command - uses surreal-sync loadtest populate
     let tables_arg = container.tables.join(",");
     let source_cmd = match config.source_type {
-        SourceType::MySQL => "mysql",
+        // All MySQL variants use the same populate command
+        SourceType::MySQL | SourceType::MySQLIncremental => "mysql",
         // All PostgreSQL variants use the same populate command (data goes to same database)
         SourceType::PostgreSQL
         | SourceType::PostgreSQLTriggerIncremental
         | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
-        SourceType::MongoDB => "mongodb",
+        SourceType::MongoDB | SourceType::MongoDBIncremental => "mongodb",
         SourceType::Neo4j => "neo4j",
         SourceType::Kafka => "kafka",
         SourceType::Csv => "csv",
@@ -486,7 +645,7 @@ fn generate_populate_service(
 
     // Build connection string args based on source type
     let connection_args = match config.source_type {
-        SourceType::MySQL => {
+        SourceType::MySQL | SourceType::MySQLIncremental => {
             format!(
                 "--mysql-connection-string '{}'",
                 container.connection_string
@@ -500,7 +659,7 @@ fn generate_populate_service(
                 container.connection_string
             )
         }
-        SourceType::MongoDB => {
+        SourceType::MongoDB | SourceType::MongoDBIncremental => {
             // MongoDB needs connection string and database
             format!(
                 "--mongodb-connection-string '{}' --mongodb-database loadtest",
@@ -522,9 +681,11 @@ fn generate_populate_service(
     };
 
     let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
-    // For PostgreSQL incremental types, populate runs AFTER schema-init creates tables, so use --data-only
+    // For incremental types, populate runs AFTER schema-init creates tables, so use --data-only
     let data_only_flag = if config.source_type == SourceType::PostgreSQLTriggerIncremental
         || config.source_type == SourceType::PostgreSQLWal2JsonIncremental
+        || config.source_type == SourceType::MySQLIncremental
+        || config.source_type == SourceType::MongoDBIncremental
     {
         " --data-only"
     } else {
@@ -630,7 +791,9 @@ fn generate_populate_service(
     );
 
     // For MongoDB, also wait for mongodb-init to complete (replica set initialization)
-    if config.source_type == SourceType::MongoDB {
+    if config.source_type == SourceType::MongoDB
+        || config.source_type == SourceType::MongoDBIncremental
+    {
         let mut init_dep = Mapping::new();
         init_dep.insert(
             Value::String("condition".to_string()),

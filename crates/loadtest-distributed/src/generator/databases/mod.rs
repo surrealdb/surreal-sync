@@ -30,7 +30,7 @@ fn normalize_memory_unit(memory: &str) -> String {
 /// Generate Docker service configuration for a database.
 pub fn generate_docker_service(config: &DatabaseConfig) -> Value {
     match config.source_type {
-        SourceType::MySQL => generate_mysql_docker_service(config),
+        SourceType::MySQL | SourceType::MySQLIncremental => generate_mysql_docker_service(config),
         // Trigger-based PostgreSQL uses standard postgres image
         SourceType::PostgreSQL | SourceType::PostgreSQLTriggerIncremental => {
             generate_postgresql_docker_service(config)
@@ -39,7 +39,9 @@ pub fn generate_docker_service(config: &DatabaseConfig) -> Value {
         SourceType::PostgreSQLWal2JsonIncremental => {
             generate_postgresql_logical_docker_service(config)
         }
-        SourceType::MongoDB => generate_mongodb_docker_service(config),
+        SourceType::MongoDB | SourceType::MongoDBIncremental => {
+            generate_mongodb_docker_service(config)
+        }
         SourceType::Neo4j => generate_neo4j_docker_service(config),
         SourceType::Kafka => generate_kafka_docker_service(config),
         SourceType::Csv | SourceType::Jsonl => generate_file_generator_docker_service(config),
@@ -54,7 +56,9 @@ pub fn generate_mongodb_init_service() -> Value {
 /// Generate Kubernetes StatefulSet for a database.
 pub fn generate_k8s_statefulset(config: &DatabaseConfig, namespace: &str) -> String {
     match config.source_type {
-        SourceType::MySQL => generate_mysql_k8s_statefulset(config, namespace),
+        SourceType::MySQL | SourceType::MySQLIncremental => {
+            generate_mysql_k8s_statefulset(config, namespace)
+        }
         // Trigger-based PostgreSQL uses standard postgres image
         SourceType::PostgreSQL | SourceType::PostgreSQLTriggerIncremental => {
             generate_postgresql_k8s_statefulset(config, namespace)
@@ -63,7 +67,9 @@ pub fn generate_k8s_statefulset(config: &DatabaseConfig, namespace: &str) -> Str
         SourceType::PostgreSQLWal2JsonIncremental => {
             generate_postgresql_logical_k8s_statefulset(config, namespace)
         }
-        SourceType::MongoDB => generate_mongodb_k8s_statefulset(config, namespace),
+        SourceType::MongoDB | SourceType::MongoDBIncremental => {
+            generate_mongodb_k8s_statefulset(config, namespace)
+        }
         SourceType::Neo4j => generate_neo4j_k8s_statefulset(config, namespace),
         SourceType::Kafka => generate_kafka_k8s_statefulset(config, namespace),
         SourceType::Csv | SourceType::Jsonl => generate_file_generator_k8s_job(config, namespace),
@@ -73,7 +79,7 @@ pub fn generate_k8s_statefulset(config: &DatabaseConfig, namespace: &str) -> Str
 /// Generate Kubernetes Service for a database.
 pub fn generate_k8s_service(config: &DatabaseConfig, namespace: &str) -> String {
     match config.source_type {
-        SourceType::MySQL => generate_mysql_k8s_service(namespace),
+        SourceType::MySQL | SourceType::MySQLIncremental => generate_mysql_k8s_service(namespace),
         // Trigger-based PostgreSQL uses standard postgres service
         SourceType::PostgreSQL | SourceType::PostgreSQLTriggerIncremental => {
             generate_postgresql_k8s_service(namespace)
@@ -82,7 +88,9 @@ pub fn generate_k8s_service(config: &DatabaseConfig, namespace: &str) -> String 
         SourceType::PostgreSQLWal2JsonIncremental => {
             generate_postgresql_logical_k8s_service(namespace)
         }
-        SourceType::MongoDB => generate_mongodb_k8s_service(namespace),
+        SourceType::MongoDB | SourceType::MongoDBIncremental => {
+            generate_mongodb_k8s_service(namespace)
+        }
         SourceType::Neo4j => generate_neo4j_k8s_service(namespace),
         SourceType::Kafka => generate_kafka_k8s_service(namespace),
         SourceType::Csv | SourceType::Jsonl => String::new(), // No service needed

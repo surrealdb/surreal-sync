@@ -24,12 +24,16 @@ impl std::fmt::Display for Platform {
 #[serde(rename_all = "lowercase")]
 pub enum SourceType {
     MySQL,
+    /// MySQL trigger-based incremental sync (audit table with triggers)
+    MySQLIncremental,
     PostgreSQL,
     /// PostgreSQL trigger-based incremental sync (audit table with triggers)
     PostgreSQLTriggerIncremental,
     /// PostgreSQL with WAL-based logical replication incremental sync (requires wal2json extension)
     PostgreSQLWal2JsonIncremental,
     MongoDB,
+    /// MongoDB change stream incremental sync
+    MongoDBIncremental,
     Neo4j,
     Kafka,
     Csv,
@@ -40,6 +44,7 @@ impl std::fmt::Display for SourceType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SourceType::MySQL => write!(f, "mysql"),
+            SourceType::MySQLIncremental => write!(f, "mysql-incremental"),
             SourceType::PostgreSQL => write!(f, "postgresql"),
             SourceType::PostgreSQLTriggerIncremental => {
                 write!(f, "postgresql-trigger-incremental")
@@ -48,6 +53,7 @@ impl std::fmt::Display for SourceType {
                 write!(f, "postgresql-wal2json-incremental")
             }
             SourceType::MongoDB => write!(f, "mongodb"),
+            SourceType::MongoDBIncremental => write!(f, "mongodb-incremental"),
             SourceType::Neo4j => write!(f, "neo4j"),
             SourceType::Kafka => write!(f, "kafka"),
             SourceType::Csv => write!(f, "csv"),
@@ -62,10 +68,12 @@ impl std::str::FromStr for SourceType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "mysql" => Ok(SourceType::MySQL),
+            "mysql-incremental" => Ok(SourceType::MySQLIncremental),
             "postgresql" | "postgres" | "postgresql-trigger" => Ok(SourceType::PostgreSQL),
             "postgresql-trigger-incremental" => Ok(SourceType::PostgreSQLTriggerIncremental),
             "postgresql-wal2json-incremental" => Ok(SourceType::PostgreSQLWal2JsonIncremental),
             "mongodb" | "mongo" => Ok(SourceType::MongoDB),
+            "mongodb-incremental" => Ok(SourceType::MongoDBIncremental),
             "neo4j" => Ok(SourceType::Neo4j),
             "kafka" => Ok(SourceType::Kafka),
             "csv" => Ok(SourceType::Csv),
@@ -392,13 +400,15 @@ pub fn build_cluster_config(
 /// Get default connection string for a source type.
 fn get_default_connection_string(source_type: SourceType, platform: Platform) -> String {
     match source_type {
-        SourceType::MySQL => "mysql://root:root@mysql:3306/loadtest".to_string(),
+        SourceType::MySQL | SourceType::MySQLIncremental => {
+            "mysql://root:root@mysql:3306/loadtest".to_string()
+        }
         SourceType::PostgreSQL
         | SourceType::PostgreSQLTriggerIncremental
         | SourceType::PostgreSQLWal2JsonIncremental => {
             "postgresql://postgres:postgres@postgresql:5432/loadtest".to_string()
         }
-        SourceType::MongoDB => {
+        SourceType::MongoDB | SourceType::MongoDBIncremental => {
             "mongodb://root:root@mongodb:27017/loadtest?authSource=admin".to_string()
         }
         SourceType::Neo4j => "bolt://neo4j:password@neo4j:7687".to_string(),
@@ -417,14 +427,14 @@ fn get_default_connection_string(source_type: SourceType, platform: Platform) ->
 /// Get default Docker image for a source type.
 fn get_default_database_image(source_type: SourceType) -> String {
     match source_type {
-        SourceType::MySQL => "mysql:8.0".to_string(),
+        SourceType::MySQL | SourceType::MySQLIncremental => "mysql:8.0".to_string(),
         SourceType::PostgreSQL | SourceType::PostgreSQLTriggerIncremental => {
             "postgres:16".to_string()
         }
         // PostgreSQL WAL2JSON replication requires wal2json extension
         // Built from custom Dockerfile (Dockerfile.postgres16.wal2json)
         SourceType::PostgreSQLWal2JsonIncremental => "postgres-wal2json:latest".to_string(),
-        SourceType::MongoDB => "mongo:7".to_string(),
+        SourceType::MongoDB | SourceType::MongoDBIncremental => "mongo:7".to_string(),
         SourceType::Neo4j => "neo4j:5".to_string(),
         SourceType::Kafka => "apache/kafka:latest".to_string(),
         SourceType::Csv | SourceType::Jsonl => "busybox:latest".to_string(),
