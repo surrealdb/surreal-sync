@@ -148,6 +148,22 @@ impl MongoDBPopulator {
         drop_collection(&collection).await
     }
 
+    /// Create an empty collection.
+    ///
+    /// This is used for schema-only mode where we want to create the collection
+    /// structure without inserting any data.
+    pub async fn create_collection(
+        &self,
+        collection_name: &str,
+    ) -> Result<(), MongoDBPopulatorError> {
+        info!("Creating collection: {}", collection_name);
+        self.database
+            .create_collection(collection_name)
+            .await
+            .map_err(MongoDBPopulatorError::from)?;
+        Ok(())
+    }
+
     /// Populate a collection with the specified number of documents.
     ///
     /// # Arguments
