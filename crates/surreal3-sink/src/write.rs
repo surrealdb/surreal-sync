@@ -130,7 +130,7 @@ pub async fn write_record(
 
     tracing::trace!("Executing SurrealDB query with flattened fields: {}", query);
 
-    log::info!("🔧 migrate_batch executing: {query} for record: {record_id:?}");
+    log::info!("🔧 migrate_batch executing: {query}");
 
     // Add debug logging to see the document being bound
     if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
