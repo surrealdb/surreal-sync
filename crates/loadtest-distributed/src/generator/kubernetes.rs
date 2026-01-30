@@ -136,7 +136,9 @@ impl KubernetesGenerator {
 fn database_name(source_type: SourceType) -> &'static str {
     match source_type {
         SourceType::MySQL => "mysql",
-        SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
+        SourceType::PostgreSQL
+        | SourceType::PostgreSQLTriggerIncremental
+        | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
         SourceType::MongoDB => "mongodb",
         SourceType::Neo4j => "neo4j",
         SourceType::Kafka => "kafka",
@@ -437,8 +439,10 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
     let db_name = database_name(config.source_type);
     let source_type_lower = match config.source_type {
         SourceType::MySQL => "mysql",
-        // Both PostgreSQL variants use the same populate command (data goes to same database)
-        SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
+        // All PostgreSQL variants use the same populate command (data goes to same database)
+        SourceType::PostgreSQL
+        | SourceType::PostgreSQLTriggerIncremental
+        | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
         SourceType::MongoDB => "mongodb",
         SourceType::Neo4j => "neo4j",
         SourceType::Kafka => "kafka",
@@ -527,7 +531,9 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
                     container.connection_string
                 )
             }
-            SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => {
+            SourceType::PostgreSQL
+            | SourceType::PostgreSQLTriggerIncremental
+            | SourceType::PostgreSQLWal2JsonIncremental => {
                 format!(
                     "- --postgresql-connection-string\n        - '{}'",
                     container.connection_string
@@ -696,6 +702,47 @@ fn generate_sync_job(config: &ClusterConfig) -> String {
         - --schema-file
         - /config/schema.yaml{dry_run}"#,
                 db = config.database.database_name,
+                ns = config.surrealdb.namespace,
+                database = config.surrealdb.database,
+                dry_run = if config.dry_run {
+                    "\n        - --dry-run"
+                } else {
+                    ""
+                }
+            )
+        }
+        SourceType::PostgreSQLTriggerIncremental => {
+            // For incremental trigger-based sync, this generates the full-sync-setup job
+            let tables: Vec<String> = config
+                .containers
+                .iter()
+                .flat_map(|c| c.tables.clone())
+                .collect();
+            let tables_arg = tables.join(",");
+            format!(
+                r#"        - from
+        - postgresql-trigger
+        - full
+        - --connection-string
+        - 'postgresql://postgres:postgres@postgresql:5432/{db}'
+        - --tables
+        - '{tables}'
+        - --checkpoints-surreal-table
+        - surreal_sync_checkpoints
+        - --to-namespace
+        - {ns}
+        - --to-database
+        - {database}
+        - --surreal-endpoint
+        - 'http://surrealdb:8000'
+        - --surreal-username
+        - root
+        - --surreal-password
+        - root
+        - --schema-file
+        - /config/schema.yaml{dry_run}"#,
+                db = config.database.database_name,
+                tables = tables_arg,
                 ns = config.surrealdb.namespace,
                 database = config.surrealdb.database,
                 dry_run = if config.dry_run {
@@ -1254,7 +1301,9 @@ fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str,
           echo "MySQL is ready!""#
             ),
         ),
-        SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => (
+        SourceType::PostgreSQL
+        | SourceType::PostgreSQLTriggerIncremental
+        | SourceType::PostgreSQLWal2JsonIncremental => (
             "postgres:16",
             format!(
                 r#"          echo "Waiting for PostgreSQL to be ready..."

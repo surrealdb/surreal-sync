@@ -59,6 +59,10 @@ impl PlatformChoice {
 pub enum SourceChoice {
     Mysql,
     Postgresql,
+    /// PostgreSQL trigger-based incremental sync (audit table with triggers)
+    /// CLI: `from postgresql-trigger incremental`
+    #[value(name = "postgresql-trigger-incremental")]
+    PostgresqlTriggerIncremental,
     /// PostgreSQL logical replication incremental sync (WAL-based with wal2json)
     /// CLI: `from postgresql incremental` (uses WAL2JSON plugin)
     #[value(name = "postgresql-wal2json-incremental")]
@@ -75,6 +79,7 @@ impl From<SourceChoice> for SourceType {
         match choice {
             SourceChoice::Mysql => SourceType::MySQL,
             SourceChoice::Postgresql => SourceType::PostgreSQL,
+            SourceChoice::PostgresqlTriggerIncremental => SourceType::PostgreSQLTriggerIncremental,
             SourceChoice::PostgresqlWal2JsonIncremental => {
                 SourceType::PostgreSQLWal2JsonIncremental
             }
