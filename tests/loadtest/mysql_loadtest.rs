@@ -102,6 +102,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
         source_uri: mysql_conn_string.clone(),
         source_database: Some("testdb".to_string()),
+        tables: vec![],
         mysql_boolean_paths: None,
     };
 

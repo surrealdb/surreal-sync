@@ -22,4 +22,6 @@ pub struct SourceOpts {
     pub source_uri: String,
     /// Source database/schema name
     pub source_database: Option<String>,
+    /// Tables to sync (empty means all tables)
+    pub tables: Vec<String>,
 }

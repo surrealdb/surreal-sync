@@ -58,7 +58,6 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
         "root".to_string(),
         "--surreal-password".to_string(),
         "root".to_string(),
-        "--emit-checkpoints".to_string(),
         "--checkpoint-dir".to_string(),
         checkpoint_dir.clone(),
     ];

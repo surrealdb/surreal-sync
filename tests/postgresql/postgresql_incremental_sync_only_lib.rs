@@ -51,6 +51,7 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
     let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
         source_uri: pg_config.get_connection_string(),
         source_database: Some("testdb".to_string()),
+        tables: vec![],
     };
 
     let sync_opts = surreal_sync_postgresql::SyncOpts {

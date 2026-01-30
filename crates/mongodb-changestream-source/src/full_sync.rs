@@ -15,6 +15,8 @@ use sync_core::{DatabaseSchema, UniversalRow, UniversalType, UniversalValue};
 pub struct SourceOpts {
     pub source_uri: String,
     pub source_database: Option<String>,
+    /// Collections to sync (empty means all collections)
+    pub collections: Vec<String>,
 }
 
 /// Sync options (non-connection related)

@@ -89,6 +89,7 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
     let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
         source_uri: MONGODB_URI.to_string(),
         source_database: Some(MONGODB_DATABASE.to_string()),
+        collections: vec![],
     };
 
     let sync_opts = surreal_sync_mongodb_changestream_source::SyncOpts {
