@@ -65,7 +65,7 @@ impl ConfigGenerator for DockerComposeGenerator {
         services.insert(Value::String("surrealdb".to_string()), surrealdb_service);
 
         // PostgreSQL Logical replication requires a special container sequence (5-stage pipeline)
-        if config.source_type == SourceType::PostgreSQLLogical {
+        if config.source_type == SourceType::PostgreSQLWal2JsonIncremental {
             generate_postgresql_logical_pipeline(&mut services, config);
         } else {
             // Standard flow for other sources (3-stage pipeline)
@@ -266,9 +266,11 @@ fn generate_sync_service(config: &ClusterConfig) -> Value {
     match config.source_type {
         SourceType::MySQL => mysql::generate_sync_service(config),
         SourceType::PostgreSQL => postgresql::generate_sync_service(config),
-        SourceType::PostgreSQLLogical => {
-            // PostgreSQLLogical uses the 5-stage pipeline, this shouldn't be called directly
-            unreachable!("PostgreSQLLogical uses 5-stage pipeline, not single sync service")
+        SourceType::PostgreSQLWal2JsonIncremental => {
+            // PostgreSQLWal2JsonIncremental uses the 5-stage pipeline, this shouldn't be called directly
+            unreachable!(
+                "PostgreSQLWal2JsonIncremental uses 5-stage pipeline, not single sync service"
+            )
         }
         SourceType::MongoDB => mongodb::generate_sync_service(config),
         SourceType::Neo4j => neo4j::generate_sync_service(config),
@@ -392,7 +394,7 @@ fn generate_populate_service(
     let source_cmd = match config.source_type {
         SourceType::MySQL => "mysql",
         // Both PostgreSQL variants use the same populate command (data goes to same database)
-        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => "postgresql",
+        SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
         SourceType::MongoDB => "mongodb",
         SourceType::Neo4j => "neo4j",
         SourceType::Kafka => "kafka",
@@ -408,7 +410,7 @@ fn generate_populate_service(
                 container.connection_string
             )
         }
-        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => {
+        SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => {
             format!(
                 "--postgresql-connection-string '{}'",
                 container.connection_string
@@ -436,8 +438,8 @@ fn generate_populate_service(
     };
 
     let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
-    // For PostgreSQLLogical, populate runs AFTER schema-init creates tables, so use --data-only
-    let data_only_flag = if config.source_type == SourceType::PostgreSQLLogical {
+    // For PostgreSQLWal2JsonIncremental, populate runs AFTER schema-init creates tables, so use --data-only
+    let data_only_flag = if config.source_type == SourceType::PostgreSQLWal2JsonIncremental {
         " --data-only"
     } else {
         ""

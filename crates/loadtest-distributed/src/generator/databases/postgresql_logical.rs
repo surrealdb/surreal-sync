@@ -241,7 +241,7 @@ mod tests {
 
     fn test_config() -> DatabaseConfig {
         DatabaseConfig {
-            source_type: SourceType::PostgreSQLLogical,
+            source_type: SourceType::PostgreSQLWal2JsonIncremental,
             image: "postgres-wal2json:latest".to_string(),
             resources: ResourceLimits::default(),
             tmpfs_storage: false,

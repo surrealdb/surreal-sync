@@ -136,7 +136,7 @@ impl KubernetesGenerator {
 fn database_name(source_type: SourceType) -> &'static str {
     match source_type {
         SourceType::MySQL => "mysql",
-        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => "postgresql",
+        SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
         SourceType::MongoDB => "mongodb",
         SourceType::Neo4j => "neo4j",
         SourceType::Kafka => "kafka",
@@ -438,7 +438,7 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
     let source_type_lower = match config.source_type {
         SourceType::MySQL => "mysql",
         // Both PostgreSQL variants use the same populate command (data goes to same database)
-        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => "postgresql",
+        SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
         SourceType::MongoDB => "mongodb",
         SourceType::Neo4j => "neo4j",
         SourceType::Kafka => "kafka",
@@ -527,7 +527,7 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
                     container.connection_string
                 )
             }
-            SourceType::PostgreSQL | SourceType::PostgreSQLLogical => {
+            SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => {
                 format!(
                     "- --postgresql-connection-string\n        - '{}'",
                     container.connection_string
@@ -705,7 +705,7 @@ fn generate_sync_job(config: &ClusterConfig) -> String {
                 }
             )
         }
-        SourceType::PostgreSQLLogical => {
+        SourceType::PostgreSQLWal2JsonIncremental => {
             // Get all table names from containers for the --tables argument
             let tables: Vec<String> = config
                 .containers
@@ -1254,7 +1254,7 @@ fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str,
           echo "MySQL is ready!""#
             ),
         ),
-        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => (
+        SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => (
             "postgres:16",
             format!(
                 r#"          echo "Waiting for PostgreSQL to be ready..."

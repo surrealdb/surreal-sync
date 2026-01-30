@@ -2,7 +2,7 @@
 //!
 //! Source crate: crates/postgresql-wal2json-source/
 //! SourceChoice: PostgresqlWal2JsonIncremental (aliases: postgresql-wal2json, postgresql-logical)
-//! SourceType: PostgreSQLLogical
+//! SourceType: PostgreSQLWal2JsonIncremental
 //! CLI commands:
 //!   - Schema init: `loadtest populate postgresql --schema-only ...`
 //!   - Full sync setup: `from postgresql full --checkpoints-surreal-table ... --slot ...`
