@@ -22,6 +22,7 @@ mod mongodb;
 mod mysql;
 mod neo4j;
 mod postgresql;
+mod postgresql_trigger_incremental;
 mod postgresql_wal2json_incremental;
 
 use super::databases;
@@ -64,9 +65,11 @@ impl ConfigGenerator for DockerComposeGenerator {
         let surrealdb_service = generate_surrealdb_service(config);
         services.insert(Value::String("surrealdb".to_string()), surrealdb_service);
 
-        // PostgreSQL Logical replication requires a special container sequence (5-stage pipeline)
-        if config.source_type == SourceType::PostgreSQLWal2JsonIncremental {
-            generate_postgresql_logical_pipeline(&mut services, config);
+        // PostgreSQL incremental sync requires a special container sequence (5-stage pipeline)
+        if config.source_type == SourceType::PostgreSQLTriggerIncremental {
+            generate_postgresql_trigger_incremental_pipeline(&mut services, config);
+        } else if config.source_type == SourceType::PostgreSQLWal2JsonIncremental {
+            generate_postgresql_wal2json_incremental_pipeline(&mut services, config);
         } else {
             // Standard flow for other sources (3-stage pipeline)
             generate_standard_pipeline(&mut services, config);
@@ -144,8 +147,87 @@ impl ConfigGenerator for DockerComposeGenerator {
     }
 }
 
-/// Generate PostgreSQL Logical 5-stage pipeline.
-fn generate_postgresql_logical_pipeline(services: &mut Mapping, config: &ClusterConfig) {
+/// Generate PostgreSQL Trigger Incremental 5-stage pipeline.
+fn generate_postgresql_trigger_incremental_pipeline(
+    services: &mut Mapping,
+    config: &ClusterConfig,
+) {
+    // 1. Add schema-init container (creates empty tables)
+    let schema_init_service = postgresql_trigger_incremental::generate_schema_init_service(config);
+    services.insert(
+        Value::String("schema-init".to_string()),
+        schema_init_service,
+    );
+
+    // 2. Add full-sync-setup container (creates triggers/audit table, runs full sync)
+    let full_sync_setup_service =
+        postgresql_trigger_incremental::generate_full_sync_setup_service(config);
+    services.insert(
+        Value::String("full-sync-setup".to_string()),
+        full_sync_setup_service,
+    );
+
+    // 3. Add populate containers (depend on full-sync-setup, changes captured by triggers)
+    for container in &config.containers {
+        let mut populate_service = generate_populate_service(config, container);
+
+        // Update dependencies to wait for full-sync-setup
+        if let Some(Value::Mapping(depends_on)) =
+            populate_service.get_mut(Value::String("depends_on".to_string()))
+        {
+            let mut setup_dep = Mapping::new();
+            setup_dep.insert(
+                Value::String("condition".to_string()),
+                Value::String("service_completed_successfully".to_string()),
+            );
+            depends_on.insert(
+                Value::String("full-sync-setup".to_string()),
+                Value::Mapping(setup_dep),
+            );
+        }
+
+        services.insert(Value::String(container.id.clone()), populate_service);
+    }
+
+    // 4. Add incremental-sync container (reads checkpoint from SurrealDB, syncs from audit table)
+    let incremental_sync_service =
+        postgresql_trigger_incremental::generate_incremental_sync_service(config);
+    services.insert(
+        Value::String("incremental-sync".to_string()),
+        incremental_sync_service,
+    );
+
+    // 5. Add verify containers (depend on incremental-sync)
+    for container in &config.containers {
+        let mut verify_service = generate_verify_service(config, container);
+
+        // Update dependencies to wait for incremental-sync instead of sync
+        if let Some(Value::Mapping(depends_on)) =
+            verify_service.get_mut(Value::String("depends_on".to_string()))
+        {
+            depends_on.remove(Value::String("sync".to_string()));
+
+            let mut sync_dep = Mapping::new();
+            sync_dep.insert(
+                Value::String("condition".to_string()),
+                Value::String("service_completed_successfully".to_string()),
+            );
+            depends_on.insert(
+                Value::String("incremental-sync".to_string()),
+                Value::Mapping(sync_dep),
+            );
+        }
+
+        let verify_id = container.id.replace("populate-", "verify-");
+        services.insert(Value::String(verify_id), verify_service);
+    }
+}
+
+/// Generate PostgreSQL WAL2JSON Incremental 5-stage pipeline.
+fn generate_postgresql_wal2json_incremental_pipeline(
+    services: &mut Mapping,
+    config: &ClusterConfig,
+) {
     // 1. Add schema-init container (creates empty tables)
     let schema_init_service = postgresql_wal2json_incremental::generate_schema_init_service(config);
     services.insert(
@@ -183,7 +265,7 @@ fn generate_postgresql_logical_pipeline(services: &mut Mapping, config: &Cluster
         services.insert(Value::String(container.id.clone()), populate_service);
     }
 
-    // 4. Add incremental-sync container (reads checkpoint from SurrealDB, processes populate changes)
+    // 4. Add incremental-sync container (reads checkpoint from SurrealDB, processes WAL changes)
     let incremental_sync_service =
         postgresql_wal2json_incremental::generate_incremental_sync_service(config);
     services.insert(
@@ -199,10 +281,8 @@ fn generate_postgresql_logical_pipeline(services: &mut Mapping, config: &Cluster
         if let Some(Value::Mapping(depends_on)) =
             verify_service.get_mut(Value::String("depends_on".to_string()))
         {
-            // Remove the "sync" dependency if it exists
             depends_on.remove(Value::String("sync".to_string()));
 
-            // Add incremental-sync dependency
             let mut sync_dep = Mapping::new();
             sync_dep.insert(
                 Value::String("condition".to_string()),
@@ -266,10 +346,10 @@ fn generate_sync_service(config: &ClusterConfig) -> Value {
     match config.source_type {
         SourceType::MySQL => mysql::generate_sync_service(config),
         SourceType::PostgreSQL => postgresql::generate_sync_service(config),
-        SourceType::PostgreSQLWal2JsonIncremental => {
-            // PostgreSQLWal2JsonIncremental uses the 5-stage pipeline, this shouldn't be called directly
+        SourceType::PostgreSQLTriggerIncremental | SourceType::PostgreSQLWal2JsonIncremental => {
+            // PostgreSQL incremental types use the 5-stage pipeline, this shouldn't be called directly
             unreachable!(
-                "PostgreSQLWal2JsonIncremental uses 5-stage pipeline, not single sync service"
+                "PostgreSQL incremental types use 5-stage pipeline, not single sync service"
             )
         }
         SourceType::MongoDB => mongodb::generate_sync_service(config),
@@ -393,8 +473,10 @@ fn generate_populate_service(
     let tables_arg = container.tables.join(",");
     let source_cmd = match config.source_type {
         SourceType::MySQL => "mysql",
-        // Both PostgreSQL variants use the same populate command (data goes to same database)
-        SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
+        // All PostgreSQL variants use the same populate command (data goes to same database)
+        SourceType::PostgreSQL
+        | SourceType::PostgreSQLTriggerIncremental
+        | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
         SourceType::MongoDB => "mongodb",
         SourceType::Neo4j => "neo4j",
         SourceType::Kafka => "kafka",
@@ -410,7 +492,9 @@ fn generate_populate_service(
                 container.connection_string
             )
         }
-        SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => {
+        SourceType::PostgreSQL
+        | SourceType::PostgreSQLTriggerIncremental
+        | SourceType::PostgreSQLWal2JsonIncremental => {
             format!(
                 "--postgresql-connection-string '{}'",
                 container.connection_string
@@ -438,8 +522,10 @@ fn generate_populate_service(
     };
 
     let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
-    // For PostgreSQLWal2JsonIncremental, populate runs AFTER schema-init creates tables, so use --data-only
-    let data_only_flag = if config.source_type == SourceType::PostgreSQLWal2JsonIncremental {
+    // For PostgreSQL incremental types, populate runs AFTER schema-init creates tables, so use --data-only
+    let data_only_flag = if config.source_type == SourceType::PostgreSQLTriggerIncremental
+        || config.source_type == SourceType::PostgreSQLWal2JsonIncremental
+    {
         " --data-only"
     } else {
         ""

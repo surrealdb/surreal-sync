@@ -31,7 +31,11 @@ fn normalize_memory_unit(memory: &str) -> String {
 pub fn generate_docker_service(config: &DatabaseConfig) -> Value {
     match config.source_type {
         SourceType::MySQL => generate_mysql_docker_service(config),
-        SourceType::PostgreSQL => generate_postgresql_docker_service(config),
+        // Trigger-based PostgreSQL uses standard postgres image
+        SourceType::PostgreSQL | SourceType::PostgreSQLTriggerIncremental => {
+            generate_postgresql_docker_service(config)
+        }
+        // WAL2JSON PostgreSQL uses wal2json image
         SourceType::PostgreSQLWal2JsonIncremental => {
             generate_postgresql_logical_docker_service(config)
         }
@@ -51,7 +55,11 @@ pub fn generate_mongodb_init_service() -> Value {
 pub fn generate_k8s_statefulset(config: &DatabaseConfig, namespace: &str) -> String {
     match config.source_type {
         SourceType::MySQL => generate_mysql_k8s_statefulset(config, namespace),
-        SourceType::PostgreSQL => generate_postgresql_k8s_statefulset(config, namespace),
+        // Trigger-based PostgreSQL uses standard postgres image
+        SourceType::PostgreSQL | SourceType::PostgreSQLTriggerIncremental => {
+            generate_postgresql_k8s_statefulset(config, namespace)
+        }
+        // WAL2JSON PostgreSQL uses wal2json image
         SourceType::PostgreSQLWal2JsonIncremental => {
             generate_postgresql_logical_k8s_statefulset(config, namespace)
         }
@@ -66,7 +74,11 @@ pub fn generate_k8s_statefulset(config: &DatabaseConfig, namespace: &str) -> Str
 pub fn generate_k8s_service(config: &DatabaseConfig, namespace: &str) -> String {
     match config.source_type {
         SourceType::MySQL => generate_mysql_k8s_service(namespace),
-        SourceType::PostgreSQL => generate_postgresql_k8s_service(namespace),
+        // Trigger-based PostgreSQL uses standard postgres service
+        SourceType::PostgreSQL | SourceType::PostgreSQLTriggerIncremental => {
+            generate_postgresql_k8s_service(namespace)
+        }
+        // WAL2JSON PostgreSQL uses wal2json service
         SourceType::PostgreSQLWal2JsonIncremental => {
             generate_postgresql_logical_k8s_service(namespace)
         }
