@@ -88,10 +88,22 @@ pub async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 .context("Failed to connect to MySQL")?
                 .with_batch_size(args.common.batch_size);
 
-                if let Err(e) = populator.create_table(table_name).await {
-                    let error_msg = format!("Failed to create table '{table_name}': {e}");
-                    tracing::error!("{}", error_msg);
-                    errors.push(error_msg);
+                // Skip table creation in data-only mode (tables must already exist)
+                if !args.common.data_only {
+                    if let Err(e) = populator.create_table(table_name).await {
+                        let error_msg = format!("Failed to create table '{table_name}': {e}");
+                        tracing::error!("{}", error_msg);
+                        errors.push(error_msg);
+                        continue;
+                    }
+                }
+
+                // Skip data insertion in schema-only mode
+                if args.common.schema_only {
+                    tracing::info!(
+                        "Skipping data insertion for '{}' (schema-only mode)",
+                        table_name
+                    );
                     continue;
                 }
 
@@ -360,6 +372,27 @@ pub async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                 .await
                 .context("Failed to connect to MongoDB")?
                 .with_batch_size(args.common.batch_size);
+
+                // Create collection explicitly if not in data-only mode
+                if !args.common.data_only {
+                    // Drop existing collection first to ensure clean state
+                    populator.drop_collection(table_name).await.ok();
+                    if let Err(e) = populator.create_collection(table_name).await {
+                        let error_msg = format!("Failed to create collection '{table_name}': {e}");
+                        tracing::error!("{}", error_msg);
+                        errors.push(error_msg);
+                        continue;
+                    }
+                }
+
+                // Skip document insertion in schema-only mode
+                if args.common.schema_only {
+                    tracing::info!(
+                        "Skipping document insertion for '{}' (schema-only mode)",
+                        table_name
+                    );
+                    continue;
+                }
 
                 match populator.populate(table_name, args.common.row_count).await {
                     Ok(metrics) => {
@@ -905,8 +938,22 @@ pub async fn run_populate(source: PopulateSource) -> anyhow::Result<()> {
                     }
                 };
 
-                // Delete existing nodes (ignore errors)
-                populator.delete_nodes(table_name).await.ok();
+                // Skip node deletion in data-only mode (append to existing nodes)
+                if !args.common.data_only {
+                    // Delete existing nodes (ignore errors)
+                    populator.delete_nodes(table_name).await.ok();
+                }
+
+                // Skip node creation in schema-only mode
+                // Note: Neo4j doesn't have a separate schema concept like SQL databases,
+                // but we skip node creation to match the behavior of other populators
+                if args.common.schema_only {
+                    tracing::info!(
+                        "Skipping node creation for '{}' (schema-only mode)",
+                        table_name
+                    );
+                    continue;
+                }
 
                 // Populate
                 match populator.populate(table_name, args.common.row_count).await {
