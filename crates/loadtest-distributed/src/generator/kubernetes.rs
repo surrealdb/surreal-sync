@@ -140,7 +140,7 @@ fn database_name(source_type: SourceType) -> &'static str {
         | SourceType::PostgreSQLTriggerIncremental
         | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
         SourceType::MongoDB | SourceType::MongoDBIncremental => "mongodb",
-        SourceType::Neo4j => "neo4j",
+        SourceType::Neo4j | SourceType::Neo4jIncremental => "neo4j",
         SourceType::Kafka => "kafka",
         SourceType::Csv | SourceType::Jsonl => "file-generator",
     }
@@ -444,7 +444,7 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
         | SourceType::PostgreSQLTriggerIncremental
         | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
         SourceType::MongoDB | SourceType::MongoDBIncremental => "mongodb",
-        SourceType::Neo4j => "neo4j",
+        SourceType::Neo4j | SourceType::Neo4jIncremental => "neo4j",
         SourceType::Kafka => "kafka",
         SourceType::Csv => "csv",
         SourceType::Jsonl => "jsonl",
@@ -549,7 +549,7 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
                     container.connection_string, config.database.database_name
                 )
             }
-            SourceType::Neo4j => {
+            SourceType::Neo4j | SourceType::Neo4jIncremental => {
                 format!(
                     "- --neo4j-connection-string\n        - '{}'\n        - --neo4j-username\n        - neo4j\n        - --neo4j-password\n        - password",
                     container.connection_string
@@ -935,6 +935,50 @@ fn generate_sync_job(config: &ClusterConfig) -> String {
         - root
         - --schema-file
         - /config/schema.yaml{dry_run}"#,
+                ns = config.surrealdb.namespace,
+                database = config.surrealdb.database,
+                dry_run = if config.dry_run {
+                    "\n        - --dry-run"
+                } else {
+                    ""
+                }
+            )
+        }
+        SourceType::Neo4jIncremental => {
+            // For incremental timestamp-based sync, this generates the full-sync-setup job
+            let tables: Vec<String> = config
+                .containers
+                .iter()
+                .flat_map(|c| c.tables.clone())
+                .collect();
+            let tables_arg = tables.join(",");
+            format!(
+                r#"        - from
+        - neo4j
+        - full
+        - --connection-string
+        - 'bolt://neo4j:7687'
+        - --username
+        - neo4j
+        - --password
+        - password
+        - --tables
+        - '{tables}'
+        - --checkpoints-surreal-table
+        - surreal_sync_checkpoints
+        - --to-namespace
+        - {ns}
+        - --to-database
+        - {database}
+        - --surreal-endpoint
+        - 'http://surrealdb:8000'
+        - --surreal-username
+        - root
+        - --surreal-password
+        - root
+        - --schema-file
+        - /config/schema.yaml{dry_run}"#,
+                tables = tables_arg,
                 ns = config.surrealdb.namespace,
                 database = config.surrealdb.database,
                 dry_run = if config.dry_run {
@@ -1413,7 +1457,7 @@ fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str,
           echo "MongoDB is ready!""#
             ),
         ),
-        SourceType::Neo4j => (
+        SourceType::Neo4j | SourceType::Neo4jIncremental => (
             "busybox:latest",
             format!(
                 r#"          echo "Waiting for Neo4j to be ready..."

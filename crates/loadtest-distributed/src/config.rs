@@ -35,6 +35,8 @@ pub enum SourceType {
     /// MongoDB change stream incremental sync
     MongoDBIncremental,
     Neo4j,
+    /// Neo4j timestamp-based incremental sync
+    Neo4jIncremental,
     Kafka,
     Csv,
     Jsonl,
@@ -55,6 +57,7 @@ impl std::fmt::Display for SourceType {
             SourceType::MongoDB => write!(f, "mongodb"),
             SourceType::MongoDBIncremental => write!(f, "mongodb-incremental"),
             SourceType::Neo4j => write!(f, "neo4j"),
+            SourceType::Neo4jIncremental => write!(f, "neo4j-incremental"),
             SourceType::Kafka => write!(f, "kafka"),
             SourceType::Csv => write!(f, "csv"),
             SourceType::Jsonl => write!(f, "jsonl"),
@@ -75,6 +78,7 @@ impl std::str::FromStr for SourceType {
             "mongodb" | "mongo" => Ok(SourceType::MongoDB),
             "mongodb-incremental" => Ok(SourceType::MongoDBIncremental),
             "neo4j" => Ok(SourceType::Neo4j),
+            "neo4j-incremental" => Ok(SourceType::Neo4jIncremental),
             "kafka" => Ok(SourceType::Kafka),
             "csv" => Ok(SourceType::Csv),
             "jsonl" => Ok(SourceType::Jsonl),
@@ -411,7 +415,9 @@ fn get_default_connection_string(source_type: SourceType, platform: Platform) ->
         SourceType::MongoDB | SourceType::MongoDBIncremental => {
             "mongodb://root:root@mongodb:27017/loadtest?authSource=admin".to_string()
         }
-        SourceType::Neo4j => "bolt://neo4j:password@neo4j:7687".to_string(),
+        SourceType::Neo4j | SourceType::Neo4jIncremental => {
+            "bolt://neo4j:password@neo4j:7687".to_string()
+        }
         SourceType::Kafka => {
             // Kubernetes uses headless services, so we need the pod-specific DNS name
             match platform {
@@ -435,7 +441,7 @@ fn get_default_database_image(source_type: SourceType) -> String {
         // Built from custom Dockerfile (Dockerfile.postgres16.wal2json)
         SourceType::PostgreSQLWal2JsonIncremental => "postgres-wal2json:latest".to_string(),
         SourceType::MongoDB | SourceType::MongoDBIncremental => "mongo:7".to_string(),
-        SourceType::Neo4j => "neo4j:5".to_string(),
+        SourceType::Neo4j | SourceType::Neo4jIncremental => "neo4j:5".to_string(),
         SourceType::Kafka => "apache/kafka:latest".to_string(),
         SourceType::Csv | SourceType::Jsonl => "busybox:latest".to_string(),
     }

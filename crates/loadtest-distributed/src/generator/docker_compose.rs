@@ -23,6 +23,7 @@ mod mongodb_incremental;
 mod mysql;
 mod mysql_incremental;
 mod neo4j;
+mod neo4j_incremental;
 mod postgresql;
 mod postgresql_trigger_incremental;
 mod postgresql_wal2json_incremental;
@@ -78,6 +79,8 @@ impl ConfigGenerator for DockerComposeGenerator {
             generate_postgresql_wal2json_incremental_pipeline(&mut services, config);
         } else if config.source_type == SourceType::MongoDBIncremental {
             generate_mongodb_incremental_pipeline(&mut services, config);
+        } else if config.source_type == SourceType::Neo4jIncremental {
+            generate_neo4j_incremental_pipeline(&mut services, config);
         } else {
             // Standard flow for other sources (3-stage pipeline)
             generate_standard_pipeline(&mut services, config);
@@ -449,6 +452,77 @@ fn generate_mongodb_incremental_pipeline(services: &mut Mapping, config: &Cluste
     }
 }
 
+/// Generate Neo4j Incremental 5-stage pipeline.
+fn generate_neo4j_incremental_pipeline(services: &mut Mapping, config: &ClusterConfig) {
+    // 1. Add schema-init container (creates empty nodes)
+    let schema_init_service = neo4j_incremental::generate_schema_init_service(config);
+    services.insert(
+        Value::String("schema-init".to_string()),
+        schema_init_service,
+    );
+
+    // 2. Add full-sync-setup container (runs full sync, stores timestamp checkpoint)
+    let full_sync_setup_service = neo4j_incremental::generate_full_sync_setup_service(config);
+    services.insert(
+        Value::String("full-sync-setup".to_string()),
+        full_sync_setup_service,
+    );
+
+    // 3. Add populate containers (depend on full-sync-setup, changes tracked by timestamp)
+    for container in &config.containers {
+        let mut populate_service = generate_populate_service(config, container);
+
+        // Update dependencies to wait for full-sync-setup
+        if let Some(Value::Mapping(depends_on)) =
+            populate_service.get_mut(Value::String("depends_on".to_string()))
+        {
+            let mut setup_dep = Mapping::new();
+            setup_dep.insert(
+                Value::String("condition".to_string()),
+                Value::String("service_completed_successfully".to_string()),
+            );
+            depends_on.insert(
+                Value::String("full-sync-setup".to_string()),
+                Value::Mapping(setup_dep),
+            );
+        }
+
+        services.insert(Value::String(container.id.clone()), populate_service);
+    }
+
+    // 4. Add incremental-sync container (reads checkpoint from SurrealDB, syncs newer nodes)
+    let incremental_sync_service = neo4j_incremental::generate_incremental_sync_service(config);
+    services.insert(
+        Value::String("incremental-sync".to_string()),
+        incremental_sync_service,
+    );
+
+    // 5. Add verify containers (depend on incremental-sync)
+    for container in &config.containers {
+        let mut verify_service = generate_verify_service(config, container);
+
+        // Update dependencies to wait for incremental-sync instead of sync
+        if let Some(Value::Mapping(depends_on)) =
+            verify_service.get_mut(Value::String("depends_on".to_string()))
+        {
+            depends_on.remove(Value::String("sync".to_string()));
+
+            let mut sync_dep = Mapping::new();
+            sync_dep.insert(
+                Value::String("condition".to_string()),
+                Value::String("service_completed_successfully".to_string()),
+            );
+            depends_on.insert(
+                Value::String("incremental-sync".to_string()),
+                Value::Mapping(sync_dep),
+            );
+        }
+
+        let verify_id = container.id.replace("populate-", "verify-");
+        services.insert(Value::String(verify_id), verify_service);
+    }
+}
+
 /// Generate standard 3-stage pipeline for most sources.
 fn generate_standard_pipeline(services: &mut Mapping, config: &ClusterConfig) {
     // Add populate container services
@@ -512,6 +586,10 @@ fn generate_sync_service(config: &ClusterConfig) -> Value {
             unreachable!("MongoDBIncremental uses 5-stage pipeline, not single sync service")
         }
         SourceType::Neo4j => neo4j::generate_sync_service(config),
+        SourceType::Neo4jIncremental => {
+            // Neo4j incremental uses the 5-stage pipeline, this shouldn't be called directly
+            unreachable!("Neo4jIncremental uses 5-stage pipeline, not single sync service")
+        }
         SourceType::Kafka => {
             unreachable!("Kafka uses per-topic sync services, not a single sync service")
         }
@@ -637,7 +715,7 @@ fn generate_populate_service(
         | SourceType::PostgreSQLTriggerIncremental
         | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
         SourceType::MongoDB | SourceType::MongoDBIncremental => "mongodb",
-        SourceType::Neo4j => "neo4j",
+        SourceType::Neo4j | SourceType::Neo4jIncremental => "neo4j",
         SourceType::Kafka => "kafka",
         SourceType::Csv => "csv",
         SourceType::Jsonl => "jsonl",
@@ -666,7 +744,7 @@ fn generate_populate_service(
                 container.connection_string
             )
         }
-        SourceType::Neo4j => {
+        SourceType::Neo4j | SourceType::Neo4jIncremental => {
             format!(
                 "--neo4j-connection-string '{}' --neo4j-username neo4j --neo4j-password password",
                 container.connection_string
@@ -686,6 +764,7 @@ fn generate_populate_service(
         || config.source_type == SourceType::PostgreSQLWal2JsonIncremental
         || config.source_type == SourceType::MySQLIncremental
         || config.source_type == SourceType::MongoDBIncremental
+        || config.source_type == SourceType::Neo4jIncremental
     {
         " --data-only"
     } else {
