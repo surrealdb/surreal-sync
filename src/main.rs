@@ -83,6 +83,7 @@ mod loadtest;
 
 #[derive(Parser)]
 #[command(name = "surreal-sync")]
+#[command(version)]
 #[command(about = "A tool for syncing data FROM various sources TO SurrealDB")]
 #[command(long_about = None)]
 struct Cli {
