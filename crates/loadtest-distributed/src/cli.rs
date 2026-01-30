@@ -58,6 +58,10 @@ impl PlatformChoice {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum SourceChoice {
     Mysql,
+    /// MySQL trigger-based incremental sync (audit table with triggers)
+    /// CLI: `from mysql incremental`
+    #[value(name = "mysql-incremental")]
+    MysqlIncremental,
     Postgresql,
     /// PostgreSQL trigger-based incremental sync (audit table with triggers)
     /// CLI: `from postgresql-trigger incremental`
@@ -68,6 +72,10 @@ pub enum SourceChoice {
     #[value(name = "postgresql-wal2json-incremental")]
     PostgresqlWal2JsonIncremental,
     Mongodb,
+    /// MongoDB change stream incremental sync
+    /// CLI: `from mongodb incremental`
+    #[value(name = "mongodb-incremental")]
+    MongodbIncremental,
     Neo4j,
     Kafka,
     Csv,
@@ -78,12 +86,14 @@ impl From<SourceChoice> for SourceType {
     fn from(choice: SourceChoice) -> Self {
         match choice {
             SourceChoice::Mysql => SourceType::MySQL,
+            SourceChoice::MysqlIncremental => SourceType::MySQLIncremental,
             SourceChoice::Postgresql => SourceType::PostgreSQL,
             SourceChoice::PostgresqlTriggerIncremental => SourceType::PostgreSQLTriggerIncremental,
             SourceChoice::PostgresqlWal2JsonIncremental => {
                 SourceType::PostgreSQLWal2JsonIncremental
             }
             SourceChoice::Mongodb => SourceType::MongoDB,
+            SourceChoice::MongodbIncremental => SourceType::MongoDBIncremental,
             SourceChoice::Neo4j => SourceType::Neo4j,
             SourceChoice::Kafka => SourceType::Kafka,
             SourceChoice::Csv => SourceType::Csv,

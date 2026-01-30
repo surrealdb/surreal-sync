@@ -135,11 +135,11 @@ impl KubernetesGenerator {
 /// Get database name for a source type.
 fn database_name(source_type: SourceType) -> &'static str {
     match source_type {
-        SourceType::MySQL => "mysql",
+        SourceType::MySQL | SourceType::MySQLIncremental => "mysql",
         SourceType::PostgreSQL
         | SourceType::PostgreSQLTriggerIncremental
         | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
-        SourceType::MongoDB => "mongodb",
+        SourceType::MongoDB | SourceType::MongoDBIncremental => "mongodb",
         SourceType::Neo4j => "neo4j",
         SourceType::Kafka => "kafka",
         SourceType::Csv | SourceType::Jsonl => "file-generator",
@@ -438,12 +438,12 @@ spec:
 fn generate_populate_job(config: &ClusterConfig) -> String {
     let db_name = database_name(config.source_type);
     let source_type_lower = match config.source_type {
-        SourceType::MySQL => "mysql",
+        SourceType::MySQL | SourceType::MySQLIncremental => "mysql",
         // All PostgreSQL variants use the same populate command (data goes to same database)
         SourceType::PostgreSQL
         | SourceType::PostgreSQLTriggerIncremental
         | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
-        SourceType::MongoDB => "mongodb",
+        SourceType::MongoDB | SourceType::MongoDBIncremental => "mongodb",
         SourceType::Neo4j => "neo4j",
         SourceType::Kafka => "kafka",
         SourceType::Csv => "csv",
@@ -456,7 +456,9 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
             let (wait_image, wait_command) = get_db_health_check(config.source_type, db_name);
 
             // For MongoDB, add extra init container to wait for mongodb-init job
-            let mongodb_init_wait = if config.source_type == SourceType::MongoDB {
+            let mongodb_init_wait = if config.source_type == SourceType::MongoDB
+                || config.source_type == SourceType::MongoDBIncremental
+            {
                 format!(
                     r#"      - name: wait-for-mongodb-init
         image: bitnami/kubectl:latest
@@ -504,7 +506,9 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
         };
 
     // For MongoDB, we need serviceAccountName for the kubectl wait in init container
-    let service_account_line = if config.source_type == SourceType::MongoDB {
+    let service_account_line = if config.source_type == SourceType::MongoDB
+        || config.source_type == SourceType::MongoDBIncremental
+    {
         "      serviceAccountName: loadtest-runner\n"
     } else {
         ""
@@ -525,7 +529,7 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
 
         // Build connection string args as separate YAML list items (each flag and value on its own line)
         let connection_args = match config.source_type {
-            SourceType::MySQL => {
+            SourceType::MySQL | SourceType::MySQLIncremental => {
                 format!(
                     "- --mysql-connection-string\n        - '{}'",
                     container.connection_string
@@ -539,7 +543,7 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
                     container.connection_string
                 )
             }
-            SourceType::MongoDB => {
+            SourceType::MongoDB | SourceType::MongoDBIncremental => {
                 format!(
                     "- --mongodb-connection-string\n        - '{}'\n        - --mongodb-database\n        - {}",
                     container.connection_string, config.database.database_name
@@ -682,6 +686,47 @@ fn generate_sync_job(config: &ClusterConfig) -> String {
                 }
             )
         }
+        SourceType::MySQLIncremental => {
+            // For incremental trigger-based sync, this generates the full-sync-setup job
+            let tables: Vec<String> = config
+                .containers
+                .iter()
+                .flat_map(|c| c.tables.clone())
+                .collect();
+            let tables_arg = tables.join(",");
+            format!(
+                r#"        - from
+        - mysql
+        - full
+        - --connection-string
+        - 'mysql://root:root@mysql:3306/{db}'
+        - --tables
+        - '{tables}'
+        - --checkpoints-surreal-table
+        - surreal_sync_checkpoints
+        - --to-namespace
+        - {ns}
+        - --to-database
+        - {database}
+        - --surreal-endpoint
+        - 'http://surrealdb:8000'
+        - --surreal-username
+        - root
+        - --surreal-password
+        - root
+        - --schema-file
+        - /config/schema.yaml{dry_run}"#,
+                db = config.database.database_name,
+                tables = tables_arg,
+                ns = config.surrealdb.namespace,
+                database = config.surrealdb.database,
+                dry_run = if config.dry_run {
+                    "\n        - --dry-run"
+                } else {
+                    ""
+                }
+            )
+        }
         SourceType::PostgreSQL => {
             format!(
                 r#"        - from
@@ -815,6 +860,49 @@ fn generate_sync_job(config: &ClusterConfig) -> String {
         - --schema-file
         - /config/schema.yaml{dry_run}"#,
                 db = config.database.database_name,
+                ns = config.surrealdb.namespace,
+                database = config.surrealdb.database,
+                dry_run = if config.dry_run {
+                    "\n        - --dry-run"
+                } else {
+                    ""
+                }
+            )
+        }
+        SourceType::MongoDBIncremental => {
+            // For incremental change stream sync, this generates the full-sync-setup job
+            let tables: Vec<String> = config
+                .containers
+                .iter()
+                .flat_map(|c| c.tables.clone())
+                .collect();
+            let tables_arg = tables.join(",");
+            format!(
+                r#"        - from
+        - mongodb
+        - full
+        - --connection-string
+        - 'mongodb://root:root@mongodb:27017'
+        - --database
+        - {db}
+        - --tables
+        - '{tables}'
+        - --checkpoints-surreal-table
+        - surreal_sync_checkpoints
+        - --to-namespace
+        - {ns}
+        - --to-database
+        - {database}
+        - --surreal-endpoint
+        - 'http://surrealdb:8000'
+        - --surreal-username
+        - root
+        - --surreal-password
+        - root
+        - --schema-file
+        - /config/schema.yaml{dry_run}"#,
+                db = config.database.database_name,
+                tables = tables_arg,
                 ns = config.surrealdb.namespace,
                 database = config.surrealdb.database,
                 dry_run = if config.dry_run {
@@ -1290,7 +1378,7 @@ spec:
 /// Returns (image, command) tuple for the health check.
 fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str, String) {
     match source_type {
-        SourceType::MySQL => (
+        SourceType::MySQL | SourceType::MySQLIncremental => (
             "mysql:8.0",
             format!(
                 r#"          echo "Waiting for MySQL to be ready..."
@@ -1314,7 +1402,7 @@ fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str,
           echo "PostgreSQL is ready!""#
             ),
         ),
-        SourceType::MongoDB => (
+        SourceType::MongoDB | SourceType::MongoDBIncremental => (
             "mongo:7",
             format!(
                 r#"          echo "Waiting for MongoDB to be ready..."
