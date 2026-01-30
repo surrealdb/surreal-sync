@@ -25,8 +25,8 @@ impl std::fmt::Display for Platform {
 pub enum SourceType {
     MySQL,
     PostgreSQL,
-    /// PostgreSQL with WAL-based logical replication (requires wal2json extension)
-    PostgreSQLLogical,
+    /// PostgreSQL with WAL-based logical replication incremental sync (requires wal2json extension)
+    PostgreSQLWal2JsonIncremental,
     MongoDB,
     Neo4j,
     Kafka,
@@ -39,7 +39,9 @@ impl std::fmt::Display for SourceType {
         match self {
             SourceType::MySQL => write!(f, "mysql"),
             SourceType::PostgreSQL => write!(f, "postgresql"),
-            SourceType::PostgreSQLLogical => write!(f, "postgresql-logical"),
+            SourceType::PostgreSQLWal2JsonIncremental => {
+                write!(f, "postgresql-wal2json-incremental")
+            }
             SourceType::MongoDB => write!(f, "mongodb"),
             SourceType::Neo4j => write!(f, "neo4j"),
             SourceType::Kafka => write!(f, "kafka"),
@@ -56,7 +58,7 @@ impl std::str::FromStr for SourceType {
         match s.to_lowercase().as_str() {
             "mysql" => Ok(SourceType::MySQL),
             "postgresql" | "postgres" | "postgresql-trigger" => Ok(SourceType::PostgreSQL),
-            "postgresql-logical" | "postgresql-wal" => Ok(SourceType::PostgreSQLLogical),
+            "postgresql-wal2json-incremental" => Ok(SourceType::PostgreSQLWal2JsonIncremental),
             "mongodb" | "mongo" => Ok(SourceType::MongoDB),
             "neo4j" => Ok(SourceType::Neo4j),
             "kafka" => Ok(SourceType::Kafka),
@@ -385,7 +387,7 @@ pub fn build_cluster_config(
 fn get_default_connection_string(source_type: SourceType, platform: Platform) -> String {
     match source_type {
         SourceType::MySQL => "mysql://root:root@mysql:3306/loadtest".to_string(),
-        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => {
+        SourceType::PostgreSQL | SourceType::PostgreSQLWal2JsonIncremental => {
             "postgresql://postgres:postgres@postgresql:5432/loadtest".to_string()
         }
         SourceType::MongoDB => {
@@ -411,7 +413,7 @@ fn get_default_database_image(source_type: SourceType) -> String {
         SourceType::PostgreSQL => "postgres:16".to_string(),
         // PostgreSQL logical replication requires wal2json extension
         // Built from custom Dockerfile (Dockerfile.postgres16.wal2json)
-        SourceType::PostgreSQLLogical => "postgres-wal2json:latest".to_string(),
+        SourceType::PostgreSQLWal2JsonIncremental => "postgres-wal2json:latest".to_string(),
         SourceType::MongoDB => "mongo:7".to_string(),
         SourceType::Neo4j => "neo4j:5".to_string(),
         SourceType::Kafka => "apache/kafka:latest".to_string(),
