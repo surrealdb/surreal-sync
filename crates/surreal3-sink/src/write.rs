@@ -266,14 +266,13 @@ pub async fn write_relation(
     let record_id = &r.id;
 
     tracing::trace!("Executing SurrealDB query with flattened fields: {}", query);
-    log::info!("🔧 migrate_batch executing: {query} for record: {record_id:?}");
+    log::info!("🔧 migrate_batch executing SurrealDB relation query: {query}");
 
     // Add debug logging to see the document being bound
     if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
         tracing::debug!(
-            "Binding document to SurrealDB query for record {:?}: {:?}",
-            record_id,
-            r
+            "Binding document to SurrealDB query for record table {:?}",
+            record_id.table
         );
     }
 
