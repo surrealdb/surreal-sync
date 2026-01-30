@@ -54,7 +54,6 @@ async fn test_mysql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
         "root",
         "--surreal-password",
         "root",
-        "--emit-checkpoints",
         "--checkpoint-dir",
         ".test-checkpoints",
     ];

@@ -28,6 +28,8 @@ pub struct SourceOpts {
     pub source_uri: String,
     /// Source database name
     pub source_database: Option<String>,
+    /// Tables to sync (empty means all tables)
+    pub tables: Vec<String>,
     /// MySQL JSON paths that contain boolean values stored as 0/1
     pub mysql_boolean_paths: Option<Vec<String>>,
 }

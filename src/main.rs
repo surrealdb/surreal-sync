@@ -178,6 +178,10 @@ struct MongoDBFullArgs {
     #[arg(long, env = "MONGODB_DATABASE")]
     database: String,
 
+    /// Collections to sync (comma-separated, empty means all collections)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
     /// Target SurrealDB namespace
     #[arg(long)]
     to_namespace: String,
@@ -186,13 +190,13 @@ struct MongoDBFullArgs {
     #[arg(long)]
     to_database: String,
 
-    /// Emit checkpoint files for coordinating with incremental sync
-    #[arg(long)]
-    emit_checkpoints: bool,
+    /// Directory to write checkpoint files (mutually exclusive with --checkpoints-surreal-table)
+    #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
+    checkpoint_dir: Option<String>,
 
-    /// Directory to write checkpoint files
-    #[arg(long, default_value = ".surreal-sync-checkpoints")]
-    checkpoint_dir: String,
+    /// SurrealDB table for storing checkpoints (mutually exclusive with --checkpoint-dir)
+    #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
+    checkpoints_surreal_table: Option<String>,
 
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
@@ -212,6 +216,10 @@ struct MongoDBIncrementalArgs {
     #[arg(long, env = "MONGODB_DATABASE")]
     database: String,
 
+    /// Collections to sync (comma-separated, empty means all collections)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
     /// Target SurrealDB namespace
     #[arg(long)]
     to_namespace: String,
@@ -221,8 +229,13 @@ struct MongoDBIncrementalArgs {
     to_database: String,
 
     /// Start incremental sync from this checkpoint (e.g., "mongodb:resumetoken:<base64>")
+    /// If not provided, checkpoint is read from --checkpoints-surreal-table
     #[arg(long)]
-    incremental_from: String,
+    incremental_from: Option<String>,
+
+    /// SurrealDB table for reading checkpoints (alternative to --incremental-from)
+    #[arg(long, value_name = "TABLE")]
+    checkpoints_surreal_table: Option<String>,
 
     /// Stop incremental sync when reaching this checkpoint (optional)
     #[arg(long)]
@@ -382,6 +395,10 @@ struct PostgreSQLTriggerFullArgs {
     #[arg(long, env = "POSTGRESQL_URI")]
     connection_string: String,
 
+    /// Tables to sync (comma-separated, empty means all tables)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
     /// Target SurrealDB namespace
     #[arg(long)]
     to_namespace: String,
@@ -390,13 +407,13 @@ struct PostgreSQLTriggerFullArgs {
     #[arg(long)]
     to_database: String,
 
-    /// Emit checkpoint files for coordinating with incremental sync
-    #[arg(long)]
-    emit_checkpoints: bool,
+    /// Directory to store checkpoint files (filesystem storage)
+    #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
+    checkpoint_dir: Option<String>,
 
-    /// Directory to write checkpoint files
-    #[arg(long, default_value = ".surreal-sync-checkpoints")]
-    checkpoint_dir: String,
+    /// SurrealDB table name for storing checkpoints (e.g., "surreal_sync_checkpoints")
+    #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
+    checkpoints_surreal_table: Option<String>,
 
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
@@ -412,6 +429,10 @@ struct PostgreSQLTriggerIncrementalArgs {
     #[arg(long, env = "POSTGRESQL_URI")]
     connection_string: String,
 
+    /// Tables to sync (comma-separated, empty means all tables)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
     /// Target SurrealDB namespace
     #[arg(long)]
     to_namespace: String,
@@ -421,8 +442,14 @@ struct PostgreSQLTriggerIncrementalArgs {
     to_database: String,
 
     /// Start incremental sync from this checkpoint (e.g., "postgresql:sequence:123")
+    /// If not specified, reads from SurrealDB using --checkpoints-surreal-table
     #[arg(long)]
-    incremental_from: String,
+    incremental_from: Option<String>,
+
+    /// SurrealDB table name for reading t1 checkpoint (e.g., "surreal_sync_checkpoints")
+    /// Used when --incremental-from is not specified
+    #[arg(long, value_name = "TABLE")]
+    checkpoints_surreal_table: Option<String>,
 
     /// Stop incremental sync when reaching this checkpoint (optional)
     #[arg(long)]
@@ -462,6 +489,10 @@ struct MySQLFullArgs {
     #[arg(long, env = "MYSQL_DATABASE")]
     database: Option<String>,
 
+    /// Tables to sync (comma-separated, empty means all tables)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
     /// MySQL JSON paths that contain boolean values stored as 0/1
     #[arg(long, value_delimiter = ',', env = "MYSQL_BOOLEAN_PATHS")]
     boolean_paths: Option<Vec<String>>,
@@ -474,13 +505,13 @@ struct MySQLFullArgs {
     #[arg(long)]
     to_database: String,
 
-    /// Emit checkpoint files for coordinating with incremental sync
-    #[arg(long)]
-    emit_checkpoints: bool,
+    /// Directory to write checkpoint files (mutually exclusive with --checkpoints-surreal-table)
+    #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
+    checkpoint_dir: Option<String>,
 
-    /// Directory to write checkpoint files
-    #[arg(long, default_value = ".surreal-sync-checkpoints")]
-    checkpoint_dir: String,
+    /// SurrealDB table for storing checkpoints (mutually exclusive with --checkpoint-dir)
+    #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
+    checkpoints_surreal_table: Option<String>,
 
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
@@ -500,6 +531,10 @@ struct MySQLIncrementalArgs {
     #[arg(long, env = "MYSQL_DATABASE")]
     database: Option<String>,
 
+    /// Tables to sync (comma-separated, empty means all tables)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
     /// MySQL JSON paths that contain boolean values stored as 0/1
     #[arg(long, value_delimiter = ',', env = "MYSQL_BOOLEAN_PATHS")]
     boolean_paths: Option<Vec<String>>,
@@ -513,8 +548,13 @@ struct MySQLIncrementalArgs {
     to_database: String,
 
     /// Start incremental sync from this checkpoint (e.g., "mysql:sequence:456")
+    /// If not provided, checkpoint is read from --checkpoints-surreal-table
     #[arg(long)]
-    incremental_from: String,
+    incremental_from: Option<String>,
+
+    /// SurrealDB table for reading checkpoints (alternative to --incremental-from)
+    #[arg(long, value_name = "TABLE")]
+    checkpoints_surreal_table: Option<String>,
 
     /// Stop incremental sync when reaching this checkpoint (optional)
     #[arg(long)]

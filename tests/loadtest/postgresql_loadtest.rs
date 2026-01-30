@@ -105,6 +105,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
     let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
         source_uri: pg_conn_string.clone(),
         source_database: Some("public".to_string()),
+        tables: vec![],
     };
 
     let sync_opts = surreal_sync_postgresql::SyncOpts {

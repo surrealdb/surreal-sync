@@ -63,7 +63,6 @@ async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error
         "root",
         "--surreal-password",
         "root",
-        "--emit-checkpoints",
         "--checkpoint-dir",
         ".test-checkpoints",
     ];

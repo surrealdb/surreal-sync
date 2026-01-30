@@ -40,6 +40,7 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
     let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
         source_uri: mysql_config.get_connection_string(),
         source_database: Some("testdb".to_string()),
+        tables: vec![],
         mysql_boolean_paths: Some(vec![
             "all_types_users.metadata=settings.notifications".to_string()
         ]),

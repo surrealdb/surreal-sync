@@ -39,6 +39,7 @@ async fn test_mongodb_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> 
     let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
         source_uri: "mongodb://root:root@mongodb:27017".to_string(),
         source_database: Some("testdb".to_string()),
+        collections: vec![],
     };
 
     let sync_opts = surreal_sync_mongodb_changestream_source::SyncOpts {
