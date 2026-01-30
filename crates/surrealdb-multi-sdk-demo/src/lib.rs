@@ -54,12 +54,27 @@ pub mod v2 {
 
     /// Example: Insert and query a record using v2 SDK
     pub async fn demo_insert_query(client: &Surreal<Any>) -> anyhow::Result<()> {
+        // Cleanup any existing data first
+        client.query("DELETE FROM demo_v2").await?;
+
         // Use raw query to avoid serde_json::Value serialization issues
         client
             .query("CREATE demo_v2:test1 SET name = 'V2 Test Record', version = 2")
             .await?;
 
-        // Query it back - count records
+        // Query specific record by ID and deserialize to struct
+        #[derive(serde::Deserialize, Debug)]
+        struct DemoRecord {
+            name: String,
+            version: i64,
+        }
+        let mut response = client.query("SELECT * FROM demo_v2:test1").await?;
+        let records: Vec<DemoRecord> = response.take(0)?;
+        assert_eq!(records.len(), 1, "Should find exactly one record by ID");
+        assert_eq!(records[0].name, "V2 Test Record");
+        assert_eq!(records[0].version, 2);
+
+        // Count records
         let mut response = client
             .query("SELECT count() FROM demo_v2 GROUP ALL")
             .await?;
@@ -113,12 +128,29 @@ pub mod v3 {
 
     /// Example: Insert and query a record using v3 SDK
     pub async fn demo_insert_query(client: &Surreal<Any>) -> anyhow::Result<()> {
+        // Cleanup any existing data first
+        client.query("DELETE FROM demo_v3").await?;
+
         // Use raw query to keep demo simple
         client
             .query("CREATE demo_v3:test1 SET name = 'V3 Test Record', version = 3")
             .await?;
 
-        // Query it back - count records
+        // Query specific record by ID and deserialize to struct
+        use surrealdb3::types::SurrealValue;
+        #[derive(SurrealValue, Debug)]
+        #[surreal(crate = "surrealdb3::types")]
+        struct DemoRecord {
+            name: String,
+            version: i64,
+        }
+        let mut response = client.query("SELECT * FROM demo_v3:test1").await?;
+        let records: Vec<DemoRecord> = response.take(0)?;
+        assert_eq!(records.len(), 1, "Should find exactly one record by ID");
+        assert_eq!(records[0].name, "V3 Test Record");
+        assert_eq!(records[0].version, 3);
+
+        // Count records
         let mut response = client
             .query("SELECT count() FROM demo_v3 GROUP ALL")
             .await?;
