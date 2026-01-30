@@ -42,7 +42,7 @@ pub fn generate_docker_service(config: &DatabaseConfig) -> Value {
         SourceType::MongoDB | SourceType::MongoDBIncremental => {
             generate_mongodb_docker_service(config)
         }
-        SourceType::Neo4j => generate_neo4j_docker_service(config),
+        SourceType::Neo4j | SourceType::Neo4jIncremental => generate_neo4j_docker_service(config),
         SourceType::Kafka => generate_kafka_docker_service(config),
         SourceType::Csv | SourceType::Jsonl => generate_file_generator_docker_service(config),
     }
@@ -70,7 +70,9 @@ pub fn generate_k8s_statefulset(config: &DatabaseConfig, namespace: &str) -> Str
         SourceType::MongoDB | SourceType::MongoDBIncremental => {
             generate_mongodb_k8s_statefulset(config, namespace)
         }
-        SourceType::Neo4j => generate_neo4j_k8s_statefulset(config, namespace),
+        SourceType::Neo4j | SourceType::Neo4jIncremental => {
+            generate_neo4j_k8s_statefulset(config, namespace)
+        }
         SourceType::Kafka => generate_kafka_k8s_statefulset(config, namespace),
         SourceType::Csv | SourceType::Jsonl => generate_file_generator_k8s_job(config, namespace),
     }
@@ -91,7 +93,7 @@ pub fn generate_k8s_service(config: &DatabaseConfig, namespace: &str) -> String 
         SourceType::MongoDB | SourceType::MongoDBIncremental => {
             generate_mongodb_k8s_service(namespace)
         }
-        SourceType::Neo4j => generate_neo4j_k8s_service(namespace),
+        SourceType::Neo4j | SourceType::Neo4jIncremental => generate_neo4j_k8s_service(namespace),
         SourceType::Kafka => generate_kafka_k8s_service(namespace),
         SourceType::Csv | SourceType::Jsonl => String::new(), // No service needed
     }

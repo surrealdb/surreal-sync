@@ -77,6 +77,10 @@ pub enum SourceChoice {
     #[value(name = "mongodb-incremental")]
     MongodbIncremental,
     Neo4j,
+    /// Neo4j timestamp-based incremental sync
+    /// CLI: `from neo4j incremental`
+    #[value(name = "neo4j-incremental")]
+    Neo4jIncremental,
     Kafka,
     Csv,
     Jsonl,
@@ -95,6 +99,7 @@ impl From<SourceChoice> for SourceType {
             SourceChoice::Mongodb => SourceType::MongoDB,
             SourceChoice::MongodbIncremental => SourceType::MongoDBIncremental,
             SourceChoice::Neo4j => SourceType::Neo4j,
+            SourceChoice::Neo4jIncremental => SourceType::Neo4jIncremental,
             SourceChoice::Kafka => SourceType::Kafka,
             SourceChoice::Csv => SourceType::Csv,
             SourceChoice::Jsonl => SourceType::Jsonl,
