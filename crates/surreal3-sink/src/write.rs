@@ -265,8 +265,8 @@ pub async fn write_relation(
 
     let record_id = &r.id;
 
-    tracing::trace!("Executing SurrealDB query with flattened fields: {}", query);
-    log::info!("🔧 migrate_batch executing SurrealDB relation query: {query}");
+    tracing::trace!("Executing SurrealDB relation query for table '{}'", record_id.table);
+    log::info!("🔧 migrate_batch executing SurrealDB relation query for table '{}'", record_id.table);
 
     // Add debug logging to see the document being bound
     if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
@@ -369,8 +369,12 @@ pub async fn write_relation(
     }
 
     // All retries exhausted
-    let error_msg =
-        format!("Failed to write relation {record_id:?} after {MAX_RETRIES} retries. Last error: {last_error:?}");
+    let error_msg = format!(
+        "Failed to write relation for table '{}' after {} retries. Last error: {:?}",
+        record_id.table,
+        MAX_RETRIES,
+        last_error
+    );
     tracing::error!("{error_msg}");
     Err(anyhow::anyhow!(error_msg))
 }
