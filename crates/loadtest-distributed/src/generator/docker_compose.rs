@@ -1,19 +1,35 @@
 //! Docker Compose configuration generator.
+//!
+//! This module orchestrates Docker Compose service generation by dispatching
+//! to source-specific modules for sync service generation.
+//!
+//! ## Module Organization
+//!
+//! Source-specific generators are in submodules:
+//! - `mysql`: MySQL full sync
+//! - `postgresql`: PostgreSQL trigger-based full sync
+//! - `postgresql_wal2json_incremental`: PostgreSQL WAL2JSON incremental sync (5-stage pipeline)
+//! - `mongodb`: MongoDB full sync
+//! - `neo4j`: Neo4j full sync
+//! - `kafka`: Kafka streaming sync (per-topic)
+//! - `csv_jsonl`: CSV and JSONL file import (per-file)
+//! - `common`: Shared helper functions
+
+mod common;
+mod csv_jsonl;
+mod kafka;
+mod mongodb;
+mod mysql;
+mod neo4j;
+mod postgresql;
+mod postgresql_wal2json_incremental;
 
 use super::databases;
 use super::ConfigGenerator;
 use crate::config::{ClusterConfig, SourceType};
 use anyhow::Result;
+use common::normalize_memory_unit;
 use serde_yaml::{Mapping, Value};
-
-/// Normalize memory unit from Kubernetes format (Mi, Gi) to Docker format (m, g).
-/// Docker Compose expects lowercase suffixes without 'i' (e.g., "512m" not "512Mi").
-fn normalize_memory_unit(memory: &str) -> String {
-    memory
-        .replace("Gi", "g")
-        .replace("Mi", "m")
-        .replace("Ki", "k")
-}
 
 /// Generator for Docker Compose configurations.
 pub struct DockerComposeGenerator;
@@ -34,7 +50,7 @@ impl ConfigGenerator for DockerComposeGenerator {
         // Add source database service
         let db_service = databases::generate_docker_service(&config.database);
         services.insert(
-            Value::String(database_service_name(config.source_type)),
+            Value::String(common::database_service_name(config.source_type)),
             db_service,
         );
 
@@ -48,126 +64,12 @@ impl ConfigGenerator for DockerComposeGenerator {
         let surrealdb_service = generate_surrealdb_service(config);
         services.insert(Value::String("surrealdb".to_string()), surrealdb_service);
 
-        // PostgreSQL Logical replication requires a special container sequence
+        // PostgreSQL Logical replication requires a special container sequence (5-stage pipeline)
         if config.source_type == SourceType::PostgreSQLLogical {
-            // 1. Add schema-init container (creates empty tables)
-            let schema_init_service = generate_postgresql_logical_schema_init_service(config);
-            services.insert(
-                Value::String("schema-init".to_string()),
-                schema_init_service,
-            );
-
-            // 2. Add full-sync-setup container (creates slot, runs full sync, emits checkpoints)
-            let full_sync_setup_service =
-                generate_postgresql_logical_full_sync_setup_service(config);
-            services.insert(
-                Value::String("full-sync-setup".to_string()),
-                full_sync_setup_service,
-            );
-
-            // 3. Add populate containers (depend on full-sync-setup)
-            for container in &config.containers {
-                let mut populate_service = generate_populate_service(config, container);
-
-                // Update dependencies to wait for full-sync-setup
-                if let Some(Value::Mapping(depends_on)) =
-                    populate_service.get_mut(Value::String("depends_on".to_string()))
-                {
-                    let mut setup_dep = Mapping::new();
-                    setup_dep.insert(
-                        Value::String("condition".to_string()),
-                        Value::String("service_completed_successfully".to_string()),
-                    );
-                    depends_on.insert(
-                        Value::String("full-sync-setup".to_string()),
-                        Value::Mapping(setup_dep),
-                    );
-                }
-
-                services.insert(Value::String(container.id.clone()), populate_service);
-            }
-
-            // 4. Add incremental-sync container (reads checkpoint from SurrealDB, processes populate changes)
-            let incremental_sync_service =
-                generate_postgresql_logical_incremental_sync_service(config);
-            services.insert(
-                Value::String("incremental-sync".to_string()),
-                incremental_sync_service,
-            );
-
-            // 5. Add verify containers (depend on incremental-sync)
-            for container in &config.containers {
-                let mut verify_service = generate_verify_service(config, container);
-
-                // Update dependencies to wait for incremental-sync instead of sync
-                if let Some(Value::Mapping(depends_on)) =
-                    verify_service.get_mut(Value::String("depends_on".to_string()))
-                {
-                    // Remove the "sync" dependency if it exists
-                    depends_on.remove(Value::String("sync".to_string()));
-
-                    // Add incremental-sync dependency
-                    let mut sync_dep = Mapping::new();
-                    sync_dep.insert(
-                        Value::String("condition".to_string()),
-                        Value::String("service_completed_successfully".to_string()),
-                    );
-                    depends_on.insert(
-                        Value::String("incremental-sync".to_string()),
-                        Value::Mapping(sync_dep),
-                    );
-                }
-
-                let verify_id = container.id.replace("populate-", "verify-");
-                services.insert(Value::String(verify_id), verify_service);
-            }
+            generate_postgresql_logical_pipeline(&mut services, config);
         } else {
-            // Standard flow for other sources
-
-            // Add populate container services
-            for container in &config.containers {
-                let populate_service = generate_populate_service(config, container);
-                services.insert(Value::String(container.id.clone()), populate_service);
-            }
-
-            // Add sync service(s)
-            // Kafka, CSV, and JSONL need one sync service per table since their CLIs handle one table at a time
-            if config.source_type == SourceType::Kafka {
-                for (idx, container) in config.containers.iter().enumerate() {
-                    for table in &container.tables {
-                        let sync_service = generate_kafka_sync_service(
-                            config,
-                            table,
-                            container.row_count,
-                            idx + 1,
-                        );
-                        services.insert(Value::String(format!("sync-{table}")), sync_service);
-                    }
-                }
-            } else if config.source_type == SourceType::Csv
-                || config.source_type == SourceType::Jsonl
-            {
-                // CSV/JSONL need one sync service per file/table
-                for (idx, container) in config.containers.iter().enumerate() {
-                    for table in &container.tables {
-                        let sync_service =
-                            generate_file_sync_service(config, table, container.row_count, idx + 1);
-                        services.insert(Value::String(format!("sync-{table}")), sync_service);
-                    }
-                }
-            } else {
-                // For other sources, a single sync service handles all tables
-                let sync_service = generate_sync_service(config);
-                services.insert(Value::String("sync".to_string()), sync_service);
-            }
-
-            // Add verify container services (run after sync completes)
-            for container in &config.containers {
-                let verify_service = generate_verify_service(config, container);
-                // Use verify-N naming to match populate-N
-                let verify_id = container.id.replace("populate-", "verify-");
-                services.insert(Value::String(verify_id), verify_service);
-            }
+            // Standard flow for other sources (3-stage pipeline)
+            generate_standard_pipeline(&mut services, config);
         }
 
         // Add aggregator service (HTTP-based metrics collection)
@@ -207,7 +109,7 @@ impl ConfigGenerator for DockerComposeGenerator {
             volumes.insert(
                 Value::String(format!(
                     "{}_data",
-                    database_service_name(config.source_type)
+                    common::database_service_name(config.source_type)
                 )),
                 Value::Mapping(Mapping::new()),
             );
@@ -242,15 +144,140 @@ impl ConfigGenerator for DockerComposeGenerator {
     }
 }
 
-/// Get the service name for a database type.
-fn database_service_name(source_type: SourceType) -> String {
-    match source_type {
-        SourceType::MySQL => "mysql".to_string(),
-        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => "postgresql".to_string(),
-        SourceType::MongoDB => "mongodb".to_string(),
-        SourceType::Neo4j => "neo4j".to_string(),
-        SourceType::Kafka => "kafka".to_string(),
-        SourceType::Csv | SourceType::Jsonl => "file-generator".to_string(),
+/// Generate PostgreSQL Logical 5-stage pipeline.
+fn generate_postgresql_logical_pipeline(services: &mut Mapping, config: &ClusterConfig) {
+    // 1. Add schema-init container (creates empty tables)
+    let schema_init_service = postgresql_wal2json_incremental::generate_schema_init_service(config);
+    services.insert(
+        Value::String("schema-init".to_string()),
+        schema_init_service,
+    );
+
+    // 2. Add full-sync-setup container (creates slot, runs full sync, emits checkpoints)
+    let full_sync_setup_service =
+        postgresql_wal2json_incremental::generate_full_sync_setup_service(config);
+    services.insert(
+        Value::String("full-sync-setup".to_string()),
+        full_sync_setup_service,
+    );
+
+    // 3. Add populate containers (depend on full-sync-setup)
+    for container in &config.containers {
+        let mut populate_service = generate_populate_service(config, container);
+
+        // Update dependencies to wait for full-sync-setup
+        if let Some(Value::Mapping(depends_on)) =
+            populate_service.get_mut(Value::String("depends_on".to_string()))
+        {
+            let mut setup_dep = Mapping::new();
+            setup_dep.insert(
+                Value::String("condition".to_string()),
+                Value::String("service_completed_successfully".to_string()),
+            );
+            depends_on.insert(
+                Value::String("full-sync-setup".to_string()),
+                Value::Mapping(setup_dep),
+            );
+        }
+
+        services.insert(Value::String(container.id.clone()), populate_service);
+    }
+
+    // 4. Add incremental-sync container (reads checkpoint from SurrealDB, processes populate changes)
+    let incremental_sync_service =
+        postgresql_wal2json_incremental::generate_incremental_sync_service(config);
+    services.insert(
+        Value::String("incremental-sync".to_string()),
+        incremental_sync_service,
+    );
+
+    // 5. Add verify containers (depend on incremental-sync)
+    for container in &config.containers {
+        let mut verify_service = generate_verify_service(config, container);
+
+        // Update dependencies to wait for incremental-sync instead of sync
+        if let Some(Value::Mapping(depends_on)) =
+            verify_service.get_mut(Value::String("depends_on".to_string()))
+        {
+            // Remove the "sync" dependency if it exists
+            depends_on.remove(Value::String("sync".to_string()));
+
+            // Add incremental-sync dependency
+            let mut sync_dep = Mapping::new();
+            sync_dep.insert(
+                Value::String("condition".to_string()),
+                Value::String("service_completed_successfully".to_string()),
+            );
+            depends_on.insert(
+                Value::String("incremental-sync".to_string()),
+                Value::Mapping(sync_dep),
+            );
+        }
+
+        let verify_id = container.id.replace("populate-", "verify-");
+        services.insert(Value::String(verify_id), verify_service);
+    }
+}
+
+/// Generate standard 3-stage pipeline for most sources.
+fn generate_standard_pipeline(services: &mut Mapping, config: &ClusterConfig) {
+    // Add populate container services
+    for container in &config.containers {
+        let populate_service = generate_populate_service(config, container);
+        services.insert(Value::String(container.id.clone()), populate_service);
+    }
+
+    // Add sync service(s)
+    // Kafka, CSV, and JSONL need one sync service per table since their CLIs handle one table at a time
+    if config.source_type == SourceType::Kafka {
+        for (idx, container) in config.containers.iter().enumerate() {
+            for table in &container.tables {
+                let sync_service =
+                    kafka::generate_sync_service(config, table, container.row_count, idx + 1);
+                services.insert(Value::String(format!("sync-{table}")), sync_service);
+            }
+        }
+    } else if config.source_type == SourceType::Csv || config.source_type == SourceType::Jsonl {
+        // CSV/JSONL need one sync service per file/table
+        for (idx, container) in config.containers.iter().enumerate() {
+            for table in &container.tables {
+                let sync_service =
+                    csv_jsonl::generate_sync_service(config, table, container.row_count, idx + 1);
+                services.insert(Value::String(format!("sync-{table}")), sync_service);
+            }
+        }
+    } else {
+        // For other sources, a single sync service handles all tables
+        let sync_service = generate_sync_service(config);
+        services.insert(Value::String("sync".to_string()), sync_service);
+    }
+
+    // Add verify container services (run after sync completes)
+    for container in &config.containers {
+        let verify_service = generate_verify_service(config, container);
+        // Use verify-N naming to match populate-N
+        let verify_id = container.id.replace("populate-", "verify-");
+        services.insert(Value::String(verify_id), verify_service);
+    }
+}
+
+/// Generate sync service by dispatching to the appropriate source-specific module.
+fn generate_sync_service(config: &ClusterConfig) -> Value {
+    match config.source_type {
+        SourceType::MySQL => mysql::generate_sync_service(config),
+        SourceType::PostgreSQL => postgresql::generate_sync_service(config),
+        SourceType::PostgreSQLLogical => {
+            // PostgreSQLLogical uses the 5-stage pipeline, this shouldn't be called directly
+            unreachable!("PostgreSQLLogical uses 5-stage pipeline, not single sync service")
+        }
+        SourceType::MongoDB => mongodb::generate_sync_service(config),
+        SourceType::Neo4j => neo4j::generate_sync_service(config),
+        SourceType::Kafka => {
+            unreachable!("Kafka uses per-topic sync services, not a single sync service")
+        }
+        SourceType::Csv | SourceType::Jsonl => {
+            unreachable!("CSV/JSONL use per-file sync services, not a single sync service")
+        }
     }
 }
 
@@ -494,7 +521,7 @@ fn generate_populate_service(
 
     // Dependencies - wait for aggregator to start (and database to be healthy)
     let mut depends_on = Mapping::new();
-    let db_name = database_service_name(config.source_type);
+    let db_name = common::database_service_name(config.source_type);
 
     let mut db_dep = Mapping::new();
     db_dep.insert(
@@ -526,434 +553,6 @@ fn generate_populate_service(
             Value::Mapping(init_dep),
         );
     }
-
-    service.insert(
-        Value::String("depends_on".to_string()),
-        Value::Mapping(depends_on),
-    );
-
-    Value::Mapping(service)
-}
-
-/// Generate sync service configuration (runs surreal-sync from <source> after populate containers).
-fn generate_sync_service(config: &ClusterConfig) -> Value {
-    let mut service = Mapping::new();
-
-    service.insert(
-        Value::String("image".to_string()),
-        Value::String("surreal-sync:latest".to_string()),
-    );
-
-    // Labels for cleanup
-    let mut labels = Mapping::new();
-    labels.insert(
-        Value::String("com.surreal-loadtest".to_string()),
-        Value::String("true".to_string()),
-    );
-    service.insert(Value::String("labels".to_string()), Value::Mapping(labels));
-
-    // Build source-specific connection args (new CLI structure)
-    let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
-
-    let command = match config.source_type {
-        SourceType::MySQL => {
-            format!(
-                "from mysql full --connection-string 'mysql://root:root@mysql:3306/{}' --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --schema-file /config/schema.yaml{}",
-                config.database.database_name, config.surrealdb.namespace, config.surrealdb.database, dry_run_flag
-            )
-        }
-        SourceType::PostgreSQL => {
-            format!(
-                "from postgresql-trigger full --connection-string 'postgresql://postgres:postgres@postgresql:5432/{}' --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --schema-file /config/schema.yaml{}",
-                config.database.database_name, config.surrealdb.namespace, config.surrealdb.database, dry_run_flag
-            )
-        }
-        SourceType::PostgreSQLLogical => {
-            // Get all table names from containers for the --tables argument
-            let tables: Vec<String> = config
-                .containers
-                .iter()
-                .flat_map(|c| c.tables.clone())
-                .collect();
-            let tables_arg = tables.join(",");
-            format!(
-                "from postgresql full --connection-string 'postgresql://postgres:postgres@postgresql:5432/{}' --slot 'surreal_sync_loadtest' --tables '{}' --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --schema-file /config/schema.yaml{}",
-                config.database.database_name, tables_arg, config.surrealdb.namespace, config.surrealdb.database, dry_run_flag
-            )
-        }
-        SourceType::MongoDB => {
-            format!(
-                "from mongodb full --connection-string 'mongodb://root:root@mongodb:27017' --database {} --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --schema-file /config/schema.yaml{}",
-                config.database.database_name, config.surrealdb.namespace, config.surrealdb.database, dry_run_flag
-            )
-        }
-        SourceType::Neo4j => {
-            format!(
-                "from neo4j full --connection-string 'bolt://neo4j:7687' --username neo4j --password password --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --schema-file /config/schema.yaml{}",
-                config.surrealdb.namespace, config.surrealdb.database, dry_run_flag
-            )
-        }
-        SourceType::Kafka => {
-            // Kafka uses per-topic sync services (generate_kafka_sync_service),
-            // this case should not be reached
-            unreachable!("Kafka uses per-topic sync services, not a single sync service")
-        }
-        SourceType::Csv => {
-            format!(
-                "from csv full --input-dir '/data' --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --schema-file /config/schema.yaml{}",
-                config.surrealdb.namespace, config.surrealdb.database, dry_run_flag
-            )
-        }
-        SourceType::Jsonl => {
-            format!(
-                "from jsonl full --input-dir '/data' --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --schema-file /config/schema.yaml{}",
-                config.surrealdb.namespace, config.surrealdb.database, dry_run_flag
-            )
-        }
-    };
-    service.insert(Value::String("command".to_string()), Value::String(command));
-
-    // Environment
-    let environment = vec![Value::String("RUST_LOG=info".to_string())];
-    service.insert(
-        Value::String("environment".to_string()),
-        Value::Sequence(environment),
-    );
-
-    // Volumes - mount config, plus shared data volume for file-based sources
-    let mut volumes = vec![Value::String("./config:/config:ro".to_string())];
-
-    // For CSV/JSONL, mount the shared data volume to read files written by populate containers
-    if config.source_type == SourceType::Csv || config.source_type == SourceType::Jsonl {
-        volumes.push(Value::String("loadtest-data:/data".to_string()));
-    }
-
-    service.insert(
-        Value::String("volumes".to_string()),
-        Value::Sequence(volumes),
-    );
-
-    // Networks
-    let networks = vec![Value::String(config.network_name.clone())];
-    service.insert(
-        Value::String("networks".to_string()),
-        Value::Sequence(networks),
-    );
-
-    // Dependencies - wait for all populate containers to complete
-    let mut depends_on = Mapping::new();
-
-    // Wait for all populate containers to complete successfully
-    for container in &config.containers {
-        let mut container_dep = Mapping::new();
-        container_dep.insert(
-            Value::String("condition".to_string()),
-            Value::String("service_completed_successfully".to_string()),
-        );
-        depends_on.insert(
-            Value::String(container.id.clone()),
-            Value::Mapping(container_dep),
-        );
-    }
-
-    // Wait for SurrealDB to be healthy
-    let mut surreal_dep = Mapping::new();
-    surreal_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_healthy".to_string()),
-    );
-    depends_on.insert(
-        Value::String("surrealdb".to_string()),
-        Value::Mapping(surreal_dep),
-    );
-
-    // Wait for source database to be healthy (in dry-run mode, populate containers may
-    // exit before MySQL finishes initializing since they don't connect)
-    let source_service_name = match config.source_type {
-        SourceType::MySQL => Some("mysql"),
-        SourceType::PostgreSQL | SourceType::PostgreSQLLogical => Some("postgresql"),
-        SourceType::MongoDB => Some("mongodb"),
-        SourceType::Neo4j => Some("neo4j"),
-        SourceType::Kafka => Some("kafka"),
-        SourceType::Csv | SourceType::Jsonl => None,
-    };
-    if let Some(db_name) = source_service_name {
-        let mut db_dep = Mapping::new();
-        db_dep.insert(
-            Value::String("condition".to_string()),
-            Value::String("service_healthy".to_string()),
-        );
-        depends_on.insert(Value::String(db_name.to_string()), Value::Mapping(db_dep));
-    }
-
-    service.insert(
-        Value::String("depends_on".to_string()),
-        Value::Mapping(depends_on),
-    );
-
-    Value::Mapping(service)
-}
-
-/// Generate Kafka sync service configuration for a single topic.
-///
-/// Kafka needs one sync service per topic because the CLI handles one topic at a time.
-/// Each sync service reads from a shared proto volume and consumes from its assigned topic.
-/// The `row_count` parameter enables early exit when all expected messages are consumed.
-fn generate_kafka_sync_service(
-    config: &ClusterConfig,
-    table_name: &str,
-    row_count: u64,
-    container_idx: usize,
-) -> Value {
-    let mut service = Mapping::new();
-
-    service.insert(
-        Value::String("image".to_string()),
-        Value::String("surreal-sync:latest".to_string()),
-    );
-
-    // Labels for cleanup
-    let mut labels = Mapping::new();
-    labels.insert(
-        Value::String("com.surreal-loadtest".to_string()),
-        Value::String("true".to_string()),
-    );
-    service.insert(Value::String("labels".to_string()), Value::Mapping(labels));
-
-    let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
-
-    // Kafka sync command - reads from topic, uses proto file for schema
-    // Message type is pascal case of table name (e.g., "users" -> "Users")
-    // Timeout is set to 1 minute (60s) as a safety limit
-    // --max-messages enables early exit once all expected messages are consumed
-    let message_type = to_pascal_case(table_name);
-    let command = format!(
-        "from kafka \
-        --proto-path '/proto/{table_name}.proto' \
-        --brokers 'kafka:9092' \
-        --group-id 'loadtest-sync-{table_name}' \
-        --topic '{table_name}' \
-        --message-type '{message_type}' \
-        --buffer-size 1000 \
-        --session-timeout-ms 30000 \
-        --kafka-batch-size 100 \
-        --max-messages {row_count} \
-        --timeout '1m' \
-        --to-namespace {} \
-        --to-database {} \
-        --surreal-endpoint 'http://surrealdb:8000' \
-        --surreal-username root \
-        --surreal-password root \
-        --schema-file /config/schema.yaml{dry_run_flag}",
-        config.surrealdb.namespace, config.surrealdb.database
-    );
-    service.insert(Value::String("command".to_string()), Value::String(command));
-
-    // Environment
-    let environment = vec![Value::String("RUST_LOG=info".to_string())];
-    service.insert(
-        Value::String("environment".to_string()),
-        Value::Sequence(environment),
-    );
-
-    // Volumes - mount config and proto files (proto files generated at config time)
-    let volumes = vec![
-        Value::String("./config:/config:ro".to_string()),
-        Value::String("./config/proto:/proto:ro".to_string()),
-    ];
-    service.insert(
-        Value::String("volumes".to_string()),
-        Value::Sequence(volumes),
-    );
-
-    // Networks
-    let networks = vec![Value::String(config.network_name.clone())];
-    service.insert(
-        Value::String("networks".to_string()),
-        Value::Sequence(networks),
-    );
-
-    // Dependencies - wait for populate container to complete
-    let mut depends_on = Mapping::new();
-
-    // Wait for the populate container that handles this table
-    let mut populate_dep = Mapping::new();
-    populate_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_completed_successfully".to_string()),
-    );
-    depends_on.insert(
-        Value::String(format!("populate-{container_idx}")),
-        Value::Mapping(populate_dep),
-    );
-
-    // Wait for SurrealDB to be healthy
-    let mut surreal_dep = Mapping::new();
-    surreal_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_healthy".to_string()),
-    );
-    depends_on.insert(
-        Value::String("surrealdb".to_string()),
-        Value::Mapping(surreal_dep),
-    );
-
-    // Wait for Kafka to be healthy
-    let mut kafka_dep = Mapping::new();
-    kafka_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_healthy".to_string()),
-    );
-    depends_on.insert(
-        Value::String("kafka".to_string()),
-        Value::Mapping(kafka_dep),
-    );
-
-    service.insert(
-        Value::String("depends_on".to_string()),
-        Value::Mapping(depends_on),
-    );
-
-    Value::Mapping(service)
-}
-
-/// Convert a snake_case string to PascalCase.
-fn to_pascal_case(s: &str) -> String {
-    s.split('_')
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                None => String::new(),
-                Some(first) => first.to_uppercase().chain(chars).collect(),
-            }
-        })
-        .collect()
-}
-
-/// Generate file sync service configuration for a single table (CSV/JSONL).
-///
-/// CSV/JSONL need one sync service per file since the CLI handles one table at a time.
-fn generate_file_sync_service(
-    config: &ClusterConfig,
-    table_name: &str,
-    _row_count: u64,
-    container_idx: usize,
-) -> Value {
-    let mut service = Mapping::new();
-
-    service.insert(
-        Value::String("image".to_string()),
-        Value::String("surreal-sync:latest".to_string()),
-    );
-
-    // Labels for cleanup
-    let mut labels = Mapping::new();
-    labels.insert(
-        Value::String("com.surreal-loadtest".to_string()),
-        Value::String("true".to_string()),
-    );
-    service.insert(Value::String("labels".to_string()), Value::Mapping(labels));
-
-    let dry_run_flag = if config.dry_run { " --dry-run" } else { "" };
-
-    // CSV/JSONL sync command - reads from file, imports to SurrealDB
-    // CSV and JSONL have different CLI syntax
-    let command = match config.source_type {
-        SourceType::Csv => {
-            // CSV: --files, --table, --has-headers, --id-field
-            format!(
-                "from csv \
-                --files '/data/csv/{table_name}.csv' \
-                --table '{table_name}' \
-                --has-headers \
-                --id-field id \
-                --to-namespace {} \
-                --to-database {} \
-                --surreal-endpoint 'http://surrealdb:8000' \
-                --surreal-username root \
-                --surreal-password root \
-                --schema-file /config/schema.yaml{dry_run_flag}",
-                config.surrealdb.namespace, config.surrealdb.database
-            )
-        }
-        SourceType::Jsonl => {
-            // JSONL: --path (directory or file), --id-field (defaults to id)
-            // JSONL infers table name from filename
-            format!(
-                "from jsonl \
-                --path '/data/jsonl/{table_name}.jsonl' \
-                --to-namespace {} \
-                --to-database {} \
-                --surreal-endpoint 'http://surrealdb:8000' \
-                --surreal-username root \
-                --surreal-password root \
-                --schema-file /config/schema.yaml{dry_run_flag}",
-                config.surrealdb.namespace, config.surrealdb.database
-            )
-        }
-        _ => unreachable!("generate_file_sync_service only called for CSV/JSONL"),
-    };
-    service.insert(Value::String("command".to_string()), Value::String(command));
-
-    // Environment
-    let environment = vec![Value::String("RUST_LOG=info".to_string())];
-    service.insert(
-        Value::String("environment".to_string()),
-        Value::Sequence(environment),
-    );
-
-    // Volumes - mount config and shared data volume
-    let volumes = vec![
-        Value::String("./config:/config:ro".to_string()),
-        Value::String("loadtest-data:/data".to_string()),
-    ];
-    service.insert(
-        Value::String("volumes".to_string()),
-        Value::Sequence(volumes),
-    );
-
-    // Networks
-    let networks = vec![Value::String(config.network_name.clone())];
-    service.insert(
-        Value::String("networks".to_string()),
-        Value::Sequence(networks),
-    );
-
-    // Dependencies - wait for populate container to complete
-    let mut depends_on = Mapping::new();
-
-    // Wait for the populate container that handles this table
-    let mut populate_dep = Mapping::new();
-    populate_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_completed_successfully".to_string()),
-    );
-    depends_on.insert(
-        Value::String(format!("populate-{container_idx}")),
-        Value::Mapping(populate_dep),
-    );
-
-    // Wait for SurrealDB to be healthy
-    let mut surreal_dep = Mapping::new();
-    surreal_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_healthy".to_string()),
-    );
-    depends_on.insert(
-        Value::String("surrealdb".to_string()),
-        Value::Mapping(surreal_dep),
-    );
-
-    // Wait for file-generator to be healthy (ensures shared volume is ready)
-    let mut file_gen_dep = Mapping::new();
-    file_gen_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_healthy".to_string()),
-    );
-    depends_on.insert(
-        Value::String("file-generator".to_string()),
-        Value::Mapping(file_gen_dep),
-    );
 
     service.insert(
         Value::String("depends_on".to_string()),
@@ -1118,255 +717,6 @@ fn generate_aggregator_service(config: &ClusterConfig) -> Value {
     // Other containers use service_started condition for dependency.
 
     // No dependencies - aggregator starts first, other containers depend on it
-
-    Value::Mapping(service)
-}
-
-/// Generate schema-init service for PostgreSQL Logical (creates empty tables).
-fn generate_postgresql_logical_schema_init_service(config: &ClusterConfig) -> Value {
-    let mut service = Mapping::new();
-
-    service.insert(
-        Value::String("image".to_string()),
-        Value::String("surreal-sync:latest".to_string()),
-    );
-
-    // Labels
-    let mut labels = Mapping::new();
-    labels.insert(
-        Value::String("com.surreal-loadtest".to_string()),
-        Value::String("true".to_string()),
-    );
-    service.insert(Value::String("labels".to_string()), Value::Mapping(labels));
-
-    // Command - populate with --schema-only flag
-    let tables: Vec<String> = config
-        .containers
-        .iter()
-        .flat_map(|c| c.tables.clone())
-        .collect();
-    let tables_arg = tables.join(",");
-
-    let command = format!(
-        "loadtest populate postgresql --schema /config/schema.yaml --tables {} --row-count 0 --schema-only --postgresql-connection-string 'postgresql://postgres:postgres@postgresql:5432/{}' --aggregator-url http://aggregator:9090",
-        tables_arg, config.database.database_name
-    );
-    service.insert(Value::String("command".to_string()), Value::String(command));
-
-    // Environment
-    let environment = vec![Value::String("RUST_LOG=info".to_string())];
-    service.insert(
-        Value::String("environment".to_string()),
-        Value::Sequence(environment),
-    );
-
-    // Volumes
-    let volumes = vec![Value::String("./config:/config:ro".to_string())];
-    service.insert(
-        Value::String("volumes".to_string()),
-        Value::Sequence(volumes),
-    );
-
-    // Networks
-    let networks = vec![Value::String(config.network_name.clone())];
-    service.insert(
-        Value::String("networks".to_string()),
-        Value::Sequence(networks),
-    );
-
-    // Dependencies - wait for PostgreSQL and aggregator
-    let mut depends_on = Mapping::new();
-
-    let mut db_dep = Mapping::new();
-    db_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_healthy".to_string()),
-    );
-    depends_on.insert(
-        Value::String("postgresql".to_string()),
-        Value::Mapping(db_dep),
-    );
-
-    let mut agg_dep = Mapping::new();
-    agg_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_started".to_string()),
-    );
-    depends_on.insert(
-        Value::String("aggregator".to_string()),
-        Value::Mapping(agg_dep),
-    );
-
-    service.insert(
-        Value::String("depends_on".to_string()),
-        Value::Mapping(depends_on),
-    );
-
-    Value::Mapping(service)
-}
-
-/// Generate full-sync-setup service for PostgreSQL Logical (creates slot, runs full sync, stores checkpoints).
-fn generate_postgresql_logical_full_sync_setup_service(config: &ClusterConfig) -> Value {
-    let mut service = Mapping::new();
-
-    service.insert(
-        Value::String("image".to_string()),
-        Value::String("surreal-sync:latest".to_string()),
-    );
-
-    // Labels
-    let mut labels = Mapping::new();
-    labels.insert(
-        Value::String("com.surreal-loadtest".to_string()),
-        Value::String("true".to_string()),
-    );
-    service.insert(Value::String("labels".to_string()), Value::Mapping(labels));
-
-    // Command - full sync with SurrealDB checkpoint storage
-    let tables: Vec<String> = config
-        .containers
-        .iter()
-        .flat_map(|c| c.tables.clone())
-        .collect();
-    let tables_arg = tables.join(",");
-
-    let command = format!(
-        "from postgresql full --connection-string 'postgresql://postgres:postgres@postgresql:5432/{}' --slot 'surreal_sync_loadtest' --tables '{}' --checkpoints-surreal-table surreal_sync_checkpoints --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root",
-        config.database.database_name,
-        tables_arg,
-        config.surrealdb.namespace,
-        config.surrealdb.database
-    );
-    service.insert(Value::String("command".to_string()), Value::String(command));
-
-    // Environment
-    let environment = vec![Value::String("RUST_LOG=info".to_string())];
-    service.insert(
-        Value::String("environment".to_string()),
-        Value::Sequence(environment),
-    );
-
-    // Networks
-    let networks = vec![Value::String(config.network_name.clone())];
-    service.insert(
-        Value::String("networks".to_string()),
-        Value::Sequence(networks),
-    );
-
-    // Dependencies - wait for schema-init and SurrealDB
-    let mut depends_on = Mapping::new();
-
-    let mut schema_dep = Mapping::new();
-    schema_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_completed_successfully".to_string()),
-    );
-    depends_on.insert(
-        Value::String("schema-init".to_string()),
-        Value::Mapping(schema_dep),
-    );
-
-    let mut surreal_dep = Mapping::new();
-    surreal_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_healthy".to_string()),
-    );
-    depends_on.insert(
-        Value::String("surrealdb".to_string()),
-        Value::Mapping(surreal_dep),
-    );
-
-    service.insert(
-        Value::String("depends_on".to_string()),
-        Value::Mapping(depends_on),
-    );
-
-    Value::Mapping(service)
-}
-
-/// Generate incremental-sync service for PostgreSQL Logical (reads from checkpoint in SurrealDB).
-fn generate_postgresql_logical_incremental_sync_service(config: &ClusterConfig) -> Value {
-    let mut service = Mapping::new();
-
-    service.insert(
-        Value::String("image".to_string()),
-        Value::String("surreal-sync:latest".to_string()),
-    );
-
-    // Labels
-    let mut labels = Mapping::new();
-    labels.insert(
-        Value::String("com.surreal-loadtest".to_string()),
-        Value::String("true".to_string()),
-    );
-    service.insert(Value::String("labels".to_string()), Value::Mapping(labels));
-
-    // Command - incremental sync reading t1 checkpoint from SurrealDB
-    let tables: Vec<String> = config
-        .containers
-        .iter()
-        .flat_map(|c| c.tables.clone())
-        .collect();
-    let tables_arg = tables.join(",");
-
-    let command = format!(
-        "from postgresql incremental --connection-string 'postgresql://postgres:postgres@postgresql:5432/{}' --slot 'surreal_sync_loadtest' --tables '{}' --checkpoints-surreal-table surreal_sync_checkpoints --timeout 60 --to-namespace {} --to-database {} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root",
-        config.database.database_name,
-        tables_arg,
-        config.surrealdb.namespace,
-        config.surrealdb.database
-    );
-    service.insert(Value::String("command".to_string()), Value::String(command));
-
-    // Environment
-    let environment = vec![Value::String("RUST_LOG=info".to_string())];
-    service.insert(
-        Value::String("environment".to_string()),
-        Value::Sequence(environment),
-    );
-
-    // Networks
-    let networks = vec![Value::String(config.network_name.clone())];
-    service.insert(
-        Value::String("networks".to_string()),
-        Value::Sequence(networks),
-    );
-
-    // Dependencies - wait for ALL populate containers and databases
-    let mut depends_on = Mapping::new();
-
-    // Wait for all populate containers to complete
-    for container in &config.containers {
-        let mut container_dep = Mapping::new();
-        container_dep.insert(
-            Value::String("condition".to_string()),
-            Value::String("service_completed_successfully".to_string()),
-        );
-        depends_on.insert(
-            Value::String(container.id.clone()),
-            Value::Mapping(container_dep),
-        );
-    }
-
-    // Wait for databases to be healthy
-    let mut db_dep = Mapping::new();
-    db_dep.insert(
-        Value::String("condition".to_string()),
-        Value::String("service_healthy".to_string()),
-    );
-    depends_on.insert(
-        Value::String("postgresql".to_string()),
-        Value::Mapping(db_dep.clone()),
-    );
-    depends_on.insert(
-        Value::String("surrealdb".to_string()),
-        Value::Mapping(db_dep),
-    );
-
-    service.insert(
-        Value::String("depends_on".to_string()),
-        Value::Mapping(depends_on),
-    );
 
     Value::Mapping(service)
 }
