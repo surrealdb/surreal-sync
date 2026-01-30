@@ -116,6 +116,7 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         source_database: Some(NEO4J_DATABASE.to_string()),
         source_username: Some(NEO4J_USERNAME.to_string()),
         source_password: Some(NEO4J_PASSWORD.to_string()),
+        labels: vec![],
         neo4j_timezone: "UTC".to_string(),
         // Tell Neo4j sync to parse these properties as JSON objects (stored as strings in Neo4j)
         neo4j_json_properties: Some(vec!["products.metadata".to_string()]),

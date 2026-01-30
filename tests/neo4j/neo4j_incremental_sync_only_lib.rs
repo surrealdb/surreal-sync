@@ -54,6 +54,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         source_database: Some(neo4j_config.get_database()),
         source_username: Some(neo4j_config.get_username()),
         source_password: Some(neo4j_config.get_password()),
+        labels: vec![],
         neo4j_timezone: "UTC".to_string(),
         neo4j_json_properties: Some(vec![
             "all_types_users.metadata".to_string(),

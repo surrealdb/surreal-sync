@@ -71,7 +71,6 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
         "root",
         "--timezone",
         "UTC",
-        "--emit-checkpoints",
         "--checkpoint-dir",
         ".test-checkpoints",
     ];

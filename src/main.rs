@@ -283,6 +283,10 @@ struct Neo4jFullArgs {
     #[arg(long, env = "NEO4J_PASSWORD")]
     password: Option<String>,
 
+    /// Labels to sync (comma-separated, empty means all labels)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
     /// Timezone for local datetime conversion
     #[arg(long, default_value = "UTC", env = "NEO4J_TIMEZONE")]
     timezone: String,
@@ -299,13 +303,13 @@ struct Neo4jFullArgs {
     #[arg(long)]
     to_database: String,
 
-    /// Emit checkpoint files for coordinating with incremental sync
-    #[arg(long)]
-    emit_checkpoints: bool,
+    /// Directory to write checkpoint files (filesystem checkpoint storage)
+    #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
+    checkpoint_dir: Option<String>,
 
-    /// Directory to write checkpoint files
-    #[arg(long, default_value = ".surreal-sync-checkpoints")]
-    checkpoint_dir: String,
+    /// SurrealDB table for storing checkpoints (alternative to --checkpoint-dir)
+    #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
+    checkpoints_surreal_table: Option<String>,
 
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
@@ -333,6 +337,10 @@ struct Neo4jIncrementalArgs {
     #[arg(long, env = "NEO4J_PASSWORD")]
     password: Option<String>,
 
+    /// Labels to sync (comma-separated, empty means all labels)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
     /// Timezone for local datetime conversion
     #[arg(long, default_value = "UTC", env = "NEO4J_TIMEZONE")]
     timezone: String,
@@ -350,8 +358,13 @@ struct Neo4jIncrementalArgs {
     to_database: String,
 
     /// Start incremental sync from this checkpoint (e.g., "neo4j:2024-01-01T00:00:00Z")
+    /// If not provided, checkpoint is read from --checkpoints-surreal-table
     #[arg(long)]
-    incremental_from: String,
+    incremental_from: Option<String>,
+
+    /// SurrealDB table for reading checkpoints (alternative to --incremental-from)
+    #[arg(long, value_name = "TABLE")]
+    checkpoints_surreal_table: Option<String>,
 
     /// Stop incremental sync when reaching this checkpoint (optional)
     #[arg(long)]

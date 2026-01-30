@@ -17,6 +17,8 @@ pub struct SourceOpts {
     pub source_database: Option<String>,
     pub source_username: Option<String>,
     pub source_password: Option<String>,
+    /// Labels to sync (empty means all labels)
+    pub labels: Vec<String>,
     pub neo4j_timezone: String,
     pub neo4j_json_properties: Option<Vec<String>>,
 }
@@ -163,7 +165,8 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     let mut total_migrated = 0;
 
     // Migrate nodes first
-    total_migrated += migrate_neo4j_nodes(&graph, surreal, &sync_opts, &ctx).await?;
+    total_migrated +=
+        migrate_neo4j_nodes(&graph, surreal, &sync_opts, &ctx, &from_opts.labels).await?;
 
     // Then migrate relationships
     total_migrated += migrate_neo4j_relationships(&graph, surreal, &sync_opts, &ctx).await?;
@@ -197,28 +200,40 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
     surreal: &S,
     sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
+    labels_filter: &[String],
 ) -> anyhow::Result<usize> {
     tracing::info!("Starting Neo4j nodes migration");
 
-    // Get all distinct node labels first
-    let label_query = Query::new("MATCH (n) RETURN DISTINCT labels(n) as labels".to_string());
-    let mut result = graph.execute(label_query).await?;
+    // Determine which labels to process
+    let labels_to_process: Vec<String> = if labels_filter.is_empty() {
+        // No filter - get all distinct labels from the database
+        let label_query = Query::new("MATCH (n) RETURN DISTINCT labels(n) as labels".to_string());
+        let mut result = graph.execute(label_query).await?;
 
-    let mut all_labels = std::collections::HashSet::new();
-    while let Some(row) = result.next().await? {
-        let labels: Vec<String> = row.get("labels")?;
-        for label in labels {
-            all_labels.insert(label);
+        let mut all_labels = std::collections::HashSet::new();
+        while let Some(row) = result.next().await? {
+            let labels: Vec<String> = row.get("labels")?;
+            for label in labels {
+                all_labels.insert(label);
+            }
         }
-    }
 
-    tracing::info!("Found {} distinct node labels", all_labels.len());
-    tracing::debug!("Node labels: {:?}", all_labels);
+        tracing::info!("Found {} distinct node labels", all_labels.len());
+        tracing::debug!("Node labels: {:?}", all_labels);
+        all_labels.into_iter().collect()
+    } else {
+        tracing::info!(
+            "Filtering to {} specified labels: {:?}",
+            labels_filter.len(),
+            labels_filter
+        );
+        labels_filter.to_vec()
+    };
 
     let mut total_migrated = 0;
 
     // Process each label separately to create proper SurrealDB tables
-    for label in all_labels {
+    for label in labels_to_process {
         tracing::info!("Migrating nodes with label: {}", label);
 
         let node_query = Query::new(
