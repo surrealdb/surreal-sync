@@ -27,7 +27,7 @@ pub async fn insert_batch(
 
     // Neo4j doesn't have great batch insert like SQL's multi-row INSERT,
     // so we use individual CREATE statements
-    for row in rows {
+    for row in rows.iter() {
         let query = build_create_node_query(label, row, table_schema)?;
         graph.run(query).await?;
         inserted += 1;
@@ -63,7 +63,7 @@ fn build_create_node_query(
     };
     props.push(format!("id: '{}'", id_string.replace('\'', "\\'")));
 
-    // Add each field
+    // Add each field from the schema
     for field_schema in &table_schema.fields {
         let field_value = row.get_field(&field_schema.name);
         let typed_value = match field_value {

@@ -146,6 +146,8 @@ impl Neo4jChangeStream {
         let checkpoint_datetime = chrono::DateTime::from_timestamp_millis(self.current_checkpoint)
             .unwrap_or_else(chrono::Utc::now);
 
+        let checkpoint_str = checkpoint_datetime.to_rfc3339();
+
         let node_query = Query::new(format!(
             "MATCH (n)
              WHERE n.{} > datetime($checkpoint)
@@ -154,7 +156,7 @@ impl Neo4jChangeStream {
              LIMIT 100",
             self.change_tracking_property, self.change_tracking_property
         ))
-        .param("checkpoint", checkpoint_datetime.to_rfc3339());
+        .param("checkpoint", checkpoint_str);
 
         let mut result = self.graph.execute(node_query).await?;
         let mut batch_changes = Vec::new();
@@ -167,16 +169,19 @@ impl Neo4jChangeStream {
             let labels: Vec<String> = row.get("labels")?;
             let label = labels.first().map(|s| s.as_str()).unwrap_or("");
 
-            // Get the checkpoint value from the node
-            let node_checkpoint = if let Ok(ts) = node.get::<i64>(&self.change_tracking_property) {
-                ts
-            } else if let Ok(dt) =
-                node.get::<chrono::DateTime<chrono::Utc>>(&self.change_tracking_property)
-            {
-                dt.timestamp_millis()
-            } else {
-                continue; // Skip nodes without valid tracking property
-            };
+            // Get the checkpoint value from the node (as milliseconds since epoch)
+            // Neo4j datetime() values are extracted as chrono::DateTime
+            let node_checkpoint = node
+                .get::<chrono::DateTime<chrono::Utc>>(&self.change_tracking_property)
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Node {} has invalid {} property (expected datetime): {}",
+                        node_id,
+                        self.change_tracking_property,
+                        e
+                    )
+                })?
+                .timestamp_millis();
 
             max_checkpoint = max_checkpoint.max(node_checkpoint);
 
