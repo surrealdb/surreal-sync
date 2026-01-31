@@ -60,8 +60,8 @@ pub enum SourceChoice {
     Mysql,
     /// MySQL trigger-based incremental sync (audit table with triggers)
     /// CLI: `from mysql incremental`
-    #[value(name = "mysql-incremental")]
-    MysqlIncremental,
+    #[value(name = "mysql-trigger-incremental")]
+    MysqlTriggerIncremental,
     Postgresql,
     /// PostgreSQL trigger-based incremental sync (audit table with triggers)
     /// CLI: `from postgresql-trigger incremental`
@@ -90,7 +90,7 @@ impl From<SourceChoice> for SourceType {
     fn from(choice: SourceChoice) -> Self {
         match choice {
             SourceChoice::Mysql => SourceType::MySQL,
-            SourceChoice::MysqlIncremental => SourceType::MySQLIncremental,
+            SourceChoice::MysqlTriggerIncremental => SourceType::MySQLTriggerIncremental,
             SourceChoice::Postgresql => SourceType::PostgreSQL,
             SourceChoice::PostgresqlTriggerIncremental => SourceType::PostgreSQLTriggerIncremental,
             SourceChoice::PostgresqlWal2JsonIncremental => {

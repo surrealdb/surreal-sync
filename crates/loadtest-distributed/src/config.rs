@@ -25,7 +25,7 @@ impl std::fmt::Display for Platform {
 pub enum SourceType {
     MySQL,
     /// MySQL trigger-based incremental sync (audit table with triggers)
-    MySQLIncremental,
+    MySQLTriggerIncremental,
     PostgreSQL,
     /// PostgreSQL trigger-based incremental sync (audit table with triggers)
     PostgreSQLTriggerIncremental,
@@ -46,7 +46,7 @@ impl std::fmt::Display for SourceType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SourceType::MySQL => write!(f, "mysql"),
-            SourceType::MySQLIncremental => write!(f, "mysql-incremental"),
+            SourceType::MySQLTriggerIncremental => write!(f, "mysql-trigger-incremental"),
             SourceType::PostgreSQL => write!(f, "postgresql"),
             SourceType::PostgreSQLTriggerIncremental => {
                 write!(f, "postgresql-trigger-incremental")
@@ -71,7 +71,7 @@ impl std::str::FromStr for SourceType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "mysql" => Ok(SourceType::MySQL),
-            "mysql-incremental" => Ok(SourceType::MySQLIncremental),
+            "mysql-trigger-incremental" => Ok(SourceType::MySQLTriggerIncremental),
             "postgresql" | "postgres" | "postgresql-trigger" => Ok(SourceType::PostgreSQL),
             "postgresql-trigger-incremental" => Ok(SourceType::PostgreSQLTriggerIncremental),
             "postgresql-wal2json-incremental" => Ok(SourceType::PostgreSQLWal2JsonIncremental),
@@ -404,7 +404,7 @@ pub fn build_cluster_config(
 /// Get default connection string for a source type.
 fn get_default_connection_string(source_type: SourceType, platform: Platform) -> String {
     match source_type {
-        SourceType::MySQL | SourceType::MySQLIncremental => {
+        SourceType::MySQL | SourceType::MySQLTriggerIncremental => {
             "mysql://root:root@mysql:3306/loadtest".to_string()
         }
         SourceType::PostgreSQL
@@ -433,7 +433,7 @@ fn get_default_connection_string(source_type: SourceType, platform: Platform) ->
 /// Get default Docker image for a source type.
 fn get_default_database_image(source_type: SourceType) -> String {
     match source_type {
-        SourceType::MySQL | SourceType::MySQLIncremental => "mysql:8.0".to_string(),
+        SourceType::MySQL | SourceType::MySQLTriggerIncremental => "mysql:8.0".to_string(),
         SourceType::PostgreSQL | SourceType::PostgreSQLTriggerIncremental => {
             "postgres:16".to_string()
         }

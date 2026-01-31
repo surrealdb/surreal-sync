@@ -135,7 +135,7 @@ impl KubernetesGenerator {
 /// Get database name for a source type.
 fn database_name(source_type: SourceType) -> &'static str {
     match source_type {
-        SourceType::MySQL | SourceType::MySQLIncremental => "mysql",
+        SourceType::MySQL | SourceType::MySQLTriggerIncremental => "mysql",
         SourceType::PostgreSQL
         | SourceType::PostgreSQLTriggerIncremental
         | SourceType::PostgreSQLWal2JsonIncremental => "postgresql",
@@ -438,7 +438,7 @@ spec:
 fn generate_populate_job(config: &ClusterConfig) -> String {
     let db_name = database_name(config.source_type);
     let source_type_lower = match config.source_type {
-        SourceType::MySQL | SourceType::MySQLIncremental => "mysql",
+        SourceType::MySQL | SourceType::MySQLTriggerIncremental => "mysql",
         // All PostgreSQL variants use the same populate command (data goes to same database)
         SourceType::PostgreSQL
         | SourceType::PostgreSQLTriggerIncremental
@@ -529,7 +529,7 @@ fn generate_populate_job(config: &ClusterConfig) -> String {
 
         // Build connection string args as separate YAML list items (each flag and value on its own line)
         let connection_args = match config.source_type {
-            SourceType::MySQL | SourceType::MySQLIncremental => {
+            SourceType::MySQL | SourceType::MySQLTriggerIncremental => {
                 format!(
                     "- --mysql-connection-string\n        - '{}'",
                     container.connection_string
@@ -686,7 +686,7 @@ fn generate_sync_job(config: &ClusterConfig) -> String {
                 }
             )
         }
-        SourceType::MySQLIncremental => {
+        SourceType::MySQLTriggerIncremental => {
             // For incremental trigger-based sync, this generates the full-sync-setup job
             let tables: Vec<String> = config
                 .containers
@@ -1422,7 +1422,7 @@ spec:
 /// Returns (image, command) tuple for the health check.
 fn get_db_health_check(source_type: SourceType, db_name: &str) -> (&'static str, String) {
     match source_type {
-        SourceType::MySQL | SourceType::MySQLIncremental => (
+        SourceType::MySQL | SourceType::MySQLTriggerIncremental => (
             "mysql:8.0",
             format!(
                 r#"          echo "Waiting for MySQL to be ready..."
