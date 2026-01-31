@@ -38,23 +38,9 @@ jobs:
           #   binary_name: surreal-sync
 
           # macOS
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            binary_name: surreal-sync
-            continue-on-error: true
           - target: aarch64-apple-darwin
             os: macos-latest
             binary_name: surreal-sync
-
-          # Windows
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            binary_name: surreal-sync.exe
-            continue-on-error: true
-          - target: aarch64-pc-windows-msvc
-            os: windows-latest
-            binary_name: surreal-sync.exe
-            continue-on-error: true
 
     steps:
       - name: Checkout repository
