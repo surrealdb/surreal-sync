@@ -17,7 +17,7 @@ on:
       sources:
         type: string
         description: 'Comma-separated list of sources to test'
-        default: 'kafka,mysql,postgresql,mongodb,neo4j'
+        default: 'mysql,mysql-trigger-incremental,postgresql,postgresql-trigger-incremental,postgresql-wal2json-incremental,mongodb,mongodb-incremental,neo4j,neo4j-incremental,kafka'
       surrealdb_images:
         type: string
         description: 'Comma-separated list of SurrealDB images to test'
@@ -73,7 +73,7 @@ jobs:
           else
             echo "preset=small" >> $GITHUB_OUTPUT
             echo "timeout=600" >> $GITHUB_OUTPUT
-            SOURCES="kafka,mysql,postgresql,mongodb,neo4j"
+            SOURCES="mysql,mysql-trigger-incremental,postgresql,postgresql-trigger-incremental,postgresql-wal2json-incremental,mongodb,mongodb-incremental,neo4j,neo4j-incremental,kafka"
             SURREALDB_IMAGES="surrealdb/surrealdb:v2.3.7,surrealdb/surrealdb:v3.0.0-beta.2"
           fi
           echo "sources=$SOURCES" >> $GITHUB_OUTPUT
