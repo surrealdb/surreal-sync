@@ -88,6 +88,7 @@ impl DataGenerator {
         let id = generate_value_typed(
             &table_schema.id.generator,
             &mut self.rng,
+            self.seed,
             index,
             Some(&table_schema.id.id_type),
         );
@@ -100,6 +101,7 @@ impl DataGenerator {
                 let value = generate_value_typed(
                     &field.generator,
                     &mut self.rng,
+                    self.seed,
                     index,
                     Some(&field.field_type),
                 );

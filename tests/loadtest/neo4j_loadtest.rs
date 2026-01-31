@@ -170,7 +170,7 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     table_name,
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
-                .with_skip_fields(vec!["updated_at".to_string()]);
+;
 
                 let report = verifier.verify_streaming(ROW_COUNT).await?;
 
@@ -212,7 +212,7 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     table_name,
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
-                .with_skip_fields(vec!["updated_at".to_string()]);
+;
 
                 let report = verifier.verify_streaming(ROW_COUNT).await?;
 

@@ -227,7 +227,7 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
                     table_name,
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
-                .with_skip_fields(vec!["updated_at".to_string()]);
+;
 
                 let report = verifier.verify_streaming(ROW_COUNT).await?;
 
@@ -269,7 +269,7 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
                     table_name,
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
-                .with_skip_fields(vec!["updated_at".to_string()]);
+;
 
                 let report = verifier.verify_streaming(ROW_COUNT).await?;
 

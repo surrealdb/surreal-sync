@@ -81,15 +81,19 @@ pub fn generate_full_sync_setup_service(config: &ClusterConfig) -> Value {
     let mut service = create_service_base(config);
 
     // Command - full sync with SurrealDB checkpoint storage
+    // Include --schema for auto-detection of JSON properties
     let tables = get_all_tables(config);
     let tables_arg = tables.join(",");
 
     let namespace = &config.surrealdb.namespace;
     let database = &config.surrealdb.database;
     let command = format!(
-        "from neo4j full --connection-string 'bolt://neo4j:7687' --username neo4j --password password --tables '{tables_arg}' --checkpoints-surreal-table surreal_sync_checkpoints --to-namespace {namespace} --to-database {database} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root"
+        "from neo4j full --connection-string 'bolt://neo4j:7687' --username neo4j --password password --schema-file /config/schema.yaml --tables '{tables_arg}' --checkpoints-surreal-table surreal_sync_checkpoints --to-namespace {namespace} --to-database {database} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root"
     );
     service.insert(Value::String("command".to_string()), Value::String(command));
+
+    // Volumes - mount config for schema
+    add_config_volume(&mut service);
 
     // Dependencies - wait for schema-init and SurrealDB
     let mut depends_on = Mapping::new();
@@ -131,15 +135,19 @@ pub fn generate_incremental_sync_service(config: &ClusterConfig) -> Value {
     let mut service = create_service_base(config);
 
     // Command - incremental sync reading checkpoint from SurrealDB
+    // Include --schema for auto-detection of JSON properties
     let tables = get_all_tables(config);
     let tables_arg = tables.join(",");
 
     let namespace = &config.surrealdb.namespace;
     let database = &config.surrealdb.database;
     let command = format!(
-        "from neo4j incremental --connection-string 'bolt://neo4j:7687' --username neo4j --password password --tables '{tables_arg}' --checkpoints-surreal-table surreal_sync_checkpoints --timeout 60 --to-namespace {namespace} --to-database {database} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root"
+        "from neo4j incremental --connection-string 'bolt://neo4j:7687' --username neo4j --password password --schema-file /config/schema.yaml --tables '{tables_arg}' --checkpoints-surreal-table surreal_sync_checkpoints --timeout 60 --to-namespace {namespace} --to-database {database} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root"
     );
     service.insert(Value::String("command".to_string()), Value::String(command));
+
+    // Volumes - mount config for schema
+    add_config_volume(&mut service);
 
     // Dependencies - wait for ALL populate containers and databases
     add_populate_dependencies(&mut service, config);
