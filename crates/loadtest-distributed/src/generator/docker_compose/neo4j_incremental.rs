@@ -88,7 +88,7 @@ pub fn generate_full_sync_setup_service(config: &ClusterConfig) -> Value {
     let namespace = &config.surrealdb.namespace;
     let database = &config.surrealdb.database;
     let command = format!(
-        "from neo4j full --connection-string 'bolt://neo4j:7687' --username neo4j --password password --schema-file /config/schema.yaml --tables '{tables_arg}' --checkpoints-surreal-table surreal_sync_checkpoints --to-namespace {namespace} --to-database {database} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root"
+        "from neo4j full --connection-string 'bolt://neo4j:7687' --username neo4j --password password --schema-file /config/schema.yaml --tables '{tables_arg}' --checkpoints-surreal-table surreal_sync_checkpoints --to-namespace {namespace} --to-database {database} --surreal-endpoint 'http://surrealdb:8000' --surreal-username root --surreal-password root --assumed-start-timestamp '2000-01-01T00:00:00Z' --allow-empty-tracking-timestamp"
     );
     service.insert(Value::String("command".to_string()), Value::String(command));
 

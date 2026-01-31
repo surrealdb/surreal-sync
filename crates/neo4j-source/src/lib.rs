@@ -12,5 +12,5 @@ pub use full_sync::{
     Neo4jJsonProperty, Relation, SourceOpts, SyncOpts,
 };
 pub use incremental_sync::{run_incremental_sync, Neo4jChangeStream, Neo4jIncrementalSource};
-pub use neo4j_checkpoint::{get_current_checkpoint, Neo4jCheckpoint};
+pub use neo4j_checkpoint::Neo4jCheckpoint;
 pub use neo4j_client::new_neo4j_client;

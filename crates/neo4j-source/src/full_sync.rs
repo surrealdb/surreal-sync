@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalRelation, UniversalRow, UniversalThingRef, UniversalValue};
 
+use crate::neo4j_checkpoint::Neo4jCheckpoint;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 
 /// Source database connection options (Neo4j-specific, library type without clap)
@@ -21,6 +22,14 @@ pub struct SourceOpts {
     pub labels: Vec<String>,
     pub neo4j_timezone: String,
     pub neo4j_json_properties: Option<Vec<String>>,
+    /// Property name for change tracking (e.g., "updated_at")
+    pub change_tracking_property: String,
+    /// Assumed start timestamp to use when no tracking property timestamps are found
+    /// Only used when allow_empty_tracking_timestamp is true
+    pub assumed_start_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    /// Allow full sync on data without tracking property timestamps
+    /// When enabled with assumed_start_timestamp, uses the assumed timestamp for checkpoints
+    pub allow_empty_tracking_timestamp: bool,
 }
 
 /// Sync options (non-connection related)
@@ -133,27 +142,6 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 
     let graph = Graph::connect(config)?;
     tracing::debug!("Neo4j connection established");
-
-    // Emit checkpoint t1 (before full sync starts) if configured
-    let _checkpoint_t1 = if let Some(manager) = sync_manager {
-        // Use timestamp-based checkpoint tracking
-        tracing::info!("Using timestamp-based checkpoint tracking");
-        let checkpoint = crate::neo4j_checkpoint::get_current_checkpoint();
-
-        // Emit the checkpoint
-        manager
-            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
-            .await?;
-
-        tracing::info!(
-            "Emitted full sync start checkpoint (t1): {}",
-            checkpoint.to_cli_string()
-        );
-        Some(checkpoint)
-    } else {
-        None
-    };
-
     tracing::info!("Connected to both Neo4j and SurrealDB");
 
     // Create conversion context with JSON-to-object configuration
@@ -164,26 +152,123 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 
     let mut total_migrated = 0;
 
-    // Migrate nodes first
-    total_migrated +=
-        migrate_neo4j_nodes(&graph, surreal, &sync_opts, &ctx, &from_opts.labels).await?;
+    // Migrate nodes first and track min/max timestamps
+    let (nodes_migrated, nodes_min_ts, nodes_max_ts) = migrate_neo4j_nodes(
+        &graph,
+        surreal,
+        &sync_opts,
+        &ctx,
+        &from_opts.labels,
+        &from_opts.change_tracking_property,
+    )
+    .await?;
+    total_migrated += nodes_migrated;
 
-    // Then migrate relationships
-    total_migrated += migrate_neo4j_relationships(&graph, surreal, &sync_opts, &ctx).await?;
+    // Then migrate relationships and track min/max timestamps
+    let (rels_migrated, rels_min_ts, rels_max_ts) = migrate_neo4j_relationships(
+        &graph,
+        surreal,
+        &sync_opts,
+        &ctx,
+        &from_opts.change_tracking_property,
+    )
+    .await?;
+    total_migrated += rels_migrated;
 
-    // Emit checkpoint t2 (after full sync completes) if configured
+    // Compute overall min/max timestamps from both nodes and relationships
+    let overall_min = [nodes_min_ts, rels_min_ts].into_iter().flatten().min();
+    let overall_max = [nodes_max_ts, rels_max_ts].into_iter().flatten().max();
+
+    // Emit checkpoints t1 and t2 (at end of full sync) if configured
     if let Some(manager) = sync_manager {
-        // Use timestamp-based checkpoint tracking
-        let checkpoint = crate::neo4j_checkpoint::get_current_checkpoint();
+        // Determine timestamps to use for checkpoints
+        let (min_timestamp, max_timestamp) = match (overall_min, overall_max) {
+            // Case 1: We have actual timestamps from the data - use them
+            (Some(min), Some(max)) => (min, max),
 
-        // Emit the checkpoint
+            // Case 2: No timestamps found - check if fallback is allowed
+            (None, None) => {
+                if from_opts.allow_empty_tracking_timestamp {
+                    // User opted in to allow empty tracking timestamps
+                    if let Some(assumed_ts) = from_opts.assumed_start_timestamp {
+                        tracing::warn!(
+                            "No tracking property '{}' timestamps found in synced data. \
+                             Using assumed start timestamp for checkpoints: {}",
+                            from_opts.change_tracking_property,
+                            assumed_ts.to_rfc3339()
+                        );
+                        (assumed_ts, assumed_ts)
+                    } else {
+                        anyhow::bail!(
+                            "No tracking property '{}' timestamps found in synced data and \
+                             --assumed-start-timestamp is not set. When using \
+                             --allow-empty-tracking-timestamp, you must also provide \
+                             --assumed-start-timestamp.",
+                            from_opts.change_tracking_property
+                        );
+                    }
+                } else {
+                    anyhow::bail!(
+                        "No tracking property '{}' timestamps found in synced data. \
+                         For incremental sync to work, all Neo4j nodes and relationships must have \
+                         the '{}' field. Options:\n\
+                         1. Add the tracking property to your data\n\
+                         2. Run full sync without checkpoint tracking (omit --checkpoint-dir and \
+                            --checkpoints-surreal-table flags)\n\
+                         3. Use --assumed-start-timestamp and --allow-empty-tracking-timestamp flags \
+                            for testing/loadtest scenarios",
+                        from_opts.change_tracking_property,
+                        from_opts.change_tracking_property
+                    );
+                }
+            }
+
+            // Case 3: Partial timestamps (shouldn't happen, but handle it)
+            _ => {
+                anyhow::bail!(
+                    "Inconsistent tracking property '{}' timestamps: found timestamps in some \
+                     but not all synced data. This indicates data quality issues.",
+                    from_opts.change_tracking_property
+                );
+            }
+        };
+
+        // t1 (FullSyncStart) = min timestamp from synced data (or assumed timestamp)
+        // t2 (FullSyncEnd) = max timestamp from synced data (or assumed timestamp)
+        //
+        // These checkpoints mark the logical boundaries of the synced data:
+        // - t1: Oldest tracking property timestamp in the synced data
+        // - t2: Newest tracking property timestamp in the synced data
+        //
+        // Incremental sync will read t1 and query: `WHERE n.{tracking_property} > datetime(t1)`
+        // This captures all changes that occurred after the oldest synced data timestamp.
+        //
+        // **Note**: Subsequent incremental sync runs read checkpoints from previous
+        // incremental sync runs (via --incremental-from CLI param or checkpoint store).
+        let checkpoint_t1 = Neo4jCheckpoint {
+            timestamp: min_timestamp,
+        };
+
         manager
-            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
+            .emit_checkpoint(&checkpoint_t1, SyncPhase::FullSyncStart)
+            .await?;
+
+        tracing::info!(
+            "Emitted full sync start checkpoint (t1): {}",
+            checkpoint_t1.to_cli_string()
+        );
+
+        let checkpoint_t2 = Neo4jCheckpoint {
+            timestamp: max_timestamp,
+        };
+
+        manager
+            .emit_checkpoint(&checkpoint_t2, SyncPhase::FullSyncEnd)
             .await?;
 
         tracing::info!(
             "Emitted full sync end checkpoint (t2): {}",
-            checkpoint.to_cli_string()
+            checkpoint_t2.to_cli_string()
         );
     }
 
@@ -195,14 +280,23 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 }
 
 /// Migrate all nodes from Neo4j to SurrealDB
+/// Returns (count, min_timestamp, max_timestamp)
 async fn migrate_neo4j_nodes<S: SurrealSink>(
     graph: &Graph,
     surreal: &S,
     sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
     labels_filter: &[String],
-) -> anyhow::Result<usize> {
+    tracking_property: &str,
+) -> anyhow::Result<(
+    usize,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::DateTime<chrono::Utc>>,
+)> {
     tracing::info!("Starting Neo4j nodes migration");
+
+    let mut min_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut max_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
 
     // Determine which labels to process
     let labels_to_process: Vec<String> = if labels_filter.is_empty() {
@@ -247,6 +341,14 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
 
         while let Some(row) = node_result.next().await? {
             let universal_row = convert_neo4j_row_to_universal_row(&row, &label, ctx)?;
+
+            // Extract tracking property timestamp if present
+            if let Some(UniversalValue::LocalDateTime(ts)) =
+                universal_row.get_field(tracking_property)
+            {
+                min_timestamp = Some(min_timestamp.map_or(*ts, |min| min.min(*ts)));
+                max_timestamp = Some(max_timestamp.map_or(*ts, |max| max.max(*ts)));
+            }
 
             if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
                 tracing::debug!("Converted Neo4j node to UniversalRow {universal_row:?}",);
@@ -299,17 +401,35 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
         "Completed Neo4j nodes migration: {} total nodes",
         total_migrated
     );
-    Ok(total_migrated)
+
+    if let (Some(min), Some(max)) = (min_timestamp, max_timestamp) {
+        tracing::info!(
+            "Node timestamp range: {} to {}",
+            min.to_rfc3339(),
+            max.to_rfc3339()
+        );
+    }
+
+    Ok((total_migrated, min_timestamp, max_timestamp))
 }
 
 /// Migrate all relationships from Neo4j to SurrealDB
+/// Returns (count, min_timestamp, max_timestamp)
 async fn migrate_neo4j_relationships<S: SurrealSink>(
     graph: &Graph,
     surreal: &S,
     sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
-) -> anyhow::Result<usize> {
+    tracking_property: &str,
+) -> anyhow::Result<(
+    usize,
+    Option<chrono::DateTime<chrono::Utc>>,
+    Option<chrono::DateTime<chrono::Utc>>,
+)> {
     tracing::info!("Starting Neo4j relationships migration");
+
+    let mut min_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
+    let mut max_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
 
     // Get all distinct relationship types first
     let type_query = Query::new("MATCH ()-[r]->() RETURN DISTINCT type(r) as rel_type".to_string());
@@ -346,6 +466,14 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
             let r = row_to_relation(&row, Some(rel_type.clone()), None)?;
 
             let universal_relation = r.to_universal_relation(ctx)?;
+
+            // Extract tracking property timestamp if present
+            if let Some(UniversalValue::LocalDateTime(ts)) =
+                universal_relation.data.get(tracking_property)
+            {
+                min_timestamp = Some(min_timestamp.map_or(*ts, |min| min.min(*ts)));
+                max_timestamp = Some(max_timestamp.map_or(*ts, |max| max.max(*ts)));
+            }
 
             if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
                 tracing::debug!(
@@ -405,7 +533,16 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
         "Completed Neo4j relationships migration: {} total relationships",
         total_migrated
     );
-    Ok(total_migrated)
+
+    if let (Some(min), Some(max)) = (min_timestamp, max_timestamp) {
+        tracing::info!(
+            "Relationship timestamp range: {} to {}",
+            min.to_rfc3339(),
+            max.to_rfc3339()
+        );
+    }
+
+    Ok((total_migrated, min_timestamp, max_timestamp))
 }
 
 // Convert Neo4j node row to UniversalRow

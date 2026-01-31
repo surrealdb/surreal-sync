@@ -73,6 +73,9 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
         "UTC",
         "--checkpoint-dir",
         ".test-checkpoints",
+        "--assumed-start-timestamp",
+        "2000-01-01T00:00:00Z",
+        "--allow-empty-tracking-timestamp",
     ];
 
     let output = execute_surreal_sync(&full_sync_args)?;

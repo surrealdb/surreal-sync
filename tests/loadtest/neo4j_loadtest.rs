@@ -120,6 +120,9 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         neo4j_timezone: "UTC".to_string(),
         // Tell Neo4j sync to parse these properties as JSON objects (stored as strings in Neo4j)
         neo4j_json_properties: Some(vec!["products.metadata".to_string()]),
+        change_tracking_property: "updated_at".to_string(),
+        assumed_start_timestamp: None,
+        allow_empty_tracking_timestamp: false,
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
