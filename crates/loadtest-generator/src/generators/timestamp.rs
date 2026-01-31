@@ -50,19 +50,26 @@ pub fn generate_timestamp_now<R: Rng + Clone>(
 /// Generate timestamp in a range (deterministic, monotonically increasing).
 ///
 /// Behaves deterministically:
-/// - Uses `start` as base timestamp (ignores `end` parameter for now)
-/// - Generates: start + cumulative_random_increments[0..index]
+/// - Uses `start` as base timestamp + seed offset for uniqueness
+/// - Generates: (start + seed_offset) + cumulative_random_increments[0..index]
 /// - Hardcoded increments: 1-1000ms per row
+/// - Seed offset ensures each table gets unique timestamps
 /// - May deprecate this function in favor of `timestamp_now` in the future
 pub fn generate_timestamp_range<R: Rng + Clone>(
     rng: &mut R,
-    _seed: u64, // Not used - start parameter provides the base timestamp
+    seed: u64,
     start: &str,
     _end: &str, // Ignored for now - kept for API compatibility
     index: u64,
 ) -> UniversalValue {
     // Parse base timestamp from start parameter
-    let base_dt = parse_timestamp(start).expect("Invalid start timestamp in schema");
+    let start_dt = parse_timestamp(start).expect("Invalid start timestamp in schema");
+
+    // Add seed-based offset to ensure different tables get unique timestamps
+    // Use modulo to keep offset reasonable (within ~10 years)
+    let max_offset_secs = 10 * 365 * 24 * 60 * 60; // ~10 years in seconds
+    let offset_secs = (seed % max_offset_secs) as i64;
+    let base_dt = start_dt + chrono::Duration::seconds(offset_secs);
 
     // Generate cumulative millisecond offset (same logic as timestamp_now)
     let mut temp_rng = rng.clone();

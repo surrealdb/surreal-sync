@@ -1,8 +1,8 @@
 //! Neo4j all-types incremental sync ONLY E2E test
 //!
 //! This test validates that Neo4j incremental sync operations work correctly
-//! by starting with empty nodes, running full sync to generate checkpoint,
-//! then adding data and running incremental sync.
+//! by capturing a timestamp before data insertion, then running incremental sync
+//! to capture all newly created nodes.
 
 use surreal_sync::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
@@ -21,6 +21,12 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
     let test_id = generate_test_id();
 
+    // Capture timestamp BEFORE any operations - this ensures all nodes created later
+    // will have updated_at > t1 and will be picked up by incremental sync
+    let t1 = chrono::Utc::now();
+
+    let dataset = create_unified_full_dataset();
+
     // Clean up checkpoint directory to prevent cross-test contamination
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-checkpoints")?;
 
@@ -33,10 +39,6 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         .db(neo4j_config.get_database())
         .build()?;
     let graph = neo4rs::Graph::connect(graph_config)?;
-
-    let t1 = chrono::Utc::now();
-
-    let dataset = create_unified_full_dataset();
 
     // Setup SurrealDB connection with auto-detection
     let surreal_config = TestConfig::new(test_id, "neo4j-incremental-only");
@@ -60,6 +62,9 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
             "all_types_users.metadata".to_string(),
             "all_types_posts.post_categories".to_string(),
         ]),
+        change_tracking_property: "updated_at".to_string(),
+        assumed_start_timestamp: None,
+        allow_empty_tracking_timestamp: false,
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
@@ -67,31 +72,48 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         dry_run: false,
     };
 
-    // Create sync manager with filesystem checkpoint store
-    let checkpoint_store = checkpoint::FilesystemStore::new(".test-checkpoints");
-    let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
-
-    // Run full sync with empty data to get checkpoint (t1), then incremental sync
+    // Run full sync with empty data to verify it works (no checkpoint tracking)
+    // Note: We don't use checkpoint tracking here because empty data has no timestamps.
+    //
+    // Alternative approach for testing with checkpoint tracking on empty data:
+    // Set assumed_start_timestamp and allow_empty_tracking_timestamp flags:
+    //   assumed_start_timestamp: Some(chrono::Utc::now())
+    //   allow_empty_tracking_timestamp: true
+    // This would emit checkpoints using the assumed timestamp, similar to how the
+    // loadtest infrastructure works. However, for this test we use the simpler
+    // approach of running without checkpoint tracking, then using a manually
+    // captured timestamp for incremental sync.
     match &conn {
         SurrealConnection::V2(client) => {
             let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-
-            // Full sync with empty data
-            surreal_sync_neo4j_source::run_full_sync(
+            surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
                 &sink,
                 source_opts.clone(),
                 sync_opts.clone(),
-                Some(&sync_manager),
+                None, // No checkpoint tracking for empty data
             )
             .await?;
+        }
+        SurrealConnection::V3(client) => {
+            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts.clone(),
+                sync_opts.clone(),
+                None, // No checkpoint tracking for empty data
+            )
+            .await?;
+        }
+    }
 
-            // Verify checkpoint emission (t1 and t2 checkpoints)
-            surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(".test-checkpoints")?;
+    // Now insert test data into Neo4j (with timestamps for incremental tracking)
+    surreal_sync::testing::neo4j::create_nodes(&graph, &dataset).await?;
 
-            // Now insert test data into Neo4j (with timestamps for incremental tracking)
-            surreal_sync::testing::neo4j::create_nodes(&graph, &dataset).await?;
-
-            // Run incremental sync using the checkpoint
+    // Run incremental sync using the timestamp from before data insertion
+    // This ensures all newly created nodes (with updated_at > t1) are synced
+    match &conn {
+        SurrealConnection::V2(client) => {
+            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
             let neo4j_checkpoint = surreal_sync_neo4j_source::Neo4jCheckpoint { timestamp: t1 };
             surreal_sync_neo4j_source::run_incremental_sync(
                 &sink,
@@ -105,23 +127,6 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         }
         SurrealConnection::V3(client) => {
             let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-
-            // Full sync with empty data
-            surreal_sync_neo4j_source::run_full_sync(
-                &sink,
-                source_opts.clone(),
-                sync_opts.clone(),
-                Some(&sync_manager),
-            )
-            .await?;
-
-            // Verify checkpoint emission (t1 and t2 checkpoints)
-            surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(".test-checkpoints")?;
-
-            // Now insert test data into Neo4j (with timestamps for incremental tracking)
-            surreal_sync::testing::neo4j::create_nodes(&graph, &dataset).await?;
-
-            // Run incremental sync using the checkpoint
             let neo4j_checkpoint = surreal_sync_neo4j_source::Neo4jCheckpoint { timestamp: t1 };
             surreal_sync_neo4j_source::run_incremental_sync(
                 &sink,
