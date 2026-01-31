@@ -1,8 +1,8 @@
 //! MySQL trigger-based incremental sync Docker Compose service generators.
 //!
 //! Source crate: crates/mysql-trigger-source/
-//! SourceChoice: MysqlIncremental
-//! SourceType: MySQLIncremental
+//! SourceChoice: MysqlTriggerIncremental
+//! SourceType: MySQLTriggerIncremental
 //! CLI commands:
 //!   - Schema init: `loadtest populate mysql --schema-only ...`
 //!   - Full sync setup: `from mysql full --checkpoints-surreal-table ...`

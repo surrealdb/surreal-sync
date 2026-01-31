@@ -17,7 +17,7 @@ pub fn normalize_memory_unit(memory: &str) -> String {
 /// Get the Docker service name for the source database.
 pub fn database_service_name(source_type: SourceType) -> String {
     match source_type {
-        SourceType::MySQL | SourceType::MySQLIncremental => "mysql".to_string(),
+        SourceType::MySQL | SourceType::MySQLTriggerIncremental => "mysql".to_string(),
         SourceType::PostgreSQL
         | SourceType::PostgreSQLTriggerIncremental
         | SourceType::PostgreSQLWal2JsonIncremental => "postgresql".to_string(),
