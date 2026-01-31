@@ -167,15 +167,42 @@ run: docker-build generate
 	@echo "Containers started. Monitoring for completion or failure..."
 	@$(MAKE) -s wait-for-completion TIMEOUT=$(TIMEOUT) POLL_INTERVAL=$(POLL_INTERVAL)
 
-# CI target - delegates to Python script for JSON metrics output
-# Usage: make run-ci SOURCE=kafka ROW_COUNT=100 TIMEOUT=300
+# CI target - delegates to Python script for JSON metrics output and log collection
+#
+# This target provides:
+#   - Automatic log collection to loadtest/output/logs/ (container logs, status JSON)
+#   - JSON metrics output to loadtest/output/metrics.json
+#   - Structured exit codes (0=success, 1=timeout, 2=failure, 3=verification_failed)
+#   - Detailed failure reports with container logs and debugging guidance
+#
+# Use this target when you need:
+#   - Detailed diagnostics and logs (automatically collected even on failure)
+#   - JSON metrics for performance analysis or CI comparison
+#   - Same behavior as GitHub Actions loadtest workflow
+#
+# Configuration:
+#   SKIP_BUILD ?= false              # Set to true to skip docker build (image already exists)
+#   PRESERVE_ON_FAILURE ?= false     # Set to true to keep containers running after failure
+#
+# Usage examples:
+#   make run-ci SOURCE=neo4j-incremental PRESET=small TIMEOUT=600
+#   make run-ci SOURCE=kafka SKIP_BUILD=true
+#   make run-ci SOURCE=mysql PRESERVE_ON_FAILURE=true  # Keep containers for debugging
+#
+# After completion, check:
+#   loadtest/output/metrics.json              # JSON metrics (duration, throughput, verification)
+#   loadtest/output/logs/containers.json      # Container status summary
+#   loadtest/output/logs/*.log                # Individual container logs
+#
 run-ci:
 	python3 ./scripts/run_ci.py \
 		--source $(SOURCE) \
 		--preset $(PRESET) \
 		--row-count $(ROW_COUNT) \
 		--workers $(WORKERS) \
-		--timeout $(TIMEOUT)
+		--timeout $(TIMEOUT) \
+		$(if $(filter true,$(SKIP_BUILD)),--skip-build,) \
+		$(if $(filter true,$(PRESERVE_ON_FAILURE)),--preserve-on-failure,--no-preserve-on-failure)
 
 # Wait for completion with early failure detection
 # This monitors containers and exits immediately when any container fails
