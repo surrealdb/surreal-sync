@@ -10,13 +10,14 @@ use checkpoint::{CheckpointID, CheckpointStore, StoredCheckpoint};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use surrealdb::engine::any::Any;
-use surrealdb::types::{RecordId, RecordIdKey};
+use surrealdb::types::{RecordId, RecordIdKey, SurrealValue};
 
 /// Internal struct for storing checkpoint data in SurrealDB v3.
 ///
 /// This struct mirrors `StoredCheckpoint` but implements the traits
 /// needed by SurrealDB v3 SDK for serialization/deserialization.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+#[surreal(crate = "surrealdb::types")]
 struct CheckpointRecord {
     checkpoint_data: String,
     database_type: String,
@@ -112,11 +113,10 @@ impl CheckpointStore for Surreal3Store {
             .bind(("record_id", record_id))
             .await?;
 
-        // Take the result as serde_json::Value for easier handling
-        let records: Vec<serde_json::Value> = response.take(0)?;
+        // Take the result directly as Vec<CheckpointRecord>
+        let records: Vec<CheckpointRecord> = response.take(0)?;
 
-        if let Some(json_val) = records.into_iter().next() {
-            let record: CheckpointRecord = serde_json::from_value(json_val)?;
+        if let Some(record) = records.into_iter().next() {
             Ok(Some(record.try_into()?))
         } else {
             Ok(None)
