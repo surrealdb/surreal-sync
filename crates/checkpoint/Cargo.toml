@@ -25,4 +25,4 @@ surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
 
 [dev-dependencies]
 tokio = { version = "1.49", features = ["full", "test-util"] }
-tempfile = "3.10"
+tempfile = "3.24"
