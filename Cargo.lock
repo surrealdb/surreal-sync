@@ -3576,7 +3576,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sync-core",
- "sysinfo 0.32.1",
+ "sysinfo",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -7204,7 +7204,7 @@ dependencies = [
  "strsim",
  "subtle",
  "surrealkv",
- "sysinfo 0.33.1",
+ "sysinfo",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -7296,7 +7296,7 @@ dependencies = [
  "surrealdb-protocol",
  "surrealdb-types",
  "surrealmx",
- "sysinfo 0.33.1",
+ "sysinfo",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
@@ -7481,20 +7481,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.103",
-]
-
-[[package]]
-name = "sysinfo"
-version = "0.32.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c33cd241af0f2e9e3b5c32163b873b29956890b5342e6745b917ce9d490f4af"
-dependencies = [
- "core-foundation-sys",
- "libc",
- "memchr",
- "ntapi",
- "rayon",
- "windows",
 ]
 
 [[package]]
