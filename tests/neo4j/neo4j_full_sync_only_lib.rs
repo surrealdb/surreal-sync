@@ -55,6 +55,9 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
             "all_types_users.metadata".to_string(),
             "all_types_posts.post_categories".to_string(),
         ]),
+        change_tracking_property: "updated_at".to_string(),
+        assumed_start_timestamp: None,
+        allow_empty_tracking_timestamp: false,
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {

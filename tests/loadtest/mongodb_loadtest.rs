@@ -156,7 +156,7 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
                     table_name,
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
-                .with_skip_fields(vec!["updated_at".to_string()]);
+;
 
                 let report = verifier.verify_streaming(ROW_COUNT).await?;
 
@@ -200,7 +200,7 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
                     table_name,
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
-                .with_skip_fields(vec!["updated_at".to_string()]);
+;
 
                 let report = verifier.verify_streaming(ROW_COUNT).await?;
 

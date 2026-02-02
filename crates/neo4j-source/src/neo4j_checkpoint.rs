@@ -30,15 +30,6 @@ impl checkpoint::Checkpoint for Neo4jCheckpoint {
     }
 }
 
-/// Get current Neo4j checkpoint with timestamp
-///
-/// This is a GENERATION operation - it creates a new checkpoint from the current time.
-pub fn get_current_checkpoint() -> Neo4jCheckpoint {
-    Neo4jCheckpoint {
-        timestamp: Utc::now(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,17 +119,6 @@ mod tests {
     #[test]
     fn test_neo4j_checkpoint_database_type() {
         assert_eq!(Neo4jCheckpoint::DATABASE_TYPE, "neo4j");
-    }
-
-    #[test]
-    fn test_get_current_checkpoint() {
-        let before = Utc::now();
-        let checkpoint = get_current_checkpoint();
-        let after = Utc::now();
-
-        // Checkpoint timestamp should be between before and after
-        assert!(checkpoint.timestamp >= before);
-        assert!(checkpoint.timestamp <= after);
     }
 
     #[test]

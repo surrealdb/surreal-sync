@@ -316,6 +316,22 @@ struct Neo4jFullArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
+    /// Property name for change tracking (default: "updated_at")
+    #[arg(long, default_value = "updated_at")]
+    change_tracking_property: String,
+
+    /// Assumed start timestamp to use when no tracking property timestamps are found
+    /// (RFC3339 format, e.g., "2024-01-01T00:00:00Z")
+    /// Requires --allow-empty-tracking-timestamp to be set
+    #[arg(long, value_name = "TIMESTAMP")]
+    assumed_start_timestamp: Option<String>,
+
+    /// Allow full sync on data without tracking property timestamps
+    /// When enabled with --assumed-start-timestamp, uses the assumed timestamp for checkpoints
+    /// Useful for testing and loadtest scenarios
+    #[arg(long)]
+    allow_empty_tracking_timestamp: bool,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -386,6 +402,18 @@ struct Neo4jIncrementalArgs {
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
+
+    /// Assumed start timestamp to use when no tracking property timestamps are found
+    /// (RFC3339 format, e.g., "2024-01-01T00:00:00Z")
+    /// Requires --allow-empty-tracking-timestamp to be set
+    #[arg(long, value_name = "TIMESTAMP")]
+    assumed_start_timestamp: Option<String>,
+
+    /// Allow full sync on data without tracking property timestamps
+    /// When enabled with --assumed-start-timestamp, uses the assumed timestamp for checkpoints
+    /// Useful for testing and loadtest scenarios
+    #[arg(long)]
+    allow_empty_tracking_timestamp: bool,
 
     #[command(flatten)]
     surreal: SurrealOpts,

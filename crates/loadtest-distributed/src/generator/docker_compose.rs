@@ -71,7 +71,7 @@ impl ConfigGenerator for DockerComposeGenerator {
         services.insert(Value::String("surrealdb".to_string()), surrealdb_service);
 
         // Incremental sync sources require a special container sequence (5-stage pipeline)
-        if config.source_type == SourceType::MySQLIncremental {
+        if config.source_type == SourceType::MySQLTriggerIncremental {
             generate_mysql_incremental_pipeline(&mut services, config);
         } else if config.source_type == SourceType::PostgreSQLTriggerIncremental {
             generate_postgresql_trigger_incremental_pipeline(&mut services, config);
@@ -569,9 +569,9 @@ fn generate_standard_pipeline(services: &mut Mapping, config: &ClusterConfig) {
 fn generate_sync_service(config: &ClusterConfig) -> Value {
     match config.source_type {
         SourceType::MySQL => mysql::generate_sync_service(config),
-        SourceType::MySQLIncremental => {
+        SourceType::MySQLTriggerIncremental => {
             // MySQL incremental uses the 5-stage pipeline, this shouldn't be called directly
-            unreachable!("MySQLIncremental uses 5-stage pipeline, not single sync service")
+            unreachable!("MySQLTriggerIncremental uses 5-stage pipeline, not single sync service")
         }
         SourceType::PostgreSQL => postgresql::generate_sync_service(config),
         SourceType::PostgreSQLTriggerIncremental | SourceType::PostgreSQLWal2JsonIncremental => {
@@ -709,7 +709,7 @@ fn generate_populate_service(
     let tables_arg = container.tables.join(",");
     let source_cmd = match config.source_type {
         // All MySQL variants use the same populate command
-        SourceType::MySQL | SourceType::MySQLIncremental => "mysql",
+        SourceType::MySQL | SourceType::MySQLTriggerIncremental => "mysql",
         // All PostgreSQL variants use the same populate command (data goes to same database)
         SourceType::PostgreSQL
         | SourceType::PostgreSQLTriggerIncremental
@@ -723,7 +723,7 @@ fn generate_populate_service(
 
     // Build connection string args based on source type
     let connection_args = match config.source_type {
-        SourceType::MySQL | SourceType::MySQLIncremental => {
+        SourceType::MySQL | SourceType::MySQLTriggerIncremental => {
             format!(
                 "--mysql-connection-string '{}'",
                 container.connection_string
@@ -762,7 +762,7 @@ fn generate_populate_service(
     // For incremental types, populate runs AFTER schema-init creates tables, so use --data-only
     let data_only_flag = if config.source_type == SourceType::PostgreSQLTriggerIncremental
         || config.source_type == SourceType::PostgreSQLWal2JsonIncremental
-        || config.source_type == SourceType::MySQLIncremental
+        || config.source_type == SourceType::MySQLTriggerIncremental
         || config.source_type == SourceType::MongoDBIncremental
         || config.source_type == SourceType::Neo4jIncremental
     {

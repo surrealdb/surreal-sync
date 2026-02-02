@@ -135,7 +135,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
                     table_name,
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
-                .with_skip_fields(vec!["updated_at".to_string()]);
+;
                 let report = verifier.verify_streaming(ROW_COUNT).await?;
 
                 tracing::info!(
@@ -175,7 +175,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
                     table_name,
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
-                .with_skip_fields(vec!["updated_at".to_string()]);
+;
                 let report = verifier.verify_streaming(ROW_COUNT).await?;
 
                 tracing::info!(
@@ -263,9 +263,10 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
     println!("{csv_content}");
 
     // Verify CSV content has the expected age values (not empty)
+    // Age values changed after adding seed offset to timestamp_range (RNG sequence shift)
     assert!(csv_content.contains(",51,"), "CSV should contain age 51");
-    assert!(csv_content.contains(",43,"), "CSV should contain age 43");
-    assert!(csv_content.contains(",64,"), "CSV should contain age 64");
+    assert!(csv_content.contains(",20,"), "CSV should contain age 20");
+    assert!(csv_content.contains(",26,"), "CSV should contain age 26");
 
     // Test 3: Sync to SurrealDB and query directly
     let test_id = generate_test_id();

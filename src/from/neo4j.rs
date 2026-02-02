@@ -66,6 +66,17 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
+    // Parse assumed_start_timestamp if provided
+    let assumed_start_timestamp = if let Some(ts_str) = &args.assumed_start_timestamp {
+        Some(
+            chrono::DateTime::parse_from_rfc3339(ts_str)
+                .map_err(|e| anyhow::anyhow!("Invalid --assumed-start-timestamp format: {e}"))?
+                .with_timezone(&chrono::Utc),
+        )
+    } else {
+        None
+    };
+
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
         source_database: args.database,
@@ -74,6 +85,9 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
         labels: args.tables,
         neo4j_timezone: args.timezone,
         neo4j_json_properties: json_properties,
+        change_tracking_property: args.change_tracking_property,
+        assumed_start_timestamp,
+        allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
@@ -172,6 +186,17 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
             .await?;
     let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
 
+    // Parse assumed_start_timestamp if provided
+    let assumed_start_timestamp = if let Some(ts_str) = &args.assumed_start_timestamp {
+        Some(
+            chrono::DateTime::parse_from_rfc3339(ts_str)
+                .map_err(|e| anyhow::anyhow!("Invalid --assumed-start-timestamp format: {e}"))?
+                .with_timezone(&chrono::Utc),
+        )
+    } else {
+        None
+    };
+
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
         source_database: args.database,
@@ -180,6 +205,9 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
         labels: args.tables,
         neo4j_timezone: args.timezone,
         neo4j_json_properties: json_properties,
+        change_tracking_property: args.change_tracking_property,
+        assumed_start_timestamp,
+        allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
@@ -338,6 +366,17 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
+    // Parse assumed_start_timestamp if provided
+    let assumed_start_timestamp = if let Some(ts_str) = &args.assumed_start_timestamp {
+        Some(
+            chrono::DateTime::parse_from_rfc3339(ts_str)
+                .map_err(|e| anyhow::anyhow!("Invalid --assumed-start-timestamp format: {e}"))?
+                .with_timezone(&chrono::Utc),
+        )
+    } else {
+        None
+    };
+
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
         source_database: args.database,
@@ -346,6 +385,9 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         labels: args.tables,
         neo4j_timezone: args.timezone,
         neo4j_json_properties: json_properties,
+        change_tracking_property: args.change_tracking_property,
+        assumed_start_timestamp,
+        allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
     };
 
     // Connect to SurrealDB using v2 SDK
@@ -456,6 +498,17 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
+    // Parse assumed_start_timestamp if provided
+    let assumed_start_timestamp = if let Some(ts_str) = &args.assumed_start_timestamp {
+        Some(
+            chrono::DateTime::parse_from_rfc3339(ts_str)
+                .map_err(|e| anyhow::anyhow!("Invalid --assumed-start-timestamp format: {e}"))?
+                .with_timezone(&chrono::Utc),
+        )
+    } else {
+        None
+    };
+
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
         source_database: args.database,
@@ -464,6 +517,9 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         labels: args.tables,
         neo4j_timezone: args.timezone,
         neo4j_json_properties: json_properties,
+        change_tracking_property: args.change_tracking_property,
+        assumed_start_timestamp,
+        allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
     };
 
     // Connect to SurrealDB using v3 SDK

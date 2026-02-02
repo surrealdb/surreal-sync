@@ -231,8 +231,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     schema.clone(),
                     SEED,
                     table_name,
-                )?
-                .with_skip_fields(vec!["updated_at".to_string()]);
+                )?;
 
                 let report = verifier.verify_streaming(ROW_COUNT).await?;
 
@@ -354,8 +353,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     schema.clone(),
                     SEED,
                     table_name,
-                )?
-                .with_skip_fields(vec!["updated_at".to_string()]);
+                )?;
 
                 let report = verifier.verify_streaming(ROW_COUNT).await?;
 

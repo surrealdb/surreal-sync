@@ -17,7 +17,7 @@ on:
       sources:
         type: string
         description: 'Comma-separated list of sources to test'
-        default: 'kafka,mysql,postgresql,mongodb,neo4j'
+        default: 'mysql,mysql-trigger-incremental,postgresql,postgresql-trigger-incremental,postgresql-wal2json-incremental,mongodb,mongodb-incremental,neo4j,neo4j-incremental,kafka'
       surrealdb_images:
         type: string
         description: 'Comma-separated list of SurrealDB images to test'
@@ -73,7 +73,7 @@ jobs:
           else
             echo "preset=small" >> $GITHUB_OUTPUT
             echo "timeout=600" >> $GITHUB_OUTPUT
-            SOURCES="kafka,mysql,postgresql,mongodb,neo4j"
+            SOURCES="mysql,mysql-trigger-incremental,postgresql,postgresql-trigger-incremental,postgresql-wal2json-incremental,mongodb,mongodb-incremental,neo4j,neo4j-incremental,kafka"
             SURREALDB_IMAGES="surrealdb/surrealdb:v2.3.7,surrealdb/surrealdb:v3.0.0-beta.2"
           fi
           echo "sources=$SOURCES" >> $GITHUB_OUTPUT
@@ -147,6 +147,14 @@ jobs:
       - name: Load Docker image
         run: gunzip -c surreal-sync-image.tar.gz | docker load
 
+      - name: Sanitize artifact name
+        id: sanitize
+        run: |
+          # Replace invalid characters in SurrealDB image name for artifact naming
+          # Colons, slashes not allowed in artifact names
+          SANITIZED_IMAGE=$(echo "${{ matrix.surrealdb_image }}" | tr ':/' '-')
+          echo "image_name=$SANITIZED_IMAGE" >> $GITHUB_OUTPUT
+
       - name: Run loadtest
         id: loadtest
         run: |
@@ -169,7 +177,7 @@ jobs:
       - name: Upload metrics
         uses: actions/upload-artifact@v6
         with:
-          name: metrics-${{ matrix.source }}-${{ matrix.surrealdb_image }}
+          name: metrics-${{ matrix.source }}-${{ steps.sanitize.outputs.image_name }}
           path: loadtest/output/metrics.json
           retention-days: 90
 
@@ -177,7 +185,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: container-logs-${{ matrix.source }}-${{ matrix.surrealdb_image }}
+          name: container-logs-${{ matrix.source }}-${{ steps.sanitize.outputs.image_name }}
           path: |
             loadtest/output/logs/
           retention-days: 7
@@ -187,7 +195,7 @@ jobs:
         if: steps.loadtest.outcome == 'failure'
         uses: actions/upload-artifact@v6
         with:
-          name: full-output-${{ matrix.source }}-${{ matrix.surrealdb_image }}
+          name: full-output-${{ matrix.source }}-${{ steps.sanitize.outputs.image_name }}
           path: loadtest/output/
           retention-days: 7
 

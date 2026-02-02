@@ -21,15 +21,21 @@ pub trait ValueGenerator {
 
 /// Generate a value based on the generator configuration.
 /// Uses default string type for arrays.
-pub fn generate_value<R: Rng>(config: &GeneratorConfig, rng: &mut R, index: u64) -> UniversalValue {
-    generate_value_typed(config, rng, index, None)
+pub fn generate_value<R: Rng + Clone>(
+    config: &GeneratorConfig,
+    rng: &mut R,
+    seed: u64,
+    index: u64,
+) -> UniversalValue {
+    generate_value_typed(config, rng, seed, index, None)
 }
 
 /// Generate a value based on the generator configuration with optional type hint.
 /// The target_type is used for type-aware conversion (e.g., arrays with int elements).
-pub fn generate_value_typed<R: Rng>(
+pub fn generate_value_typed<R: Rng + Clone>(
     config: &GeneratorConfig,
     rng: &mut R,
+    seed: u64,
     index: u64,
     target_type: Option<&UniversalType>,
 ) -> UniversalValue {
@@ -49,10 +55,10 @@ pub fn generate_value_typed<R: Rng>(
         }
 
         GeneratorConfig::TimestampRange { start, end } => {
-            timestamp::generate_timestamp_range(rng, start, end)
+            timestamp::generate_timestamp_range(rng, seed, start, end, index)
         }
 
-        GeneratorConfig::TimestampNow => timestamp::generate_timestamp_now(),
+        GeneratorConfig::TimestampNow => timestamp::generate_timestamp_now(rng, seed, index),
 
         GeneratorConfig::WeightedBool { true_weight } => {
             UniversalValue::Bool(rng.random_bool(*true_weight))

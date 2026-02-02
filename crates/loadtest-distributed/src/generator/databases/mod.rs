@@ -30,7 +30,9 @@ fn normalize_memory_unit(memory: &str) -> String {
 /// Generate Docker service configuration for a database.
 pub fn generate_docker_service(config: &DatabaseConfig) -> Value {
     match config.source_type {
-        SourceType::MySQL | SourceType::MySQLIncremental => generate_mysql_docker_service(config),
+        SourceType::MySQL | SourceType::MySQLTriggerIncremental => {
+            generate_mysql_docker_service(config)
+        }
         // Trigger-based PostgreSQL uses standard postgres image
         SourceType::PostgreSQL | SourceType::PostgreSQLTriggerIncremental => {
             generate_postgresql_docker_service(config)
@@ -56,7 +58,7 @@ pub fn generate_mongodb_init_service() -> Value {
 /// Generate Kubernetes StatefulSet for a database.
 pub fn generate_k8s_statefulset(config: &DatabaseConfig, namespace: &str) -> String {
     match config.source_type {
-        SourceType::MySQL | SourceType::MySQLIncremental => {
+        SourceType::MySQL | SourceType::MySQLTriggerIncremental => {
             generate_mysql_k8s_statefulset(config, namespace)
         }
         // Trigger-based PostgreSQL uses standard postgres image
@@ -81,7 +83,9 @@ pub fn generate_k8s_statefulset(config: &DatabaseConfig, namespace: &str) -> Str
 /// Generate Kubernetes Service for a database.
 pub fn generate_k8s_service(config: &DatabaseConfig, namespace: &str) -> String {
     match config.source_type {
-        SourceType::MySQL | SourceType::MySQLIncremental => generate_mysql_k8s_service(namespace),
+        SourceType::MySQL | SourceType::MySQLTriggerIncremental => {
+            generate_mysql_k8s_service(namespace)
+        }
         // Trigger-based PostgreSQL uses standard postgres service
         SourceType::PostgreSQL | SourceType::PostgreSQLTriggerIncremental => {
             generate_postgresql_k8s_service(namespace)
