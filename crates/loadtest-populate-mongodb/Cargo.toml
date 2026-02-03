@@ -17,7 +17,7 @@ mongodb = "3.2"
 bson = { version = "2.15", features = ["chrono-0_4", "uuid-1"] }
 tokio = { version = "1.49", features = ["full"] }
 async-trait = "0.1"
-thiserror = "1.0"
+thiserror = "2.0"
 tracing = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4"] }

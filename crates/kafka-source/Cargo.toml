@@ -28,7 +28,7 @@ tokio = { version = "1.49", features = ["full"] }
 
 # Error handling
 anyhow = { version = "1.0.100", features = ["backtrace"] }
-thiserror = "1.0"
+thiserror = "2.0"
 
 # Serialization
 serde = { version = "1.0.228", features = ["derive"] }
