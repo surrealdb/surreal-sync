@@ -84,6 +84,7 @@ mod loadtest;
 
 #[derive(Parser)]
 #[command(name = "surreal-sync")]
+#[command(version)]
 #[command(about = "A tool for syncing data FROM various sources TO SurrealDB")]
 #[command(long_about = None)]
 struct Cli {
@@ -932,7 +933,10 @@ async fn main() -> anyhow::Result<()> {
 
 async fn run() -> anyhow::Result<()> {
     // Install the crypto provider before any TLS operations occur
-    let _ = CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider());
+    if let Err(err) = CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
+    {
+        eprintln!("Error setting up crypto provider for TLS: {err:?}");
+    }
 
     // Initialize tracing
     tracing_subscriber::fmt()
