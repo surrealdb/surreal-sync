@@ -56,6 +56,7 @@
 //! - MySQL: `mysql:sequence:456` (trigger-based audit table)
 
 use clap::{Args, Parser, Subcommand};
+use rustls::crypto::CryptoProvider;
 use std::path::PathBuf;
 use surreal_sync::SurrealOpts;
 
@@ -931,15 +932,15 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
-    // Initialize rustls crypto provider (required for rustls 0.23+)
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("Failed to install rustls crypto provider");
-
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    // Install the crypto provider before any TLS operations occur
+    if let Err(err) = CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider()) {
+        tracing::error!("Error: {err:?}");
+    }
 
     let cli = Cli::parse();
 
