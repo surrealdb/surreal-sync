@@ -932,15 +932,16 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
+    // Install the crypto provider before any TLS operations occur
+    if let Err(err) = CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
+    {
+        eprintln!("Error setting up crypto provider for TLS: {err:?}");
+    }
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
-
-    // Install the crypto provider before any TLS operations occur
-    if let Err(err) = CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider()) {
-        tracing::error!("Error: {err:?}");
-    }
 
     let cli = Cli::parse();
 
