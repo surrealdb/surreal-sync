@@ -57,7 +57,7 @@ async-trait = "0.1"
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io-util"] }
 tempfile = "3.24"
-geo-types = "0.7.17"
+geo-types = "0.7.18"
 
 # CSV parsing
 csv = "1.3"
