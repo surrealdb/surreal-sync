@@ -49,6 +49,8 @@ pub struct Neo4jIncrementalSource {
     ctx: Neo4jConversionContext,
     /// The property name used for tracking changes (e.g., "updated_at", "modified_at")
     change_tracking_property: String,
+    /// Property name to use as SurrealDB record ID (e.g., "id", "uuid")
+    id_property: String,
     /// Current timestamp position for incremental sync (as i64)
     current_timestamp: i64,
 }
@@ -60,6 +62,7 @@ impl Neo4jIncrementalSource {
         neo4j_timezone: String,
         neo4j_json_properties: Option<Vec<String>>,
         change_tracking_property: Option<String>,
+        id_property: String,
         initial_timestamp: i64,
     ) -> anyhow::Result<Self> {
         let ctx = Neo4jConversionContext::new(neo4j_timezone, neo4j_json_properties)?;
@@ -68,6 +71,7 @@ impl Neo4jIncrementalSource {
             ctx,
             change_tracking_property: change_tracking_property
                 .unwrap_or_else(|| "updated_at".to_string()),
+            id_property,
             current_timestamp: initial_timestamp,
         })
     }
@@ -84,6 +88,7 @@ impl Neo4jIncrementalSource {
             self.graph.clone(),
             self.current_timestamp,
             self.change_tracking_property.clone(),
+            self.id_property.clone(),
             self.ctx.clone(),
         )))
     }
@@ -110,6 +115,8 @@ pub struct Neo4jChangeStream {
     graph: Graph,
     current_checkpoint: i64,
     change_tracking_property: String,
+    /// Property name to use as SurrealDB record ID
+    id_property: String,
     /// Conversion context with timezone and JSON-to-object configuration
     ctx: Neo4jConversionContext,
     /// Buffer for batched changes
@@ -123,12 +130,14 @@ impl Neo4jChangeStream {
         graph: Graph,
         from_checkpoint: i64,
         change_tracking_property: String,
+        id_property: String,
         ctx: Neo4jConversionContext,
     ) -> Self {
         Neo4jChangeStream {
             graph,
             current_checkpoint: from_checkpoint,
             change_tracking_property,
+            id_property,
             ctx,
             change_buffer: Vec::new(),
             finished: false,
@@ -213,8 +222,8 @@ impl Neo4jChangeStream {
                         &self.ctx.timezone,
                         should_parse_json,
                     ) {
-                        // Rename 'id' field to 'neo4j_original_id' to avoid conflict with SurrealDB record ID
-                        let field_name = if key == "id" {
+                        // Rename id property field to avoid conflict with SurrealDB record ID
+                        let field_name = if key == self.id_property {
                             // Extract ID from the UniversalValue
                             record_id = match &v {
                                 UniversalValue::Int64(n) => UniversalValue::Int64(*n),
@@ -253,15 +262,16 @@ impl Neo4jChangeStream {
         // Also query for relationship changes
         let rel_query = Query::new(format!(
             "MATCH (a)-[r]->(b)
-             WHERE r.{} > $checkpoint
+             WHERE r.{tracking} > $checkpoint
              RETURN r, id(r) as rel_id, type(r) as rel_type,
                     id(a) as start_id, id(b) as end_id,
                     labels(a) as start_labels, labels(b) as end_labels,
-                    a.id as start_prop_id, b.id as end_prop_id,
+                    a.{id_prop} as start_prop_id, b.{id_prop} as end_prop_id,
                     'update' as operation
-             ORDER BY r.{}
+             ORDER BY r.{tracking}
              LIMIT 100",
-            self.change_tracking_property, self.change_tracking_property
+            tracking = self.change_tracking_property,
+            id_prop = self.id_property,
         ))
         .param("checkpoint", self.current_checkpoint);
 
@@ -388,6 +398,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
         from_opts.neo4j_timezone.clone(),
         from_opts.neo4j_json_properties.clone(),
         None,
+        from_opts.id_property.clone(),
         initial_timestamp,
     )?;
 

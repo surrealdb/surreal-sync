@@ -333,6 +333,11 @@ struct Neo4jFullArgs {
     #[arg(long)]
     allow_empty_tracking_timestamp: bool,
 
+    /// Node property to use as SurrealDB record ID (default: "id").
+    /// If a node does not have this property, the Neo4j internal node ID is used as fallback.
+    #[arg(long, default_value = "id")]
+    id_property: String,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -415,6 +420,11 @@ struct Neo4jIncrementalArgs {
     /// Useful for testing and loadtest scenarios
     #[arg(long)]
     allow_empty_tracking_timestamp: bool,
+
+    /// Node property to use as SurrealDB record ID (default: "id").
+    /// If a node does not have this property, the Neo4j internal node ID is used as fallback.
+    #[arg(long, default_value = "id")]
+    id_property: String,
 
     #[command(flatten)]
     surreal: SurrealOpts,

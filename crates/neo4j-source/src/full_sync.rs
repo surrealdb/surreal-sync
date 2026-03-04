@@ -30,6 +30,9 @@ pub struct SourceOpts {
     /// Allow full sync on data without tracking property timestamps
     /// When enabled with assumed_start_timestamp, uses the assumed timestamp for checkpoints
     pub allow_empty_tracking_timestamp: bool,
+    /// Property name to use as SurrealDB record ID (default: "id").
+    /// If a node does not have this property, the Neo4j internal node_id is used.
+    pub id_property: String,
 }
 
 /// Sync options (non-connection related)
@@ -160,6 +163,7 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
         &ctx,
         &from_opts.labels,
         &from_opts.change_tracking_property,
+        &from_opts.id_property,
     )
     .await?;
     total_migrated += nodes_migrated;
@@ -171,6 +175,7 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
         &sync_opts,
         &ctx,
         &from_opts.change_tracking_property,
+        &from_opts.id_property,
     )
     .await?;
     total_migrated += rels_migrated;
@@ -288,6 +293,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
     ctx: &Neo4jConversionContext,
     labels_filter: &[String],
     tracking_property: &str,
+    id_property: &str,
 ) -> anyhow::Result<(
     usize,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -340,7 +346,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
         let mut processed = 0;
 
         while let Some(row) = node_result.next().await? {
-            let universal_row = convert_neo4j_row_to_universal_row(&row, &label, ctx)?;
+            let universal_row = convert_neo4j_row_to_universal_row(&row, &label, ctx, id_property)?;
 
             // Extract tracking property timestamp if present
             if let Some(UniversalValue::LocalDateTime(ts)) =
@@ -421,6 +427,7 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
     tracking_property: &str,
+    id_property: &str,
 ) -> anyhow::Result<(
     usize,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -450,13 +457,12 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     for rel_type in all_types {
         tracing::info!("Migrating relationships of type: {}", rel_type);
 
-        let rel_query = Query::new(
+        let rel_query = Query::new(format!(
             "MATCH (start_node)-[r]->(end_node) WHERE type(r) = $rel_type
              RETURN r, id(r) as rel_id, id(start_node) as start_id, id(end_node) as end_id,
              labels(start_node) as start_labels, labels(end_node) as end_labels,
-             start_node.id as start_prop_id, end_node.id as end_prop_id"
-                .to_string(),
-        )
+             start_node.{id_property} as start_prop_id, end_node.{id_property} as end_prop_id",
+        ))
         .param("rel_type", rel_type.clone());
         let mut rel_result = graph.execute(rel_query).await?;
 
@@ -590,12 +596,10 @@ fn convert_neo4j_row_to_universal_row(
     row: &neo4rs::Row,
     label: &str,
     ctx: &Neo4jConversionContext,
+    id_property: &str,
 ) -> anyhow::Result<UniversalRow> {
     let node: neo4rs::Node = row.get("n")?;
     let node_id: i64 = row.get("node_id")?;
-
-    // TODO make this configurable
-    let id_property = "id"; // Use 'id' property as the SurrealDB record ID if present
 
     // Convert Neo4j node to universal format
     let mut data = convert_neo4j_node_to_universal_kvs(node, node_id, label, ctx)?;
