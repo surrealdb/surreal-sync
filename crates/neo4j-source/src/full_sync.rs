@@ -556,7 +556,7 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
 /// Resolve a Neo4j node's SurrealDB record ID from its `id` property, falling back to the
 /// internal Neo4j node ID. This ensures that both node records and relationship endpoints
 /// use the same ID, so that RELATE statements reference existing records.
-fn resolve_node_id(
+pub(crate) fn resolve_node_id(
     prop_id: Option<&neo4rs::BoltType>,
     internal_id: i64,
     ctx: &Neo4jConversionContext,
@@ -1187,5 +1187,76 @@ mod tests {
         assert_eq!(props.len(), 2);
         assert_eq!(props[0].label, "User");
         assert_eq!(props[1].property, "config");
+    }
+
+    fn test_ctx() -> Neo4jConversionContext {
+        Neo4jConversionContext::new("UTC".to_string(), None).unwrap()
+    }
+
+    #[test]
+    fn test_resolve_node_id_string_id() {
+        let ctx = test_ctx();
+        let bolt = neo4rs::BoltType::String(neo4rs::BoltString::new("user_001"));
+        let result = resolve_node_id(Some(&bolt), 99, &ctx).unwrap();
+        assert!(
+            matches!(result, UniversalValue::Text(ref s) if s == "user_001"),
+            "Expected Text(\"user_001\"), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_node_id_numeric_string() {
+        let ctx = test_ctx();
+        let bolt = neo4rs::BoltType::String(neo4rs::BoltString::new("123"));
+        let result = resolve_node_id(Some(&bolt), 99, &ctx).unwrap();
+        assert!(
+            matches!(result, UniversalValue::Int64(123)),
+            "Expected Int64(123), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_node_id_integer() {
+        let ctx = test_ctx();
+        let bolt = neo4rs::BoltType::Integer(neo4rs::BoltInteger::new(42));
+        let result = resolve_node_id(Some(&bolt), 99, &ctx).unwrap();
+        assert!(
+            matches!(result, UniversalValue::Int64(42)),
+            "Expected Int64(42), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_node_id_null_falls_back_to_internal() {
+        let ctx = test_ctx();
+        let bolt = neo4rs::BoltType::Null(neo4rs::BoltNull);
+        let result = resolve_node_id(Some(&bolt), 77, &ctx).unwrap();
+        assert!(
+            matches!(result, UniversalValue::Int64(77)),
+            "Expected Int64(77) fallback, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_node_id_none_falls_back_to_internal() {
+        let ctx = test_ctx();
+        let result = resolve_node_id(None, 55, &ctx).unwrap();
+        assert!(
+            matches!(result, UniversalValue::Int64(55)),
+            "Expected Int64(55) fallback, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_node_id_unsupported_type_returns_error() {
+        let ctx = test_ctx();
+        let bolt = neo4rs::BoltType::Float(neo4rs::BoltFloat::new(3.14));
+        let result = resolve_node_id(Some(&bolt), 99, &ctx);
+        assert!(result.is_err(), "Expected error for Float type");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("unsupported"),
+            "Error should mention unsupported type: {err_msg}"
+        );
     }
 }
