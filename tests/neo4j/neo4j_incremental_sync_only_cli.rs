@@ -85,6 +85,7 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
 
     // Now insert test data into Neo4j (with timestamps for incremental tracking)
     surreal_sync::testing::neo4j::create_nodes(&graph, &dataset).await?;
+    surreal_sync::testing::neo4j::create_relationships(&graph, &dataset).await?;
 
     // For Neo4j incremental sync, we use the timestamp captured at the START of the test
     // (before any nodes were created). This ensures all nodes with updated_at > t1

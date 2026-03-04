@@ -2,10 +2,12 @@
 //!
 //! Defines relationships between tables for graph database testing
 
+use crate::testing::neo4j::Neo4jField;
 use crate::testing::postgresql::PostgreSQLField;
 use crate::testing::value::PostgreSQLValue;
 use crate::testing::{
     field::Field,
+    neo4j::bolt,
     schema::{
         ColumnDef, IndexDef, MongoDBSchema, MongoIndexDef, MySQLSchema, Neo4jConstraintDef,
         Neo4jIndexDef, Neo4jIndexType, Neo4jSchema, PostgreSQLSchema, PropertyDef, TestSchema,
@@ -59,6 +61,10 @@ pub fn create_user_post_relation() -> TestTable {
                         data_type: "TIMESTAMPTZ".to_string(),
                         precision: None,
                         scale: None,
+                    })
+                    .with_neo4j(Neo4jField {
+                        property_name: "relationship_created".to_string(),
+                        property_value: bolt::datetime(ts),
                     }),
             ]),
             TestDoc::new(vec![
@@ -97,6 +103,10 @@ pub fn create_user_post_relation() -> TestTable {
                         data_type: "TIMESTAMPTZ".to_string(),
                         precision: None,
                         scale: None,
+                    })
+                    .with_neo4j(Neo4jField {
+                        property_name: "relationship_created".to_string(),
+                        property_value: bolt::datetime(ts),
                     }),
             ]),
         ],

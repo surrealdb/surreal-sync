@@ -451,3 +451,116 @@ pub async fn create_nodes(
     }
     Ok(())
 }
+
+/// Create relationships in Neo4j from the dataset's relations
+///
+/// For each relation in `dataset.relations`, this looks up the Neo4j relationship type
+/// from the schema, extracts `in`/`out` endpoints from the SurrealDB Thing values,
+/// and creates the relationship with its properties using Cypher MATCH + CREATE.
+#[allow(dead_code)]
+pub async fn create_relationships(
+    graph: &Graph,
+    dataset: &TestDataSet,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::testing::value::SurrealDBValue;
+
+    for relation in &dataset.relations {
+        // Get the Neo4j relationship type from the schema
+        let rel_type = relation
+            .schema
+            .neo4j
+            .relationship_types
+            .first()
+            .ok_or_else(|| {
+                format!(
+                    "Relation '{}' has no Neo4j relationship_types defined in schema",
+                    relation.name
+                )
+            })?;
+
+        // Get the start and end node labels from the schema
+        // Convention: node_labels[0] = start node label (in), node_labels[1] = end node label (out)
+        let start_label = relation
+            .schema
+            .neo4j
+            .node_labels
+            .first()
+            .ok_or_else(|| {
+                format!(
+                    "Relation '{}' has no start node label in Neo4j schema",
+                    relation.name
+                )
+            })?;
+        let end_label = relation
+            .schema
+            .neo4j
+            .node_labels
+            .get(1)
+            .ok_or_else(|| {
+                format!(
+                    "Relation '{}' has no end node label in Neo4j schema",
+                    relation.name
+                )
+            })?;
+
+        for doc in &relation.documents {
+            // Extract in/out node IDs from the SurrealDB Thing values
+            let in_field = doc.get_field("in").ok_or_else(|| {
+                format!("Relation '{}' document missing 'in' field", relation.name)
+            })?;
+            let out_field = doc.get_field("out").ok_or_else(|| {
+                format!("Relation '{}' document missing 'out' field", relation.name)
+            })?;
+
+            let start_id = match &in_field.value {
+                SurrealDBValue::Thing { id, .. } => match id.as_ref() {
+                    SurrealDBValue::String(s) => s.clone(),
+                    SurrealDBValue::Int64(i) => i.to_string(),
+                    other => return Err(format!("Unsupported 'in' ID type: {other:?}").into()),
+                },
+                other => return Err(format!("Expected Thing for 'in', got: {other:?}").into()),
+            };
+
+            let end_id = match &out_field.value {
+                SurrealDBValue::Thing { id, .. } => match id.as_ref() {
+                    SurrealDBValue::String(s) => s.clone(),
+                    SurrealDBValue::Int64(i) => i.to_string(),
+                    other => return Err(format!("Unsupported 'out' ID type: {other:?}").into()),
+                },
+                other => return Err(format!("Expected Thing for 'out', got: {other:?}").into()),
+            };
+
+            // Get Neo4j properties for the relationship (excluding in/out)
+            let neo4j_doc = doc.to_neo4j_doc();
+
+            // Build property assignments with parameter placeholders
+            let mut props = Vec::new();
+            props.push("updated_at: datetime()".to_string());
+            for key in neo4j_doc.keys() {
+                props.push(format!("{key}: ${key}"));
+            }
+
+            let props_str = if props.is_empty() {
+                String::new()
+            } else {
+                format!(" {{{}}}", props.join(", "))
+            };
+
+            let cypher = format!(
+                "MATCH (a:{start_label} {{id: $start_id}}), (b:{end_label} {{id: $end_id}}) \
+                 CREATE (a)-[r:{rel_type}{props_str}]->(b)"
+            );
+
+            let mut query = neo4rs::query(&cypher);
+            query = query.param("start_id", start_id);
+            query = query.param("end_id", end_id);
+            for (key, value) in &neo4j_doc {
+                query = query.param(key, value.clone());
+            }
+
+            graph.run(query).await?;
+        }
+    }
+
+    Ok(())
+}
