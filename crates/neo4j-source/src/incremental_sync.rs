@@ -257,6 +257,7 @@ impl Neo4jChangeStream {
              RETURN r, id(r) as rel_id, type(r) as rel_type,
                     id(a) as start_id, id(b) as end_id,
                     labels(a) as start_labels, labels(b) as end_labels,
+                    a.id as start_prop_id, b.id as end_prop_id,
                     'update' as operation
              ORDER BY r.{}
              LIMIT 100",

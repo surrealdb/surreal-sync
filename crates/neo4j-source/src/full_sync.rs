@@ -453,7 +453,8 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
         let rel_query = Query::new(
             "MATCH (start_node)-[r]->(end_node) WHERE type(r) = $rel_type
              RETURN r, id(r) as rel_id, id(start_node) as start_id, id(end_node) as end_id,
-             labels(start_node) as start_labels, labels(end_node) as end_labels"
+             labels(start_node) as start_labels, labels(end_node) as end_labels,
+             start_node.id as start_prop_id, end_node.id as end_prop_id"
                 .to_string(),
         )
         .param("rel_type", rel_type.clone());
@@ -546,6 +547,45 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
 }
 
 // Convert Neo4j node row to UniversalRow
+/// Resolve a Neo4j node's SurrealDB record ID from its `id` property, falling back to the
+/// internal Neo4j node ID. This ensures that both node records and relationship endpoints
+/// use the same ID, so that RELATE statements reference existing records.
+fn resolve_node_id(
+    prop_id: Option<&neo4rs::BoltType>,
+    internal_id: i64,
+    ctx: &Neo4jConversionContext,
+) -> anyhow::Result<UniversalValue> {
+    match prop_id {
+        Some(bolt_value) => {
+            let universal =
+                convert_neo4j_type_to_universal_value(bolt_value.clone(), &ctx.timezone, false)?;
+            match universal {
+                UniversalValue::Text(s) => {
+                    // String ID - try to parse as integer first (common case: numeric strings)
+                    if let Ok(n) = s.parse::<i64>() {
+                        Ok(UniversalValue::Int64(n))
+                    } else {
+                        Ok(UniversalValue::Text(s))
+                    }
+                }
+                UniversalValue::Int64(n) => Ok(UniversalValue::Int64(n)),
+                UniversalValue::Null => {
+                    // Node has no 'id' property (Neo4j returned null) - use internal node_id
+                    Ok(UniversalValue::Int64(internal_id))
+                }
+                other => Err(anyhow::anyhow!(
+                    "Node with internal id '{internal_id}' has unsupported 'id' property type: {other:?}. \
+                     Expected String or Int.",
+                )),
+            }
+        }
+        None => {
+            // No 'id' property in query results - use Neo4j's internal node_id
+            Ok(UniversalValue::Int64(internal_id))
+        }
+    }
+}
+
 fn convert_neo4j_row_to_universal_row(
     row: &neo4rs::Row,
     label: &str,
@@ -563,21 +603,23 @@ fn convert_neo4j_row_to_universal_row(
     // Neo4j stores all properties as bolt types - integers are preserved as Integer,
     // strings as String, etc. We convert each type to the appropriate ID type.
     let id = match data.remove(id_property) {
-        Some(UniversalValue::Text(s)) => {
-            // String ID - try to parse as integer first (common case: numeric strings)
-            if let Ok(n) = s.parse::<i64>() {
-                UniversalValue::Int64(n)
-            } else {
-                // Keep as string ID
-                UniversalValue::Text(s)
+        Some(universal) => {
+            match universal {
+                UniversalValue::Text(s) => {
+                    if let Ok(n) = s.parse::<i64>() {
+                        UniversalValue::Int64(n)
+                    } else {
+                        UniversalValue::Text(s)
+                    }
+                }
+                UniversalValue::Int64(n) => UniversalValue::Int64(n),
+                other => {
+                    return Err(anyhow::anyhow!(
+                        "Node with label '{label}' and id '{node_id}' has unsupported 'id' property type: {other:?}. \
+                         Expected String or Int.",
+                    ));
+                }
             }
-        }
-        Some(UniversalValue::Int64(n)) => UniversalValue::Int64(n),
-        Some(other) => {
-            return Err(anyhow::anyhow!(
-                "Node with label '{label}' and id '{node_id}' has unsupported 'id' property type: {other:?}. \
-                 Expected String or Int.",
-            ));
         }
         None => {
             // No 'id' property - use Neo4j's internal node_id
@@ -642,8 +684,10 @@ pub struct Relation {
     pub id: i64,
     pub start_labels: Vec<String>,
     pub start_node_id: i64,
+    pub start_prop_id: Option<neo4rs::BoltType>,
     pub end_labels: Vec<String>,
     pub end_node_id: i64,
+    pub end_prop_id: Option<neo4rs::BoltType>,
     pub relationship: neo4rs::Relation,
     pub updated_at: i64,
 }
@@ -660,7 +704,7 @@ impl Relation {
                 .first()
                 .map(|s| s.to_lowercase())
                 .unwrap_or_else(|| "node".to_string()),
-            UniversalValue::Int64(self.start_node_id),
+            resolve_node_id(self.start_prop_id.as_ref(), self.start_node_id, ctx)?,
         );
 
         let output = UniversalThingRef::new(
@@ -668,7 +712,7 @@ impl Relation {
                 .first()
                 .map(|s| s.to_lowercase())
                 .unwrap_or_else(|| "node".to_string()),
-            UniversalValue::Int64(self.end_node_id),
+            resolve_node_id(self.end_prop_id.as_ref(), self.end_node_id, ctx)?,
         );
 
         let mut data = HashMap::new();
@@ -707,6 +751,12 @@ pub fn row_to_relation(
     let start_labels: Vec<String> = row.get("start_labels")?;
     let end_labels: Vec<String> = row.get("end_labels")?;
 
+    // Get the 'id' property from start/end nodes (if present in the query results).
+    // These are used to match the same ID resolution logic used for node records,
+    // ensuring relationship endpoints reference the correct SurrealDB record IDs.
+    let start_prop_id: Option<neo4rs::BoltType> = row.get("start_prop_id").ok();
+    let end_prop_id: Option<neo4rs::BoltType> = row.get("end_prop_id").ok();
+
     // Get the checkpoint value from the relationship
     let rel_checkpoint_opt = if let Some(change_tracking_property) = &change_tracking_property {
         if let Ok(ts) = relationship.get::<i64>(change_tracking_property) {
@@ -729,8 +779,10 @@ pub fn row_to_relation(
         id: rel_id,
         start_labels,
         start_node_id: start_id,
+        start_prop_id,
         end_labels,
         end_node_id: end_id,
+        end_prop_id,
         relationship,
         updated_at: rel_checkpoint_opt.unwrap_or(0),
     })
