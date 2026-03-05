@@ -77,12 +77,12 @@ pub struct Config {
     /// SASL password for broker authentication
     #[clap(long, env = "KAFKA_SASL_PASSWORD")]
     pub sasl_password: Option<String>,
-    /// SASL mechanism
-    #[clap(long, value_enum, default_value_t = SaslMechanism::default())]
-    pub sasl_mechanism: SaslMechanism,
-    /// Security protocol
-    #[clap(long, value_enum, default_value_t = SecurityProtocol::default())]
-    pub security_protocol: SecurityProtocol,
+    /// SASL mechanism. Required when security_protocol uses SASL.
+    #[clap(long, value_enum)]
+    pub sasl_mechanism: Option<SaslMechanism>,
+    /// Security protocol. Omit for plain Kafka with no auth.
+    #[clap(long, value_enum)]
+    pub security_protocol: Option<SecurityProtocol>,
 }
 
 /// Run incremental sync from Kafka to SurrealDB.

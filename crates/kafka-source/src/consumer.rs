@@ -59,6 +59,10 @@ impl SecurityProtocol {
             SecurityProtocol::Ssl => "SSL",
         }
     }
+
+    pub fn requires_sasl(&self) -> bool {
+        matches!(self, SecurityProtocol::SaslPlaintext | SecurityProtocol::SaslSsl)
+    }
 }
 
 /// Configuration for Kafka consumer
@@ -108,10 +112,10 @@ pub struct ConsumerConfig {
     pub sasl_username: Option<String>,
     /// Optional SASL password for broker authentication
     pub sasl_password: Option<String>,
-    /// SASL mechanism (e.g. SCRAM-SHA-256, PLAIN)
-    pub sasl_mechanism: SaslMechanism,
-    /// Security protocol (e.g. SASL_PLAINTEXT, PLAINTEXT)
-    pub security_protocol: SecurityProtocol,
+    /// SASL mechanism (e.g. SCRAM-SHA-256, PLAIN). Required when security_protocol uses SASL.
+    pub sasl_mechanism: Option<SaslMechanism>,
+    /// Security protocol. When None, rdkafka defaults to PLAINTEXT (no auth).
+    pub security_protocol: Option<SecurityProtocol>,
 }
 
 impl Default for ConsumerConfig {
@@ -127,8 +131,8 @@ impl Default for ConsumerConfig {
             enable_auto_commit: false,
             sasl_username: None,
             sasl_password: None,
-            sasl_mechanism: SaslMechanism::default(),
-            security_protocol: SecurityProtocol::default(),
+            sasl_mechanism: None,
+            security_protocol: None,
         }
     }
 }
@@ -144,6 +148,23 @@ pub struct Consumer {
 impl Consumer {
     /// Create a new Kafka consumer
     pub fn new(config: ConsumerConfig, decoder: ProtoDecoder) -> Result<Self> {
+        if let Some(ref protocol) = config.security_protocol {
+            if protocol.requires_sasl() {
+                if config.sasl_username.is_none() || config.sasl_password.is_none() {
+                    return Err(Error::Consumer(format!(
+                        "Security protocol '{}' requires both sasl_username and sasl_password",
+                        protocol.as_str()
+                    )));
+                }
+                if config.sasl_mechanism.is_none() {
+                    return Err(Error::Consumer(format!(
+                        "Security protocol '{}' requires sasl_mechanism to be set",
+                        protocol.as_str()
+                    )));
+                }
+            }
+        }
+
         let mut client_config = ClientConfig::new();
         client_config
             .set("bootstrap.servers", &config.brokers)
@@ -153,12 +174,15 @@ impl Consumer {
             .set("session.timeout.ms", &config.session_timeout_ms)
             .set("enable.partition.eof", "false");
 
-        if let (Some(username), Some(password)) = (&config.sasl_username, &config.sasl_password) {
-            client_config
-                .set("security.protocol", config.security_protocol.as_str())
-                .set("sasl.mechanism", config.sasl_mechanism.as_str())
-                .set("sasl.username", username)
-                .set("sasl.password", password);
+        if let Some(ref protocol) = config.security_protocol {
+            client_config.set("security.protocol", protocol.as_str());
+
+            if protocol.requires_sasl() {
+                client_config
+                    .set("sasl.mechanism", config.sasl_mechanism.as_ref().unwrap().as_str())
+                    .set("sasl.username", config.sasl_username.as_deref().unwrap())
+                    .set("sasl.password", config.sasl_password.as_deref().unwrap());
+            }
         }
 
         let consumer: RdkafkaStreamConsumer = client_config
