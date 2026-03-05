@@ -14,6 +14,53 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
+/// SASL authentication mechanism
+#[derive(Debug, Clone, Default, clap::ValueEnum)]
+pub enum SaslMechanism {
+    #[default]
+    #[clap(name = "SCRAM-SHA-256")]
+    ScramSha256,
+    #[clap(name = "SCRAM-SHA-512")]
+    ScramSha512,
+    #[clap(name = "PLAIN")]
+    Plain,
+}
+
+impl SaslMechanism {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SaslMechanism::ScramSha256 => "SCRAM-SHA-256",
+            SaslMechanism::ScramSha512 => "SCRAM-SHA-512",
+            SaslMechanism::Plain => "PLAIN",
+        }
+    }
+}
+
+/// Kafka security protocol
+#[derive(Debug, Clone, Default, clap::ValueEnum)]
+pub enum SecurityProtocol {
+    #[default]
+    #[clap(name = "SASL_PLAINTEXT")]
+    SaslPlaintext,
+    #[clap(name = "SASL_SSL")]
+    SaslSsl,
+    #[clap(name = "PLAINTEXT")]
+    Plaintext,
+    #[clap(name = "SSL")]
+    Ssl,
+}
+
+impl SecurityProtocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SecurityProtocol::SaslPlaintext => "SASL_PLAINTEXT",
+            SecurityProtocol::SaslSsl => "SASL_SSL",
+            SecurityProtocol::Plaintext => "PLAINTEXT",
+            SecurityProtocol::Ssl => "SSL",
+        }
+    }
+}
+
 /// Configuration for Kafka consumer
 #[derive(Debug, Clone)]
 pub struct ConsumerConfig {
@@ -62,9 +109,9 @@ pub struct ConsumerConfig {
     /// Optional SASL password for broker authentication
     pub sasl_password: Option<String>,
     /// SASL mechanism (e.g. SCRAM-SHA-256, PLAIN)
-    pub sasl_mechanism: String,
+    pub sasl_mechanism: SaslMechanism,
     /// Security protocol (e.g. SASL_PLAINTEXT, PLAINTEXT)
-    pub security_protocol: String,
+    pub security_protocol: SecurityProtocol,
 }
 
 impl Default for ConsumerConfig {
@@ -80,8 +127,8 @@ impl Default for ConsumerConfig {
             enable_auto_commit: false,
             sasl_username: None,
             sasl_password: None,
-            sasl_mechanism: "SCRAM-SHA-256".to_string(),
-            security_protocol: "SASL_PLAINTEXT".to_string(),
+            sasl_mechanism: SaslMechanism::default(),
+            security_protocol: SecurityProtocol::default(),
         }
     }
 }
@@ -108,8 +155,8 @@ impl Consumer {
 
         if let (Some(username), Some(password)) = (&config.sasl_username, &config.sasl_password) {
             client_config
-                .set("security.protocol", &config.security_protocol)
-                .set("sasl.mechanism", &config.sasl_mechanism)
+                .set("security.protocol", config.security_protocol.as_str())
+                .set("sasl.mechanism", config.sasl_mechanism.as_str())
                 .set("sasl.username", username)
                 .set("sasl.password", password);
         }

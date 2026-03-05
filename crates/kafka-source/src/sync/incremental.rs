@@ -19,7 +19,7 @@ use sync_core::{TableDefinition, TypedValue, UniversalRow, UniversalValue};
 use tokio::time::{sleep, Duration};
 use tracing::{debug, info};
 
-use crate::consumer::ConsumerConfig;
+use crate::consumer::{ConsumerConfig, SaslMechanism, SecurityProtocol};
 use crate::Client;
 
 /// Configuration for Kafka source.
@@ -77,12 +77,12 @@ pub struct Config {
     /// SASL password for broker authentication
     #[clap(long, env = "KAFKA_SASL_PASSWORD")]
     pub sasl_password: Option<String>,
-    /// SASL mechanism (e.g. SCRAM-SHA-256, SCRAM-SHA-512, PLAIN)
-    #[clap(long, default_value = "SCRAM-SHA-256")]
-    pub sasl_mechanism: String,
-    /// Security protocol (e.g. SASL_PLAINTEXT, SASL_SSL, PLAINTEXT)
-    #[clap(long, default_value = "SASL_PLAINTEXT")]
-    pub security_protocol: String,
+    /// SASL mechanism
+    #[clap(long, value_enum, default_value_t = SaslMechanism::default())]
+    pub sasl_mechanism: SaslMechanism,
+    /// Security protocol
+    #[clap(long, value_enum, default_value_t = SecurityProtocol::default())]
+    pub security_protocol: SecurityProtocol,
 }
 
 /// Run incremental sync from Kafka to SurrealDB.

@@ -45,7 +45,7 @@ pub use sync::{run_incremental_sync, Config};
 
 // Re-export consumer types
 pub use client::Client;
-pub use consumer::{Consumer, ConsumerConfig};
+pub use consumer::{Consumer, ConsumerConfig, SaslMechanism, SecurityProtocol};
 pub use error::{Error, Result};
 pub use proto::decoder::ProtoDecoder;
 pub use proto::parser::ProtoParser;
