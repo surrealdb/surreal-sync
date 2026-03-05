@@ -71,6 +71,18 @@ pub struct Config {
     /// the exact message count is known.
     #[clap(long)]
     pub max_messages: Option<u64>,
+    /// SASL username for broker authentication
+    #[clap(long, env = "KAFKA_SASL_USERNAME")]
+    pub sasl_username: Option<String>,
+    /// SASL password for broker authentication
+    #[clap(long, env = "KAFKA_SASL_PASSWORD")]
+    pub sasl_password: Option<String>,
+    /// SASL mechanism (e.g. SCRAM-SHA-256, SCRAM-SHA-512, PLAIN)
+    #[clap(long, default_value = "SCRAM-SHA-256")]
+    pub sasl_mechanism: String,
+    /// Security protocol (e.g. SASL_PLAINTEXT, SASL_SSL, PLAINTEXT)
+    #[clap(long, default_value = "SASL_PLAINTEXT")]
+    pub security_protocol: String,
 }
 
 /// Run incremental sync from Kafka to SurrealDB.
@@ -104,6 +116,10 @@ pub async fn run_incremental_sync<S: SurrealSink + Send + Sync + 'static>(
         message_type: config.message_type,
         buffer_size: config.buffer_size,
         session_timeout_ms: config.session_timeout_ms,
+        sasl_username: config.sasl_username,
+        sasl_password: config.sasl_password,
+        sasl_mechanism: config.sasl_mechanism,
+        security_protocol: config.security_protocol,
         ..Default::default()
     };
 

@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     pkg-config \
     protobuf-compiler \
+    libsasl2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace files
@@ -28,6 +29,10 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
+    # For protobuf schema parsing at runtime
+    protobuf-compiler \
+    # For SASL SCRAM-SHA-256/512 broker authentication
+    libsasl2-2 \
     # For environment verification
     procps \
     # For database connectivity testing

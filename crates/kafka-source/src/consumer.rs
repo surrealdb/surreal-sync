@@ -57,6 +57,14 @@ pub struct ConsumerConfig {
     /// This is false by default, as surreal-sync manages offsets manually to ensure
     /// atomic processing and committing of batches.
     pub enable_auto_commit: bool,
+    /// Optional SASL username for broker authentication
+    pub sasl_username: Option<String>,
+    /// Optional SASL password for broker authentication
+    pub sasl_password: Option<String>,
+    /// SASL mechanism (e.g. SCRAM-SHA-256, PLAIN)
+    pub sasl_mechanism: String,
+    /// Security protocol (e.g. SASL_PLAINTEXT, PLAINTEXT)
+    pub security_protocol: String,
 }
 
 impl Default for ConsumerConfig {
@@ -70,6 +78,10 @@ impl Default for ConsumerConfig {
             auto_offset_reset: "earliest".to_string(),
             session_timeout_ms: "6000".to_string(),
             enable_auto_commit: false,
+            sasl_username: None,
+            sasl_password: None,
+            sasl_mechanism: "SCRAM-SHA-256".to_string(),
+            security_protocol: "SASL_PLAINTEXT".to_string(),
         }
     }
 }
@@ -85,13 +97,24 @@ pub struct Consumer {
 impl Consumer {
     /// Create a new Kafka consumer
     pub fn new(config: ConsumerConfig, decoder: ProtoDecoder) -> Result<Self> {
-        let consumer: RdkafkaStreamConsumer = ClientConfig::new()
+        let mut client_config = ClientConfig::new();
+        client_config
             .set("bootstrap.servers", &config.brokers)
             .set("group.id", &config.group_id)
             .set("enable.auto.commit", config.enable_auto_commit.to_string())
             .set("auto.offset.reset", &config.auto_offset_reset)
             .set("session.timeout.ms", &config.session_timeout_ms)
-            .set("enable.partition.eof", "false")
+            .set("enable.partition.eof", "false");
+
+        if let (Some(username), Some(password)) = (&config.sasl_username, &config.sasl_password) {
+            client_config
+                .set("security.protocol", &config.security_protocol)
+                .set("sasl.mechanism", &config.sasl_mechanism)
+                .set("sasl.username", username)
+                .set("sasl.password", password);
+        }
+
+        let consumer: RdkafkaStreamConsumer = client_config
             .create()
             .map_err(|e| Error::Consumer(format!("Failed to create consumer: {e}")))?;
 
