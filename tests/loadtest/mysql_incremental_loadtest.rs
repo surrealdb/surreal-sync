@@ -12,6 +12,7 @@
 use loadtest_populate_mysql::MySQLPopulator;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
+use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
 use sync_core::Schema;
 
 const SEED: u64 = 42;
@@ -35,6 +36,10 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
         .try_init()
         .ok();
 
+    let mut container = MySQLContainer::new("test-mysql-incr-loadtest");
+    container.start()?;
+    container.wait_until_ready(60).await?;
+
     // Load schema from fixture file
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
         .expect("Failed to load test schema");
@@ -44,8 +49,7 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
     let table_names: Vec<&str> = schema.table_names();
 
     // Connect to MySQL
-    let mysql_config = surreal_sync::testing::mysql::create_mysql_config();
-    let mysql_conn_string = mysql_config.get_connection_string();
+    let mysql_conn_string = container.connection_string.clone();
     let pool = mysql_async::Pool::from_url(&mysql_conn_string)?;
     let mut mysql_conn = pool.get_conn().await?;
 

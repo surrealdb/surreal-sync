@@ -5,51 +5,37 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
-/// Configuration for a test MySQL container
+/// A test MySQL container backed by Docker with dynamic port binding.
 pub struct MySQLContainer {
-    /// Container name
     pub container_name: String,
-    /// Host port to bind to
     pub host_port: u16,
-    /// Image name (uses official mysql image)
-    pub image_name: String,
-    /// Connection string for the container
     pub connection_string: String,
+    image_name: String,
 }
 
 impl MySQLContainer {
-    /// Creates a new MySQL container configuration
-    pub fn new(container_name: &str, host_port: u16) -> Self {
-        // Use official MySQL 8 image
-        let image_name = "mysql:8.0".to_string();
-        let connection_string = format!("mysql://root:testpass@127.0.0.1:{host_port}/testdb",);
-
+    /// Creates a new container configuration. Call [`start`](Self::start) before
+    /// using the connection.
+    pub fn new(container_name: &str) -> Self {
         Self {
             container_name: container_name.to_string(),
-            host_port,
-            image_name,
-            connection_string,
+            image_name: "mysql:8.0".to_string(),
+            host_port: 0,
+            connection_string: String::new(),
         }
     }
 
-    /// Starts the MySQL container
-    pub fn start(&self) -> Result<()> {
+    /// Starts the container with dynamic port binding and discovers the assigned port.
+    pub fn start(&mut self) -> Result<()> {
         info!("Starting MySQL container: {}", self.container_name);
 
-        // First, try to stop and remove any existing container with the same name
+        // Remove any leftover container with the same name
         let _ = Command::new("docker")
-            .args(["stop", &self.container_name])
+            .args(["rm", "-f", &self.container_name])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
 
-        let _ = Command::new("docker")
-            .args(["rm", &self.container_name])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-
-        // Start the new container
         let output = Command::new("docker")
             .args([
                 "run",
@@ -60,7 +46,7 @@ impl MySQLContainer {
                 "-e",
                 "MYSQL_DATABASE=testdb",
                 "-p",
-                &format!("{}:3306", self.host_port),
+                "0:3306",
                 "-d",
                 &self.image_name,
             ])
@@ -75,6 +61,17 @@ impl MySQLContainer {
         let container_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
         info!("Started container: {}", container_id);
 
+        self.host_port = get_dynamic_port(&self.container_name)?;
+        self.connection_string = format!(
+            "mysql://root:testpass@127.0.0.1:{}/testdb",
+            self.host_port
+        );
+
+        info!(
+            "Container bound to dynamic port {} (connection: {})",
+            self.host_port, self.connection_string
+        );
+
         Ok(())
     }
 
@@ -86,7 +83,6 @@ impl MySQLContainer {
         let timeout = Duration::from_secs(timeout_secs);
 
         while start.elapsed() < timeout {
-            // Try to connect
             match self.test_connection().await {
                 Ok(_) => {
                     info!("MySQL is ready!");
@@ -102,7 +98,6 @@ impl MySQLContainer {
         anyhow::bail!("MySQL did not become ready within {timeout_secs} seconds")
     }
 
-    /// Tests if we can connect to MySQL
     async fn test_connection(&self) -> Result<()> {
         let pool = mysql_async::Pool::from_url(&self.connection_string)
             .context("Failed to create connection pool")?;
@@ -129,7 +124,6 @@ impl MySQLContainer {
             .context("Failed to create connection pool")
     }
 
-    /// Stops and removes the container
     pub fn stop(&self) -> Result<()> {
         info!("Stopping container: {}", self.container_name);
 
@@ -157,7 +151,6 @@ impl MySQLContainer {
         Ok(())
     }
 
-    /// Gets logs from the container
     pub fn get_logs(&self) -> Result<String> {
         let output = Command::new("docker")
             .args(["logs", &self.container_name])
@@ -173,7 +166,32 @@ impl MySQLContainer {
 
 impl Drop for MySQLContainer {
     fn drop(&mut self) {
-        // Best effort cleanup
         let _ = self.stop();
     }
+}
+
+/// Queries Docker for the host port dynamically bound to container port 3306.
+fn get_dynamic_port(container_name: &str) -> Result<u16> {
+    let output = Command::new("docker")
+        .args(["port", container_name, "3306"])
+        .output()
+        .context("Failed to query dynamic port")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("docker port failed: {stderr}");
+    }
+
+    // Output format: "0.0.0.0:12345\n" or "[::]:12345\n" or both lines
+    let port_output = String::from_utf8_lossy(&output.stdout);
+    let port = port_output
+        .lines()
+        .next()
+        .and_then(|line| line.rsplit(':').next())
+        .and_then(|p| p.trim().parse::<u16>().ok())
+        .with_context(|| {
+            format!("Failed to parse dynamic port from docker output: {port_output}")
+        })?;
+
+    Ok(port)
 }

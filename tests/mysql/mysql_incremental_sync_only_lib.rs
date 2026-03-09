@@ -10,6 +10,7 @@ use surreal_sync::testing::surreal::{
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
+use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
 
 #[tokio::test]
 async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,14 +20,17 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         .try_init()
         .ok();
 
+    let mut container = MySQLContainer::new("test-mysql-incr-sync-lib");
+    container.start()?;
+    container.wait_until_ready(60).await?;
+
     let test_id = generate_test_id();
 
     // Clean up checkpoint directory to prevent cross-test contamination
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-checkpoints")?;
 
     // Setup MySQL connection
-    let mysql_config = surreal_sync::testing::mysql::create_mysql_config();
-    let pool = mysql_async::Pool::from_url(mysql_config.get_connection_string())?;
+    let pool = mysql_async::Pool::from_url(&container.connection_string)?;
     let mut mysql_conn = pool.get_conn().await?;
 
     let dataset = create_unified_full_dataset();
@@ -41,7 +45,7 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     surreal_sync::testing::mysql::create_tables_and_indices(&mut mysql_conn, &dataset).await?;
 
     let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
-        source_uri: mysql_config.get_connection_string(),
+        source_uri: container.connection_string.clone(),
         source_database: Some("testdb".to_string()),
         tables: vec![],
         mysql_boolean_paths: Some(vec!["all_types_posts.post_categories".to_string()]),

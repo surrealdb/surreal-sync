@@ -9,6 +9,7 @@ use surreal_sync::testing::surreal::{
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
+use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
 
 #[tokio::test]
 async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,13 +19,16 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
         .try_init()
         .ok();
 
+    let mut container = MySQLContainer::new("test-mysql-full-sync-lib");
+    container.start()?;
+    container.wait_until_ready(60).await?;
+
     // Create test dataset
     let dataset = create_unified_full_dataset();
     let test_id = generate_test_id();
 
     // Setup MySQL connection and data
-    let mysql_config = surreal_sync::testing::mysql::create_mysql_config();
-    let pool = mysql_async::Pool::from_url(mysql_config.get_connection_string())?;
+    let pool = mysql_async::Pool::from_url(&container.connection_string)?;
     let mut mysql_conn = pool.get_conn().await?;
 
     // Setup SurrealDB connection with auto-detection
@@ -38,7 +42,7 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
 
     // Perform full sync from MySQL to SurrealDB
     let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
-        source_uri: mysql_config.get_connection_string(),
+        source_uri: container.connection_string.clone(),
         source_database: Some("testdb".to_string()),
         tables: vec![],
         mysql_boolean_paths: Some(vec![

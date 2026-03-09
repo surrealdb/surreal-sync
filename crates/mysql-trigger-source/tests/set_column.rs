@@ -12,9 +12,6 @@ use sync_core::UniversalValue;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-/// Test port that doesn't conflict with standard MySQL port
-const TEST_PORT: u16 = 13309;
-
 /// Initialize logging for tests
 fn init_logging() {
     let _ = tracing_subscriber::registry()
@@ -38,7 +35,7 @@ async fn test_set_column_without_schema_returns_string() -> Result<()> {
     info!("Testing that SET columns without schema detection return as strings");
 
     // Create and start container
-    let container = MySQLContainer::new("test-set-column", TEST_PORT);
+    let mut container = MySQLContainer::new("test-set-column");
     container.start()?;
     container.wait_until_ready(60).await?;
 
@@ -134,7 +131,7 @@ async fn test_set_column_with_schema_detection() -> Result<()> {
     init_logging();
     info!("Starting SET column test WITH schema-based detection");
 
-    let container = MySQLContainer::new("test-set-schema", TEST_PORT + 2);
+    let mut container = MySQLContainer::new("test-set-schema");
     container.start()?;
     container.wait_until_ready(60).await?;
 
@@ -214,7 +211,7 @@ async fn test_mysql_async_set_column_type() -> Result<()> {
     init_logging();
     info!("Testing mysql_async ColumnType for SET columns");
 
-    let container = MySQLContainer::new("test-set-coltype", TEST_PORT + 1);
+    let mut container = MySQLContainer::new("test-set-coltype");
     container.start()?;
     container.wait_until_ready(60).await?;
 

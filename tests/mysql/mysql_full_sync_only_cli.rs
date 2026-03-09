@@ -8,6 +8,7 @@ use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto,
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
+use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
 
 #[tokio::test]
 async fn test_mysql_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,12 +18,15 @@ async fn test_mysql_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
         .try_init()
         .ok();
 
+    let mut container = MySQLContainer::new("test-mysql-full-sync-cli");
+    container.start()?;
+    container.wait_until_ready(60).await?;
+
     let test_id = generate_test_id();
     let dataset = create_unified_full_dataset();
 
     // Setup MySQL with test data
-    let mysql_config = surreal_sync::testing::mysql::create_mysql_config();
-    let pool = mysql_async::Pool::from_url(mysql_config.get_connection_string())?;
+    let pool = mysql_async::Pool::from_url(&container.connection_string)?;
     let mut mysql_conn = pool.get_conn().await?;
 
     surreal_sync::testing::mysql::cleanup_mysql_test_data(&mut mysql_conn).await?;
@@ -35,12 +39,13 @@ async fn test_mysql_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
     cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     // Execute CLI command for MySQL full sync with data
+    let mysql_conn_str = container.connection_string.clone();
     let args = [
         "from",
         "mysql",
         "full",
         "--connection-string",
-        &mysql_config.get_connection_string(),
+        &mysql_conn_str,
         "--database",
         "testdb",
         "--surreal-endpoint",
