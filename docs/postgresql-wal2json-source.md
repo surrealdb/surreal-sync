@@ -113,6 +113,43 @@ For implementation details on the connection model, transaction handling, at-lea
 
 ## CLI Usage
 
+### Config File
+
+Instead of passing many flags, you can use a TOML config file with `-c` / `--config-file`:
+
+```bash
+surreal-sync from postgresql full -c surreal-sync.toml
+surreal-sync from postgresql incremental -c surreal-sync.toml
+```
+
+Example `surreal-sync.toml`:
+
+```toml
+[source.postgresql]
+connection_string = "postgresql://user:password@host:5432/database"
+slot = "surreal_sync_slot"
+tables = ["users", "orders", "products"]
+schema = "public"
+
+# Full sync checkpoint settings
+checkpoint_dir = ".checkpoints"
+# Or use SurrealDB for checkpoints:
+# checkpoints_surreal_table = "surreal_sync_checkpoints"
+
+# Incremental sync settings (ignored by full sync)
+# incremental_from = "0/1949850"
+# timeout = 3600
+
+[sink.surrealdb]
+endpoint = "ws://localhost:8000"
+username = "root"
+password = "root"
+namespace = "production"
+database = "myapp"
+```
+
+CLI flags take precedence over config file values when both are provided. The same config file can be shared between `full` and `incremental` subcommands -- irrelevant fields are ignored.
+
 ### Full Sync Command
 
 ```bash

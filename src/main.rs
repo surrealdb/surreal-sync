@@ -49,6 +49,33 @@
 //!   --surreal-endpoint ws://localhost:8000
 //! ```
 //!
+//! ## Config File (PostgreSQL)
+//!
+//! PostgreSQL sources support `-c` / `--config-file` to replace CLI flags with a TOML file:
+//!
+//! ```bash
+//! # All PostgreSQL settings from a config file
+//! surreal-sync from postgresql-trigger full -c surreal-sync.toml
+//! surreal-sync from postgresql-trigger incremental -c surreal-sync.toml
+//! surreal-sync from postgresql full -c surreal-sync.toml
+//! surreal-sync from postgresql incremental -c surreal-sync.toml
+//! ```
+//!
+//! Example `surreal-sync.toml`:
+//! ```toml
+//! [source.postgresql]
+//! connection_string = "postgresql://user:pass@host:5432/mydb"
+//! tables = ["users", "orders"]
+//! checkpoint_dir = "./checkpoints"
+//!
+//! [sink.surrealdb]
+//! endpoint = "http://localhost:8000"
+//! namespace = "test"
+//! database = "test"
+//! ```
+//!
+//! CLI flags take precedence over config file values when both are provided.
+//!
 //! ## Checkpoint Formats
 //! - Neo4j: `neo4j:2024-01-01T00:00:00Z` (timestamp-based)
 //! - MongoDB: `mongodb:base64token:2024-01-01T00:00:00Z` (resume token + timestamp)
@@ -434,9 +461,13 @@ enum PostgreSQLTriggerCommands {
 
 #[derive(Args)]
 struct PostgreSQLTriggerFullArgs {
+    /// TOML config file (provides defaults for all other flags)
+    #[arg(short = 'c', long = "config-file", value_name = "PATH")]
+    config_file: Option<PathBuf>,
+
     /// PostgreSQL connection string (must include database name, e.g., postgresql://user:pass@host:5432/mydb)
     #[arg(long, env = "POSTGRESQL_URI")]
-    connection_string: String,
+    connection_string: Option<String>,
 
     /// Tables to sync (comma-separated, empty means all tables)
     #[arg(long, value_delimiter = ',')]
@@ -444,11 +475,11 @@ struct PostgreSQLTriggerFullArgs {
 
     /// Target SurrealDB namespace
     #[arg(long)]
-    to_namespace: String,
+    to_namespace: Option<String>,
 
     /// Target SurrealDB database
     #[arg(long)]
-    to_database: String,
+    to_database: Option<String>,
 
     /// Directory to store checkpoint files (filesystem storage)
     #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
@@ -468,9 +499,13 @@ struct PostgreSQLTriggerFullArgs {
 
 #[derive(Args)]
 struct PostgreSQLTriggerIncrementalArgs {
+    /// TOML config file (provides defaults for all other flags)
+    #[arg(short = 'c', long = "config-file", value_name = "PATH")]
+    config_file: Option<PathBuf>,
+
     /// PostgreSQL connection string (must include database name, e.g., postgresql://user:pass@host:5432/mydb)
     #[arg(long, env = "POSTGRESQL_URI")]
-    connection_string: String,
+    connection_string: Option<String>,
 
     /// Tables to sync (comma-separated, empty means all tables)
     #[arg(long, value_delimiter = ',')]
@@ -478,11 +513,11 @@ struct PostgreSQLTriggerIncrementalArgs {
 
     /// Target SurrealDB namespace
     #[arg(long)]
-    to_namespace: String,
+    to_namespace: Option<String>,
 
     /// Target SurrealDB database
     #[arg(long)]
-    to_database: String,
+    to_database: Option<String>,
 
     /// Start incremental sync from this checkpoint (e.g., "postgresql:sequence:123")
     /// If not specified, reads from SurrealDB using --checkpoints-surreal-table
@@ -629,9 +664,13 @@ enum PostgreSQLLogicalCommands {
 
 #[derive(Args)]
 struct PostgreSQLLogicalFullArgs {
+    /// TOML config file (provides defaults for all other flags)
+    #[arg(short = 'c', long = "config-file", value_name = "PATH")]
+    config_file: Option<PathBuf>,
+
     /// PostgreSQL connection string (must include database name, e.g., postgresql://user:pass@host:5432/mydb)
     #[arg(long)]
-    connection_string: String,
+    connection_string: Option<String>,
 
     /// Replication slot name
     #[arg(long, default_value = "surreal_sync_slot")]
@@ -647,11 +686,11 @@ struct PostgreSQLLogicalFullArgs {
 
     /// Target SurrealDB namespace
     #[arg(long)]
-    to_namespace: String,
+    to_namespace: Option<String>,
 
     /// Target SurrealDB database
     #[arg(long)]
-    to_database: String,
+    to_database: Option<String>,
 
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
@@ -671,9 +710,13 @@ struct PostgreSQLLogicalFullArgs {
 
 #[derive(Args)]
 struct PostgreSQLLogicalIncrementalArgs {
+    /// TOML config file (provides defaults for all other flags)
+    #[arg(short = 'c', long = "config-file", value_name = "PATH")]
+    config_file: Option<PathBuf>,
+
     /// PostgreSQL connection string (must include database name, e.g., postgresql://user:pass@host:5432/mydb)
     #[arg(long)]
-    connection_string: String,
+    connection_string: Option<String>,
 
     /// Replication slot name
     #[arg(long, default_value = "surreal_sync_slot")]
@@ -689,11 +732,11 @@ struct PostgreSQLLogicalIncrementalArgs {
 
     /// Target SurrealDB namespace
     #[arg(long)]
-    to_namespace: String,
+    to_namespace: Option<String>,
 
     /// Target SurrealDB database
     #[arg(long)]
-    to_database: String,
+    to_database: Option<String>,
 
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]

@@ -7,6 +7,7 @@ pub mod checkpoint;
 mod full_sync;
 mod incremental_sync;
 pub mod schema;
+pub mod toml_config;
 
 pub use checkpoint::{get_current_checkpoint, PostgreSQLCheckpoint};
 pub use full_sync::run_full_sync;

@@ -35,6 +35,17 @@
 //! # Kafka consumer
 //! surreal-sync from kafka --bootstrap-servers localhost:9092 --topic events ...
 //! ```
+//!
+//! # Config File (PostgreSQL)
+//!
+//! PostgreSQL sources support a TOML config file via `-c` / `--config-file`:
+//!
+//! ```bash
+//! surreal-sync from postgresql-trigger full -c surreal-sync.toml
+//! ```
+//!
+//! See the `config::file` module (in the binary crate) for the config file format
+//! and struct definitions.
 
 use clap::Parser;
 

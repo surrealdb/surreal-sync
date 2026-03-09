@@ -49,6 +49,7 @@ mod full_sync;
 mod incremental_sync;
 mod logical_replication;
 pub mod sync;
+pub mod toml_config;
 mod wal2json;
 
 // Make testing module available for integration tests

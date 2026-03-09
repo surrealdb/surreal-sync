@@ -29,6 +29,13 @@ surreal-sync from <SOURCE> <COMMAND> \
   --to-database <DB>
 ```
 
+PostgreSQL sources also support a TOML config file to avoid long flag lists:
+
+```bash
+surreal-sync from postgresql-trigger full -c surreal-sync.toml
+surreal-sync from postgresql incremental -c surreal-sync.toml
+```
+
 See source-specific guides for more details:
 
 - **[MongoDB](docs/mongodb.md)**: Full and incremental sync using change streams

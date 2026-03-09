@@ -100,6 +100,42 @@ surreal-sync from postgresql-trigger incremental \
   --timeout 60
 ```
 
+### Config File
+
+Instead of passing many flags, you can use a TOML config file with `-c` / `--config-file`:
+
+```bash
+surreal-sync from postgresql-trigger full -c surreal-sync.toml
+surreal-sync from postgresql-trigger incremental -c surreal-sync.toml
+```
+
+Example `surreal-sync.toml`:
+
+```toml
+[source.postgresql]
+connection_string = "postgresql://postgres:postgres@postgresql:5432/myapp"
+tables = ["users", "orders"]
+schema_file = "schema.yaml"
+
+# Full sync checkpoint settings
+checkpoint_dir = ".surreal-sync-checkpoints"
+# Or use SurrealDB for checkpoints:
+# checkpoints_surreal_table = "surreal_sync_checkpoints"
+
+# Incremental sync settings (ignored by full sync)
+# incremental_from = "123"
+# timeout = 3600
+
+[sink.surrealdb]
+endpoint = "ws://localhost:8000"
+username = "root"
+password = "root"
+namespace = "production"
+database = "migrated_data"
+```
+
+CLI flags take precedence over config file values when both are provided. The same config file can be shared between `full` and `incremental` subcommands -- irrelevant fields are ignored.
+
 ### Command-Line Options
 
 #### Full Sync Options
