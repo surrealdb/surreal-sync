@@ -24,12 +24,11 @@ use loadtest_populate_kafka::KafkaPopulator;
 use std::{sync::Arc, time::Duration};
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
+use surreal_sync_kafka_producer::container::KafkaContainer;
 use surreal_sync_kafka_source::Config as KafkaConfig;
 use sync_core::Schema;
 use tokio::time::sleep;
 
-/// Kafka broker address for testing
-const KAFKA_BROKER: &str = "kafka:9092";
 const SEED: u64 = 42;
 const ROW_COUNT: u64 = 50; // Small scale for integration tests
 const BATCH_SIZE: usize = 10;
@@ -47,6 +46,11 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .with_env_filter("surreal_sync=info,loadtest=info,loadtest_populate_kafka=info")
         .try_init()
         .ok();
+
+    let mut kafka = KafkaContainer::new("test-kafka-loadtest");
+    kafka.start()?;
+    kafka.wait_until_ready(30).await?;
+    let kafka_broker = &kafka.broker_address;
 
     // Load schema from fixture file
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
@@ -105,7 +109,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         );
 
         // Create a fresh populator for each table to reset the generator index
-        let mut populator = KafkaPopulator::new(KAFKA_BROKER, schema.clone(), SEED)
+        let mut populator = KafkaPopulator::new(kafka_broker, schema.clone(), SEED)
             .await?
             .with_batch_size(BATCH_SIZE);
 
@@ -165,7 +169,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
 
                 let config = KafkaConfig {
                     proto_path: proto_path.to_string_lossy().to_string(),
-                    brokers: vec![KAFKA_BROKER.to_string()],
+                    brokers: vec![kafka_broker.to_string()],
                     group_id: format!("loadtest-{table_name}-{test_id}"),
                     topic: topic_name.clone(),
                     message_type,
@@ -287,7 +291,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
 
                 let config = KafkaConfig {
                     proto_path: proto_path.to_string_lossy().to_string(),
-                    brokers: vec![KAFKA_BROKER.to_string()],
+                    brokers: vec![kafka_broker.to_string()],
                     group_id: format!("loadtest-{table_name}-{test_id}"),
                     topic: topic_name.clone(),
                     message_type,

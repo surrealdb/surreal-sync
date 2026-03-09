@@ -26,14 +26,12 @@ use surreal_sync::testing::surreal::{
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
+use surreal_sync_kafka_producer::container::KafkaContainer;
 use surreal_sync_kafka_producer::{
     publish_test_posts, publish_test_relations, publish_test_users, KafkaTestProducer,
 };
 use surreal_sync_kafka_source::Config as KafkaConfig;
 use tokio::time::sleep;
-
-/// Kafka broker address for testing
-const KAFKA_BROKER: &str = "kafka:9092";
 
 #[tokio::test]
 async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,6 +40,11 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         .with_env_filter("surreal_sync=debug,surreal_sync_kafka_source=debug")
         .try_init()
         .ok();
+
+    let mut kafka = KafkaContainer::new("test-kafka-incr-sync");
+    kafka.start()?;
+    kafka.wait_until_ready(30).await?;
+    let kafka_broker = &kafka.broker_address;
 
     let test_id = generate_test_id();
     let dataset = create_unified_full_dataset();
@@ -67,7 +70,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
     // Step 1: Setup Kafka producer and create topics
     tracing::info!("Setting up Kafka producer and topics...");
-    let producer = KafkaTestProducer::new(KAFKA_BROKER).await?;
+    let producer = KafkaTestProducer::new(kafka_broker).await?;
 
     // Create topics with appropriate partition counts
     producer.create_topic_if_not_exists(&users_topic, 3).await?;
@@ -110,7 +113,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Run sync for users topic with a deadline
     let user_config = KafkaConfig {
         proto_path: user_proto_path.to_string_lossy().to_string(),
-        brokers: vec![KAFKA_BROKER.to_string()],
+        brokers: vec![kafka_broker.to_string()],
         group_id: format!("test-group-users-{test_id}"),
         topic: users_topic.clone(),
         message_type: "User".to_string(),
@@ -162,7 +165,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
             let post_config = KafkaConfig {
                 proto_path: post_proto_path.to_string_lossy().to_string(),
-                brokers: vec![KAFKA_BROKER.to_string()],
+                brokers: vec![kafka_broker.to_string()],
                 group_id: format!("test-group-posts-{test_id}"),
                 topic: posts_topic.clone(),
                 message_type: "Post".to_string(),
@@ -206,7 +209,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
             let relation_config = KafkaConfig {
                 proto_path: relation_proto_path.to_string_lossy().to_string(),
-                brokers: vec![KAFKA_BROKER.to_string()],
+                brokers: vec![kafka_broker.to_string()],
                 group_id: format!("test-group-relations-{test_id}"),
                 topic: relations_topic.clone(),
                 message_type: "UserPostRelation".to_string(),
@@ -273,7 +276,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
             let post_config = KafkaConfig {
                 proto_path: post_proto_path.to_string_lossy().to_string(),
-                brokers: vec![KAFKA_BROKER.to_string()],
+                brokers: vec![kafka_broker.to_string()],
                 group_id: format!("test-group-posts-{test_id}"),
                 topic: posts_topic.clone(),
                 message_type: "Post".to_string(),
@@ -317,7 +320,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
             let relation_config = KafkaConfig {
                 proto_path: relation_proto_path.to_string_lossy().to_string(),
-                brokers: vec![KAFKA_BROKER.to_string()],
+                brokers: vec![kafka_broker.to_string()],
                 group_id: format!("test-group-relations-{test_id}"),
                 topic: relations_topic.clone(),
                 message_type: "UserPostRelation".to_string(),

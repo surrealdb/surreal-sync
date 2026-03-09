@@ -62,6 +62,9 @@ use std::time::Duration;
 // Include generated protobuf code
 mod protos;
 
+// Docker container management for Kafka test instances
+pub mod container;
+
 // Test data helpers module
 pub mod testdata;
 
