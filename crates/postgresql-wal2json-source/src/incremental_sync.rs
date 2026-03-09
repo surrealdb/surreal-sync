@@ -7,7 +7,10 @@ use crate::checkpoint::PostgreSQLLogicalCheckpoint;
 use anyhow::Result;
 use checkpoint::{CheckpointID, CheckpointStore, Surreal2Store};
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalChange, UniversalChangeOp};
+use sync_core::{
+    classify_table, DatabaseSchema, TableKind, UniversalChange, UniversalChangeOp,
+    UniversalRelationChange,
+};
 use tokio_postgres::NoTls;
 use tracing::{debug, error, info, warn};
 
@@ -81,6 +84,11 @@ pub async fn run_incremental_sync<S: SurrealSink>(
         }
     });
 
+    // Collect schema with FK info for record link and relation conversion
+    let db_schema =
+        surreal_sync_postgresql::schema::collect_database_schema_with_fks(&client).await?;
+    let relation_table_overrides = &from_opts.relation_tables;
+
     // Create logical replication client
     let pg_client = crate::Client::new(client, from_opts.tables.clone());
 
@@ -132,41 +140,33 @@ pub async fn run_incremental_sync<S: SurrealSink>(
 
                 // Process all changes in the batch
                 for change in &changes {
-                    match change {
+                    let (row, op) = match change {
                         crate::Action::Insert(row) => {
-                            debug!(
-                                "INSERT: table={}, primary_key={:?}",
-                                row.table, row.primary_key
-                            );
-                            let universal_change =
-                                row_to_universal_change(row, UniversalChangeOp::Create);
-                            surreal.apply_universal_change(&universal_change).await?;
-                            total_changes += 1;
+                            debug!("INSERT: table={}, primary_key={:?}", row.table, row.primary_key);
+                            (row, UniversalChangeOp::Create)
                         }
                         crate::Action::Update(row) => {
-                            debug!(
-                                "UPDATE: table={}, primary_key={:?}",
-                                row.table, row.primary_key
-                            );
-                            let universal_change =
-                                row_to_universal_change(row, UniversalChangeOp::Update);
-                            surreal.apply_universal_change(&universal_change).await?;
-                            total_changes += 1;
+                            debug!("UPDATE: table={}, primary_key={:?}", row.table, row.primary_key);
+                            (row, UniversalChangeOp::Update)
                         }
                         crate::Action::Delete(row) => {
-                            debug!(
-                                "DELETE: table={}, primary_key={:?}",
-                                row.table, row.primary_key
-                            );
-                            let universal_change =
-                                row_to_universal_change(row, UniversalChangeOp::Delete);
-                            surreal.apply_universal_change(&universal_change).await?;
-                            total_changes += 1;
+                            debug!("DELETE: table={}, primary_key={:?}", row.table, row.primary_key);
+                            (row, UniversalChangeOp::Delete)
                         }
                         crate::Action::Begin { .. } | crate::Action::Commit { .. } => {
-                            // Skip transaction markers
+                            continue;
                         }
-                    }
+                    };
+
+                    apply_change_with_fk_transform(
+                        surreal,
+                        row,
+                        op,
+                        &db_schema,
+                        relation_table_overrides,
+                    )
+                    .await?;
+                    total_changes += 1;
                 }
 
                 // Advance slot after processing
@@ -216,6 +216,45 @@ fn row_to_universal_change(row: &crate::Row, op: UniversalChangeOp) -> Universal
         Some(row.columns.clone())
     };
     UniversalChange::new(op, row.table.clone(), row.primary_key.clone(), data)
+}
+
+/// Apply a change with FK-to-Thing transformation and relation-table routing.
+async fn apply_change_with_fk_transform<S: SurrealSink>(
+    surreal: &S,
+    row: &crate::Row,
+    op: UniversalChangeOp,
+    db_schema: &DatabaseSchema,
+    relation_table_overrides: &[String],
+) -> Result<()> {
+    let table_def = db_schema.get_table(&row.table);
+    let table_kind = table_def.map(|td| classify_table(td, relation_table_overrides));
+
+    match table_kind {
+        Some(TableKind::Relation { ref in_fk, ref out_fk }) => {
+            let data = if op == UniversalChangeOp::Delete {
+                std::collections::HashMap::new()
+            } else {
+                row.columns.clone()
+            };
+            let relation = surreal_sync_postgresql::fk_transform::build_relation_from_change(
+                &row.table,
+                row.primary_key.clone(),
+                data,
+                in_fk,
+                out_fk,
+            );
+            let rel_change = UniversalRelationChange::new(op, relation);
+            surreal.apply_universal_relation_change(&rel_change).await?;
+        }
+        _ => {
+            let mut change = row_to_universal_change(row, op);
+            if let (Some(td), Some(ref mut data)) = (table_def, change.data.as_mut()) {
+                surreal_sync_postgresql::fk_transform::transform_fk_values(data, td);
+            }
+            surreal.apply_universal_change(&change).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Compare two LSN strings

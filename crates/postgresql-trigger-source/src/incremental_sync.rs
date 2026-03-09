@@ -12,7 +12,10 @@ use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
 use surreal_sink::SurrealSink;
-use sync_core::{DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalValue};
+use sync_core::{
+    classify_table, DatabaseSchema, TableKind, UniversalChange, UniversalChangeOp,
+    UniversalRelationChange, UniversalValue,
+};
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
 use tracing::debug;
@@ -88,6 +91,14 @@ pub async fn run_incremental_sync<S: SurrealSink>(
     source.initialize().await?;
     log::debug!("Source initialized");
 
+    // Collect schema with FK info for record link and relation conversion
+    let schema_client = surreal_sync_postgresql::new_postgresql_client(&from_opts.source_uri).await?;
+    let db_schema = {
+        let client = schema_client.lock().await;
+        surreal_sync_postgresql::schema::collect_database_schema_with_fks(&client).await?
+    };
+    let relation_table_overrides = &from_opts.relation_tables;
+
     // Get list of user tables to track
     let (pg_client, pg_connection) =
         tokio_postgres::connect(&from_opts.source_uri, tokio_postgres::NoTls).await?;
@@ -121,7 +132,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
     while let Some(result) = stream.next().await {
         log::debug!("🔄 Main loop: Got result from stream.next(), change_count: {change_count}");
         match result {
-            Ok(change) => {
+            Ok(mut change) => {
                 debug!("Received change: {:?}", change);
 
                 // Check if we've reached the deadline
@@ -143,7 +154,32 @@ pub async fn run_incremental_sync<S: SurrealSink>(
                     }
                 }
 
-                surreal.apply_universal_change(&change).await?;
+                // Apply FK transforms based on table classification
+                let table_def = db_schema.get_table(&change.table);
+                let table_kind = table_def
+                    .map(|td| classify_table(td, relation_table_overrides));
+
+                match table_kind {
+                    Some(TableKind::Relation { ref in_fk, ref out_fk }) => {
+                        let op = change.operation;
+                        let data = change.data.take().unwrap_or_default();
+                        let relation = surreal_sync_postgresql::fk_transform::build_relation_from_change(
+                            &change.table,
+                            change.id,
+                            data,
+                            in_fk,
+                            out_fk,
+                        );
+                        let rel_change = UniversalRelationChange::new(op, relation);
+                        surreal.apply_universal_relation_change(&rel_change).await?;
+                    }
+                    _ => {
+                        if let (Some(td), Some(ref mut data)) = (table_def, change.data.as_mut()) {
+                            surreal_sync_postgresql::fk_transform::transform_fk_values(data, td);
+                        }
+                        surreal.apply_universal_change(&change).await?;
+                    }
+                }
 
                 change_count += 1;
                 if change_count % 100 == 0 {

@@ -518,6 +518,13 @@ mod tests {
         async fn apply_universal_change(&self, _change: &UniversalChange) -> anyhow::Result<()> {
             Ok(())
         }
+
+        async fn apply_universal_relation_change(
+            &self,
+            _change: &sync_core::UniversalRelationChange,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]

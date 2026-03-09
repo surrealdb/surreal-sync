@@ -4,10 +4,10 @@ use anyhow::Result;
 use surreal_sink::SurrealSink;
 use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
-use sync_core::{UniversalChange, UniversalRelation, UniversalRow};
+use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
 
 use crate::rows::{write_universal_relations, write_universal_rows};
-use crate::write::apply_universal_change;
+use crate::write::{apply_universal_change, apply_universal_relation_change};
 
 /// Wrapper around Surreal<Any> that implements SurrealSink.
 ///
@@ -52,5 +52,12 @@ impl SurrealSink for Surreal2Sink {
 
     async fn apply_universal_change(&self, change: &UniversalChange) -> Result<()> {
         apply_universal_change(&self.client, change).await
+    }
+
+    async fn apply_universal_relation_change(
+        &self,
+        change: &UniversalRelationChange,
+    ) -> Result<()> {
+        apply_universal_relation_change(&self.client, change).await
     }
 }

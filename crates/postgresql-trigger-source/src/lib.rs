@@ -24,4 +24,7 @@ pub struct SourceOpts {
     pub source_database: Option<String>,
     /// Tables to sync (empty means all tables)
     pub tables: Vec<String>,
+    /// Tables to force-classify as relation (join) tables for SurrealDB RELATE.
+    /// When empty (default), auto-detection is used based on FK/PK heuristics.
+    pub relation_tables: Vec<String>,
 }

@@ -22,6 +22,9 @@ pub struct SourceOpts {
     pub tables: Vec<String>,
     /// PostgreSQL schema (default: public)
     pub schema: String,
+    /// Tables to force-classify as relation (join) tables for SurrealDB RELATE.
+    /// When empty (default), auto-detection is used based on FK/PK heuristics.
+    pub relation_tables: Vec<String>,
 }
 
 /// Run full sync from PostgreSQL to SurrealDB with checkpoint support
@@ -85,6 +88,11 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 
     info!("Found {} tables to migrate", tables.len());
 
+    // Collect schema with FK info for record link and relation conversion
+    let db_schema =
+        surreal_sync_postgresql::schema::collect_database_schema_with_fks(pg_client.pg_client())
+            .await?;
+
     let mut total_migrated = 0;
 
     // Migrate each table
@@ -96,6 +104,8 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
             surreal,
             table_name,
             &sync_opts,
+            Some(&db_schema),
+            &from_opts.relation_tables,
         )
         .await?;
 

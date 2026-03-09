@@ -4,10 +4,10 @@ use std::time::Duration;
 use surreal3_types::{RecordWithSurrealValues as Record, Relation, SurrealValue};
 use surrealdb::types::RecordId;
 use surrealdb::Surreal;
-use sync_core::{UniversalChange, UniversalChangeOp};
+use sync_core::{UniversalChange, UniversalChangeOp, UniversalRelationChange};
 use tokio::time::sleep;
 
-use crate::rows::universal_value_to_surreal_id;
+use crate::rows::{universal_relation_to_surreal_relation, universal_value_to_surreal_id};
 
 /// Maximum number of retries for retriable transaction errors
 const MAX_RETRIES: u32 = 5;
@@ -404,5 +404,35 @@ pub async fn write_relations(
         table_name,
         batch.len()
     );
+    Ok(())
+}
+
+/// Apply a UniversalRelationChange event to SurrealDB.
+pub async fn apply_universal_relation_change(
+    surreal: &Surreal<surrealdb::engine::any::Any>,
+    change: &UniversalRelationChange,
+) -> anyhow::Result<()> {
+    match change.operation {
+        UniversalChangeOp::Create | UniversalChangeOp::Update => {
+            let surreal_rel = universal_relation_to_surreal_relation(&change.relation)?;
+            write_relation(surreal, &surreal_rel).await?;
+            tracing::trace!(
+                "Successfully upserted relation: {:?}",
+                change.relation.relation_type
+            );
+        }
+        UniversalChangeOp::Delete => {
+            let surreal_id = universal_value_to_surreal_id(&change.relation.id)?;
+            let thing = RecordId::new(
+                change.relation.relation_type.as_str(),
+                surreal_id,
+            );
+            let query = "DELETE $relation_id".to_string();
+            let mut q = surreal.query(query);
+            q = q.bind(("relation_id", thing.clone()));
+            q.await?;
+            tracing::trace!("Successfully deleted relation: {:?}", thing);
+        }
+    }
     Ok(())
 }

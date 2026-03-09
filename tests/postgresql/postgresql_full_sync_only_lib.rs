@@ -52,6 +52,7 @@ async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error
         source_uri: container.connection_string.clone(),
         source_database: Some("testdb".to_string()),
         tables: vec![],
+        relation_tables: vec![],
     };
 
     let sync_opts = surreal_sync_postgresql::SyncOpts {

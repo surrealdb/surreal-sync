@@ -57,6 +57,7 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
         slot_name: "surreal_sync_lib_test_slot".to_string(),
         tables: table_names,
         schema: "public".to_string(),
+        relation_tables: vec![],
     };
 
     // Create SurrealDB sync options

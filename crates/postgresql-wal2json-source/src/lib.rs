@@ -16,6 +16,7 @@
 //!     slot_name: "surreal_sync_slot".to_string(),
 //!     tables: vec!["users".to_string(), "orders".to_string()],
 //!     schema: "public".to_string(),
+//!     relation_tables: vec![],
 //! };
 //!
 //! run_full_sync(source_opts, "namespace", "database", surreal_opts, sync_config).await?;

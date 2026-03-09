@@ -53,6 +53,7 @@ async fn run_full_v2(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<()> {
         slot_name: args.slot,
         tables: args.tables,
         schema: args.schema,
+        relation_tables: vec![],
     };
 
     let sync_opts = surreal_sync_postgresql::SyncOpts {
@@ -139,6 +140,7 @@ async fn run_full_v3(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<()> {
         slot_name: args.slot,
         tables: args.tables,
         schema: args.schema,
+        relation_tables: vec![],
     };
 
     let sync_opts = surreal_sync_postgresql::SyncOpts {
@@ -280,6 +282,7 @@ async fn run_incremental_v2(args: PostgreSQLLogicalIncrementalArgs) -> anyhow::R
         slot_name: args.slot.clone(),
         tables: args.tables.clone(),
         schema: args.schema.clone(),
+        relation_tables: vec![],
     };
 
     surreal_sync_postgresql_wal2json_source::run_incremental_sync(
@@ -369,6 +372,7 @@ async fn run_incremental_v3(args: PostgreSQLLogicalIncrementalArgs) -> anyhow::R
         slot_name: args.slot.clone(),
         tables: args.tables.clone(),
         schema: args.schema.clone(),
+        relation_tables: vec![],
     };
 
     surreal_sync_postgresql_wal2json_source::run_incremental_sync(

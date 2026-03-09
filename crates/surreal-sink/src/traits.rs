@@ -5,7 +5,7 @@
 //! with both v2 and v3 servers.
 
 use anyhow::Result;
-use sync_core::{UniversalChange, UniversalRelation, UniversalRow};
+use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
 
 /// Trait for writing data to SurrealDB.
 ///
@@ -49,4 +49,14 @@ pub trait SurrealSink: Send + Sync {
     /// - Create/Update: UPSERT the record
     /// - Delete: DELETE the record
     async fn apply_universal_change(&self, change: &UniversalChange) -> Result<()>;
+
+    /// Apply a single relation change (create/update/delete) to SurrealDB.
+    ///
+    /// Converts the `UniversalRelationChange` to the appropriate SurrealDB operation:
+    /// - Create/Update: RELATE the edge
+    /// - Delete: DELETE the relation
+    async fn apply_universal_relation_change(
+        &self,
+        change: &UniversalRelationChange,
+    ) -> Result<()>;
 }

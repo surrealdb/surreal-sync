@@ -44,11 +44,16 @@
 //! // let mysql_value: MySQLValue = value.into();
 //! ```
 
+pub mod foreign_keys;
+pub mod relation_change;
 pub mod schema;
 pub mod types;
 pub mod values;
 
 // Re-exports for convenience
+// Foreign key types
+pub use foreign_keys::{classify_table, ForeignKeyDefinition, TableKind};
+
 // Base types (context-neutral, no generators)
 pub use schema::{ColumnDefinition, DatabaseSchema, TableDefinition};
 
@@ -63,6 +68,7 @@ pub use schema::{
 #[deprecated(since = "1.0.0", note = "Use GeneratorSchema instead")]
 pub type LoadTestSchema = Schema;
 pub use types::{GeometryType, ToDdl, UniversalType};
+pub use relation_change::UniversalRelationChange;
 pub use values::{
     GeometryData, RowConverter, TypedValue, TypedValueError, UniversalChange, UniversalChangeOp,
     UniversalRelation, UniversalRow, UniversalRowBuilder, UniversalThingRef, UniversalValue,

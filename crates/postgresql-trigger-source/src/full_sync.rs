@@ -79,15 +79,25 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 
     info!("Found {} tables to migrate", tables.len());
 
+    // Collect schema with FK info for record link and relation conversion
+    let db_schema =
+        surreal_sync_postgresql::schema::collect_database_schema_with_fks(&client).await?;
+
     let mut total_migrated = 0;
 
     // Migrate each table
     for table_name in &tables {
         info!("Migrating table: {}", table_name);
 
-        let count =
-            surreal_sync_postgresql::migrate_table(&client, surreal, table_name, &sync_opts)
-                .await?;
+        let count = surreal_sync_postgresql::migrate_table(
+            &client,
+            surreal,
+            table_name,
+            &sync_opts,
+            Some(&db_schema),
+            &from_opts.relation_tables,
+        )
+        .await?;
 
         total_migrated += count;
         info!("Migrated {} records from table {}", count, table_name);

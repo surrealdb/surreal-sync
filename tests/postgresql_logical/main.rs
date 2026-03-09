@@ -1,3 +1,4 @@
+mod postgresql_logical_fk_incremental_test;
 mod postgresql_logical_full_sync_only_cli;
 mod postgresql_logical_full_sync_only_lib;
 mod postgresql_logical_incremental_sync_only_cli;

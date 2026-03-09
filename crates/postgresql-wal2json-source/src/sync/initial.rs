@@ -40,7 +40,8 @@ pub async fn sync(
     let sink = Surreal2Sink::new(surreal.clone());
 
     for tb in &config.tables {
-        surreal_sync_postgresql::migrate_table(&psql_client, &sink, tb, sync_opts).await?;
+        surreal_sync_postgresql::migrate_table(&psql_client, &sink, tb, sync_opts, None, &[])
+            .await?;
     }
 
     // Spawn connection handler

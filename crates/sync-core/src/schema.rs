@@ -20,6 +20,7 @@
 //! - Use base types for schema introspection during sync operations
 //! - Use generator types for test data generation (YAML schema files)
 
+use crate::foreign_keys::ForeignKeyDefinition;
 use crate::types::UniversalType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -105,11 +106,20 @@ pub struct TableDefinition {
     /// Table name
     pub name: String,
 
-    /// Primary key column definition
+    /// Primary key column definition (first PK column for composite keys)
     pub primary_key: ColumnDefinition,
 
     /// Column definitions (excluding primary key)
     pub columns: Vec<ColumnDefinition>,
+
+    /// Foreign key constraints on this table
+    #[serde(default)]
+    pub foreign_keys: Vec<ForeignKeyDefinition>,
+
+    /// Composite primary key column names (when PK spans multiple columns).
+    /// `None` means the PK is the single `primary_key` field.
+    #[serde(default)]
+    pub composite_primary_key: Option<Vec<String>>,
 }
 
 impl TableDefinition {
@@ -123,6 +133,8 @@ impl TableDefinition {
             name: name.into(),
             primary_key,
             columns,
+            foreign_keys: Vec::new(),
+            composite_primary_key: None,
         }
     }
 
@@ -144,6 +156,15 @@ impl TableDefinition {
         let mut names = vec![self.primary_key.name.as_str()];
         names.extend(self.columns.iter().map(|c| c.name.as_str()));
         names
+    }
+
+    /// Get the primary key column names (supports composite keys).
+    pub fn primary_key_column_names(&self) -> Vec<&str> {
+        if let Some(ref cpk) = self.composite_primary_key {
+            cpk.iter().map(|s| s.as_str()).collect()
+        } else {
+            vec![self.primary_key.name.as_str()]
+        }
     }
 }
 
@@ -420,6 +441,8 @@ impl GeneratorTableDefinition {
                 .iter()
                 .map(|f| f.to_column_definition())
                 .collect(),
+            foreign_keys: Vec::new(),
+            composite_primary_key: None,
         }
     }
 }

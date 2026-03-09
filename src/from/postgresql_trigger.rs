@@ -51,6 +51,7 @@ async fn run_full_v2(args: PostgreSQLTriggerFullArgs) -> anyhow::Result<()> {
         source_uri: args.connection_string,
         source_database,
         tables: args.tables,
+        relation_tables: vec![],
     };
 
     let sync_opts = surreal_sync_postgresql::SyncOpts {
@@ -136,6 +137,7 @@ async fn run_full_v3(args: PostgreSQLTriggerFullArgs) -> anyhow::Result<()> {
         source_uri: args.connection_string,
         source_database,
         tables: args.tables,
+        relation_tables: vec![],
     };
 
     let sync_opts = surreal_sync_postgresql::SyncOpts {
@@ -278,6 +280,7 @@ async fn run_incremental_v2(args: PostgreSQLTriggerIncrementalArgs) -> anyhow::R
         source_uri: args.connection_string,
         source_database,
         tables: args.tables,
+        relation_tables: vec![],
     };
 
     // Connect to SurrealDB using v2 SDK
@@ -368,6 +371,7 @@ async fn run_incremental_v3(args: PostgreSQLTriggerIncrementalArgs) -> anyhow::R
         source_uri: args.connection_string,
         source_database,
         tables: args.tables,
+        relation_tables: vec![],
     };
 
     // Connect to SurrealDB using v3 SDK
