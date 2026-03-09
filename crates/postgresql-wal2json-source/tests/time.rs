@@ -2,16 +2,12 @@
 #![allow(clippy::uninlined_format_args)]
 
 use anyhow::{Context, Result};
-use surreal_sync_postgresql_wal2json_source::{
-    testing::container::PostgresContainer, Action, Client,
-};
+use surreal_sync_postgresql::testing::container::PostgresContainer;
+use surreal_sync_postgresql_wal2json_source::{Action, Client};
 use sync_core::UniversalValue;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-/// Test port that doesn't conflict with standard PostgreSQL port
-const TEST_PORT: u16 = 15437;
 
 /// Initialize logging for tests
 fn init_logging() {
@@ -29,10 +25,8 @@ async fn test_time_replication_formats() -> Result<()> {
     init_logging();
     info!("Starting TIME replication format test");
 
-    // Create container configuration
-    let container = PostgresContainer::new("test-time", TEST_PORT);
-
-    // Build and start container
+    // Create container with dynamic port
+    let mut container = PostgresContainer::new("test-time");
     container.build_image()?;
     container.start()?;
     container.wait_until_ready(30).await?;

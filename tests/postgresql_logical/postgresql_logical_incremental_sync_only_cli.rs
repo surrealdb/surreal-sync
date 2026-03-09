@@ -9,7 +9,7 @@ use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto,
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
-use surreal_sync_postgresql_wal2json_source::testing::container::PostgresContainer;
+use surreal_sync_postgresql::testing::container::PostgresContainer;
 
 /// Test PostgreSQL logical replication incremental sync CLI
 #[tokio::test]
@@ -20,9 +20,8 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
         .try_init()
         .ok();
 
-    // Setup PostgreSQL container with wal2json
-    const TEST_PORT: u16 = 15441; // Use unique port
-    let container = PostgresContainer::new("test-logical-incr-cli", TEST_PORT);
+    // Setup PostgreSQL container with wal2json (dynamic port)
+    let mut container = PostgresContainer::new("test-logical-incr-cli");
     container.build_image()?;
     container.start()?;
     container.wait_until_ready(30).await?;
@@ -33,7 +32,7 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-logical-checkpoints")?;
 
     // Setup PostgreSQL with test data using container
-    let connection_string = format!("postgresql://postgres:postgres@localhost:{TEST_PORT}/testdb");
+    let connection_string = container.connection_url();
     let (pg_client, pg_connection) =
         tokio_postgres::connect(&connection_string, tokio_postgres::NoTls).await?;
 

@@ -10,6 +10,7 @@
 mod autoconf;
 mod client;
 mod full_sync;
+pub mod testing;
 
 pub use autoconf::get_user_tables;
 pub use client::new_postgresql_client;

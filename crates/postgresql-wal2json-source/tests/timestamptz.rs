@@ -3,16 +3,12 @@
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use surreal_sync_postgresql_wal2json_source::{
-    testing::container::PostgresContainer, Action, Client,
-};
+use surreal_sync_postgresql::testing::container::PostgresContainer;
+use surreal_sync_postgresql_wal2json_source::{Action, Client};
 use sync_core::UniversalValue;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-/// Test port that doesn't conflict with standard PostgreSQL port
-const TEST_PORT: u16 = 15436;
 
 /// Initialize logging for tests
 fn init_logging() {
@@ -31,7 +27,7 @@ async fn test_timestamptz_replication_formats() -> Result<()> {
     info!("Starting TIMESTAMPTZ replication format test");
 
     // Create container configuration
-    let container = PostgresContainer::new("test-timestamptz", TEST_PORT);
+    let mut container = PostgresContainer::new("test-timestamptz");
 
     // Build and start container
     container.build_image()?;

@@ -10,6 +10,7 @@ use surreal_sync::testing::surreal::{
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
+use surreal_sync_postgresql::testing::container::PostgresContainer;
 
 #[tokio::test]
 async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,14 +19,18 @@ async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error
         .try_init()
         .ok();
 
+    let mut container = PostgresContainer::new("test-pg-full-sync-lib");
+    container.build_image()?;
+    container.start()?;
+    container.wait_until_ready(30).await?;
+
     // Test edge cases for complex PostgreSQL types
     let dataset = create_unified_full_dataset();
     let test_id = generate_test_id();
 
     // Setup connections
-    let pg_config = surreal_sync::testing::postgresql::create_postgres_config();
     let (pg_client, pg_connection) =
-        tokio_postgres::connect(&pg_config.get_connection_string(), tokio_postgres::NoTls).await?;
+        tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls).await?;
 
     tokio::spawn(async move {
         if let Err(e) = pg_connection.await {
@@ -44,7 +49,7 @@ async fn test_postgresql_full_sync_lib() -> Result<(), Box<dyn std::error::Error
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
 
     let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
-        source_uri: pg_config.get_connection_string(),
+        source_uri: container.connection_string.clone(),
         source_database: Some("testdb".to_string()),
         tables: vec![],
     };

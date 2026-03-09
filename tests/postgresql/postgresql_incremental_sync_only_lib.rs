@@ -10,6 +10,7 @@ use surreal_sync::testing::surreal::{
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
+use surreal_sync_postgresql::testing::container::PostgresContainer;
 
 #[tokio::test]
 async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,15 +20,19 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
         .try_init()
         .ok();
 
+    let mut container = PostgresContainer::new("test-pg-incr-sync-lib");
+    container.build_image()?;
+    container.start()?;
+    container.wait_until_ready(30).await?;
+
     let test_id = generate_test_id();
 
     // Clean up checkpoint directory to prevent cross-test contamination
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-checkpoints")?;
 
     // Setup PostgreSQL connection
-    let pg_config = surreal_sync::testing::postgresql::create_postgres_config();
     let (pg_client, pg_connection) =
-        tokio_postgres::connect(&pg_config.get_connection_string(), tokio_postgres::NoTls).await?;
+        tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls).await?;
 
     tokio::spawn(async move {
         if let Err(e) = pg_connection.await {
@@ -49,7 +54,7 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
     surreal_sync::testing::postgresql::create_tables_and_indices(&pg_client, &dataset).await?;
 
     let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
-        source_uri: pg_config.get_connection_string(),
+        source_uri: container.connection_string.clone(),
         source_database: Some("testdb".to_string()),
         tables: vec![],
     };

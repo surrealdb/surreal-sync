@@ -1,16 +1,12 @@
 //! Integration tests for PostgreSQL logical replication with wal2json
 
 use anyhow::{bail, Context, Result};
-use surreal_sync_postgresql_wal2json_source::{
-    testing::container::PostgresContainer, Action, Client,
-};
+use surreal_sync_postgresql::testing::container::PostgresContainer;
+use surreal_sync_postgresql_wal2json_source::{Action, Client};
 use tokio_postgres::NoTls;
 use tracing::{debug, info};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
-
-/// Test port that doesn't conflict with standard PostgreSQL port
-const TEST_PORT: u16 = 15432;
 
 /// Initialize logging for tests
 fn init_logging() {
@@ -161,7 +157,7 @@ async fn test_postgresql_replication_with_all_types() -> Result<()> {
     info!("Starting PostgreSQL replication integration test");
 
     // Create container configuration
-    let container = PostgresContainer::new("test-replication", TEST_PORT);
+    let mut container = PostgresContainer::new("test-replication");
 
     // Build the Docker image
     container
@@ -290,7 +286,7 @@ async fn test_multiple_inserts_and_batch_advance() -> Result<()> {
     info!("Starting batch processing test");
 
     // Create container configuration
-    let container = PostgresContainer::new("test-batch", TEST_PORT + 1);
+    let mut container = PostgresContainer::new("test-batch");
 
     // Build and start container
     container.build_image()?;
@@ -391,7 +387,7 @@ async fn test_get_current_wal_lsn() -> Result<()> {
     info!("Starting get_current_wal_lsn test");
 
     // Create container configuration
-    let container = PostgresContainer::new("test-wal-lsn", TEST_PORT + 2);
+    let mut container = PostgresContainer::new("test-wal-lsn");
 
     // Build and start container
     container.build_image()?;

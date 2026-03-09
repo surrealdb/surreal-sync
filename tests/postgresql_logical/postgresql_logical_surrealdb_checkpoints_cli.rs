@@ -11,7 +11,7 @@ use surreal_sync::testing::surreal::{
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
-use surreal_sync_postgresql_wal2json_source::testing::container::PostgresContainer;
+use surreal_sync_postgresql::testing::container::PostgresContainer;
 
 /// Test PostgreSQL logical replication with SurrealDB checkpoint storage
 #[tokio::test]
@@ -23,9 +23,8 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
         .try_init()
         .ok();
 
-    // Setup PostgreSQL container with wal2json
-    const TEST_PORT: u16 = 15442; // Use unique port
-    let container = PostgresContainer::new("test-logical-surrealdb-cli", TEST_PORT);
+    // Setup PostgreSQL container with wal2json (dynamic port)
+    let mut container = PostgresContainer::new("test-logical-surrealdb-cli");
     container.build_image()?;
     container.start()?;
     container.wait_until_ready(30).await?;
@@ -33,7 +32,7 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
     let test_id = generate_test_id();
 
     // Setup PostgreSQL with test data using container
-    let connection_string = format!("postgresql://postgres:postgres@localhost:{TEST_PORT}/testdb");
+    let connection_string = container.connection_url();
     let (pg_client, pg_connection) =
         tokio_postgres::connect(&connection_string, tokio_postgres::NoTls).await?;
 

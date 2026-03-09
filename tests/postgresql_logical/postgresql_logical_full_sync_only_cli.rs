@@ -8,10 +8,10 @@ use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto,
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
+use surreal_sync_postgresql::testing::container::PostgresContainer;
 
 /// Test PostgreSQL logical replication full sync CLI
 #[tokio::test]
-#[ignore = "Requires wal2json PostgreSQL extension not available in devcontainer"]
 async fn test_postgresql_logical_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::fmt()
@@ -19,13 +19,18 @@ async fn test_postgresql_logical_full_sync_cli() -> Result<(), Box<dyn std::erro
         .try_init()
         .ok();
 
+    let mut container = PostgresContainer::new("test-logical-full-sync-cli");
+    container.build_image()?;
+    container.start()?;
+    container.wait_until_ready(30).await?;
+
     let test_id = generate_test_id();
     let dataset = create_unified_full_dataset();
 
     // Setup PostgreSQL with test data
-    let pg_config = surreal_sync::testing::postgresql::create_postgres_config();
+    let connection_string = container.connection_url();
     let (pg_client, pg_connection) =
-        tokio_postgres::connect(&pg_config.get_connection_string(), tokio_postgres::NoTls).await?;
+        tokio_postgres::connect(&connection_string, tokio_postgres::NoTls).await?;
 
     tokio::spawn(async move {
         if let Err(e) = pg_connection.await {
@@ -53,7 +58,7 @@ async fn test_postgresql_logical_full_sync_cli() -> Result<(), Box<dyn std::erro
         "postgresql",
         "full",
         "--connection-string",
-        &pg_config.get_connection_string(),
+        &connection_string,
         "--slot",
         "surreal_sync_test_slot",
         "--tables",

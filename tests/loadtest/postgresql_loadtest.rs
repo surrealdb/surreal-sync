@@ -10,6 +10,7 @@
 use loadtest_populate_postgresql::PostgreSQLPopulator;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
+use surreal_sync_postgresql::testing::container::PostgresContainer;
 use sync_core::Schema;
 use tokio_postgres::NoTls;
 
@@ -30,6 +31,11 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
         .try_init()
         .ok();
 
+    let mut container = PostgresContainer::new("test-pg-loadtest");
+    container.build_image()?;
+    container.start()?;
+    container.wait_until_ready(30).await?;
+
     // Load schema from fixture file
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
         .expect("Failed to load test schema");
@@ -39,8 +45,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
     let table_names: Vec<&str> = schema.table_names();
 
     // Connect to PostgreSQL
-    let pg_config = surreal_sync::testing::postgresql::create_postgres_config();
-    let pg_conn_string = pg_config.get_connection_string();
+    let pg_conn_string = container.connection_string.clone();
 
     let (pg_client, connection) = tokio_postgres::connect(&pg_conn_string, NoTls).await?;
     tokio::spawn(async move {

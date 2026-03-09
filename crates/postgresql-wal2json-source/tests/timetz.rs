@@ -2,16 +2,12 @@
 #![allow(clippy::uninlined_format_args)]
 
 use anyhow::{Context, Result};
-use surreal_sync_postgresql_wal2json_source::{
-    testing::container::PostgresContainer, Action, Client,
-};
+use surreal_sync_postgresql::testing::container::PostgresContainer;
+use surreal_sync_postgresql_wal2json_source::{Action, Client};
 use sync_core::UniversalValue;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-/// Test port that doesn't conflict with standard PostgreSQL port
-const TEST_PORT: u16 = 15438;
 
 /// Initialize logging for tests
 fn init_logging() {
@@ -30,7 +26,7 @@ async fn test_timetz_replication_formats() -> Result<()> {
     info!("Starting TIMETZ replication format test");
 
     // Create container configuration
-    let container = PostgresContainer::new("test-timetz", TEST_PORT);
+    let mut container = PostgresContainer::new("test-timetz");
 
     // Build and start container
     container.build_image()?;

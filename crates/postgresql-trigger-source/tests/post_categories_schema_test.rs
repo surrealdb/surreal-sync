@@ -4,18 +4,25 @@
 //! 1. Schema collection correctly identifies TEXT[] as UniversalType::Array
 //! 2. JSON conversion correctly handles arrays with schema information
 
+use surreal_sync_postgresql::testing::container::PostgresContainer;
 use sync_core::{ColumnDefinition, TableDefinition, UniversalType, UniversalValue};
 
 /// Test that schema collection correctly identifies array types
 #[tokio::test]
 async fn test_schema_collection_identifies_array_types() {
-    // Connect to PostgreSQL
-    let connection_string = std::env::var("POSTGRESQL_TEST_URL")
-        .unwrap_or_else(|_| "postgres://postgres:postgres@postgresql:5432/testdb".to_string());
-
-    let (client, connection) = tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
+    let mut container = PostgresContainer::new("test-schema-array-types");
+    container.build_image().expect("Failed to build image");
+    container.start().expect("Failed to start container");
+    container
+        .wait_until_ready(30)
         .await
-        .expect("Failed to connect");
+        .expect("Container not ready");
+
+    // Connect to PostgreSQL
+    let (client, connection) =
+        tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls)
+            .await
+            .expect("Failed to connect");
 
     tokio::spawn(async move {
         if let Err(e) = connection.await {
@@ -123,13 +130,19 @@ fn test_json_array_conversion_with_schema() {
 /// Test the complete flow: schema collection + JSON conversion
 #[tokio::test]
 async fn test_complete_array_flow() {
-    // Connect to PostgreSQL
-    let connection_string = std::env::var("POSTGRESQL_TEST_URL")
-        .unwrap_or_else(|_| "postgres://postgres:postgres@postgresql:5432/testdb".to_string());
-
-    let (client, connection) = tokio_postgres::connect(&connection_string, tokio_postgres::NoTls)
+    let mut container = PostgresContainer::new("test-complete-array-flow");
+    container.build_image().expect("Failed to build image");
+    container.start().expect("Failed to start container");
+    container
+        .wait_until_ready(30)
         .await
-        .expect("Failed to connect");
+        .expect("Container not ready");
+
+    // Connect to PostgreSQL
+    let (client, connection) =
+        tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls)
+            .await
+            .expect("Failed to connect");
 
     tokio::spawn(async move {
         if let Err(e) = connection.await {
