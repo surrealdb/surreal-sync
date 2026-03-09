@@ -4,6 +4,7 @@
 //! correctly, using the unified dataset.
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
+use surreal_sync::testing::mongodb_container::MongoContainer;
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
@@ -16,11 +17,15 @@ async fn test_mongodb_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> 
         .try_init()
         .ok();
 
+    let mut container = MongoContainer::new("test-mongo-full-sync-cli");
+    container.start()?;
+    container.wait_until_ready(30).await?;
+
     let test_id = generate_test_id();
     let dataset = create_unified_full_dataset();
 
-    // Setup MongoDB with test data
-    let mongodb_client = surreal_sync::testing::mongodb::connect_mongodb().await?;
+    let mongodb_client =
+        surreal_sync::testing::mongodb::connect_mongodb(&container.connection_uri()).await?;
     let db = mongodb_client.database("testdb");
 
     surreal_sync::testing::mongodb::cleanup_mongodb_test_data(&db).await?;
@@ -40,7 +45,7 @@ async fn test_mongodb_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> 
         "mongodb",
         "full",
         "--connection-string",
-        "mongodb://root:root@mongodb:27017",
+        &container.connection_uri(),
         "--database",
         "testdb",
         "--surreal-endpoint",

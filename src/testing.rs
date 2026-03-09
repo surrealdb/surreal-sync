@@ -10,6 +10,7 @@ pub mod cli;
 pub mod field;
 pub mod full;
 pub mod mongodb;
+pub mod mongodb_container;
 pub mod mysql;
 pub mod mysql_cleanup;
 pub mod neo4j;

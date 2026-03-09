@@ -4,6 +4,7 @@
 //! by starting with empty collections, running full sync to generate checkpoint,
 //! then adding data and running incremental sync.
 
+use surreal_sync::testing::mongodb_container::MongoContainer;
 use surreal_sync::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
@@ -19,14 +20,17 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
         .try_init()
         .ok();
 
+    let mut container = MongoContainer::new("test-mongo-incr-sync-lib");
+    container.start()?;
+    container.wait_until_ready(30).await?;
+
     let test_id = generate_test_id();
     let dataset = create_unified_full_dataset();
 
-    // Clean up checkpoint directory to prevent cross-test contamination
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-checkpoints")?;
 
-    // Setup MongoDB connection
-    let mongodb_client = surreal_sync::testing::mongodb::connect_mongodb().await?;
+    let mongodb_client =
+        surreal_sync::testing::mongodb::connect_mongodb(&container.connection_uri()).await?;
     let db = mongodb_client.database("testdb");
 
     // Setup SurrealDB connection with auto-detection
@@ -39,7 +43,7 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
-        source_uri: "mongodb://root:root@mongodb:27017".to_string(),
+        source_uri: container.connection_uri(),
         source_database: Some("testdb".to_string()),
         collections: vec![],
     };

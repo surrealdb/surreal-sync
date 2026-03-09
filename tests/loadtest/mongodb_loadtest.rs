@@ -8,14 +8,14 @@
 //! 5. Clean up all test data
 
 use loadtest_populate_mongodb::MongoDBPopulator;
+use surreal_sync::testing::mongodb_container::MongoContainer;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use sync_core::Schema;
 
 const SEED: u64 = 42;
-const ROW_COUNT: u64 = 50; // Small scale for integration tests
+const ROW_COUNT: u64 = 50;
 const BATCH_SIZE: usize = 10;
-const MONGODB_URI: &str = "mongodb://root:root@mongodb:27017";
 const MONGODB_DATABASE: &str = "loadtest";
 
 /// Test the full populate -> sync -> verify workflow with MongoDB.
@@ -31,16 +31,18 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
         .try_init()
         .ok();
 
-    // Load schema from fixture file
+    let mut container = MongoContainer::new("test-mongo-loadtest");
+    container.start()?;
+    container.wait_until_ready(30).await?;
+    let mongodb_uri = container.connection_uri();
+
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
         .expect("Failed to load test schema");
 
     let test_id = generate_test_id();
-    // All tables including 'products' with complex types (UUID, JSON, Array, Enum)
     let table_names: Vec<&str> = schema.table_names();
 
-    // Connect to MongoDB
-    let mongo_client = mongodb::Client::with_uri_str(MONGODB_URI).await?;
+    let mongo_client = mongodb::Client::with_uri_str(&mongodb_uri).await?;
     let mongo_db = mongo_client.database(MONGODB_DATABASE);
 
     // Connect to SurrealDB (auto-detect v2 or v3)
@@ -85,7 +87,7 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
     // Create a fresh populator for each table so sequential IDs start from the configured start value
     for table_name in &table_names {
         let mut populator =
-            MongoDBPopulator::new(MONGODB_URI, MONGODB_DATABASE, schema.clone(), SEED)
+            MongoDBPopulator::new(&mongodb_uri, MONGODB_DATABASE, schema.clone(), SEED)
                 .await?
                 .with_batch_size(BATCH_SIZE);
         populator.drop_collection(table_name).await.ok();
@@ -102,7 +104,7 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
     tracing::info!("Running full sync from MongoDB to SurrealDB");
 
     let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
-        source_uri: MONGODB_URI.to_string(),
+        source_uri: mongodb_uri,
         source_database: Some(MONGODB_DATABASE.to_string()),
         collections: vec![],
     };

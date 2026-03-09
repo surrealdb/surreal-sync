@@ -10,8 +10,8 @@ use mongodb::{
 };
 use std::str::FromStr;
 
-pub async fn connect_mongodb() -> Result<Client, Box<dyn std::error::Error>> {
-    let client = Client::with_uri_str("mongodb://root:root@mongodb:27017").await?;
+pub async fn connect_mongodb(uri: &str) -> Result<Client, Box<dyn std::error::Error>> {
+    let client = Client::with_uri_str(uri).await?;
     Ok(client)
 }
 

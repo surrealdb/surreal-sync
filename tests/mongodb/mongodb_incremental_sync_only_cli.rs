@@ -8,6 +8,7 @@
 //! 5. Validating all data types are preserved correctly via incremental sync
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
+use surreal_sync::testing::mongodb_container::MongoContainer;
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
@@ -21,12 +22,16 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
         .try_init()
         .ok();
 
+    let mut container = MongoContainer::new("test-mongo-incr-sync-cli");
+    container.start()?;
+    container.wait_until_ready(30).await?;
+
     let test_id = generate_test_id();
     let dataset = create_unified_full_dataset();
     let checkpoint_dir = format!(".surreal-sync-checkpoints-test-{test_id}");
 
-    // Setup MongoDB
-    let mongodb_client = surreal_sync::testing::mongodb::connect_mongodb().await?;
+    let mongodb_client =
+        surreal_sync::testing::mongodb::connect_mongodb(&container.connection_uri()).await?;
     let db = mongodb_client.database("testdb");
 
     // Setup SurrealDB connection with auto-detection for validation
@@ -40,12 +45,13 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
     // Run FULL SYNC with EMPTY MongoDB database
     // This sets up the change stream infrastructure and emits a checkpoint with resume token
     println!("📝 Phase 1: Running full sync with empty database to setup change stream and get checkpoint...");
+    let mongo_uri = container.connection_uri();
     let full_args = vec![
         "from".to_string(),
         "mongodb".to_string(),
         "full".to_string(),
         "--connection-string".to_string(),
-        "mongodb://root:root@mongodb:27017".to_string(),
+        mongo_uri.clone(),
         "--database".to_string(),
         "testdb".to_string(),
         "--surreal-endpoint".to_string(),
@@ -95,7 +101,7 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
         "mongodb".to_string(),
         "incremental".to_string(),
         "--connection-string".to_string(),
-        "mongodb://root:root@mongodb:27017".to_string(),
+        mongo_uri.clone(),
         "--database".to_string(),
         "testdb".to_string(),
         "--to-namespace".to_string(),
