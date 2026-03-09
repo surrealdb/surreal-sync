@@ -8,6 +8,7 @@ use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto,
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
+use surreal_sync_neo4j_source::testing::container::Neo4jContainer;
 
 #[tokio::test]
 async fn test_neo4j_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,16 +18,19 @@ async fn test_neo4j_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
         .try_init()
         .ok();
 
+    let mut container = Neo4jContainer::new("test-neo4j-full-sync-cli");
+    container.start()?;
+    container.wait_until_ready(60).await?;
+
     let test_id = generate_test_id();
     let dataset = create_unified_full_dataset();
 
     // Setup Neo4j with test data
-    let neo4j_config = surreal_sync::testing::neo4j::Neo4jConfig::default();
     let graph_config = neo4rs::ConfigBuilder::default()
-        .uri(neo4j_config.get_uri())
-        .user(neo4j_config.get_username())
-        .password(neo4j_config.get_password())
-        .db(neo4j_config.get_database())
+        .uri(&container.bolt_uri())
+        .user(&container.username)
+        .password(&container.password)
+        .db(&*container.database)
         .build()?;
     let graph = neo4rs::Graph::connect(graph_config)?;
 
@@ -42,18 +46,19 @@ async fn test_neo4j_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
     cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     // Execute CLI command for Neo4j full sync with data
+    let bolt_uri = container.bolt_uri();
     let args = [
         "from",
         "neo4j",
         "full",
         "--connection-string",
-        &neo4j_config.get_uri(),
+        &bolt_uri,
         "--database",
-        &neo4j_config.get_database(),
+        &container.database,
         "--username",
-        &neo4j_config.get_username(),
+        &container.username,
         "--password",
-        &neo4j_config.get_password(),
+        &container.password,
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,
         "--to-namespace",

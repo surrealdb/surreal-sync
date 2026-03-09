@@ -10,15 +10,12 @@
 use loadtest_populate_neo4j::Neo4jPopulator;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
+use surreal_sync_neo4j_source::testing::container::Neo4jContainer;
 use sync_core::Schema;
 
 const SEED: u64 = 42;
 const ROW_COUNT: u64 = 50; // Small scale for integration tests
 const BATCH_SIZE: usize = 10;
-const NEO4J_URI: &str = "bolt://neo4j:7687";
-const NEO4J_DATABASE: &str = "neo4j";
-const NEO4J_USERNAME: &str = "neo4j";
-const NEO4J_PASSWORD: &str = "password";
 
 /// Test the full populate -> sync -> verify workflow with Neo4j.
 #[tokio::test]
@@ -28,6 +25,10 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .with_env_filter("surreal_sync=info,loadtest=info")
         .try_init()
         .ok();
+
+    let mut container = Neo4jContainer::new("test-neo4j-loadtest");
+    container.start()?;
+    container.wait_until_ready(60).await?;
 
     // Load schema from fixture file
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
@@ -39,10 +40,10 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
 
     // Connect to Neo4j using neo4rs
     let graph_config = neo4rs::ConfigBuilder::default()
-        .uri(NEO4J_URI)
-        .user(NEO4J_USERNAME)
-        .password(NEO4J_PASSWORD)
-        .db(NEO4J_DATABASE)
+        .uri(&container.bolt_uri())
+        .user(&container.username)
+        .password(&container.password)
+        .db(&*container.database)
         .build()?;
     let graph = neo4rs::Graph::connect(graph_config)?;
 
@@ -85,13 +86,15 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         SEED
     );
 
+    let neo4j_uri = container.bolt_uri();
+
     // Create a fresh populator for each table so sequential IDs start from the configured start value
     for table_name in &table_names {
         let mut populator = Neo4jPopulator::new(
-            NEO4J_URI,
-            NEO4J_USERNAME,
-            NEO4J_PASSWORD,
-            NEO4J_DATABASE,
+            &neo4j_uri,
+            &container.username,
+            &container.password,
+            &container.database,
             schema.clone(),
             SEED,
         )
@@ -112,10 +115,10 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     tracing::info!("Running full sync from Neo4j to SurrealDB");
 
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
-        source_uri: NEO4J_URI.to_string(),
-        source_database: Some(NEO4J_DATABASE.to_string()),
-        source_username: Some(NEO4J_USERNAME.to_string()),
-        source_password: Some(NEO4J_PASSWORD.to_string()),
+        source_uri: neo4j_uri.clone(),
+        source_database: Some(container.database.clone()),
+        source_username: Some(container.username.clone()),
+        source_password: Some(container.password.clone()),
         labels: vec![],
         neo4j_timezone: "UTC".to_string(),
         // Tell Neo4j sync to parse these properties as JSON objects (stored as strings in Neo4j)

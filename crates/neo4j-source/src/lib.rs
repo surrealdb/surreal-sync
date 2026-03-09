@@ -6,6 +6,7 @@ mod full_sync;
 mod incremental_sync;
 pub mod neo4j_checkpoint;
 mod neo4j_client;
+pub mod testing;
 
 pub use full_sync::{
     convert_neo4j_type_to_universal_value, row_to_relation, run_full_sync, Neo4jConversionContext,

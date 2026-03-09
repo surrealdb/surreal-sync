@@ -9,6 +9,7 @@ use surreal_sync::testing::surreal::{
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
+use surreal_sync_neo4j_source::testing::container::Neo4jContainer;
 
 #[tokio::test]
 async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,17 +19,20 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
         .try_init()
         .ok();
 
+    let mut container = Neo4jContainer::new("test-neo4j-full-sync-lib");
+    container.start()?;
+    container.wait_until_ready(60).await?;
+
     // Create test dataset
     let dataset = create_unified_full_dataset();
     let test_id = generate_test_id();
 
     // Setup Neo4j connection and data
-    let neo4j_config = surreal_sync::testing::neo4j::Neo4jConfig::default();
     let graph_config = neo4rs::ConfigBuilder::default()
-        .uri(neo4j_config.get_uri())
-        .user(neo4j_config.get_username())
-        .password(neo4j_config.get_password())
-        .db(neo4j_config.get_database())
+        .uri(&container.bolt_uri())
+        .user(&container.username)
+        .password(&container.password)
+        .db(&*container.database)
         .build()?;
     let graph = neo4rs::Graph::connect(graph_config)?;
 
@@ -45,10 +49,10 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
 
     // Perform full sync from Neo4j to SurrealDB
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
-        source_uri: neo4j_config.get_uri(),
-        source_database: Some(neo4j_config.get_database()),
-        source_username: Some(neo4j_config.get_username()),
-        source_password: Some(neo4j_config.get_password()),
+        source_uri: container.bolt_uri(),
+        source_database: Some(container.database.clone()),
+        source_username: Some(container.username.clone()),
+        source_password: Some(container.password.clone()),
         labels: vec![],
         neo4j_timezone: "UTC".to_string(),
         neo4j_json_properties: Some(vec![
