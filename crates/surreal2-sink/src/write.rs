@@ -22,45 +22,6 @@ fn id_to_sql_value(id: &sql::Id) -> sql::Value {
     }
 }
 
-/// Replace `sql::Value::Thing` with its string representation recursively.
-///
-/// SurrealDB v2 can reject Thing-typed values inside bound Object parameters.
-/// Converting to `"table:key"` strings avoids the rejection while preserving
-/// the reference information for downstream verification.
-fn sanitize_sql_value(value: sql::Value) -> sql::Value {
-    match value {
-        sql::Value::Thing(thing) => {
-            let id_str = match &thing.id {
-                sql::Id::String(s) => s.clone(),
-                sql::Id::Number(n) => n.to_string(),
-                sql::Id::Uuid(u) => {
-                    let inner: uuid::Uuid = (*u).into();
-                    inner.to_string()
-                }
-                other => format!("{other:?}"),
-            };
-            sql::Value::Strand(sql::Strand::from(format!("{}:{}", thing.tb, id_str)))
-        }
-        sql::Value::Object(obj) => {
-            let sanitized: std::collections::BTreeMap<String, sql::Value> = obj
-                .0
-                .into_iter()
-                .map(|(k, v)| (k, sanitize_sql_value(v)))
-                .collect();
-            sql::Value::Object(sql::Object::from(sanitized))
-        }
-        sql::Value::Array(arr) => {
-            let sanitized: Vec<sql::Value> = arr
-                .0
-                .into_iter()
-                .map(sanitize_sql_value)
-                .collect();
-            sql::Value::Array(sql::Array::from(sanitized))
-        }
-        other => other,
-    }
-}
-
 /// Maximum number of retries for retriable transaction errors
 const MAX_RETRIES: u32 = 5;
 /// Base delay between retries (will be multiplied by retry attempt for backoff)
@@ -178,7 +139,7 @@ pub async fn write_record(
     document: &Record,
 ) -> anyhow::Result<()> {
     let record_id = &document.id;
-    let upsert_content = sanitize_sql_value(document.get_upsert_content());
+    let upsert_content = document.get_upsert_content();
 
     let query = "UPSERT $record_id CONTENT $content".to_string();
 
@@ -305,34 +266,11 @@ pub async fn write_records(
     Ok(())
 }
 
-/// Format a v2 `sql::Id` as a SurrealQL literal for inline embedding.
-fn format_sql_id(id: &sql::Id) -> String {
-    match id {
-        sql::Id::String(s) => format!("⟨{s}⟩"),
-        sql::Id::Number(n) => n.to_string(),
-        sql::Id::Uuid(u) => {
-            let inner: uuid::Uuid = (*u).into();
-            format!("u'{inner}'")
-        }
-        other => format!("⟨{other:?}⟩"),
-    }
-}
-
 pub async fn write_relation(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     r: &Relation,
 ) -> anyhow::Result<()> {
-    // SurrealDB can reject Thing-typed params in RELATE positions and inside
-    // bound Object params. Format in/out as SurrealQL literals and sanitize content.
-    let relate_content = sanitize_sql_value(r.get_relate_content());
-
-    let in_literal = format!("{}:{}", r.input.tb, format_sql_id(&r.input.id));
-    let out_literal = format!("{}:{}", r.output.tb, format_sql_id(&r.output.id));
-
-    let query = format!(
-        "RELATE {in_literal}->{}->{out_literal} CONTENT $content",
-        r.id.tb
-    );
+    let query = format!("RELATE $in->{}->$out CONTENT $content", r.id.tb);
 
     let record_id = &r.id;
 
@@ -363,7 +301,9 @@ pub async fn write_relation(
         }
 
         let mut q = surreal.query(query.clone());
-        q = q.bind(("content", relate_content.clone()));
+        q = q.bind(("in", r.get_in()));
+        q = q.bind(("out", r.get_out()));
+        q = q.bind(("content", r.get_relate_content()));
 
         let response_result: Result<surrealdb::Response, surrealdb::Error> = q.await;
 
