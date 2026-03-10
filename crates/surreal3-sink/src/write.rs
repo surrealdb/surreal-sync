@@ -274,10 +274,13 @@ pub async fn write_relation(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     r: &Relation,
 ) -> anyhow::Result<()> {
-    // SurrealDB v3 rejects RecordId-typed params in RELATE positions, so we
-    // decompose into table+key and reconstruct with type::record() server-side.
+    // SurrealDB v3 rejects RecordId-typed params in RELATE positions, and
+    // type::record() cannot be inlined in RELATE targets (parse error).
+    // Use LET to pre-compute the record IDs from decomposed table+key parts.
     let query = format!(
-        "RELATE type::record($in_tb, $in_key)->{}->type::record($out_tb, $out_key) CONTENT $content",
+        "LET $from = type::record($in_tb, $in_key); \
+         LET $to = type::record($out_tb, $out_key); \
+         RELATE $from->{}->$to CONTENT $content",
         r.id.table
     );
 
@@ -327,9 +330,9 @@ pub async fn write_relation(
 
         match response_result {
             Ok(mut response) => {
-                // In SurrealDB v3, Thing is now RecordId
+                // Statement index 2 = RELATE (after two LET statements)
                 let result: Result<Vec<surrealdb::types::RecordId>, surrealdb::Error> =
-                    response.take("id").map_err(|e| {
+                    response.take((2, "id")).map_err(|e| {
                         tracing::error!(
                             "SurrealDB response.take() failed for record {:?}: {}",
                             record_id,
