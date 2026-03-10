@@ -3,14 +3,16 @@
 use std::io::Write;
 use surreal2_sink::Surreal2Sink;
 use surreal_sync_csv_source::{sync, Config};
+use surreal_version::testing::SurrealDbContainer;
 use tempfile::NamedTempFile;
 
 /// Setup SurrealDB connection for tests
 async fn setup_surrealdb(
+    endpoint: &str,
     namespace: &str,
     database: &str,
 ) -> anyhow::Result<surrealdb::Surreal<surrealdb::engine::any::Any>> {
-    let surreal = surrealdb::engine::any::connect("ws://surrealdb:8000").await?;
+    let surreal = surrealdb::engine::any::connect(endpoint).await?;
 
     surreal
         .signin(surrealdb::opt::auth::Root {
@@ -36,6 +38,11 @@ async fn cleanup_namespace(
 
 #[tokio::test]
 async fn test_csv_with_custom_column_names() {
+    let mut surrealdb = SurrealDbContainer::new("test-csv-custom-cols");
+    surrealdb.start().unwrap();
+    surrealdb.wait_until_ready(30).unwrap();
+    let endpoint = surrealdb.ws_endpoint();
+
     // CSV data without headers
     let csv_data = "1,Alice,30,true
 2,Bob,25,false
@@ -50,9 +57,9 @@ async fn test_csv_with_custom_column_names() {
     let table = "users";
 
     // Setup and cleanup
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
     cleanup_namespace(&surreal, namespace).await.unwrap();
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
     let sink = Surreal2Sink::new(surreal.clone());
 
     let config = Config {
@@ -105,6 +112,11 @@ async fn test_csv_with_custom_column_names() {
 
 #[tokio::test]
 async fn test_csv_column_count_mismatch_error() {
+    let mut surrealdb = SurrealDbContainer::new("test-csv-col-mismatch");
+    surrealdb.start().unwrap();
+    surrealdb.wait_until_ready(30).unwrap();
+    let endpoint = surrealdb.ws_endpoint();
+
     // CSV data with 3 columns
     let csv_data = "1,Alice,30
 2,Bob,25
@@ -119,7 +131,7 @@ async fn test_csv_column_count_mismatch_error() {
     let table = "users";
 
     // Setup and cleanup
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
     cleanup_namespace(&surreal, namespace).await.unwrap();
     let sink = Surreal2Sink::new(surreal.clone());
 
@@ -160,6 +172,11 @@ async fn test_csv_column_count_mismatch_error() {
 
 #[tokio::test]
 async fn test_csv_without_headers_auto_generated_names() {
+    let mut surrealdb = SurrealDbContainer::new("test-csv-auto-cols");
+    surrealdb.start().unwrap();
+    surrealdb.wait_until_ready(30).unwrap();
+    let endpoint = surrealdb.ws_endpoint();
+
     // CSV data without headers and no column_names specified
     let csv_data = "1,Alice,30
 2,Bob,25
@@ -174,9 +191,9 @@ async fn test_csv_without_headers_auto_generated_names() {
     let table = "data";
 
     // Setup and cleanup
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
     cleanup_namespace(&surreal, namespace).await.unwrap();
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
     let sink = Surreal2Sink::new(surreal.clone());
 
     let config = Config {
@@ -222,6 +239,11 @@ async fn test_csv_without_headers_auto_generated_names() {
 
 #[tokio::test]
 async fn test_csv_column_count_mismatch_with_extra_columns_in_row() {
+    let mut surrealdb = SurrealDbContainer::new("test-csv-extra-cols");
+    surrealdb.start().unwrap();
+    surrealdb.wait_until_ready(30).unwrap();
+    let endpoint = surrealdb.ws_endpoint();
+
     // First row has 3 columns, second row has 4 columns
     let csv_data = "1,Alice,30
 2,Bob,25,extra_field";
@@ -235,7 +257,7 @@ async fn test_csv_column_count_mismatch_with_extra_columns_in_row() {
     let table = "users";
 
     // Setup and cleanup
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
     cleanup_namespace(&surreal, namespace).await.unwrap();
     let sink = Surreal2Sink::new(surreal.clone());
 

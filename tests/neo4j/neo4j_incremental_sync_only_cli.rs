@@ -3,6 +3,7 @@
 //! This test validates that the CLI handles Neo4j incremental sync with all data types
 //! correctly, using the unified dataset.
 
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     cli::{assert_cli_success, execute_surreal_sync},
     create_unified_full_dataset, generate_test_id,
@@ -18,6 +19,10 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
         .with_env_filter("surreal_sync=info")
         .try_init()
         .ok();
+
+    let mut surrealdb = SurrealDbContainer::new("test-neo4j-incr-sync-cli-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
 
     let mut container = Neo4jContainer::new("test-neo4j-incr-sync-cli");
     container.start()?;
@@ -46,7 +51,7 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
     surreal_sync::testing::neo4j::create_constraints_and_indices(&graph, &dataset).await?;
 
     // Setup SurrealDB connection with auto-detection for validation
-    let surreal_config = TestConfig::new(test_id, "neo4j-incremental-cli");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
     cleanup_surrealdb_auto(&conn, &dataset).await?;
 

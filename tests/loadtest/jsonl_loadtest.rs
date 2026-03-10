@@ -10,6 +10,7 @@
 use loadtest_populate_jsonl::JsonlPopulator;
 use surreal_sync::jsonl::{sync, Config, FileSource};
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use sync_core::Schema;
 use tempfile::TempDir;
@@ -31,6 +32,10 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .try_init()
         .ok();
 
+    let mut surrealdb = SurrealDbContainer::new("test-lt-jsonl-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
     // Load schema from fixture file
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
         .expect("Failed to load test schema");
@@ -42,7 +47,7 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     let temp_dir = TempDir::new()?;
 
     // Connect to SurrealDB with auto-detection
-    let surreal_config = TestConfig::new(test_id, "loadtest-jsonl");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     // === CLEANUP BEFORE (ensure clean initial state) ===

@@ -10,6 +10,7 @@
 use loadtest_populate_mongodb::MongoDBPopulator;
 use surreal_sync::testing::mongodb_container::MongoContainer;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use sync_core::Schema;
 
@@ -31,6 +32,10 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
         .try_init()
         .ok();
 
+    let mut surrealdb = SurrealDbContainer::new("test-lt-mongodb-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
     let mut container = MongoContainer::new("test-mongo-loadtest");
     container.start()?;
     container.wait_until_ready(30).await?;
@@ -46,7 +51,7 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
     let mongo_db = mongo_client.database(MONGODB_DATABASE);
 
     // Connect to SurrealDB (auto-detect v2 or v3)
-    let surreal_config = TestConfig::new(test_id, "loadtest-mongodb");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let surreal_conn = connect_auto(&surreal_config).await?;
 
     // === CLEANUP BEFORE (ensure clean initial state) ===

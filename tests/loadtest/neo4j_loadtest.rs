@@ -9,6 +9,7 @@
 
 use loadtest_populate_neo4j::Neo4jPopulator;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use surreal_sync_neo4j_source::testing::container::Neo4jContainer;
 use sync_core::Schema;
@@ -25,6 +26,10 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .with_env_filter("surreal_sync=info,loadtest=info")
         .try_init()
         .ok();
+
+    let mut surrealdb = SurrealDbContainer::new("test-lt-neo4j-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
 
     let mut container = Neo4jContainer::new("test-neo4j-loadtest");
     container.start()?;
@@ -48,7 +53,7 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     let graph = neo4rs::Graph::connect(graph_config)?;
 
     // Connect to SurrealDB with auto-detection of v2 or v3
-    let surreal_config = TestConfig::new(test_id, "loadtest-neo4j");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     // === CLEANUP BEFORE (ensure clean initial state) ===

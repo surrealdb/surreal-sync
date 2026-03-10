@@ -12,6 +12,7 @@
 //! 5. Verify SurrealDB has record links and graph edges
 
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use surreal_sync_postgresql::testing::container::PostgresContainer;
 
@@ -21,6 +22,10 @@ async fn test_trigger_fk_incremental_only() -> Result<(), Box<dyn std::error::Er
         .with_env_filter("surreal_sync=info,surreal_sync_postgresql=info")
         .try_init()
         .ok();
+
+    let mut surrealdb = SurrealDbContainer::new("test-pg-fk-incr-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
 
     // --- Start PostgreSQL ---
     let mut container = PostgresContainer::new("test-pg-fk-incr-trigger");
@@ -58,7 +63,7 @@ async fn test_trigger_fk_incremental_only() -> Result<(), Box<dyn std::error::Er
 
     // --- Connect to SurrealDB ---
     let test_id = generate_test_id();
-    let surreal_config = TestConfig::new(test_id, "pg-fk-incr-trigger");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     // --- Prepare checkpoint infrastructure ---

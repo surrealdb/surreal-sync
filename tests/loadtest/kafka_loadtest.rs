@@ -23,6 +23,7 @@ use chrono::Utc;
 use loadtest_populate_kafka::KafkaPopulator;
 use std::{sync::Arc, time::Duration};
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use surreal_sync_kafka_producer::container::KafkaContainer;
 use surreal_sync_kafka_source::Config as KafkaConfig;
@@ -47,6 +48,10 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .try_init()
         .ok();
 
+    let mut surrealdb = SurrealDbContainer::new("test-lt-kafka-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
     let mut kafka = KafkaContainer::new("test-kafka-loadtest");
     kafka.start()?;
     kafka.wait_until_ready(30).await?;
@@ -68,7 +73,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     );
 
     // Setup SurrealDB connection
-    let surreal_config = TestConfig::new(test_id, "kafka-loadtest");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     // === CLEANUP BEFORE (ensure clean initial state) ===

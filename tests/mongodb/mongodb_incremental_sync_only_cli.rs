@@ -10,6 +10,7 @@
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::mongodb_container::MongoContainer;
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
@@ -21,6 +22,10 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
         .with_env_filter("surreal_sync=info")
         .try_init()
         .ok();
+
+    let mut surrealdb = SurrealDbContainer::new("test-mongo-incr-sync-cli-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
 
     let mut container = MongoContainer::new("test-mongo-incr-sync-cli");
     container.start()?;
@@ -35,7 +40,7 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
     let db = mongodb_client.database("testdb");
 
     // Setup SurrealDB connection with auto-detection for validation
-    let surreal_config = TestConfig::new(test_id, "mongodb-incr-cli");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     surreal_sync::testing::mongodb::cleanup(&db, &dataset).await?;

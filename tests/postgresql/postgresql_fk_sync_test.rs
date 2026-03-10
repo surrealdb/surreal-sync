@@ -8,6 +8,7 @@
 //! Requires Docker (PostgresContainer) and a running SurrealDB instance.
 
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use surreal_sync_postgresql::testing::container::PostgresContainer;
 
@@ -18,6 +19,10 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
         .with_env_filter("surreal_sync=info,surreal_sync_postgresql=debug")
         .try_init()
         .ok();
+
+    let mut surrealdb = SurrealDbContainer::new("test-pg-fk-sync-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
 
     // --- Start PostgreSQL ---
     let mut container = PostgresContainer::new("test-pg-fk-sync");
@@ -76,7 +81,7 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
 
     // --- Connect to SurrealDB ---
     let test_id = generate_test_id();
-    let surreal_config = TestConfig::new(test_id, "pg-fk-sync");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     // --- Run full sync using migrate_table directly ---
@@ -228,6 +233,10 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
         .try_init()
         .ok();
 
+    let mut surrealdb = SurrealDbContainer::new("test-pg-fk-sync-sdb-2");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
     let mut container = PostgresContainer::new("test-pg-fk-override-e2e");
     container.build_image()?;
     container.start()?;
@@ -261,7 +270,7 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
         surreal_sync_postgresql::schema::collect_database_schema_with_fks(&pg_client).await?;
 
     let test_id = generate_test_id();
-    let surreal_config = TestConfig::new(test_id, "pg-fk-override");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     let sync_opts = surreal_sync_postgresql::SyncOpts {

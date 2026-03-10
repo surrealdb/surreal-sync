@@ -7,6 +7,7 @@
 
 pub mod checkpoint;
 pub mod cli;
+pub mod surrealdb_container;
 pub mod field;
 pub mod full;
 pub mod mongodb;

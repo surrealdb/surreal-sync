@@ -6,6 +6,7 @@
 use surreal_sync::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
@@ -19,6 +20,10 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
         .with_env_filter("surreal_sync=info")
         .try_init()
         .ok();
+
+    let mut surrealdb = SurrealDbContainer::new("test-pgl-full-sync-lib-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
 
     let mut container = PostgresContainer::new("test-logical-full-sync-lib");
     container.build_image()?;
@@ -40,7 +45,7 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
     });
 
     // Setup SurrealDB connection with auto-detection for validation
-    let surreal_config = TestConfig::new(test_id, "postgresql-logical-lib-test1");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;

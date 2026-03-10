@@ -6,6 +6,7 @@
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::mongodb_container::MongoContainer;
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
@@ -16,6 +17,10 @@ async fn test_mongodb_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> 
         .with_env_filter("surreal_sync=info")
         .try_init()
         .ok();
+
+    let mut surrealdb = SurrealDbContainer::new("test-mongo-full-sync-cli-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
 
     let mut container = MongoContainer::new("test-mongo-full-sync-cli");
     container.start()?;
@@ -34,7 +39,7 @@ async fn test_mongodb_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> 
     surreal_sync::testing::mongodb::insert_docs(&db, &dataset).await?;
 
     // Setup SurrealDB connection with auto-detection for validation
-    let surreal_config = TestConfig::new(test_id, "neo4j-test8");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     cleanup_surrealdb_auto(&conn, &dataset).await?;

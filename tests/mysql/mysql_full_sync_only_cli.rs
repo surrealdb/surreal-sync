@@ -8,6 +8,7 @@ use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto,
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
 
 #[tokio::test]
@@ -33,8 +34,13 @@ async fn test_mysql_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
     surreal_sync::testing::mysql::create_tables_and_indices(&mut mysql_conn, &dataset).await?;
     surreal_sync::testing::mysql::insert_rows(&mut mysql_conn, &dataset).await?;
 
+    // Setup SurrealDB container
+    let mut surrealdb = SurrealDbContainer::new("test-mysql-full-sync-cli-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
     // Setup SurrealDB connection with auto-detection for validation
-    let surreal_config = TestConfig::new(test_id, "neo4j-test5");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
     cleanup_surrealdb_auto(&conn, &dataset).await?;
 

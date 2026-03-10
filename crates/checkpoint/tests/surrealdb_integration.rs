@@ -1,9 +1,10 @@
 //! Integration tests for checkpoint storage in SurrealDB.
 //!
 //! These tests verify that Surreal2Store correctly stores and retrieves
-//! checkpoints from a real SurrealDB instance running on hostname "surrealdb".
+//! checkpoints from a real SurrealDB instance started via Docker container.
 
 use checkpoint::{CheckpointID, CheckpointStore, Surreal2Store};
+use surreal_version::testing::SurrealDbContainer;
 use surrealdb::engine::any;
 use surrealdb::sql::{Id, Thing};
 
@@ -15,8 +16,11 @@ fn make_thing(table: &str, id: &CheckpointID) -> Thing {
 
 #[tokio::test]
 async fn test_checkpoint_store_roundtrip() -> anyhow::Result<()> {
-    // Connect to SurrealDB test instance
-    let surreal = any::connect("ws://surrealdb:8000").await?;
+    let mut surrealdb = SurrealDbContainer::new("test-checkpoint-roundtrip");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
+    let surreal = any::connect(&surrealdb.ws_endpoint()).await?;
     surreal
         .signin(surrealdb::opt::auth::Root {
             username: "root",
@@ -59,8 +63,11 @@ async fn test_checkpoint_store_roundtrip() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_checkpoint_store_not_found() -> anyhow::Result<()> {
-    // Connect to SurrealDB test instance
-    let surreal = any::connect("ws://surrealdb:8000").await?;
+    let mut surrealdb = SurrealDbContainer::new("test-checkpoint-not-found");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
+    let surreal = any::connect(&surrealdb.ws_endpoint()).await?;
     surreal
         .signin(surrealdb::opt::auth::Root {
             username: "root",
@@ -88,8 +95,11 @@ async fn test_checkpoint_store_not_found() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_checkpoint_store_multiple_phases() -> anyhow::Result<()> {
-    // Connect to SurrealDB test instance
-    let surreal = any::connect("ws://surrealdb:8000").await?;
+    let mut surrealdb = SurrealDbContainer::new("test-checkpoint-phases");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
+    let surreal = any::connect(&surrealdb.ws_endpoint()).await?;
     surreal
         .signin(surrealdb::opt::auth::Root {
             username: "root",
@@ -141,8 +151,11 @@ async fn test_checkpoint_store_multiple_phases() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_checkpoint_store_update_existing() -> anyhow::Result<()> {
-    // Connect to SurrealDB test instance
-    let surreal = any::connect("ws://surrealdb:8000").await?;
+    let mut surrealdb = SurrealDbContainer::new("test-checkpoint-update");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
+    let surreal = any::connect(&surrealdb.ws_endpoint()).await?;
     surreal
         .signin(surrealdb::opt::auth::Root {
             username: "root",

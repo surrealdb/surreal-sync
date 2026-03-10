@@ -51,6 +51,20 @@ impl TestConfig {
             surreal_database: format!("test_db_{test_id}"),
         }
     }
+
+    /// Create a test configuration with an explicit SurrealDB endpoint.
+    ///
+    /// Use this when connecting to a dynamically-started `SurrealDbContainer`.
+    pub fn with_surreal_endpoint(test_id: u64, surreal_endpoint: &str) -> Self {
+        TestConfig {
+            neo4j_uri: String::new(),
+            neo4j_username: "neo4j".to_string(),
+            neo4j_password: "password".to_string(),
+            surreal_endpoint: surreal_endpoint.to_string(),
+            surreal_namespace: format!("test_ns_{test_id}"),
+            surreal_database: format!("test_db_{test_id}"),
+        }
+    }
 }
 
 /// Connect to SurrealDB with the given configuration

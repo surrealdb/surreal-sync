@@ -5,6 +5,8 @@
 //! appropriate SDK version (v2 or v3) since they use incompatible WebSocket
 //! subprotocols.
 
+pub mod testing;
+
 use reqwest::Client;
 use semver::Version;
 

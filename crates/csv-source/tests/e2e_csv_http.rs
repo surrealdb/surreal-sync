@@ -11,6 +11,7 @@ use axum::{
 };
 use surreal2_sink::Surreal2Sink;
 use surreal_sync_csv_source::{sync, Config};
+use surreal_version::testing::SurrealDbContainer;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
 
@@ -35,10 +36,11 @@ async fn cleanup_namespace(
 
 /// Setup SurrealDB connection for tests
 async fn setup_surrealdb(
+    endpoint: &str,
     namespace: &str,
     database: &str,
 ) -> anyhow::Result<surrealdb::Surreal<surrealdb::engine::any::Any>> {
-    let surreal = surrealdb::engine::any::connect("ws://surrealdb:8000").await?;
+    let surreal = surrealdb::engine::any::connect(endpoint).await?;
 
     surreal
         .signin(surrealdb::opt::auth::Root {
@@ -106,18 +108,23 @@ async fn test_csv_http_import() {
         .with_env_filter("debug")
         .try_init();
 
+    let mut surrealdb = SurrealDbContainer::new("test-csv-http-import");
+    surrealdb.start().unwrap();
+    surrealdb.wait_until_ready(30).unwrap();
+    let endpoint = surrealdb.ws_endpoint();
+
     let namespace = "test_csv_http";
     let database = "test_db";
     let table = "users";
 
     // Setup SurrealDB connection for cleanup
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
 
     // Cleanup before test
     cleanup_namespace(&surreal, namespace).await.unwrap();
 
     // Reconnect after cleanup
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
     let sink = Surreal2Sink::new(surreal.clone());
 
     // Start test HTTP server
@@ -182,18 +189,23 @@ async fn test_csv_http_import_with_path() {
         .with_env_filter("debug")
         .try_init();
 
+    let mut surrealdb = SurrealDbContainer::new("test-csv-http-path");
+    surrealdb.start().unwrap();
+    surrealdb.wait_until_ready(30).unwrap();
+    let endpoint = surrealdb.ws_endpoint();
+
     let namespace = "test_csv_http_path";
     let database = "test_db";
     let table = "people";
 
     // Setup SurrealDB connection for cleanup
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
 
     // Cleanup before test
     cleanup_namespace(&surreal, namespace).await.unwrap();
 
     // Reconnect after cleanup
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
     let sink = Surreal2Sink::new(surreal.clone());
 
     // Start test HTTP server
@@ -225,7 +237,7 @@ async fn test_csv_http_import_with_path() {
     assert!(result.is_ok(), "CSV import should succeed: {result:?}");
 
     // Reconnect to verify data (ensures we're seeing fresh data)
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
 
     // First, try getting count
     let count_query = format!("SELECT count() AS count FROM {table} GROUP ALL");
@@ -304,17 +316,22 @@ async fn test_csv_http_404_error() {
         .with_env_filter("debug")
         .try_init();
 
+    let mut surrealdb = SurrealDbContainer::new("test-csv-http-404");
+    surrealdb.start().unwrap();
+    surrealdb.wait_until_ready(30).unwrap();
+    let endpoint = surrealdb.ws_endpoint();
+
     let namespace = "test_csv_http_404";
     let database = "test_db";
 
     // Setup SurrealDB connection for cleanup
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
 
     // Cleanup before test
     cleanup_namespace(&surreal, namespace).await.unwrap();
 
     // Reconnect after cleanup
-    let surreal = setup_surrealdb(namespace, database).await.unwrap();
+    let surreal = setup_surrealdb(&endpoint, namespace, database).await.unwrap();
     let sink = Surreal2Sink::new(surreal.clone());
 
     // Start test HTTP server

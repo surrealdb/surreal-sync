@@ -10,6 +10,7 @@
 use loadtest_populate_csv::CSVPopulator;
 use surreal_sync::csv::{sync, Config, FileSource};
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use sync_core::Schema;
 use tempfile::TempDir;
@@ -31,6 +32,10 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
         .try_init()
         .ok();
 
+    let mut surrealdb = SurrealDbContainer::new("test-lt-csv-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
     // Load schema from fixture file
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
         .expect("Failed to load test schema");
@@ -42,7 +47,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
     let temp_dir = TempDir::new()?;
 
     // Connect to SurrealDB with auto-detection
-    let surreal_config = TestConfig::new(test_id, "loadtest-csv");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     // === CLEANUP BEFORE (ensure clean initial state) ===
@@ -269,8 +274,12 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
     assert!(csv_content.contains(",26,"), "CSV should contain age 26");
 
     // Test 3: Sync to SurrealDB and query directly
+    let mut surrealdb = SurrealDbContainer::new("test-lt-csv-debug-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
     let test_id = generate_test_id();
-    let surreal_config = TestConfig::new(test_id, "debug-csv");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     match &conn {

@@ -8,6 +8,7 @@ use surreal_sync::testing::postgresql::create_tables_and_indices;
 use surreal_sync::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
@@ -22,6 +23,10 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
         .with_env_filter("surreal_sync=info")
         .try_init()
         .ok();
+
+    let mut surrealdb = SurrealDbContainer::new("test-pgl-surreal-ckpt-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
 
     // Setup PostgreSQL container with wal2json (dynamic port)
     let mut container = PostgresContainer::new("test-logical-surrealdb-cli");
@@ -48,7 +53,7 @@ async fn test_postgresql_logical_surrealdb_checkpoints_cli(
     create_tables_and_indices(&pg_client, &dataset).await?;
 
     // Setup SurrealDB connection with auto-detection for validation
-    let surreal_config = TestConfig::new(test_id, "postgresql-logical-surrealdb-test1");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     cleanup_surrealdb_auto(&conn, &dataset).await?;

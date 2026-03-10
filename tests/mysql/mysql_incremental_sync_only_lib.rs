@@ -10,6 +10,7 @@ use surreal_sync::testing::surreal::{
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
 
 #[tokio::test]
@@ -35,8 +36,13 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
     let dataset = create_unified_full_dataset();
 
+    // Setup SurrealDB container
+    let mut surrealdb = SurrealDbContainer::new("test-mysql-incr-sync-lib-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
     // Setup SurrealDB connection with auto-detection
-    let surreal_config = TestConfig::new(test_id, "mysql-incremental-only");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
     cleanup_surrealdb_auto(&conn, &dataset).await?;
 

@@ -11,6 +11,7 @@
 
 use loadtest_populate_mysql::MySQLPopulator;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
 use sync_core::Schema;
@@ -36,6 +37,10 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
         .try_init()
         .ok();
 
+    let mut surrealdb = SurrealDbContainer::new("test-lt-mysql-incr-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
     let mut container = MySQLContainer::new("test-mysql-incr-loadtest");
     container.start()?;
     container.wait_until_ready(60).await?;
@@ -54,7 +59,7 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
     let mut mysql_conn = pool.get_conn().await?;
 
     // Connect to SurrealDB (auto-detects v2 or v3)
-    let surreal_config = TestConfig::new(test_id, "loadtest-mysql-incr");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     // === CLEANUP BEFORE (ensure clean initial state) ===

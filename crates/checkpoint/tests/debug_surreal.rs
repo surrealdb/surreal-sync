@@ -1,6 +1,7 @@
 //! Debug test to understand SurrealDB behavior
 
 use serde::{Deserialize, Serialize};
+use surreal_version::testing::SurrealDbContainer;
 use surrealdb::engine::any;
 use surrealdb::sql::{Id, Thing};
 
@@ -12,8 +13,11 @@ struct TestRecord {
 
 #[tokio::test]
 async fn debug_update_and_select() -> anyhow::Result<()> {
-    // Connect to SurrealDB
-    let surreal = any::connect("ws://surrealdb:8000").await?;
+    let mut surrealdb = SurrealDbContainer::new("test-debug-surreal");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
+    let surreal = any::connect(&surrealdb.ws_endpoint()).await?;
     surreal
         .signin(surrealdb::opt::auth::Root {
             username: "root",

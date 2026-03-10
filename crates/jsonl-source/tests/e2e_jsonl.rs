@@ -2,6 +2,7 @@ use serde::Deserialize;
 use std::path::PathBuf;
 use surreal2_sink::Surreal2Sink;
 use surreal_sync_jsonl_source::{sync, Config, ConversionRule};
+use surreal_version::testing::SurrealDbContainer;
 use surrealdb::{engine::any::connect, sql::Thing, Surreal};
 
 #[derive(Debug, Deserialize)]
@@ -36,8 +37,12 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Starting JSONL to SurrealDB migration end-to-end test");
 
+    let mut surrealdb = SurrealDbContainer::new("test-jsonl-migration-e2e");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
     // Setup test configuration
-    let surreal_endpoint = "ws://surrealdb:8000";
+    let surreal_endpoint = surrealdb.ws_endpoint();
     let surreal_namespace = "test_jsonl_ns";
     let surreal_database = "test_jsonl_db";
 
@@ -46,7 +51,7 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
 
     // Connect to SurrealDB
     println!("Connecting to SurrealDB...");
-    let surreal = connect(surreal_endpoint).await?;
+    let surreal = connect(&surreal_endpoint).await?;
     surreal
         .signin(surrealdb::opt::auth::Root {
             username: "root",
@@ -206,6 +211,10 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
         .try_init()
         .ok();
 
+    let mut surrealdb = SurrealDbContainer::new("test-jsonl-custom-id");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
+
     // Create test directory
     let test_dir = PathBuf::from("/tmp/jsonl_test_custom_id");
     std::fs::create_dir_all(&test_dir)?;
@@ -219,8 +228,7 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
     )?;
 
     // Setup SurrealDB connection
-    let surreal_endpoint = "ws://surrealdb:8000";
-    let surreal = connect(surreal_endpoint).await?;
+    let surreal = connect(&surrealdb.ws_endpoint()).await?;
     surreal
         .signin(surrealdb::opt::auth::Root {
             username: "root",
@@ -290,6 +298,10 @@ async fn test_jsonl_with_complex_id_field() {
         .try_init()
         .ok();
 
+    let mut surrealdb = SurrealDbContainer::new("test-jsonl-complex-id");
+    surrealdb.start().unwrap();
+    surrealdb.wait_until_ready(30).unwrap();
+
     // Create test directory
     let test_dir = PathBuf::from("/tmp/jsonl_test_complex_id");
     std::fs::create_dir_all(&test_dir).unwrap();
@@ -304,8 +316,7 @@ async fn test_jsonl_with_complex_id_field() {
     .unwrap();
 
     // Setup SurrealDB connection
-    let surreal_endpoint = "ws://surrealdb:8000";
-    let surreal = connect(surreal_endpoint).await.unwrap();
+    let surreal = connect(&surrealdb.ws_endpoint()).await.unwrap();
     surreal
         .signin(surrealdb::opt::auth::Root {
             username: "root",

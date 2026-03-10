@@ -9,6 +9,7 @@
 
 use loadtest_populate_postgresql::PostgreSQLPopulator;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
+use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use surreal_sync_postgresql::testing::container::PostgresContainer;
 use sync_core::Schema;
@@ -30,6 +31,10 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
         .with_env_filter("surreal_sync=info,loadtest=info")
         .try_init()
         .ok();
+
+    let mut surrealdb = SurrealDbContainer::new("test-lt-pg-sdb");
+    surrealdb.start()?;
+    surrealdb.wait_until_ready(30)?;
 
     let mut container = PostgresContainer::new("test-pg-loadtest");
     container.build_image()?;
@@ -55,7 +60,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
     });
 
     // Connect to SurrealDB (auto-detects v2 or v3)
-    let surreal_config = TestConfig::new(test_id, "loadtest-postgresql");
+    let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
     // === CLEANUP BEFORE (ensure clean initial state) ===
