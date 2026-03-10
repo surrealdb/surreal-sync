@@ -1,35 +1,106 @@
 //! Integration tests for checkpoint storage in SurrealDB.
 //!
-//! These tests verify that Surreal2Store correctly stores and retrieves
-//! checkpoints from a real SurrealDB instance started via Docker container.
+//! These tests verify that Surreal2Store / Surreal3Store correctly stores and
+//! retrieves checkpoints from a real SurrealDB instance started via Docker.
+//! The server version is auto-detected so the same tests pass against both
+//! v2 and v3 servers (controlled by the `SURREALDB_IMAGE` env var).
 
 use checkpoint::{CheckpointID, CheckpointStore, Surreal2Store};
+use checkpoint_surreal3::Surreal3Store;
 use surreal_version::testing::SurrealDbContainer;
-use surrealdb::engine::any;
-use surrealdb::sql::{Id, Thing};
+use surreal_version::SurrealMajorVersion;
 
-/// Helper to create a Thing for test cleanup
-fn make_thing(table: &str, id: &CheckpointID) -> Thing {
-    let id_str = format!("{}_{}", id.database_type.replace('-', "_"), id.phase);
-    Thing::from((table, Id::String(id_str)))
+// ---------------------------------------------------------------------------
+// Version-aware helpers
+// ---------------------------------------------------------------------------
+
+enum TestCtx {
+    V2 {
+        store: Surreal2Store,
+        client: surrealdb::Surreal<surrealdb::engine::any::Any>,
+    },
+    V3 {
+        store: Surreal3Store,
+        client: surrealdb3::Surreal<surrealdb3::engine::any::Any>,
+    },
 }
+
+impl TestCtx {
+    fn store(&self) -> &dyn CheckpointStore {
+        match self {
+            Self::V2 { store, .. } => store,
+            Self::V3 { store, .. } => store,
+        }
+    }
+}
+
+async fn connect(db: &SurrealDbContainer, table: &str) -> anyhow::Result<TestCtx> {
+    let endpoint = db.ws_endpoint();
+    match db.detected_version {
+        Some(SurrealMajorVersion::V3) => {
+            let client = surrealdb3::engine::any::connect(&endpoint).await?;
+            client
+                .signin(surrealdb3::opt::auth::Root {
+                    username: "root".to_string(),
+                    password: "root".to_string(),
+                })
+                .await?;
+            client.use_ns("test").use_db("test").await?;
+            let store = Surreal3Store::new(client.clone(), table.to_string());
+            Ok(TestCtx::V3 { store, client })
+        }
+        _ => {
+            let client = surrealdb::engine::any::connect(&endpoint).await?;
+            client
+                .signin(surrealdb::opt::auth::Root {
+                    username: "root",
+                    password: "root",
+                })
+                .await?;
+            client.use_ns("test").use_db("test").await?;
+            let store = Surreal2Store::new(client.clone(), table.to_string());
+            Ok(TestCtx::V2 { store, client })
+        }
+    }
+}
+
+async fn cleanup_record(ctx: &TestCtx, table: &str, id: &CheckpointID) -> anyhow::Result<()> {
+    let id_str = format!("{}_{}", id.database_type.replace('-', "_"), id.phase);
+    match ctx {
+        TestCtx::V2 { client, .. } => {
+            let thing =
+                surrealdb::sql::Thing::from((table, surrealdb::sql::Id::String(id_str)));
+            client
+                .query("DELETE $record_id")
+                .bind(("record_id", thing))
+                .await?;
+        }
+        TestCtx::V3 { client, .. } => {
+            let record_id = surrealdb3::types::RecordId::new(
+                table,
+                surrealdb3::types::RecordIdKey::String(id_str),
+            );
+            client
+                .query("DELETE $record_id")
+                .bind(("record_id", record_id))
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn test_checkpoint_store_roundtrip() -> anyhow::Result<()> {
-    let mut surrealdb = SurrealDbContainer::new("test-checkpoint-roundtrip");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let mut db = SurrealDbContainer::new("test-checkpoint-roundtrip");
+    db.start()?;
+    db.wait_until_ready(30)?;
 
-    let surreal = any::connect(&surrealdb.ws_endpoint()).await?;
-    surreal
-        .signin(surrealdb::opt::auth::Root {
-            username: "root",
-            password: "root",
-        })
-        .await?;
-    surreal.use_ns("test").use_db("test").await?;
-
-    let store = Surreal2Store::new(surreal.clone(), "test_checkpoints".to_string());
+    let ctx = connect(&db, "test_checkpoints").await?;
+    let store = ctx.store();
 
     let id = CheckpointID {
         database_type: "postgresql-wal2json".to_string(),
@@ -38,12 +109,10 @@ async fn test_checkpoint_store_roundtrip() -> anyhow::Result<()> {
 
     let checkpoint_data = r#"{"lsn":"0/1949850","timestamp":"2024-01-01T00:00:00Z"}"#;
 
-    // Store checkpoint
     store
         .store_checkpoint(&id, checkpoint_data.to_string())
         .await?;
 
-    // Read checkpoint back
     let loaded = store.read_checkpoint(&id).await?;
     assert!(loaded.is_some(), "Checkpoint should be found after storing");
 
@@ -52,38 +121,25 @@ async fn test_checkpoint_store_roundtrip() -> anyhow::Result<()> {
     assert_eq!(loaded.database_type, "postgresql-wal2json");
     assert_eq!(loaded.phase, "full_sync_start");
 
-    // Cleanup: delete test checkpoint
-    surreal
-        .query("DELETE $record_id")
-        .bind(("record_id", make_thing("test_checkpoints", &id)))
-        .await?;
+    cleanup_record(&ctx, "test_checkpoints", &id).await?;
 
     Ok(())
 }
 
 #[tokio::test]
 async fn test_checkpoint_store_not_found() -> anyhow::Result<()> {
-    let mut surrealdb = SurrealDbContainer::new("test-checkpoint-not-found");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let mut db = SurrealDbContainer::new("test-checkpoint-not-found");
+    db.start()?;
+    db.wait_until_ready(30)?;
 
-    let surreal = any::connect(&surrealdb.ws_endpoint()).await?;
-    surreal
-        .signin(surrealdb::opt::auth::Root {
-            username: "root",
-            password: "root",
-        })
-        .await?;
-    surreal.use_ns("test").use_db("test").await?;
-
-    let store = Surreal2Store::new(surreal.clone(), "test_checkpoints".to_string());
+    let ctx = connect(&db, "test_checkpoints").await?;
+    let store = ctx.store();
 
     let id = CheckpointID {
         database_type: "nonexistent-source".to_string(),
         phase: "full_sync_start".to_string(),
     };
 
-    // Try to read non-existent checkpoint
     let loaded = store.read_checkpoint(&id).await?;
     assert!(
         loaded.is_none(),
@@ -95,22 +151,13 @@ async fn test_checkpoint_store_not_found() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn test_checkpoint_store_multiple_phases() -> anyhow::Result<()> {
-    let mut surrealdb = SurrealDbContainer::new("test-checkpoint-phases");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let mut db = SurrealDbContainer::new("test-checkpoint-phases");
+    db.start()?;
+    db.wait_until_ready(30)?;
 
-    let surreal = any::connect(&surrealdb.ws_endpoint()).await?;
-    surreal
-        .signin(surrealdb::opt::auth::Root {
-            username: "root",
-            password: "root",
-        })
-        .await?;
-    surreal.use_ns("test").use_db("test").await?;
+    let ctx = connect(&db, "test_checkpoints").await?;
+    let store = ctx.store();
 
-    let store = Surreal2Store::new(surreal.clone(), "test_checkpoints".to_string());
-
-    // Store t1 checkpoint
     let id_t1 = CheckpointID {
         database_type: "postgresql-wal2json".to_string(),
         phase: "full_sync_start".to_string(),
@@ -120,7 +167,6 @@ async fn test_checkpoint_store_multiple_phases() -> anyhow::Result<()> {
         .store_checkpoint(&id_t1, checkpoint_data_t1.to_string())
         .await?;
 
-    // Store t2 checkpoint
     let id_t2 = CheckpointID {
         database_type: "postgresql-wal2json".to_string(),
         phase: "full_sync_end".to_string(),
@@ -130,7 +176,6 @@ async fn test_checkpoint_store_multiple_phases() -> anyhow::Result<()> {
         .store_checkpoint(&id_t2, checkpoint_data_t2.to_string())
         .await?;
 
-    // Read both checkpoints back
     let loaded_t1 = store.read_checkpoint(&id_t1).await?;
     assert!(loaded_t1.is_some());
     assert_eq!(loaded_t1.unwrap().checkpoint_data, checkpoint_data_t1);
@@ -139,60 +184,41 @@ async fn test_checkpoint_store_multiple_phases() -> anyhow::Result<()> {
     assert!(loaded_t2.is_some());
     assert_eq!(loaded_t2.unwrap().checkpoint_data, checkpoint_data_t2);
 
-    // Cleanup
-    surreal
-        .query("DELETE $record_id1; DELETE $record_id2;")
-        .bind(("record_id1", make_thing("test_checkpoints", &id_t1)))
-        .bind(("record_id2", make_thing("test_checkpoints", &id_t2)))
-        .await?;
+    cleanup_record(&ctx, "test_checkpoints", &id_t1).await?;
+    cleanup_record(&ctx, "test_checkpoints", &id_t2).await?;
 
     Ok(())
 }
 
 #[tokio::test]
 async fn test_checkpoint_store_update_existing() -> anyhow::Result<()> {
-    let mut surrealdb = SurrealDbContainer::new("test-checkpoint-update");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let mut db = SurrealDbContainer::new("test-checkpoint-update");
+    db.start()?;
+    db.wait_until_ready(30)?;
 
-    let surreal = any::connect(&surrealdb.ws_endpoint()).await?;
-    surreal
-        .signin(surrealdb::opt::auth::Root {
-            username: "root",
-            password: "root",
-        })
-        .await?;
-    surreal.use_ns("test").use_db("test").await?;
-
-    let store = Surreal2Store::new(surreal.clone(), "test_checkpoints".to_string());
+    let ctx = connect(&db, "test_checkpoints").await?;
+    let store = ctx.store();
 
     let id = CheckpointID {
         database_type: "postgresql-wal2json".to_string(),
         phase: "full_sync_start".to_string(),
     };
 
-    // Store initial checkpoint
     let checkpoint_data_v1 = r#"{"lsn":"0/1000000","timestamp":"2024-01-01T00:00:00Z"}"#;
     store
         .store_checkpoint(&id, checkpoint_data_v1.to_string())
         .await?;
 
-    // Update the same checkpoint
     let checkpoint_data_v2 = r#"{"lsn":"0/2000000","timestamp":"2024-01-01T01:00:00Z"}"#;
     store
         .store_checkpoint(&id, checkpoint_data_v2.to_string())
         .await?;
 
-    // Read checkpoint - should have the updated value
     let loaded = store.read_checkpoint(&id).await?;
     assert!(loaded.is_some());
     assert_eq!(loaded.unwrap().checkpoint_data, checkpoint_data_v2);
 
-    // Cleanup
-    surreal
-        .query("DELETE $record_id")
-        .bind(("record_id", make_thing("test_checkpoints", &id)))
-        .await?;
+    cleanup_record(&ctx, "test_checkpoints", &id).await?;
 
     Ok(())
 }

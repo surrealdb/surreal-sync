@@ -27,3 +27,5 @@ surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
 tokio = { version = "1.49", features = ["full", "test-util"] }
 tempfile = "3.24"
 surreal-version = { path = "../surreal-version" }
+surrealdb3 = { version = "=3.0.1", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
+checkpoint-surreal3 = { path = "../checkpoint-surreal3" }

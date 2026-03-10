@@ -49,10 +49,12 @@ tokio-test = "0.4"
 tempfile = "3.24"
 surreal-sink = { path = "../surreal-sink" }
 surreal2-sink = { path = "../surreal2-sink" }
+surreal3-sink = { path = "../surreal3-sink" }
 surreal-version = { path = "../surreal-version" }
 
 # SurrealDB for tests
 surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+surrealdb3 = { version = "=3.0.1", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
 
 # HTTP test server
 axum = "0.7"

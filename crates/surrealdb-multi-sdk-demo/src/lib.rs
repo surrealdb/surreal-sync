@@ -166,6 +166,42 @@ mod tests {
             .try_init();
     }
 
+    /// Returns a V2 endpoint, or `None` if the server is unreachable or is not V2.
+    async fn get_v2_endpoint() -> Option<String> {
+        let endpoint = std::env::var("SURREAL_V2_ENDPOINT")
+            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+        match surreal_version::detect_server_version(&endpoint).await {
+            Ok(surreal_version::SurrealMajorVersion::V2) => Some(endpoint),
+            Ok(v) => {
+                eprintln!("Skipping V2 test: server at {endpoint} is {v}");
+                None
+            }
+            Err(e) => {
+                eprintln!("Skipping V2 test: server at {endpoint} unreachable: {e}");
+                None
+            }
+        }
+    }
+
+    /// Returns a V3 endpoint, or `None` if no V3 server is available.
+    ///
+    /// Checks `SURREAL_V3_ENDPOINT` first, then falls back to the default
+    /// endpoint if it happens to be running V3.
+    async fn get_v3_endpoint() -> Option<String> {
+        if let Ok(ep) = std::env::var("SURREAL_V3_ENDPOINT") {
+            return Some(ep);
+        }
+        let default = std::env::var("SURREAL_V2_ENDPOINT")
+            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+        match surreal_version::detect_server_version(&default).await {
+            Ok(surreal_version::SurrealMajorVersion::V3) => Some(default),
+            _ => {
+                eprintln!("Skipping V3 test: SURREAL_V3_ENDPOINT not set and default is not V3");
+                None
+            }
+        }
+    }
+
     /// Test that both SDKs compile and types are properly namespaced
     #[test]
     fn test_types_compile_and_are_distinct() {
@@ -192,23 +228,21 @@ mod tests {
         // V2 Thing and V3 RecordId are different types - mixing them would be a compile error
     }
 
-    /// Test connecting to V2 server (DevContainer default at surrealdb:8000)
-    ///
-    /// This test requires a V2 SurrealDB server to be running.
-    /// In DevContainer, this is available at ws://surrealdb:8000.
+    /// Test connecting to V2 server (DevContainer default at surrealdb:8000).
+    /// Skipped when the server is V3 or unreachable.
     #[tokio::test]
     async fn test_v2_connection() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = std::env::var("SURREAL_V2_ENDPOINT")
-            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+        let endpoint = match get_v2_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
+        };
 
-        // Connect to V2 server - this should succeed
         let client = v2::connect(&endpoint, "test", "demo")
             .await
             .expect("V2 SDK should connect to V2 server");
 
-        // Run demo operations to verify the connection works
         v2::demo_insert_query(&client)
             .await
             .expect("V2 insert/query should succeed");
@@ -216,29 +250,21 @@ mod tests {
         Ok(())
     }
 
-    /// Test connecting to V3 server (typically at localhost:8001)
-    ///
-    /// This test is skipped if SURREAL_V3_ENDPOINT is not set or server is unavailable.
-    /// Set SURREAL_V3_ENDPOINT to enable this test.
+    /// Test connecting to V3 server.
+    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v3_connection() -> anyhow::Result<()> {
         init_logging();
 
-        // Only run this test if V3 endpoint is explicitly configured
-        let endpoint = match std::env::var("SURREAL_V3_ENDPOINT") {
-            Ok(ep) => ep,
-            Err(_) => {
-                eprintln!("Skipping V3 connection test: SURREAL_V3_ENDPOINT not set");
-                return Ok(());
-            }
+        let endpoint = match get_v3_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
         };
 
-        // Connect to V3 server - this should succeed when server is available
         let client = v3::connect(&endpoint, "test", "demo")
             .await
-            .expect("V3 SDK should connect to V3 server when SURREAL_V3_ENDPOINT is set");
+            .expect("V3 SDK should connect to V3 server");
 
-        // Run demo operations to verify the connection works
         v3::demo_insert_query(&client)
             .await
             .expect("V3 insert/query should succeed");
@@ -246,18 +272,17 @@ mod tests {
         Ok(())
     }
 
-    /// Test that V3 SDK cannot connect to V2 server (protocol mismatch)
-    ///
-    /// V2 servers use WebSocket subprotocol "revision", V3 SDK expects "flatbuffers".
-    /// This test verifies the protocol incompatibility.
+    /// Test that V3 SDK cannot connect to V2 server (protocol mismatch).
+    /// Skipped when no V2 server is available.
     #[tokio::test]
     async fn test_v3_sdk_cannot_connect_to_v2_server() -> anyhow::Result<()> {
         init_logging();
 
-        let v2_endpoint = std::env::var("SURREAL_V2_ENDPOINT")
-            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+        let v2_endpoint = match get_v2_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
+        };
 
-        // V3 SDK connecting to V2 server should fail due to protocol mismatch
         let result = v3::connect(&v2_endpoint, "test", "demo").await;
 
         assert!(
@@ -268,24 +293,17 @@ mod tests {
         Ok(())
     }
 
-    /// Test that V2 SDK cannot connect to V3 server (protocol mismatch)
-    ///
-    /// V3 servers use WebSocket subprotocol "flatbuffers", V2 SDK expects "revision".
-    /// This test is skipped if SURREAL_V3_ENDPOINT is not set.
+    /// Test that V2 SDK cannot connect to V3 server (protocol mismatch).
+    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v2_sdk_cannot_connect_to_v3_server() -> anyhow::Result<()> {
         init_logging();
 
-        // Only run this test if V3 endpoint is explicitly configured
-        let v3_endpoint = match std::env::var("SURREAL_V3_ENDPOINT") {
-            Ok(ep) => ep,
-            Err(_) => {
-                eprintln!("Skipping V2-to-V3 mismatch test: SURREAL_V3_ENDPOINT not set");
-                return Ok(());
-            }
+        let v3_endpoint = match get_v3_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
         };
 
-        // V2 SDK connecting to V3 server should fail due to protocol mismatch
         let result = v2::connect(&v3_endpoint, "test", "demo").await;
 
         assert!(
@@ -296,13 +314,16 @@ mod tests {
         Ok(())
     }
 
-    /// Test V2 SDK deserializing query results to custom struct
+    /// Test V2 SDK deserializing query results to custom struct.
+    /// Skipped when the server is V3 or unreachable.
     #[tokio::test]
     async fn test_v2_query_deserialize_to_struct() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = std::env::var("SURREAL_V2_ENDPOINT")
-            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+        let endpoint = match get_v2_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
+        };
 
         let client = v2::connect(&endpoint, "test", "demo_struct_test").await?;
 
@@ -334,21 +355,15 @@ mod tests {
         Ok(())
     }
 
-    /// Test V3 SDK deserializing query results to custom struct
-    ///
-    /// V3 SDK requires SurrealValue trait for .take(). Use #[derive(SurrealValue)]
-    /// on the struct to enable direct deserialization.
+    /// Test V3 SDK deserializing query results to custom struct.
+    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v3_query_deserialize_to_struct() -> anyhow::Result<()> {
         init_logging();
 
-        // Only run this test if V3 endpoint is explicitly configured
-        let endpoint = match std::env::var("SURREAL_V3_ENDPOINT") {
-            Ok(ep) => ep,
-            Err(_) => {
-                eprintln!("Skipping V3 struct deserialization test: SURREAL_V3_ENDPOINT not set");
-                return Ok(());
-            }
+        let endpoint = match get_v3_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
         };
 
         let client = v3::connect(&endpoint, "test", "demo_struct_test").await?;
@@ -386,16 +401,16 @@ mod tests {
         Ok(())
     }
 
-    /// Test that V2 SDK handles DELETE on non-existent tables gracefully
-    ///
-    /// V2 SDK does not throw an error when deleting from a table that doesn't exist.
-    /// This is the expected behavior for cleanup operations.
+    /// Test that V2 SDK handles DELETE on non-existent tables gracefully.
+    /// Skipped when the server is V3 or unreachable.
     #[tokio::test]
     async fn test_v2_delete_nonexistent_table() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = std::env::var("SURREAL_V2_ENDPOINT")
-            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+        let endpoint = match get_v2_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
+        };
 
         let client = v2::connect(&endpoint, "test", "demo_delete_test").await?;
 
@@ -414,23 +429,15 @@ mod tests {
         Ok(())
     }
 
-    /// Test that V3 SDK behavior for DELETE on non-existent tables
-    ///
-    /// V3 SDK may have different behavior for deleting from non-existent tables.
-    /// This test documents the observed behavior.
+    /// Test that V3 SDK handles DELETE on non-existent tables gracefully.
+    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v3_delete_nonexistent_table() -> anyhow::Result<()> {
         init_logging();
 
-        // Only run this test if V3 endpoint is explicitly configured
-        let endpoint = match std::env::var("SURREAL_V3_ENDPOINT") {
-            Ok(ep) => ep,
-            Err(_) => {
-                eprintln!(
-                    "Skipping V3 DELETE non-existent table test: SURREAL_V3_ENDPOINT not set"
-                );
-                return Ok(());
-            }
+        let endpoint = match get_v3_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
         };
 
         let client = v3::connect(&endpoint, "test", "demo_delete_test").await?;
@@ -452,19 +459,16 @@ mod tests {
         Ok(())
     }
 
-    /// Test V2 SDK decimal deserialization behavior - comprehensive test
-    ///
-    /// This test verifies how V2 SDK handles reading decimal values with all approaches:
-    /// - as f64 (direct coercion)
-    /// - as rust_decimal::Decimal (native type)
-    /// - as String (implicit conversion)
-    /// - with SurrealQL <float> cast
+    /// Test V2 SDK decimal deserialization behavior.
+    /// Skipped when the server is V3 or unreachable.
     #[tokio::test]
     async fn test_v2_decimal_deserialization() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = std::env::var("SURREAL_V2_ENDPOINT")
-            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+        let endpoint = match get_v2_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
+        };
 
         let client = v2::connect(&endpoint, "test", "demo_decimal_test").await?;
 
@@ -538,23 +542,15 @@ mod tests {
         Ok(())
     }
 
-    /// Test V3 SDK decimal deserialization behavior - comprehensive test
-    ///
-    /// This test verifies how V3 SDK handles reading decimal values with all approaches:
-    /// - as f64 (direct coercion)
-    /// - as rust_decimal::Decimal (native type)
-    /// - as String (implicit conversion)
-    /// - with SurrealQL <float> cast
+    /// Test V3 SDK decimal deserialization behavior.
+    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v3_decimal_deserialization() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match std::env::var("SURREAL_V3_ENDPOINT") {
-            Ok(ep) => ep,
-            Err(_) => {
-                eprintln!("Skipping V3 decimal test: SURREAL_V3_ENDPOINT not set");
-                return Ok(());
-            }
+        let endpoint = match get_v3_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
         };
 
         let client = v3::connect(&endpoint, "test", "demo_decimal_test").await?;
@@ -665,20 +661,16 @@ mod tests {
         Ok(())
     }
 
-    /// Test V2 SDK decimal storage using proper `dec` suffix
-    ///
-    /// SurrealDB types:
-    /// - `int`: 64-bit integer (i64)
-    /// - `float`: 64-bit floating point (f64)
-    /// - `decimal`: 128-bit decimal
-    ///
-    /// Use `dec` suffix to create decimal literals: `123.45dec`
+    /// Test V2 SDK decimal storage using proper `dec` suffix.
+    /// Skipped when the server is V3 or unreachable.
     #[tokio::test]
     async fn test_v2_decimal_storage_with_dec_suffix() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = std::env::var("SURREAL_V2_ENDPOINT")
-            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
+        let endpoint = match get_v2_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
+        };
 
         let client = v2::connect(&endpoint, "test", "demo_decimal_limits").await?;
 
@@ -721,17 +713,15 @@ mod tests {
         Ok(())
     }
 
-    /// Test V3 SDK decimal storage using proper `dec` suffix
+    /// Test V3 SDK decimal storage using proper `dec` suffix.
+    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v3_decimal_storage_with_dec_suffix() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match std::env::var("SURREAL_V3_ENDPOINT") {
-            Ok(ep) => ep,
-            Err(_) => {
-                eprintln!("Skipping V3 decimal limits test: SURREAL_V3_ENDPOINT not set");
-                return Ok(());
-            }
+        let endpoint = match get_v3_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
         };
 
         let client = v3::connect(&endpoint, "test", "demo_decimal_limits").await?;
@@ -775,21 +765,15 @@ mod tests {
         Ok(())
     }
 
-    /// Test V3 SDK cleanup pattern with proper error handling
-    ///
-    /// This test demonstrates the recommended pattern for cleaning up tables
-    /// that may or may not exist in V3 SDK.
+    /// Test V3 SDK cleanup pattern with proper error handling.
+    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v3_cleanup_pattern() -> anyhow::Result<()> {
         init_logging();
 
-        // Only run this test if V3 endpoint is explicitly configured
-        let endpoint = match std::env::var("SURREAL_V3_ENDPOINT") {
-            Ok(ep) => ep,
-            Err(_) => {
-                eprintln!("Skipping V3 cleanup pattern test: SURREAL_V3_ENDPOINT not set");
-                return Ok(());
-            }
+        let endpoint = match get_v3_endpoint().await {
+            Some(ep) => ep,
+            None => return Ok(()),
         };
 
         let client = v3::connect(&endpoint, "test", "demo_cleanup_test").await?;

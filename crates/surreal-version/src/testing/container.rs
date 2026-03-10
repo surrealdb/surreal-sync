@@ -10,6 +10,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 use tracing::{debug, info};
 
+use crate::SurrealMajorVersion;
+
 const DEFAULT_IMAGE: &str = "surrealdb/surrealdb:v2.3.7";
 
 /// A test SurrealDB container backed by Docker with dynamic port binding.
@@ -17,6 +19,8 @@ pub struct SurrealDbContainer {
     pub container_name: String,
     pub host_port: u16,
     image: String,
+    /// The server's major version, populated by `wait_until_ready()`.
+    pub detected_version: Option<SurrealMajorVersion>,
 }
 
 impl SurrealDbContainer {
@@ -31,6 +35,7 @@ impl SurrealDbContainer {
             container_name: container_name.to_string(),
             host_port: 0,
             image,
+            detected_version: None,
         }
     }
 
@@ -93,7 +98,7 @@ impl SurrealDbContainer {
     ///
     /// We avoid `reqwest::blocking` here because its internal tokio runtime
     /// conflicts with `#[tokio::test]` when the container is dropped.
-    pub fn wait_until_ready(&self, timeout_secs: u64) -> Result<()> {
+    pub fn wait_until_ready(&mut self, timeout_secs: u64) -> Result<()> {
         info!("Waiting for SurrealDB to be ready...");
 
         let start = Instant::now();
@@ -121,7 +126,10 @@ impl SurrealDbContainer {
                             if let Some(version_line) =
                                 response.lines().last().filter(|l| l.contains("surrealdb-"))
                             {
-                                info!("SurrealDB is ready! Version: {}", version_line.trim());
+                                let trimmed = version_line.trim();
+                                info!("SurrealDB is ready! Version: {}", trimmed);
+                                self.detected_version =
+                                    crate::parse_version_string(trimmed).ok();
                             } else {
                                 info!("SurrealDB is ready!");
                             }
@@ -149,6 +157,11 @@ impl SurrealDbContainer {
     /// Returns an HTTP endpoint URL.
     pub fn http_endpoint(&self) -> String {
         format!("http://localhost:{}", self.host_port)
+    }
+
+    /// Returns `true` when the container is running SurrealDB v3.
+    pub fn is_v3(&self) -> bool {
+        self.detected_version == Some(SurrealMajorVersion::V3)
     }
 
     pub fn stop(&self) -> Result<()> {
