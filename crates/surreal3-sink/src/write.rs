@@ -2,12 +2,25 @@ use crate::Change;
 use std::collections::HashMap;
 use std::time::Duration;
 use surreal3_types::{RecordWithSurrealValues as Record, Relation, SurrealValue};
-use surrealdb::types::RecordId;
+use surrealdb::types::{Number, RecordId, RecordIdKey, Value};
 use surrealdb::Surreal;
 use sync_core::{UniversalChange, UniversalChangeOp, UniversalRelationChange};
 use tokio::time::sleep;
 
 use crate::rows::{universal_relation_to_surreal_relation, universal_value_to_surreal_id};
+
+/// Convert a `RecordIdKey` to a `Value` suitable for parameter binding.
+///
+/// SurrealDB v3 rejects `RecordId`-typed parameters in RELATE/DELETE positions,
+/// so we decompose the record ID and use `type::record($tb, $key)` server-side.
+fn record_id_key_to_value(key: &RecordIdKey) -> Value {
+    match key {
+        RecordIdKey::String(s) => Value::String(s.clone()),
+        RecordIdKey::Number(n) => Value::Number(Number::Int(*n)),
+        RecordIdKey::Uuid(u) => Value::Uuid(*u),
+        other => Value::String(format!("{other:?}")),
+    }
+}
 
 /// Maximum number of retries for retriable transaction errors
 const MAX_RETRIES: u32 = 5;
@@ -33,12 +46,13 @@ pub async fn apply_change(
             tracing::trace!("Successfully upserted record: {record:?}");
         }
         Change::DeleteRecord(record_id) => {
-            let query = "DELETE $record_id".to_string();
+            let query = "DELETE type::record($record_tb, $record_key)".to_string();
             tracing::trace!("Executing SurrealDB query: {}", query);
             log::info!("🔧 migrate_change executing: {query} for record: {record_id:?}");
 
             let mut q = surreal.query(query);
-            q = q.bind(("record_id", record_id.clone()));
+            q = q.bind(("record_tb", record_id.table.to_string()));
+            q = q.bind(("record_key", record_id_key_to_value(&record_id.key)));
 
             q.await?;
 
@@ -50,12 +64,13 @@ pub async fn apply_change(
             tracing::trace!("Successfully upserted relation: {relation:?}");
         }
         Change::DeleteRelation(record_id) => {
-            let query = "DELETE $relation_id".to_string();
+            let query = "DELETE type::record($relation_tb, $relation_key)".to_string();
             tracing::trace!("Executing SurrealDB query: {}", query);
             log::info!("🔧 migrate_change executing: {query} for relation: {record_id:?}");
 
             let mut q = surreal.query(query);
-            q = q.bind(("relation_id", record_id.clone()));
+            q = q.bind(("relation_tb", record_id.table.to_string()));
+            q = q.bind(("relation_key", record_id_key_to_value(&record_id.key)));
             q.await?;
             tracing::trace!("Successfully deleted relation: {record_id:?}");
         }
@@ -101,11 +116,12 @@ pub async fn apply_universal_change(
             tracing::trace!("Successfully upserted record: {record_id:?}");
         }
         UniversalChangeOp::Delete => {
-            let query = "DELETE $record_id".to_string();
+            let query = "DELETE type::record($record_tb, $record_key)".to_string();
             tracing::trace!("Executing SurrealDB query: {}", query);
 
             let mut q = surreal.query(query);
-            q = q.bind(("record_id", record_id.clone()));
+            q = q.bind(("record_tb", record_id.table.to_string()));
+            q = q.bind(("record_key", record_id_key_to_value(&record_id.key)));
             q.await?;
 
             tracing::trace!("Successfully deleted record: {record_id:?}");
@@ -258,10 +274,12 @@ pub async fn write_relation(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     r: &Relation,
 ) -> anyhow::Result<()> {
-    // Build parameterized query using proper variable binding to prevent injection
-    // In v3, RecordId uses .table instead of .tb
-    // In v3, RecordId uses .table field instead of .tb
-    let query = format!("RELATE $in->{}->$out CONTENT $content", r.id.table);
+    // SurrealDB v3 rejects RecordId-typed params in RELATE positions, so we
+    // decompose into table+key and reconstruct with type::record() server-side.
+    let query = format!(
+        "RELATE type::record($in_tb, $in_key)->{}->type::record($out_tb, $out_key) CONTENT $content",
+        r.id.table
+    );
 
     let record_id = &r.id;
 
@@ -299,8 +317,10 @@ pub async fn write_relation(
 
         // Build query with proper parameter binding
         let mut q = surreal.query(query.clone());
-        q = q.bind(("in", r.get_in()));
-        q = q.bind(("out", r.get_out()));
+        q = q.bind(("in_tb", r.input.table.to_string()));
+        q = q.bind(("in_key", record_id_key_to_value(&r.input.key)));
+        q = q.bind(("out_tb", r.output.table.to_string()));
+        q = q.bind(("out_key", record_id_key_to_value(&r.output.key)));
         q = q.bind(("content", r.get_relate_content()));
 
         let response_result: Result<surrealdb::IndexedResults, surrealdb::Error> = q.await;
@@ -423,15 +443,12 @@ pub async fn apply_universal_relation_change(
         }
         UniversalChangeOp::Delete => {
             let surreal_id = universal_value_to_surreal_id(&change.relation.id)?;
-            let thing = RecordId::new(
-                change.relation.relation_type.as_str(),
-                surreal_id,
-            );
-            let query = "DELETE $relation_id".to_string();
+            let query = "DELETE type::record($relation_tb, $relation_key)".to_string();
             let mut q = surreal.query(query);
-            q = q.bind(("relation_id", thing.clone()));
+            q = q.bind(("relation_tb", change.relation.relation_type.clone()));
+            q = q.bind(("relation_key", record_id_key_to_value(&surreal_id)));
             q.await?;
-            tracing::trace!("Successfully deleted relation: {:?}", thing);
+            tracing::trace!("Successfully deleted relation for table: {:?}", change.relation.relation_type);
         }
     }
     Ok(())

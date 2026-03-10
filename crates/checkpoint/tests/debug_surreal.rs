@@ -88,8 +88,13 @@ async fn debug_update_and_select_v2(db: &SurrealDbContainer) -> anyhow::Result<(
     assert_eq!(records2[0], updated_record, "Record should be updated");
 
     surreal
-        .query("DELETE $record_id")
-        .bind(("record_id", thing))
+        .query("DELETE type::thing($record_tb, $record_id)")
+        .bind(("record_tb", thing.tb.clone()))
+        .bind(("record_id", match &thing.id {
+            surrealdb::sql::Id::String(s) => surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(s.as_str())),
+            surrealdb::sql::Id::Number(n) => surrealdb::sql::Value::Number(surrealdb::sql::Number::Int(*n)),
+            other => surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(format!("{other:?}"))),
+        }))
         .await?;
 
     Ok(())
@@ -170,9 +175,16 @@ async fn debug_update_and_select_v3(db: &SurrealDbContainer) -> anyhow::Result<(
     assert_eq!(records2.len(), 1, "Should have one record");
     assert_eq!(records2[0], updated_record, "Record should be updated");
 
+    let key_value: surrealdb3::types::Value = match &record_id.key {
+        surrealdb3::types::RecordIdKey::String(s) => surrealdb3::types::Value::String(s.clone()),
+        surrealdb3::types::RecordIdKey::Number(n) => surrealdb3::types::Value::Number(surrealdb3::types::Number::Int(*n)),
+        surrealdb3::types::RecordIdKey::Uuid(u) => surrealdb3::types::Value::Uuid(*u),
+        other => surrealdb3::types::Value::String(format!("{other:?}")),
+    };
     surreal
-        .query("DELETE $record_id")
-        .bind(("record_id", record_id))
+        .query("DELETE type::record($record_tb, $record_key)")
+        .bind(("record_tb", record_id.table.to_string()))
+        .bind(("record_key", key_value))
         .await?;
 
     Ok(())

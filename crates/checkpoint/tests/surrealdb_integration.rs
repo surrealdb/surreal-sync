@@ -68,21 +68,17 @@ async fn cleanup_record(ctx: &TestCtx, table: &str, id: &CheckpointID) -> anyhow
     let id_str = format!("{}_{}", id.database_type.replace('-', "_"), id.phase);
     match ctx {
         TestCtx::V2 { client, .. } => {
-            let thing =
-                surrealdb::sql::Thing::from((table, surrealdb::sql::Id::String(id_str)));
             client
-                .query("DELETE $record_id")
-                .bind(("record_id", thing))
+                .query("DELETE type::thing($record_tb, $record_id)")
+                .bind(("record_tb", table.to_string()))
+                .bind(("record_id", surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(id_str))))
                 .await?;
         }
         TestCtx::V3 { client, .. } => {
-            let record_id = surrealdb3::types::RecordId::new(
-                table,
-                surrealdb3::types::RecordIdKey::String(id_str),
-            );
             client
-                .query("DELETE $record_id")
-                .bind(("record_id", record_id))
+                .query("DELETE type::record($record_tb, $record_key)")
+                .bind(("record_tb", table.to_string()))
+                .bind(("record_key", surrealdb3::types::Value::String(id_str)))
                 .await?;
         }
     }
