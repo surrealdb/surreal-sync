@@ -185,27 +185,34 @@ async fn verify_fk_sync_v2(
 async fn verify_fk_sync_v3(
     client: &surrealdb3::Surreal<surrealdb3::engine::any::Any>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // For v3, we use string-based queries and check the structure
+    use surrealdb3::types::Value;
+
     let mut resp = client.query("SELECT * FROM books:1").await?;
-    let result: Option<serde_json::Value> = resp.take(0)?;
+    let result: Option<Value> = resp.take(0)?;
     if let Some(record) = result {
-        println!("books:1 in SurrealDB v3: {}", serde_json::to_string_pretty(&record)?);
-        // author_id should be a record link (represented as string "authors:1" in JSON)
-        if let Some(author_id) = record.get("author_id") {
-            let author_str = author_id.to_string();
-            assert!(
-                author_str.contains("authors"),
-                "books:1.author_id should reference authors table, got: {author_str}"
-            );
-            println!("PASS: books:1.author_id = {author_str} (record link to authors)");
+        println!("books:1 in SurrealDB v3: {record:?}");
+        if let Value::Object(obj) = &record {
+            if let Some(author_id) = obj.get("author_id") {
+                let author_str = format!("{author_id:?}");
+                assert!(
+                    author_str.contains("authors"),
+                    "books:1.author_id should reference authors table, got: {author_str}"
+                );
+                println!("PASS: books:1.author_id = {author_str} (record link to authors)");
+            }
         }
     }
 
     let mut resp = client.query("SELECT count() FROM book_tags GROUP ALL").await?;
-    let result: Option<serde_json::Value> = resp.take(0)?;
-    if let Some(count_obj) = result {
-        println!("book_tags count: {}", serde_json::to_string(&count_obj)?);
-        let count = count_obj.get("count").and_then(|v| v.as_i64());
+    let result: Option<Value> = resp.take(0)?;
+    if let Some(Value::Object(obj)) = result {
+        println!("book_tags count: {obj:?}");
+        let count = match obj.get("count") {
+            Some(Value::Number(n)) => {
+                if let surrealdb3::types::Number::Int(i) = n { Some(*i) } else { None }
+            }
+            _ => None,
+        };
         assert_eq!(count, Some(3), "Should have 3 book_tag relation edges");
         println!("PASS: book_tags has 3 relation edges");
     }
@@ -213,10 +220,10 @@ async fn verify_fk_sync_v3(
     let mut resp = client
         .query("SELECT ->book_tags->tags AS linked_tags FROM books:1")
         .await?;
-    let result: Option<serde_json::Value> = resp.take(0)?;
-    if let Some(obj) = result {
-        println!("books:1 graph traversal: {}", serde_json::to_string_pretty(&obj)?);
-        if let Some(tags) = obj.get("linked_tags").and_then(|v| v.as_array()) {
+    let result: Option<Value> = resp.take(0)?;
+    if let Some(Value::Object(obj)) = result {
+        println!("books:1 graph traversal: {obj:?}");
+        if let Some(Value::Array(tags)) = obj.get("linked_tags") {
             assert_eq!(tags.len(), 2, "books:1 should link to 2 tags");
             println!("PASS: books:1 ->book_tags-> tags has 2 entries (graph traversal works)");
         }
@@ -335,12 +342,19 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
                 .await?;
             }
 
+            use surrealdb3::types::Value;
+
             let mut resp = client
                 .query("SELECT count() FROM mentorship GROUP ALL")
                 .await?;
-            let result: Option<serde_json::Value> = resp.take(0)?;
-            if let Some(obj) = result {
-                let count = obj.get("count").and_then(|v| v.as_i64());
+            let result: Option<Value> = resp.take(0)?;
+            if let Some(Value::Object(obj)) = result {
+                let count = match obj.get("count") {
+                    Some(Value::Number(n)) => {
+                        if let surrealdb3::types::Number::Int(i) = n { Some(*i) } else { None }
+                    }
+                    _ => None,
+                };
                 assert_eq!(count, Some(2), "Should have 2 mentorship edges");
                 println!("PASS: mentorship has 2 relation edges (forced via config override)");
             }
@@ -348,11 +362,17 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
             let mut resp = client
                 .query("SELECT ->mentorship->people AS outward, <-mentorship<-people AS inward FROM people:1")
                 .await?;
-            let result: Option<serde_json::Value> = resp.take(0)?;
-            if let Some(obj) = result {
-                println!("people:1 graph traversal: {}", serde_json::to_string_pretty(&obj)?);
-                let out_count = obj.get("outward").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-                let in_count = obj.get("inward").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            let result: Option<Value> = resp.take(0)?;
+            if let Some(Value::Object(obj)) = result {
+                println!("people:1 graph traversal: {obj:?}");
+                let out_count = match obj.get("outward") {
+                    Some(Value::Array(a)) => a.len(),
+                    _ => 0,
+                };
+                let in_count = match obj.get("inward") {
+                    Some(Value::Array(a)) => a.len(),
+                    _ => 0,
+                };
                 assert_eq!(out_count + in_count, 2, "people:1 linked to 2 via mentorship");
                 println!("PASS: people:1 mentorship links total={}", out_count + in_count);
             }

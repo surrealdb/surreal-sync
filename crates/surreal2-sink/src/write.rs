@@ -22,6 +22,45 @@ fn id_to_sql_value(id: &sql::Id) -> sql::Value {
     }
 }
 
+/// Replace `sql::Value::Thing` with its string representation recursively.
+///
+/// SurrealDB v2 can reject Thing-typed values inside bound Object parameters.
+/// Converting to `"table:key"` strings avoids the rejection while preserving
+/// the reference information for downstream verification.
+fn sanitize_sql_value(value: sql::Value) -> sql::Value {
+    match value {
+        sql::Value::Thing(thing) => {
+            let id_str = match &thing.id {
+                sql::Id::String(s) => s.clone(),
+                sql::Id::Number(n) => n.to_string(),
+                sql::Id::Uuid(u) => {
+                    let inner: uuid::Uuid = (*u).into();
+                    inner.to_string()
+                }
+                other => format!("{other:?}"),
+            };
+            sql::Value::Strand(sql::Strand::from(format!("{}:{}", thing.tb, id_str)))
+        }
+        sql::Value::Object(obj) => {
+            let sanitized: std::collections::BTreeMap<String, sql::Value> = obj
+                .0
+                .into_iter()
+                .map(|(k, v)| (k, sanitize_sql_value(v)))
+                .collect();
+            sql::Value::Object(sql::Object::from(sanitized))
+        }
+        sql::Value::Array(arr) => {
+            let sanitized: Vec<sql::Value> = arr
+                .0
+                .into_iter()
+                .map(sanitize_sql_value)
+                .collect();
+            sql::Value::Array(sql::Array::from(sanitized))
+        }
+        other => other,
+    }
+}
+
 /// Maximum number of retries for retriable transaction errors
 const MAX_RETRIES: u32 = 5;
 /// Base delay between retries (will be multiplied by retry attempt for backoff)
@@ -138,17 +177,15 @@ pub async fn write_record(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     document: &Record,
 ) -> anyhow::Result<()> {
-    let upsert_content = document.get_upsert_content();
     let record_id = &document.id;
+    let upsert_content = sanitize_sql_value(document.get_upsert_content());
 
-    // Build parameterized query using proper variable binding to prevent injection
     let query = "UPSERT $record_id CONTENT $content".to_string();
 
     tracing::trace!("Executing SurrealDB query with flattened fields: {}", query);
 
     log::info!("🔧 migrate_batch executing: {query} for record: {record_id:?}");
 
-    // Add debug logging to see the document being bound
     if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
         tracing::debug!("Binding document to SurrealDB query for record {document:?}",);
     }
@@ -168,7 +205,6 @@ pub async fn write_record(
             sleep(Duration::from_millis(delay_ms)).await;
         }
 
-        // Build query with proper parameter binding
         let mut q = surreal.query(query.clone());
         q = q.bind(("record_id", record_id.clone()));
         q = q.bind(("content", upsert_content.clone()));
@@ -230,7 +266,7 @@ pub async fn write_record(
                     e
                 );
                 if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                    tracing::error!("Failed query content: {upsert_content:?}");
+                    tracing::error!("Failed query content: {:?}", document.data);
                 }
                 return Err(e.into());
             }
@@ -269,17 +305,32 @@ pub async fn write_records(
     Ok(())
 }
 
+/// Format a v2 `sql::Id` as a SurrealQL literal for inline embedding.
+fn format_sql_id(id: &sql::Id) -> String {
+    match id {
+        sql::Id::String(s) => format!("⟨{s}⟩"),
+        sql::Id::Number(n) => n.to_string(),
+        sql::Id::Uuid(u) => {
+            let inner: uuid::Uuid = (*u).into();
+            format!("u'{inner}'")
+        }
+        other => format!("⟨{other:?}⟩"),
+    }
+}
+
 pub async fn write_relation(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     r: &Relation,
 ) -> anyhow::Result<()> {
-    // SurrealDB v2 can reject Thing-typed params in RELATE positions, and
-    // type::thing() cannot be inlined in RELATE targets (parse error).
-    // Use LET to pre-compute the record IDs from decomposed table+id parts.
+    // SurrealDB can reject Thing-typed params in RELATE positions and inside
+    // bound Object params. Format in/out as SurrealQL literals and sanitize content.
+    let relate_content = sanitize_sql_value(r.get_relate_content());
+
+    let in_literal = format!("{}:{}", r.input.tb, format_sql_id(&r.input.id));
+    let out_literal = format!("{}:{}", r.output.tb, format_sql_id(&r.output.id));
+
     let query = format!(
-        "LET $from = type::thing($in_tb, $in_id); \
-         LET $to = type::thing($out_tb, $out_id); \
-         RELATE $from->{}->$to CONTENT $content",
+        "RELATE {in_literal}->{}->{out_literal} CONTENT $content",
         r.id.tb
     );
 
@@ -288,7 +339,6 @@ pub async fn write_relation(
     tracing::trace!("Executing SurrealDB query with flattened fields: {}", query);
     log::info!("🔧 migrate_batch executing: {query} for record: {record_id:?}");
 
-    // Add debug logging to see the document being bound
     if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
         tracing::debug!(
             "Binding document to SurrealDB query for record {:?}: {:?}",
@@ -312,21 +362,15 @@ pub async fn write_relation(
             sleep(Duration::from_millis(delay_ms)).await;
         }
 
-        // Build query with proper parameter binding
         let mut q = surreal.query(query.clone());
-        q = q.bind(("in_tb", r.input.tb.clone()));
-        q = q.bind(("in_id", id_to_sql_value(&r.input.id)));
-        q = q.bind(("out_tb", r.output.tb.clone()));
-        q = q.bind(("out_id", id_to_sql_value(&r.output.id)));
-        q = q.bind(("content", r.get_relate_content()));
+        q = q.bind(("content", relate_content.clone()));
 
         let response_result: Result<surrealdb::Response, surrealdb::Error> = q.await;
 
         match response_result {
             Ok(mut response) => {
-                // Statement index 2 = RELATE (after two LET statements)
                 let result: Result<Vec<surrealdb::sql::Thing>, surrealdb::Error> =
-                    response.take((2, "id")).map_err(|e| {
+                    response.take("id").map_err(|e| {
                         tracing::error!(
                             "SurrealDB response.take() failed for record {:?}: {}",
                             record_id,

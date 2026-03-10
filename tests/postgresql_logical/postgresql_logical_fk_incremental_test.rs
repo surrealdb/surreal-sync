@@ -241,11 +241,13 @@ async fn verify_fk_incremental_v2(
 async fn verify_fk_incremental_v3(
     client: &surrealdb3::Surreal<surrealdb3::engine::any::Any>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use surrealdb3::types::Value;
+
     let mut resp = client.query("SELECT * FROM books:1").await?;
-    let result: Option<serde_json::Value> = resp.take(0)?;
-    if let Some(record) = result {
-        if let Some(author_id) = record.get("author_id") {
-            let s = author_id.to_string();
+    let result: Option<Value> = resp.take(0)?;
+    if let Some(Value::Object(obj)) = result {
+        if let Some(author_id) = obj.get("author_id") {
+            let s = format!("{author_id:?}");
             assert!(
                 s.contains("authors"),
                 "wal2json incremental v3: books:1.author_id should reference authors, got: {s}"
@@ -257,9 +259,14 @@ async fn verify_fk_incremental_v3(
     let mut resp = client
         .query("SELECT count() FROM book_tags GROUP ALL")
         .await?;
-    let result: Option<serde_json::Value> = resp.take(0)?;
-    if let Some(obj) = result {
-        let count = obj.get("count").and_then(|v| v.as_i64());
+    let result: Option<Value> = resp.take(0)?;
+    if let Some(Value::Object(obj)) = result {
+        let count = match obj.get("count") {
+            Some(Value::Number(n)) => {
+                if let surrealdb3::types::Number::Int(i) = n { Some(*i) } else { None }
+            }
+            _ => None,
+        };
         assert_eq!(count, Some(3), "wal2json incremental v3: 3 book_tag edges");
         println!("PASS [wal2json-incremental-v3]: book_tags has 3 edges");
     }
@@ -267,10 +274,16 @@ async fn verify_fk_incremental_v3(
     let mut resp = client
         .query("SELECT ->book_tags->tags AS outward, <-book_tags<-tags AS inward FROM books:1")
         .await?;
-    let result: Option<serde_json::Value> = resp.take(0)?;
-    if let Some(obj) = result {
-        let out_count = obj.get("outward").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
-        let in_count = obj.get("inward").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+    let result: Option<Value> = resp.take(0)?;
+    if let Some(Value::Object(obj)) = result {
+        let out_count = match obj.get("outward") {
+            Some(Value::Array(a)) => a.len(),
+            _ => 0,
+        };
+        let in_count = match obj.get("inward") {
+            Some(Value::Array(a)) => a.len(),
+            _ => 0,
+        };
         assert_eq!(out_count + in_count, 2, "wal2json incremental v3: books:1 linked to 2 tags");
         println!("PASS [wal2json-incremental-v3]: graph traversal OK (total={})", out_count + in_count);
     }
