@@ -4,7 +4,7 @@
 //!
 //! This crate uses Cargo's package aliasing feature to import both SDK versions:
 //! - `surrealdb2` = SurrealDB SDK 2.3.7
-//! - `surrealdb3` = SurrealDB SDK 3.0.0-beta.2
+//! - `surrealdb3` = SurrealDB SDK 3.0.1
 //!
 //! ## Key Findings
 //!
@@ -73,7 +73,7 @@ pub mod v2 {
 // V3 SDK Types and Functions
 // ============================================================================
 
-/// V3 SDK types (from surrealdb 3.0.0-beta.2)
+/// V3 SDK types (from surrealdb 3.0.1)
 pub mod v3 {
     pub use surrealdb3::engine::any::Any;
     pub use surrealdb3::opt::auth::Root;

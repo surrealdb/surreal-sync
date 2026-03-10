@@ -44,7 +44,7 @@ impl std::fmt::Display for SurrealMajorVersion {
 /// # Example responses from /version:
 ///
 /// - "surrealdb-2.4.1" -> V2
-/// - "surrealdb-3.0.0-beta.2" -> V3
+/// - "surrealdb-3.0.1" -> V3
 pub async fn detect_server_version(endpoint: &str) -> anyhow::Result<SurrealMajorVersion> {
     // Convert ws:// to http:// for version check
     let http_endpoint = endpoint
@@ -77,7 +77,7 @@ pub async fn detect_server_version(endpoint: &str) -> anyhow::Result<SurrealMajo
     parse_version_string(&version_string)
 }
 
-/// Parse a SurrealDB version string like "surrealdb-2.4.1" or "surrealdb-3.0.0-beta.2".
+/// Parse a SurrealDB version string like "surrealdb-2.4.1" or "surrealdb-3.0.1".
 ///
 /// Returns the major version (V2 or V3).
 pub fn parse_version_string(version_string: &str) -> anyhow::Result<SurrealMajorVersion> {
@@ -85,7 +85,7 @@ pub fn parse_version_string(version_string: &str) -> anyhow::Result<SurrealMajor
 
     tracing::debug!("Parsing SurrealDB version string: '{version_string}'");
 
-    // Parse version string like "surrealdb-2.4.1" or "surrealdb-3.0.0-beta.2"
+    // Parse version string like "surrealdb-2.4.1" or "surrealdb-3.0.1"
     let version_part = version_string.strip_prefix("surrealdb-").ok_or_else(|| {
         anyhow::anyhow!(
             "Invalid version format: '{version_string}'. Expected format: 'surrealdb-X.Y.Z'"

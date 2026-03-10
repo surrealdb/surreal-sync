@@ -34,7 +34,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # SurrealDB SDK v2 (aliased for coexistence with v3)
 surrealdb2 = { version = "2.3.7", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
 # SurrealDB SDK v3 (aliased for coexistence with v2)
-surrealdb3 = { version = "3.0.0-beta.2", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
+surrealdb3 = { version = "=3.0.1", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
 mongodb = "3.2.4"
 bson = { version = "2.15.0", features = ["chrono-0_4"] }
 chrono = "0.4.41"

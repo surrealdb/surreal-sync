@@ -6,7 +6,7 @@ description = "SurrealDB v3 connection and write utilities"
 license = "MIT"
 
 [dependencies]
-surrealdb = { version = "3.0.0-beta.2", features = ["protocol-ws", "kv-mem"] }
+surrealdb = { version = "=3.0.1", features = ["protocol-ws", "kv-mem"] }
 surreal3-types = { path = "../surreal3-types" }
 surreal-sink = { path = "../surreal-sink" }
 sync-core = { path = "../sync-core" }

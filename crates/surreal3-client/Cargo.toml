@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 surreal-client = { path = "../surreal-client" }
-surrealdb = { version = "3.0.0-beta.2", features = ["protocol-ws", "kv-mem"] }
+surrealdb = { version = "=3.0.1", features = ["protocol-ws", "kv-mem"] }
 anyhow = "1.0.100"
 async-trait = "0.1"
 tracing = "0.1"

@@ -21,9 +21,24 @@ fn resolve_binary_path() -> String {
         return bin;
     }
     if let Ok(cwd) = std::env::current_dir() {
-        let local = cwd.join("target/release/surreal-sync");
-        if local.exists() {
-            return local.to_string_lossy().to_string();
+        let release = cwd.join("target/release/surreal-sync");
+        let debug = cwd.join("target/debug/surreal-sync");
+        match (release.exists(), debug.exists()) {
+            (true, true) => {
+                // Pick whichever was compiled more recently so that
+                // `cargo test` (debug) and `make test` (release-then-test)
+                // both use the binary that matches the code under test.
+                let r_mtime = std::fs::metadata(&release).and_then(|m| m.modified()).ok();
+                let d_mtime = std::fs::metadata(&debug).and_then(|m| m.modified()).ok();
+                return match (r_mtime, d_mtime) {
+                    (Some(r), Some(d)) if r >= d => release.to_string_lossy().to_string(),
+                    (Some(_), Some(_)) => debug.to_string_lossy().to_string(),
+                    _ => release.to_string_lossy().to_string(),
+                };
+            }
+            (true, false) => return release.to_string_lossy().to_string(),
+            (false, true) => return debug.to_string_lossy().to_string(),
+            (false, false) => {}
         }
     }
     "/workspace/target/release/surreal-sync".to_string()
