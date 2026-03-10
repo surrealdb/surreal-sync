@@ -31,9 +31,10 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
     container.wait_until_ready(30).await?;
 
     let test_id = generate_test_id();
+    let checkpoint_dir = format!(".test-pg-incr-lib-checkpoints-{test_id}");
 
     // Clean up checkpoint directory to prevent cross-test contamination
-    surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-checkpoints")?;
+    surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
     // Setup PostgreSQL connection
     let (pg_client, pg_connection) =
@@ -71,7 +72,7 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
     };
 
     // Create sync manager with filesystem checkpoint store
-    let checkpoint_store = checkpoint::FilesystemStore::new(".test-checkpoints");
+    let checkpoint_store = checkpoint::FilesystemStore::new(&checkpoint_dir);
     let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
 
     // Run full sync with appropriate sink based on detected version
@@ -99,14 +100,14 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
     }
 
     // Verify checkpoint emission (t1 and t2 checkpoints)
-    surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(".test-checkpoints")?;
+    surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(&checkpoint_dir)?;
 
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
 
     // Read the t1 (FullSyncStart) checkpoint file - this is needed
     // for incremental sync to pick up changes made after full sync started
     let checkpoint_file = checkpoint::get_checkpoint_for_phase(
-        ".test-checkpoints",
+        &checkpoint_dir,
         checkpoint::SyncPhase::FullSyncStart,
     )
     .await?;

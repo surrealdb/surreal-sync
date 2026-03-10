@@ -20,12 +20,13 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-pg-fk-sync-sdb");
+    let test_id = generate_test_id();
+    let mut surrealdb = SurrealDbContainer::new(&format!("test-pg-fk-sync-sdb-{test_id}"));
     surrealdb.start()?;
     surrealdb.wait_until_ready(30)?;
 
     // --- Start PostgreSQL ---
-    let mut container = PostgresContainer::new("test-pg-fk-sync");
+    let mut container = PostgresContainer::new(&format!("test-pg-fk-sync-{test_id}"));
     container.build_image()?;
     container.start()?;
     container.wait_until_ready(30).await?;
@@ -80,7 +81,6 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
     assert_eq!(book_tags_def.foreign_keys.len(), 2, "book_tags should have 2 FKs");
 
     // --- Connect to SurrealDB ---
-    let test_id = generate_test_id();
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
@@ -240,11 +240,12 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-pg-fk-sync-sdb-2");
+    let test_id = generate_test_id();
+    let mut surrealdb = SurrealDbContainer::new(&format!("test-pg-fk-override-sdb-{test_id}"));
     surrealdb.start()?;
     surrealdb.wait_until_ready(30)?;
 
-    let mut container = PostgresContainer::new("test-pg-fk-override-e2e");
+    let mut container = PostgresContainer::new(&format!("test-pg-fk-override-{test_id}"));
     container.build_image()?;
     container.start()?;
     container.wait_until_ready(30).await?;
@@ -276,7 +277,6 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
     let db_schema =
         surreal_sync_postgresql::schema::collect_database_schema_with_fks(&pg_client).await?;
 
-    let test_id = generate_test_id();
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 

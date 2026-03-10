@@ -26,9 +26,10 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     container.wait_until_ready(60).await?;
 
     let test_id = generate_test_id();
+    let checkpoint_dir = format!(".test-mysql-incr-lib-checkpoints-{test_id}");
 
     // Clean up checkpoint directory to prevent cross-test contamination
-    surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-checkpoints")?;
+    surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
     // Setup MySQL connection
     let pool = mysql_async::Pool::from_url(&container.connection_string)?;
@@ -63,7 +64,7 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     };
 
     // Create sync manager with filesystem checkpoint store
-    let checkpoint_store = checkpoint::FilesystemStore::new(".test-checkpoints");
+    let checkpoint_store = checkpoint::FilesystemStore::new(&checkpoint_dir);
     let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
 
     // Run full sync to set up triggers and get checkpoint with appropriate sink
@@ -91,7 +92,7 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     }
 
     // Verify checkpoint emission (t1 and t2 checkpoints)
-    surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(".test-checkpoints")?;
+    surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(&checkpoint_dir)?;
 
     // Insert test data into MySQL (data only, tables already exist with triggers)
     surreal_sync::testing::mysql::insert_rows(&mut mysql_conn, &dataset).await?;
@@ -99,7 +100,7 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Read the t1 (FullSyncStart) checkpoint file - this is needed
     // for incremental sync to pick up changes made after full sync started
     let checkpoint_file = checkpoint::get_checkpoint_for_phase(
-        ".test-checkpoints",
+        &checkpoint_dir,
         checkpoint::SyncPhase::FullSyncStart,
     )
     .await?;

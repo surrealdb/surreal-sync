@@ -23,12 +23,13 @@ async fn test_trigger_fk_incremental_only() -> Result<(), Box<dyn std::error::Er
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-pg-fk-incr-sdb");
+    let test_id = generate_test_id();
+    let mut surrealdb = SurrealDbContainer::new(&format!("test-pg-fk-incr-sdb-{test_id}"));
     surrealdb.start()?;
     surrealdb.wait_until_ready(30)?;
 
     // --- Start PostgreSQL ---
-    let mut container = PostgresContainer::new("test-pg-fk-incr-trigger");
+    let mut container = PostgresContainer::new(&format!("test-pg-fk-incr-trigger-{test_id}"));
     container.build_image()?;
     container.start()?;
     container.wait_until_ready(30).await?;
@@ -62,7 +63,6 @@ async fn test_trigger_fk_incremental_only() -> Result<(), Box<dyn std::error::Er
         .await?;
 
     // --- Connect to SurrealDB ---
-    let test_id = generate_test_id();
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 

@@ -29,12 +29,13 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
     container.wait_until_ready(60).await?;
 
     let test_id = generate_test_id();
+    let checkpoint_dir = format!(".test-neo4j-incr-cli-checkpoints-{test_id}");
     // Capture timestamp BEFORE any operations - this ensures all nodes created later
     // will have updated_at > t1 and will be picked up by incremental sync
     let t1 = chrono::Utc::now();
     let dataset = create_unified_full_dataset();
 
-    surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-checkpoints")?;
+    surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
     // Setup Neo4j with test data
     let graph_config = neo4rs::ConfigBuilder::default()
@@ -82,7 +83,7 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
         "--timezone",
         "UTC",
         "--checkpoint-dir",
-        ".test-checkpoints",
+        &checkpoint_dir,
         "--assumed-start-timestamp",
         "2000-01-01T00:00:00Z",
         "--allow-empty-tracking-timestamp",
@@ -91,7 +92,7 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
     let output = execute_surreal_sync(&full_sync_args)?;
     assert_cli_success(&output, "Neo4j all-types full sync CLI");
 
-    surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(".test-checkpoints")?;
+    surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(&checkpoint_dir)?;
 
     // Now insert test data into Neo4j (with timestamps for incremental tracking)
     surreal_sync::testing::neo4j::create_nodes(&graph, &dataset).await?;

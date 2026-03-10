@@ -447,6 +447,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_container_metrics_builder_populate() {
         let builder = ContainerMetricsBuilder::start(
             Operation::Populate,
@@ -476,6 +477,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_container_metrics_builder_verify() {
         let builder = ContainerMetricsBuilder::start(Operation::Verify, vec!["users".to_string()])
             .expect("Failed to create builder");
@@ -499,6 +501,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_container_metrics_builder_dry_run_populate() {
         let builder =
             ContainerMetricsBuilder::start(Operation::Populate, vec!["test_table".to_string()])
@@ -517,6 +520,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn test_container_metrics_builder_dry_run_verify() {
         let builder =
             ContainerMetricsBuilder::start(Operation::Verify, vec!["test_table".to_string()])

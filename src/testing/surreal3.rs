@@ -455,12 +455,39 @@ pub async fn compare_sync_results_in_surrealdb_v3(
                                         actual_float
                                     );
                                 } else {
-                                    panic!(
-                                        "{}: Document {}, Field '{}' is neither Decimal nor Float - cannot validate",
-                                        test_description,
-                                        doc_idx + 1,
-                                        field_name
-                                    );
+                                    // SurrealDB v3 may return Decimal as a String representation
+                                    let str_query = format!("SELECT {field_name} FROM $record_id");
+                                    let mut str_response = surreal
+                                        .query(&str_query)
+                                        .bind(("record_id", record_id.clone()))
+                                        .await?;
+                                    let str_result: Result<Option<String>, _> =
+                                        str_response.take((0, field_name.as_str()));
+
+                                    if let Ok(Some(actual_str)) = str_result {
+                                        let actual_decimal: Decimal = actual_str.parse().map_err(|_| {
+                                            format!("{}: Document {}, Field '{}' string '{}' is not a valid decimal",
+                                                test_description, doc_idx + 1, field_name, actual_str)
+                                        })?;
+                                        let expected_decimal: Decimal = value.parse().map_err(|_| {
+                                            format!("Invalid expected decimal value: {value}")
+                                        })?;
+                                        assert_eq!(
+                                            actual_decimal,
+                                            expected_decimal,
+                                            "{}: Document {}, Field '{}' decimal (as string) mismatch",
+                                            test_description,
+                                            doc_idx + 1,
+                                            field_name
+                                        );
+                                    } else {
+                                        panic!(
+                                            "{}: Document {}, Field '{}' is neither Decimal, Float, nor parseable String - cannot validate",
+                                            test_description,
+                                            doc_idx + 1,
+                                            field_name
+                                        );
+                                    }
                                 }
                             }
                         }

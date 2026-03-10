@@ -113,8 +113,12 @@ impl CheckpointStore for Surreal3Store {
             .bind(("record_id", record_id))
             .await?;
 
-        // Take the result directly as Vec<CheckpointRecord>
-        let records: Vec<CheckpointRecord> = response.take(0)?;
+        // SurrealDB v3 returns an error for non-existent tables; treat as "not found"
+        let records: Vec<CheckpointRecord> = match response.take(0) {
+            Ok(r) => r,
+            Err(e) if e.to_string().contains("does not exist") => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
 
         if let Some(record) = records.into_iter().next() {
             Ok(Some(record.try_into()?))

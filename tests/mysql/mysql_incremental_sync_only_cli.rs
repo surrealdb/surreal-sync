@@ -26,7 +26,8 @@ async fn test_mysql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
     let test_id = generate_test_id();
     let dataset = create_unified_full_dataset();
 
-    surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-checkpoints")?;
+    let checkpoint_dir = format!(".test-mysql-incr-cli-checkpoints-{test_id}");
+    surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
     // Setup MySQL with test data
     let pool = mysql_async::Pool::from_url(&container.connection_string)?;
@@ -66,13 +67,13 @@ async fn test_mysql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
         "--surreal-password",
         "root",
         "--checkpoint-dir",
-        ".test-checkpoints",
+        &checkpoint_dir,
     ];
 
     let output = execute_surreal_sync(&full_sync_args)?;
     assert_cli_success(&output, "MySQL all-types full sync CLI");
 
-    surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(".test-checkpoints")?;
+    surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(&checkpoint_dir)?;
 
     surreal_sync::testing::mysql::insert_rows(&mut mysql_conn, &dataset).await?;
 
@@ -80,7 +81,7 @@ async fn test_mysql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
     // for incremental sync to pick up changes made after full sync started
     use checkpoint::{Checkpoint, SyncPhase};
     let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(".test-checkpoints", SyncPhase::FullSyncStart).await?;
+        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, SyncPhase::FullSyncStart).await?;
     let mysql_checkpoint: surreal_sync_mysql_trigger_source::MySQLCheckpoint =
         checkpoint_file.parse()?;
     let checkpoint_string = mysql_checkpoint.to_cli_string();

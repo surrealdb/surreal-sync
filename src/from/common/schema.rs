@@ -34,14 +34,21 @@ pub fn extract_json_fields_from_schema(schema: &Schema) -> Vec<String> {
 /// Extract database name from a PostgreSQL connection string.
 /// Supports formats like: postgresql://user:pass@host:port/database
 pub fn extract_postgresql_database(connection_string: &str) -> Option<String> {
-    // Try to extract from connection string
-    // Format: postgresql://user:pass@host:port/database?params
+    // URL format: postgresql://user:pass@host:port/database?params
     if let Some(db_start) = connection_string.rfind('/') {
         let after_slash = &connection_string[db_start + 1..];
-        // Remove query params if present
         let db_name = after_slash.split('?').next().unwrap_or(after_slash);
         if !db_name.is_empty() {
             return Some(db_name.to_string());
+        }
+    }
+
+    // Key-value format: host=localhost port=5432 dbname=testdb user=postgres ...
+    for part in connection_string.split_whitespace() {
+        if let Some(val) = part.strip_prefix("dbname=") {
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
         }
     }
 

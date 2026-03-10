@@ -30,9 +30,10 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     container.wait_until_ready(30).await?;
 
     let test_id = generate_test_id();
+    let checkpoint_dir = format!(".test-mongodb-incr-lib-checkpoints-{test_id}");
     let dataset = create_unified_full_dataset();
 
-    surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-checkpoints")?;
+    surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
     let mongodb_client =
         surreal_sync::testing::mongodb::connect_mongodb(&container.connection_uri()).await?;
@@ -66,7 +67,7 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     let checkpoint_timestamp = chrono::Utc::now();
 
     // Create sync manager with filesystem checkpoint store
-    let checkpoint_store = checkpoint::FilesystemStore::new(".test-checkpoints");
+    let checkpoint_store = checkpoint::FilesystemStore::new(&checkpoint_dir);
     let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
 
     // Run full sync with appropriate sink based on detected version
@@ -94,7 +95,7 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     }
 
     // Verify checkpoint emission (t1 and t2 checkpoints)
-    surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(".test-checkpoints")?;
+    surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(&checkpoint_dir)?;
 
     println!(
         "📍 Timestamp checkpoint from empty collection: {}",
@@ -109,7 +110,7 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
     // Read the t1 (FullSyncStart) checkpoint file - this is needed
     // for incremental sync to pick up changes made after full sync started
     let main_checkpoint = checkpoint::get_checkpoint_for_phase(
-        ".test-checkpoints",
+        &checkpoint_dir,
         checkpoint::SyncPhase::FullSyncStart,
     )
     .await?;

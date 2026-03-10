@@ -350,13 +350,10 @@ impl StreamingVerifier3 {
                 Ok(val.map(|v| SurrealValue::Number(Number::Float(v))))
             }
             UniversalType::Decimal { .. } => {
-                // Decimal fields may be stored as Number::Decimal or Number::Float
-                // Try reading as rust_decimal::Decimal first (works for both V2 and V3 SDKs)
                 match response.take::<Option<Decimal>>((0, field_name)) {
                     Ok(Some(d)) => Ok(Some(SurrealValue::Number(Number::Decimal(d)))),
                     Ok(None) => Ok(None),
                     Err(_) => {
-                        // Not stored as Decimal - try reading as f64 (for Float storage)
                         let mut retry_response = self
                             .surreal
                             .query("SELECT * FROM $record_id")
@@ -365,9 +362,28 @@ impl StreamingVerifier3 {
                         match retry_response.take::<Option<f64>>((0, field_name)) {
                             Ok(Some(f)) => Ok(Some(SurrealValue::Number(Number::Float(f)))),
                             Ok(None) => Ok(None),
-                            Err(e) => Err(VerifyError::Query(format!(
-                                "Field '{field_name}' is neither Decimal nor Float: {e}"
-                            ))),
+                            Err(_) => {
+                                // SurrealDB v3 may return Decimal as a String
+                                let mut str_response = self
+                                    .surreal
+                                    .query("SELECT * FROM $record_id")
+                                    .bind(("record_id", record_id.clone()))
+                                    .await?;
+                                match str_response.take::<Option<String>>((0, field_name)) {
+                                    Ok(Some(s)) => {
+                                        let d: Decimal = s.parse().map_err(|_| {
+                                            VerifyError::Query(format!(
+                                                "Field '{field_name}' string '{s}' is not a valid decimal"
+                                            ))
+                                        })?;
+                                        Ok(Some(SurrealValue::Number(Number::Decimal(d))))
+                                    }
+                                    Ok(None) => Ok(None),
+                                    Err(e) => Err(VerifyError::Query(format!(
+                                        "Field '{field_name}' is neither Decimal, Float, nor parseable String: {e}"
+                                    ))),
+                                }
+                            }
                         }
                     }
                 }
@@ -380,20 +396,31 @@ impl StreamingVerifier3 {
                 Ok(val.map(SurrealValue::String))
             }
             UniversalType::Uuid => {
-                // UUIDs can be stored as native UUID type or as string
-                // Try native UUID first, fall back to string
                 let result: Result<Option<uuid::Uuid>, _> = response.take((0, field_name));
                 match result {
                     Ok(Some(v)) => Ok(Some(SurrealValue::Uuid(surrealdb3::types::Uuid::from(v)))),
                     Ok(None) => Ok(None),
                     Err(_) => {
-                        // Try as string (for JSONL which stores UUIDs as strings)
+                        // v3 may store UUID as Bytes; try reading as Bytes and parsing
                         let mut response2 = self
                             .surreal
                             .query(format!("SELECT {field_name} FROM $record_id"))
                             .bind(("record_id", record_id.clone()))
                             .await?;
-                        let val: Option<String> = response2.take((0, field_name))?;
+                        let bytes_result: Result<Option<surrealdb3::types::Bytes>, _> =
+                            response2.take((0, field_name));
+                        if let Ok(Some(bytes)) = bytes_result {
+                            if let Ok(uuid) = uuid::Uuid::from_slice(bytes.as_ref()) {
+                                return Ok(Some(SurrealValue::Uuid(surrealdb3::types::Uuid::from(uuid))));
+                            }
+                        }
+                        // Final fallback: try as String
+                        let mut response3 = self
+                            .surreal
+                            .query(format!("SELECT {field_name} FROM $record_id"))
+                            .bind(("record_id", record_id.clone()))
+                            .await?;
+                        let val: Option<String> = response3.take((0, field_name))?;
                         Ok(val.map(SurrealValue::String))
                     }
                 }

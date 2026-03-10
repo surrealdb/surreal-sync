@@ -30,6 +30,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     container.wait_until_ready(60).await?;
 
     let test_id = generate_test_id();
+    let checkpoint_dir = format!(".test-neo4j-incr-lib-checkpoints-{test_id}");
 
     // Capture timestamp BEFORE any operations - this ensures all nodes created later
     // will have updated_at > t1 and will be picked up by incremental sync
@@ -38,7 +39,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     let dataset = create_unified_full_dataset();
 
     // Clean up checkpoint directory to prevent cross-test contamination
-    surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-checkpoints")?;
+    surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
     // Setup Neo4j connection
     let graph_config = neo4rs::ConfigBuilder::default()
