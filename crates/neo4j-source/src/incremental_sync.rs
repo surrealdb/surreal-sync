@@ -165,7 +165,7 @@ impl Neo4jChangeStream {
              LIMIT 100",
             self.change_tracking_property, self.change_tracking_property
         ))
-        .param("checkpoint", checkpoint_str);
+        .param("checkpoint", checkpoint_str.clone());
 
         let mut result = self.graph.execute(node_query).await?;
         let mut batch_changes = Vec::new();
@@ -262,7 +262,7 @@ impl Neo4jChangeStream {
         // Also query for relationship changes
         let rel_query = Query::new(format!(
             "MATCH (a)-[r]->(b)
-             WHERE r.{tracking} > $checkpoint
+             WHERE r.{tracking} > datetime($checkpoint)
              RETURN r, id(r) as rel_id, type(r) as rel_type,
                     id(a) as start_id, id(b) as end_id,
                     labels(a) as start_labels, labels(b) as end_labels,
@@ -273,7 +273,7 @@ impl Neo4jChangeStream {
             tracking = self.change_tracking_property,
             id_prop = self.id_property,
         ))
-        .param("checkpoint", self.current_checkpoint);
+        .param("checkpoint", checkpoint_str);
 
         let mut rel_result = self.graph.execute(rel_query).await?;
 

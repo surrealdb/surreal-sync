@@ -157,7 +157,7 @@ pub fn authored_by_schema() -> TestSchema {
             max: None,
         },
         neo4j: Neo4jSchema {
-            node_labels: vec!["Post".to_string(), "User".to_string()],
+            node_labels: vec!["all_types_users".to_string(), "all_types_posts".to_string()],
             relationship_types: vec!["AUTHORED_BY".to_string()],
             properties: vec![
                 PropertyDef::new("post_id", "String").required(),
