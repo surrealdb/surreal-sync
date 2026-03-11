@@ -9,6 +9,10 @@ edition = "2021"
 description = "A tool for migrating Neo4j and MongoDB data to SurrealDB"
 authors = ["surreal-sync contributors"]
 
+[features]
+default = []
+vendored-openssl = ["dep:openssl"]
+
 [dependencies]
 # CLI framework
 clap = { version = "4.5", features = ["derive", "env"] }
@@ -129,6 +133,7 @@ surreal-sync-postgresql-trigger-source = { path = "crates/postgresql-trigger-sou
 # PostgreSQL shared utilities
 surreal-sync-postgresql = { path = "crates/postgresql" }
 libc = "0.2.183"
+openssl = { version = "0.10", features = ["vendored"], optional = true }
 
 [dev-dependencies]
 # Testing

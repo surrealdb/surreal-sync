@@ -68,7 +68,12 @@ jobs:
           esac
 
       - name: Build binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: |
+          FEATURES=""
+          case "${{ matrix.target }}" in
+            *-musl) FEATURES="--features vendored-openssl" ;;
+          esac
+          cargo build --release --target ${{ matrix.target }} $FEATURES
 
       - name: Create archive
         shell: bash
