@@ -71,7 +71,10 @@ jobs:
         run: |
           FEATURES=""
           case "${{ matrix.target }}" in
-            *-musl) FEATURES="--features vendored-openssl" ;;
+            *-musl)
+              FEATURES="--features vendored-openssl"
+              export CC=musl-gcc
+              ;;
           esac
           cargo build --release --target ${{ matrix.target }} $FEATURES
 
