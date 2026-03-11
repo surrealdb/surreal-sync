@@ -72,7 +72,7 @@ test: fmt check clippy build
 	@echo "Unit tests passed"
 
 	@echo "Running integration tests..."
-	@if ! RUST_TEST_THREADS=1 cargo test --workspace --no-fail-fast --tests > $(LOGS_DIR)/integration.log 2>&1; then \
+	@if ! SURREAL_SYNC_BIN=$(CURDIR)/target/release/surreal-sync RUST_TEST_THREADS=1 cargo test --workspace --no-fail-fast --tests > $(LOGS_DIR)/integration.log 2>&1; then \
 		echo "Integration tests failed. See: $(LOGS_DIR)/integration.log"; \
 		exit 1; \
 	fi
