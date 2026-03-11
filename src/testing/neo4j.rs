@@ -480,28 +480,18 @@ pub async fn create_relationships(
 
         // Get the start and end node labels from the schema
         // Convention: node_labels[0] = start node label (in), node_labels[1] = end node label (out)
-        let start_label = relation
-            .schema
-            .neo4j
-            .node_labels
-            .first()
-            .ok_or_else(|| {
-                format!(
-                    "Relation '{}' has no start node label in Neo4j schema",
-                    relation.name
-                )
-            })?;
-        let end_label = relation
-            .schema
-            .neo4j
-            .node_labels
-            .get(1)
-            .ok_or_else(|| {
-                format!(
-                    "Relation '{}' has no end node label in Neo4j schema",
-                    relation.name
-                )
-            })?;
+        let start_label = relation.schema.neo4j.node_labels.first().ok_or_else(|| {
+            format!(
+                "Relation '{}' has no start node label in Neo4j schema",
+                relation.name
+            )
+        })?;
+        let end_label = relation.schema.neo4j.node_labels.get(1).ok_or_else(|| {
+            format!(
+                "Relation '{}' has no end node label in Neo4j schema",
+                relation.name
+            )
+        })?;
 
         for doc in &relation.documents {
             // Extract in/out node IDs from the SurrealDB Thing values

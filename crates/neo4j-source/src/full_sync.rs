@@ -607,24 +607,22 @@ fn convert_neo4j_row_to_universal_row(
     // Neo4j stores all properties as bolt types - integers are preserved as Integer,
     // strings as String, etc. We convert each type to the appropriate ID type.
     let id = match data.remove(id_property) {
-        Some(universal) => {
-            match universal {
-                UniversalValue::Text(s) => {
-                    if let Ok(n) = s.parse::<i64>() {
-                        UniversalValue::Int64(n)
-                    } else {
-                        UniversalValue::Text(s)
-                    }
+        Some(universal) => match universal {
+            UniversalValue::Text(s) => {
+                if let Ok(n) = s.parse::<i64>() {
+                    UniversalValue::Int64(n)
+                } else {
+                    UniversalValue::Text(s)
                 }
-                UniversalValue::Int64(n) => UniversalValue::Int64(n),
-                other => {
-                    return Err(anyhow::anyhow!(
+            }
+            UniversalValue::Int64(n) => UniversalValue::Int64(n),
+            other => {
+                return Err(anyhow::anyhow!(
                         "Node with label '{label}' and id '{node_id}' has unsupported 'id' property type: {other:?}. \
                          Expected String or Int.",
                     ));
-                }
             }
-        }
+        },
         None => {
             // No 'id' property - use Neo4j's internal node_id
             UniversalValue::Int64(node_id)
@@ -1250,7 +1248,7 @@ mod tests {
     #[test]
     fn test_resolve_node_id_unsupported_type_returns_error() {
         let ctx = test_ctx();
-        let bolt = neo4rs::BoltType::Float(neo4rs::BoltFloat::new(3.14));
+        let bolt = neo4rs::BoltType::Float(neo4rs::BoltFloat::new(1.23));
         let result = resolve_node_id(Some(&bolt), 99, &ctx);
         assert!(result.is_err(), "Expected error for Float type");
         let err_msg = result.unwrap_err().to_string();
