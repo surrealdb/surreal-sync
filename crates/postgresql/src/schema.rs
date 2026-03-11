@@ -156,10 +156,14 @@ pub async fn collect_foreign_keys(
         entry.2.push(referenced_column);
     }
 
-    // Convert to table_name -> Vec<ForeignKeyDefinition>
+    // Convert to table_name -> Vec<ForeignKeyDefinition>, sorted by constraint name
+    // for deterministic in_fk / out_fk assignment in relation classification.
     let mut result: HashMap<String, Vec<ForeignKeyDefinition>> = HashMap::new();
+    let mut sorted_entries: Vec<_> = constraint_map.into_iter().collect();
+    sorted_entries.sort_by(|a, b| a.0.cmp(&b.0));
+
     for ((table_name, constraint_name), (columns, referenced_table, referenced_columns)) in
-        constraint_map
+        sorted_entries
     {
         result
             .entry(table_name)
