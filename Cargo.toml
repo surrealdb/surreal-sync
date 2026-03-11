@@ -128,6 +128,7 @@ surreal-sync-postgresql-trigger-source = { path = "crates/postgresql-trigger-sou
 
 # PostgreSQL shared utilities
 surreal-sync-postgresql = { path = "crates/postgresql" }
+libc = "0.2.183"
 
 [dev-dependencies]
 # Testing
