@@ -48,6 +48,7 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
     // Create schema and insert all test data
     surreal_sync::testing::neo4j::create_constraints_and_indices(&graph, &dataset).await?;
     surreal_sync::testing::neo4j::create_nodes(&graph, &dataset).await?;
+    surreal_sync::testing::neo4j::create_relationships(&graph, &dataset).await?;
 
     // Perform full sync from Neo4j to SurrealDB
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
@@ -64,6 +65,7 @@ async fn test_neo4j_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
         change_tracking_property: "updated_at".to_string(),
         assumed_start_timestamp: None,
         allow_empty_tracking_timestamp: false,
+        id_property: "id".to_string(),
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {

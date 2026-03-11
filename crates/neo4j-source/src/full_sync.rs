@@ -30,6 +30,9 @@ pub struct SourceOpts {
     /// Allow full sync on data without tracking property timestamps
     /// When enabled with assumed_start_timestamp, uses the assumed timestamp for checkpoints
     pub allow_empty_tracking_timestamp: bool,
+    /// Property name to use as SurrealDB record ID (default: "id").
+    /// If a node does not have this property, the Neo4j internal node_id is used.
+    pub id_property: String,
 }
 
 /// Sync options (non-connection related)
@@ -160,6 +163,7 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
         &ctx,
         &from_opts.labels,
         &from_opts.change_tracking_property,
+        &from_opts.id_property,
     )
     .await?;
     total_migrated += nodes_migrated;
@@ -171,6 +175,7 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
         &sync_opts,
         &ctx,
         &from_opts.change_tracking_property,
+        &from_opts.id_property,
     )
     .await?;
     total_migrated += rels_migrated;
@@ -288,6 +293,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
     ctx: &Neo4jConversionContext,
     labels_filter: &[String],
     tracking_property: &str,
+    id_property: &str,
 ) -> anyhow::Result<(
     usize,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -340,7 +346,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
         let mut processed = 0;
 
         while let Some(row) = node_result.next().await? {
-            let universal_row = convert_neo4j_row_to_universal_row(&row, &label, ctx)?;
+            let universal_row = convert_neo4j_row_to_universal_row(&row, &label, ctx, id_property)?;
 
             // Extract tracking property timestamp if present
             if let Some(UniversalValue::LocalDateTime(ts)) =
@@ -421,6 +427,7 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
     tracking_property: &str,
+    id_property: &str,
 ) -> anyhow::Result<(
     usize,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -450,12 +457,12 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     for rel_type in all_types {
         tracing::info!("Migrating relationships of type: {}", rel_type);
 
-        let rel_query = Query::new(
+        let rel_query = Query::new(format!(
             "MATCH (start_node)-[r]->(end_node) WHERE type(r) = $rel_type
              RETURN r, id(r) as rel_id, id(start_node) as start_id, id(end_node) as end_id,
-             labels(start_node) as start_labels, labels(end_node) as end_labels"
-                .to_string(),
-        )
+             labels(start_node) as start_labels, labels(end_node) as end_labels,
+             start_node.{id_property} as start_prop_id, end_node.{id_property} as end_prop_id",
+        ))
         .param("rel_type", rel_type.clone());
         let mut rel_result = graph.execute(rel_query).await?;
 
@@ -546,16 +553,53 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
 }
 
 // Convert Neo4j node row to UniversalRow
+/// Resolve a Neo4j node's SurrealDB record ID from its `id` property, falling back to the
+/// internal Neo4j node ID. This ensures that both node records and relationship endpoints
+/// use the same ID, so that RELATE statements reference existing records.
+pub(crate) fn resolve_node_id(
+    prop_id: Option<&neo4rs::BoltType>,
+    internal_id: i64,
+    ctx: &Neo4jConversionContext,
+) -> anyhow::Result<UniversalValue> {
+    match prop_id {
+        Some(bolt_value) => {
+            let universal =
+                convert_neo4j_type_to_universal_value(bolt_value.clone(), &ctx.timezone, false)?;
+            match universal {
+                UniversalValue::Text(s) => {
+                    // String ID - try to parse as integer first (common case: numeric strings)
+                    if let Ok(n) = s.parse::<i64>() {
+                        Ok(UniversalValue::Int64(n))
+                    } else {
+                        Ok(UniversalValue::Text(s))
+                    }
+                }
+                UniversalValue::Int64(n) => Ok(UniversalValue::Int64(n)),
+                UniversalValue::Null => {
+                    // Node has no 'id' property (Neo4j returned null) - use internal node_id
+                    Ok(UniversalValue::Int64(internal_id))
+                }
+                other => Err(anyhow::anyhow!(
+                    "Node with internal id '{internal_id}' has unsupported 'id' property type: {other:?}. \
+                     Expected String or Int.",
+                )),
+            }
+        }
+        None => {
+            // No 'id' property in query results - use Neo4j's internal node_id
+            Ok(UniversalValue::Int64(internal_id))
+        }
+    }
+}
+
 fn convert_neo4j_row_to_universal_row(
     row: &neo4rs::Row,
     label: &str,
     ctx: &Neo4jConversionContext,
+    id_property: &str,
 ) -> anyhow::Result<UniversalRow> {
     let node: neo4rs::Node = row.get("n")?;
     let node_id: i64 = row.get("node_id")?;
-
-    // TODO make this configurable
-    let id_property = "id"; // Use 'id' property as the SurrealDB record ID if present
 
     // Convert Neo4j node to universal format
     let mut data = convert_neo4j_node_to_universal_kvs(node, node_id, label, ctx)?;
@@ -563,21 +607,23 @@ fn convert_neo4j_row_to_universal_row(
     // Neo4j stores all properties as bolt types - integers are preserved as Integer,
     // strings as String, etc. We convert each type to the appropriate ID type.
     let id = match data.remove(id_property) {
-        Some(UniversalValue::Text(s)) => {
-            // String ID - try to parse as integer first (common case: numeric strings)
-            if let Ok(n) = s.parse::<i64>() {
-                UniversalValue::Int64(n)
-            } else {
-                // Keep as string ID
-                UniversalValue::Text(s)
+        Some(universal) => {
+            match universal {
+                UniversalValue::Text(s) => {
+                    if let Ok(n) = s.parse::<i64>() {
+                        UniversalValue::Int64(n)
+                    } else {
+                        UniversalValue::Text(s)
+                    }
+                }
+                UniversalValue::Int64(n) => UniversalValue::Int64(n),
+                other => {
+                    return Err(anyhow::anyhow!(
+                        "Node with label '{label}' and id '{node_id}' has unsupported 'id' property type: {other:?}. \
+                         Expected String or Int.",
+                    ));
+                }
             }
-        }
-        Some(UniversalValue::Int64(n)) => UniversalValue::Int64(n),
-        Some(other) => {
-            return Err(anyhow::anyhow!(
-                "Node with label '{label}' and id '{node_id}' has unsupported 'id' property type: {other:?}. \
-                 Expected String or Int.",
-            ));
         }
         None => {
             // No 'id' property - use Neo4j's internal node_id
@@ -642,8 +688,10 @@ pub struct Relation {
     pub id: i64,
     pub start_labels: Vec<String>,
     pub start_node_id: i64,
+    pub start_prop_id: Option<neo4rs::BoltType>,
     pub end_labels: Vec<String>,
     pub end_node_id: i64,
+    pub end_prop_id: Option<neo4rs::BoltType>,
     pub relationship: neo4rs::Relation,
     pub updated_at: i64,
 }
@@ -660,7 +708,7 @@ impl Relation {
                 .first()
                 .map(|s| s.to_lowercase())
                 .unwrap_or_else(|| "node".to_string()),
-            UniversalValue::Int64(self.start_node_id),
+            resolve_node_id(self.start_prop_id.as_ref(), self.start_node_id, ctx)?,
         );
 
         let output = UniversalThingRef::new(
@@ -668,7 +716,7 @@ impl Relation {
                 .first()
                 .map(|s| s.to_lowercase())
                 .unwrap_or_else(|| "node".to_string()),
-            UniversalValue::Int64(self.end_node_id),
+            resolve_node_id(self.end_prop_id.as_ref(), self.end_node_id, ctx)?,
         );
 
         let mut data = HashMap::new();
@@ -707,6 +755,12 @@ pub fn row_to_relation(
     let start_labels: Vec<String> = row.get("start_labels")?;
     let end_labels: Vec<String> = row.get("end_labels")?;
 
+    // Get the 'id' property from start/end nodes (if present in the query results).
+    // These are used to match the same ID resolution logic used for node records,
+    // ensuring relationship endpoints reference the correct SurrealDB record IDs.
+    let start_prop_id: Option<neo4rs::BoltType> = row.get("start_prop_id").ok();
+    let end_prop_id: Option<neo4rs::BoltType> = row.get("end_prop_id").ok();
+
     // Get the checkpoint value from the relationship
     let rel_checkpoint_opt = if let Some(change_tracking_property) = &change_tracking_property {
         if let Ok(ts) = relationship.get::<i64>(change_tracking_property) {
@@ -729,8 +783,10 @@ pub fn row_to_relation(
         id: rel_id,
         start_labels,
         start_node_id: start_id,
+        start_prop_id,
         end_labels,
         end_node_id: end_id,
+        end_prop_id,
         relationship,
         updated_at: rel_checkpoint_opt.unwrap_or(0),
     })
@@ -1131,5 +1187,76 @@ mod tests {
         assert_eq!(props.len(), 2);
         assert_eq!(props[0].label, "User");
         assert_eq!(props[1].property, "config");
+    }
+
+    fn test_ctx() -> Neo4jConversionContext {
+        Neo4jConversionContext::new("UTC".to_string(), None).unwrap()
+    }
+
+    #[test]
+    fn test_resolve_node_id_string_id() {
+        let ctx = test_ctx();
+        let bolt = neo4rs::BoltType::String(neo4rs::BoltString::new("user_001"));
+        let result = resolve_node_id(Some(&bolt), 99, &ctx).unwrap();
+        assert!(
+            matches!(result, UniversalValue::Text(ref s) if s == "user_001"),
+            "Expected Text(\"user_001\"), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_node_id_numeric_string() {
+        let ctx = test_ctx();
+        let bolt = neo4rs::BoltType::String(neo4rs::BoltString::new("123"));
+        let result = resolve_node_id(Some(&bolt), 99, &ctx).unwrap();
+        assert!(
+            matches!(result, UniversalValue::Int64(123)),
+            "Expected Int64(123), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_node_id_integer() {
+        let ctx = test_ctx();
+        let bolt = neo4rs::BoltType::Integer(neo4rs::BoltInteger::new(42));
+        let result = resolve_node_id(Some(&bolt), 99, &ctx).unwrap();
+        assert!(
+            matches!(result, UniversalValue::Int64(42)),
+            "Expected Int64(42), got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_node_id_null_falls_back_to_internal() {
+        let ctx = test_ctx();
+        let bolt = neo4rs::BoltType::Null(neo4rs::BoltNull);
+        let result = resolve_node_id(Some(&bolt), 77, &ctx).unwrap();
+        assert!(
+            matches!(result, UniversalValue::Int64(77)),
+            "Expected Int64(77) fallback, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_node_id_none_falls_back_to_internal() {
+        let ctx = test_ctx();
+        let result = resolve_node_id(None, 55, &ctx).unwrap();
+        assert!(
+            matches!(result, UniversalValue::Int64(55)),
+            "Expected Int64(55) fallback, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_node_id_unsupported_type_returns_error() {
+        let ctx = test_ctx();
+        let bolt = neo4rs::BoltType::Float(neo4rs::BoltFloat::new(3.14));
+        let result = resolve_node_id(Some(&bolt), 99, &ctx);
+        assert!(result.is_err(), "Expected error for Float type");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("unsupported"),
+            "Error should mention unsupported type: {err_msg}"
+        );
     }
 }

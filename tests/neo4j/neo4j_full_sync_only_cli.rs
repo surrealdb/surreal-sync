@@ -41,6 +41,7 @@ async fn test_neo4j_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
     // Create schema and insert all test data
     surreal_sync::testing::neo4j::create_constraints_and_indices(&graph, &dataset).await?;
     surreal_sync::testing::neo4j::create_nodes(&graph, &dataset).await?;
+    surreal_sync::testing::neo4j::create_relationships(&graph, &dataset).await?;
 
     // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());

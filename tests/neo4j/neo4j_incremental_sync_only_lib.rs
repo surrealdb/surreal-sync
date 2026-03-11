@@ -72,6 +72,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         change_tracking_property: "updated_at".to_string(),
         assumed_start_timestamp: None,
         allow_empty_tracking_timestamp: false,
+        id_property: "id".to_string(),
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
@@ -115,6 +116,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
     // Now insert test data into Neo4j (with timestamps for incremental tracking)
     surreal_sync::testing::neo4j::create_nodes(&graph, &dataset).await?;
+    surreal_sync::testing::neo4j::create_relationships(&graph, &dataset).await?;
 
     // Run incremental sync using the timestamp from before data insertion
     // This ensures all newly created nodes (with updated_at > t1) are synced

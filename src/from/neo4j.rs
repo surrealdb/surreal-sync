@@ -88,6 +88,7 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
         change_tracking_property: args.change_tracking_property,
         assumed_start_timestamp,
         allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
+        id_property: args.id_property.clone(),
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
@@ -208,6 +209,7 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
         change_tracking_property: args.change_tracking_property,
         assumed_start_timestamp,
         allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
+        id_property: args.id_property.clone(),
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
@@ -388,6 +390,7 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         change_tracking_property: args.change_tracking_property,
         assumed_start_timestamp,
         allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
+        id_property: args.id_property.clone(),
     };
 
     // Connect to SurrealDB using v2 SDK
@@ -520,6 +523,7 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         change_tracking_property: args.change_tracking_property,
         assumed_start_timestamp,
         allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
+        id_property: args.id_property.clone(),
     };
 
     // Connect to SurrealDB using v3 SDK

@@ -85,6 +85,7 @@ pub async fn cleanup_surrealdb_auto(
     let table_names: Vec<&str> = dataset
         .tables
         .iter()
+        .chain(dataset.relations.iter())
         .map(|table| table.name.as_str())
         .collect();
     cleanup_auto(conn, &table_names).await

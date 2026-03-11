@@ -825,6 +825,18 @@ pub async fn assert_synced_v3(
         )
         .await?;
     }
+
+    for relation in &dataset.relations {
+        tracing::info!("Validating relation '{}'", relation.name);
+        validate_synced_table_in_surrealdb_v3(
+            surreal,
+            relation,
+            &format!("{} - {}", test_prefix, relation.name),
+            source,
+        )
+        .await?;
+    }
+
     Ok(())
 }
 
