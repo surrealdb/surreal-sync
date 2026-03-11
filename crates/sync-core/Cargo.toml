@@ -21,7 +21,7 @@ ulid = { version = "1.1", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # Error handling
-thiserror = "1.0"
+thiserror = "2.0"
 
 [dev-dependencies]
 # Testing
