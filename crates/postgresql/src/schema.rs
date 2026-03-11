@@ -10,6 +10,9 @@ use std::collections::HashMap;
 use sync_core::{ColumnDefinition, DatabaseSchema, ForeignKeyDefinition, TableDefinition, UniversalType};
 use tokio_postgres::Client;
 
+/// (source_columns, referenced_table, referenced_columns) grouped per constraint.
+type FkConstraintEntry = (Vec<String>, String, Vec<String>);
+
 /// Collect base database schema (tables, columns, primary keys) from PostgreSQL.
 ///
 /// This mirrors the logic in `postgresql-trigger-source/src/schema.rs` but
@@ -135,8 +138,7 @@ pub async fn collect_foreign_keys(
     let rows = client.query(fk_query, &[]).await?;
 
     // Group by (table_name, constraint_name)
-    let mut constraint_map: HashMap<(String, String), (Vec<String>, String, Vec<String>)> =
-        HashMap::new();
+    let mut constraint_map: HashMap<(String, String), FkConstraintEntry> = HashMap::new();
 
     for row in rows {
         let constraint_name: String = row.get(0);
