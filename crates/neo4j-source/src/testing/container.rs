@@ -119,7 +119,7 @@ impl Neo4jContainer {
 
     async fn test_connection(&self) -> Result<()> {
         let config = neo4rs::ConfigBuilder::default()
-            .uri(&self.bolt_uri())
+            .uri(self.bolt_uri())
             .user(&self.username)
             .password(&self.password)
             .db(&*self.database)
