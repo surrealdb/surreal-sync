@@ -37,7 +37,7 @@ async fn test_set_column_without_schema_returns_string() -> Result<()> {
     // Create and start container
     let mut container = MySQLContainer::new("test-set-column");
     container.start()?;
-    container.wait_until_ready(60).await?;
+    container.wait_until_ready(30).await?;
 
     // Get connection pool
     let pool = container.get_pool()?;
@@ -133,7 +133,7 @@ async fn test_set_column_with_schema_detection() -> Result<()> {
 
     let mut container = MySQLContainer::new("test-set-schema");
     container.start()?;
-    container.wait_until_ready(60).await?;
+    container.wait_until_ready(30).await?;
 
     let pool = container.get_pool()?;
     let mut conn = pool.get_conn().await?;
@@ -213,7 +213,7 @@ async fn test_mysql_async_set_column_type() -> Result<()> {
 
     let mut container = MySQLContainer::new("test-set-coltype");
     container.start()?;
-    container.wait_until_ready(60).await?;
+    container.wait_until_ready(30).await?;
 
     let pool = container.get_pool()?;
     let mut conn = pool.get_conn().await?;
