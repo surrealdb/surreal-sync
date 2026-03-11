@@ -30,21 +30,37 @@ pub mod v2 {
     pub use surrealdb2::sql::{Id, Thing, Value};
     pub use surrealdb2::Surreal;
 
-    /// Connect to a SurrealDB v2 server
+    /// Connect to a SurrealDB v2 server, retrying on transient write conflicts.
     pub async fn connect(
         endpoint: &str,
         namespace: &str,
         database: &str,
     ) -> anyhow::Result<Surreal<Any>> {
-        let client = surrealdb2::engine::any::connect(endpoint).await?;
-        client
-            .signin(Root {
-                username: "root",
-                password: "root",
-            })
-            .await?;
-        client.use_ns(namespace).use_db(database).await?;
-        Ok(client)
+        let mut last_err = None;
+        for attempt in 0..5u32 {
+            let client = surrealdb2::engine::any::connect(endpoint).await?;
+            match async {
+                client
+                    .signin(Root {
+                        username: "root",
+                        password: "root",
+                    })
+                    .await?;
+                client.use_ns(namespace).use_db(database).await?;
+                Ok::<_, anyhow::Error>(client)
+            }
+            .await
+            {
+                Ok(c) => return Ok(c),
+                Err(e) if e.to_string().contains("conflict") => {
+                    last_err = Some(e);
+                    let delay = 100 * 2u64.pow(attempt);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap())
     }
 
     /// Create a Thing (record ID) using v2 SDK types
@@ -80,7 +96,7 @@ pub mod v3 {
     pub use surrealdb3::types::{RecordId, RecordIdKey, SurrealValue, Value};
     pub use surrealdb3::Surreal;
 
-    /// Connect to a SurrealDB v3 server
+    /// Connect to a SurrealDB v3 server, retrying on transient write conflicts.
     ///
     /// Note: V3 SDK requires String for username/password, unlike V2 which accepts &str
     pub async fn connect(
@@ -88,15 +104,31 @@ pub mod v3 {
         namespace: &str,
         database: &str,
     ) -> anyhow::Result<Surreal<Any>> {
-        let client = surrealdb3::engine::any::connect(endpoint).await?;
-        client
-            .signin(Root {
-                username: "root".to_string(),
-                password: "root".to_string(),
-            })
-            .await?;
-        client.use_ns(namespace).use_db(database).await?;
-        Ok(client)
+        let mut last_err = None;
+        for attempt in 0..5u32 {
+            let client = surrealdb3::engine::any::connect(endpoint).await?;
+            match async {
+                client
+                    .signin(Root {
+                        username: "root".to_string(),
+                        password: "root".to_string(),
+                    })
+                    .await?;
+                client.use_ns(namespace).use_db(database).await?;
+                Ok::<_, anyhow::Error>(client)
+            }
+            .await
+            {
+                Ok(c) => return Ok(c),
+                Err(e) if e.to_string().contains("conflict") => {
+                    last_err = Some(e);
+                    let delay = 100 * 2u64.pow(attempt);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(last_err.unwrap())
     }
 
     /// Create a RecordId using v3 SDK types
@@ -232,6 +264,13 @@ mod tests {
         shared_surrealdb_v3().ws_endpoint()
     }
 
+    /// Generate a unique database name to isolate each test from write conflicts.
+    fn unique_db() -> String {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        format!("test_{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+    }
+
     /// Test that both SDKs compile and types are properly namespaced
     #[test]
     fn test_types_compile_and_are_distinct() {
@@ -257,7 +296,7 @@ mod tests {
     async fn test_v2_connection() -> anyhow::Result<()> {
         init_logging();
 
-        let client = v2::connect(&v2_endpoint(), "test", "demo")
+        let client = v2::connect(&v2_endpoint(), "test", &unique_db())
             .await
             .expect("V2 SDK should connect to V2 server");
 
@@ -272,7 +311,7 @@ mod tests {
     async fn test_v3_connection() -> anyhow::Result<()> {
         init_logging();
 
-        let client = v3::connect(&v3_endpoint(), "test", "demo")
+        let client = v3::connect(&v3_endpoint(), "test", &unique_db())
             .await
             .expect("V3 SDK should connect to V3 server");
 
@@ -288,7 +327,7 @@ mod tests {
     async fn test_v3_sdk_cannot_connect_to_v2_server() -> anyhow::Result<()> {
         init_logging();
 
-        let result = v3::connect(&v2_endpoint(), "test", "demo").await;
+        let result = v3::connect(&v2_endpoint(), "test", &unique_db()).await;
 
         assert!(
             result.is_err(),
@@ -303,7 +342,7 @@ mod tests {
     async fn test_v2_sdk_cannot_connect_to_v3_server() -> anyhow::Result<()> {
         init_logging();
 
-        let result = v2::connect(&v3_endpoint(), "test", "demo").await;
+        let result = v2::connect(&v3_endpoint(), "test", &unique_db()).await;
 
         assert!(
             result.is_err(),
@@ -317,12 +356,7 @@ mod tests {
     async fn test_v2_query_deserialize_to_struct() -> anyhow::Result<()> {
         init_logging();
 
-        let client = v2::connect(&v2_endpoint(), "test", "demo_struct_test").await?;
-
-        client.query("DELETE FROM test_record").await?;
-        client
-            .query("CREATE test_record:1 SET name = 'Alice', age = 30, active = true")
-            .await?;
+        let client = v2::connect(&v2_endpoint(), "test", &unique_db()).await?;
 
         #[derive(serde::Deserialize, Debug)]
         struct TestRecord {
@@ -330,6 +364,12 @@ mod tests {
             age: i64,
             active: bool,
         }
+
+        client
+            .query("CREATE test_record:1 SET name = 'Alice', age = 30, active = true")
+            .await?
+            .check()
+            .expect("V2 CREATE should succeed on a fresh database");
 
         let mut response = client.query("SELECT * FROM test_record").await?;
         let records: Vec<TestRecord> = response.take(0)?;
@@ -339,8 +379,6 @@ mod tests {
         assert_eq!(records[0].age, 30);
         assert!(records[0].active);
 
-        client.query("DELETE FROM test_record").await?;
-
         Ok(())
     }
 
@@ -348,9 +386,8 @@ mod tests {
     async fn test_v3_query_deserialize_to_struct() -> anyhow::Result<()> {
         init_logging();
 
-        let client = v3::connect(&v3_endpoint(), "test", "demo_struct_test").await?;
+        let client = v3::connect(&v3_endpoint(), "test", &unique_db()).await?;
 
-        client.query("DELETE FROM test_record").await?;
         client
             .query("CREATE test_record:1 SET name = 'Bob', age = 25, active = false")
             .await?;
@@ -382,7 +419,7 @@ mod tests {
     async fn test_v2_delete_nonexistent_table() -> anyhow::Result<()> {
         init_logging();
 
-        let client = v2::connect(&v2_endpoint(), "test", "demo_delete_test").await?;
+        let client = v2::connect(&v2_endpoint(), "test", &unique_db()).await?;
 
         let result = client
             .query("DELETE FROM this_table_definitely_does_not_exist_12345")
@@ -401,7 +438,7 @@ mod tests {
     async fn test_v3_delete_nonexistent_table() -> anyhow::Result<()> {
         init_logging();
 
-        let client = v3::connect(&v3_endpoint(), "test", "demo_delete_test").await?;
+        let client = v3::connect(&v3_endpoint(), "test", &unique_db()).await?;
 
         let result = client
             .query("DELETE FROM this_table_definitely_does_not_exist_12345 RETURN NONE")
@@ -420,7 +457,7 @@ mod tests {
     async fn test_v2_decimal_deserialization() -> anyhow::Result<()> {
         init_logging();
 
-        let client = v2::connect(&v2_endpoint(), "test", "demo_decimal_test").await?;
+        let client = v2::connect(&v2_endpoint(), "test", &unique_db()).await?;
 
         client.query("DELETE FROM decimal_test").await?;
 
@@ -487,7 +524,7 @@ mod tests {
     async fn test_v3_decimal_deserialization() -> anyhow::Result<()> {
         init_logging();
 
-        let client = v3::connect(&v3_endpoint(), "test", "demo_decimal_test").await?;
+        let client = v3::connect(&v3_endpoint(), "test", &unique_db()).await?;
 
         client.query("DELETE FROM decimal_test").await?;
 
@@ -587,7 +624,7 @@ mod tests {
     async fn test_v2_decimal_storage_with_dec_suffix() -> anyhow::Result<()> {
         init_logging();
 
-        let client = v2::connect(&v2_endpoint(), "test", "demo_decimal_limits").await?;
+        let client = v2::connect(&v2_endpoint(), "test", &unique_db()).await?;
 
         client.query("DELETE FROM decimal_limits").await?;
 
@@ -628,7 +665,7 @@ mod tests {
     async fn test_v3_decimal_storage_with_dec_suffix() -> anyhow::Result<()> {
         init_logging();
 
-        let client = v3::connect(&v3_endpoint(), "test", "demo_decimal_limits").await?;
+        let client = v3::connect(&v3_endpoint(), "test", &unique_db()).await?;
 
         client.query("DELETE FROM decimal_limits").await?;
 
@@ -669,7 +706,7 @@ mod tests {
     async fn test_v3_cleanup_pattern() -> anyhow::Result<()> {
         init_logging();
 
-        let client = v3::connect(&v3_endpoint(), "test", "demo_cleanup_test").await?;
+        let client = v3::connect(&v3_endpoint(), "test", &unique_db()).await?;
 
         let tables = [
             "nonexistent_table_1",
