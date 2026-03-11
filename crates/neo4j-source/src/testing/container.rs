@@ -126,8 +126,7 @@ impl Neo4jContainer {
             .build()
             .context("Failed to build Neo4j config")?;
 
-        let graph = neo4rs::Graph::connect(config)
-            .context("Failed to connect to Neo4j")?;
+        let graph = neo4rs::Graph::connect(config).context("Failed to connect to Neo4j")?;
 
         let mut result = graph
             .execute(neo4rs::query("RETURN 1 AS n"))

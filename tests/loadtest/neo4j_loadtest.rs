@@ -41,7 +41,7 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
 
     // Connect to Neo4j using neo4rs
     let graph_config = neo4rs::ConfigBuilder::default()
-        .uri(&container.bolt_uri())
+        .uri(container.bolt_uri())
         .user(&container.username)
         .password(&container.password)
         .db(&*container.database)
@@ -103,7 +103,9 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .with_batch_size(BATCH_SIZE);
 
         populator.delete_nodes(table_name).await.ok();
-        let metrics = populator.populate(table_name, crate::common::row_count()).await?;
+        let metrics = populator
+            .populate(table_name, crate::common::row_count())
+            .await?;
         tracing::info!(
             "Populated {}: {} nodes in {:?}",
             table_name,
@@ -179,7 +181,9 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(crate::common::row_count()).await?;
+                let report = verifier
+                    .verify_streaming(crate::common::row_count())
+                    .await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -207,7 +211,8 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, crate::common::row_count(),
+                    report.matched,
+                    crate::common::row_count(),
                     "Not all nodes matched for label '{table_name}'"
                 );
             }
@@ -221,7 +226,9 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(crate::common::row_count()).await?;
+                let report = verifier
+                    .verify_streaming(crate::common::row_count())
+                    .await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -249,7 +256,8 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, crate::common::row_count(),
+                    report.matched,
+                    crate::common::row_count(),
                     "Not all nodes matched for label '{table_name}'"
                 );
             }

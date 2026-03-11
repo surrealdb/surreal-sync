@@ -92,7 +92,8 @@ pub async fn run_incremental_sync<S: SurrealSink>(
     log::debug!("Source initialized");
 
     // Collect schema with FK info for record link and relation conversion
-    let schema_client = surreal_sync_postgresql::new_postgresql_client(&from_opts.source_uri).await?;
+    let schema_client =
+        surreal_sync_postgresql::new_postgresql_client(&from_opts.source_uri).await?;
     let db_schema = {
         let client = schema_client.lock().await;
         surreal_sync_postgresql::schema::collect_database_schema_with_fks(&client).await?
@@ -156,20 +157,23 @@ pub async fn run_incremental_sync<S: SurrealSink>(
 
                 // Apply FK transforms based on table classification
                 let table_def = db_schema.get_table(&change.table);
-                let table_kind = table_def
-                    .map(|td| classify_table(td, relation_table_overrides));
+                let table_kind = table_def.map(|td| classify_table(td, relation_table_overrides));
 
                 match table_kind {
-                    Some(TableKind::Relation { ref in_fk, ref out_fk }) => {
+                    Some(TableKind::Relation {
+                        ref in_fk,
+                        ref out_fk,
+                    }) => {
                         let op = change.operation;
                         let data = change.data.take().unwrap_or_default();
-                        let relation = surreal_sync_postgresql::fk_transform::build_relation_from_change(
-                            &change.table,
-                            change.id,
-                            data,
-                            in_fk,
-                            out_fk,
-                        );
+                        let relation =
+                            surreal_sync_postgresql::fk_transform::build_relation_from_change(
+                                &change.table,
+                                change.id,
+                                data,
+                                in_fk,
+                                out_fk,
+                            );
                         let rel_change = UniversalRelationChange::new(op, relation);
                         surreal.apply_universal_relation_change(&rel_change).await?;
                     }

@@ -24,7 +24,8 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
     let dataset = create_unified_full_dataset();
     let test_id = generate_test_id();
 
-    let test_conn_str = surreal_sync::testing::shared_containers::create_mysql_test_db(container, test_id).await?;
+    let test_conn_str =
+        surreal_sync::testing::shared_containers::create_mysql_test_db(container, test_id).await?;
 
     // Setup MySQL connection and data
     let pool = mysql_async::Pool::from_url(&test_conn_str)?;

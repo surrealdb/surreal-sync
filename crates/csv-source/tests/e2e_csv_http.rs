@@ -29,12 +29,22 @@ const TEST_CSV_DATA: &str = "id,name,age,active
 // ---------------------------------------------------------------------------
 
 async fn serve_csv() -> Response {
-    (StatusCode::OK, [("Content-Type", "text/csv")], TEST_CSV_DATA).into_response()
+    (
+        StatusCode::OK,
+        [("Content-Type", "text/csv")],
+        TEST_CSV_DATA,
+    )
+        .into_response()
 }
 
 async fn serve_csv_with_path(Path(filename): Path<String>) -> Response {
     if filename == "test.csv" {
-        (StatusCode::OK, [("Content-Type", "text/csv")], TEST_CSV_DATA).into_response()
+        (
+            StatusCode::OK,
+            [("Content-Type", "text/csv")],
+            TEST_CSV_DATA,
+        )
+            .into_response()
     } else {
         (StatusCode::NOT_FOUND, "File not found").into_response()
     }
@@ -172,7 +182,10 @@ async fn test_csv_http_import() {
                 active: bool,
             }
 
-            let mut response = surreal.query(format!("SELECT name, age, active FROM {table}")).await.unwrap();
+            let mut response = surreal
+                .query(format!("SELECT name, age, active FROM {table}"))
+                .await
+                .unwrap();
             let users: Vec<User> = response.take(0).unwrap();
 
             assert_eq!(users.len(), 5, "Should have imported 5 records");
@@ -200,7 +213,10 @@ async fn test_csv_http_import() {
                 active: bool,
             }
 
-            let mut response = surreal.query(format!("SELECT name, age, active FROM {table}")).await.unwrap();
+            let mut response = surreal
+                .query(format!("SELECT name, age, active FROM {table}"))
+                .await
+                .unwrap();
             let users: Vec<User> = response.take(0).unwrap();
 
             assert_eq!(users.len(), 5, "Should have imported 5 records");
@@ -341,11 +357,31 @@ async fn test_csv_http_import_with_path() {
 
             people.sort_by(|a, b| a.name.cmp(&b.name));
             let expected = vec![
-                Person { name: "Alice".to_string(), age: 30, active: true },
-                Person { name: "Bob".to_string(), age: 25, active: false },
-                Person { name: "Charlie".to_string(), age: 35, active: true },
-                Person { name: "Diana".to_string(), age: 28, active: false },
-                Person { name: "Eve".to_string(), age: 32, active: true },
+                Person {
+                    name: "Alice".to_string(),
+                    age: 30,
+                    active: true,
+                },
+                Person {
+                    name: "Bob".to_string(),
+                    age: 25,
+                    active: false,
+                },
+                Person {
+                    name: "Charlie".to_string(),
+                    age: 35,
+                    active: true,
+                },
+                Person {
+                    name: "Diana".to_string(),
+                    age: 28,
+                    active: false,
+                },
+                Person {
+                    name: "Eve".to_string(),
+                    age: 32,
+                    active: true,
+                },
             ];
             assert_eq!(people, expected);
 

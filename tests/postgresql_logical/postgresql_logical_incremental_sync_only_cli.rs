@@ -24,13 +24,17 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
     let container = surreal_sync::testing::shared_containers::shared_postgres().await;
 
     let test_id = generate_test_id();
-    let _test_conn_str = surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id).await?;
+    let _test_conn_str =
+        surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id)
+            .await?;
 
     // Clean up checkpoint directory to prevent cross-test contamination
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-logical-checkpoints")?;
 
     // Setup PostgreSQL with test data using container
-    let connection_string = container.connection_url().replace("testdb", &format!("test_{test_id}"));
+    let connection_string = container
+        .connection_url()
+        .replace("testdb", &format!("test_{test_id}"));
     let (pg_client, pg_connection) =
         tokio_postgres::connect(&connection_string, tokio_postgres::NoTls).await?;
 

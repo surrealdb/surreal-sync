@@ -411,7 +411,9 @@ impl StreamingVerifier3 {
                             response2.take((0, field_name));
                         if let Ok(Some(bytes)) = bytes_result {
                             if let Ok(uuid) = uuid::Uuid::from_slice(bytes.as_ref()) {
-                                return Ok(Some(SurrealValue::Uuid(surrealdb3::types::Uuid::from(uuid))));
+                                return Ok(Some(SurrealValue::Uuid(
+                                    surrealdb3::types::Uuid::from(uuid),
+                                )));
                             }
                         }
                         // Final fallback: try as String

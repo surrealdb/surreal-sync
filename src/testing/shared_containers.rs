@@ -7,8 +7,8 @@
 use std::sync::{Mutex, OnceLock};
 use tokio::sync::OnceCell;
 
-use surreal_version::testing::SurrealDbContainer;
 use surreal_sync_postgresql::testing::container::PostgresContainer;
+use surreal_version::testing::SurrealDbContainer;
 
 /// Track container names for cleanup at process exit.
 static CONTAINER_NAMES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -76,8 +76,7 @@ pub async fn create_postgres_test_db(
     let db_name = format!("test_{test_id}");
     let admin_conn_str = &container.connection_string;
 
-    let (client, conn) =
-        tokio_postgres::connect(admin_conn_str, tokio_postgres::NoTls).await?;
+    let (client, conn) = tokio_postgres::connect(admin_conn_str, tokio_postgres::NoTls).await?;
     tokio::spawn(async move {
         if let Err(e) = conn.await {
             eprintln!("admin PG connection error: {e}");
@@ -93,8 +92,7 @@ pub async fn create_postgres_test_db(
         Err(e) => return Err(e.into()),
     }
 
-    let test_conn = admin_conn_str
-        .replace("dbname=testdb", &format!("dbname={db_name}"));
+    let test_conn = admin_conn_str.replace("dbname=testdb", &format!("dbname={db_name}"));
     Ok(test_conn)
 }
 
@@ -137,8 +135,7 @@ pub async fn create_mysql_test_db(
 
 /// Returns a shared MongoDB container, starting it on first call.
 pub async fn shared_mongodb() -> &'static crate::testing::mongodb_container::MongoContainer {
-    static MG: OnceCell<crate::testing::mongodb_container::MongoContainer> =
-        OnceCell::const_new();
+    static MG: OnceCell<crate::testing::mongodb_container::MongoContainer> = OnceCell::const_new();
     MG.get_or_init(|| async {
         let name = format!("shared-mongo-{}", std::process::id());
         register_container(&name);
@@ -160,8 +157,7 @@ pub async fn shared_neo4j() -> &'static surreal_sync_neo4j_source::testing::cont
     N4.get_or_init(|| async {
         let name = format!("shared-neo4j-{}", std::process::id());
         register_container(&name);
-        let mut c =
-            surreal_sync_neo4j_source::testing::container::Neo4jContainer::new(&name);
+        let mut c = surreal_sync_neo4j_source::testing::container::Neo4jContainer::new(&name);
         c.start().expect("Neo4j start failed");
         c.wait_until_ready(30)
             .await

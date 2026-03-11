@@ -71,8 +71,14 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
 
     let books_def = db_schema.get_table("books").expect("books table in schema");
     assert_eq!(books_def.foreign_keys.len(), 1, "books should have 1 FK");
-    let book_tags_def = db_schema.get_table("book_tags").expect("book_tags table in schema");
-    assert_eq!(book_tags_def.foreign_keys.len(), 2, "book_tags should have 2 FKs");
+    let book_tags_def = db_schema
+        .get_table("book_tags")
+        .expect("book_tags table in schema");
+    assert_eq!(
+        book_tags_def.foreign_keys.len(),
+        2,
+        "book_tags should have 2 FKs"
+    );
 
     // --- Connect to SurrealDB ---
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
@@ -168,10 +174,7 @@ async fn verify_fk_sync_v2(
         2,
         "books:1 should be linked to 2 tags via book_tags"
     );
-    println!(
-        "PASS: books:1 ->book_tags-> tags = {:?} (graph traversal works)",
-        tag_ids
-    );
+    println!("PASS: books:1 ->book_tags-> tags = {tag_ids:?} (graph traversal works)");
 
     Ok(())
 }
@@ -197,13 +200,19 @@ async fn verify_fk_sync_v3(
         }
     }
 
-    let mut resp = client.query("SELECT count() FROM book_tags GROUP ALL").await?;
+    let mut resp = client
+        .query("SELECT count() FROM book_tags GROUP ALL")
+        .await?;
     let result: Option<Value> = resp.take(0)?;
     if let Some(Value::Object(obj)) = result {
         println!("book_tags count: {obj:?}");
         let count = match obj.get("count") {
             Some(Value::Number(n)) => {
-                if let surrealdb3::types::Number::Int(i) = n { Some(*i) } else { None }
+                if let surrealdb3::types::Number::Int(i) = n {
+                    Some(*i)
+                } else {
+                    None
+                }
             }
             _ => None,
         };
@@ -314,10 +323,7 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
                 total_links, 2,
                 "people:1 should be connected to 2 others via mentorship (in either direction)"
             );
-            println!(
-                "PASS: people:1 mentorship outward={:?} inward={:?} (total={total_links})",
-                outward, inward
-            );
+            println!("PASS: people:1 mentorship outward={outward:?} inward={inward:?} (total={total_links})");
         }
         SurrealConnection::V3(client) => {
             let sink = surreal3_sink::Surreal3Sink::new(client.clone());
@@ -342,7 +348,11 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
             if let Some(Value::Object(obj)) = result {
                 let count = match obj.get("count") {
                     Some(Value::Number(n)) => {
-                        if let surrealdb3::types::Number::Int(i) = n { Some(*i) } else { None }
+                        if let surrealdb3::types::Number::Int(i) = n {
+                            Some(*i)
+                        } else {
+                            None
+                        }
                     }
                     _ => None,
                 };
@@ -364,8 +374,15 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
                     Some(Value::Array(a)) => a.len(),
                     _ => 0,
                 };
-                assert_eq!(out_count + in_count, 2, "people:1 linked to 2 via mentorship");
-                println!("PASS: people:1 mentorship links total={}", out_count + in_count);
+                assert_eq!(
+                    out_count + in_count,
+                    2,
+                    "people:1 linked to 2 via mentorship"
+                );
+                println!(
+                    "PASS: people:1 mentorship links total={}",
+                    out_count + in_count
+                );
             }
         }
     }

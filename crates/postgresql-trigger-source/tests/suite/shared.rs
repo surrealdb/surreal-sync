@@ -9,7 +9,11 @@ fn register_cleanup(name: &str) {
     let names = NAMES.get_or_init(|| {
         extern "C" fn cleanup() {
             let _ = std::process::Command::new("docker")
-                .args(["rm", "-f", &format!("shared-trigger-pg-{}", std::process::id())])
+                .args([
+                    "rm",
+                    "-f",
+                    &format!("shared-trigger-pg-{}", std::process::id()),
+                ])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status();

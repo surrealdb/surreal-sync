@@ -175,10 +175,9 @@ async fn test_postgresql_replication_with_all_types() -> Result<()> {
 
     // Create replication client (Client::new takes ownership of the client)
     // We need to create a new connection for the replication client
-    let (repl_pg_client, repl_connection) =
-        tokio_postgres::connect(&test_conn, NoTls)
-            .await
-            .context("Failed to connect to PostgreSQL for replication")?;
+    let (repl_pg_client, repl_connection) = tokio_postgres::connect(&test_conn, NoTls)
+        .await
+        .context("Failed to connect to PostgreSQL for replication")?;
 
     tokio::spawn(async move {
         if let Err(e) = repl_connection.await {
@@ -288,10 +287,9 @@ async fn test_multiple_inserts_and_batch_advance() -> Result<()> {
         .await?;
 
     // Create replication (need separate connection)
-    let (repl_pg_client, repl_connection) =
-        tokio_postgres::connect(&test_conn, NoTls)
-            .await
-            .context("Failed to connect to PostgreSQL for replication")?;
+    let (repl_pg_client, repl_connection) = tokio_postgres::connect(&test_conn, NoTls)
+        .await
+        .context("Failed to connect to PostgreSQL for replication")?;
 
     tokio::spawn(async move {
         if let Err(e) = repl_connection.await {

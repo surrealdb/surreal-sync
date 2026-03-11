@@ -183,7 +183,10 @@ mod tests {
         let table = make_table_with_fks(fks);
 
         let mut fields = HashMap::new();
-        fields.insert("title".to_string(), UniversalValue::Text("Rust".to_string()));
+        fields.insert(
+            "title".to_string(),
+            UniversalValue::Text("Rust".to_string()),
+        );
         fields.insert("author_id".to_string(), UniversalValue::Int32(42));
 
         transform_fk_values(&mut fields, &table);
@@ -197,7 +200,7 @@ mod tests {
                 assert_eq!(table, "authors");
                 assert_eq!(**id, UniversalValue::Int32(42));
             }
-            other => panic!("Expected Thing, got {:?}", other),
+            other => panic!("Expected Thing, got {other:?}"),
         }
     }
 
@@ -267,11 +270,11 @@ mod tests {
 
         match fields.get("author_id") {
             Some(UniversalValue::Thing { table, .. }) => assert_eq!(table, "authors"),
-            other => panic!("Expected Thing for author_id, got {:?}", other),
+            other => panic!("Expected Thing for author_id, got {other:?}"),
         }
         match fields.get("editor_id") {
             Some(UniversalValue::Thing { table, .. }) => assert_eq!(table, "editors"),
-            other => panic!("Expected Thing for editor_id, got {:?}", other),
+            other => panic!("Expected Thing for editor_id, got {other:?}"),
         }
     }
 

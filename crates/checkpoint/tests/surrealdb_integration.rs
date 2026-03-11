@@ -71,7 +71,10 @@ async fn cleanup_record(ctx: &TestCtx, table: &str, id: &CheckpointID) -> anyhow
             client
                 .query("DELETE type::thing($record_tb, $record_id)")
                 .bind(("record_tb", table.to_string()))
-                .bind(("record_id", surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(id_str))))
+                .bind((
+                    "record_id",
+                    surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(id_str)),
+                ))
                 .await?;
         }
         TestCtx::V3 { client, .. } => {

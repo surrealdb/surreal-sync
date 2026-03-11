@@ -27,7 +27,8 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Clean up checkpoint directory to prevent cross-test contamination
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
-    let test_conn_str = surreal_sync::testing::shared_containers::create_mysql_test_db(container, test_id).await?;
+    let test_conn_str =
+        surreal_sync::testing::shared_containers::create_mysql_test_db(container, test_id).await?;
     let test_db_name = format!("test_{test_id}");
 
     // Setup MySQL connection
@@ -96,11 +97,9 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
 
     // Read the t1 (FullSyncStart) checkpoint file - this is needed
     // for incremental sync to pick up changes made after full sync started
-    let checkpoint_file = checkpoint::get_checkpoint_for_phase(
-        &checkpoint_dir,
-        checkpoint::SyncPhase::FullSyncStart,
-    )
-    .await?;
+    let checkpoint_file =
+        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
+            .await?;
     // Parse the CheckpointFile into database-specific checkpoint type
     let sync_checkpoint: surreal_sync_mysql_trigger_source::MySQLCheckpoint =
         checkpoint_file.parse()?;

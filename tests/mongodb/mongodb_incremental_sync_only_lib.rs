@@ -104,11 +104,9 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
 
     // Read the t1 (FullSyncStart) checkpoint file - this is needed
     // for incremental sync to pick up changes made after full sync started
-    let main_checkpoint = checkpoint::get_checkpoint_for_phase(
-        &checkpoint_dir,
-        checkpoint::SyncPhase::FullSyncStart,
-    )
-    .await?;
+    let main_checkpoint =
+        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
+            .await?;
     // Convert to mongodb crate's checkpoint type
     let sync_checkpoint: surreal_sync_mongodb_changestream_source::MongoDBCheckpoint =
         main_checkpoint.parse()?;

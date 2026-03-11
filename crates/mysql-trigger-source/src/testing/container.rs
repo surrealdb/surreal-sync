@@ -62,10 +62,8 @@ impl MySQLContainer {
         info!("Started container: {}", container_id);
 
         self.host_port = get_dynamic_port(&self.container_name)?;
-        self.connection_string = format!(
-            "mysql://root:testpass@127.0.0.1:{}/testdb",
-            self.host_port
-        );
+        self.connection_string =
+            format!("mysql://root:testpass@127.0.0.1:{}/testdb", self.host_port);
 
         info!(
             "Container bound to dynamic port {} (connection: {})",

@@ -137,7 +137,9 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
-                let report = verifier.verify_streaming(crate::common::row_count()).await?;
+                let report = verifier
+                    .verify_streaming(crate::common::row_count())
+                    .await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -164,7 +166,8 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, crate::common::row_count(),
+                    report.matched,
+                    crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }
@@ -177,7 +180,9 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
-                let report = verifier.verify_streaming(crate::common::row_count()).await?;
+                let report = verifier
+                    .verify_streaming(crate::common::row_count())
+                    .await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -204,7 +209,8 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, crate::common::row_count(),
+                    report.matched,
+                    crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }

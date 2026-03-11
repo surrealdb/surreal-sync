@@ -55,8 +55,6 @@ pub trait SurrealSink: Send + Sync {
     /// Converts the `UniversalRelationChange` to the appropriate SurrealDB operation:
     /// - Create/Update: RELATE the edge
     /// - Delete: DELETE the relation
-    async fn apply_universal_relation_change(
-        &self,
-        change: &UniversalRelationChange,
-    ) -> Result<()>;
+    async fn apply_universal_relation_change(&self, change: &UniversalRelationChange)
+        -> Result<()>;
 }

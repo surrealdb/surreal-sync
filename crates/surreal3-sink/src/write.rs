@@ -49,11 +49,7 @@ fn sanitize_value(value: Value) -> Value {
             Value::Object(surrealdb::types::Object::from(sanitized))
         }
         Value::Array(arr) => {
-            let sanitized: Vec<Value> = arr
-                .into_inner()
-                .into_iter()
-                .map(sanitize_value)
-                .collect();
+            let sanitized: Vec<Value> = arr.into_inner().into_iter().map(sanitize_value).collect();
             Value::Array(surrealdb::types::Array::from(sanitized))
         }
         other => other,
@@ -326,16 +322,8 @@ pub async fn write_relation(
     // any RecordId in bound parameters, and sanitize the CONTENT object.
     let relate_content = sanitize_value(r.get_relate_content());
 
-    let in_literal = format!(
-        "{}:{}",
-        r.input.table,
-        format_record_id_key(&r.input.key)
-    );
-    let out_literal = format!(
-        "{}:{}",
-        r.output.table,
-        format_record_id_key(&r.output.key)
-    );
+    let in_literal = format!("{}:{}", r.input.table, format_record_id_key(&r.input.key));
+    let out_literal = format!("{}:{}", r.output.table, format_record_id_key(&r.output.key));
 
     let query = format!(
         "RELATE {in_literal}->{}->{out_literal} CONTENT $content",
@@ -502,7 +490,10 @@ pub async fn apply_universal_relation_change(
             q = q.bind(("relation_tb", change.relation.relation_type.clone()));
             q = q.bind(("relation_key", record_id_key_to_value(&surreal_id)));
             q.await?;
-            tracing::trace!("Successfully deleted relation for table: {:?}", change.relation.relation_type);
+            tracing::trace!(
+                "Successfully deleted relation for table: {:?}",
+                change.relation.relation_type
+            );
         }
     }
     Ok(())

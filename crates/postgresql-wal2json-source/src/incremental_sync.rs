@@ -142,15 +142,24 @@ pub async fn run_incremental_sync<S: SurrealSink>(
                 for change in &changes {
                     let (row, op) = match change {
                         crate::Action::Insert(row) => {
-                            debug!("INSERT: table={}, primary_key={:?}", row.table, row.primary_key);
+                            debug!(
+                                "INSERT: table={}, primary_key={:?}",
+                                row.table, row.primary_key
+                            );
                             (row, UniversalChangeOp::Create)
                         }
                         crate::Action::Update(row) => {
-                            debug!("UPDATE: table={}, primary_key={:?}", row.table, row.primary_key);
+                            debug!(
+                                "UPDATE: table={}, primary_key={:?}",
+                                row.table, row.primary_key
+                            );
                             (row, UniversalChangeOp::Update)
                         }
                         crate::Action::Delete(row) => {
-                            debug!("DELETE: table={}, primary_key={:?}", row.table, row.primary_key);
+                            debug!(
+                                "DELETE: table={}, primary_key={:?}",
+                                row.table, row.primary_key
+                            );
                             (row, UniversalChangeOp::Delete)
                         }
                         crate::Action::Begin { .. } | crate::Action::Commit { .. } => {
@@ -230,7 +239,10 @@ async fn apply_change_with_fk_transform<S: SurrealSink>(
     let table_kind = table_def.map(|td| classify_table(td, relation_table_overrides));
 
     match table_kind {
-        Some(TableKind::Relation { ref in_fk, ref out_fk }) => {
+        Some(TableKind::Relation {
+            ref in_fk,
+            ref out_fk,
+        }) => {
             let data = if op == UniversalChangeOp::Delete {
                 std::collections::HashMap::new()
             } else {

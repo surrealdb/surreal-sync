@@ -48,10 +48,7 @@ pub enum TableKind {
 /// **Override**: if `relation_table_overrides` contains the table name the
 /// table is forced to `TableKind::Relation` regardless of the heuristic
 /// (provided it has at least 2 FKs pointing to distinct tables).
-pub fn classify_table(
-    table: &TableDefinition,
-    relation_table_overrides: &[String],
-) -> TableKind {
+pub fn classify_table(table: &TableDefinition, relation_table_overrides: &[String]) -> TableKind {
     let forced = relation_table_overrides.contains(&table.name);
 
     let fks = &table.foreign_keys;
@@ -135,11 +132,7 @@ mod tests {
         column_names: Vec<&str>,
         fks: Vec<ForeignKeyDefinition>,
     ) -> TableDefinition {
-        let primary_key = if pk_names.len() == 1 {
-            ColumnDefinition::new(pk_names[0], UniversalType::Int64)
-        } else {
-            ColumnDefinition::new(pk_names[0], UniversalType::Int64)
-        };
+        let primary_key = ColumnDefinition::new(pk_names[0], UniversalType::Int64);
 
         let mut columns: Vec<ColumnDefinition> = column_names
             .iter()
@@ -161,7 +154,12 @@ mod tests {
         td
     }
 
-    fn fk(name: &str, cols: Vec<&str>, ref_table: &str, ref_cols: Vec<&str>) -> ForeignKeyDefinition {
+    fn fk(
+        name: &str,
+        cols: Vec<&str>,
+        ref_table: &str,
+        ref_cols: Vec<&str>,
+    ) -> ForeignKeyDefinition {
         ForeignKeyDefinition {
             constraint_name: name.to_string(),
             columns: cols.iter().map(|s| s.to_string()).collect(),

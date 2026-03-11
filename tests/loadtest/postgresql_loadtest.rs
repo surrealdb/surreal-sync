@@ -42,7 +42,9 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
     let table_names: Vec<&str> = schema.table_names();
 
     // Connect to PostgreSQL
-    let pg_conn_string = surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id).await?;
+    let pg_conn_string =
+        surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id)
+            .await?;
 
     let (pg_client, connection) = tokio_postgres::connect(&pg_conn_string, NoTls).await?;
     tokio::spawn(async move {
@@ -92,7 +94,9 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
             .await?
             .with_batch_size(BATCH_SIZE);
         populator.recreate_table(table_name).await?;
-        let metrics = populator.populate(table_name, crate::common::row_count()).await?;
+        let metrics = populator
+            .populate(table_name, crate::common::row_count())
+            .await?;
         tracing::info!(
             "Populated {}: {} rows in {:?}",
             table_name,
@@ -161,7 +165,9 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(crate::common::row_count()).await?;
+                let report = verifier
+                    .verify_streaming(crate::common::row_count())
+                    .await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -179,7 +185,8 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, crate::common::row_count(),
+                    report.matched,
+                    crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }
@@ -193,7 +200,9 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(crate::common::row_count()).await?;
+                let report = verifier
+                    .verify_streaming(crate::common::row_count())
+                    .await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -211,7 +220,8 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, crate::common::row_count(),
+                    report.matched,
+                    crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }

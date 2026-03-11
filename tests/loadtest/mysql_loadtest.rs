@@ -44,7 +44,8 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     let table_names: Vec<&str> = schema.table_names();
 
     // Connect to MySQL
-    let mysql_conn_string = surreal_sync::testing::shared_containers::create_mysql_test_db(container, test_id).await?;
+    let mysql_conn_string =
+        surreal_sync::testing::shared_containers::create_mysql_test_db(container, test_id).await?;
     let pool = mysql_async::Pool::from_url(&mysql_conn_string)?;
     let mut mysql_conn = pool.get_conn().await?;
 
@@ -89,7 +90,9 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             .await?
             .with_batch_size(BATCH_SIZE);
         populator.create_table(table_name).await?;
-        let metrics = populator.populate(table_name, crate::common::row_count()).await?;
+        let metrics = populator
+            .populate(table_name, crate::common::row_count())
+            .await?;
         tracing::info!(
             "Populated {}: {} rows in {:?}",
             table_name,
@@ -158,7 +161,9 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(crate::common::row_count()).await?;
+                let report = verifier
+                    .verify_streaming(crate::common::row_count())
+                    .await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -176,7 +181,8 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, crate::common::row_count(),
+                    report.matched,
+                    crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }
@@ -192,7 +198,9 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(crate::common::row_count()).await?;
+                let report = verifier
+                    .verify_streaming(crate::common::row_count())
+                    .await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -210,7 +218,8 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, crate::common::row_count(),
+                    report.matched,
+                    crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }

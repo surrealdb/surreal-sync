@@ -118,11 +118,9 @@ async fn test_trigger_fk_incremental_only() -> Result<(), Box<dyn std::error::Er
         .await?;
 
     // --- Step 3: Read checkpoint and run incremental sync ---
-    let checkpoint_file = checkpoint::get_checkpoint_for_phase(
-        &checkpoint_dir,
-        checkpoint::SyncPhase::FullSyncStart,
-    )
-    .await?;
+    let checkpoint_file =
+        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
+            .await?;
     let sync_checkpoint: surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint =
         checkpoint_file.parse()?;
 
@@ -173,9 +171,7 @@ async fn verify_fk_incremental_v2(
         author_id.tb, "authors",
         "Incremental: books:1.author_id should be record link to authors"
     );
-    println!(
-        "PASS [trigger-incremental]: books:1.author_id = {author_id} (record link)"
-    );
+    println!("PASS [trigger-incremental]: books:1.author_id = {author_id} (record link)");
 
     // --- Relation table: book_tags as graph edges ---
     let mut resp = client
@@ -202,10 +198,7 @@ async fn verify_fk_incremental_v2(
         2,
         "Incremental: books:1 should link to 2 tags via book_tags (out={out_count}, in={in_count})"
     );
-    println!(
-        "PASS [trigger-incremental]: books:1 book_tags outward={:?} inward={:?}",
-        outward, inward
-    );
+    println!("PASS [trigger-incremental]: books:1 book_tags outward={outward:?} inward={inward:?}");
 
     // --- Verify plain data on authors (no FK transformation) ---
     let mut resp = client.query("SELECT name FROM authors:1").await?;
@@ -241,7 +234,11 @@ async fn verify_fk_incremental_v3(
     if let Some(Value::Object(obj)) = result {
         let count = match obj.get("count") {
             Some(Value::Number(n)) => {
-                if let surrealdb3::types::Number::Int(i) = n { Some(*i) } else { None }
+                if let surrealdb3::types::Number::Int(i) = n {
+                    Some(*i)
+                } else {
+                    None
+                }
             }
             _ => None,
         };
@@ -262,8 +259,15 @@ async fn verify_fk_incremental_v3(
             Some(Value::Array(a)) => a.len(),
             _ => 0,
         };
-        assert_eq!(out_count + in_count, 2, "Incremental v3: books:1 linked to 2 tags");
-        println!("PASS [trigger-incremental-v3]: graph traversal OK (total={})", out_count + in_count);
+        assert_eq!(
+            out_count + in_count,
+            2,
+            "Incremental v3: books:1 linked to 2 tags"
+        );
+        println!(
+            "PASS [trigger-incremental-v3]: graph traversal OK (total={})",
+            out_count + in_count
+        );
     }
 
     Ok(())

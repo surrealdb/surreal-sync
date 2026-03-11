@@ -145,7 +145,9 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
                 .with_batch_size(BATCH_SIZE);
 
         // Use populate to insert data
-        let metrics = populator.populate(table_name, crate::common::row_count()).await?;
+        let metrics = populator
+            .populate(table_name, crate::common::row_count())
+            .await?;
         tracing::info!(
             "Populated {}: {} documents in {:?}",
             table_name,
@@ -218,7 +220,9 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(crate::common::row_count()).await?;
+                let report = verifier
+                    .verify_streaming(crate::common::row_count())
+                    .await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -246,7 +250,8 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, crate::common::row_count(),
+                    report.matched,
+                    crate::common::row_count(),
                     "Not all documents matched for collection '{table_name}'"
                 );
             }
@@ -260,7 +265,9 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(crate::common::row_count()).await?;
+                let report = verifier
+                    .verify_streaming(crate::common::row_count())
+                    .await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -288,7 +295,8 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, crate::common::row_count(),
+                    report.matched,
+                    crate::common::row_count(),
                     "Not all documents matched for collection '{table_name}'"
                 );
             }

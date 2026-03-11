@@ -469,9 +469,10 @@ pub async fn compare_sync_results_in_surrealdb_v3(
                                             format!("{}: Document {}, Field '{}' string '{}' is not a valid decimal",
                                                 test_description, doc_idx + 1, field_name, actual_str)
                                         })?;
-                                        let expected_decimal: Decimal = value.parse().map_err(|_| {
-                                            format!("Invalid expected decimal value: {value}")
-                                        })?;
+                                        let expected_decimal: Decimal =
+                                            value.parse().map_err(|_| {
+                                                format!("Invalid expected decimal value: {value}")
+                                            })?;
                                         assert_eq!(
                                             actual_decimal,
                                             expected_decimal,

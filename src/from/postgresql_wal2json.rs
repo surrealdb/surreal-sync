@@ -60,14 +60,28 @@ fn resolve_full_args(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<Resolved
         let sink = cfg.sink.surrealdb;
         Ok(ResolvedWal2jsonFullArgs {
             connection_string: args.connection_string.unwrap_or(pg.connection_string),
-            slot: if args.slot != "surreal_sync_slot" { args.slot } else { pg.slot },
-            tables: if args.tables.is_empty() { pg.tables } else { args.tables },
-            schema: if args.schema != "public" { args.schema } else { pg.schema },
+            slot: if args.slot != "surreal_sync_slot" {
+                args.slot
+            } else {
+                pg.slot
+            },
+            tables: if args.tables.is_empty() {
+                pg.tables
+            } else {
+                args.tables
+            },
+            schema: if args.schema != "public" {
+                args.schema
+            } else {
+                pg.schema
+            },
             to_namespace: args.to_namespace.unwrap_or(sink.namespace),
             to_database: args.to_database.unwrap_or(sink.database),
             schema_file: args.schema_file.or(pg.schema_file),
             checkpoint_dir: args.checkpoint_dir.or(pg.checkpoint_dir),
-            checkpoints_surreal_table: args.checkpoints_surreal_table.or(pg.checkpoints_surreal_table),
+            checkpoints_surreal_table: args
+                .checkpoints_surreal_table
+                .or(pg.checkpoints_surreal_table),
             surreal: SurrealOpts {
                 surreal_endpoint: sink.endpoint,
                 surreal_username: sink.username,
@@ -108,14 +122,28 @@ fn resolve_incremental_args(
         let sink = cfg.sink.surrealdb;
         Ok(ResolvedWal2jsonIncrementalArgs {
             connection_string: args.connection_string.unwrap_or(pg.connection_string),
-            slot: if args.slot != "surreal_sync_slot" { args.slot } else { pg.slot },
-            tables: if args.tables.is_empty() { pg.tables } else { args.tables },
-            schema: if args.schema != "public" { args.schema } else { pg.schema },
+            slot: if args.slot != "surreal_sync_slot" {
+                args.slot
+            } else {
+                pg.slot
+            },
+            tables: if args.tables.is_empty() {
+                pg.tables
+            } else {
+                args.tables
+            },
+            schema: if args.schema != "public" {
+                args.schema
+            } else {
+                pg.schema
+            },
             to_namespace: args.to_namespace.unwrap_or(sink.namespace),
             to_database: args.to_database.unwrap_or(sink.database),
             schema_file: args.schema_file.or(pg.schema_file),
             incremental_from: args.incremental_from.or(pg.incremental_from),
-            checkpoints_surreal_table: args.checkpoints_surreal_table.or(pg.checkpoints_surreal_table),
+            checkpoints_surreal_table: args
+                .checkpoints_surreal_table
+                .or(pg.checkpoints_surreal_table),
             incremental_to: args.incremental_to.or(pg.incremental_to),
             timeout: if args.timeout != "3600" {
                 args.timeout

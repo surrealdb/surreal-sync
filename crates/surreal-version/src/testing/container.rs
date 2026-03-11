@@ -29,8 +29,7 @@ impl SurrealDbContainer {
     /// The Docker image is read from `SURREALDB_IMAGE` env var, falling back
     /// to `surrealdb/surrealdb:v2.3.7`.
     pub fn new(container_name: &str) -> Self {
-        let image =
-            std::env::var("SURREALDB_IMAGE").unwrap_or_else(|_| DEFAULT_IMAGE.to_string());
+        let image = std::env::var("SURREALDB_IMAGE").unwrap_or_else(|_| DEFAULT_IMAGE.to_string());
         Self {
             container_name: container_name.to_string(),
             host_port: 0,
@@ -114,9 +113,7 @@ impl SurrealDbContainer {
                 std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1))
             {
                 use std::io::{Read, Write};
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
-                    .ok();
+                stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
 
                 if stream.write_all(request.as_bytes()).is_ok() {
                     let mut buf = vec![0u8; 1024];
@@ -128,14 +125,16 @@ impl SurrealDbContainer {
                             {
                                 let trimmed = version_line.trim();
                                 info!("SurrealDB is ready! Version: {}", trimmed);
-                                self.detected_version =
-                                    crate::parse_version_string(trimmed).ok();
+                                self.detected_version = crate::parse_version_string(trimmed).ok();
                             } else {
                                 info!("SurrealDB is ready!");
                             }
                             return Ok(());
                         }
-                        debug!("SurrealDB not ready yet (response: {}...)", &response[..response.len().min(80)]);
+                        debug!(
+                            "SurrealDB not ready yet (response: {}...)",
+                            &response[..response.len().min(80)]
+                        );
                     }
                 }
             } else {

@@ -67,8 +67,8 @@ pub use schema::{
 // Legacy alias for backwards compatibility
 #[deprecated(since = "1.0.0", note = "Use GeneratorSchema instead")]
 pub type LoadTestSchema = Schema;
-pub use types::{GeometryType, ToDdl, UniversalType};
 pub use relation_change::UniversalRelationChange;
+pub use types::{GeometryType, ToDdl, UniversalType};
 pub use values::{
     GeometryData, RowConverter, TypedValue, TypedValueError, UniversalChange, UniversalChangeOp,
     UniversalRelation, UniversalRow, UniversalRowBuilder, UniversalThingRef, UniversalValue,

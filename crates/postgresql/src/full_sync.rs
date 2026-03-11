@@ -81,11 +81,7 @@ pub async fn migrate_table<S: SurrealSink>(
                 let all_fields = convert_all_columns_to_universal_values(row)?;
                 let rel_id = UniversalValue::Int64(row_index as i64);
                 let relation = fk_transform::build_relation_from_row(
-                    table_name,
-                    rel_id,
-                    all_fields,
-                    in_fk,
-                    out_fk,
+                    table_name, rel_id, all_fields, in_fk, out_fk,
                 );
                 rel_batch.push(relation);
             }
@@ -246,9 +242,7 @@ fn convert_row_to_keys_and_universal_values(
 
 /// Convert all columns in a PostgreSQL row to UniversalValues (including PK columns).
 /// Used for relation tables where FK columns may overlap with PK columns.
-fn convert_all_columns_to_universal_values(
-    row: &Row,
-) -> Result<HashMap<String, UniversalValue>> {
+fn convert_all_columns_to_universal_values(row: &Row) -> Result<HashMap<String, UniversalValue>> {
     let mut record = HashMap::new();
     for (i, column) in row.columns().iter().enumerate() {
         let value = convert_postgres_value_to_universal(row, i)?;

@@ -52,10 +52,9 @@ async fn test_time_replication_formats() -> Result<()> {
     info!("Created time_test table");
 
     // Create replication client
-    let (repl_pg_client, repl_connection) =
-        tokio_postgres::connect(&test_conn, NoTls)
-            .await
-            .context("Failed to connect for replication")?;
+    let (repl_pg_client, repl_connection) = tokio_postgres::connect(&test_conn, NoTls)
+        .await
+        .context("Failed to connect for replication")?;
 
     tokio::spawn(async move {
         if let Err(e) = repl_connection.await {

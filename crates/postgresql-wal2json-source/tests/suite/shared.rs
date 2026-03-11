@@ -10,7 +10,11 @@ fn register_cleanup(name: &str) {
         extern "C" fn cleanup() {
             // Best-effort cleanup
             let _ = std::process::Command::new("docker")
-                .args(["rm", "-f", &format!("shared-wal2json-pg-{}", std::process::id())])
+                .args([
+                    "rm",
+                    "-f",
+                    &format!("shared-wal2json-pg-{}", std::process::id()),
+                ])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .status();
@@ -45,7 +49,9 @@ pub async fn create_test_db(
 ) -> anyhow::Result<String> {
     let (client, conn) =
         tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls).await?;
-    tokio::spawn(async move { let _ = conn.await; });
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
 
     match client
         .execute(&format!("CREATE DATABASE \"{db_name}\""), &[])

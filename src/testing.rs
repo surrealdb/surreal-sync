@@ -7,8 +7,6 @@
 
 pub mod checkpoint;
 pub mod cli;
-pub mod shared_containers;
-pub mod surrealdb_container;
 pub mod field;
 pub mod full;
 pub mod mongodb;
@@ -22,9 +20,11 @@ pub mod posts;
 pub mod relations;
 pub mod schema;
 pub mod schemas_for_tests;
+pub mod shared_containers;
 pub mod surreal;
 pub mod surreal2;
 pub mod surreal3;
+pub mod surrealdb_container;
 pub mod table;
 pub mod test_helpers;
 pub mod users;

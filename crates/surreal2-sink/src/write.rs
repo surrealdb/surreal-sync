@@ -427,7 +427,10 @@ pub async fn apply_universal_relation_change(
             q = q.bind(("relation_tb", change.relation.relation_type.clone()));
             q = q.bind(("relation_id", id_to_sql_value(&surreal_id)));
             q.await?;
-            tracing::trace!("Successfully deleted relation for table: {:?}", change.relation.relation_type);
+            tracing::trace!(
+                "Successfully deleted relation for table: {:?}",
+                change.relation.relation_type
+            );
         }
     }
     Ok(())

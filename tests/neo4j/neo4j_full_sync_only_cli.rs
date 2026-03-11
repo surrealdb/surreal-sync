@@ -29,7 +29,7 @@ async fn test_neo4j_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
 
     // Setup Neo4j with test data
     let graph_config = neo4rs::ConfigBuilder::default()
-        .uri(&container.bolt_uri())
+        .uri(container.bolt_uri())
         .user(&container.username)
         .password(&container.password)
         .db(&*container.database)

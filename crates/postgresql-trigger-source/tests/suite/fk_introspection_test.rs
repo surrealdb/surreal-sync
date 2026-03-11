@@ -46,7 +46,10 @@ async fn test_fk_introspection_and_classification() -> Result<(), Box<dyn std::e
 
     // --- Verify authors: 0 FKs, Entity ---
     let authors = schema.get_table("authors").expect("authors table");
-    assert!(authors.foreign_keys.is_empty(), "authors should have no FKs");
+    assert!(
+        authors.foreign_keys.is_empty(),
+        "authors should have no FKs"
+    );
     assert!(
         matches!(classify_table(authors, &[]), TableKind::Entity),
         "authors should be Entity"
@@ -74,7 +77,11 @@ async fn test_fk_introspection_and_classification() -> Result<(), Box<dyn std::e
 
     // --- Verify book_tags: 2 FKs, composite PK, Relation ---
     let book_tags = schema.get_table("book_tags").expect("book_tags table");
-    assert_eq!(book_tags.foreign_keys.len(), 2, "book_tags should have 2 FKs");
+    assert_eq!(
+        book_tags.foreign_keys.len(),
+        2,
+        "book_tags should have 2 FKs"
+    );
 
     // Verify composite PK
     assert!(
@@ -97,8 +104,10 @@ async fn test_fk_introspection_and_classification() -> Result<(), Box<dyn std::e
     // Should be classified as Relation
     match classify_table(book_tags, &[]) {
         TableKind::Relation { in_fk, out_fk } => {
-            let ref_tables: Vec<&str> =
-                vec![in_fk.referenced_table.as_str(), out_fk.referenced_table.as_str()];
+            let ref_tables: Vec<&str> = vec![
+                in_fk.referenced_table.as_str(),
+                out_fk.referenced_table.as_str(),
+            ];
             assert!(ref_tables.contains(&"books"));
             assert!(ref_tables.contains(&"tags"));
         }
@@ -109,8 +118,7 @@ async fn test_fk_introspection_and_classification() -> Result<(), Box<dyn std::e
 }
 
 #[tokio::test]
-async fn test_override_forces_relation_classification()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_override_forces_relation_classification() -> Result<(), Box<dyn std::error::Error>> {
     let container = crate::shared::postgres().await;
 
     let (client, connection) =
@@ -136,7 +144,9 @@ async fn test_override_forces_relation_classification()
         .await?;
 
     let schema = collect_database_schema_with_fks(&client).await?;
-    let collab = schema.get_table("collaborations").expect("collaborations table");
+    let collab = schema
+        .get_table("collaborations")
+        .expect("collaborations table");
 
     // Without override: Entity (PK is own 'id', not composed of FKs)
     assert!(
@@ -147,7 +157,10 @@ async fn test_override_forces_relation_classification()
     // With override: Relation (forced)
     let overrides = vec!["collaborations".to_string()];
     assert!(
-        matches!(classify_table(collab, &overrides), TableKind::Relation { .. }),
+        matches!(
+            classify_table(collab, &overrides),
+            TableKind::Relation { .. }
+        ),
         "With override, collaborations should be Relation"
     );
 

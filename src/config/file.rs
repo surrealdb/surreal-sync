@@ -60,8 +60,8 @@ fn default_batch_size() -> usize {
 
 /// Load and parse a TOML config file into `ConfigFile<S>`.
 pub fn load_config<S: DeserializeOwned>(path: &Path) -> Result<ConfigFile<S>> {
-    let contents =
-        std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
+    let contents = std::fs::read_to_string(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
     let config: ConfigFile<S> =
         toml::from_str(&contents).with_context(|| format!("Failed to parse {}", path.display()))?;
     Ok(config)

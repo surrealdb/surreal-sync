@@ -7,7 +7,9 @@
 use anyhow::Result;
 use postgresql_types::postgresql_column_to_universal_type;
 use std::collections::HashMap;
-use sync_core::{ColumnDefinition, DatabaseSchema, ForeignKeyDefinition, TableDefinition, UniversalType};
+use sync_core::{
+    ColumnDefinition, DatabaseSchema, ForeignKeyDefinition, TableDefinition, UniversalType,
+};
 use tokio_postgres::Client;
 
 /// (source_columns, referenced_table, referenced_columns) grouped per constraint.
@@ -91,9 +93,8 @@ pub async fn collect_database_schema(client: &Client) -> Result<DatabaseSchema> 
             }
         }
 
-        let pk = primary_key.unwrap_or_else(|| {
-            ColumnDefinition::new(pk_col_name, UniversalType::Int64)
-        });
+        let pk =
+            primary_key.unwrap_or_else(|| ColumnDefinition::new(pk_col_name, UniversalType::Int64));
 
         tables.push(TableDefinition::new(table_name, pk, other_columns));
     }

@@ -25,7 +25,9 @@ async fn test_wal2json_fk_incremental_only() -> Result<(), Box<dyn std::error::E
     let container = surreal_sync::testing::shared_containers::shared_postgres().await;
 
     let test_id = generate_test_id();
-    let test_conn_str = surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id).await?;
+    let test_conn_str =
+        surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id)
+            .await?;
 
     let (pg_client, pg_conn) =
         tokio_postgres::connect(&test_conn_str, tokio_postgres::NoTls).await?;
@@ -126,11 +128,9 @@ async fn test_wal2json_fk_incremental_only() -> Result<(), Box<dyn std::error::E
         .await?;
 
     // --- Step 3: Read checkpoint and run incremental sync ---
-    let checkpoint_file = checkpoint::get_checkpoint_for_phase(
-        &checkpoint_dir,
-        checkpoint::SyncPhase::FullSyncStart,
-    )
-    .await?;
+    let checkpoint_file =
+        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
+            .await?;
     let sync_checkpoint: surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint =
         checkpoint_file.parse()?;
 
@@ -189,9 +189,7 @@ async fn verify_fk_incremental_v2(
         author_id.tb, "authors",
         "wal2json incremental: books:1.author_id should be record link to authors"
     );
-    println!(
-        "PASS [wal2json-incremental]: books:1.author_id = {author_id} (record link)"
-    );
+    println!("PASS [wal2json-incremental]: books:1.author_id = {author_id} (record link)");
 
     // Relation table: book_tags as graph edges
     let mut resp = client
@@ -219,8 +217,7 @@ async fn verify_fk_incremental_v2(
         "wal2json incremental: books:1 should link to 2 tags via book_tags (out={out_count}, in={in_count})"
     );
     println!(
-        "PASS [wal2json-incremental]: books:1 book_tags outward={:?} inward={:?}",
-        outward, inward
+        "PASS [wal2json-incremental]: books:1 book_tags outward={outward:?} inward={inward:?}"
     );
 
     // Plain data on authors
@@ -257,7 +254,11 @@ async fn verify_fk_incremental_v3(
     if let Some(Value::Object(obj)) = result {
         let count = match obj.get("count") {
             Some(Value::Number(n)) => {
-                if let surrealdb3::types::Number::Int(i) = n { Some(*i) } else { None }
+                if let surrealdb3::types::Number::Int(i) = n {
+                    Some(*i)
+                } else {
+                    None
+                }
             }
             _ => None,
         };
@@ -278,8 +279,15 @@ async fn verify_fk_incremental_v3(
             Some(Value::Array(a)) => a.len(),
             _ => 0,
         };
-        assert_eq!(out_count + in_count, 2, "wal2json incremental v3: books:1 linked to 2 tags");
-        println!("PASS [wal2json-incremental-v3]: graph traversal OK (total={})", out_count + in_count);
+        assert_eq!(
+            out_count + in_count,
+            2,
+            "wal2json incremental v3: books:1 linked to 2 tags"
+        );
+        println!(
+            "PASS [wal2json-incremental-v3]: graph traversal OK (total={})",
+            out_count + in_count
+        );
     }
 
     Ok(())

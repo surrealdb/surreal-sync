@@ -1,4 +1,4 @@
-.PHONY: test check fmt clippy build clean clean-logs help install-tools
+.PHONY: test check fmt clippy build clean clean-logs help install-tools install-hooks
 
 # Log directory for test output
 LOGS_DIR := logs/test
@@ -15,12 +15,19 @@ help:
 	@echo "  clean         - Clean build artifacts"
 	@echo "  clean-logs    - Clean test log files"
 	@echo "  install-tools - Install required Rust toolchain components"
+	@echo "  install-hooks - Install git pre-push hook for local CI checks"
 
 # Install required Rust toolchain components
 install-tools:
 	@echo "🔧 Installing Rust toolchain components..."
 	rustup component add rustfmt clippy
 	@echo "✅ Toolchain components installed"
+
+# Install git hooks for pre-push checks (fmt + clippy)
+install-hooks:
+	@echo "🔗 Installing git hooks..."
+	git config core.hooksPath .githooks
+	@echo "✅ Git hooks installed (using .githooks/)"
 
 # Format code according to Rust standards
 fmt:

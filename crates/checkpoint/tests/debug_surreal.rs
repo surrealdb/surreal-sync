@@ -90,11 +90,20 @@ async fn debug_update_and_select_v2(db: &SurrealDbContainer) -> anyhow::Result<(
     surreal
         .query("DELETE type::thing($record_tb, $record_id)")
         .bind(("record_tb", thing.tb.clone()))
-        .bind(("record_id", match &thing.id {
-            surrealdb::sql::Id::String(s) => surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(s.as_str())),
-            surrealdb::sql::Id::Number(n) => surrealdb::sql::Value::Number(surrealdb::sql::Number::Int(*n)),
-            other => surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(format!("{other:?}"))),
-        }))
+        .bind((
+            "record_id",
+            match &thing.id {
+                surrealdb::sql::Id::String(s) => {
+                    surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(s.as_str()))
+                }
+                surrealdb::sql::Id::Number(n) => {
+                    surrealdb::sql::Value::Number(surrealdb::sql::Number::Int(*n))
+                }
+                other => surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(format!(
+                    "{other:?}"
+                ))),
+            },
+        ))
         .await?;
 
     Ok(())
@@ -119,7 +128,10 @@ async fn debug_update_and_select_v3(db: &SurrealDbContainer) -> anyhow::Result<(
         .await?;
     surreal.use_ns("test").use_db("test").await?;
 
-    let record_id = RecordId::new("debug_table", RecordIdKey::String("test_record".to_string()));
+    let record_id = RecordId::new(
+        "debug_table",
+        RecordIdKey::String("test_record".to_string()),
+    );
     println!("RecordId: {record_id:?}");
 
     let record = TestRecordV3 {
@@ -177,7 +189,9 @@ async fn debug_update_and_select_v3(db: &SurrealDbContainer) -> anyhow::Result<(
 
     let key_value: surrealdb3::types::Value = match &record_id.key {
         surrealdb3::types::RecordIdKey::String(s) => surrealdb3::types::Value::String(s.clone()),
-        surrealdb3::types::RecordIdKey::Number(n) => surrealdb3::types::Value::Number(surrealdb3::types::Number::Int(*n)),
+        surrealdb3::types::RecordIdKey::Number(n) => {
+            surrealdb3::types::Value::Number(surrealdb3::types::Number::Int(*n))
+        }
         surrealdb3::types::RecordIdKey::Uuid(u) => surrealdb3::types::Value::Uuid(*u),
         other => surrealdb3::types::Value::String(format!("{other:?}")),
     };

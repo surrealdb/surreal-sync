@@ -178,9 +178,15 @@ impl Store {
     pub async fn remove(&self, id: &StateID) -> Result<()> {
         let thing = id.to_thing();
         let id_value = match &thing.id {
-            surrealdb::sql::Id::String(s) => surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(s.as_str())),
-            surrealdb::sql::Id::Number(n) => surrealdb::sql::Value::Number(surrealdb::sql::Number::Int(*n)),
-            other => surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(format!("{other:?}"))),
+            surrealdb::sql::Id::String(s) => {
+                surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(s.as_str()))
+            }
+            surrealdb::sql::Id::Number(n) => {
+                surrealdb::sql::Value::Number(surrealdb::sql::Number::Int(*n))
+            }
+            other => {
+                surrealdb::sql::Value::Strand(surrealdb::sql::Strand::from(format!("{other:?}")))
+            }
         };
         let query = "DELETE type::thing($record_tb, $record_id)";
 

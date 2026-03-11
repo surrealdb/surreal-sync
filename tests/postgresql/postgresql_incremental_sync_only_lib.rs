@@ -98,11 +98,9 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
 
     // Read the t1 (FullSyncStart) checkpoint file - this is needed
     // for incremental sync to pick up changes made after full sync started
-    let checkpoint_file = checkpoint::get_checkpoint_for_phase(
-        &checkpoint_dir,
-        checkpoint::SyncPhase::FullSyncStart,
-    )
-    .await?;
+    let checkpoint_file =
+        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
+            .await?;
     // Parse the CheckpointFile into database-specific checkpoint type
     let sync_checkpoint: surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint =
         checkpoint_file.parse()?;

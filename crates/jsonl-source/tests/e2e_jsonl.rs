@@ -145,8 +145,7 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
 
     match db.detected_version {
         Some(SurrealMajorVersion::V3) => {
-            let surreal =
-                surrealdb3::engine::any::connect(&surreal_endpoint).await?;
+            let surreal = surrealdb3::engine::any::connect(&surreal_endpoint).await?;
             surreal
                 .signin(surrealdb3::opt::auth::Root {
                     username: "root".to_string(),
@@ -218,8 +217,7 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         _ => {
-            let surreal =
-                surrealdb::engine::any::connect(&surreal_endpoint).await?;
+            let surreal = surrealdb::engine::any::connect(&surreal_endpoint).await?;
             surreal
                 .signin(surrealdb::opt::auth::Root {
                     username: "root",
@@ -348,18 +346,14 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
 
     match db.detected_version {
         Some(SurrealMajorVersion::V3) => {
-            let surreal =
-                surrealdb3::engine::any::connect(db.ws_endpoint()).await?;
+            let surreal = surrealdb3::engine::any::connect(db.ws_endpoint()).await?;
             surreal
                 .signin(surrealdb3::opt::auth::Root {
                     username: "root".to_string(),
                     password: "root".to_string(),
                 })
                 .await?;
-            surreal
-                .use_ns("test_custom_id")
-                .use_db("test_db")
-                .await?;
+            surreal.use_ns("test_custom_id").use_db("test_db").await?;
             surreal.query("DELETE FROM items").await?;
 
             let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
@@ -376,18 +370,14 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
             assert_eq!(items[1].value, 200);
         }
         _ => {
-            let surreal =
-                surrealdb::engine::any::connect(db.ws_endpoint()).await?;
+            let surreal = surrealdb::engine::any::connect(db.ws_endpoint()).await?;
             surreal
                 .signin(surrealdb::opt::auth::Root {
                     username: "root",
                     password: "root",
                 })
                 .await?;
-            surreal
-                .use_ns("test_custom_id")
-                .use_db("test_db")
-                .await?;
+            surreal.use_ns("test_custom_id").use_db("test_db").await?;
             let _: Vec<surrealdb::sql::Thing> = surreal
                 .query("DELETE FROM items")
                 .await?
@@ -450,10 +440,9 @@ async fn test_jsonl_with_complex_id_field() {
 
     match db.detected_version {
         Some(SurrealMajorVersion::V3) => {
-            let surreal =
-                surrealdb3::engine::any::connect(db.ws_endpoint())
-                    .await
-                    .unwrap();
+            let surreal = surrealdb3::engine::any::connect(db.ws_endpoint())
+                .await
+                .unwrap();
             surreal
                 .signin(surrealdb3::opt::auth::Root {
                     username: "root".to_string(),
@@ -480,10 +469,9 @@ async fn test_jsonl_with_complex_id_field() {
             assert_eq!(items[1].target, "surreal::env");
         }
         _ => {
-            let surreal =
-                surrealdb::engine::any::connect(db.ws_endpoint())
-                    .await
-                    .unwrap();
+            let surreal = surrealdb::engine::any::connect(db.ws_endpoint())
+                .await
+                .unwrap();
             surreal
                 .signin(surrealdb::opt::auth::Root {
                     username: "root",

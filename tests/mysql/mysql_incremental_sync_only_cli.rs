@@ -25,7 +25,8 @@ async fn test_mysql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
     let checkpoint_dir = format!(".test-mysql-incr-cli-checkpoints-{test_id}");
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
-    let test_conn_str = surreal_sync::testing::shared_containers::create_mysql_test_db(container, test_id).await?;
+    let test_conn_str =
+        surreal_sync::testing::shared_containers::create_mysql_test_db(container, test_id).await?;
     let test_db_name = format!("test_{test_id}");
 
     // Setup MySQL with test data
