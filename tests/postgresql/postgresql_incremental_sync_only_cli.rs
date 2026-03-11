@@ -6,37 +6,30 @@
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::postgresql::create_tables_and_indices;
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 
 #[tokio::test]
 async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter("surreal_sync=info")
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-pg-incr-sync-cli-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
-
-    let mut container = PostgresContainer::new("test-pg-incr-sync-cli");
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
+    let container = surreal_sync::testing::shared_containers::shared_postgres().await;
 
     let test_id = generate_test_id();
+    let test_conn_str =
+        surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id)
+            .await?;
 
     let checkpoint_dir = format!(".test-pg-incr-cli-checkpoints-{test_id}");
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
-    // Setup PostgreSQL with test data
     let (pg_client, pg_connection) =
-        tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls).await?;
+        tokio_postgres::connect(&test_conn_str, tokio_postgres::NoTls).await?;
 
     tokio::spawn(async move {
         if let Err(e) = pg_connection.await {
@@ -62,7 +55,7 @@ async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error
         "postgresql-trigger",
         "full",
         "--connection-string",
-        &container.connection_string,
+        &test_conn_str,
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,
         "--to-namespace",
@@ -80,13 +73,10 @@ async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error
     let output = execute_surreal_sync(&args)?;
     assert_cli_success(&output, "PostgreSQL all-types full sync CLI");
 
-    // Verify checkpoint emission (t1 and t2 checkpoints)
     surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(&checkpoint_dir)?;
 
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
 
-    // Read the t1 (FullSyncStart) checkpoint from the file - this is the one we need
-    // for incremental sync to pick up changes made after full sync started
     use checkpoint::{Checkpoint, SyncPhase};
     let checkpoint_file =
         checkpoint::get_checkpoint_for_phase(&checkpoint_dir, SyncPhase::FullSyncStart).await?;
@@ -94,15 +84,12 @@ async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error
         checkpoint_file.parse()?;
     let checkpoint_string = pg_checkpoint.to_cli_string();
 
-    // Execute CLI incremental sync command
-    // For PostgreSQL incremental sync, we need to provide a checkpoint (sequence-based)
-    // Note: database is extracted from connection string, not passed separately
     let incremental_args = [
         "from",
         "postgresql-trigger",
         "incremental",
         "--connection-string",
-        &container.connection_string,
+        &test_conn_str,
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,
         "--to-namespace",

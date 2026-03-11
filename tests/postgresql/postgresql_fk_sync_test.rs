@@ -8,9 +8,7 @@
 //! Requires Docker (PostgresContainer) and a running SurrealDB instance.
 
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 
 /// Full sync: FK columns -> record links, join table -> RELATE edges
 #[tokio::test]
@@ -21,18 +19,14 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
         .ok();
 
     let test_id = generate_test_id();
-    let mut surrealdb = SurrealDbContainer::new(&format!("test-pg-fk-sync-sdb-{test_id}"));
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
-
-    // --- Start PostgreSQL ---
-    let mut container = PostgresContainer::new(&format!("test-pg-fk-sync-{test_id}"));
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
+    let container = surreal_sync::testing::shared_containers::shared_postgres().await;
+    let test_conn_str =
+        surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id)
+            .await?;
 
     let (pg_client, pg_conn) =
-        tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls).await?;
+        tokio_postgres::connect(&test_conn_str, tokio_postgres::NoTls).await?;
     tokio::spawn(async move {
         if let Err(e) = pg_conn.await {
             eprintln!("PG connection error: {e}");
@@ -241,17 +235,14 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
         .ok();
 
     let test_id = generate_test_id();
-    let mut surrealdb = SurrealDbContainer::new(&format!("test-pg-fk-override-sdb-{test_id}"));
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
-
-    let mut container = PostgresContainer::new(&format!("test-pg-fk-override-{test_id}"));
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
+    let container = surreal_sync::testing::shared_containers::shared_postgres().await;
+    let test_conn_str =
+        surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id)
+            .await?;
 
     let (pg_client, pg_conn) =
-        tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls).await?;
+        tokio_postgres::connect(&test_conn_str, tokio_postgres::NoTls).await?;
     tokio::spawn(async move {
         if let Err(e) = pg_conn.await {
             eprintln!("PG connection error: {e}");

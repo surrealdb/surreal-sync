@@ -7,38 +7,30 @@
 use surreal_sync::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 
 #[tokio::test]
 async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing for debug output
     tracing_subscriber::fmt()
         .with_env_filter("surreal_sync=debug")
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-pg-incr-sync-lib-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
-
-    let mut container = PostgresContainer::new("test-pg-incr-sync-lib");
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
+    let container = surreal_sync::testing::shared_containers::shared_postgres().await;
 
     let test_id = generate_test_id();
     let checkpoint_dir = format!(".test-pg-incr-lib-checkpoints-{test_id}");
+    let test_conn_str =
+        surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id)
+            .await?;
 
-    // Clean up checkpoint directory to prevent cross-test contamination
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
-    // Setup PostgreSQL connection
     let (pg_client, pg_connection) =
-        tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls).await?;
+        tokio_postgres::connect(&test_conn_str, tokio_postgres::NoTls).await?;
 
     tokio::spawn(async move {
         if let Err(e) = pg_connection.await {
@@ -60,8 +52,8 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
     surreal_sync::testing::postgresql::create_tables_and_indices(&pg_client, &dataset).await?;
 
     let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
-        source_uri: container.connection_string.clone(),
-        source_database: Some("testdb".to_string()),
+        source_uri: test_conn_str.clone(),
+        source_database: Some(format!("test_{test_id}")),
         tables: vec![],
         relation_tables: vec![],
     };

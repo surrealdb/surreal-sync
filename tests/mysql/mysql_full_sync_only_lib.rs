@@ -9,8 +9,6 @@ use surreal_sync::testing::surreal::{
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
-use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
 
 #[tokio::test]
 async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,22 +18,20 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
         .try_init()
         .ok();
 
-    let mut container = MySQLContainer::new("test-mysql-full-sync-lib");
-    container.start()?;
-    container.wait_until_ready(60).await?;
+    let container = surreal_sync::testing::shared_containers::shared_mysql().await;
 
     // Create test dataset
     let dataset = create_unified_full_dataset();
     let test_id = generate_test_id();
 
+    let test_conn_str = surreal_sync::testing::shared_containers::create_mysql_test_db(container, test_id).await?;
+
     // Setup MySQL connection and data
-    let pool = mysql_async::Pool::from_url(&container.connection_string)?;
+    let pool = mysql_async::Pool::from_url(&test_conn_str)?;
     let mut mysql_conn = pool.get_conn().await?;
 
     // Setup SurrealDB container
-    let mut surrealdb = SurrealDbContainer::new("test-mysql-full-sync-lib-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
     // Setup SurrealDB connection with auto-detection
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
@@ -48,8 +44,8 @@ async fn test_mysql_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
 
     // Perform full sync from MySQL to SurrealDB
     let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
-        source_uri: container.connection_string.clone(),
-        source_database: Some("testdb".to_string()),
+        source_uri: test_conn_str.clone(),
+        source_database: Some(format!("test_{test_id}")),
         tables: vec![],
         mysql_boolean_paths: Some(vec![
             "all_types_users.metadata=settings.notifications".to_string()

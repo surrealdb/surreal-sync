@@ -5,36 +5,29 @@
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 
 /// Test PostgreSQL CLI with data types
 #[tokio::test]
 async fn test_postgresql_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter("surreal_sync=info")
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-pg-full-sync-cli-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
-
-    let mut container = PostgresContainer::new("test-pg-full-sync-cli");
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
+    let container = surreal_sync::testing::shared_containers::shared_postgres().await;
 
     let test_id = generate_test_id();
     let dataset = create_unified_full_dataset();
+    let test_conn_str =
+        surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id)
+            .await?;
 
-    // Setup PostgreSQL with test data
     let (pg_client, pg_connection) =
-        tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls).await?;
+        tokio_postgres::connect(&test_conn_str, tokio_postgres::NoTls).await?;
 
     tokio::spawn(async move {
         if let Err(e) = pg_connection.await {
@@ -42,7 +35,6 @@ async fn test_postgresql_full_sync_cli() -> Result<(), Box<dyn std::error::Error
         }
     });
 
-    // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
@@ -59,7 +51,7 @@ async fn test_postgresql_full_sync_cli() -> Result<(), Box<dyn std::error::Error
         "postgresql-trigger",
         "full",
         "--connection-string",
-        &container.connection_string,
+        &test_conn_str,
         "--surreal-endpoint",
         &surreal_config.surreal_endpoint,
         "--to-namespace",

@@ -23,7 +23,6 @@ use std::{sync::Arc, time::Duration};
 use surreal_sync::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
@@ -42,9 +41,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-kafka-incr-sync-lib-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
     let mut kafka = KafkaContainer::new("test-kafka-incr-sync");
     kafka.start()?;

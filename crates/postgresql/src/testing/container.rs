@@ -240,26 +240,33 @@ impl Drop for PostgresContainer {
 
 /// Queries Docker for the host port dynamically bound to container port 5432.
 fn get_dynamic_port(container_name: &str) -> Result<u16> {
+    for attempt in 0..10 {
+        let output = Command::new("docker")
+            .args(["port", container_name, "5432"])
+            .output()
+            .context("Failed to query dynamic port")?;
+
+        if output.status.success() {
+            let port_output = String::from_utf8_lossy(&output.stdout);
+            if let Some(port) = port_output
+                .lines()
+                .next()
+                .and_then(|line| line.rsplit(':').next())
+                .and_then(|p| p.trim().parse::<u16>().ok())
+            {
+                return Ok(port);
+            }
+        }
+
+        if attempt < 9 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
     let output = Command::new("docker")
         .args(["port", container_name, "5432"])
         .output()
         .context("Failed to query dynamic port")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("docker port failed: {stderr}");
-    }
-
-    // Output format: "0.0.0.0:12345\n" or "[::]:12345\n" or both lines
-    let port_output = String::from_utf8_lossy(&output.stdout);
-    let port = port_output
-        .lines()
-        .next()
-        .and_then(|line| line.rsplit(':').next())
-        .and_then(|p| p.trim().parse::<u16>().ok())
-        .with_context(|| {
-            format!("Failed to parse dynamic port from docker output: {port_output}")
-        })?;
-
-    Ok(port)
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    anyhow::bail!("docker port failed after retries: {stderr}")
 }

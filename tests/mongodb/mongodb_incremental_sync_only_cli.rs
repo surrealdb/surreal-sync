@@ -8,9 +8,7 @@
 //! 5. Validating all data types are preserved correctly via incremental sync
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
-use surreal_sync::testing::mongodb_container::MongoContainer;
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
@@ -23,13 +21,9 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-mongo-incr-sync-cli-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
-    let mut container = MongoContainer::new("test-mongo-incr-sync-cli");
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let container = surreal_sync::testing::shared_containers::shared_mongodb().await;
 
     let test_id = generate_test_id();
     let dataset = create_unified_full_dataset();
@@ -37,7 +31,8 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
 
     let mongodb_client =
         surreal_sync::testing::mongodb::connect_mongodb(&container.connection_uri()).await?;
-    let db = mongodb_client.database("testdb");
+    let mongodb_database = format!("test_{test_id}");
+    let db = mongodb_client.database(&mongodb_database);
 
     // Setup SurrealDB connection with auto-detection for validation
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
@@ -58,7 +53,7 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
         "--connection-string".to_string(),
         mongo_uri.clone(),
         "--database".to_string(),
-        "testdb".to_string(),
+        mongodb_database.clone(),
         "--surreal-endpoint".to_string(),
         surreal_config.surreal_endpoint.clone(),
         "--to-namespace".to_string(),
@@ -108,7 +103,7 @@ async fn test_mongodb_incremental_sync_cli() -> Result<(), Box<dyn std::error::E
         "--connection-string".to_string(),
         mongo_uri.clone(),
         "--database".to_string(),
-        "testdb".to_string(),
+        mongodb_database.clone(),
         "--to-namespace".to_string(),
         surreal_config.surreal_namespace.clone(),
         "--to-database".to_string(),

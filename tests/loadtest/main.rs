@@ -8,6 +8,7 @@
 //! 4. Verifies synced data matches expected values (same seed)
 //! 5. Cleans up all test data
 
+mod common;
 mod csv_loadtest;
 mod jsonl_loadtest;
 mod kafka_loadtest;

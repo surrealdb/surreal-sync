@@ -26,6 +26,7 @@ sync-core = { path = "../sync-core" }
 surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 rust_decimal = { version = "^1.23", features = ["db-tokio-postgres"] }
+libc = "0.2.183"
 
 [dev-dependencies]
 tempfile = "3.24"

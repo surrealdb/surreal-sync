@@ -5,7 +5,6 @@
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
@@ -19,16 +18,14 @@ async fn test_neo4j_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-neo4j-full-sync-cli-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
-
-    let mut container = Neo4jContainer::new("test-neo4j-full-sync-cli");
-    container.start()?;
-    container.wait_until_ready(60).await?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
     let test_id = generate_test_id();
     let dataset = create_unified_full_dataset();
+
+    let mut container = Neo4jContainer::new(&format!("test-neo4j-{test_id}"));
+    container.start()?;
+    container.wait_until_ready(30).await?;
 
     // Setup Neo4j with test data
     let graph_config = neo4rs::ConfigBuilder::default()

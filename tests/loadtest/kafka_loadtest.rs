@@ -23,7 +23,6 @@ use chrono::Utc;
 use loadtest_populate_kafka::KafkaPopulator;
 use std::{sync::Arc, time::Duration};
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use surreal_sync_kafka_producer::container::KafkaContainer;
 use surreal_sync_kafka_source::Config as KafkaConfig;
@@ -31,7 +30,6 @@ use sync_core::Schema;
 use tokio::time::sleep;
 
 const SEED: u64 = 42;
-const ROW_COUNT: u64 = 50; // Small scale for integration tests
 const BATCH_SIZE: usize = 10;
 /// Sync timeout in seconds
 const SYNC_TIMEOUT_SECS: i64 = 10;
@@ -48,9 +46,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-lt-kafka-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
     let mut kafka = KafkaContainer::new("test-kafka-loadtest");
     kafka.start()?;
@@ -68,7 +64,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     tracing::info!(
         "Starting Kafka loadtest with {} tables, {} rows each (seed={})",
         table_names.len(),
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
@@ -110,7 +106,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             table_name,
             topic_name,
             SEED,
-            ROW_COUNT
+            crate::common::row_count()
         );
 
         // Create a fresh populator for each table to reset the generator index
@@ -129,7 +125,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
 
         // Populate to the unique topic name
         let metrics = populator
-            .populate_to_topic(table_name, &topic_name, ROW_COUNT)
+            .populate_to_topic(table_name, &topic_name, crate::common::row_count())
             .await?;
 
         // Store the topic info for sync and verification
@@ -230,7 +226,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
 
             tracing::info!(
                 "Verifying synced data ({} rows per table, seed={})",
-                ROW_COUNT,
+                crate::common::row_count(),
                 SEED
             );
 
@@ -242,7 +238,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     table_name,
                 )?;
 
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -272,7 +268,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }
@@ -352,7 +348,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
 
             tracing::info!(
                 "Verifying synced data ({} rows per table, seed={})",
-                ROW_COUNT,
+                crate::common::row_count(),
                 SEED
             );
 
@@ -364,7 +360,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     table_name,
                 )?;
 
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -394,7 +390,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }

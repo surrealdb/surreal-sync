@@ -8,17 +8,14 @@
 //! 5. Clean up all test data
 
 use loadtest_populate_mysql::MySQLPopulator;
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     generate_test_id,
     surreal::{connect_auto, SurrealConnection},
     TestConfig,
 };
-use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
 use sync_core::Schema;
 
 const SEED: u64 = 42;
-const ROW_COUNT: u64 = 50; // Small scale for integration tests
 const BATCH_SIZE: usize = 10;
 
 /// Test the full populate -> sync -> verify workflow with MySQL.
@@ -34,13 +31,9 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-lt-mysql-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
-    let mut container = MySQLContainer::new("test-mysql-loadtest");
-    container.start()?;
-    container.wait_until_ready(60).await?;
+    let container = surreal_sync::testing::shared_containers::shared_mysql().await;
 
     // Load schema from fixture file
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
@@ -51,7 +44,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     let table_names: Vec<&str> = schema.table_names();
 
     // Connect to MySQL
-    let mysql_conn_string = container.connection_string.clone();
+    let mysql_conn_string = surreal_sync::testing::shared_containers::create_mysql_test_db(container, test_id).await?;
     let pool = mysql_async::Pool::from_url(&mysql_conn_string)?;
     let mut mysql_conn = pool.get_conn().await?;
 
@@ -86,7 +79,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     // === PHASE 1: POPULATE MySQL with deterministic test data ===
     tracing::info!(
         "Populating MySQL with {} rows per table (seed={})",
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
@@ -96,7 +89,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             .await?
             .with_batch_size(BATCH_SIZE);
         populator.create_table(table_name).await?;
-        let metrics = populator.populate(table_name, ROW_COUNT).await?;
+        let metrics = populator.populate(table_name, crate::common::row_count()).await?;
         tracing::info!(
             "Populated {}: {} rows in {:?}",
             table_name,
@@ -110,7 +103,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
 
     let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
         source_uri: mysql_conn_string.clone(),
-        source_database: Some("testdb".to_string()),
+        source_database: Some(format!("test_{test_id}")),
         tables: vec![],
         mysql_boolean_paths: None,
     };
@@ -149,7 +142,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     // === PHASE 3: VERIFY synced data matches expected values ===
     tracing::info!(
         "Verifying synced data ({} rows per table, seed={})",
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
@@ -165,7 +158,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -183,7 +176,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }
@@ -199,7 +192,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -217,7 +210,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }

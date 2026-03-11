@@ -4,7 +4,6 @@
 //! where array values might be lost.
 
 use std::sync::Arc;
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 use surreal_sync_postgresql_trigger_source::IncrementalSource;
 use sync_core::UniversalValue;
 use tokio::sync::Mutex;
@@ -12,15 +11,8 @@ use tokio::sync::Mutex;
 /// Comprehensive E2E test that traces array data through the entire incremental sync flow
 #[tokio::test]
 async fn test_incremental_sync_array_e2e() {
-    let mut container = PostgresContainer::new("test-incr-array-e2e");
-    container.build_image().expect("Failed to build image");
-    container.start().expect("Failed to start container");
-    container
-        .wait_until_ready(30)
-        .await
-        .expect("Container not ready");
+    let container = crate::shared::postgres().await;
 
-    // Connect to PostgreSQL
     let (client, connection) =
         tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls)
             .await

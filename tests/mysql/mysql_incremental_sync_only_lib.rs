@@ -10,8 +10,6 @@ use surreal_sync::testing::surreal::{
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
-use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
 
 #[tokio::test]
 async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -21,9 +19,7 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         .try_init()
         .ok();
 
-    let mut container = MySQLContainer::new("test-mysql-incr-sync-lib");
-    container.start()?;
-    container.wait_until_ready(60).await?;
+    let container = surreal_sync::testing::shared_containers::shared_mysql().await;
 
     let test_id = generate_test_id();
     let checkpoint_dir = format!(".test-mysql-incr-lib-checkpoints-{test_id}");
@@ -31,16 +27,17 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Clean up checkpoint directory to prevent cross-test contamination
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
+    let test_conn_str = surreal_sync::testing::shared_containers::create_mysql_test_db(container, test_id).await?;
+    let test_db_name = format!("test_{test_id}");
+
     // Setup MySQL connection
-    let pool = mysql_async::Pool::from_url(&container.connection_string)?;
+    let pool = mysql_async::Pool::from_url(&test_conn_str)?;
     let mut mysql_conn = pool.get_conn().await?;
 
     let dataset = create_unified_full_dataset();
 
     // Setup SurrealDB container
-    let mut surrealdb = SurrealDbContainer::new("test-mysql-incr-sync-lib-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
     // Setup SurrealDB connection with auto-detection
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
@@ -52,8 +49,8 @@ async fn test_mysql_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     surreal_sync::testing::mysql::create_tables_and_indices(&mut mysql_conn, &dataset).await?;
 
     let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
-        source_uri: container.connection_string.clone(),
-        source_database: Some("testdb".to_string()),
+        source_uri: test_conn_str.clone(),
+        source_database: Some(test_db_name),
         tables: vec![],
         mysql_boolean_paths: Some(vec!["all_types_posts.post_categories".to_string()]),
     };

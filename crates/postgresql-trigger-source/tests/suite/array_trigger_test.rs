@@ -5,24 +5,12 @@
 //! 2. The to_jsonb() function correctly serializes arrays
 //! 3. The trigger captures array data correctly in the audit table
 
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 use tokio_postgres::{types::ToSql, NoTls};
-
-fn setup_container(name: &str) -> PostgresContainer {
-    let mut container = PostgresContainer::new(name);
-    container.build_image().expect("Failed to build image");
-    container.start().expect("Failed to start container");
-    container
-}
 
 /// Test that Vec<String> correctly inserts as TEXT[] and serializes via to_jsonb()
 #[tokio::test]
 async fn test_array_insertion_and_jsonb_serialization() {
-    let container = setup_container("test-array-insert-jsonb");
-    container
-        .wait_until_ready(30)
-        .await
-        .expect("Container not ready");
+    let container = crate::shared::postgres().await;
 
     let (client, connection) = tokio_postgres::connect(&container.connection_string, NoTls)
         .await
@@ -118,11 +106,7 @@ async fn test_array_insertion_and_jsonb_serialization() {
 /// Test that Box<dyn ToSql> with Vec<String> works correctly
 #[tokio::test]
 async fn test_boxed_array_parameter() {
-    let container = setup_container("test-boxed-array-param");
-    container
-        .wait_until_ready(30)
-        .await
-        .expect("Container not ready");
+    let container = crate::shared::postgres().await;
 
     let (client, connection) = tokio_postgres::connect(&container.connection_string, NoTls)
         .await
@@ -195,11 +179,7 @@ async fn test_boxed_array_parameter() {
 /// Test the full trigger flow: insert array -> trigger captures -> audit table has correct JSON
 #[tokio::test]
 async fn test_array_through_trigger_audit() {
-    let container = setup_container("test-array-trigger-audit");
-    container
-        .wait_until_ready(30)
-        .await
-        .expect("Container not ready");
+    let container = crate::shared::postgres().await;
 
     let (client, connection) = tokio_postgres::connect(&container.connection_string, NoTls)
         .await

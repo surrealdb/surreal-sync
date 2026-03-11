@@ -2,7 +2,6 @@
 #![allow(clippy::uninlined_format_args)]
 
 use anyhow::{Context, Result};
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 use surreal_sync_postgresql_wal2json_source::{Action, Client};
 use sync_core::UniversalValue;
 use tokio_postgres::NoTls;
@@ -25,16 +24,11 @@ async fn test_timetz_replication_formats() -> Result<()> {
     init_logging();
     info!("Starting TIMETZ replication format test");
 
-    // Create container configuration
-    let mut container = PostgresContainer::new("test-timetz");
-
-    // Build and start container
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let container = crate::shared::postgres().await;
+    let test_conn = crate::shared::create_test_db(container, "test_timetz").await?;
 
     // Connect to PostgreSQL
-    let (pg_client, connection) = tokio_postgres::connect(&container.connection_string, NoTls)
+    let (pg_client, connection) = tokio_postgres::connect(&test_conn, NoTls)
         .await
         .context("Failed to connect to PostgreSQL")?;
 
@@ -59,7 +53,7 @@ async fn test_timetz_replication_formats() -> Result<()> {
 
     // Create replication client
     let (repl_pg_client, repl_connection) =
-        tokio_postgres::connect(&container.connection_string, NoTls)
+        tokio_postgres::connect(&test_conn, NoTls)
             .await
             .context("Failed to connect for replication")?;
 
@@ -270,7 +264,6 @@ async fn test_timetz_replication_formats() -> Result<()> {
 
     // Cleanup
     repl_client.drop_slot(slot_name).await?;
-    container.stop()?;
 
     info!("TIMETZ replication format test completed successfully");
     Ok(())

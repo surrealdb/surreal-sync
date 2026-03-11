@@ -1,7 +1,6 @@
 //! Integration tests for PostgreSQL logical replication with wal2json
 
 use anyhow::{bail, Context, Result};
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 use surreal_sync_postgresql_wal2json_source::{Action, Client};
 use tokio_postgres::NoTls;
 use tracing::{debug, info};
@@ -156,27 +155,11 @@ async fn test_postgresql_replication_with_all_types() -> Result<()> {
     init_logging();
     info!("Starting PostgreSQL replication integration test");
 
-    // Create container configuration
-    let mut container = PostgresContainer::new("test-replication");
-
-    // Build the Docker image
-    container
-        .build_image()
-        .context("Failed to build Docker image")?;
-
-    // Start the container
-    container
-        .start()
-        .context("Failed to start PostgreSQL container")?;
-
-    // Wait for PostgreSQL to be ready
-    container
-        .wait_until_ready(30)
-        .await
-        .context("PostgreSQL did not become ready in time")?;
+    let container = crate::shared::postgres().await;
+    let test_conn = crate::shared::create_test_db(container, "test_integ_all_types").await?;
 
     // Connect to PostgreSQL
-    let (pg_client, connection) = tokio_postgres::connect(&container.connection_string, NoTls)
+    let (pg_client, connection) = tokio_postgres::connect(&test_conn, NoTls)
         .await
         .context("Failed to connect to PostgreSQL")?;
 
@@ -193,7 +176,7 @@ async fn test_postgresql_replication_with_all_types() -> Result<()> {
     // Create replication client (Client::new takes ownership of the client)
     // We need to create a new connection for the replication client
     let (repl_pg_client, repl_connection) =
-        tokio_postgres::connect(&container.connection_string, NoTls)
+        tokio_postgres::connect(&test_conn, NoTls)
             .await
             .context("Failed to connect to PostgreSQL for replication")?;
 
@@ -273,9 +256,6 @@ async fn test_postgresql_replication_with_all_types() -> Result<()> {
         .await
         .context("Failed to drop replication slot")?;
 
-    // Stop the container
-    container.stop().context("Failed to stop container")?;
-
     info!("Integration test completed successfully");
     Ok(())
 }
@@ -285,16 +265,11 @@ async fn test_multiple_inserts_and_batch_advance() -> Result<()> {
     init_logging();
     info!("Starting batch processing test");
 
-    // Create container configuration
-    let mut container = PostgresContainer::new("test-batch");
-
-    // Build and start container
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let container = crate::shared::postgres().await;
+    let test_conn = crate::shared::create_test_db(container, "test_integ_multi_insert").await?;
 
     // Connect to PostgreSQL
-    let (pg_client, connection) = tokio_postgres::connect(&container.connection_string, NoTls)
+    let (pg_client, connection) = tokio_postgres::connect(&test_conn, NoTls)
         .await
         .context("Failed to connect to PostgreSQL")?;
 
@@ -314,7 +289,7 @@ async fn test_multiple_inserts_and_batch_advance() -> Result<()> {
 
     // Create replication (need separate connection)
     let (repl_pg_client, repl_connection) =
-        tokio_postgres::connect(&container.connection_string, NoTls)
+        tokio_postgres::connect(&test_conn, NoTls)
             .await
             .context("Failed to connect to PostgreSQL for replication")?;
 
@@ -375,7 +350,6 @@ async fn test_multiple_inserts_and_batch_advance() -> Result<()> {
 
     // Cleanup
     repl_client.drop_slot(slot_name).await?;
-    container.stop()?;
 
     info!("Batch processing test completed successfully");
     Ok(())
@@ -386,16 +360,11 @@ async fn test_get_current_wal_lsn() -> Result<()> {
     init_logging();
     info!("Starting get_current_wal_lsn test");
 
-    // Create container configuration
-    let mut container = PostgresContainer::new("test-wal-lsn");
-
-    // Build and start container
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let container = crate::shared::postgres().await;
+    let test_conn = crate::shared::create_test_db(container, "test_integ_lsn").await?;
 
     // Connect to PostgreSQL
-    let (pg_client, connection) = tokio_postgres::connect(&container.connection_string, NoTls)
+    let (pg_client, connection) = tokio_postgres::connect(&test_conn, NoTls)
         .await
         .context("Failed to connect to PostgreSQL")?;
 
@@ -422,7 +391,7 @@ async fn test_get_current_wal_lsn() -> Result<()> {
     );
 
     // Create a table and insert data to advance the WAL
-    let (pg_client2, connection2) = tokio_postgres::connect(&container.connection_string, NoTls)
+    let (pg_client2, connection2) = tokio_postgres::connect(&test_conn, NoTls)
         .await
         .context("Failed to connect to PostgreSQL")?;
 
@@ -478,9 +447,6 @@ async fn test_get_current_wal_lsn() -> Result<()> {
     );
 
     info!("Successfully verified WAL LSN advancement");
-
-    // Cleanup
-    container.stop()?;
 
     info!("get_current_wal_lsn test completed successfully");
     Ok(())

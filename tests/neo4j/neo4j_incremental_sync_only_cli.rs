@@ -3,7 +3,6 @@
 //! This test validates that the CLI handles Neo4j incremental sync with all data types
 //! correctly, using the unified dataset.
 
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     cli::{assert_cli_success, execute_surreal_sync},
     create_unified_full_dataset, generate_test_id,
@@ -20,16 +19,14 @@ async fn test_neo4j_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-neo4j-incr-sync-cli-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
-
-    let mut container = Neo4jContainer::new("test-neo4j-incr-sync-cli");
-    container.start()?;
-    container.wait_until_ready(60).await?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
     let test_id = generate_test_id();
     let checkpoint_dir = format!(".test-neo4j-incr-cli-checkpoints-{test_id}");
+
+    let mut container = Neo4jContainer::new(&format!("test-neo4j-{test_id}"));
+    container.start()?;
+    container.wait_until_ready(30).await?;
     // Capture timestamp BEFORE any operations - this ensures all nodes created later
     // will have updated_at > t1 and will be picked up by incremental sync
     let t1 = chrono::Utc::now();

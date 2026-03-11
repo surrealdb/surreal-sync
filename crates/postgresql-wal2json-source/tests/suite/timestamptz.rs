@@ -1,9 +1,8 @@
-//! Integration tests for TIMESTAMP replication with various timestamp formats
+//! Integration tests for TIMESTAMPTZ replication with various timestamp formats
 #![allow(clippy::uninlined_format_args)]
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 use surreal_sync_postgresql_wal2json_source::{Action, Client};
 use sync_core::UniversalValue;
 use tokio_postgres::NoTls;
@@ -22,20 +21,15 @@ fn init_logging() {
 }
 
 #[tokio::test]
-async fn test_timestamp_replication_formats() -> Result<()> {
+async fn test_timestamptz_replication_formats() -> Result<()> {
     init_logging();
-    info!("Starting TIMESTAMP replication format test");
+    info!("Starting TIMESTAMPTZ replication format test");
 
-    // Create container configuration
-    let mut container = PostgresContainer::new("test-timestamp");
-
-    // Build and start container
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let container = crate::shared::postgres().await;
+    let test_conn = crate::shared::create_test_db(container, "test_timestamptz").await?;
 
     // Connect to PostgreSQL
-    let (pg_client, connection) = tokio_postgres::connect(&container.connection_string, NoTls)
+    let (pg_client, connection) = tokio_postgres::connect(&test_conn, NoTls)
         .await
         .context("Failed to connect to PostgreSQL")?;
 
@@ -45,12 +39,12 @@ async fn test_timestamp_replication_formats() -> Result<()> {
         }
     });
 
-    // Create a test table with id and timestamp field (without timezone)
+    // Create a test table with id and timestamptz field
     pg_client
         .execute(
             "CREATE TABLE timestamp_test (
                 id INTEGER PRIMARY KEY,
-                event_time TIMESTAMP
+                event_time TIMESTAMPTZ
             )",
             &[],
         )
@@ -60,7 +54,7 @@ async fn test_timestamp_replication_formats() -> Result<()> {
 
     // Create replication client
     let (repl_pg_client, repl_connection) =
-        tokio_postgres::connect(&container.connection_string, NoTls)
+        tokio_postgres::connect(&test_conn, NoTls)
             .await
             .context("Failed to connect for replication")?;
 
@@ -71,54 +65,55 @@ async fn test_timestamp_replication_formats() -> Result<()> {
     });
 
     let repl_client = Client::new(repl_pg_client, vec![]);
-    let slot_name = "timestamp_slot";
+    let slot_name = "timestamptz_slot";
     repl_client.create_slot(slot_name).await?;
     let slot = repl_client.start_replication(Some(slot_name)).await?;
 
     // Insert test data with various timestamp formats
-    // Note: TIMESTAMP (without timezone) stores timestamps without timezone information
-    // PostgreSQL will interpret them in the server's timezone context
+    // PostgreSQL will normalize these to TIMESTAMPTZ internally
+    // We use TIMESTAMPTZ literals in SQL since tokio-postgres doesn't support
+    // direct string-to-timestamptz conversion
 
-    // 1. ISO 8601 format
+    // 1. ISO 8601 format with timezone
     pg_client
         .execute(
-            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMP '2024-01-15T10:30:00')",
+            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMPTZ '2024-01-15T10:30:00+00:00')",
             &[&1i32],
         )
         .await?;
     info!("Inserted ISO 8601 timestamp");
 
-    // 2. ISO 8601 with microseconds
+    // 2. ISO 8601 with 'Z' timezone
     pg_client
         .execute(
-            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMP '1997-12-17T15:37:16.123456')",
+            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMPTZ '1997-12-17T15:37:16Z')",
             &[&2i32],
         )
         .await?;
-    info!("Inserted ISO 8601 with microseconds timestamp");
+    info!("Inserted ISO 8601 with Z timestamp");
 
-    // 3. Traditional SQL format
+    // 3. ISO 8601 with PST offset
     pg_client
         .execute(
-            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMP '12/17/1997 07:37:16.00')",
+            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMPTZ '1997-12-17T07:37:16-08:00')",
             &[&3i32],
+        )
+        .await?;
+    info!("Inserted ISO 8601 with PST offset timestamp");
+
+    // 4. Traditional SQL format (PostgreSQL will parse this)
+    pg_client
+        .execute(
+            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMPTZ '12/17/1997 07:37:16.00 PST')",
+            &[&4i32],
         )
         .await?;
     info!("Inserted traditional SQL format timestamp");
 
-    // 4. PostgreSQL date + time format
-    pg_client
-        .execute(
-            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMP '1997-12-17 15:37:16')",
-            &[&4i32],
-        )
-        .await?;
-    info!("Inserted PostgreSQL date+time format timestamp");
-
     // 5. Traditional PostgreSQL format
     pg_client
         .execute(
-            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMP 'Wed Dec 17 07:37:16 1997')",
+            "INSERT INTO timestamp_test (id, event_time) VALUES ($1, TIMESTAMPTZ 'Wed Dec 17 07:37:16 1997 PST')",
             &[&5i32],
         )
         .await?;
@@ -149,10 +144,10 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                     .get("event_time")
                     .context("Should have event_time column")?;
 
-                // Verify it's a LocalDateTime value (TIMESTAMP without timezone)
+                // Verify it's a ZonedDateTime value (TIMESTAMPTZ)
                 match event_time {
-                    UniversalValue::LocalDateTime(dt) => {
-                        info!("Successfully got LocalDateTime: {}", dt.to_rfc3339());
+                    UniversalValue::ZonedDateTime(dt) => {
+                        info!("Successfully got ZonedDateTime: {}", dt.to_rfc3339());
 
                         // Verify the timestamp makes sense (not in the future, not before 1990)
                         let now = Utc::now();
@@ -170,21 +165,37 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                             dt.to_rfc3339()
                         );
 
-                        // For known timestamps (IDs 1-5), verify they were parsed successfully
-                        // Note: TIMESTAMP without timezone doesn't preserve timezone info,
-                        // so we just verify that parsing succeeded
+                        // For known timestamps (IDs 1-5), verify specific values
                         let id = match row.primary_key {
                             UniversalValue::Int32(i) => i,
                             _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
                         };
 
-                        info!(
-                            "Successfully verified timestamp for id={}: {}",
-                            id,
-                            dt.to_rfc3339()
-                        );
+                        match id {
+                            1 => {
+                                // 2024-01-15T10:30:00+00:00
+                                assert_eq!(dt.to_rfc3339(), "2024-01-15T10:30:00+00:00");
+                            }
+                            2 => {
+                                // 1997-12-17T15:37:16Z
+                                assert_eq!(dt.to_rfc3339(), "1997-12-17T15:37:16+00:00");
+                            }
+                            3 => {
+                                // 1997-12-17T07:37:16-08:00 (PST) = 1997-12-17T15:37:16+00:00 (UTC)
+                                assert_eq!(dt.to_rfc3339(), "1997-12-17T15:37:16+00:00");
+                            }
+                            4 => {
+                                // 12/17/1997 07:37:16.00 PST = 1997-12-17T15:37:16+00:00 (UTC)
+                                assert_eq!(dt.to_rfc3339(), "1997-12-17T15:37:16+00:00");
+                            }
+                            5 => {
+                                // Wed Dec 17 07:37:16 1997 PST = 1997-12-17T15:37:16+00:00 (UTC)
+                                assert_eq!(dt.to_rfc3339(), "1997-12-17T15:37:16+00:00");
+                            }
+                            _ => panic!("Unexpected id: {id}"),
+                        }
                     }
-                    _ => panic!("Expected LocalDateTime value, got {:?}", event_time),
+                    _ => panic!("Expected ZonedDateTime value, got {:?}", event_time),
                 }
             }
             _ => panic!("Expected Insert action, got {change}"),
@@ -196,7 +207,7 @@ async fn test_timestamp_replication_formats() -> Result<()> {
     // Now test UPDATE to ensure it also works
     pg_client
         .execute(
-            "UPDATE timestamp_test SET event_time = TIMESTAMP '2025-06-01 12:00:00' WHERE id = $1",
+            "UPDATE timestamp_test SET event_time = TIMESTAMPTZ '2025-06-01T12:00:00Z' WHERE id = $1",
             &[&1i32],
         )
         .await?;
@@ -223,17 +234,17 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                 .context("Should have event_time column in UPDATE")?;
 
             match event_time {
-                UniversalValue::LocalDateTime(dt) => {
+                UniversalValue::ZonedDateTime(dt) => {
                     info!(
                         "UPDATE timestamp successfully converted: {}",
                         dt.to_rfc3339()
                     );
 
-                    // Verify it's a valid timestamp
-                    assert!(dt > &(Utc::now() - chrono::Duration::days(365 * 2)));
+                    // Verify the updated value
+                    assert_eq!(dt.to_rfc3339(), "2025-06-01T12:00:00+00:00");
                 }
                 _ => panic!(
-                    "Expected LocalDateTime value in UPDATE, got {:?}",
+                    "Expected ZonedDateTime value in UPDATE, got {:?}",
                     event_time
                 ),
             }
@@ -245,8 +256,7 @@ async fn test_timestamp_replication_formats() -> Result<()> {
 
     // Cleanup
     repl_client.drop_slot(slot_name).await?;
-    container.stop()?;
 
-    info!("TIMESTAMP replication format test completed successfully");
+    info!("TIMESTAMPTZ replication format test completed successfully");
     Ok(())
 }

@@ -11,9 +11,7 @@
 //! 5. Verify SurrealDB has record links and graph edges
 
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 
 #[tokio::test]
 async fn test_wal2json_fk_incremental_only() -> Result<(), Box<dyn std::error::Error>> {
@@ -22,18 +20,15 @@ async fn test_wal2json_fk_incremental_only() -> Result<(), Box<dyn std::error::E
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-pgl-fk-incr-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
-    // --- Start PostgreSQL ---
-    let mut container = PostgresContainer::new("test-pg-fk-incr-wal2json");
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let container = surreal_sync::testing::shared_containers::shared_postgres().await;
+
+    let test_id = generate_test_id();
+    let test_conn_str = surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id).await?;
 
     let (pg_client, pg_conn) =
-        tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls).await?;
+        tokio_postgres::connect(&test_conn_str, tokio_postgres::NoTls).await?;
     tokio::spawn(async move {
         if let Err(e) = pg_conn.await {
             eprintln!("PG connection error: {e}");
@@ -61,7 +56,6 @@ async fn test_wal2json_fk_incremental_only() -> Result<(), Box<dyn std::error::E
         .await?;
 
     // --- Connect to SurrealDB ---
-    let test_id = generate_test_id();
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
@@ -78,7 +72,7 @@ async fn test_wal2json_fk_incremental_only() -> Result<(), Box<dyn std::error::E
     ];
 
     let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
-        connection_string: container.connection_string.clone(),
+        connection_string: test_conn_str.clone(),
         slot_name: slot_name.clone(),
         tables: table_names.clone(),
         schema: "public".to_string(),

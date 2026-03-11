@@ -12,9 +12,7 @@
 //! 5. Verify SurrealDB has record links and graph edges
 
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 
 #[tokio::test]
 async fn test_trigger_fk_incremental_only() -> Result<(), Box<dyn std::error::Error>> {
@@ -24,18 +22,14 @@ async fn test_trigger_fk_incremental_only() -> Result<(), Box<dyn std::error::Er
         .ok();
 
     let test_id = generate_test_id();
-    let mut surrealdb = SurrealDbContainer::new(&format!("test-pg-fk-incr-sdb-{test_id}"));
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
-
-    // --- Start PostgreSQL ---
-    let mut container = PostgresContainer::new(&format!("test-pg-fk-incr-trigger-{test_id}"));
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
+    let container = surreal_sync::testing::shared_containers::shared_postgres().await;
+    let test_conn_str =
+        surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id)
+            .await?;
 
     let (pg_client, pg_conn) =
-        tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls).await?;
+        tokio_postgres::connect(&test_conn_str, tokio_postgres::NoTls).await?;
     tokio::spawn(async move {
         if let Err(e) = pg_conn.await {
             eprintln!("PG connection error: {e}");
@@ -71,8 +65,8 @@ async fn test_trigger_fk_incremental_only() -> Result<(), Box<dyn std::error::Er
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
     let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
-        source_uri: container.connection_string.clone(),
-        source_database: Some("testdb".to_string()),
+        source_uri: test_conn_str.clone(),
+        source_database: Some(format!("test_{test_id}")),
         tables: vec![],
         relation_tables: vec![],
     };

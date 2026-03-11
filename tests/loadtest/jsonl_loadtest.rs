@@ -10,13 +10,11 @@
 use loadtest_populate_jsonl::JsonlPopulator;
 use surreal_sync::jsonl::{sync, Config, FileSource};
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use sync_core::Schema;
 use tempfile::TempDir;
 
 const SEED: u64 = 42;
-const ROW_COUNT: u64 = 50; // Small scale for integration tests
 const BATCH_SIZE: usize = 10;
 
 /// Test the full generate -> sync -> verify workflow with JSONL files.
@@ -32,9 +30,7 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-lt-jsonl-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
     // Load schema from fixture file
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
@@ -66,7 +62,7 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     // === PHASE 1: GENERATE JSONL files with deterministic test data ===
     tracing::info!(
         "Generating JSONL files with {} rows per table (seed={})",
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
@@ -76,7 +72,7 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     for table_name in &table_names {
         let mut populator = JsonlPopulator::new(schema.clone(), SEED);
         let output_path = temp_dir.path().join(format!("{table_name}.jsonl"));
-        let metrics = populator.populate(table_name, &output_path, ROW_COUNT)?;
+        let metrics = populator.populate(table_name, &output_path, crate::common::row_count())?;
         tracing::info!(
             "Generated {}: {} rows in {:?} ({} bytes)",
             table_name,
@@ -122,7 +118,7 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     // === PHASE 3: VERIFY synced data matches expected values ===
     tracing::info!(
         "Verifying synced data ({} rows per table, seed={})",
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
@@ -137,7 +133,7 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -165,7 +161,7 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }
@@ -178,7 +174,7 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -206,7 +202,7 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }

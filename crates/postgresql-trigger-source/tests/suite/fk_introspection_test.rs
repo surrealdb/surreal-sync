@@ -6,15 +6,11 @@
 //! Requires Docker to start a PostgreSQL container.
 
 use surreal_sync_postgresql::schema::collect_database_schema_with_fks;
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 use sync_core::{classify_table, TableKind};
 
 #[tokio::test]
 async fn test_fk_introspection_and_classification() -> Result<(), Box<dyn std::error::Error>> {
-    let mut container = PostgresContainer::new("test-pg-fk-introspect");
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let container = crate::shared::postgres().await;
 
     let (client, connection) =
         tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls).await?;
@@ -115,10 +111,7 @@ async fn test_fk_introspection_and_classification() -> Result<(), Box<dyn std::e
 #[tokio::test]
 async fn test_override_forces_relation_classification()
 -> Result<(), Box<dyn std::error::Error>> {
-    let mut container = PostgresContainer::new("test-pg-fk-override");
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let container = crate::shared::postgres().await;
 
     let (client, connection) =
         tokio_postgres::connect(&container.connection_string, tokio_postgres::NoTls).await?;

@@ -6,11 +6,9 @@
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::postgresql::create_tables_and_indices;
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 
 /// Test PostgreSQL logical replication incremental sync CLI
 #[tokio::test]
@@ -21,23 +19,18 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-pgl-incr-sync-cli-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
-    // Setup PostgreSQL container with wal2json (dynamic port)
-    let mut container = PostgresContainer::new("test-logical-incr-cli");
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let container = surreal_sync::testing::shared_containers::shared_postgres().await;
 
     let test_id = generate_test_id();
+    let _test_conn_str = surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id).await?;
 
     // Clean up checkpoint directory to prevent cross-test contamination
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(".test-logical-checkpoints")?;
 
     // Setup PostgreSQL with test data using container
-    let connection_string = container.connection_url();
+    let connection_string = container.connection_url().replace("testdb", &format!("test_{test_id}"));
     let (pg_client, pg_connection) =
         tokio_postgres::connect(&connection_string, tokio_postgres::NoTls).await?;
 
@@ -70,7 +63,7 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
         "--connection-string",
         &connection_string,
         "--slot",
-        "surreal_sync_incr_test_slot",
+        &format!("slot_{test_id}"),
         "--tables",
         &tables_arg,
         "--surreal-endpoint",
@@ -113,7 +106,7 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
         "--connection-string",
         &connection_string,
         "--slot",
-        "surreal_sync_incr_test_slot",
+        &format!("slot_{test_id}"),
         "--tables",
         &tables_arg,
         "--surreal-endpoint",
@@ -154,16 +147,13 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
     // Cleanup: drop the replication slot
     pg_client
         .execute(
-            "SELECT pg_drop_replication_slot('surreal_sync_incr_test_slot')",
+            &format!("SELECT pg_drop_replication_slot('slot_{test_id}')"),
             &[],
         )
         .await
         .ok(); // Ignore errors if slot doesn't exist
 
     surreal_sync::testing::postgresql_cleanup::cleanup_unified_dataset_tables(&pg_client).await?;
-
-    // Cleanup: Stop container
-    container.stop()?;
 
     Ok(())
 }

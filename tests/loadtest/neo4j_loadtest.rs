@@ -9,13 +9,11 @@
 
 use loadtest_populate_neo4j::Neo4jPopulator;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use surreal_sync_neo4j_source::testing::container::Neo4jContainer;
 use sync_core::Schema;
 
 const SEED: u64 = 42;
-const ROW_COUNT: u64 = 50; // Small scale for integration tests
 const BATCH_SIZE: usize = 10;
 
 /// Test the full populate -> sync -> verify workflow with Neo4j.
@@ -27,19 +25,17 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-lt-neo4j-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
-
-    let mut container = Neo4jContainer::new("test-neo4j-loadtest");
-    container.start()?;
-    container.wait_until_ready(60).await?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
     // Load schema from fixture file
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
         .expect("Failed to load test schema");
 
     let test_id = generate_test_id();
+
+    let mut container = Neo4jContainer::new(&format!("test-neo4j-{test_id}"));
+    container.start()?;
+    container.wait_until_ready(30).await?;
     // All tables including 'products' with complex types (UUID, JSON, Array, Enum)
     let table_names: Vec<&str> = schema.table_names();
 
@@ -87,7 +83,7 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     // === PHASE 1: POPULATE Neo4j with deterministic test data ===
     tracing::info!(
         "Populating Neo4j with {} nodes per label (seed={})",
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
@@ -107,7 +103,7 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         .with_batch_size(BATCH_SIZE);
 
         populator.delete_nodes(table_name).await.ok();
-        let metrics = populator.populate(table_name, ROW_COUNT).await?;
+        let metrics = populator.populate(table_name, crate::common::row_count()).await?;
         tracing::info!(
             "Populated {}: {} nodes in {:?}",
             table_name,
@@ -167,7 +163,7 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     // === PHASE 3: VERIFY synced data matches expected values ===
     tracing::info!(
         "Verifying synced data ({} nodes per label, seed={})",
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
@@ -183,7 +179,7 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -211,7 +207,7 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all nodes matched for label '{table_name}'"
                 );
             }
@@ -225,7 +221,7 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -253,7 +249,7 @@ async fn test_neo4j_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all nodes matched for label '{table_name}'"
                 );
             }

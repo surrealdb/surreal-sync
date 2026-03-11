@@ -9,14 +9,11 @@
 
 use loadtest_populate_postgresql::PostgreSQLPopulator;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use surreal_sync_postgresql::testing::container::PostgresContainer;
 use sync_core::Schema;
 use tokio_postgres::NoTls;
 
 const SEED: u64 = 42;
-const ROW_COUNT: u64 = 50; // Small scale for integration tests
 const BATCH_SIZE: usize = 10;
 
 /// Test the full populate -> sync -> verify workflow with PostgreSQL.
@@ -32,14 +29,9 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-lt-pg-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
-    let mut container = PostgresContainer::new("test-pg-loadtest");
-    container.build_image()?;
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let container = surreal_sync::testing::shared_containers::shared_postgres().await;
 
     // Load schema from fixture file
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
@@ -50,7 +42,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
     let table_names: Vec<&str> = schema.table_names();
 
     // Connect to PostgreSQL
-    let pg_conn_string = container.connection_string.clone();
+    let pg_conn_string = surreal_sync::testing::shared_containers::create_postgres_test_db(container, test_id).await?;
 
     let (pg_client, connection) = tokio_postgres::connect(&pg_conn_string, NoTls).await?;
     tokio::spawn(async move {
@@ -90,7 +82,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
     // === PHASE 1: POPULATE PostgreSQL with deterministic test data ===
     tracing::info!(
         "Populating PostgreSQL with {} rows per table (seed={})",
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
@@ -100,7 +92,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
             .await?
             .with_batch_size(BATCH_SIZE);
         populator.recreate_table(table_name).await?;
-        let metrics = populator.populate(table_name, ROW_COUNT).await?;
+        let metrics = populator.populate(table_name, crate::common::row_count()).await?;
         tracing::info!(
             "Populated {}: {} rows in {:?}",
             table_name,
@@ -153,7 +145,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
     // === PHASE 3: VERIFY synced data matches expected values ===
     tracing::info!(
         "Verifying synced data ({} rows per table, seed={})",
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
@@ -169,7 +161,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -187,7 +179,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }
@@ -201,7 +193,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -219,7 +211,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }

@@ -9,16 +9,12 @@
 //! 6. Clean up all test data
 
 use loadtest_populate_mongodb::MongoDBPopulator;
-use surreal_sync::testing::mongodb_container::MongoContainer;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use sync_core::Schema;
 
 const SEED: u64 = 42;
-const ROW_COUNT: u64 = 50;
 const BATCH_SIZE: usize = 10;
-const MONGODB_DATABASE: &str = "loadtest_incr";
 const CHECKPOINT_DIR: &str = ".loadtest-mongodb-incremental-checkpoints";
 
 /// Test the incremental sync workflow with MongoDB.
@@ -37,23 +33,20 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-lt-mongodb-incr-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
-    let mut container = MongoContainer::new("test-mongo-incr-loadtest");
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let container = surreal_sync::testing::shared_containers::shared_mongodb().await;
     let mongodb_uri = container.connection_uri();
 
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
         .expect("Failed to load test schema");
 
     let test_id = generate_test_id();
+    let mongodb_database = format!("test_{test_id}");
     let table_names: Vec<&str> = schema.table_names();
 
     let mongo_client = mongodb::Client::with_uri_str(&mongodb_uri).await?;
-    let mongo_db = mongo_client.database(MONGODB_DATABASE);
+    let mongo_db = mongo_client.database(&mongodb_database);
 
     // Connect to SurrealDB (auto-detect v2 or v3)
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
@@ -95,7 +88,7 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
 
     let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
         source_uri: mongodb_uri.clone(),
-        source_database: Some(MONGODB_DATABASE.to_string()),
+        source_database: Some(mongodb_database.clone()),
         collections: vec![],
     };
 
@@ -141,18 +134,18 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
     // This data will be captured by the change stream when we resume
     tracing::info!(
         "Populating MongoDB with {} documents per collection (seed={})",
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
     for table_name in &table_names {
         let mut populator =
-            MongoDBPopulator::new(&mongodb_uri, MONGODB_DATABASE, schema.clone(), SEED)
+            MongoDBPopulator::new(&mongodb_uri, &mongodb_database, schema.clone(), SEED)
                 .await?
                 .with_batch_size(BATCH_SIZE);
 
         // Use populate to insert data
-        let metrics = populator.populate(table_name, ROW_COUNT).await?;
+        let metrics = populator.populate(table_name, crate::common::row_count()).await?;
         tracing::info!(
             "Populated {}: {} documents in {:?}",
             table_name,
@@ -209,7 +202,7 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
     // === PHASE 4: VERIFY synced data matches expected values ===
     tracing::info!(
         "Verifying synced data ({} documents per collection, seed={})",
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
@@ -225,7 +218,7 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -253,7 +246,7 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all documents matched for collection '{table_name}'"
                 );
             }
@@ -267,7 +260,7 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
 
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -295,7 +288,7 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all documents matched for collection '{table_name}'"
                 );
             }

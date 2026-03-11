@@ -4,11 +4,9 @@
 //! by starting with empty collections, running full sync to generate checkpoint,
 //! then adding data and running incremental sync.
 
-use surreal_sync::testing::mongodb_container::MongoContainer;
 use surreal_sync::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
@@ -21,13 +19,9 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-mongo-incr-sync-lib-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
-    let mut container = MongoContainer::new("test-mongo-incr-sync-lib");
-    container.start()?;
-    container.wait_until_ready(30).await?;
+    let container = surreal_sync::testing::shared_containers::shared_mongodb().await;
 
     let test_id = generate_test_id();
     let checkpoint_dir = format!(".test-mongodb-incr-lib-checkpoints-{test_id}");
@@ -37,7 +31,8 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
 
     let mongodb_client =
         surreal_sync::testing::mongodb::connect_mongodb(&container.connection_uri()).await?;
-    let db = mongodb_client.database("testdb");
+    let mongodb_database = format!("test_{test_id}");
+    let db = mongodb_client.database(&mongodb_database);
 
     // Setup SurrealDB connection with auto-detection
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
@@ -50,7 +45,7 @@ async fn test_mongodb_incremental_sync_lib() -> Result<(), Box<dyn std::error::E
 
     let source_opts = surreal_sync_mongodb_changestream_source::SourceOpts {
         source_uri: container.connection_uri(),
-        source_database: Some("testdb".to_string()),
+        source_database: Some(mongodb_database.clone()),
         collections: vec![],
     };
 

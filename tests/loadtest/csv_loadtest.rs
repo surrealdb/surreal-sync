@@ -10,13 +10,11 @@
 use loadtest_populate_csv::CSVPopulator;
 use surreal_sync::csv::{sync, Config, FileSource};
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
-use surreal_sync::testing::surrealdb_container::SurrealDbContainer;
 use surreal_sync::testing::{generate_test_id, TestConfig};
 use sync_core::Schema;
 use tempfile::TempDir;
 
 const SEED: u64 = 42;
-const ROW_COUNT: u64 = 50; // Small scale for integration tests
 const BATCH_SIZE: usize = 10;
 
 /// Test the full generate -> sync -> verify workflow with CSV files.
@@ -32,9 +30,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
         .try_init()
         .ok();
 
-    let mut surrealdb = SurrealDbContainer::new("test-lt-csv-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
     // Load schema from fixture file
     let schema = Schema::from_file("tests/fixtures/loadtest_schema.yaml")
@@ -66,7 +62,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
     // === PHASE 1: GENERATE CSV files with deterministic test data ===
     tracing::info!(
         "Generating CSV files with {} rows per table (seed={})",
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
@@ -76,7 +72,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
     for table_name in &table_names {
         let mut populator = CSVPopulator::new(schema.clone(), SEED);
         let output_path = temp_dir.path().join(format!("{table_name}.csv"));
-        let metrics = populator.populate(table_name, &output_path, ROW_COUNT)?;
+        let metrics = populator.populate(table_name, &output_path, crate::common::row_count())?;
         tracing::info!(
             "Generated {}: {} rows in {:?} ({} bytes)",
             table_name,
@@ -126,7 +122,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
     // === PHASE 3: VERIFY synced data matches expected values ===
     tracing::info!(
         "Verifying synced data ({} rows per table, seed={})",
-        ROW_COUNT,
+        crate::common::row_count(),
         SEED
     );
 
@@ -141,7 +137,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -168,7 +164,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }
@@ -181,7 +177,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
                 )?
                 // Skip updated_at - it uses timestamp_now generator which is non-deterministic
 ;
-                let report = verifier.verify_streaming(ROW_COUNT).await?;
+                let report = verifier.verify_streaming(crate::common::row_count()).await?;
 
                 tracing::info!(
                     "Verified {}: {} matched, {} missing, {} mismatched",
@@ -208,7 +204,7 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
                     report.mismatched
                 );
                 assert_eq!(
-                    report.matched, ROW_COUNT,
+                    report.matched, crate::common::row_count(),
                     "Not all rows matched for table '{table_name}'"
                 );
             }
@@ -274,9 +270,7 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
     assert!(csv_content.contains(",26,"), "CSV should contain age 26");
 
     // Test 3: Sync to SurrealDB and query directly
-    let mut surrealdb = SurrealDbContainer::new("test-lt-csv-debug-sdb");
-    surrealdb.start()?;
-    surrealdb.wait_until_ready(30)?;
+    let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
 
     let test_id = generate_test_id();
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
