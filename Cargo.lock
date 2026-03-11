@@ -8062,6 +8062,7 @@ name = "surrealdb-multi-sdk-demo"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "rust_decimal",
  "serde",
  "serde_json",

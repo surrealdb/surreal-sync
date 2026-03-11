@@ -156,6 +156,36 @@ mod type_safety_demo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+    use surreal_version::testing::SurrealDbContainer;
+
+    const V2_IMAGE: &str = "surrealdb/surrealdb:v2.3.7";
+    const V3_IMAGE: &str = "surrealdb/surrealdb:v3.0.1";
+
+    static CONTAINER_NAMES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+
+    fn register_container(name: &str) {
+        let names = CONTAINER_NAMES.get_or_init(|| {
+            extern "C" fn cleanup() {
+                if let Some(names) = CONTAINER_NAMES.get() {
+                    if let Ok(names) = names.lock() {
+                        for name in names.iter() {
+                            let _ = std::process::Command::new("docker")
+                                .args(["rm", "-f", name])
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .status();
+                        }
+                    }
+                }
+            }
+            unsafe { libc::atexit(cleanup) };
+            Mutex::new(Vec::new())
+        });
+        if let Ok(mut names) = names.lock() {
+            names.push(name.to_string());
+        }
+    }
 
     fn init_logging() {
         let _ = tracing_subscriber::fmt()
@@ -166,46 +196,45 @@ mod tests {
             .try_init();
     }
 
-    /// Returns a V2 endpoint, or `None` if the server is unreachable or is not V2.
-    async fn get_v2_endpoint() -> Option<String> {
-        let endpoint = std::env::var("SURREAL_V2_ENDPOINT")
-            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
-        match surreal_version::detect_server_version(&endpoint).await {
-            Ok(surreal_version::SurrealMajorVersion::V2) => Some(endpoint),
-            Ok(v) => {
-                eprintln!("Skipping V2 test: server at {endpoint} is {v}");
-                None
-            }
-            Err(e) => {
-                eprintln!("Skipping V2 test: server at {endpoint} unreachable: {e}");
-                None
-            }
-        }
+    /// Returns a shared V2 SurrealDB container, starting it on first call.
+    fn shared_surrealdb_v2() -> &'static SurrealDbContainer {
+        static DB: OnceLock<SurrealDbContainer> = OnceLock::new();
+        DB.get_or_init(|| {
+            let name = format!("multi-sdk-v2-{}", std::process::id());
+            register_container(&name);
+            let mut c = SurrealDbContainer::with_image(&name, V2_IMAGE);
+            c.start().expect("V2 SurrealDB failed to start");
+            c.wait_until_ready(30)
+                .expect("V2 SurrealDB not ready in 30s");
+            c
+        })
     }
 
-    /// Returns a V3 endpoint, or `None` if no V3 server is available.
-    ///
-    /// Checks `SURREAL_V3_ENDPOINT` first, then falls back to the default
-    /// endpoint if it happens to be running V3.
-    async fn get_v3_endpoint() -> Option<String> {
-        if let Ok(ep) = std::env::var("SURREAL_V3_ENDPOINT") {
-            return Some(ep);
-        }
-        let default = std::env::var("SURREAL_V2_ENDPOINT")
-            .unwrap_or_else(|_| "ws://surrealdb:8000".to_string());
-        match surreal_version::detect_server_version(&default).await {
-            Ok(surreal_version::SurrealMajorVersion::V3) => Some(default),
-            _ => {
-                eprintln!("Skipping V3 test: SURREAL_V3_ENDPOINT not set and default is not V3");
-                None
-            }
-        }
+    /// Returns a shared V3 SurrealDB container, starting it on first call.
+    fn shared_surrealdb_v3() -> &'static SurrealDbContainer {
+        static DB: OnceLock<SurrealDbContainer> = OnceLock::new();
+        DB.get_or_init(|| {
+            let name = format!("multi-sdk-v3-{}", std::process::id());
+            register_container(&name);
+            let mut c = SurrealDbContainer::with_image(&name, V3_IMAGE);
+            c.start().expect("V3 SurrealDB failed to start");
+            c.wait_until_ready(30)
+                .expect("V3 SurrealDB not ready in 30s");
+            c
+        })
+    }
+
+    fn v2_endpoint() -> String {
+        shared_surrealdb_v2().ws_endpoint()
+    }
+
+    fn v3_endpoint() -> String {
+        shared_surrealdb_v3().ws_endpoint()
     }
 
     /// Test that both SDKs compile and types are properly namespaced
     #[test]
     fn test_types_compile_and_are_distinct() {
-        // V2 types
         let v2_thing = v2::create_thing("users", "alice");
         assert_eq!(v2_thing.tb, "users");
         match &v2_thing.id {
@@ -213,7 +242,6 @@ mod tests {
             _ => panic!("Expected V2 Id::String, got {:?}", v2_thing.id),
         }
 
-        // V3 types - note: table is a field, not a method in v3
         let v3_record_id = v3::create_record_id("users", "alice");
         assert_eq!(v3_record_id.table.to_string(), "users");
         match &v3_record_id.key {
@@ -223,23 +251,13 @@ mod tests {
                 v3_record_id.key
             ),
         }
-
-        // Verify types are distinct (this is a compile-time check, but we document it)
-        // V2 Thing and V3 RecordId are different types - mixing them would be a compile error
     }
 
-    /// Test connecting to V2 server (DevContainer default at surrealdb:8000).
-    /// Skipped when the server is V3 or unreachable.
     #[tokio::test]
     async fn test_v2_connection() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match get_v2_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
-
-        let client = v2::connect(&endpoint, "test", "demo")
+        let client = v2::connect(&v2_endpoint(), "test", "demo")
             .await
             .expect("V2 SDK should connect to V2 server");
 
@@ -250,18 +268,11 @@ mod tests {
         Ok(())
     }
 
-    /// Test connecting to V3 server.
-    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v3_connection() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match get_v3_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
-
-        let client = v3::connect(&endpoint, "test", "demo")
+        let client = v3::connect(&v3_endpoint(), "test", "demo")
             .await
             .expect("V3 SDK should connect to V3 server");
 
@@ -272,18 +283,12 @@ mod tests {
         Ok(())
     }
 
-    /// Test that V3 SDK cannot connect to V2 server (protocol mismatch).
-    /// Skipped when no V2 server is available.
+    /// V3 SDK uses "flatbuffers" subprotocol, V2 server expects "revision".
     #[tokio::test]
     async fn test_v3_sdk_cannot_connect_to_v2_server() -> anyhow::Result<()> {
         init_logging();
 
-        let v2_endpoint = match get_v2_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
-
-        let result = v3::connect(&v2_endpoint, "test", "demo").await;
+        let result = v3::connect(&v2_endpoint(), "test", "demo").await;
 
         assert!(
             result.is_err(),
@@ -293,18 +298,12 @@ mod tests {
         Ok(())
     }
 
-    /// Test that V2 SDK cannot connect to V3 server (protocol mismatch).
-    /// Skipped when no V3 server is available.
+    /// V2 SDK uses "revision" subprotocol, V3 server expects "flatbuffers".
     #[tokio::test]
     async fn test_v2_sdk_cannot_connect_to_v3_server() -> anyhow::Result<()> {
         init_logging();
 
-        let v3_endpoint = match get_v3_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
-
-        let result = v2::connect(&v3_endpoint, "test", "demo").await;
+        let result = v2::connect(&v3_endpoint(), "test", "demo").await;
 
         assert!(
             result.is_err(),
@@ -314,25 +313,17 @@ mod tests {
         Ok(())
     }
 
-    /// Test V2 SDK deserializing query results to custom struct.
-    /// Skipped when the server is V3 or unreachable.
     #[tokio::test]
     async fn test_v2_query_deserialize_to_struct() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match get_v2_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
+        let client = v2::connect(&v2_endpoint(), "test", "demo_struct_test").await?;
 
-        let client = v2::connect(&endpoint, "test", "demo_struct_test").await?;
-
-        // Create test data
+        client.query("DELETE FROM test_record").await?;
         client
             .query("CREATE test_record:1 SET name = 'Alice', age = 30, active = true")
             .await?;
 
-        // Define struct to deserialize into
         #[derive(serde::Deserialize, Debug)]
         struct TestRecord {
             name: String,
@@ -340,7 +331,6 @@ mod tests {
             active: bool,
         }
 
-        // Query and deserialize - V2 SDK supports Deserialize trait directly
         let mut response = client.query("SELECT * FROM test_record").await?;
         let records: Vec<TestRecord> = response.take(0)?;
 
@@ -349,33 +339,22 @@ mod tests {
         assert_eq!(records[0].age, 30);
         assert!(records[0].active);
 
-        // Cleanup
         client.query("DELETE FROM test_record").await?;
 
         Ok(())
     }
 
-    /// Test V3 SDK deserializing query results to custom struct.
-    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v3_query_deserialize_to_struct() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match get_v3_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
+        let client = v3::connect(&v3_endpoint(), "test", "demo_struct_test").await?;
 
-        let client = v3::connect(&endpoint, "test", "demo_struct_test").await?;
-
-        // Create test data
+        client.query("DELETE FROM test_record").await?;
         client
             .query("CREATE test_record:1 SET name = 'Bob', age = 25, active = false")
             .await?;
 
-        // Define struct with SurrealValue derive for V3 SDK
-        // This enables direct deserialization via .take()
-        // Use #[surreal(crate = "...")] to specify the path to surrealdb_types
         use surrealdb3::types::SurrealValue;
 
         #[derive(SurrealValue, Debug)]
@@ -386,7 +365,6 @@ mod tests {
             active: bool,
         }
 
-        // Query and deserialize directly - V3 SDK uses SurrealValue trait
         let mut response = client.query("SELECT * FROM test_record").await?;
         let records: Vec<TestRecord> = response.take(0)?;
 
@@ -395,31 +373,21 @@ mod tests {
         assert_eq!(records[0].age, 25);
         assert!(!records[0].active);
 
-        // Cleanup
         client.query("DELETE FROM test_record").await?;
 
         Ok(())
     }
 
-    /// Test that V2 SDK handles DELETE on non-existent tables gracefully.
-    /// Skipped when the server is V3 or unreachable.
     #[tokio::test]
     async fn test_v2_delete_nonexistent_table() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match get_v2_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
+        let client = v2::connect(&v2_endpoint(), "test", "demo_delete_test").await?;
 
-        let client = v2::connect(&endpoint, "test", "demo_delete_test").await?;
-
-        // Delete from a table that definitely doesn't exist
         let result = client
             .query("DELETE FROM this_table_definitely_does_not_exist_12345")
             .await;
 
-        // V2 SDK should NOT throw an error for non-existent tables
         assert!(
             result.is_ok(),
             "V2 SDK should handle DELETE on non-existent table gracefully, got: {:?}",
@@ -429,27 +397,16 @@ mod tests {
         Ok(())
     }
 
-    /// Test that V3 SDK handles DELETE on non-existent tables gracefully.
-    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v3_delete_nonexistent_table() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match get_v3_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
+        let client = v3::connect(&v3_endpoint(), "test", "demo_delete_test").await?;
 
-        let client = v3::connect(&endpoint, "test", "demo_delete_test").await?;
-
-        // Delete from a table that definitely doesn't exist
-        // Using RETURN NONE to avoid needing to deserialize any response
         let result = client
             .query("DELETE FROM this_table_definitely_does_not_exist_12345 RETURN NONE")
             .await;
 
-        // Document V3 SDK behavior - it should also handle this gracefully
-        // If V3 throws an error, this test will fail and document that difference
         assert!(
             result.is_ok(),
             "V3 SDK should handle DELETE on non-existent table gracefully, got: {:?}",
@@ -459,59 +416,44 @@ mod tests {
         Ok(())
     }
 
-    /// Test V2 SDK decimal deserialization behavior.
-    /// Skipped when the server is V3 or unreachable.
     #[tokio::test]
     async fn test_v2_decimal_deserialization() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match get_v2_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
+        let client = v2::connect(&v2_endpoint(), "test", "demo_decimal_test").await?;
 
-        let client = v2::connect(&endpoint, "test", "demo_decimal_test").await?;
-
-        // Clean up first
         client.query("DELETE FROM decimal_test").await?;
 
-        // Create a record with decimal value
         client
             .query("CREATE decimal_test:1 SET dec_val = <decimal> 123.45")
             .await?;
 
         eprintln!("\n=== V2 SDK Decimal Deserialization Tests ===");
 
-        // 1. Try to read the decimal value as f64
         let mut response = client.query("SELECT dec_val FROM decimal_test:1").await?;
         let val_f64: Result<Option<f64>, _> = response.take((0, "dec_val"));
         eprintln!("V2 SDK: decimal as f64        = {:?}", val_f64);
 
-        // 2. Try to read the decimal value as rust_decimal::Decimal
         let mut response2 = client.query("SELECT dec_val FROM decimal_test:1").await?;
         let val_decimal: Result<Option<rust_decimal::Decimal>, _> = response2.take((0, "dec_val"));
         eprintln!("V2 SDK: decimal as Decimal    = {:?}", val_decimal);
 
-        // 3. Try to read the decimal value as String
         let mut response3 = client.query("SELECT dec_val FROM decimal_test:1").await?;
         let val_str: Result<Option<String>, _> = response3.take((0, "dec_val"));
         eprintln!("V2 SDK: decimal as String     = {:?}", val_str);
 
-        // 4. Try to read with <float> cast
         let mut response4 = client
             .query("SELECT <float> dec_val as casted FROM decimal_test:1")
             .await?;
         let val_casted: Result<Option<f64>, _> = response4.take((0, "casted"));
         eprintln!("V2 SDK: decimal <float> cast  = {:?}", val_casted);
 
-        // 5. Try to read with <string> cast
         let mut response5 = client
             .query("SELECT <string> dec_val as casted FROM decimal_test:1")
             .await?;
         let val_str_cast: Result<Option<String>, _> = response5.take((0, "casted"));
         eprintln!("V2 SDK: decimal <string> cast = {:?}", val_str_cast);
 
-        // Summary table
         eprintln!("\n--- V2 SDK Summary ---");
         eprintln!("| Approach          | Result |");
         eprintln!("|-------------------|--------|");
@@ -536,65 +478,49 @@ mod tests {
             if val_str_cast.is_ok() { "OK" } else { "Err" }
         );
 
-        // Cleanup
         client.query("DELETE FROM decimal_test").await?;
 
         Ok(())
     }
 
-    /// Test V3 SDK decimal deserialization behavior.
-    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v3_decimal_deserialization() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match get_v3_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
+        let client = v3::connect(&v3_endpoint(), "test", "demo_decimal_test").await?;
 
-        let client = v3::connect(&endpoint, "test", "demo_decimal_test").await?;
-
-        // Clean up first
         client.query("DELETE FROM decimal_test").await?;
 
-        // Create a record with decimal value
         client
             .query("CREATE decimal_test:1 SET dec_val = <decimal> 123.45")
             .await?;
 
         eprintln!("\n=== V3 SDK Decimal Deserialization Tests ===");
 
-        // 1. Try to read the decimal value as f64
         let mut response = client.query("SELECT dec_val FROM decimal_test:1").await?;
         let val_f64: Result<Option<f64>, _> = response.take((0, "dec_val"));
         eprintln!("V3 SDK: decimal as f64        = {:?}", val_f64);
 
-        // 2. Try to read the decimal value as rust_decimal::Decimal
         let mut response2 = client.query("SELECT dec_val FROM decimal_test:1").await?;
         let val_decimal: Result<Option<rust_decimal::Decimal>, _> = response2.take((0, "dec_val"));
         eprintln!("V3 SDK: decimal as Decimal    = {:?}", val_decimal);
 
-        // 3. Try to read the decimal value as String
         let mut response3 = client.query("SELECT dec_val FROM decimal_test:1").await?;
         let val_str: Result<Option<String>, _> = response3.take((0, "dec_val"));
         eprintln!("V3 SDK: decimal as String     = {:?}", val_str);
 
-        // 4. Try to read with <float> cast
         let mut response4 = client
             .query("SELECT <float> dec_val as casted FROM decimal_test:1")
             .await?;
         let val_casted: Result<Option<f64>, _> = response4.take((0, "casted"));
         eprintln!("V3 SDK: decimal <float> cast  = {:?}", val_casted);
 
-        // 5. Try to read with <string> cast
         let mut response5 = client
             .query("SELECT <string> dec_val as casted FROM decimal_test:1")
             .await?;
         let val_str_cast: Result<Option<String>, _> = response5.take((0, "casted"));
         eprintln!("V3 SDK: decimal <string> cast = {:?}", val_str_cast);
 
-        // Summary table
         eprintln!("\n--- V3 SDK Summary ---");
         eprintln!("| Approach          | Result |");
         eprintln!("|-------------------|--------|");
@@ -619,14 +545,11 @@ mod tests {
             if val_str_cast.is_ok() { "OK" } else { "Err" }
         );
 
-        // Cleanup
         client.query("DELETE FROM decimal_test").await?;
 
         Ok(())
     }
 
-    /// Test rust_decimal parsing limits locally
-    ///
     /// rust_decimal uses 96 bits for mantissa. MAX is 79228162514264337593543950335.
     /// This means not all 29-digit numbers can be parsed - only those <= MAX.
     #[tokio::test]
@@ -637,7 +560,6 @@ mod tests {
         eprintln!("MAX = {}", rust_decimal::Decimal::MAX);
         eprintln!("MIN = {}", rust_decimal::Decimal::MIN);
 
-        // Test various values around the limit
         let test_cases = [
             ("rust_decimal MAX", "79228162514264337593543950335", true),
             (
@@ -645,10 +567,10 @@ mod tests {
                 "79228162514264337593543950336",
                 false,
             ),
-            ("28 nines", "9999999999999999999999999999", true), // 28 digits of 9
-            ("29 nines", "99999999999999999999999999999", false), // 29 digits of 9 > MAX
+            ("28 nines", "9999999999999999999999999999", true),
+            ("29 nines", "99999999999999999999999999999", false),
             ("typical money", "99999999.99", true),
-            ("high precision", "123.456789012345678901234567890", true), // truncated but parseable
+            ("high precision", "123.456789012345678901234567890", true),
         ];
 
         for (label, value, expected_ok) in &test_cases {
@@ -661,33 +583,24 @@ mod tests {
         Ok(())
     }
 
-    /// Test V2 SDK decimal storage using proper `dec` suffix.
-    /// Skipped when the server is V3 or unreachable.
     #[tokio::test]
     async fn test_v2_decimal_storage_with_dec_suffix() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match get_v2_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
+        let client = v2::connect(&v2_endpoint(), "test", "demo_decimal_limits").await?;
 
-        let client = v2::connect(&endpoint, "test", "demo_decimal_limits").await?;
-
-        // Cleanup
         client.query("DELETE FROM decimal_limits").await?;
 
         eprintln!("\n=== V2 SDK Decimal Storage (using dec suffix) ===");
 
-        // Test using `dec` suffix for decimal literals
         let test_cases = [
             ("typical_money", "99999999.99dec"),
             ("small_decimal", "123.45dec"),
-            ("large_integer_as_decimal", "1234567890123456789dec"), // 19 digits
+            ("large_integer_as_decimal", "1234567890123456789dec"),
             ("rust_decimal_max", "79228162514264337593543950335dec"),
             ("over_rust_decimal_max", "79228162514264337593543950336dec"),
-            ("28_nines", "9999999999999999999999999999dec"), // 28 nines
-            ("29_nines", "99999999999999999999999999999dec"), // 29 nines
+            ("28_nines", "9999999999999999999999999999dec"),
+            ("29_nines", "99999999999999999999999999999dec"),
         ];
 
         for (label, value) in &test_cases {
@@ -695,7 +608,6 @@ mod tests {
             let result = client.query(&query).await;
 
             if result.is_ok() {
-                // Try to read it back as rust_decimal
                 let mut response = client
                     .query(format!("SELECT val FROM decimal_limits:{label}"))
                     .await?;
@@ -707,39 +619,29 @@ mod tests {
             }
         }
 
-        // Cleanup
         client.query("DELETE FROM decimal_limits").await?;
 
         Ok(())
     }
 
-    /// Test V3 SDK decimal storage using proper `dec` suffix.
-    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v3_decimal_storage_with_dec_suffix() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match get_v3_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
+        let client = v3::connect(&v3_endpoint(), "test", "demo_decimal_limits").await?;
 
-        let client = v3::connect(&endpoint, "test", "demo_decimal_limits").await?;
-
-        // Cleanup
         client.query("DELETE FROM decimal_limits").await?;
 
         eprintln!("\n=== V3 SDK Decimal Storage (using dec suffix) ===");
 
-        // Test using `dec` suffix for decimal literals
         let test_cases = [
             ("typical_money", "99999999.99dec"),
             ("small_decimal", "123.45dec"),
-            ("large_integer_as_decimal", "1234567890123456789dec"), // 19 digits
+            ("large_integer_as_decimal", "1234567890123456789dec"),
             ("rust_decimal_max", "79228162514264337593543950335dec"),
             ("over_rust_decimal_max", "79228162514264337593543950336dec"),
-            ("28_nines", "9999999999999999999999999999dec"), // 28 nines
-            ("29_nines", "99999999999999999999999999999dec"), // 29 nines
+            ("28_nines", "9999999999999999999999999999dec"),
+            ("29_nines", "99999999999999999999999999999dec"),
         ];
 
         for (label, value) in &test_cases {
@@ -747,7 +649,6 @@ mod tests {
             let result = client.query(&query).await;
 
             if result.is_ok() {
-                // Try to read it back as rust_decimal
                 let mut response = client
                     .query(format!("SELECT val FROM decimal_limits:{label}"))
                     .await?;
@@ -759,26 +660,17 @@ mod tests {
             }
         }
 
-        // Cleanup
         client.query("DELETE FROM decimal_limits").await?;
 
         Ok(())
     }
 
-    /// Test V3 SDK cleanup pattern with proper error handling.
-    /// Skipped when no V3 server is available.
     #[tokio::test]
     async fn test_v3_cleanup_pattern() -> anyhow::Result<()> {
         init_logging();
 
-        let endpoint = match get_v3_endpoint().await {
-            Some(ep) => ep,
-            None => return Ok(()),
-        };
+        let client = v3::connect(&v3_endpoint(), "test", "demo_cleanup_test").await?;
 
-        let client = v3::connect(&endpoint, "test", "demo_cleanup_test").await?;
-
-        // Recommended cleanup pattern: ignore "does not exist" errors
         let tables = [
             "nonexistent_table_1",
             "nonexistent_table_2",
@@ -792,13 +684,10 @@ mod tests {
                     eprintln!("Cleaned up table '{}'", table);
                 }
                 Err(e) => {
-                    // Check if it's a "does not exist" error
                     let err_str = e.to_string();
                     if err_str.contains("does not exist") {
-                        // This is expected for cleanup operations - ignore it
                         eprintln!("Table '{}' does not exist, skipping: {}", table, err_str);
                     } else {
-                        // Unexpected error - fail the test
                         panic!("Unexpected error during cleanup: {}", e);
                     }
                 }

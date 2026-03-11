@@ -21,6 +21,7 @@ serde_json = "1.0"
 rust_decimal = "1.37"
 
 [dev-dependencies]
+libc = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 surreal-version = { path = "../surreal-version" }

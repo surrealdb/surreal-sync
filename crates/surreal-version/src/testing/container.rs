@@ -38,6 +38,17 @@ impl SurrealDbContainer {
         }
     }
 
+    /// Creates a new container configuration with an explicit Docker image,
+    /// ignoring the `SURREALDB_IMAGE` env var.
+    pub fn with_image(container_name: &str, image: &str) -> Self {
+        Self {
+            container_name: container_name.to_string(),
+            host_port: 0,
+            image: image.to_string(),
+            detected_version: None,
+        }
+    }
+
     /// Starts the container with dynamic port binding and discovers the assigned port.
     pub fn start(&mut self) -> Result<()> {
         info!(
