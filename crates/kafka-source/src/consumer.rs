@@ -61,7 +61,10 @@ impl SecurityProtocol {
     }
 
     pub fn requires_sasl(&self) -> bool {
-        matches!(self, SecurityProtocol::SaslPlaintext | SecurityProtocol::SaslSsl)
+        matches!(
+            self,
+            SecurityProtocol::SaslPlaintext | SecurityProtocol::SaslSsl
+        )
     }
 }
 
@@ -179,7 +182,10 @@ impl Consumer {
 
             if protocol.requires_sasl() {
                 client_config
-                    .set("sasl.mechanism", config.sasl_mechanism.as_ref().unwrap().as_str())
+                    .set(
+                        "sasl.mechanism",
+                        config.sasl_mechanism.as_ref().unwrap().as_str(),
+                    )
                     .set("sasl.username", config.sasl_username.as_deref().unwrap())
                     .set("sasl.password", config.sasl_password.as_deref().unwrap());
             }
@@ -339,5 +345,130 @@ impl Clone for Consumer {
             config: self.config.clone(),
             buffer: Arc::clone(&self.buffer),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sasl_mechanism_as_str() {
+        assert_eq!(SaslMechanism::ScramSha256.as_str(), "SCRAM-SHA-256");
+        assert_eq!(SaslMechanism::ScramSha512.as_str(), "SCRAM-SHA-512");
+        assert_eq!(SaslMechanism::Plain.as_str(), "PLAIN");
+    }
+
+    #[test]
+    fn security_protocol_as_str() {
+        assert_eq!(SecurityProtocol::SaslPlaintext.as_str(), "SASL_PLAINTEXT");
+        assert_eq!(SecurityProtocol::SaslSsl.as_str(), "SASL_SSL");
+        assert_eq!(SecurityProtocol::Plaintext.as_str(), "PLAINTEXT");
+        assert_eq!(SecurityProtocol::Ssl.as_str(), "SSL");
+    }
+
+    #[test]
+    fn requires_sasl_for_sasl_protocols() {
+        assert!(SecurityProtocol::SaslPlaintext.requires_sasl());
+        assert!(SecurityProtocol::SaslSsl.requires_sasl());
+    }
+
+    #[test]
+    fn requires_sasl_false_for_non_sasl_protocols() {
+        assert!(!SecurityProtocol::Plaintext.requires_sasl());
+        assert!(!SecurityProtocol::Ssl.requires_sasl());
+    }
+
+    fn config_with_sasl_protocol(protocol: SecurityProtocol) -> ConsumerConfig {
+        ConsumerConfig {
+            security_protocol: Some(protocol),
+            ..Default::default()
+        }
+    }
+
+    /// Extract the error from a Consumer::new result, panicking if it was Ok.
+    fn expect_err(result: Result<Consumer>) -> Error {
+        match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected Consumer::new to fail, but it succeeded"),
+        }
+    }
+
+    #[test]
+    fn rejects_sasl_protocol_without_credentials() {
+        let config = config_with_sasl_protocol(SecurityProtocol::SaslPlaintext);
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err
+            .to_string()
+            .contains("requires both sasl_username and sasl_password"));
+    }
+
+    #[test]
+    fn rejects_sasl_protocol_with_username_only() {
+        let mut config = config_with_sasl_protocol(SecurityProtocol::SaslSsl);
+        config.sasl_username = Some("user".into());
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err
+            .to_string()
+            .contains("requires both sasl_username and sasl_password"));
+    }
+
+    #[test]
+    fn rejects_sasl_protocol_with_password_only() {
+        let mut config = config_with_sasl_protocol(SecurityProtocol::SaslPlaintext);
+        config.sasl_password = Some("pass".into());
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err
+            .to_string()
+            .contains("requires both sasl_username and sasl_password"));
+    }
+
+    #[test]
+    fn rejects_sasl_protocol_without_mechanism() {
+        let mut config = config_with_sasl_protocol(SecurityProtocol::SaslPlaintext);
+        config.sasl_username = Some("user".into());
+        config.sasl_password = Some("pass".into());
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err
+            .to_string()
+            .contains("requires sasl_mechanism to be set"));
+    }
+
+    #[tokio::test]
+    async fn accepts_non_sasl_protocol_without_credentials() {
+        // PLAINTEXT and SSL should not require any SASL fields.
+        // Consumer::new will fail later when trying to subscribe to an empty topic,
+        // but should NOT fail on SASL validation.
+        for protocol in [SecurityProtocol::Plaintext, SecurityProtocol::Ssl] {
+            let config = config_with_sasl_protocol(protocol);
+            let result = Consumer::new(config, dummy_decoder());
+            if let Err(e) = result {
+                assert!(
+                    !e.to_string().contains("sasl"),
+                    "unexpected SASL error for non-SASL protocol: {e}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn accepts_no_security_protocol() {
+        let config = ConsumerConfig::default();
+        let result = Consumer::new(config, dummy_decoder());
+        if let Err(e) = result {
+            assert!(
+                !e.to_string().contains("sasl"),
+                "unexpected SASL error when no protocol set: {e}"
+            );
+        }
+    }
+
+    /// Minimal decoder — validation tests fail before decoding is ever attempted.
+    fn dummy_decoder() -> ProtoDecoder {
+        use kafka_types::proto::ProtoSchema;
+        use std::collections::HashMap;
+        ProtoDecoder::new(ProtoSchema {
+            messages: HashMap::new(),
+        })
     }
 }

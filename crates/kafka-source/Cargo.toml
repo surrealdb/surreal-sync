@@ -16,7 +16,7 @@ kafka-types = { path = "../kafka-types" }
 surreal-sink = { path = "../surreal-sink" }
 sync-core = { path = "../sync-core" }
 
-# Kafka client - added sasl for auth 
+# Kafka client
 rdkafka = { version = "0.38", features = ["tokio", "sasl"] }
 
 # Protobuf support
