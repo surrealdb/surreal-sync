@@ -140,7 +140,7 @@ jobs:
       - uses: actions/checkout@v6.0.2
 
       - name: Download Docker image
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8.0.1
         with:
           name: docker-image
 
@@ -208,7 +208,7 @@ jobs:
       - uses: actions/checkout@v6.0.2
 
       - name: Download all metrics artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8.0.1
         with:
           pattern: metrics-*
           path: metrics/
