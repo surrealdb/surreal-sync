@@ -14,6 +14,60 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
+/// SASL authentication mechanism
+#[derive(Debug, Clone, Default, clap::ValueEnum)]
+pub enum SaslMechanism {
+    #[default]
+    #[clap(name = "SCRAM-SHA-256")]
+    ScramSha256,
+    #[clap(name = "SCRAM-SHA-512")]
+    ScramSha512,
+    #[clap(name = "PLAIN")]
+    Plain,
+}
+
+impl SaslMechanism {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SaslMechanism::ScramSha256 => "SCRAM-SHA-256",
+            SaslMechanism::ScramSha512 => "SCRAM-SHA-512",
+            SaslMechanism::Plain => "PLAIN",
+        }
+    }
+}
+
+/// Kafka security protocol
+#[derive(Debug, Clone, Default, clap::ValueEnum)]
+pub enum SecurityProtocol {
+    #[default]
+    #[clap(name = "SASL_PLAINTEXT")]
+    SaslPlaintext,
+    #[clap(name = "SASL_SSL")]
+    SaslSsl,
+    #[clap(name = "PLAINTEXT")]
+    Plaintext,
+    #[clap(name = "SSL")]
+    Ssl,
+}
+
+impl SecurityProtocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SecurityProtocol::SaslPlaintext => "SASL_PLAINTEXT",
+            SecurityProtocol::SaslSsl => "SASL_SSL",
+            SecurityProtocol::Plaintext => "PLAINTEXT",
+            SecurityProtocol::Ssl => "SSL",
+        }
+    }
+
+    pub fn requires_sasl(&self) -> bool {
+        matches!(
+            self,
+            SecurityProtocol::SaslPlaintext | SecurityProtocol::SaslSsl
+        )
+    }
+}
+
 /// Configuration for Kafka consumer
 #[derive(Debug, Clone)]
 pub struct ConsumerConfig {
@@ -57,6 +111,14 @@ pub struct ConsumerConfig {
     /// This is false by default, as surreal-sync manages offsets manually to ensure
     /// atomic processing and committing of batches.
     pub enable_auto_commit: bool,
+    /// Optional SASL username for broker authentication
+    pub sasl_username: Option<String>,
+    /// Optional SASL password for broker authentication
+    pub sasl_password: Option<String>,
+    /// SASL mechanism (e.g. SCRAM-SHA-256, PLAIN). Required when security_protocol uses SASL.
+    pub sasl_mechanism: Option<SaslMechanism>,
+    /// Security protocol. When None, rdkafka defaults to PLAINTEXT (no auth).
+    pub security_protocol: Option<SecurityProtocol>,
 }
 
 impl Default for ConsumerConfig {
@@ -70,6 +132,10 @@ impl Default for ConsumerConfig {
             auto_offset_reset: "earliest".to_string(),
             session_timeout_ms: "6000".to_string(),
             enable_auto_commit: false,
+            sasl_username: None,
+            sasl_password: None,
+            sasl_mechanism: None,
+            security_protocol: None,
         }
     }
 }
@@ -85,13 +151,47 @@ pub struct Consumer {
 impl Consumer {
     /// Create a new Kafka consumer
     pub fn new(config: ConsumerConfig, decoder: ProtoDecoder) -> Result<Self> {
-        let consumer: RdkafkaStreamConsumer = ClientConfig::new()
+        if let Some(ref protocol) = config.security_protocol {
+            if protocol.requires_sasl() {
+                if config.sasl_username.is_none() || config.sasl_password.is_none() {
+                    return Err(Error::Consumer(format!(
+                        "Security protocol '{}' requires both sasl_username and sasl_password",
+                        protocol.as_str()
+                    )));
+                }
+                if config.sasl_mechanism.is_none() {
+                    return Err(Error::Consumer(format!(
+                        "Security protocol '{}' requires sasl_mechanism to be set",
+                        protocol.as_str()
+                    )));
+                }
+            }
+        }
+
+        let mut client_config = ClientConfig::new();
+        client_config
             .set("bootstrap.servers", &config.brokers)
             .set("group.id", &config.group_id)
             .set("enable.auto.commit", config.enable_auto_commit.to_string())
             .set("auto.offset.reset", &config.auto_offset_reset)
             .set("session.timeout.ms", &config.session_timeout_ms)
-            .set("enable.partition.eof", "false")
+            .set("enable.partition.eof", "false");
+
+        if let Some(ref protocol) = config.security_protocol {
+            client_config.set("security.protocol", protocol.as_str());
+
+            if protocol.requires_sasl() {
+                client_config
+                    .set(
+                        "sasl.mechanism",
+                        config.sasl_mechanism.as_ref().unwrap().as_str(),
+                    )
+                    .set("sasl.username", config.sasl_username.as_deref().unwrap())
+                    .set("sasl.password", config.sasl_password.as_deref().unwrap());
+            }
+        }
+
+        let consumer: RdkafkaStreamConsumer = client_config
             .create()
             .map_err(|e| Error::Consumer(format!("Failed to create consumer: {e}")))?;
 
@@ -245,5 +345,130 @@ impl Clone for Consumer {
             config: self.config.clone(),
             buffer: Arc::clone(&self.buffer),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sasl_mechanism_as_str() {
+        assert_eq!(SaslMechanism::ScramSha256.as_str(), "SCRAM-SHA-256");
+        assert_eq!(SaslMechanism::ScramSha512.as_str(), "SCRAM-SHA-512");
+        assert_eq!(SaslMechanism::Plain.as_str(), "PLAIN");
+    }
+
+    #[test]
+    fn security_protocol_as_str() {
+        assert_eq!(SecurityProtocol::SaslPlaintext.as_str(), "SASL_PLAINTEXT");
+        assert_eq!(SecurityProtocol::SaslSsl.as_str(), "SASL_SSL");
+        assert_eq!(SecurityProtocol::Plaintext.as_str(), "PLAINTEXT");
+        assert_eq!(SecurityProtocol::Ssl.as_str(), "SSL");
+    }
+
+    #[test]
+    fn requires_sasl_for_sasl_protocols() {
+        assert!(SecurityProtocol::SaslPlaintext.requires_sasl());
+        assert!(SecurityProtocol::SaslSsl.requires_sasl());
+    }
+
+    #[test]
+    fn requires_sasl_false_for_non_sasl_protocols() {
+        assert!(!SecurityProtocol::Plaintext.requires_sasl());
+        assert!(!SecurityProtocol::Ssl.requires_sasl());
+    }
+
+    fn config_with_sasl_protocol(protocol: SecurityProtocol) -> ConsumerConfig {
+        ConsumerConfig {
+            security_protocol: Some(protocol),
+            ..Default::default()
+        }
+    }
+
+    /// Extract the error from a Consumer::new result, panicking if it was Ok.
+    fn expect_err(result: Result<Consumer>) -> Error {
+        match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected Consumer::new to fail, but it succeeded"),
+        }
+    }
+
+    #[test]
+    fn rejects_sasl_protocol_without_credentials() {
+        let config = config_with_sasl_protocol(SecurityProtocol::SaslPlaintext);
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err
+            .to_string()
+            .contains("requires both sasl_username and sasl_password"));
+    }
+
+    #[test]
+    fn rejects_sasl_protocol_with_username_only() {
+        let mut config = config_with_sasl_protocol(SecurityProtocol::SaslSsl);
+        config.sasl_username = Some("user".into());
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err
+            .to_string()
+            .contains("requires both sasl_username and sasl_password"));
+    }
+
+    #[test]
+    fn rejects_sasl_protocol_with_password_only() {
+        let mut config = config_with_sasl_protocol(SecurityProtocol::SaslPlaintext);
+        config.sasl_password = Some("pass".into());
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err
+            .to_string()
+            .contains("requires both sasl_username and sasl_password"));
+    }
+
+    #[test]
+    fn rejects_sasl_protocol_without_mechanism() {
+        let mut config = config_with_sasl_protocol(SecurityProtocol::SaslPlaintext);
+        config.sasl_username = Some("user".into());
+        config.sasl_password = Some("pass".into());
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err
+            .to_string()
+            .contains("requires sasl_mechanism to be set"));
+    }
+
+    #[tokio::test]
+    async fn accepts_non_sasl_protocol_without_credentials() {
+        // PLAINTEXT and SSL should not require any SASL fields.
+        // Consumer::new will fail later when trying to subscribe to an empty topic,
+        // but should NOT fail on SASL validation.
+        for protocol in [SecurityProtocol::Plaintext, SecurityProtocol::Ssl] {
+            let config = config_with_sasl_protocol(protocol);
+            let result = Consumer::new(config, dummy_decoder());
+            if let Err(e) = result {
+                assert!(
+                    !e.to_string().contains("sasl"),
+                    "unexpected SASL error for non-SASL protocol: {e}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn accepts_no_security_protocol() {
+        let config = ConsumerConfig::default();
+        let result = Consumer::new(config, dummy_decoder());
+        if let Err(e) = result {
+            assert!(
+                !e.to_string().contains("sasl"),
+                "unexpected SASL error when no protocol set: {e}"
+            );
+        }
+    }
+
+    /// Minimal decoder — validation tests fail before decoding is ever attempted.
+    fn dummy_decoder() -> ProtoDecoder {
+        use kafka_types::proto::ProtoSchema;
+        use std::collections::HashMap;
+        ProtoDecoder::new(ProtoSchema {
+            messages: HashMap::new(),
+        })
     }
 }

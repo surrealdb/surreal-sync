@@ -17,7 +17,7 @@ surreal-sink = { path = "../surreal-sink" }
 sync-core = { path = "../sync-core" }
 
 # Kafka client
-rdkafka = { version = "0.38", features = ["tokio"] }
+rdkafka = { version = "0.38", features = ["tokio", "sasl"] }
 
 # Protobuf support
 protobuf = "3.5"
