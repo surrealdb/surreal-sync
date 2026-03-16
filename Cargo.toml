@@ -61,7 +61,7 @@ async-trait = "0.1"
 # Streams
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io-util"] }
-tempfile = "3.24"
+tempfile = "3.27"
 geo-types = "0.7.17"
 
 # CSV parsing
@@ -138,7 +138,7 @@ openssl = { version = "0.10", features = ["vendored"], optional = true }
 [dev-dependencies]
 # Testing
 tokio-test = "0.4"
-tempfile = "3.24"
+tempfile = "3.27"
 
 # Kafka producer library for Kafka source testing
 surreal-sync-kafka-producer = { path = "crates/kafka-producer" }
