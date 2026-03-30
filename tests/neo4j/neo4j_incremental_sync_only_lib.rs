@@ -73,6 +73,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         assumed_start_timestamp: None,
         allow_empty_tracking_timestamp: false,
         id_property: "id".to_string(),
+        composite_constituent: None,
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {

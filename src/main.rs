@@ -365,6 +365,10 @@ struct Neo4jFullArgs {
     #[arg(long, default_value = "id")]
     id_property: String,
 
+    /// Composite database constituent to query via USE clause (e.g., "gatewayro.c1o")
+    #[arg(long, env = "NEO4J_COMPOSITE_CONSTITUENT")]
+    composite_constituent: Option<String>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -452,6 +456,10 @@ struct Neo4jIncrementalArgs {
     /// If a node does not have this property, the Neo4j internal node ID is used as fallback.
     #[arg(long, default_value = "id")]
     id_property: String,
+
+    /// Composite database constituent to query via USE clause (e.g., "gatewayro.c1o")
+    #[arg(long, env = "NEO4J_COMPOSITE_CONSTITUENT")]
+    composite_constituent: Option<String>,
 
     #[command(flatten)]
     surreal: SurrealOpts,

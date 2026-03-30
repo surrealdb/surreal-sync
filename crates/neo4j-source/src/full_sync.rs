@@ -33,6 +33,8 @@ pub struct SourceOpts {
     /// Property name to use as SurrealDB record ID (default: "id").
     /// If a node does not have this property, the Neo4j internal node_id is used.
     pub id_property: String,
+    /// Optional composite database constituent to prefix queries with `USE <constituent>`
+    pub composite_constituent: Option<String>,
 }
 
 /// Sync options (non-connection related)
@@ -102,6 +104,14 @@ impl Neo4jConversionContext {
     }
 }
 
+/// Prefix a Cypher query with `USE <constituent>` for composite database access.
+pub fn with_use_clause(query: &str, constituent: &Option<String>) -> String {
+    match constituent {
+        Some(c) => format!("USE {c} {query}"),
+        None => query.to_string(),
+    }
+}
+
 /// Enhanced version that supports checkpoint emission for incremental sync coordination
 ///
 /// # Arguments
@@ -164,6 +174,7 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
         &from_opts.labels,
         &from_opts.change_tracking_property,
         &from_opts.id_property,
+        &from_opts.composite_constituent,
     )
     .await?;
     total_migrated += nodes_migrated;
@@ -176,6 +187,7 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
         &ctx,
         &from_opts.change_tracking_property,
         &from_opts.id_property,
+        &from_opts.composite_constituent,
     )
     .await?;
     total_migrated += rels_migrated;
@@ -294,6 +306,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
     labels_filter: &[String],
     tracking_property: &str,
     id_property: &str,
+    composite_constituent: &Option<String>,
 ) -> anyhow::Result<(
     usize,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -307,7 +320,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
     // Determine which labels to process
     let labels_to_process: Vec<String> = if labels_filter.is_empty() {
         // No filter - get all distinct labels from the database
-        let label_query = Query::new("MATCH (n) RETURN DISTINCT labels(n) as labels".to_string());
+        let label_query = Query::new(with_use_clause("MATCH (n) RETURN DISTINCT labels(n) as labels", composite_constituent));
         let mut result = graph.execute(label_query).await?;
 
         let mut all_labels = std::collections::HashSet::new();
@@ -337,7 +350,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
         tracing::info!("Migrating nodes with label: {}", label);
 
         let node_query = Query::new(
-            "MATCH (n) WHERE $label IN labels(n) RETURN n, id(n) as node_id".to_string(),
+            with_use_clause("MATCH (n) WHERE $label IN labels(n) RETURN n, id(n) as node_id", composite_constituent),
         )
         .param("label", label.clone());
         let mut node_result = graph.execute(node_query).await?;
@@ -428,6 +441,7 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     ctx: &Neo4jConversionContext,
     tracking_property: &str,
     id_property: &str,
+    composite_constituent: &Option<String>,
 ) -> anyhow::Result<(
     usize,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -439,7 +453,7 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     let mut max_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
 
     // Get all distinct relationship types first
-    let type_query = Query::new("MATCH ()-[r]->() RETURN DISTINCT type(r) as rel_type".to_string());
+    let type_query = Query::new(with_use_clause("MATCH ()-[r]->() RETURN DISTINCT type(r) as rel_type", composite_constituent));
     let mut result = graph.execute(type_query).await?;
 
     let mut all_types = std::collections::HashSet::new();
@@ -457,12 +471,12 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     for rel_type in all_types {
         tracing::info!("Migrating relationships of type: {}", rel_type);
 
-        let rel_query = Query::new(format!(
+        let rel_query = Query::new(with_use_clause(&format!(
             "MATCH (start_node)-[r]->(end_node) WHERE type(r) = $rel_type
              RETURN r, id(r) as rel_id, id(start_node) as start_id, id(end_node) as end_id,
              labels(start_node) as start_labels, labels(end_node) as end_labels,
              start_node.{id_property} as start_prop_id, end_node.{id_property} as end_prop_id",
-        ))
+        ), composite_constituent))
         .param("rel_type", rel_type.clone());
         let mut rel_result = graph.execute(rel_query).await?;
 
