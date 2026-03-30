@@ -166,30 +166,13 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     let mut total_migrated = 0;
 
     // Migrate nodes first and track min/max timestamps
-    let (nodes_migrated, nodes_min_ts, nodes_max_ts) = migrate_neo4j_nodes(
-        &graph,
-        surreal,
-        &sync_opts,
-        &ctx,
-        &from_opts.labels,
-        &from_opts.change_tracking_property,
-        &from_opts.id_property,
-        &from_opts.composite_constituent,
-    )
-    .await?;
+    let (nodes_migrated, nodes_min_ts, nodes_max_ts) =
+        migrate_neo4j_nodes(&graph, surreal, &sync_opts, &ctx, &from_opts).await?;
     total_migrated += nodes_migrated;
 
     // Then migrate relationships and track min/max timestamps
-    let (rels_migrated, rels_min_ts, rels_max_ts) = migrate_neo4j_relationships(
-        &graph,
-        surreal,
-        &sync_opts,
-        &ctx,
-        &from_opts.change_tracking_property,
-        &from_opts.id_property,
-        &from_opts.composite_constituent,
-    )
-    .await?;
+    let (rels_migrated, rels_min_ts, rels_max_ts) =
+        migrate_neo4j_relationships(&graph, surreal, &sync_opts, &ctx, &from_opts).await?;
     total_migrated += rels_migrated;
 
     // Compute overall min/max timestamps from both nodes and relationships
@@ -303,10 +286,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
     surreal: &S,
     sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
-    labels_filter: &[String],
-    tracking_property: &str,
-    id_property: &str,
-    composite_constituent: &Option<String>,
+    from_opts: &SourceOpts,
 ) -> anyhow::Result<(
     usize,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -318,9 +298,12 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
     let mut max_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
 
     // Determine which labels to process
-    let labels_to_process: Vec<String> = if labels_filter.is_empty() {
+    let labels_to_process: Vec<String> = if from_opts.labels.is_empty() {
         // No filter - get all distinct labels from the database
-        let label_query = Query::new(with_use_clause("MATCH (n) RETURN DISTINCT labels(n) as labels", composite_constituent));
+        let label_query = Query::new(with_use_clause(
+            "MATCH (n) RETURN DISTINCT labels(n) as labels",
+            &from_opts.composite_constituent,
+        ));
         let mut result = graph.execute(label_query).await?;
 
         let mut all_labels = std::collections::HashSet::new();
@@ -337,10 +320,10 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
     } else {
         tracing::info!(
             "Filtering to {} specified labels: {:?}",
-            labels_filter.len(),
-            labels_filter
+            from_opts.labels.len(),
+            from_opts.labels
         );
-        labels_filter.to_vec()
+        from_opts.labels.to_vec()
     };
 
     let mut total_migrated = 0;
@@ -349,9 +332,10 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
     for label in labels_to_process {
         tracing::info!("Migrating nodes with label: {}", label);
 
-        let node_query = Query::new(
-            with_use_clause("MATCH (n) WHERE $label IN labels(n) RETURN n, id(n) as node_id", composite_constituent),
-        )
+        let node_query = Query::new(with_use_clause(
+            "MATCH (n) WHERE $label IN labels(n) RETURN n, id(n) as node_id",
+            &from_opts.composite_constituent,
+        ))
         .param("label", label.clone());
         let mut node_result = graph.execute(node_query).await?;
 
@@ -359,11 +343,12 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
         let mut processed = 0;
 
         while let Some(row) = node_result.next().await? {
-            let universal_row = convert_neo4j_row_to_universal_row(&row, &label, ctx, id_property)?;
+            let universal_row =
+                convert_neo4j_row_to_universal_row(&row, &label, ctx, &from_opts.id_property)?;
 
             // Extract tracking property timestamp if present
             if let Some(UniversalValue::LocalDateTime(ts)) =
-                universal_row.get_field(tracking_property)
+                universal_row.get_field(&from_opts.change_tracking_property)
             {
                 min_timestamp = Some(min_timestamp.map_or(*ts, |min| min.min(*ts)));
                 max_timestamp = Some(max_timestamp.map_or(*ts, |max| max.max(*ts)));
@@ -439,9 +424,7 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     surreal: &S,
     sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
-    tracking_property: &str,
-    id_property: &str,
-    composite_constituent: &Option<String>,
+    from_opts: &SourceOpts,
 ) -> anyhow::Result<(
     usize,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -453,7 +436,10 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     let mut max_timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
 
     // Get all distinct relationship types first
-    let type_query = Query::new(with_use_clause("MATCH ()-[r]->() RETURN DISTINCT type(r) as rel_type", composite_constituent));
+    let type_query = Query::new(with_use_clause(
+        "MATCH ()-[r]->() RETURN DISTINCT type(r) as rel_type",
+        &from_opts.composite_constituent,
+    ));
     let mut result = graph.execute(type_query).await?;
 
     let mut all_types = std::collections::HashSet::new();
@@ -471,12 +457,16 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     for rel_type in all_types {
         tracing::info!("Migrating relationships of type: {}", rel_type);
 
-        let rel_query = Query::new(with_use_clause(&format!(
-            "MATCH (start_node)-[r]->(end_node) WHERE type(r) = $rel_type
+        let id_property = &from_opts.id_property;
+        let rel_query = Query::new(with_use_clause(
+            &format!(
+                "MATCH (start_node)-[r]->(end_node) WHERE type(r) = $rel_type
              RETURN r, id(r) as rel_id, id(start_node) as start_id, id(end_node) as end_id,
              labels(start_node) as start_labels, labels(end_node) as end_labels,
              start_node.{id_property} as start_prop_id, end_node.{id_property} as end_prop_id",
-        ), composite_constituent))
+            ),
+            &from_opts.composite_constituent,
+        ))
         .param("rel_type", rel_type.clone());
         let mut rel_result = graph.execute(rel_query).await?;
 
@@ -489,8 +479,9 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
             let universal_relation = r.to_universal_relation(ctx)?;
 
             // Extract tracking property timestamp if present
-            if let Some(UniversalValue::LocalDateTime(ts)) =
-                universal_relation.data.get(tracking_property)
+            if let Some(UniversalValue::LocalDateTime(ts)) = universal_relation
+                .data
+                .get(&from_opts.change_tracking_property)
             {
                 min_timestamp = Some(min_timestamp.map_or(*ts, |min| min.min(*ts)));
                 max_timestamp = Some(max_timestamp.map_or(*ts, |max| max.max(*ts)));
@@ -1270,5 +1261,18 @@ mod tests {
             err_msg.contains("unsupported"),
             "Error should mention unsupported type: {err_msg}"
         );
+    }
+
+    #[test]
+    fn test_with_use_clause_none() {
+        let result = with_use_clause("MATCH (n) RETURN n", &None);
+        assert_eq!(result, "MATCH (n) RETURN n");
+    }
+
+    #[test]
+    fn test_with_use_clause_some() {
+        let constituent = Some("composite.db1".to_string());
+        let result = with_use_clause("MATCH (n) RETURN n", &constituent);
+        assert_eq!(result, "USE composite.db1 MATCH (n) RETURN n");
     }
 }

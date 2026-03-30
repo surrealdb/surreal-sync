@@ -167,14 +167,17 @@ impl Neo4jChangeStream {
 
         let checkpoint_str = checkpoint_datetime.to_rfc3339();
 
-        let node_query = Query::new(with_use_clause(&format!(
-            "MATCH (n)
+        let node_query = Query::new(with_use_clause(
+            &format!(
+                "MATCH (n)
              WHERE n.{} > datetime($checkpoint)
              RETURN n, id(n) as node_id, labels(n) as labels
              ORDER BY n.{}
              LIMIT 100",
-            self.change_tracking_property, self.change_tracking_property
-        ), &self.composite_constituent))
+                self.change_tracking_property, self.change_tracking_property
+            ),
+            &self.composite_constituent,
+        ))
         .param("checkpoint", checkpoint_str.clone());
 
         let mut result = self.graph.execute(node_query).await?;
@@ -270,8 +273,9 @@ impl Neo4jChangeStream {
         }
 
         // Also query for relationship changes
-        let rel_query = Query::new(with_use_clause(&format!(
-            "MATCH (a)-[r]->(b)
+        let rel_query = Query::new(with_use_clause(
+            &format!(
+                "MATCH (a)-[r]->(b)
              WHERE r.{tracking} > datetime($checkpoint)
              RETURN r, id(r) as rel_id, type(r) as rel_type,
                     id(a) as start_id, id(b) as end_id,
@@ -280,9 +284,11 @@ impl Neo4jChangeStream {
                     'update' as operation
              ORDER BY r.{tracking}
              LIMIT 100",
-            tracking = self.change_tracking_property,
-            id_prop = self.id_property,
-        ), &self.composite_constituent))
+                tracking = self.change_tracking_property,
+                id_prop = self.id_property,
+            ),
+            &self.composite_constituent,
+        ))
         .param("checkpoint", checkpoint_str);
 
         let mut rel_result = self.graph.execute(rel_query).await?;
