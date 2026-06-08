@@ -43,7 +43,7 @@ jobs:
 
     - name: Run make test in dev container
       id: test
-      uses: devcontainers/ci@8bf61b26e9c3a98f69cb6ce2f88d24ff59b785c6 # v0.3.1900000417
+      uses: devcontainers/ci@513af61f4de4f75d37e4438f184ba4358f0fc1ca # v0.3.1900000450
       with:
         runCmd: |
           make test
