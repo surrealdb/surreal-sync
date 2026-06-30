@@ -5,7 +5,7 @@ edition = "2021"
 description = "MySQL trigger-based sync for surreal-sync"
 
 [dependencies]
-mysql_async = "0.34"
+mysql_async = "0.36"
 surreal-sink = { path = "../surreal-sink" }
 sync-core = { path = "../sync-core" }
 checkpoint = { path = "../checkpoint" }
