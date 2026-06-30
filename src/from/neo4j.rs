@@ -13,6 +13,20 @@ use super::{
 };
 use crate::{Neo4jFullArgs, Neo4jIncrementalArgs};
 
+/// Parse a database name that may be a composite constituent (e.g., "composite.db1").
+/// Returns (session_database, composite_constituent).
+/// If the name contains a dot, the part before the first dot is the session database
+/// and the full name is the composite constituent for the USE clause.
+fn parse_composite_database(database: &Option<String>) -> (Option<String>, Option<String>) {
+    match database {
+        Some(db) if db.contains('.') => {
+            let session_db = db.split('.').next().unwrap().to_string();
+            (Some(session_db), Some(db.clone()))
+        }
+        other => (other.clone(), None),
+    }
+}
+
 /// Run Neo4j full sync, dispatching to appropriate SDK version.
 pub async fn run_full(args: Neo4jFullArgs) -> anyhow::Result<()> {
     let sdk_version = get_sdk_version(
@@ -79,7 +93,7 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
 
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
-        source_database: args.database,
+        source_database: parse_composite_database(&args.database).0,
         source_username: args.username,
         source_password: args.password,
         labels: args.tables,
@@ -89,6 +103,7 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
         assumed_start_timestamp,
         allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
         id_property: args.id_property.clone(),
+        composite_constituent: parse_composite_database(&args.database).1,
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
@@ -200,7 +215,7 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
 
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
-        source_database: args.database,
+        source_database: parse_composite_database(&args.database).0,
         source_username: args.username,
         source_password: args.password,
         labels: args.tables,
@@ -210,6 +225,7 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
         assumed_start_timestamp,
         allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
         id_property: args.id_property.clone(),
+        composite_constituent: parse_composite_database(&args.database).1,
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
@@ -381,7 +397,7 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
 
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
-        source_database: args.database,
+        source_database: parse_composite_database(&args.database).0,
         source_username: args.username,
         source_password: args.password,
         labels: args.tables,
@@ -391,6 +407,7 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         assumed_start_timestamp,
         allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
         id_property: args.id_property.clone(),
+        composite_constituent: parse_composite_database(&args.database).1,
     };
 
     // Connect to SurrealDB using v2 SDK
@@ -514,7 +531,7 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
 
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
-        source_database: args.database,
+        source_database: parse_composite_database(&args.database).0,
         source_username: args.username,
         source_password: args.password,
         labels: args.tables,
@@ -524,6 +541,7 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         assumed_start_timestamp,
         allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
         id_property: args.id_property.clone(),
+        composite_constituent: parse_composite_database(&args.database).1,
     };
 
     // Connect to SurrealDB using v3 SDK
@@ -547,4 +565,30 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
 
     tracing::info!("Incremental sync completed successfully");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_composite_database_none() {
+        let (db, constituent) = parse_composite_database(&None);
+        assert_eq!(db, None);
+        assert_eq!(constituent, None);
+    }
+
+    #[test]
+    fn test_parse_composite_database_standard() {
+        let (db, constituent) = parse_composite_database(&Some("neo4j".to_string()));
+        assert_eq!(db, Some("neo4j".to_string()));
+        assert_eq!(constituent, None);
+    }
+
+    #[test]
+    fn test_parse_composite_database_composite_constituent() {
+        let (db, constituent) = parse_composite_database(&Some("composite.db1".to_string()));
+        assert_eq!(db, Some("composite".to_string()));
+        assert_eq!(constituent, Some("composite.db1".to_string()));
+    }
 }

@@ -14,6 +14,7 @@
 //! If you need to sync deletions, run periodic clean-ups and full syncs to ensure SurrealDB
 //! exactly matches Neo4j.
 
+use crate::full_sync::with_use_clause;
 use crate::neo4j_checkpoint::Neo4jCheckpoint;
 use crate::{Neo4jConversionContext, SourceOpts, SyncOpts};
 use async_trait::async_trait;
@@ -53,6 +54,8 @@ pub struct Neo4jIncrementalSource {
     id_property: String,
     /// Current timestamp position for incremental sync (as i64)
     current_timestamp: i64,
+    /// Optional composite database constituent for `USE` clause
+    composite_constituent: Option<String>,
 }
 
 impl Neo4jIncrementalSource {
@@ -64,6 +67,7 @@ impl Neo4jIncrementalSource {
         change_tracking_property: Option<String>,
         id_property: String,
         initial_timestamp: i64,
+        composite_constituent: Option<String>,
     ) -> anyhow::Result<Self> {
         let ctx = Neo4jConversionContext::new(neo4j_timezone, neo4j_json_properties)?;
         Ok(Neo4jIncrementalSource {
@@ -73,6 +77,7 @@ impl Neo4jIncrementalSource {
                 .unwrap_or_else(|| "updated_at".to_string()),
             id_property,
             current_timestamp: initial_timestamp,
+            composite_constituent,
         })
     }
 
@@ -90,6 +95,7 @@ impl Neo4jIncrementalSource {
             self.change_tracking_property.clone(),
             self.id_property.clone(),
             self.ctx.clone(),
+            self.composite_constituent.clone(),
         )))
     }
 
@@ -123,6 +129,8 @@ pub struct Neo4jChangeStream {
     change_buffer: Vec<IncrementalChange>,
     /// Whether we've finished reading all changes
     finished: bool,
+    /// Optional composite database constituent for `USE` clause
+    composite_constituent: Option<String>,
 }
 
 impl Neo4jChangeStream {
@@ -132,6 +140,7 @@ impl Neo4jChangeStream {
         change_tracking_property: String,
         id_property: String,
         ctx: Neo4jConversionContext,
+        composite_constituent: Option<String>,
     ) -> Self {
         Neo4jChangeStream {
             graph,
@@ -141,6 +150,7 @@ impl Neo4jChangeStream {
             ctx,
             change_buffer: Vec::new(),
             finished: false,
+            composite_constituent,
         }
     }
 
@@ -157,13 +167,16 @@ impl Neo4jChangeStream {
 
         let checkpoint_str = checkpoint_datetime.to_rfc3339();
 
-        let node_query = Query::new(format!(
-            "MATCH (n)
+        let node_query = Query::new(with_use_clause(
+            &format!(
+                "MATCH (n)
              WHERE n.{} > datetime($checkpoint)
              RETURN n, id(n) as node_id, labels(n) as labels
              ORDER BY n.{}
              LIMIT 100",
-            self.change_tracking_property, self.change_tracking_property
+                self.change_tracking_property, self.change_tracking_property
+            ),
+            &self.composite_constituent,
         ))
         .param("checkpoint", checkpoint_str.clone());
 
@@ -260,8 +273,9 @@ impl Neo4jChangeStream {
         }
 
         // Also query for relationship changes
-        let rel_query = Query::new(format!(
-            "MATCH (a)-[r]->(b)
+        let rel_query = Query::new(with_use_clause(
+            &format!(
+                "MATCH (a)-[r]->(b)
              WHERE r.{tracking} > datetime($checkpoint)
              RETURN r, id(r) as rel_id, type(r) as rel_type,
                     id(a) as start_id, id(b) as end_id,
@@ -270,8 +284,10 @@ impl Neo4jChangeStream {
                     'update' as operation
              ORDER BY r.{tracking}
              LIMIT 100",
-            tracking = self.change_tracking_property,
-            id_prop = self.id_property,
+                tracking = self.change_tracking_property,
+                id_prop = self.id_property,
+            ),
+            &self.composite_constituent,
         ))
         .param("checkpoint", checkpoint_str);
 
@@ -400,6 +416,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
         None,
         from_opts.id_property.clone(),
         initial_timestamp,
+        from_opts.composite_constituent.clone(),
     )?;
 
     // Start reading changes

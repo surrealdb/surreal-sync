@@ -300,7 +300,9 @@ struct Neo4jFullArgs {
     #[arg(long, env = "NEO4J_URI")]
     connection_string: String,
 
-    /// Neo4j database name
+    /// Neo4j database name. For composite database constituents, use
+    /// "composite.constituent" (e.g., "composite.db1") to automatically
+    /// route queries via USE clause.
     #[arg(long, env = "NEO4J_DATABASE")]
     database: Option<String>,
 
@@ -375,7 +377,9 @@ struct Neo4jIncrementalArgs {
     #[arg(long, env = "NEO4J_URI")]
     connection_string: String,
 
-    /// Neo4j database name
+    /// Neo4j database name. For composite database constituents, use
+    /// "composite.constituent" (e.g., "composite.db1") to automatically
+    /// route queries via USE clause.
     #[arg(long, env = "NEO4J_DATABASE")]
     database: Option<String>,
 
