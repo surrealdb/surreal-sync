@@ -33,7 +33,38 @@ use crate::SourceOpts;
 const AUDIT_TABLE: &str = "surreal_sync_changes";
 
 /// The dedicated signal table watermark rows are written into.
-const SIGNAL_TABLE: &str = "surreal_sync_signal";
+pub(crate) const SIGNAL_TABLE: &str = "surreal_sync_signal";
+
+/// `kind` value identifying an ad-hoc `execute-snapshot` request row (as
+/// opposed to a `low`/`high` watermark row).
+const EXECUTE_SNAPSHOT_KIND: &str = "execute-snapshot";
+
+/// SQL that creates the signal table. The same statement is used by the
+/// watermark source and the ad-hoc `snapshot` command so the schema is
+/// identical regardless of which runs first.
+///
+/// The table holds two unambiguous kinds of rows, distinguished by `kind`:
+/// `low`/`high` watermark rows (their inserts flow through the change stream),
+/// and `execute-snapshot` request rows (polled directly via `read_signals`).
+pub(crate) fn create_signal_table_sql() -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {SIGNAL_TABLE} (\
+            id UUID PRIMARY KEY, \
+            kind TEXT NOT NULL, \
+            tables TEXT, \
+            consumed BOOLEAN NOT NULL DEFAULT FALSE)"
+    )
+}
+
+/// The current low/high watermark UUIDs, so only the active watermark pair is
+/// surfaced from the change stream; all other signal-table rows (stale
+/// watermarks, `execute-snapshot` requests, consumed-flag updates) are consumed
+/// silently and never applied to the sink.
+#[derive(Default)]
+struct WatermarkIds {
+    low: Option<Uuid>,
+    high: Option<Uuid>,
+}
 
 /// A [`WatermarkSource`] backed by the PostgreSQL trigger audit table.
 ///
@@ -54,6 +85,8 @@ pub struct PostgresTriggerWatermarkSource {
     /// stream. Pruning never advances past this, so unconsumed audit rows are
     /// never dropped.
     last_consumed: i64,
+    /// The current low/high watermark UUIDs (see [`WatermarkIds`]).
+    watermarks: std::sync::Mutex<WatermarkIds>,
 }
 
 impl PostgresTriggerWatermarkSource {
@@ -69,10 +102,7 @@ impl PostgresTriggerWatermarkSource {
         // sequence_id.
         {
             let c = client.lock().await;
-            c.simple_query(&format!(
-                "CREATE TABLE IF NOT EXISTS {SIGNAL_TABLE} (id UUID PRIMARY KEY, kind TEXT NOT NULL)"
-            ))
-            .await?;
+            c.simple_query(&create_signal_table_sql()).await?;
         }
 
         // Enumerate user tables. `get_user_tables` already excludes every
@@ -90,6 +120,13 @@ impl PostgresTriggerWatermarkSource {
             let c = client.lock().await;
             for table in &user_tables {
                 let pk_columns = surreal_sync_postgresql::get_primary_key_columns(&c, table).await?;
+                if pk_columns.is_empty() {
+                    anyhow::bail!(
+                        "Table '{table}' has no primary key; the snapshot-stream strategy requires \
+                         a primary key on every table. Re-run with --strategy bulk to copy this \
+                         source without watermark snapshots."
+                    );
+                }
                 tables.push(TableSpec::new(table.clone(), pk_columns));
             }
         }
@@ -117,6 +154,7 @@ impl PostgresTriggerWatermarkSource {
             tables,
             schema,
             last_consumed: 0,
+            watermarks: std::sync::Mutex::new(WatermarkIds::default()),
         })
     }
 
@@ -190,13 +228,20 @@ impl WatermarkSource for PostgresTriggerWatermarkSource {
             WatermarkKind::Low => "low".to_string(),
             WatermarkKind::High => "high".to_string(),
         };
-        let client = self.client.lock().await;
-        client
-            .execute(
-                &format!("INSERT INTO {SIGNAL_TABLE} (id, kind) VALUES ($1, $2)"),
-                &[&id, &kind_str],
-            )
-            .await?;
+        {
+            let client = self.client.lock().await;
+            client
+                .execute(
+                    &format!("INSERT INTO {SIGNAL_TABLE} (id, kind) VALUES ($1, $2)"),
+                    &[&id, &kind_str],
+                )
+                .await?;
+        }
+        let mut guard = self.watermarks.lock().expect("watermark lock poisoned");
+        match kind {
+            WatermarkKind::Low => guard.low = Some(id),
+            WatermarkKind::High => guard.high = Some(id),
+        }
         Ok(())
     }
 
@@ -207,6 +252,21 @@ impl WatermarkSource for PostgresTriggerWatermarkSource {
                     self.last_consumed = sequence_id;
                 }
                 let pk = pk_from_change(&change);
+
+                // Signal-table rows that are not the active watermark pair
+                // (stale watermarks, `execute-snapshot` requests, consumed-flag
+                // updates) are consumed silently so they are pruned but never
+                // applied to the sink.
+                if change.table == SIGNAL_TABLE {
+                    let is_active_watermark = pk.single_uuid().is_some_and(|id| {
+                        let guard = self.watermarks.lock().expect("watermark lock poisoned");
+                        Some(id) == guard.low || Some(id) == guard.high
+                    });
+                    if !is_active_watermark {
+                        return Ok(Vec::new());
+                    }
+                }
+
                 Ok(vec![StreamEvent {
                     position: sequence_id,
                     table: change.table.clone(),
@@ -242,8 +302,80 @@ impl WatermarkSource for PostgresTriggerWatermarkSource {
     }
 
     async fn read_signals(&mut self) -> Result<Vec<SnapshotSignal>> {
-        Ok(Vec::new())
+        let client = self.client.lock().await;
+        let rows = client
+            .query(
+                &format!(
+                    "SELECT id, tables FROM {SIGNAL_TABLE} \
+                     WHERE kind = $1 AND consumed = FALSE ORDER BY id"
+                ),
+                &[&EXECUTE_SNAPSHOT_KIND],
+            )
+            .await?;
+
+        let mut signals = Vec::new();
+        for row in &rows {
+            let id: Uuid = row.get(0);
+            let tables_json: Option<String> = row.get(1);
+            let tables = parse_signal_tables(tables_json.as_deref());
+            client
+                .execute(
+                    &format!("UPDATE {SIGNAL_TABLE} SET consumed = TRUE WHERE id = $1"),
+                    &[&id],
+                )
+                .await?;
+            signals.push(SnapshotSignal {
+                id: id.to_string(),
+                tables,
+            });
+        }
+        Ok(signals)
     }
+
+    async fn resolve_tables(&self, names: &[String]) -> Result<Vec<TableSpec>> {
+        let client = self.client.lock().await;
+        let mut specs = Vec::with_capacity(names.len());
+        for name in names {
+            if name == SIGNAL_TABLE || name == AUDIT_TABLE {
+                continue;
+            }
+            let pk_columns = surreal_sync_postgresql::get_primary_key_columns(&client, name).await?;
+            if pk_columns.is_empty() {
+                anyhow::bail!(
+                    "Table '{name}' requested by an execute-snapshot signal has no primary key; \
+                     watermark snapshots require a primary key (use --strategy bulk for such tables)"
+                );
+            }
+            specs.push(TableSpec::new(name.clone(), pk_columns));
+        }
+        Ok(specs)
+    }
+}
+
+/// Parse the `tables` payload stored on an `execute-snapshot` signal row. The
+/// payload is a JSON array of table names; a missing or invalid payload yields
+/// no tables.
+fn parse_signal_tables(payload: Option<&str>) -> Vec<String> {
+    payload
+        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default()
+}
+
+/// Insert an ad-hoc `execute-snapshot` signal row requesting `tables` be
+/// snapshotted by a running watermark sync. Connects, ensures the signal table
+/// exists, and inserts a single request row.
+pub async fn request_snapshot(from_opts: &SourceOpts, tables: &[String]) -> Result<()> {
+    let client = surreal_sync_postgresql::new_postgresql_client(&from_opts.source_uri).await?;
+    let c = client.lock().await;
+    c.simple_query(&create_signal_table_sql()).await?;
+    let id = Uuid::new_v4();
+    let tables_json = serde_json::to_string(tables)?;
+    c.execute(
+        &format!("INSERT INTO {SIGNAL_TABLE} (id, kind, tables, consumed) VALUES ($1, $2, $3, FALSE)"),
+        &[&id, &EXECUTE_SNAPSHOT_KIND, &tables_json],
+    )
+    .await?;
+    Ok(())
 }
 
 /// Run a watermark snapshot+stream full sync of every primary-keyed user table

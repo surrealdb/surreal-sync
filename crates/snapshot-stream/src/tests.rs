@@ -228,6 +228,15 @@ impl WatermarkSource for MockSource {
     async fn read_signals(&mut self) -> Result<Vec<SnapshotSignal>> {
         Ok(Vec::new())
     }
+
+    async fn resolve_tables(&self, names: &[String]) -> Result<Vec<TableSpec>> {
+        Ok(self
+            .snapshot_tables()
+            .await?
+            .into_iter()
+            .filter(|spec| names.iter().any(|n| n == &spec.table))
+            .collect())
+    }
 }
 
 // ---------------------------------------------------------------------------

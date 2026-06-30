@@ -62,4 +62,14 @@ pub trait WatermarkSource: Send {
     /// Return any pending ad-hoc snapshot signals. Backends without signalling
     /// support may return an empty vector.
     async fn read_signals(&mut self) -> Result<Vec<SnapshotSignal>>;
+
+    /// Resolve a set of table names (as carried by an ad-hoc
+    /// [`SnapshotSignal`]) into [`TableSpec`]s with their ordered primary key
+    /// columns, so the framework can snapshot tables that were not part of the
+    /// initial [`snapshot_tables`](WatermarkSource::snapshot_tables) set.
+    ///
+    /// Backends without signalling support (whose
+    /// [`read_signals`](WatermarkSource::read_signals) returns no signals) can
+    /// simply return an empty vector.
+    async fn resolve_tables(&self, names: &[String]) -> Result<Vec<TableSpec>>;
 }

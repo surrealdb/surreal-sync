@@ -16,7 +16,9 @@ pub use incremental_sync::{
     run_incremental_sync, ChangeStream, IncrementalSource, PostgresChangeStream,
     PostgresIncrementalSource,
 };
-pub use snapshot_stream::{run_snapshot_stream_full_sync, PostgresTriggerWatermarkSource};
+pub use snapshot_stream::{
+    request_snapshot, run_snapshot_stream_full_sync, PostgresTriggerWatermarkSource,
+};
 
 /// PostgreSQL source connection options (trigger-specific)
 #[derive(Clone, Debug)]

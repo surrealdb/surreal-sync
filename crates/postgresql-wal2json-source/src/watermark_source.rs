@@ -49,6 +49,39 @@ use crate::logical_replication::{Client, Slot};
 /// set of tables to snapshot.
 pub const SIGNAL_TABLE: &str = "surreal_sync_signal";
 
+/// `kind` value identifying an ad-hoc `execute-snapshot` request row (as
+/// opposed to a `low`/`high` watermark row).
+const EXECUTE_SNAPSHOT_KIND: &str = "execute-snapshot";
+
+/// SQL that creates the signal table, shared by the watermark source and the
+/// ad-hoc `snapshot` command so the schema is identical regardless of which
+/// runs first.
+///
+/// The table holds two unambiguous kinds of rows, distinguished by `kind`:
+/// `low`/`high` watermark rows (captured by the slot so they reappear in the
+/// change stream) and `execute-snapshot` request rows (polled directly via
+/// `read_signals`). FULL replica identity makes wal2json emit the primary key
+/// for every operation.
+pub(crate) fn create_signal_table_sql(signal_table: &str) -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {signal_table} (\
+            id UUID PRIMARY KEY, \
+            kind TEXT NOT NULL, \
+            tables TEXT, \
+            consumed BOOLEAN NOT NULL DEFAULT FALSE);
+         ALTER TABLE {signal_table} REPLICA IDENTITY FULL;"
+    )
+}
+
+/// The current low/high watermark UUIDs, so only the active watermark pair is
+/// surfaced from the change stream; all other signal-table rows are consumed
+/// silently and never applied to the sink.
+#[derive(Default)]
+struct WatermarkIds {
+    low: Option<Uuid>,
+    high: Option<Uuid>,
+}
+
 /// A PostgreSQL Log Sequence Number, ordered numerically.
 ///
 /// PostgreSQL prints an LSN as `segment/offset` in hexadecimal (e.g.
@@ -158,6 +191,8 @@ pub struct Wal2JsonWatermarkSource {
     /// Cache of primary-key column type OIDs per table, used to coerce keyset
     /// cursor integer widths to the actual column types.
     pk_type_cache: Mutex<HashMap<String, HashMap<String, u32>>>,
+    /// The current low/high watermark UUIDs (see [`WatermarkIds`]).
+    watermarks: Mutex<WatermarkIds>,
 }
 
 /// PostgreSQL type OIDs for the integer types whose width must match the bound
@@ -202,10 +237,7 @@ impl Wal2JsonWatermarkSource {
         // wal2json emit the primary key for every operation.
         client
             .pg_client()
-            .batch_execute(&format!(
-                "CREATE TABLE IF NOT EXISTS {signal_table} (id UUID PRIMARY KEY, kind TEXT NOT NULL);
-                 ALTER TABLE {signal_table} REPLICA IDENTITY FULL;"
-            ))
+            .batch_execute(&create_signal_table_sql(signal_table))
             .await
             .context("Failed to ensure signal table exists")?;
 
@@ -233,6 +265,7 @@ impl Wal2JsonWatermarkSource {
             returned_since_advance: 0,
             last_advanced: None,
             pk_type_cache: Mutex::new(HashMap::new()),
+            watermarks: Mutex::new(WatermarkIds::default()),
         })
     }
 
@@ -368,6 +401,13 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
             let pk_columns =
                 surreal_sync_postgresql::get_primary_key_columns(self.client.pg_client(), &table)
                     .await?;
+            if pk_columns.is_empty() {
+                anyhow::bail!(
+                    "Table '{table}' has no primary key; the snapshot-stream strategy requires a \
+                     primary key on every table. Re-run with --strategy bulk to copy this source \
+                     without watermark snapshots."
+                );
+            }
             specs.push(TableSpec::new(table, pk_columns));
         }
         Ok(specs)
@@ -410,6 +450,11 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
             .execute(&query, &[&id])
             .await
             .context("Failed to insert watermark row")?;
+        let mut guard = self.watermarks.lock().await;
+        match kind {
+            WatermarkKind::Low => guard.low = Some(id),
+            WatermarkKind::High => guard.high = Some(id),
+        }
         Ok(())
     }
 
@@ -425,6 +470,15 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
             Lsn::parse(&nextlsn)?
         };
 
+        // Snapshot the active watermark pair once for this batch so signal-table
+        // rows that are not the current low/high (stale watermarks,
+        // `execute-snapshot` requests, consumed-flag updates) are consumed
+        // silently and never applied to the sink.
+        let (low, high) = {
+            let guard = self.watermarks.lock().await;
+            (guard.low, guard.high)
+        };
+
         // The peek returns committed changes in commit order from the slot's
         // restart point; the prefix is stable across calls until the slot is
         // advanced. Skip the changes already surfaced and emit the rest, so a
@@ -433,12 +487,20 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
         let mut out = Vec::new();
         for change in changes.iter().skip(self.returned_since_advance) {
             if let Some((table, pk, change)) = action_to_event(&change.action) {
-                out.push(StreamEvent {
-                    position,
-                    table,
-                    pk,
-                    change,
-                });
+                let emit = if table == self.signal_table {
+                    pk.single_uuid()
+                        .is_some_and(|id| Some(id) == low || Some(id) == high)
+                } else {
+                    true
+                };
+                if emit {
+                    out.push(StreamEvent {
+                        position,
+                        table,
+                        pk,
+                        change,
+                    });
+                }
             }
             self.returned_since_advance += 1;
         }
@@ -476,8 +538,97 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
     }
 
     async fn read_signals(&mut self) -> Result<Vec<SnapshotSignal>> {
-        Ok(Vec::new())
+        let rows = self
+            .client
+            .pg_client()
+            .query(
+                &format!(
+                    "SELECT id, tables FROM {} WHERE kind = $1 AND consumed = FALSE ORDER BY id",
+                    self.signal_table
+                ),
+                &[&EXECUTE_SNAPSHOT_KIND],
+            )
+            .await
+            .context("Failed to read execute-snapshot signals")?;
+
+        let mut signals = Vec::new();
+        for row in &rows {
+            let id: Uuid = row.get(0);
+            let tables_json: Option<String> = row.get(1);
+            let tables = parse_signal_tables(tables_json.as_deref());
+            self.client
+                .pg_client()
+                .execute(
+                    &format!(
+                        "UPDATE {} SET consumed = TRUE WHERE id = $1",
+                        self.signal_table
+                    ),
+                    &[&id],
+                )
+                .await?;
+            signals.push(SnapshotSignal {
+                id: id.to_string(),
+                tables,
+            });
+        }
+        Ok(signals)
     }
+
+    async fn resolve_tables(&self, names: &[String]) -> Result<Vec<TableSpec>> {
+        let mut specs = Vec::with_capacity(names.len());
+        for name in names {
+            if name == &self.signal_table {
+                continue;
+            }
+            let pk_columns =
+                surreal_sync_postgresql::get_primary_key_columns(self.client.pg_client(), name)
+                    .await?;
+            if pk_columns.is_empty() {
+                anyhow::bail!(
+                    "Table '{name}' requested by an execute-snapshot signal has no primary key; \
+                     watermark snapshots require a primary key (use --strategy bulk for such tables)"
+                );
+            }
+            specs.push(TableSpec::new(name.clone(), pk_columns));
+        }
+        Ok(specs)
+    }
+}
+
+/// Parse the `tables` payload (a JSON array of table names) stored on an
+/// `execute-snapshot` signal row. A missing or invalid payload yields no
+/// tables.
+fn parse_signal_tables(payload: Option<&str>) -> Vec<String> {
+    payload
+        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default()
+}
+
+/// Insert an ad-hoc `execute-snapshot` signal row requesting `tables` be
+/// snapshotted by a running watermark sync. Connects, ensures the signal table
+/// exists, and inserts a single request row that the running sync will pick up
+/// via [`WatermarkSource::read_signals`].
+pub async fn request_snapshot(from_opts: &SourceOpts, tables: &[String]) -> Result<()> {
+    let (pg, connection) = tokio_postgres::connect(&from_opts.connection_string, NoTls).await?;
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            eprintln!("PostgreSQL connection error: {e}");
+        }
+    });
+    pg.batch_execute(&create_signal_table_sql(SIGNAL_TABLE))
+        .await
+        .context("Failed to ensure signal table exists")?;
+    let id = Uuid::new_v4();
+    let tables_json = serde_json::to_string(tables)?;
+    pg.execute(
+        &format!(
+            "INSERT INTO {SIGNAL_TABLE} (id, kind, tables, consumed) VALUES ($1, $2, $3, FALSE)"
+        ),
+        &[&id, &EXECUTE_SNAPSHOT_KIND, &tables_json],
+    )
+    .await
+    .context("Failed to insert execute-snapshot signal row")?;
+    Ok(())
 }
 
 /// Run a watermark snapshot+stream full sync from PostgreSQL to SurrealDB.

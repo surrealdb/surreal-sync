@@ -135,6 +135,9 @@ surreal-sync-postgresql = { path = "crates/postgresql" }
 
 # Watermark-based snapshot+stream full-sync framework
 surreal-sync-snapshot-stream = { path = "crates/snapshot-stream" }
+
+# Version-independent sink trait (used by the snapshot-stream orchestrator)
+surreal-sink = { path = "crates/surreal-sink" }
 libc = "0.2.183"
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 

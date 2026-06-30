@@ -7282,6 +7282,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "surreal-sink",
  "surreal-sync-csv-source",
  "surreal-sync-jsonl-source",
  "surreal-sync-kafka-producer",

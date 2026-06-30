@@ -42,6 +42,28 @@ const AUDIT_TABLE: &str = "surreal_sync_changes";
 /// Dedicated table whose inserts emit ordered watermark positions in the stream.
 const SIGNAL_TABLE: &str = "surreal_sync_signal";
 
+/// `kind` value identifying an ad-hoc `execute-snapshot` request row (as
+/// opposed to a `low`/`high` watermark row).
+const EXECUTE_SNAPSHOT_KIND: &str = "execute-snapshot";
+
+/// SQL that creates the signal table, shared by the watermark source and the
+/// ad-hoc `snapshot` command so the schema is identical regardless of which
+/// runs first.
+///
+/// The table holds two unambiguous kinds of rows, distinguished by `kind`:
+/// `low`/`high` watermark rows (their inserts flow through the audit stream so
+/// the framework detects its watermarks) and `execute-snapshot` request rows
+/// (polled directly via `read_signals`).
+fn create_signal_table_sql() -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {SIGNAL_TABLE} (\
+            id CHAR(36) PRIMARY KEY, \
+            kind VARCHAR(32) NOT NULL DEFAULT 'watermark', \
+            tables TEXT NULL, \
+            consumed TINYINT(1) NOT NULL DEFAULT 0)"
+    )
+}
+
 /// Per-table schema-aware row-conversion settings (boolean / SET columns).
 #[derive(Default, Clone)]
 struct TableConversion {
@@ -57,9 +79,14 @@ struct TableConversion {
 /// in stream order.
 pub struct MySqlWatermarkSource {
     pool: Pool,
+    /// Database name, used to resolve primary keys for ad-hoc snapshot tables.
+    database: String,
     schema: DatabaseSchema,
     tables: Vec<TableSpec>,
-    pk_by_table: HashMap<String, Vec<String>>,
+    /// Primary key columns per table. Behind a mutex so ad-hoc
+    /// `execute-snapshot` requests can register the primary key of a table that
+    /// was not part of the initial snapshot set.
+    pk_by_table: Mutex<HashMap<String, Vec<String>>>,
     conversion_by_table: HashMap<String, TableConversion>,
     /// Highest audit `sequence_id` delivered through [`Self::next_stream_events`]
     /// so far. Reads are resumed strictly after this, and it is the position the
@@ -87,10 +114,7 @@ impl MySqlWatermarkSource {
 
         // Create the signal table before installing triggers so it gets its own
         // change-tracking trigger writing ordered watermark positions.
-        conn.query_drop(format!(
-            "CREATE TABLE IF NOT EXISTS {SIGNAL_TABLE} (id CHAR(36) PRIMARY KEY)"
-        ))
-        .await?;
+        conn.query_drop(create_signal_table_sql()).await?;
 
         setup_mysql_change_tracking(&mut conn, &database).await?;
 
@@ -116,9 +140,10 @@ impl MySqlWatermarkSource {
 
         Ok(Self {
             pool,
+            database,
             schema,
             tables,
-            pk_by_table,
+            pk_by_table: Mutex::new(pk_by_table),
             conversion_by_table,
             last_sequence_id: AtomicI64::new(starting),
             watermarks: Mutex::new(WatermarkIds::default()),
@@ -257,10 +282,14 @@ impl WatermarkSource for MySqlWatermarkSource {
     }
 
     async fn write_watermark(&self, kind: WatermarkKind, id: Uuid) -> Result<()> {
+        let kind_str = match kind {
+            WatermarkKind::Low => "low",
+            WatermarkKind::High => "high",
+        };
         let mut conn = self.pool.get_conn().await?;
         conn.exec_drop(
-            format!("INSERT INTO {SIGNAL_TABLE} (id) VALUES (?)"),
-            (id.to_string(),),
+            format!("INSERT INTO {SIGNAL_TABLE} (id, kind) VALUES (?, ?)"),
+            (id.to_string(), kind_str),
         )
         .await?;
 
@@ -328,11 +357,15 @@ impl WatermarkSource for MySqlWatermarkSource {
                 continue;
             }
 
-            let pk_columns = self
-                .pk_by_table
-                .get(&table_name)
-                .ok_or_else(|| anyhow!("no primary key columns known for table '{table_name}'"))?
-                .clone();
+            let pk_columns = {
+                let guard = self.pk_by_table.lock().expect("pk_by_table lock poisoned");
+                guard
+                    .get(&table_name)
+                    .ok_or_else(|| {
+                        anyhow!("no primary key columns known for table '{table_name}'")
+                    })?
+                    .clone()
+            };
 
             let (pk, id) = self.pk_and_id(&table_name, &pk_columns, &row_id)?;
 
@@ -373,8 +406,81 @@ impl WatermarkSource for MySqlWatermarkSource {
     }
 
     async fn read_signals(&mut self) -> Result<Vec<SnapshotSignal>> {
-        Ok(Vec::new())
+        let mut conn = self.pool.get_conn().await?;
+        let rows: Vec<Row> = conn
+            .exec(
+                format!(
+                    "SELECT id, tables FROM {SIGNAL_TABLE} \
+                     WHERE kind = ? AND consumed = 0 ORDER BY id"
+                ),
+                (EXECUTE_SNAPSHOT_KIND,),
+            )
+            .await?;
+
+        let mut signals = Vec::new();
+        for row in rows {
+            let id: String = row.get(0).ok_or_else(|| anyhow!("missing signal id"))?;
+            let tables_json: Option<String> = row.get(1);
+            let tables = parse_signal_tables(tables_json.as_deref());
+            conn.exec_drop(
+                format!("UPDATE {SIGNAL_TABLE} SET consumed = 1 WHERE id = ?"),
+                (id.clone(),),
+            )
+            .await?;
+            signals.push(SnapshotSignal { id, tables });
+        }
+        Ok(signals)
     }
+
+    async fn resolve_tables(&self, names: &[String]) -> Result<Vec<TableSpec>> {
+        let mut conn = self.pool.get_conn().await?;
+        let mut specs = Vec::with_capacity(names.len());
+        for name in names {
+            if name == SIGNAL_TABLE || name == AUDIT_TABLE {
+                continue;
+            }
+            let pk_columns = get_primary_key_columns(&mut conn, &self.database, name).await?;
+            if pk_columns.is_empty() {
+                return Err(anyhow!(
+                    "Table '{name}' requested by an execute-snapshot signal has no primary key; \
+                     watermark snapshots require a primary key (use --strategy bulk for such tables)"
+                ));
+            }
+            self.pk_by_table
+                .lock()
+                .expect("pk_by_table lock poisoned")
+                .insert(name.clone(), pk_columns.clone());
+            specs.push(TableSpec::new(name.clone(), pk_columns));
+        }
+        Ok(specs)
+    }
+}
+
+/// Parse the `tables` payload (a JSON array of table names) stored on an
+/// `execute-snapshot` signal row. A missing or invalid payload yields no
+/// tables.
+fn parse_signal_tables(payload: Option<&str>) -> Vec<String> {
+    payload
+        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default()
+}
+
+/// Insert an ad-hoc `execute-snapshot` signal row requesting `tables` be
+/// snapshotted by a running watermark sync. Connects, ensures the signal table
+/// exists, and inserts a single request row that the running sync will pick up
+/// via [`WatermarkSource::read_signals`].
+pub async fn request_snapshot(pool: Pool, database: String, tables: &[String]) -> Result<()> {
+    let mut conn = pool.get_conn().await?;
+    conn.query_drop(format!("USE `{database}`")).await?;
+    conn.query_drop(create_signal_table_sql()).await?;
+    let id = Uuid::new_v4().to_string();
+    let tables_json = serde_json::to_string(tables)?;
+    conn.exec_drop(
+        format!("INSERT INTO {SIGNAL_TABLE} (id, kind, tables, consumed) VALUES (?, ?, ?, 0)"),
+        (id, EXECUTE_SNAPSHOT_KIND, tables_json),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Run a watermark snapshot+stream sync for MySQL, returning the final audit

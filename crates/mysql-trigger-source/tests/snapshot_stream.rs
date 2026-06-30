@@ -427,3 +427,87 @@ async fn test_mysql_snapshot_stream_bounded_retention() -> Result<()> {
     container.stop()?;
     Ok(())
 }
+
+/// Ad-hoc snapshot: an `execute-snapshot` signal requests a table that was not
+/// part of the initial snapshot set (it is created after the sync starts). The
+/// running snapshot loop must pick the signal up, resolve the table, and copy
+/// it with the same watermark-window machinery without interrupting the stream.
+#[tokio::test]
+async fn test_mysql_adhoc_snapshot_adds_table_mid_stream() -> Result<()> {
+    init_logging();
+
+    let mut container = MySQLContainer::new("test-ss-adhoc");
+    container.start()?;
+    container.wait_until_ready(60).await?;
+
+    let pool = Pool::from_url(&container.connection_string)?;
+
+    // Only `items` exists when the sync starts, so it is the sole table in the
+    // initial snapshot set.
+    {
+        let mut conn = pool.get_conn().await?;
+        conn.query_drop("CREATE TABLE items (id INT PRIMARY KEY, val INT)")
+            .await?;
+        for i in 1..=20 {
+            conn.exec_drop("INSERT INTO items (id, val) VALUES (?, ?)", (i, i * 10))
+                .await?;
+        }
+    }
+
+    let mut source = MySqlWatermarkSource::new(pool.clone(), "testdb".to_string()).await?;
+    let initial: Vec<String> = source
+        .snapshot_tables()
+        .await?
+        .into_iter()
+        .map(|t| t.table)
+        .collect();
+    assert_eq!(
+        initial,
+        vec!["items".to_string()],
+        "ad-hoc table must not be part of the initial snapshot set"
+    );
+
+    // An operator introduces a brand-new table after the sync has started and
+    // requests an ad-hoc snapshot of it via an execute-snapshot signal.
+    {
+        let mut conn = pool.get_conn().await?;
+        conn.query_drop("CREATE TABLE extra (id INT PRIMARY KEY, score INT)")
+            .await?;
+        for i in 1..=15 {
+            conn.exec_drop("INSERT INTO extra (id, score) VALUES (?, ?)", (i, i * 7))
+                .await?;
+        }
+    }
+    surreal_sync_mysql_trigger_source::request_snapshot(
+        Pool::from_url(&container.connection_string)?,
+        "testdb".to_string(),
+        &["extra".to_string()],
+    )
+    .await?;
+
+    let sink = MemSink::default();
+    let config = SnapshotStreamConfig { chunk_size: 8 };
+    let result = run_snapshot_stream(&mut source, &sink, &config, &mut NoopCheckpointer).await?;
+
+    // Bounded memory holds across both the initial and the ad-hoc table.
+    assert!(result.peak_buffered_rows <= config.chunk_size);
+
+    // The initial table is fully snapshotted.
+    let items_expected = source_value_map(&pool, "items", &["id".to_string()], "val").await?;
+    let items_actual = sink.value_map("items", "val").await;
+    assert_eq!(items_actual, items_expected, "parity mismatch for 'items'");
+    assert_eq!(items_expected.len(), 20);
+
+    // The ad-hoc requested table was discovered mid-stream and fully copied.
+    let extra_expected = source_value_map(&pool, "extra", &["id".to_string()], "score").await?;
+    let extra_actual = sink.value_map("extra", "score").await;
+    assert_eq!(
+        extra_actual, extra_expected,
+        "parity mismatch for ad-hoc table 'extra'"
+    );
+    assert_eq!(extra_expected.len(), 15);
+
+    pool.disconnect().await?;
+    container.stop()?;
+    Ok(())
+}
