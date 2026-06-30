@@ -6,19 +6,18 @@ It supports inconsistent full syncs and consistent incremental syncs, and togeth
 
 ## How It Works
 
-`surreal-sync from postgresql-trigger` supports two types of syncs, `full` and `incremental`.
+`surreal-sync from postgresql-trigger` supports `full`, `incremental`, a combined `sync`, and an ad-hoc `snapshot` command.
 
-The full sync uses standard PostgreSQL queries to dump the table rows. As you may already know, it does not guarantee something like "snapshot isolation at the table or the database level".
+Change capture is trigger-based: an audit table (`surreal_sync_changes`) populated by per-table triggers provides resumable, sequence-based checkpointing. A potential alternative to this approach is to read and parse WAL and replay changes recorded in the WAL (see the [wal2json source](postgresql-wal2json-source.md)). We opted for the trigger-based approach believing it's more reliable from the application perspective because you don't need to rely on less mature WAL reading/parsing libraries.
 
-A full sync result can contain various versions of rows contained in the source PostgreSQL tables, from the starting time to the ending time of the full sync.
+Full sync offers two strategies, selected with `--strategy`:
 
-The incremental sync uses a trigger-based approach with an audit table to capture changes. It provides a resumable change capture by tracking changes in a separate table and using sequence-based checkpointing.
+- **`snapshot-stream` (default)** — A DBLog-style watermark snapshot interleaved with the trigger change stream. Tables are copied in primary-key-ordered, resumable chunks (`--chunk-size`) while the audit-table stream is consumed concurrently; watermark windows reconcile snapshot reads against live changes (the log event wins). The result converges to a consistent image at the end position (≈ t2) and then keeps tracking live — it is **not** a frozen t1 snapshot. It uses bounded memory (O(chunk_size)) and prunes consumed rows from `surreal_sync_changes` as it goes, so the audit table does not grow for the whole snapshot. It requires a primary key on every selected table and writes a small `surreal_sync_signal` table to the source.
+- **`bulk`** — The original strategy: a monolithic `SELECT *` per table bracketed by t1/t2 checkpoints. The dump can mix row versions between t1 and t2, so a separate `incremental` run from t1 is required to make the target consistent at t2. Use this when a table has no usable primary key, or when writing the signal table to the source is not permitted.
 
-A potential alternative to this approach is to read and parse WAL and reply changes recorded in the WAL.
+See [Full Sync Strategies](design.md#full-sync-strategies) for the side-by-side comparison and the consistency guarantee.
 
-We opted to use the trigger-based approach believing it's more reliable from the application perspective because you don't need to explore less mature WAL reading/parsing libraries/code/etc.
-
-But we may build an alternative PostgreSQL incremental sync backend that relies on WAL.
+**Behavior change for existing users:** `snapshot-stream` is now the default. Compared to the previous behavior, it creates a `surreal_sync_signal` table on the source and requires every selected table to have a primary key. Pass `--strategy bulk` to keep the previous monolithic full-sync behavior.
 
 ## Prerequisites
 
@@ -34,7 +33,7 @@ You can start a full sync via the `surreal-sync from postgresql-trigger full` co
 export CONNECTION_STRING="postgresql://postgres:postgres@postgresql:5432/myapp"
 export SURREAL_ENDPOINT="ws://localhost:8000"
 
-# Full sync (automatically sets up triggers for incremental sync)
+# Full sync (snapshot-stream by default; automatically sets up triggers for incremental sync)
 surreal-sync from postgresql-trigger full \
   # Source = PostgreSQL settings
   --connection-string "$CONNECTION_STRING" \
@@ -44,12 +43,30 @@ surreal-sync from postgresql-trigger full \
   --surreal-password "root" \
   --to-namespace "production" \
   --to-database "migrated_data" \
-  --emit-checkpoints
+  --checkpoint-dir ".surreal-sync-checkpoints"
 ```
 
-`--emit-checkpoints` is optional but necessary when you want to start incremental syncs after the full sync to enable the command to know where to continue the sync.
+By default this runs the `snapshot-stream` strategy. The emitted checkpoint is the consistent end position; an `incremental` run started from it continues live tracking. You can tune the keyset chunk with `--chunk-size <N>` (default 1024).
 
-A `surreal-sync` with the `emit-checkpoints` flag will produce logs like the below:
+To use the original monolithic strategy instead, add `--strategy bulk`:
+
+```bash
+surreal-sync from postgresql-trigger full \
+  --connection-string "$CONNECTION_STRING" \
+  --strategy bulk \
+  --surreal-endpoint "$SURREAL_ENDPOINT" \
+  --surreal-username "root" \
+  --surreal-password "root" \
+  --to-namespace "production" \
+  --to-database "migrated_data" \
+  --checkpoint-dir ".surreal-sync-checkpoints"
+```
+
+For the bulk strategy the emitted checkpoints follow the t1/t2 model described below.
+
+Checkpoint emission is enabled by providing a checkpoint store — either `--checkpoint-dir <DIR>` (filesystem) or `--checkpoints-surreal-table <TABLE>` (stored in SurrealDB). It is necessary when you want to start incremental syncs after the full sync, so the command knows where to continue the sync.
+
+A `surreal-sync` with a checkpoint store configured will produce logs like the below:
 
 ```
 INFO surreal_sync::postgresql_trigger_source: Emitted full sync start checkpoint (t1): 0
@@ -58,11 +75,9 @@ INFO surreal_sync::postgresql_trigger_source: Emitted full sync end checkpoint (
 
 The checkpoint format is just the sequence ID number (e.g., `"123"`), not a prefixed string.
 
-To continue incremental sync after this full sync, you need to specify t1 (not t2) as the starting point for incremental sync.
+With the **bulk** strategy you must specify t1 (not t2) as the starting point for incremental sync. This corresponds to the fact that bulk full sync produces an inconsistent snapshot of the PostgreSQL tables, due to the nature of PostgreSQL's isolation guarantee. By reading and applying changes made since t1 instead of t2, when the incremental sync writes all the changes up to t2, the target SurrealDB tables can be viewed as consistent with the source tables at t2.
 
-This corresponds to the fact that the `surreal-sync from postgresql-trigger`'s full sync produces an inconsistent snapshot of the PostgreSQL tables, due to the nature of PostgreSQL's isolation guarantee.
-
-By reading and applying changes made since t1 instead of t2, when the incremental sync writes all the changes up to t2, the target SurrealDB tables can be viewed as consistent with the source tables at t2.
+With the **snapshot-stream** strategy the start and end checkpoints both record the consistent end position (≈ t2), because the snapshot is already reconciled against the live stream via watermarks. Start incremental sync from either; it continues live tracking from that consistent point. Prefer the combined [`sync`](#combined-snapshotstream-sync) command, which performs this handoff in one process.
 
 ## Incremental Sync
 
@@ -99,6 +114,39 @@ surreal-sync from postgresql-trigger incremental \
   --incremental-from "$CHECKPOINT" \
   --timeout 60
 ```
+
+## Combined snapshot+stream sync
+
+With the `snapshot-stream` strategy you usually don't need two separate runs. The `sync` command runs the watermark snapshot and then continues incremental sync from the handed-off end position, in a single process:
+
+```bash
+surreal-sync from postgresql-trigger sync \
+  --connection-string "$CONNECTION_STRING" \
+  --surreal-endpoint "$SURREAL_ENDPOINT" \
+  --surreal-username "root" \
+  --surreal-password "root" \
+  --to-namespace "production" \
+  --to-database "migrated_data" \
+  --tables "users,orders" \
+  --chunk-size 1024 \
+  --timeout 3600
+```
+
+- `--chunk-size <N>`: rows read per keyset chunk during the snapshot phase (default 1024).
+- `--timeout <SECONDS>`: how long the incremental phase runs after the snapshot completes (default 3600).
+- `--tables`: comma-separated tables (empty means all tables). Every selected table must have a primary key.
+
+## Ad-hoc Snapshots (Signalling)
+
+While a `sync` is streaming, you can ask it to snapshot additional tables on the fly. The `snapshot` command inserts an `execute-snapshot` signal row into the `surreal_sync_signal` table on the source; the running `sync` picks it up and snapshots the requested tables while streaming continues (resumable via the snapshot checkpoint):
+
+```bash
+surreal-sync from postgresql-trigger snapshot \
+  --connection-string "$CONNECTION_STRING" \
+  --tables "new_table,another_table"
+```
+
+- `--tables` (required): comma-separated tables to snapshot.
 
 ### Config File
 
@@ -141,12 +189,28 @@ CLI flags take precedence over config file values when both are provided. The sa
 #### Full Sync Options
 
 - `--connection-string`: PostgreSQL connection string (must include database, e.g., `postgresql://user:pass@host:5432/mydb`)
+- `--tables`: Comma-separated tables to sync (empty means all tables)
 - `--to-namespace`: Target SurrealDB namespace
 - `--to-database`: Target SurrealDB database
-- `--emit-checkpoints`: Emit checkpoint files for coordinating with incremental sync (boolean flag)
-- `--checkpoint-dir`: Directory to write checkpoint files (default: `.surreal-sync-checkpoints`)
+- `--strategy`: Full-sync strategy, `snapshot-stream` (default) or `bulk`
+- `--chunk-size`: Rows read per keyset chunk for the `snapshot-stream` strategy (default: 1024)
+- `--checkpoint-dir`: Directory to write checkpoint files (mutually exclusive with `--checkpoints-surreal-table`)
+- `--checkpoints-surreal-table`: SurrealDB table to store checkpoints (mutually exclusive with `--checkpoint-dir`)
 - `--schema-file`: Optional schema file for type-aware conversion
+- `-c` / `--config-file`: Load defaults from a TOML config file
 - Plus standard SurrealDB options: `--surreal-endpoint`, `--surreal-username`, `--surreal-password`, `--batch-size`, `--dry-run`
+
+#### Combined `sync` Options
+
+- `--connection-string`, `--tables`, `--to-namespace`, `--to-database`, and standard SurrealDB options
+- `--chunk-size`: Rows read per keyset chunk during the snapshot phase (default: 1024)
+- `--timeout`: Seconds to run the incremental phase after the snapshot (default: 3600)
+- `--schema-file`: Optional schema file for type-aware conversion
+
+#### Ad-hoc `snapshot` Options
+
+- `--connection-string`: PostgreSQL connection string (must include database)
+- `--tables` (required): Comma-separated tables to snapshot
 
 #### Incremental Sync Options
 
@@ -195,7 +259,7 @@ GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO sync_user;
 
 ### Audit Table Cleanup
 
-The `surreal_sync_changes` audit table may grow over time. Consider periodic cleanup:
+The `snapshot-stream` strategy prunes consumed rows from `surreal_sync_changes` automatically as the stream is applied, keeping it bounded. For the `bulk` strategy (or long-running standalone `incremental` runs) the audit table may grow over time, so consider periodic cleanup:
 
 ```sql
 -- Check audit table size

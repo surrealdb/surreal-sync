@@ -5,6 +5,7 @@
 - [PostgreSQL wal2json Source](#postgresql-wal2json-source)
   - [Table of Contents](#table-of-contents)
   - [Introduction](#introduction)
+  - [Full Sync Strategies](#full-sync-strategies)
   - [Prerequisites](#prerequisites)
     - [PostgreSQL Version](#postgresql-version)
     - [Verifying wal2json Extension](#verifying-wal2json-extension)
@@ -14,6 +15,8 @@
   - [CLI Usage](#cli-usage)
     - [Full Sync Command](#full-sync-command)
     - [Incremental Sync Command](#incremental-sync-command)
+    - [Combined sync Command](#combined-sync-command)
+    - [Ad-hoc snapshot Command (Signalling)](#ad-hoc-snapshot-command-signalling)
     - [Example Workflow: Initial Sync + Ongoing Changes](#example-workflow-initial-sync--ongoing-changes)
   - [Data Type Support](#data-type-support)
     - [Numeric Types](#numeric-types)
@@ -63,11 +66,23 @@
 The PostgreSQL wal2json source is a Change Data Capture (CDC) implementation for surreal-sync that enables real-time data synchronization from PostgreSQL databases to SurrealDB using PostgreSQL's logical replication capabilities with the wal2json output plugin.
 
 **Key Capabilities:**
-- **Full Sync**: Complete database migration with schema discovery and data transfer
+- **Full Sync**: Complete database migration with schema discovery and data transfer, via two strategies (`snapshot-stream` by default, or `bulk`)
 - **Incremental Sync**: Real-time change streaming for inserts, updates, and deletes
+- **Combined `sync`**: One-process watermark snapshot that hands off to incremental at the consistent end position
 - **At-Least-Once Delivery**: Guarantees no data loss through peek-process-advance pattern
 - **Transaction Support**: Respects PostgreSQL ACID transactions
 - **LSN-Based Checkpointing**: Enables resumable incremental sync from any point in the WAL
+
+## Full Sync Strategies
+
+Full sync supports two strategies, selected with `--strategy`:
+
+- **`snapshot-stream` (default)** — A DBLog-style watermark snapshot interleaved with the WAL change stream. Tables are copied in primary-key-ordered, resumable chunks (`--chunk-size`, default 1024) while the logical replication stream is consumed concurrently; watermark windows reconcile snapshot reads against live changes (the log event wins). The result converges to a consistent image at the end LSN (≈ t2) and then keeps tracking live — it is **not** a frozen t1 snapshot. It uses bounded memory (O(chunk_size)) and advances the replication slot (`restart_lsn`) as the stream is consumed, so WAL is freed continuously instead of being pinned for the whole snapshot. It requires a primary key on every selected table and writes a small `surreal_sync_signal` table to the source (whose inserts the slot captures as watermarks).
+- **`bulk`** — The original strategy: a monolithic `SELECT *` per table bracketed by t1/t2 LSN checkpoints. Because the slot must retain all WAL from t1 until a separate `incremental` run from t1 catches up to t2, WAL retention grows with the full snapshot duration. Use this when a table has no usable primary key, or when writing the signal table to the source is not permitted.
+
+See [Full Sync Strategies](design.md#full-sync-strategies) for the side-by-side comparison and the consistency guarantee.
+
+**Behavior change for existing users:** `snapshot-stream` is now the default. Compared to the previous behavior, it creates a `surreal_sync_signal` table on the source and requires every selected table to have a primary key. Pass `--strategy bulk` to keep the previous monolithic full-sync behavior.
 
 ## Prerequisites
 
@@ -106,8 +121,8 @@ The PostgreSQL wal2json source consists of several key components:
 For implementation details on the connection model, transaction handling, at-least-once delivery pattern, and LSN-based checkpointing, see the documentation in [logical_replication.rs](../crates/postgresql-wal2json-source/src/logical_replication.rs#L1-L78).
 
 **Key Points for Users:**
-- **Full sync creates two checkpoints** - t1 checkpoint is captured BEFORE the full sync snapshot (use this for incremental sync), t2 checkpoint is captured AFTER the full sync completes (for reference only).
-- **Incremental sync always starts from t1, not t2** - This ensures no changes are missed regardless of isolation level. See [the test implementation](../tests/postgresql_logical/postgresql_logical_incremental_sync_only_cli.rs#L88-L95) for reference.
+- **With `bulk`, full sync creates two checkpoints** - t1 is captured BEFORE the snapshot (use this for incremental sync), t2 AFTER it completes (for reference only). Incremental sync always starts from t1, not t2, so no changes are missed regardless of isolation level. See [the test implementation](../tests/postgresql_logical/postgresql_logical_incremental_sync_only_cli.rs#L88-L95) for reference.
+- **With `snapshot-stream`, the recorded position is the consistent end position** (≈ t2) - the snapshot is reconciled against the live stream via watermarks, so you start incremental from that single position (or use the combined `sync` command, which does the handoff in one process).
 - **At-least-once delivery** - Changes may be replayed if processing fails, so ensure your processing logic is idempotent.
 - **Transaction consistency** - All changes within a PostgreSQL transaction are processed as a batch.
 
@@ -177,8 +192,12 @@ surreal-sync from postgresql full \
 - `--surreal-endpoint`: SurrealDB WebSocket endpoint
 - `--surreal-username`: SurrealDB username
 - `--surreal-password`: SurrealDB password
-- `--emit-checkpoints`: Enable checkpoint file emission for incremental sync
-- `--checkpoint-dir`: Directory to store checkpoint files
+- `--strategy`: Full-sync strategy, `snapshot-stream` (default) or `bulk`
+- `--chunk-size`: Rows read per keyset chunk for the `snapshot-stream` strategy (default: 1024)
+- `--checkpoint-dir`: Directory to store checkpoint files (mutually exclusive with `--checkpoints-surreal-table`)
+- `--checkpoints-surreal-table`: SurrealDB table to store checkpoints (mutually exclusive with `--checkpoint-dir`)
+
+> Checkpoint emission is enabled by providing a checkpoint store (`--checkpoint-dir` or `--checkpoints-surreal-table`). With `snapshot-stream`, the recorded position is the consistent end position; with `bulk`, the t1/t2 LSNs are recorded.
 
 ### Incremental Sync Command
 
@@ -202,6 +221,48 @@ surreal-sync from postgresql incremental \
 - `--incremental-from` (required): Starting LSN checkpoint (from t1 checkpoint file)
 - `--incremental-to`: Optional stopping LSN checkpoint
 - `--timeout`: Maximum runtime in seconds (default: 3600 = 1 hour)
+
+### Combined `sync` Command
+
+With the `snapshot-stream` strategy you usually don't need two separate runs. The `sync` command runs the watermark snapshot and then continues incremental sync from the handed-off end LSN, in a single process:
+
+```bash
+surreal-sync from postgresql sync \
+  --connection-string "postgresql://user:password@host:5432/database" \
+  --slot "surreal_sync_slot" \
+  --tables "users,orders,products" \
+  --schema "public" \
+  --to-namespace "production" \
+  --to-database "myapp" \
+  --surreal-endpoint "ws://localhost:8000" \
+  --surreal-username "root" \
+  --surreal-password "root" \
+  --chunk-size 1024 \
+  --timeout 3600
+```
+
+**Parameters:**
+- `--connection-string` (required), `--slot`, `--tables`, `--schema`, `--to-namespace`, `--to-database`, and standard SurrealDB options
+- `--chunk-size`: Rows read per keyset chunk during the snapshot phase (default: 1024)
+- `--timeout`: Seconds to run the incremental phase after the snapshot (default: 3600)
+
+Every selected table must have a primary key.
+
+### Ad-hoc `snapshot` Command (Signalling)
+
+While a `sync` is streaming, you can ask it to snapshot additional tables on the fly. The `snapshot` command inserts an `execute-snapshot` signal row into the `surreal_sync_signal` table; the running `sync` picks it up and snapshots the requested tables while streaming continues (resumable via the snapshot checkpoint):
+
+```bash
+surreal-sync from postgresql snapshot \
+  --connection-string "postgresql://user:password@host:5432/database" \
+  --slot "surreal_sync_slot" \
+  --schema "public" \
+  --tables "new_table,another_table"
+```
+
+**Parameters:**
+- `--connection-string` (required), `--slot`, `--schema`
+- `--tables` (required): Comma-separated tables to snapshot
 
 ### Example Workflow: Initial Sync + Ongoing Changes
 
