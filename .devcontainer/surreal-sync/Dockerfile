@@ -6,6 +6,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive \
     build-essential \
     cmake \
     libssl-dev \
+    libsasl2-dev \
     pkg-config \
     protobuf-compiler \
     curl \

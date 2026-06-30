@@ -182,6 +182,10 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     use_message_key_as_id: false,
                     id_field: "id".to_string(),
                     max_messages: None,
+                    sasl_username: None,
+                    sasl_password: None,
+                    sasl_mechanism: None,
+                    security_protocol: None,
                 };
 
                 // Run sync with a deadline
@@ -307,6 +311,10 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                     use_message_key_as_id: false,
                     id_field: "id".to_string(),
                     max_messages: None,
+                    sasl_username: None,
+                    sasl_password: None,
+                    sasl_mechanism: None,
+                    security_protocol: None,
                 };
 
                 // Run sync with a deadline
