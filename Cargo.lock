@@ -7292,6 +7292,7 @@ dependencies = [
  "surreal-sync-postgresql",
  "surreal-sync-postgresql-trigger-source",
  "surreal-sync-postgresql-wal2json-source",
+ "surreal-sync-snapshot-stream",
  "surreal-version",
  "surreal2-sink",
  "surreal2-types",
@@ -7580,6 +7581,23 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "surreal-sync-snapshot-stream"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "checkpoint",
+ "serde",
+ "serde_json",
+ "surreal-sink",
+ "sync-core",
+ "tempfile",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 

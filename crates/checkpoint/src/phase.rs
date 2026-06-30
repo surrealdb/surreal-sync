@@ -25,6 +25,20 @@ pub enum SyncPhase {
     /// after data migration completes. It marks the point where
     /// incremental sync should stop replaying and switch to live mode.
     FullSyncEnd,
+
+    /// Checkpoint emitted per chunk while a watermark snapshot is in progress.
+    ///
+    /// This captures the current stream position together with per-table
+    /// progress (the last primary key copied and whether the table is done),
+    /// enabling a snapshot to resume mid-way after a crash without re-copying
+    /// already-copied chunks.
+    SnapshotProgress,
+
+    /// Checkpoint emitted when a watermark snapshot completes.
+    ///
+    /// This records the final stream position the snapshot reached. Downstream
+    /// incremental/live processing continues from exactly this position.
+    SnapshotHandoff,
 }
 
 impl SyncPhase {
@@ -37,6 +51,8 @@ impl SyncPhase {
         match self {
             SyncPhase::FullSyncStart => "full_sync_start",
             SyncPhase::FullSyncEnd => "full_sync_end",
+            SyncPhase::SnapshotProgress => "snapshot_progress",
+            SyncPhase::SnapshotHandoff => "snapshot_handoff",
         }
     }
 }

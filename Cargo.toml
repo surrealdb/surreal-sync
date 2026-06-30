@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kafka-source", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql", "crates/postgresql-wal2json-source", "crates/postgresql-trigger-source", "crates/csv-source", "crates/jsonl-source", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/loadtest-populate", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surreal2-types", "crates/surreal3-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify-surreal2", "crates/loadtest-verify-surreal3", "crates/surreal-sink", "crates/surreal2-sink", "crates/surreal3-sink", "crates/surreal-client", "crates/surreal2-client", "crates/surreal3-client", "crates/surreal-version", "crates/mongodb-changestream-source", "crates/neo4j-source", "crates/checkpoint", "crates/checkpoint-surreal3", "crates/mysql-trigger-source", "crates/loadtest-distributed", "crates/surrealdb-multi-sdk-demo"]
+members = ["crates/kafka-source", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql", "crates/postgresql-wal2json-source", "crates/postgresql-trigger-source", "crates/csv-source", "crates/jsonl-source", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/loadtest-populate", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surreal2-types", "crates/surreal3-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify-surreal2", "crates/loadtest-verify-surreal3", "crates/surreal-sink", "crates/surreal2-sink", "crates/surreal3-sink", "crates/surreal-client", "crates/surreal2-client", "crates/surreal3-client", "crates/surreal-version", "crates/mongodb-changestream-source", "crates/neo4j-source", "crates/checkpoint", "crates/checkpoint-surreal3", "crates/mysql-trigger-source", "crates/loadtest-distributed", "crates/surrealdb-multi-sdk-demo", "crates/snapshot-stream"]
 resolver = "2"
 
 [package]
@@ -132,6 +132,9 @@ surreal-sync-postgresql-trigger-source = { path = "crates/postgresql-trigger-sou
 
 # PostgreSQL shared utilities
 surreal-sync-postgresql = { path = "crates/postgresql" }
+
+# Watermark-based snapshot+stream full-sync framework
+surreal-sync-snapshot-stream = { path = "crates/snapshot-stream" }
 libc = "0.2.183"
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 
