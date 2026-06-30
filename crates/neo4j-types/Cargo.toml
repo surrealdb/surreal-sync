@@ -20,7 +20,7 @@ serde = { version = "1.0", features = ["derive"] }
 sync-core = { path = "../sync-core" }
 
 # Error handling
-thiserror = "1.0"
+thiserror = "2.0"
 
 # UUID support
 uuid = "1.17"
