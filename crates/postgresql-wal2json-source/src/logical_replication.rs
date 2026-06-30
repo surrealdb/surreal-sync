@@ -456,9 +456,8 @@ impl Slot {
                                     xid: action_xid, ..
                                 } => {
                                     // Begin transaction
-                                    if current_xid.is_some() {
-                                        bail!("Found Begin transaction xid={} while previous transaction xid={} is not committed",
-                                              action_xid, current_xid.as_ref().unwrap());
+                                    if let Some(previous_xid) = current_xid.as_ref() {
+                                        bail!("Found Begin transaction xid={action_xid} while previous transaction xid={previous_xid} is not committed");
                                     }
                                     current_xid = Some(xid.clone());
                                     debug!("Begin transaction xid={}", xid);

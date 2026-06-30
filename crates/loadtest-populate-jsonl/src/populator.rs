@@ -163,7 +163,7 @@ impl JsonlPopulator {
 
             metrics.rows_written += 1;
 
-            if metrics.rows_written % 10000 == 0 {
+            if metrics.rows_written.is_multiple_of(10000) {
                 debug!("Written {} rows", metrics.rows_written);
             }
         }
@@ -244,7 +244,7 @@ impl JsonlPopulator {
 
             metrics.rows_written += 1;
 
-            if metrics.rows_written % 10000 == 0 {
+            if metrics.rows_written.is_multiple_of(10000) {
                 debug!("Appended {} rows", metrics.rows_written);
             }
         }

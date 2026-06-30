@@ -8,24 +8,20 @@
 /// Used to select which SDK implementation to use at runtime.
 /// The CLI entry point branches once based on this value, and
 /// all subsequent code is monomorphized for that specific SDK.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SurrealSdkVersion {
     /// SurrealDB SDK v2 (for v2 servers)
     ///
     /// Uses the "revision" WebSocket subprotocol.
+    ///
+    /// This is the default since most users are on v2 servers and the
+    /// WebSocket subprotocols are incompatible.
+    #[default]
     V2,
     /// SurrealDB SDK v3 (for v3 servers)
     ///
     /// Uses the "flatbuffers" WebSocket subprotocol.
     V3,
-}
-
-impl Default for SurrealSdkVersion {
-    fn default() -> Self {
-        // Default to v2 since most users are on v2 servers
-        // and the WebSocket subprotocols are incompatible
-        Self::V2
-    }
 }
 
 impl std::fmt::Display for SurrealSdkVersion {

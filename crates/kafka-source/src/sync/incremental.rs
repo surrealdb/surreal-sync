@@ -173,7 +173,7 @@ pub async fn run_incremental_sync<S: SurrealSink + Send + Sync + 'static>(
                     surreal.write_universal_rows(&[row]).await?;
 
                     let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
-                    if count % 100 == 0 {
+                    if count.is_multiple_of(100) {
                         info!("Processed {count} messages total");
                     }
                 }

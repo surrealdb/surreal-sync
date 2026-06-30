@@ -39,7 +39,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
 
     info!("Starting to consume MySQL change stream...");
 
-    let mut change_count = 0;
+    let mut change_count: u64 = 0;
     while let Some(result) = stream.next().await {
         match result {
             Ok(change) => {
@@ -67,7 +67,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
                 surreal.apply_universal_change(&change).await?;
 
                 change_count += 1;
-                if change_count % 100 == 0 {
+                if change_count.is_multiple_of(100) {
                     info!("Processed {} changes", change_count);
                 }
             }
