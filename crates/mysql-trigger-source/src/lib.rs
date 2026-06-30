@@ -9,6 +9,7 @@ mod client;
 mod full_sync;
 mod incremental_sync;
 mod schema;
+mod snapshot_stream;
 mod source;
 
 /// Testing utilities for MySQL trigger source
@@ -19,6 +20,9 @@ pub use checkpoint::{get_current_checkpoint, MySQLCheckpoint};
 pub use client::new_mysql_pool;
 pub use full_sync::{get_primary_key_columns, read_table_chunk, run_full_sync, TableChunk};
 pub use incremental_sync::run_incremental_sync;
+pub use snapshot_stream::{
+    run_mysql_snapshot_stream, run_mysql_snapshot_stream_result, MySqlWatermarkSource,
+};
 pub use source::{ChangeStream, IncrementalSource, MySQLChangeStream, MySQLIncrementalSource};
 
 /// MySQL source connection options
