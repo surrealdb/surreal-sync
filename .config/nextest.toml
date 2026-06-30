@@ -37,3 +37,8 @@ failure-output = "immediate-final"
 # Emit a JUnit report so CI can surface per-test results / upload it as an artifact.
 [profile.ci.junit]
 path = "junit.xml"
+
+# Ship the CLI binary alongside test binaries so shard runners can set SURREAL_SYNC_BIN.
+archive.include = [
+  { path = "ci/surreal-sync", relative-to = "target" },
+]

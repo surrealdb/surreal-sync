@@ -148,3 +148,10 @@ loadtest-generator = { path = "crates/loadtest-generator" }
 
 [profile.dev]
 debug = 1
+
+# CI build profile: stripped binaries for faster linking and smaller nextest archives.
+[profile.ci]
+inherits = "dev"
+debug = 0
+strip = "symbols"
+incremental = false

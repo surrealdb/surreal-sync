@@ -14,7 +14,33 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  cargo-test:
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+    - name: Install system build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential cmake libssl-dev libsasl2-dev pkg-config protobuf-compiler postgresql-client
+
+    - name: Install Rust toolchain (from rust-toolchain.toml) + cache
+      uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+      with:
+        components: rustfmt, clippy
+        cache: true
+
+    - name: Format check
+      run: cargo fmt --all -- --check
+
+    - name: Clippy
+      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -37,7 +63,6 @@ jobs:
     - name: Install Rust toolchain (from rust-toolchain.toml) + cache
       uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
       with:
-        components: rustfmt, clippy
         cache: true
 
     - name: Install cargo-nextest
@@ -45,14 +70,46 @@ jobs:
       with:
         tool: nextest
 
-    - name: Format check
-      run: cargo fmt --all -- --check
+    - name: Build stripped CLI binary (used by CLI tests)
+      run: cargo build -p surreal-sync --profile ci
 
-    - name: Clippy
-      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+    - name: Archive test binaries
+      run: cargo nextest archive --workspace --cargo-profile ci --archive-file nextest.tar.zst
 
-    - name: Build debug binary (used by CLI tests)
-      run: cargo build
+    - name: Upload nextest archive
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: nextest-archive
+        path: nextest.tar.zst
+        retention-days: 1
+
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+    - name: Free disk space
+      run: |
+        sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+        df -h
+
+    - name: Checkout repository
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+    - name: Download nextest archive
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: nextest-archive
+
+    - name: Install cargo-nextest
+      uses: taiki-e/install-action@9bcaee1dcae34154180f412e2fa69355a7cda9f6 # v2.82.6
+      with:
+        tool: nextest
 
     - name: Pre-build PostgreSQL (wal2json) test image
       run: |
@@ -60,13 +117,13 @@ jobs:
           -f crates/postgresql-wal2json-source/Dockerfile.postgres16.wal2json \
           crates/postgresql-wal2json-source
 
-    - name: Run unit + integration tests (nextest)
+    - name: Run unit + integration tests (nextest shard ${{ matrix.shard }}/3)
       env:
-        SURREAL_SYNC_BIN: ${{ github.workspace }}/target/debug/surreal-sync
-      run: cargo nextest run --workspace --profile ci
-
-    - name: Run documentation tests
-      run: cargo test --workspace --doc
+        SURREAL_SYNC_BIN: ${{ github.workspace }}/target/ci/surreal-sync
+        RUST_BACKTRACE: 1
+      run: |
+        cargo nextest run --archive-file nextest.tar.zst --profile ci \
+          --partition count:${{ matrix.shard }}/3
 
     - name: Clean up leftover test containers
       if: always()
@@ -76,9 +133,31 @@ jobs:
       if: failure()
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
-        name: test-results
+        name: test-results-shard-${{ matrix.shard }}
         path: |
           target/nextest/ci/junit.xml
           logs/test/
         retention-days: 7
         if-no-files-found: ignore
+
+  doc:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+    - name: Install system build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          build-essential cmake libssl-dev libsasl2-dev pkg-config protobuf-compiler postgresql-client
+
+    - name: Install Rust toolchain (from rust-toolchain.toml) + cache
+      uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+      with:
+        cache: true
+
+    - name: Run documentation tests
+      run: cargo test --workspace --doc
