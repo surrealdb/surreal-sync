@@ -129,7 +129,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
 
     info!("Starting to consume PostgreSQL change stream...");
 
-    let mut change_count = 0;
+    let mut change_count: u64 = 0;
     while let Some(result) = stream.next().await {
         log::debug!("🔄 Main loop: Got result from stream.next(), change_count: {change_count}");
         match result {
@@ -186,7 +186,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
                 }
 
                 change_count += 1;
-                if change_count % 100 == 0 {
+                if change_count.is_multiple_of(100) {
                     info!("Processed {change_count} changes");
                 }
             }

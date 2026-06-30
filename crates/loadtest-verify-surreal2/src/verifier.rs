@@ -190,7 +190,7 @@ impl StreamingVerifier {
             }
             compare_time += compare_start.elapsed();
 
-            if (i + 1) % 1000 == 0 {
+            if (i + 1).is_multiple_of(1000) {
                 debug!(
                     "Verified {}/{} rows ({} matched, {} missing, {} mismatched)",
                     i + 1,

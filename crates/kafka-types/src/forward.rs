@@ -25,12 +25,11 @@ pub fn encode_row(row: &UniversalRow, table_schema: &GeneratorTableDefinition) -
         encode_generated_value(&mut stream, 1, &row.id)?;
 
         // Encode remaining fields in order (starting from field number 2)
-        let mut field_number = 2u32;
-        for field_schema in &table_schema.fields {
+        for (index, field_schema) in table_schema.fields.iter().enumerate() {
+            let field_number = 2u32 + index as u32;
             if let Some(value) = row.fields.get(&field_schema.name) {
                 encode_generated_value(&mut stream, field_number, value)?;
             }
-            field_number += 1;
         }
 
         stream
@@ -61,12 +60,11 @@ pub fn encode_typed_values(
         }
 
         // Encode remaining fields in order (starting from field number 2)
-        let mut field_number = 2u32;
-        for field_schema in &table_schema.fields {
+        for (index, field_schema) in table_schema.fields.iter().enumerate() {
+            let field_number = 2u32 + index as u32;
             if let Some(value) = values.get(&field_schema.name) {
                 encode_typed_value(&mut stream, field_number, value)?;
             }
-            field_number += 1;
         }
 
         stream

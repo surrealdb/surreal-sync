@@ -217,7 +217,7 @@ impl Store {
 
         let states: Vec<State> = result.take((0, "state")).unwrap_or_else(|_| Vec::new());
 
-        Ok(ids.into_iter().zip(states.into_iter()).collect())
+        Ok(ids.into_iter().zip(states).collect())
     }
 
     /// Validate state transitions

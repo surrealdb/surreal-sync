@@ -1,19 +1,15 @@
 //! SDK version enumeration.
 
 /// SurrealDB SDK version selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SurrealSdkVersion {
-    /// SurrealDB SDK v2 (for v2 servers)
+    /// SurrealDB SDK v2 (for v2 servers).
+    ///
+    /// Default since most users are on v2 servers.
+    #[default]
     V2,
     /// SurrealDB SDK v3 (for v3 servers)
     V3,
-}
-
-impl Default for SurrealSdkVersion {
-    fn default() -> Self {
-        // Default to v2 since most users are on v2 servers
-        Self::V2
-    }
 }
 
 impl std::fmt::Display for SurrealSdkVersion {

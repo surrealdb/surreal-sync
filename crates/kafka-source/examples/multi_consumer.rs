@@ -132,7 +132,7 @@ async fn run_main() -> anyhow::Result<()> {
 
                     // Increment counter
                     let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
-                    if count % 100 == 0 {
+                    if count.is_multiple_of(100) {
                         println!("Processed {count} messages total");
                     }
                 }

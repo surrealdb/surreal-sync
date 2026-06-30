@@ -347,7 +347,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
 
     info!("Starting to consume MongoDB change stream...");
 
-    let mut change_count = 0;
+    let mut change_count: u64 = 0;
     let timeout_duration = std::time::Duration::from_secs(5);
 
     loop {
@@ -370,7 +370,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
                 surreal.apply_universal_change(&change).await?;
 
                 change_count += 1;
-                if change_count % 100 == 0 {
+                if change_count.is_multiple_of(100) {
                     info!("Processed {change_count} changes");
                 }
 
