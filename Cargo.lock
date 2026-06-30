@@ -7467,6 +7467,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sink",
+ "surreal-sync-snapshot-stream",
  "surrealdb 2.3.7",
  "sync-core",
  "tempfile",
@@ -7474,6 +7475,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -7546,6 +7548,7 @@ dependencies = [
  "serde_json",
  "surreal-sink",
  "surreal-sync-postgresql",
+ "surreal-sync-snapshot-stream",
  "surrealdb 2.3.7",
  "sync-core",
  "tempfile",
@@ -7562,6 +7565,7 @@ name = "surreal-sync-postgresql-wal2json-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "checkpoint",
  "chrono",
  "clap",
@@ -7572,6 +7576,7 @@ dependencies = [
  "serde_json",
  "surreal-sink",
  "surreal-sync-postgresql",
+ "surreal-sync-snapshot-stream",
  "surreal2-sink",
  "surrealdb 2.3.7",
  "sync-core",
