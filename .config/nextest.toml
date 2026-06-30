@@ -1,0 +1,39 @@
+# cargo-nextest configuration.
+#
+# Why nextest: it runs each test in its own process and executes them
+# concurrently across the whole workspace (cargo's built-in runner runs test
+# binaries sequentially). Our integration tests each spin up their own
+# throwaway Docker containers (see src/testing/shared_containers.rs) keyed by
+# process id, so every nextest test process gets a fully isolated set of
+# databases. That means parallelism is always collision-safe and needs no
+# serialization groups -- the only thing we tune is how many run at once, to
+# avoid overwhelming the host/runner with concurrent containers.
+
+[profile.default]
+# Container startup can occasionally be slow/flaky; one retry smooths that over.
+retries = 1
+# Each test may start 1-3 DB containers, so we bound concurrency rather than
+# using one-thread-per-core (which would cause a container storm). Override
+# locally with `--test-threads N` or NEXTEST_TEST_THREADS.
+test-threads = 6
+# Tests are I/O/container-bound and some poll with internal `--timeout` loops.
+# Give generous headroom before declaring a test stuck.
+slow-timeout = { period = "60s", terminate-after = 4 }
+# Show output for failures inline as they happen and again in the final summary.
+failure-output = "immediate-final"
+
+[profile.ci]
+# CI runners are smaller and Docker pulls add variance; retry a bit more.
+retries = 2
+# Bounded for a 2-core / ~7GB GitHub-hosted runner. Raise if running on a
+# larger runner. Tests are mostly waiting on containers, so we oversubscribe
+# the 2 CPUs intentionally.
+test-threads = 4
+# Run the whole suite so we see every failure in one go.
+fail-fast = false
+slow-timeout = { period = "90s", terminate-after = 5 }
+failure-output = "immediate-final"
+
+# Emit a JUnit report so CI can surface per-test results / upload it as an artifact.
+[profile.ci.junit]
+path = "junit.xml"

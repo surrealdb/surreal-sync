@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "=== Pre-push checks ==="
+
+echo "Running cargo fmt --check..."
+if ! cargo fmt --all -- --check; then
+    echo ""
+    echo "FAILED: Code is not formatted. Run 'cargo fmt --all' and commit the changes."
+    exit 1
+fi
+
+echo "Running cargo clippy..."
+# Use `make clippy` so platform-specific build env (e.g. macOS OpenSSL paths) is applied.
+if ! make clippy; then
+    echo ""
+    echo "FAILED: Clippy found issues. Fix them before pushing."
+    exit 1
+fi
+
+echo "=== Pre-push checks passed ==="
