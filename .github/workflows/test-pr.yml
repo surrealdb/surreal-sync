@@ -123,6 +123,7 @@ jobs:
         RUST_BACKTRACE: 1
       run: |
         cargo nextest run --archive-file nextest.tar.zst --profile ci \
+          --extract-to . --extract-overwrite \
           --partition count:${{ matrix.shard }}/3
 
     - name: Clean up leftover test containers
