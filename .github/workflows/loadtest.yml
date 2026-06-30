@@ -114,7 +114,7 @@ jobs:
     needs: setup
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
 
       - name: Build Docker image
         run: docker build -t surreal-sync:latest -f Dockerfile .
@@ -137,7 +137,7 @@ jobs:
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
       fail-fast: false
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
 
       - name: Download Docker image
         uses: actions/download-artifact@v7
@@ -205,7 +205,7 @@ jobs:
     runs-on: ubuntu-latest
     if: always() && needs.setup.result == 'success'
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@v6.0.3
 
       - name: Download all metrics artifacts
         uses: actions/download-artifact@v7
