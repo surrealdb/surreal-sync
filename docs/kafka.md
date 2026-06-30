@@ -69,6 +69,19 @@ surreal-sync from kafka \
 | `--num-consumers <COUNT>` | 1 | Number of consumers in the consumer group to spawn |
 | `--kafka-batch-size <COUNT>` | 100 | Number of decoded protobuf messages to fetch and process per batch |
 
+### SASL Authentication
+
+For secured Kafka clusters, set `--security-protocol` to `SASL_PLAINTEXT` or `SASL_SSL` and provide credentials. When using a SASL protocol, `--sasl-username`, `--sasl-password`, and `--sasl-mechanism` are required.
+
+| Flag | Env var | Description |
+|------|---------|-------------|
+| `--security-protocol <PROTO>` | — | `PLAINTEXT`, `SSL`, `SASL_PLAINTEXT`, or `SASL_SSL` (omit for unauthenticated Kafka) |
+| `--sasl-username <USER>` | `KAFKA_SASL_USERNAME` | SASL username |
+| `--sasl-password <PASS>` | `KAFKA_SASL_PASSWORD` | SASL password |
+| `--sasl-mechanism <MECH>` | — | `SCRAM-SHA-256`, `SCRAM-SHA-512`, or `PLAIN` |
+
+Run `surreal-sync from kafka --help` for full flag details.
+
 ### SurrealDB Connection Settings
 
 | Flag | Default | Description |
@@ -482,7 +495,7 @@ For production deployments that need continuous consumption:
 
 ### Kafka Client Settings Flexibility
 
-surreal-sync uses the Kafka client library (librdkafka) to become a Kafka consumer which is configured with only basic settings in [`crates/kafka-source/src/consumer.rs:88-94`](../crates/kafka-source/src/consumer.rs#L88-L94). All other librdkafka settings use their defaults.
+surreal-sync uses the Kafka client library (librdkafka) with a fixed set of settings (brokers, consumer group, session timeout, and optional SASL authentication). All other librdkafka settings use their defaults.
 
 See [librdkafka Configuration Documentation](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) for complete details on all settings and their defaults.
 
