@@ -57,6 +57,6 @@ surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
 surrealdb3 = { version = "=3.0.1", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
 
 # HTTP test server
-axum = "0.7"
+axum = "0.8"
 tower = "0.5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
