@@ -7,6 +7,8 @@ description = "PostgreSQL trigger-based sync for surreal-sync"
 [dependencies]
 # PostgreSQL shared utilities (client, autoconf, table migration)
 surreal-sync-postgresql = { path = "../postgresql" }
+# Generic watermark snapshot+stream framework
+surreal-sync-snapshot-stream = { path = "../snapshot-stream" }
 
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1", "with-geo-types-0_7"] }
 surreal-sink = { path = "../surreal-sink" }

@@ -182,7 +182,9 @@ pub async fn read_table_chunk(
     let order_by = pk_columns.join(", ");
 
     // Build the keyset predicate and bind the cursor values (if any).
-    let mut boxed_params: Vec<Box<dyn ToSql + Sync>> = Vec::new();
+    // `Send` is required so callers can drive this read from a `Send` async
+    // context (e.g. the watermark snapshot framework's trait methods).
+    let mut boxed_params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
     let where_clause = match after {
         Some(cursor) => {
             if cursor.len() != pk_columns.len() {
@@ -268,7 +270,7 @@ fn extract_pk_cursor_values(row: &Row, pk_columns: &[String]) -> Result<Vec<Univ
 /// Convert a primary-key `UniversalValue` into a boxed `ToSql` for binding into
 /// a keyset-pagination query. The bound SQL type mirrors the way the cursor
 /// values were read back out of the row.
-fn pk_value_to_sql(value: &UniversalValue) -> Result<Box<dyn ToSql + Sync>> {
+fn pk_value_to_sql(value: &UniversalValue) -> Result<Box<dyn ToSql + Sync + Send>> {
     match value {
         UniversalValue::Int16(v) => Ok(Box::new(*v)),
         UniversalValue::Int32(v) => Ok(Box::new(*v)),
