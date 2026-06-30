@@ -61,5 +61,5 @@ pub use checkpoint::PostgreSQLLogicalCheckpoint;
 pub use config::Config;
 pub use full_sync::{run_full_sync, SourceOpts};
 pub use incremental_sync::run_incremental_sync;
-pub use logical_replication::{Client, Slot};
+pub use logical_replication::{ChangeAtLsn, Client, Slot};
 pub use sync::{State, StateID, Store};

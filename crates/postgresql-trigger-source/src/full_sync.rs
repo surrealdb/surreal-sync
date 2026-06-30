@@ -105,9 +105,17 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 
     // Emit checkpoint t2 (after full sync completes) if configured
     if let Some(manager) = sync_manager {
-        // For trigger-based sync, checkpoint reflects the current state
+        // Read the current audit-table sequence so the end-of-snapshot checkpoint
+        // reflects the real stream position (mirroring the MySQL trigger source),
+        // rather than a hardcoded 0.
+        let incremental_client =
+            surreal_sync_postgresql::new_postgresql_client(&from_opts.source_uri).await?;
+        let incremental_source =
+            super::incremental_sync::PostgresIncrementalSource::new(incremental_client, 0);
+        let current_sequence = incremental_source.get_current_sequence().await?;
+
         let checkpoint = super::checkpoint::PostgreSQLCheckpoint {
-            sequence_id: 0, // Full sync complete, incremental will start from audit table
+            sequence_id: current_sequence,
             timestamp: Utc::now(),
         };
 

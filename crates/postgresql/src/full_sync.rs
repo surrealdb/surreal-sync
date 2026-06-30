@@ -12,6 +12,7 @@ use sync_core::{
     classify_table, DatabaseSchema, GeometryType, TableKind, UniversalRow, UniversalType,
     UniversalValue,
 };
+use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, Row};
 use tracing::{debug, info, warn};
 
@@ -138,8 +139,152 @@ pub async fn migrate_table<S: SurrealSink>(
     Ok(total_processed)
 }
 
+/// A primary-key-ordered chunk of rows read from a table, together with the
+/// cursor needed to continue keyset pagination.
+#[derive(Debug, Clone)]
+pub struct TableChunk {
+    /// The converted rows, in primary-key order.
+    pub rows: Vec<UniversalRow>,
+    /// Primary-key values of the last row in `rows`, in primary-key column
+    /// order. `None` when no rows were returned. Pass this back as `after` to
+    /// read the following chunk.
+    pub last_pk: Option<Vec<UniversalValue>>,
+}
+
+/// Read a single primary-key-ordered chunk of a table using keyset pagination.
+///
+/// Rows are ordered by the table's primary key column(s). When `after` is
+/// `None`, reading starts from the beginning; otherwise only rows strictly
+/// greater than `after` (by row-value comparison over the primary-key columns)
+/// are returned. A single primary-key column degenerates to `pk > $after`; a
+/// composite primary key uses `(a, b, ...) > ($1, $2, ...)`. At most `limit`
+/// rows are returned.
+///
+/// When `schema` is provided and the table has foreign keys, foreign-key column
+/// values are converted to SurrealDB record links, matching `migrate_table`.
+///
+/// This is an additive, chunked alternative to `migrate_table`; it does not
+/// write to a sink and does not handle relation (join) tables.
+pub async fn read_table_chunk(
+    client: &Client,
+    table_name: &str,
+    pk_columns: &[String],
+    after: Option<&[UniversalValue]>,
+    limit: usize,
+    schema: Option<&DatabaseSchema>,
+) -> Result<TableChunk> {
+    if pk_columns.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Table '{table_name}' has no primary key columns; keyset chunk reads require a primary key"
+        ));
+    }
+
+    let order_by = pk_columns.join(", ");
+
+    // Build the keyset predicate and bind the cursor values (if any).
+    let mut boxed_params: Vec<Box<dyn ToSql + Sync>> = Vec::new();
+    let where_clause = match after {
+        Some(cursor) => {
+            if cursor.len() != pk_columns.len() {
+                return Err(anyhow::anyhow!(
+                    "Keyset cursor length ({}) does not match primary key column count ({}) for table '{table_name}'",
+                    cursor.len(),
+                    pk_columns.len()
+                ));
+            }
+            let placeholders: Vec<String> =
+                (1..=pk_columns.len()).map(|i| format!("${i}")).collect();
+            for value in cursor {
+                boxed_params.push(pk_value_to_sql(value)?);
+            }
+            if pk_columns.len() == 1 {
+                format!("WHERE {} > {}", pk_columns[0], placeholders[0])
+            } else {
+                format!(
+                    "WHERE ({}) > ({})",
+                    pk_columns.join(", "),
+                    placeholders.join(", ")
+                )
+            }
+        }
+        None => String::new(),
+    };
+
+    let query = format!("SELECT * FROM {table_name} {where_clause} ORDER BY {order_by} LIMIT {limit}");
+    debug!("Chunk-reading table {table_name} with: {query}");
+
+    let params: Vec<&(dyn ToSql + Sync)> = boxed_params
+        .iter()
+        .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+        .collect();
+
+    let rows = client.query(&query, &params).await?;
+
+    let table_def = schema.and_then(|s| s.get_table(table_name));
+
+    let mut out = Vec::with_capacity(rows.len());
+    let mut last_pk: Option<Vec<UniversalValue>> = None;
+    for (row_index, row) in rows.iter().enumerate() {
+        let mut record =
+            convert_row_to_universal_row(table_name, row, pk_columns, row_index as u64)?;
+        if let Some(td) = table_def {
+            fk_transform::transform_fk_values(&mut record.fields, td);
+        }
+        last_pk = Some(extract_pk_cursor_values(row, pk_columns)?);
+        out.push(record);
+    }
+
+    Ok(TableChunk {
+        rows: out,
+        last_pk,
+    })
+}
+
+/// Extract the raw primary-key column values from a row, in primary-key column
+/// order, for use as a keyset-pagination cursor.
+fn extract_pk_cursor_values(row: &Row, pk_columns: &[String]) -> Result<Vec<UniversalValue>> {
+    let mut values = Vec::with_capacity(pk_columns.len());
+    for col in pk_columns {
+        let value = if let Ok(v) = row.try_get::<_, i64>(col.as_str()) {
+            UniversalValue::Int64(v)
+        } else if let Ok(v) = row.try_get::<_, i32>(col.as_str()) {
+            UniversalValue::Int32(v)
+        } else if let Ok(v) = row.try_get::<_, i16>(col.as_str()) {
+            UniversalValue::Int16(v)
+        } else if let Ok(v) = row.try_get::<_, String>(col.as_str()) {
+            UniversalValue::Text(v)
+        } else if let Ok(v) = row.try_get::<_, uuid::Uuid>(col.as_str()) {
+            UniversalValue::Uuid(v)
+        } else {
+            return Err(anyhow::anyhow!(
+                "Failed to extract primary key value from column '{col}' for keyset pagination - unsupported data type"
+            ));
+        };
+        values.push(value);
+    }
+    Ok(values)
+}
+
+/// Convert a primary-key `UniversalValue` into a boxed `ToSql` for binding into
+/// a keyset-pagination query. The bound SQL type mirrors the way the cursor
+/// values were read back out of the row.
+fn pk_value_to_sql(value: &UniversalValue) -> Result<Box<dyn ToSql + Sync>> {
+    match value {
+        UniversalValue::Int16(v) => Ok(Box::new(*v)),
+        UniversalValue::Int32(v) => Ok(Box::new(*v)),
+        UniversalValue::Int64(v) => Ok(Box::new(*v)),
+        UniversalValue::Text(v) => Ok(Box::new(v.clone())),
+        UniversalValue::VarChar { value, .. } => Ok(Box::new(value.clone())),
+        UniversalValue::Char { value, .. } => Ok(Box::new(value.clone())),
+        UniversalValue::Uuid(v) => Ok(Box::new(*v)),
+        other => Err(anyhow::anyhow!(
+            "Unsupported primary key value type for keyset pagination: {other:?}"
+        )),
+    }
+}
+
 /// Get primary key columns for a table
-async fn get_primary_key_columns(client: &Client, table_name: &str) -> Result<Vec<String>> {
+pub async fn get_primary_key_columns(client: &Client, table_name: &str) -> Result<Vec<String>> {
     let query = format!(
         "
         SELECT a.attname as column_name

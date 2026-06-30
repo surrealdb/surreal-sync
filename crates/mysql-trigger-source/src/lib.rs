@@ -17,7 +17,7 @@ pub mod testing;
 pub use change_tracking::setup_mysql_change_tracking;
 pub use checkpoint::{get_current_checkpoint, MySQLCheckpoint};
 pub use client::new_mysql_pool;
-pub use full_sync::run_full_sync;
+pub use full_sync::{get_primary_key_columns, read_table_chunk, run_full_sync, TableChunk};
 pub use incremental_sync::run_incremental_sync;
 pub use source::{ChangeStream, IncrementalSource, MySQLChangeStream, MySQLIncrementalSource};
 

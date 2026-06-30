@@ -117,6 +117,19 @@ use tracing::{debug, info};
 use crate::change::{wal2json_to_psql, Action};
 use crate::wal2json::parse_wal2json;
 
+/// A change action paired with the WAL LSN at which it occurred.
+///
+/// The LSN is the per-row position reported by `pg_logical_slot_peek_changes`,
+/// allowing each change to carry its own stream position rather than only the
+/// transaction's commit `nextlsn`.
+#[derive(Debug, Clone)]
+pub struct ChangeAtLsn {
+    /// The per-row WAL LSN (e.g. "0/1949850").
+    pub lsn: String,
+    /// The decoded change action.
+    pub action: Action,
+}
+
 /// Client for PostgreSQL logical replication
 ///
 /// Manages the connection and configuration for logical replication
@@ -419,6 +432,19 @@ impl Slot {
     /// }
     /// ```
     pub async fn peek(&self) -> Result<(Vec<Action>, String)> {
+        let (changes, nextlsn) = self.peek_with_positions().await?;
+        Ok((changes.into_iter().map(|c| c.action).collect(), nextlsn))
+    }
+
+    /// Peek at changes without consuming them, preserving each change's per-row LSN.
+    ///
+    /// This is the position-carrying variant of [`Slot::peek`]: every returned
+    /// [`ChangeAtLsn`] keeps the WAL LSN of the individual change, in addition to
+    /// the transaction `nextlsn` returned alongside the batch.
+    ///
+    /// # Returns
+    /// * `Result<(Vec<ChangeAtLsn>, String)>` - Tuple of (changes-with-LSN, nextlsn)
+    pub async fn peek_with_positions(&self) -> Result<(Vec<ChangeAtLsn>, String)> {
         // wal2json options for formatting
         //
         // 'format-version', '2' - use format version 2
@@ -442,7 +468,7 @@ impl Slot {
         let mut current_xid: Option<String> = None;
 
         for row in rows {
-            let _lsn: String = row.get(0);
+            let lsn: String = row.get(0);
             let xid: String = row.get(1);
             let data: String = row.get(2);
 
@@ -507,7 +533,10 @@ impl Slot {
                                     };
 
                                     if should_include {
-                                        changes.push(action);
+                                        changes.push(ChangeAtLsn {
+                                            lsn: lsn.clone(),
+                                            action,
+                                        });
                                     }
                                 }
                             }
