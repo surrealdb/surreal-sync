@@ -3,8 +3,8 @@
 //! Demo crate verifying that SurrealDB SDK v2 and v3 can coexist in the same crate.
 //!
 //! This crate uses Cargo's package aliasing feature to import both SDK versions:
-//! - `surrealdb2` = SurrealDB SDK 2.3.7
-//! - `surrealdb3` = SurrealDB SDK 3.0.1
+//! - `surrealdb2` = SurrealDB SDK 2.6.5
+//! - `surrealdb3` = SurrealDB SDK 3.1.5
 //!
 //! ## Key Findings
 //!
@@ -191,8 +191,8 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
     use surreal_version::testing::SurrealDbContainer;
 
-    const V2_IMAGE: &str = "surrealdb/surrealdb:v2.3.7";
-    const V3_IMAGE: &str = "surrealdb/surrealdb:v3.0.1";
+    const V2_IMAGE: &str = "surrealdb/surrealdb:v2.6.5";
+    const V3_IMAGE: &str = "surrealdb/surrealdb:v3.1.5";
 
     static CONTAINER_NAMES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 

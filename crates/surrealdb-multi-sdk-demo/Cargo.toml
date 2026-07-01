@@ -8,10 +8,10 @@ publish = false
 
 [dependencies]
 # SurrealDB SDK v2 (aliased as surrealdb2)
-surrealdb2 = { version = "2.3.7", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
+surrealdb2 = { version = "2.6.5", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
 
 # SurrealDB SDK v3 (aliased as surrealdb3)
-surrealdb3 = { version = "=3.0.1", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
+surrealdb3 = { version = "3.1.5", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
 
 # Common dependencies
 tokio = { version = "1", features = ["full"] }
