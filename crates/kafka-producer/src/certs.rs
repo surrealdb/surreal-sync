@@ -193,6 +193,8 @@ fn run_cert_generation_in_docker(work_dir: &Path) -> Result<()> {
         .args([
             "run",
             "--rm",
+            "--user",
+            "0",
             "-v",
             &mount,
             DOCKER_IMAGE,
