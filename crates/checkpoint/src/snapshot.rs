@@ -100,7 +100,10 @@ mod tests {
     fn checkpoint_file_roundtrip() {
         let original = sample();
         let file = CheckpointFile::new(&original, SyncPhase::SnapshotProgress).unwrap();
-        assert_eq!(file.database_type(), SnapshotStreamCheckpoint::DATABASE_TYPE);
+        assert_eq!(
+            file.database_type(),
+            SnapshotStreamCheckpoint::DATABASE_TYPE
+        );
         let decoded: SnapshotStreamCheckpoint = file.parse().unwrap();
         assert_eq!(original, decoded);
     }

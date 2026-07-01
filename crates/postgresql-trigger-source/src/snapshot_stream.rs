@@ -119,7 +119,8 @@ impl PostgresTriggerWatermarkSource {
         {
             let c = client.lock().await;
             for table in &user_tables {
-                let pk_columns = surreal_sync_postgresql::get_primary_key_columns(&c, table).await?;
+                let pk_columns =
+                    surreal_sync_postgresql::get_primary_key_columns(&c, table).await?;
                 if pk_columns.is_empty() {
                     anyhow::bail!(
                         "Table '{table}' has no primary key; the snapshot-stream strategy requires \
@@ -339,7 +340,8 @@ impl WatermarkSource for PostgresTriggerWatermarkSource {
             if name == SIGNAL_TABLE || name == AUDIT_TABLE {
                 continue;
             }
-            let pk_columns = surreal_sync_postgresql::get_primary_key_columns(&client, name).await?;
+            let pk_columns =
+                surreal_sync_postgresql::get_primary_key_columns(&client, name).await?;
             if pk_columns.is_empty() {
                 anyhow::bail!(
                     "Table '{name}' requested by an execute-snapshot signal has no primary key; \
@@ -371,7 +373,9 @@ pub async fn request_snapshot(from_opts: &SourceOpts, tables: &[String]) -> Resu
     let id = Uuid::new_v4();
     let tables_json = serde_json::to_string(tables)?;
     c.execute(
-        &format!("INSERT INTO {SIGNAL_TABLE} (id, kind, tables, consumed) VALUES ($1, $2, $3, FALSE)"),
+        &format!(
+            "INSERT INTO {SIGNAL_TABLE} (id, kind, tables, consumed) VALUES ($1, $2, $3, FALSE)"
+        ),
         &[&id, &EXECUTE_SNAPSHOT_KIND, &tables_json],
     )
     .await?;

@@ -24,7 +24,6 @@ use std::fmt;
 use std::str::FromStr;
 
 use anyhow::{Context, Result};
-use tokio::sync::Mutex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use surreal_sink::SurrealSink;
 use surreal_sync_snapshot_stream::{
@@ -32,6 +31,7 @@ use surreal_sync_snapshot_stream::{
     StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
 };
 use sync_core::{UniversalChange, UniversalChangeOp, UniversalRow, UniversalValue};
+use tokio::sync::Mutex;
 use tokio_postgres::NoTls;
 use tracing::{debug, info};
 use uuid::Uuid;

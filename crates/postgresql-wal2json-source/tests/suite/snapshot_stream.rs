@@ -42,7 +42,9 @@ async fn pg_connect(conn: &str) -> Result<PgClient> {
 /// Create the `users` table and seed it with `n` rows (`val = v{i}`).
 async fn seed_users(client: &PgClient, n: i32) -> Result<()> {
     client
-        .batch_execute("DROP TABLE IF EXISTS users; CREATE TABLE users (id SERIAL PRIMARY KEY, val TEXT);")
+        .batch_execute(
+            "DROP TABLE IF EXISTS users; CREATE TABLE users (id SERIAL PRIMARY KEY, val TEXT);",
+        )
         .await?;
     for i in 1..=n {
         client
@@ -71,7 +73,9 @@ async fn surreal_users(db: &Surreal<Any>) -> Result<BTreeMap<i64, Option<String>
         id: i64,
         val: Option<String>,
     }
-    let mut resp = db.query("SELECT meta::id(id) AS id, val FROM users").await?;
+    let mut resp = db
+        .query("SELECT meta::id(id) AS id, val FROM users")
+        .await?;
     let rows: Vec<Row> = resp.take(0)?;
     Ok(rows.into_iter().map(|r| (r.id, r.val)).collect())
 }
@@ -290,7 +294,10 @@ async fn snapshot_stream_bounded_wal_retention() -> Result<()> {
     // Correctness is preserved: freeing never dropped an unapplied change.
     let expected = pg_users(&setup).await?;
     let actual = surreal_users(&db).await?;
-    assert_eq!(expected, actual, "parity broken under bounded-WAL retention");
+    assert_eq!(
+        expected, actual,
+        "parity broken under bounded-WAL retention"
+    );
 
     Ok(())
 }
@@ -305,8 +312,7 @@ async fn snapshot_stream_peak_buffer_independent_of_table_size() -> Result<()> {
         let setup = pg_connect(conn).await?;
         seed_users(&setup, rows).await?;
         let (sink, _db) = mem_sink().await?;
-        let mut source =
-            Wal2JsonWatermarkSource::connect(&source_opts(conn, slot)).await?;
+        let mut source = Wal2JsonWatermarkSource::connect(&source_opts(conn, slot)).await?;
         let config = SnapshotStreamConfig { chunk_size };
         let mut checkpointer = NoopCheckpointer;
         let result = run_snapshot_stream(&mut source, &sink, &config, &mut checkpointer).await?;
@@ -321,7 +327,10 @@ async fn snapshot_stream_peak_buffer_independent_of_table_size() -> Result<()> {
 
     assert_eq!(peak_small, 8, "peak should equal full chunk size");
     assert_eq!(peak_large, 8, "peak should equal full chunk size");
-    assert_eq!(peak_small, peak_large, "peak must not scale with table size");
+    assert_eq!(
+        peak_small, peak_large,
+        "peak must not scale with table size"
+    );
 
     Ok(())
 }

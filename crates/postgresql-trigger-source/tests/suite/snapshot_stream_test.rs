@@ -176,12 +176,9 @@ async fn snapshot_stream_parity_under_concurrent_writes() {
         let w = connect(&writer_uri).await;
         for i in 1..=50i64 {
             let val = format!("u{i}");
-            w.execute(
-                "UPDATE ss_parity SET val = $2 WHERE id = $1",
-                &[&i, &val],
-            )
-            .await
-            .unwrap();
+            w.execute("UPDATE ss_parity SET val = $2 WHERE id = $1", &[&i, &val])
+                .await
+                .unwrap();
         }
         for i in (n + 1)..=(n + 30) {
             let val = format!("v{i}");

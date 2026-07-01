@@ -4,7 +4,9 @@ use anyhow::Result;
 use sync_core::UniversalRow;
 use uuid::Uuid;
 
-use crate::types::{PkTuple, SnapshotSignal, StreamEvent, StreamPosition, TableSpec, WatermarkKind};
+use crate::types::{
+    PkTuple, SnapshotSignal, StreamEvent, StreamPosition, TableSpec, WatermarkKind,
+};
 
 /// A source capable of driving a DBLog-style watermark snapshot.
 ///

@@ -622,8 +622,12 @@ async fn run_full_snapshot_stream_v2(args: ResolvedWal2jsonFullArgs) -> anyhow::
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
-    let source_opts =
-        wal2json_source_opts(&args.connection_string, &args.slot, args.tables.clone(), &args.schema);
+    let source_opts = wal2json_source_opts(
+        &args.connection_string,
+        &args.slot,
+        args.tables.clone(),
+        &args.schema,
+    );
 
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
@@ -637,8 +641,10 @@ async fn run_full_snapshot_stream_v2(args: ResolvedWal2jsonFullArgs) -> anyhow::
                 &args.to_database,
             )
             .await?;
-            let manager =
-                SyncManager::new(checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone()));
+            let manager = SyncManager::new(checkpoint::Surreal2Store::new(
+                checkpoint_surreal,
+                table.clone(),
+            ));
             wal2json_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
         }
         (None, None) => {
@@ -671,8 +677,12 @@ async fn run_full_snapshot_stream_v3(args: ResolvedWal2jsonFullArgs) -> anyhow::
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
     let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
-    let source_opts =
-        wal2json_source_opts(&args.connection_string, &args.slot, args.tables.clone(), &args.schema);
+    let source_opts = wal2json_source_opts(
+        &args.connection_string,
+        &args.slot,
+        args.tables.clone(),
+        &args.schema,
+    );
 
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
@@ -680,8 +690,10 @@ async fn run_full_snapshot_stream_v3(args: ResolvedWal2jsonFullArgs) -> anyhow::
             wal2json_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
         }
         (None, Some(table)) => {
-            let manager =
-                SyncManager::new(checkpoint_surreal3::Surreal3Store::new(surreal, table.clone()));
+            let manager = SyncManager::new(checkpoint_surreal3::Surreal3Store::new(
+                surreal,
+                table.clone(),
+            ));
             wal2json_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
         }
         (None, None) => {
@@ -756,10 +768,18 @@ async fn wal2json_orchestrate<S: SurrealSink>(
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
-    let snapshot_opts =
-        wal2json_source_opts(&args.connection_string, &args.slot, args.tables.clone(), &args.schema);
-    let incremental_opts =
-        wal2json_source_opts(&args.connection_string, &args.slot, args.tables.clone(), &args.schema);
+    let snapshot_opts = wal2json_source_opts(
+        &args.connection_string,
+        &args.slot,
+        args.tables.clone(),
+        &args.schema,
+    );
+    let incremental_opts = wal2json_source_opts(
+        &args.connection_string,
+        &args.slot,
+        args.tables.clone(),
+        &args.schema,
+    );
     let chunk_size = args.chunk_size;
 
     orchestrate_snapshot_then_incremental(

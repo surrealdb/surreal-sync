@@ -465,7 +465,9 @@ pub async fn read_table_chunk(
         let mut cursor_values = Vec::with_capacity(pk_columns.len());
         for col in pk_columns {
             let v = values.get(col).cloned().ok_or_else(|| {
-                anyhow::anyhow!("Primary key column '{col}' not found in row for table '{table_name}'")
+                anyhow::anyhow!(
+                    "Primary key column '{col}' not found in row for table '{table_name}'"
+                )
             })?;
             cursor_values.push(v);
         }
@@ -484,10 +486,7 @@ pub async fn read_table_chunk(
         ));
     }
 
-    Ok(TableChunk {
-        rows: out,
-        last_pk,
-    })
+    Ok(TableChunk { rows: out, last_pk })
 }
 
 /// Convert a primary-key `UniversalValue` into a MySQL bind value for keyset

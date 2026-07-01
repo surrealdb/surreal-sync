@@ -403,7 +403,9 @@ where
 }
 
 async fn run_full_snapshot_stream_v2(args: ResolvedTriggerFullArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting snapshot-stream full sync from PostgreSQL (trigger) to SurrealDB (SDK v2)");
+    tracing::info!(
+        "Starting snapshot-stream full sync from PostgreSQL (trigger) to SurrealDB (SDK v2)"
+    );
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
     let surreal_opts = surreal2_sink::SurrealOpts {
@@ -429,8 +431,10 @@ async fn run_full_snapshot_stream_v2(args: ResolvedTriggerFullArgs) -> anyhow::R
                 &args.to_database,
             )
             .await?;
-            let manager =
-                SyncManager::new(checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone()));
+            let manager = SyncManager::new(checkpoint::Surreal2Store::new(
+                checkpoint_surreal,
+                table.clone(),
+            ));
             pg_trigger_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
         }
         (None, None) => {
@@ -449,7 +453,9 @@ async fn run_full_snapshot_stream_v2(args: ResolvedTriggerFullArgs) -> anyhow::R
 }
 
 async fn run_full_snapshot_stream_v3(args: ResolvedTriggerFullArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting snapshot-stream full sync from PostgreSQL (trigger) to SurrealDB (SDK v3)");
+    tracing::info!(
+        "Starting snapshot-stream full sync from PostgreSQL (trigger) to SurrealDB (SDK v3)"
+    );
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
     let surreal_opts = surreal3_sink::SurrealOpts {
@@ -469,8 +475,10 @@ async fn run_full_snapshot_stream_v3(args: ResolvedTriggerFullArgs) -> anyhow::R
             pg_trigger_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
         }
         (None, Some(table)) => {
-            let manager =
-                SyncManager::new(checkpoint_surreal3::Surreal3Store::new(surreal, table.clone()));
+            let manager = SyncManager::new(checkpoint_surreal3::Surreal3Store::new(
+                surreal,
+                table.clone(),
+            ));
             pg_trigger_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
         }
         (None, None) => {

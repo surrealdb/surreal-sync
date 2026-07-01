@@ -212,7 +212,8 @@ pub async fn read_table_chunk(
         None => String::new(),
     };
 
-    let query = format!("SELECT * FROM {table_name} {where_clause} ORDER BY {order_by} LIMIT {limit}");
+    let query =
+        format!("SELECT * FROM {table_name} {where_clause} ORDER BY {order_by} LIMIT {limit}");
     debug!("Chunk-reading table {table_name} with: {query}");
 
     let params: Vec<&(dyn ToSql + Sync)> = boxed_params
@@ -236,10 +237,7 @@ pub async fn read_table_chunk(
         out.push(record);
     }
 
-    Ok(TableChunk {
-        rows: out,
-        last_pk,
-    })
+    Ok(TableChunk { rows: out, last_pk })
 }
 
 /// Extract the raw primary-key column values from a row, in primary-key column

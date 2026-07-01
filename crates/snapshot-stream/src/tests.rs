@@ -377,9 +377,7 @@ async fn bounded_memory_independent_of_table_size() {
 
 #[tokio::test]
 async fn progress_and_handoff_checkpoints_persist() {
-    use checkpoint::{
-        FilesystemStore, SnapshotStreamCheckpoint, SyncManager, SyncPhase,
-    };
+    use checkpoint::{FilesystemStore, SnapshotStreamCheckpoint, SyncManager, SyncPhase};
     use tempfile::TempDir;
 
     let tmp = TempDir::new().unwrap();

@@ -317,12 +317,10 @@ async fn resolve_mysql_database(
         return Ok(db.clone());
     }
     let mut conn = pool.get_conn().await?;
-    let current: Option<String> = mysql_async::prelude::Queryable::query_first(
-        &mut conn,
-        "SELECT DATABASE()",
-    )
-    .await?
-    .flatten();
+    let current: Option<String> =
+        mysql_async::prelude::Queryable::query_first(&mut conn, "SELECT DATABASE()")
+            .await?
+            .flatten();
     current.ok_or_else(|| anyhow::anyhow!("No MySQL database selected; pass --database"))
 }
 
@@ -402,8 +400,10 @@ async fn run_full_snapshot_stream_v2(args: MySQLFullArgs) -> anyhow::Result<()> 
                 &args.to_database,
             )
             .await?;
-            let manager =
-                SyncManager::new(checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone()));
+            let manager = SyncManager::new(checkpoint::Surreal2Store::new(
+                checkpoint_surreal,
+                table.clone(),
+            ));
             mysql_snapshot_full(
                 &sink,
                 args.connection_string,
@@ -456,8 +456,10 @@ async fn run_full_snapshot_stream_v3(args: MySQLFullArgs) -> anyhow::Result<()> 
             .await
         }
         (None, Some(table)) => {
-            let manager =
-                SyncManager::new(checkpoint_surreal3::Surreal3Store::new(surreal, table.clone()));
+            let manager = SyncManager::new(checkpoint_surreal3::Surreal3Store::new(
+                surreal,
+                table.clone(),
+            ));
             mysql_snapshot_full(
                 &sink,
                 args.connection_string,

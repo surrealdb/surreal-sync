@@ -28,8 +28,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 fn init_logging() {
     let _ = tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .with(tracing_subscriber::fmt::layer())
         .try_init();
@@ -155,15 +154,8 @@ async fn source_value_map(
     let mut out = BTreeMap::new();
     let mut after: Option<Vec<UniversalValue>> = None;
     loop {
-        let chunk = read_table_chunk(
-            &mut conn,
-            table,
-            pk_columns,
-            after.as_deref(),
-            64,
-            &config,
-        )
-        .await?;
+        let chunk =
+            read_table_chunk(&mut conn, table, pk_columns, after.as_deref(), 64, &config).await?;
         if chunk.rows.is_empty() {
             break;
         }
@@ -268,8 +260,11 @@ async fn test_mysql_snapshot_stream_parity_under_concurrent_writes() -> Result<(
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
         for b in 1..=5 {
-            conn.exec_drop("UPDATE ledger SET amount = amount + 1000 WHERE a = 1 AND b = ?", (b,))
-                .await?;
+            conn.exec_drop(
+                "UPDATE ledger SET amount = amount + 1000 WHERE a = 1 AND b = ?",
+                (b,),
+            )
+            .await?;
         }
         for i in 100..=104 {
             conn.exec_drop("INSERT INTO items (id, val) VALUES (?, ?)", (i, i * 10))
@@ -282,11 +277,15 @@ async fn test_mysql_snapshot_stream_parity_under_concurrent_writes() -> Result<(
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
         for b in 1..=5 {
-            conn.exec_drop("INSERT INTO ledger (a, b, amount) VALUES (?, ?, ?)", (9, b, 9000 + b))
-                .await?;
+            conn.exec_drop(
+                "INSERT INTO ledger (a, b, amount) VALUES (?, ?, ?)",
+                (9, b, 9000 + b),
+            )
+            .await?;
         }
         for i in 38..=40 {
-            conn.exec_drop("DELETE FROM items WHERE id = ?", (i,)).await?;
+            conn.exec_drop("DELETE FROM items WHERE id = ?", (i,))
+                .await?;
             conn.exec_drop(
                 "DELETE FROM accounts WHERE account_code = ?",
                 (format!("acct-{:03}", i),),
@@ -399,7 +398,12 @@ async fn test_mysql_snapshot_stream_bounded_retention() -> Result<()> {
     // Retention is bounded: the audit table holds at most a few rows per window
     // (the current low/high watermarks), independent of how many windows ran.
     // Without per-chunk pruning it would grow to ~2 rows per window.
-    let max_count = checkpointer.samples.iter().copied().max().unwrap_or_default();
+    let max_count = checkpointer
+        .samples
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or_default();
     let bound = chunk_size as i64 + 4;
     assert!(
         max_count <= bound,
@@ -417,8 +421,7 @@ async fn test_mysql_snapshot_stream_bounded_retention() -> Result<()> {
     assert!(result.peak_buffered_rows <= chunk_size);
 
     // Correctness preserved: every snapshot row reached the sink.
-    let expected =
-        source_value_map(&pool, "widgets", &["id".to_string()], "val").await?;
+    let expected = source_value_map(&pool, "widgets", &["id".to_string()], "val").await?;
     let actual = sink.value_map("widgets", "val").await;
     assert_eq!(actual, expected, "snapshot parity mismatch for 'widgets'");
     assert_eq!(expected.len(), 120);

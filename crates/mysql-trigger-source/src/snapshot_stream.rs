@@ -22,8 +22,8 @@ use json_types::{convert_id_to_universal_value, JsonValueWithSchema};
 use mysql_async::{prelude::*, Pool, Row, Value};
 use surreal_sink::SurrealSink;
 use surreal_sync_snapshot_stream::{
-    run_snapshot_stream, PkTuple, SnapshotCheckpointer, SnapshotStreamConfig, SnapshotStreamResult,
-    SnapshotSignal, StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
+    run_snapshot_stream, PkTuple, SnapshotCheckpointer, SnapshotSignal, SnapshotStreamConfig,
+    SnapshotStreamResult, StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
 };
 use sync_core::{
     DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,
@@ -151,7 +151,11 @@ impl MySqlWatermarkSource {
     }
 
     fn conversion_config(&self, table: &str) -> RowConversionConfig {
-        let conv = self.conversion_by_table.get(table).cloned().unwrap_or_default();
+        let conv = self
+            .conversion_by_table
+            .get(table)
+            .cloned()
+            .unwrap_or_default();
         RowConversionConfig {
             boolean_columns: conv.boolean_columns,
             set_columns: conv.set_columns,
@@ -235,10 +239,16 @@ impl MySqlWatermarkSource {
                         };
                         UniversalValue::set(elements, Vec::new())
                     }
-                    _ => JsonValueWithSchema::new(value, col_type).to_typed_value().value,
+                    _ => {
+                        JsonValueWithSchema::new(value, col_type)
+                            .to_typed_value()
+                            .value
+                    }
                 }
             } else {
-                JsonValueWithSchema::new(value, col_type).to_typed_value().value
+                JsonValueWithSchema::new(value, col_type)
+                    .to_typed_value()
+                    .value
             };
             fields.insert(key, universal);
         }
@@ -338,9 +348,8 @@ impl WatermarkSource for MySqlWatermarkSource {
                 // Only surface the current low/high watermarks. Stale watermark
                 // rows are consumed (advancing the position so they get pruned)
                 // but never emitted, so they are never applied to the sink.
-                let id = Uuid::parse_str(&row_id).map_err(|e| {
-                    anyhow!("invalid watermark id '{row_id}' in signal table: {e}")
-                })?;
+                let id = Uuid::parse_str(&row_id)
+                    .map_err(|e| anyhow!("invalid watermark id '{row_id}' in signal table: {e}"))?;
                 if Some(id) == low || Some(id) == high {
                     events.push(StreamEvent {
                         position: sequence_id,
@@ -496,7 +505,8 @@ where
     S: SurrealSink,
     C: SnapshotCheckpointer,
 {
-    let result = run_mysql_snapshot_stream_result(pool, database, sink, config, checkpointer).await?;
+    let result =
+        run_mysql_snapshot_stream_result(pool, database, sink, config, checkpointer).await?;
     Ok(result.final_position)
 }
 
@@ -569,7 +579,9 @@ fn parse_new_data(
                 .map_err(|e| anyhow!("invalid JSON in audit new_data: {e}"))?;
             match json {
                 serde_json::Value::Object(map) => Ok(Some(map)),
-                other => Err(anyhow!("expected JSON object in audit new_data, got {other}")),
+                other => Err(anyhow!(
+                    "expected JSON object in audit new_data, got {other}"
+                )),
             }
         }
         _ => Ok(None),
