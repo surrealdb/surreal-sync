@@ -186,15 +186,40 @@ ssl.endpoint.identification.algorithm=
     Ok(())
 }
 
+fn docker_run_user_spec() -> Result<String> {
+    #[cfg(unix)]
+    {
+        let uid = Command::new("id")
+            .arg("-u")
+            .output()
+            .context("Failed to run id -u")?;
+        let gid = Command::new("id")
+            .arg("-g")
+            .output()
+            .context("Failed to run id -g")?;
+        if !uid.status.success() || !gid.status.success() {
+            anyhow::bail!("id command failed while resolving docker --user");
+        }
+        let uid = String::from_utf8(uid.stdout).context("id -u stdout")?;
+        let gid = String::from_utf8(gid.stdout).context("id -g stdout")?;
+        Ok(format!("{}:{}", uid.trim(), gid.trim()))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok("0".into())
+    }
+}
+
 fn run_cert_generation_in_docker(work_dir: &Path) -> Result<()> {
     let mount = format!("{}:/work", work_dir.display());
+    let user = docker_run_user_spec()?;
 
     let output = Command::new("docker")
         .args([
             "run",
             "--rm",
             "--user",
-            "0",
+            &user,
             "-v",
             &mount,
             DOCKER_IMAGE,
