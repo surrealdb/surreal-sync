@@ -79,6 +79,7 @@ See the source-specific documentation for implementation details:
 
 - **[MongoDB](mongodb.md)**: Change streams and resume token management
 - **[MySQL](mysql.md)**: Trigger-based CDC with sequence checkpointing ([legacy sequential-snapshot guide](mysql/legacy.md))
-- **[PostgreSQL](postgresql.md)**: Trigger-based CDC with sequence checkpointing
+- **[PostgreSQL](postgresql.md)**: Trigger-based CDC with sequence checkpointing ([legacy sequential-snapshot guide](postgresql/legacy.md))
+- **[PostgreSQL (wal2json)](postgresql-wal2json-source.md)**: Logical replication with wal2json ([legacy sequential-snapshot guide](postgresql-wal2json/legacy.md))
 - **[Neo4j](neo4j.md)**: Timestamp-based tracking with deletion limitations
 - **[JSONL](jsonl.md)**: File-based bulk import (no incremental sync)
