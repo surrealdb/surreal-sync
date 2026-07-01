@@ -9,6 +9,7 @@ mod client;
 mod full_sync;
 mod incremental_sync;
 mod interleaved_snapshot;
+mod json_columns;
 mod schema;
 mod source;
 

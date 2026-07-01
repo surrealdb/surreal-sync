@@ -175,6 +175,7 @@ async fn test_set_column_with_schema_detection() -> Result<()> {
     let config = RowConversionConfig {
         boolean_columns: vec![],
         set_columns: set_columns.clone(),
+        json_columns: vec![],
         json_config: None,
     };
 

@@ -92,7 +92,7 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     }
 
     // Collect schema information for boolean column detection
-    let schema_info = collect_schema_info(&mut conn).await?;
+    let schema_info = collect_schema_info(&mut conn, &database_name).await?;
     info!("Collected MySQL schema information");
 
     // Get list of tables to migrate (excluding system tables)
@@ -148,17 +148,21 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 }
 
 /// Schema information for a table, used for type-aware conversion
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct TableSchemaInfo {
     /// Columns that should be treated as boolean (TINYINT(1))
     boolean_columns: Vec<String>,
     /// Columns that are SET type (comma-separated values -> array)
     set_columns: Vec<String>,
+    /// Columns that hold JSON (native MySQL JSON or MariaDB `LONGTEXT`-backed
+    /// JSON), so they convert to a nested JSON value rather than text.
+    json_columns: Vec<String>,
 }
 
 /// Collect schema information for all tables in the database
 async fn collect_schema_info(
     conn: &mut mysql_async::Conn,
+    database_name: &str,
 ) -> Result<HashMap<String, TableSchemaInfo>> {
     let mut schema_info: HashMap<String, TableSchemaInfo> = HashMap::new();
 
@@ -181,10 +185,7 @@ async fn collect_schema_info(
 
         schema_info
             .entry(table_name)
-            .or_insert_with(|| TableSchemaInfo {
-                boolean_columns: Vec::new(),
-                set_columns: Vec::new(),
-            })
+            .or_default()
             .boolean_columns
             .push(column_name);
     }
@@ -208,12 +209,16 @@ async fn collect_schema_info(
 
         schema_info
             .entry(table_name)
-            .or_insert_with(|| TableSchemaInfo {
-                boolean_columns: Vec::new(),
-                set_columns: Vec::new(),
-            })
+            .or_default()
             .set_columns
             .push(column_name);
+    }
+
+    // Detect JSON columns (native MySQL JSON + MariaDB `json_valid`-checked
+    // LONGTEXT) so full-sync reads convert them to nested JSON on both engines.
+    let json_columns_by_table = crate::json_columns::get_json_columns(conn, database_name).await?;
+    for (table_name, columns) in json_columns_by_table {
+        schema_info.entry(table_name).or_default().json_columns = columns;
     }
 
     Ok(schema_info)
@@ -290,6 +295,9 @@ async fn migrate_table<S: SurrealSink>(
     let set_columns: Vec<String> = schema_info
         .map(|s| s.set_columns.clone())
         .unwrap_or_default();
+    let json_columns: Vec<String> = schema_info
+        .map(|s| s.json_columns.clone())
+        .unwrap_or_default();
 
     if !set_columns.is_empty() {
         debug!("Table {} has SET columns: {:?}", table_name, set_columns);
@@ -307,10 +315,11 @@ async fn migrate_table<S: SurrealSink>(
     let mut batch = Vec::new();
     let mut total_processed = 0;
 
-    // Build row conversion config with boolean and SET columns
+    // Build row conversion config with boolean, SET, and JSON columns
     let config = RowConversionConfig {
         boolean_columns: boolean_columns.clone(),
         set_columns: set_columns.clone(),
+        json_columns: json_columns.clone(),
         json_config: None,
     };
 

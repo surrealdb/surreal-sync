@@ -64,11 +64,12 @@ fn create_signal_table_sql() -> String {
     )
 }
 
-/// Per-table schema-aware row-conversion settings (boolean / SET columns).
+/// Per-table schema-aware row-conversion settings (boolean / SET / JSON columns).
 #[derive(Default, Clone)]
 struct TableConversion {
     boolean_columns: Vec<String>,
     set_columns: Vec<String>,
+    json_columns: Vec<String>,
 }
 
 /// A MySQL trigger-backed [`WatermarkSource`].
@@ -159,6 +160,7 @@ impl MySqlWatermarkSource {
         RowConversionConfig {
             boolean_columns: conv.boolean_columns,
             set_columns: conv.set_columns,
+            json_columns: conv.json_columns,
             json_config: None,
         }
     }
@@ -562,6 +564,7 @@ fn conversions_from_schema(schema: &DatabaseSchema) -> HashMap<String, TableConv
             match table.get_column_type(column) {
                 Some(UniversalType::Bool) => conv.boolean_columns.push(column.to_string()),
                 Some(UniversalType::Set { .. }) => conv.set_columns.push(column.to_string()),
+                Some(UniversalType::Json) => conv.json_columns.push(column.to_string()),
                 _ => {}
             }
         }

@@ -4,6 +4,7 @@
 //! for trigger-based incremental synchronization. This infrastructure is used by both
 //! full sync (to set up change tracking) and incremental sync (to read changes).
 
+use crate::json_columns::{get_json_columns, json_object_value_expr};
 use anyhow::{anyhow, Result};
 use mysql_async::{prelude::*, Row};
 use tracing::{info, warn};
@@ -26,6 +27,10 @@ pub async fn setup_mysql_change_tracking(
     )";
 
     conn.query_drop(create_table).await?;
+
+    // Detect JSON columns up front so triggers can nest them as real JSON
+    // (needed for MariaDB's LONGTEXT-backed JSON; a no-op for native MySQL JSON).
+    let json_columns_by_table = get_json_columns(conn, database_name).await?;
 
     // Get list of tables to set up triggers for
     let tables_query = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
@@ -75,7 +80,12 @@ pub async fn setup_mysql_change_tracking(
             continue;
         }
 
-        create_triggers_for_table(conn, &table_name, &columns, &pk_columns).await?;
+        let json_columns = json_columns_by_table
+            .get(&table_name)
+            .cloned()
+            .unwrap_or_default();
+
+        create_triggers_for_table(conn, &table_name, &columns, &pk_columns, &json_columns).await?;
     }
 
     info!("MySQL trigger-based change tracking setup completed");
@@ -126,23 +136,26 @@ fn build_row_id_expr(row_alias: &str, pk_columns: &[String]) -> String {
 /// Create INSERT, UPDATE, DELETE triggers for a specific table.
 ///
 /// `pk_columns` are the table's actual primary key column(s); they determine
-/// what is written to the audit table's `row_id` column.
+/// what is written to the audit table's `row_id` column. `json_columns` are the
+/// table's JSON columns, which are wrapped in `JSON_EXTRACT(..., '$')` so they
+/// nest as real JSON in the audit payload on both MySQL and MariaDB.
 pub async fn create_triggers_for_table(
     conn: &mut mysql_async::Conn,
     table_name: &str,
     columns: &[String],
     pk_columns: &[String],
+    json_columns: &[String],
 ) -> Result<()> {
     // Build column lists for JSON_OBJECT()
     let new_columns = columns
         .iter()
-        .map(|c| format!("'{c}', NEW.{c}"))
+        .map(|c| format!("'{c}', {}", json_object_value_expr("NEW", c, json_columns)))
         .collect::<Vec<_>>()
         .join(", ");
 
     let old_columns = columns
         .iter()
-        .map(|c| format!("'{c}', OLD.{c}"))
+        .map(|c| format!("'{c}', {}", json_object_value_expr("OLD", c, json_columns)))
         .collect::<Vec<_>>()
         .join(", ");
 

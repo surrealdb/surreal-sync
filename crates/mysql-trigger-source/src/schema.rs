@@ -36,6 +36,18 @@ pub async fn collect_mysql_database_schema(
 
     let pk_rows: Vec<mysql_async::Row> = conn.query(pk_query).await?;
 
+    // Detect JSON columns so MariaDB's `LONGTEXT`-backed JSON (reported as
+    // `longtext`, not `json`) is still mapped to `UniversalType::Json`, matching
+    // native MySQL JSON. This drives the incremental stream path in `source.rs`,
+    // which keys conversion off the schema type.
+    let json_columns = {
+        let current_db: Option<String> = conn.query_first("SELECT DATABASE()").await?;
+        match current_db {
+            Some(db) => crate::json_columns::get_json_columns(conn, &db).await?,
+            None => HashMap::new(),
+        }
+    };
+
     // Build primary key lookup: table_name -> first PK column name
     let mut pk_columns: HashMap<String, String> = HashMap::new();
     for row in pk_rows {
@@ -68,8 +80,14 @@ pub async fn collect_mysql_database_schema(
         let precision: Option<u32> = row.get::<Option<u32>, _>(4).unwrap_or(None);
         let scale: Option<u32> = row.get::<Option<u32>, _>(5).unwrap_or(None);
 
-        let universal_type =
-            mysql_column_to_universal_type(&data_type, &column_type, precision, scale);
+        let is_json = json_columns
+            .get(&table_name)
+            .is_some_and(|cols| cols.contains(&column_name));
+        let universal_type = if is_json {
+            UniversalType::Json
+        } else {
+            mysql_column_to_universal_type(&data_type, &column_type, precision, scale)
+        };
 
         table_columns
             .entry(table_name)

@@ -133,6 +133,39 @@ pub async fn create_mysql_test_db(
     Ok(test_conn)
 }
 
+/// Returns a shared MariaDB container, starting it on first call.
+///
+/// Uses the same [`MySQLContainer`](surreal_sync_mysql_trigger_source::testing::MySQLContainer)
+/// as MySQL (MariaDB speaks the MySQL wire protocol) but with the `mariadb:11`
+/// image.
+pub async fn shared_mariadb() -> &'static surreal_sync_mysql_trigger_source::testing::MySQLContainer
+{
+    static MDB: OnceCell<surreal_sync_mysql_trigger_source::testing::MySQLContainer> =
+        OnceCell::const_new();
+    MDB.get_or_init(|| async {
+        let name = format!("shared-mariadb-{}", std::process::id());
+        register_container(&name);
+        let mut c = surreal_sync_mysql_trigger_source::testing::MySQLContainer::mariadb(&name);
+        c.start().expect("MariaDB start failed");
+        c.wait_until_ready(60)
+            .await
+            .expect("MariaDB not ready in 60s");
+        c
+    })
+    .await
+}
+
+/// Create a fresh MariaDB database for a test.
+///
+/// MariaDB uses the same [`MySQLContainer`](surreal_sync_mysql_trigger_source::testing::MySQLContainer)
+/// as MySQL, so this delegates to [`create_mysql_test_db`].
+pub async fn create_mariadb_test_db(
+    container: &surreal_sync_mysql_trigger_source::testing::MySQLContainer,
+    test_id: u64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    create_mysql_test_db(container, test_id).await
+}
+
 /// Returns a shared MongoDB container, starting it on first call.
 pub async fn shared_mongodb() -> &'static crate::testing::mongodb_container::MongoContainer {
     static MG: OnceCell<crate::testing::mongodb_container::MongoContainer> = OnceCell::const_new();

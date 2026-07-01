@@ -14,15 +14,28 @@ pub struct MySQLContainer {
 }
 
 impl MySQLContainer {
-    /// Creates a new container configuration. Call [`start`](Self::start) before
-    /// using the connection.
+    /// Creates a new MySQL container configuration (image `mysql:8.0`). Call
+    /// [`start`](Self::start) before using the connection.
     pub fn new(container_name: &str) -> Self {
+        Self::with_image(container_name, "mysql:8.0")
+    }
+
+    /// Creates a container configuration for an arbitrary MySQL-compatible image
+    /// (e.g. `mysql:8.0`, `mariadb:11`). MariaDB speaks the MySQL wire protocol,
+    /// honors `MYSQL_ROOT_PASSWORD`/`MYSQL_DATABASE`, and connects via the
+    /// `mysql://` scheme, so it reuses this container wholesale.
+    pub fn with_image(container_name: &str, image: &str) -> Self {
         Self {
             container_name: container_name.to_string(),
-            image_name: "mysql:8.0".to_string(),
+            image_name: image.to_string(),
             host_port: 0,
             connection_string: String::new(),
         }
+    }
+
+    /// Convenience constructor for a MariaDB container (image `mariadb:11`).
+    pub fn mariadb(container_name: &str) -> Self {
+        Self::with_image(container_name, "mariadb:11")
     }
 
     /// Starts the container with dynamic port binding and discovers the assigned port.
