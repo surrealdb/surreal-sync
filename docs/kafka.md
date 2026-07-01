@@ -80,6 +80,37 @@ For secured Kafka clusters, set `--security-protocol` to `SASL_PLAINTEXT` or `SA
 | `--sasl-password <PASS>` | `KAFKA_SASL_PASSWORD` | SASL password |
 | `--sasl-mechanism <MECH>` | — | `SCRAM-SHA-256`, `SCRAM-SHA-512`, or `PLAIN` |
 
+### TLS / mTLS
+
+When `--security-protocol` is `SSL` or `SASL_SSL`, you can configure TLS trust and optional mutual TLS (mTLS) client authentication. These flags map to librdkafka `ssl.*` settings and are ignored for `PLAINTEXT` and `SASL_PLAINTEXT`.
+
+| Flag | Env var | Description |
+|------|---------|-------------|
+| `--ssl-ca-location <PATH>` | `KAFKA_SSL_CA_LOCATION` | Custom CA certificate for broker verification (omit to use the system trust store) |
+| `--ssl-certificate-location <PATH>` | `KAFKA_SSL_CERTIFICATE_LOCATION` | Client certificate for mTLS (must be paired with `--ssl-key-location`) |
+| `--ssl-key-location <PATH>` | `KAFKA_SSL_KEY_LOCATION` | Client private key for mTLS (must be paired with `--ssl-certificate-location`) |
+| `--ssl-key-password <PASS>` | `KAFKA_SSL_KEY_PASSWORD` | Password for an encrypted client private key (optional) |
+
+Example combining SASL, a custom CA, and mTLS client credentials:
+
+```bash
+surreal-sync from kafka \
+  --proto-path ./schemas/user.proto \
+  --brokers kafka.example.com:9093 \
+  --group-id user-sync \
+  --topic users \
+  --message-type User \
+  --security-protocol SASL_SSL \
+  --sasl-mechanism SCRAM-SHA-256 \
+  --sasl-username "$KAFKA_SASL_USERNAME" \
+  --sasl-password "$KAFKA_SASL_PASSWORD" \
+  --ssl-ca-location /etc/kafka/secrets/ca.pem \
+  --ssl-certificate-location /etc/kafka/secrets/client.pem \
+  --ssl-key-location /etc/kafka/secrets/client.key \
+  --to-namespace production \
+  --to-database users
+```
+
 Run `surreal-sync from kafka --help` for full flag details.
 
 ### SurrealDB Connection Settings
@@ -495,7 +526,7 @@ For production deployments that need continuous consumption:
 
 ### Kafka Client Settings Flexibility
 
-surreal-sync uses the Kafka client library (librdkafka) with a fixed set of settings (brokers, consumer group, session timeout, and optional SASL authentication). All other librdkafka settings use their defaults.
+surreal-sync uses the Kafka client library (librdkafka) with a fixed set of settings (brokers, consumer group, session timeout, optional SASL authentication, and optional TLS/mTLS certificate paths). All other librdkafka settings use their defaults.
 
 See [librdkafka Configuration Documentation](https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md) for complete details on all settings and their defaults.
 

@@ -66,6 +66,10 @@ impl SecurityProtocol {
             SecurityProtocol::SaslPlaintext | SecurityProtocol::SaslSsl
         )
     }
+
+    pub fn uses_ssl(&self) -> bool {
+        matches!(self, SecurityProtocol::Ssl | SecurityProtocol::SaslSsl)
+    }
 }
 
 /// Configuration for Kafka consumer
@@ -119,6 +123,14 @@ pub struct ConsumerConfig {
     pub sasl_mechanism: Option<SaslMechanism>,
     /// Security protocol. When None, rdkafka defaults to PLAINTEXT (no auth).
     pub security_protocol: Option<SecurityProtocol>,
+    /// Path to CA certificate file for broker verification (`ssl.ca.location`)
+    pub ssl_ca_location: Option<String>,
+    /// Path to client certificate file for mTLS (`ssl.certificate.location`)
+    pub ssl_certificate_location: Option<String>,
+    /// Path to client private key file for mTLS (`ssl.key.location`)
+    pub ssl_key_location: Option<String>,
+    /// Password for the client private key (`ssl.key.password`)
+    pub ssl_key_password: Option<String>,
 }
 
 impl Default for ConsumerConfig {
@@ -136,8 +148,47 @@ impl Default for ConsumerConfig {
             sasl_password: None,
             sasl_mechanism: None,
             security_protocol: None,
+            ssl_ca_location: None,
+            ssl_certificate_location: None,
+            ssl_key_location: None,
+            ssl_key_password: None,
         }
     }
+}
+
+fn validate_mtls_pairing(config: &ConsumerConfig) -> Result<()> {
+    let has_cert = config.ssl_certificate_location.is_some();
+    let has_key = config.ssl_key_location.is_some();
+    if has_cert != has_key {
+        return Err(Error::Consumer(
+            "ssl_certificate_location and ssl_key_location must both be set for mTLS client authentication"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn ssl_config_entries(config: &ConsumerConfig) -> Vec<(&'static str, &str)> {
+    let mut entries = Vec::new();
+    let Some(protocol) = config.security_protocol.as_ref() else {
+        return entries;
+    };
+    if !protocol.uses_ssl() {
+        return entries;
+    }
+    if let Some(ca) = config.ssl_ca_location.as_deref() {
+        entries.push(("ssl.ca.location", ca));
+    }
+    if let Some(cert) = config.ssl_certificate_location.as_deref() {
+        entries.push(("ssl.certificate.location", cert));
+    }
+    if let Some(key) = config.ssl_key_location.as_deref() {
+        entries.push(("ssl.key.location", key));
+    }
+    if let Some(password) = config.ssl_key_password.as_deref() {
+        entries.push(("ssl.key.password", password));
+    }
+    entries
 }
 
 /// Kafka consumer with peek buffer and manual offset management
@@ -168,6 +219,8 @@ impl Consumer {
             }
         }
 
+        validate_mtls_pairing(&config)?;
+
         let mut client_config = ClientConfig::new();
         client_config
             .set("bootstrap.servers", &config.brokers)
@@ -189,6 +242,10 @@ impl Consumer {
                     .set("sasl.username", config.sasl_username.as_deref().unwrap())
                     .set("sasl.password", config.sasl_password.as_deref().unwrap());
             }
+        }
+
+        for (key, value) in ssl_config_entries(&config) {
+            client_config.set(key, value);
         }
 
         let consumer: RdkafkaStreamConsumer = client_config
@@ -379,6 +436,18 @@ mod tests {
         assert!(!SecurityProtocol::Ssl.requires_sasl());
     }
 
+    #[test]
+    fn uses_ssl_for_ssl_protocols() {
+        assert!(SecurityProtocol::Ssl.uses_ssl());
+        assert!(SecurityProtocol::SaslSsl.uses_ssl());
+    }
+
+    #[test]
+    fn uses_ssl_false_for_non_ssl_protocols() {
+        assert!(!SecurityProtocol::Plaintext.uses_ssl());
+        assert!(!SecurityProtocol::SaslPlaintext.uses_ssl());
+    }
+
     fn config_with_sasl_protocol(protocol: SecurityProtocol) -> ConsumerConfig {
         ConsumerConfig {
             security_protocol: Some(protocol),
@@ -461,6 +530,76 @@ mod tests {
                 "unexpected SASL error when no protocol set: {e}"
             );
         }
+    }
+
+    #[test]
+    fn rejects_cert_without_key() {
+        let config = ConsumerConfig {
+            ssl_certificate_location: Some("/path/to/client.pem".into()),
+            ..Default::default()
+        };
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err.to_string().contains("ssl_certificate_location"));
+        assert!(err.to_string().contains("ssl_key_location"));
+    }
+
+    #[test]
+    fn rejects_key_without_cert() {
+        let config = ConsumerConfig {
+            ssl_key_location: Some("/path/to/client.key".into()),
+            ..Default::default()
+        };
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err.to_string().contains("ssl_certificate_location"));
+        assert!(err.to_string().contains("ssl_key_location"));
+    }
+
+    #[test]
+    fn ssl_config_skipped_for_plaintext_protocols() {
+        for protocol in [SecurityProtocol::Plaintext, SecurityProtocol::SaslPlaintext] {
+            let protocol_for_msg = format!("{protocol:?}");
+            let config = ConsumerConfig {
+                security_protocol: Some(protocol),
+                ssl_ca_location: Some("/ca.pem".into()),
+                ssl_certificate_location: Some("/client.pem".into()),
+                ssl_key_location: Some("/client.key".into()),
+                ssl_key_password: Some("secret".into()),
+                ..Default::default()
+            };
+            assert!(
+                ssl_config_entries(&config).is_empty(),
+                "SSL settings should not apply for {protocol_for_msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn ssl_config_applied_for_ssl_protocols() {
+        let config = ConsumerConfig {
+            security_protocol: Some(SecurityProtocol::SaslSsl),
+            ssl_ca_location: Some("/ca.pem".into()),
+            ssl_certificate_location: Some("/client.pem".into()),
+            ssl_key_location: Some("/client.key".into()),
+            ssl_key_password: Some("secret".into()),
+            ..Default::default()
+        };
+        let entries = ssl_config_entries(&config);
+        assert_eq!(entries.len(), 4);
+        assert!(entries.contains(&("ssl.ca.location", "/ca.pem")));
+        assert!(entries.contains(&("ssl.certificate.location", "/client.pem")));
+        assert!(entries.contains(&("ssl.key.location", "/client.key")));
+        assert!(entries.contains(&("ssl.key.password", "secret")));
+    }
+
+    #[test]
+    fn ssl_config_ca_only_without_mtls() {
+        let config = ConsumerConfig {
+            security_protocol: Some(SecurityProtocol::Ssl),
+            ssl_ca_location: Some("/ca.pem".into()),
+            ..Default::default()
+        };
+        let entries = ssl_config_entries(&config);
+        assert_eq!(entries, vec![("ssl.ca.location", "/ca.pem")]);
     }
 
     /// Minimal decoder — validation tests fail before decoding is ever attempted.

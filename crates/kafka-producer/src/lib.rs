@@ -65,6 +65,12 @@ mod protos;
 // Docker container management for Kafka test instances
 pub mod container;
 
+// TLS certificate generation for secured Kafka tests
+pub mod certs;
+
+// SASL_SSL + mTLS Kafka test container
+pub mod secure_container;
+
 // Test data helpers module
 pub mod testdata;
 
@@ -75,33 +81,191 @@ pub use protos::user_post_relation::UserPostRelation;
 
 pub use testdata::{publish_test_posts, publish_test_relations, publish_test_users};
 
+pub use certs::{
+    KafkaTestSecrets, DEFAULT_SASL_PASSWORD, DEFAULT_SASL_USERNAME, INTER_BROKER_PASSWORD,
+    INTER_BROKER_USERNAME, TEST_JKS_PASSWORD,
+};
+pub use secure_container::SecureKafkaContainer;
+
+/// SASL authentication mechanism for test Kafka clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SaslMechanism {
+    ScramSha256,
+    ScramSha512,
+    Plain,
+}
+
+impl SaslMechanism {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SaslMechanism::ScramSha256 => "SCRAM-SHA-256",
+            SaslMechanism::ScramSha512 => "SCRAM-SHA-512",
+            SaslMechanism::Plain => "PLAIN",
+        }
+    }
+}
+
+/// Kafka security protocol for test Kafka clients.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecurityProtocol {
+    Plaintext,
+    Ssl,
+    SaslPlaintext,
+    SaslSsl,
+}
+
+impl SecurityProtocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SecurityProtocol::Plaintext => "PLAINTEXT",
+            SecurityProtocol::Ssl => "SSL",
+            SecurityProtocol::SaslPlaintext => "SASL_PLAINTEXT",
+            SecurityProtocol::SaslSsl => "SASL_SSL",
+        }
+    }
+
+    pub fn requires_sasl(&self) -> bool {
+        matches!(
+            self,
+            SecurityProtocol::SaslPlaintext | SecurityProtocol::SaslSsl
+        )
+    }
+
+    pub fn uses_ssl(&self) -> bool {
+        matches!(self, SecurityProtocol::Ssl | SecurityProtocol::SaslSsl)
+    }
+}
+
+/// Connection and security options shared by producer and admin clients.
+#[derive(Debug, Clone, Default)]
+pub struct KafkaConnectionOptions {
+    pub brokers: String,
+    pub security_protocol: Option<SecurityProtocol>,
+    pub sasl_mechanism: Option<SaslMechanism>,
+    pub sasl_username: Option<String>,
+    pub sasl_password: Option<String>,
+    pub ssl_ca_location: Option<String>,
+    pub ssl_certificate_location: Option<String>,
+    pub ssl_key_location: Option<String>,
+    pub ssl_key_password: Option<String>,
+}
+
+impl KafkaConnectionOptions {
+    /// PLAINTEXT connection to the given broker address.
+    pub fn plaintext(brokers: impl Into<String>) -> Self {
+        Self {
+            brokers: brokers.into(),
+            ..Default::default()
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        if let Some(protocol) = self.security_protocol {
+            if protocol.requires_sasl() {
+                if self.sasl_username.is_none() || self.sasl_password.is_none() {
+                    anyhow::bail!(
+                        "Security protocol '{}' requires both sasl_username and sasl_password",
+                        protocol.as_str()
+                    );
+                }
+                if self.sasl_mechanism.is_none() {
+                    anyhow::bail!(
+                        "Security protocol '{}' requires sasl_mechanism to be set",
+                        protocol.as_str()
+                    );
+                }
+            }
+        }
+
+        let has_cert = self.ssl_certificate_location.is_some();
+        let has_key = self.ssl_key_location.is_some();
+        if has_cert != has_key {
+            anyhow::bail!(
+                "ssl_certificate_location and ssl_key_location must both be set for mTLS client authentication"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Apply security settings to an rdkafka client configuration.
+    pub fn apply_to_client_config(&self, config: &mut ClientConfig) -> Result<()> {
+        self.validate()?;
+
+        config
+            .set("bootstrap.servers", &self.brokers)
+            .set("message.timeout.ms", "5000");
+
+        if let Some(protocol) = self.security_protocol {
+            config.set("security.protocol", protocol.as_str());
+
+            if protocol.requires_sasl() {
+                config
+                    .set(
+                        "sasl.mechanism",
+                        self.sasl_mechanism.as_ref().unwrap().as_str(),
+                    )
+                    .set("sasl.username", self.sasl_username.as_deref().unwrap())
+                    .set("sasl.password", self.sasl_password.as_deref().unwrap());
+            }
+
+            if protocol.uses_ssl() {
+                if let Some(ca) = &self.ssl_ca_location {
+                    config.set("ssl.ca.location", ca);
+                }
+                if let Some(cert) = &self.ssl_certificate_location {
+                    config.set("ssl.certificate.location", cert);
+                }
+                if let Some(key) = &self.ssl_key_location {
+                    config.set("ssl.key.location", key);
+                }
+                if let Some(password) = &self.ssl_key_password {
+                    config.set("ssl.key.password", password);
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
 /// Kafka producer wrapper for testing
 pub struct KafkaTestProducer {
     producer: FutureProducer,
-    broker: String,
+    options: KafkaConnectionOptions,
 }
 
 impl KafkaTestProducer {
-    /// Create a new Kafka test producer
-    pub async fn new(broker: &str) -> Result<Self> {
-        let producer: FutureProducer = ClientConfig::new()
-            .set("bootstrap.servers", broker)
-            .set("message.timeout.ms", "5000")
-            .create()
-            .context("Failed to create Kafka producer")?;
+    /// Connect to Kafka with explicit security options.
+    pub async fn connect(options: &KafkaConnectionOptions) -> Result<Self> {
+        let mut config = ClientConfig::new();
+        options
+            .apply_to_client_config(&mut config)
+            .context("Invalid Kafka connection options")?;
+
+        let producer: FutureProducer =
+            config.create().context("Failed to create Kafka producer")?;
 
         Ok(Self {
             producer,
-            broker: broker.to_string(),
+            options: options.clone(),
         })
+    }
+
+    /// Create a PLAINTEXT Kafka test producer (backward-compatible wrapper).
+    pub async fn new(broker: &str) -> Result<Self> {
+        Self::connect(&KafkaConnectionOptions::plaintext(broker)).await
     }
 
     /// Create Kafka topic if it doesn't exist
     pub async fn create_topic_if_not_exists(&self, topic: &str, partitions: i32) -> Result<()> {
-        let admin_client: AdminClient<DefaultClientContext> = ClientConfig::new()
-            .set("bootstrap.servers", &self.broker)
-            .create()
-            .context("Failed to create admin client")?;
+        let mut config = ClientConfig::new();
+        self.options
+            .apply_to_client_config(&mut config)
+            .context("Invalid Kafka connection options")?;
+
+        let admin_client: AdminClient<DefaultClientContext> =
+            config.create().context("Failed to create admin client")?;
 
         let new_topic = NewTopic::new(topic, partitions, TopicReplication::Fixed(1));
         let opts = AdminOptions::new().operation_timeout(Some(Duration::from_secs(5)));

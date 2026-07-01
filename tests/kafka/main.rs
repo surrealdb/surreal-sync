@@ -4,3 +4,4 @@
 //! that does not require full sync or checkpoint management.
 
 mod incremental_sync_lib;
+mod sasl_ssl_mtls_sync;
