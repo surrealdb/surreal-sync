@@ -1,8 +1,8 @@
 [package]
-name = "surreal-sync-snapshot-stream"
+name = "surreal-sync-interleaved-snapshot"
 version = "0.1.0"
 edition = "2021"
-description = "Generic watermark-based snapshot+stream full-sync framework for surreal-sync"
+description = "Generic watermark-based interleaved snapshot full-sync framework for surreal-sync"
 license = "MIT"
 
 [dependencies]

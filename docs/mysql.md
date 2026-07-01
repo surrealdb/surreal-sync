@@ -12,12 +12,12 @@ Change capture is trigger-based: an audit table (`surreal_sync_changes`) populat
 
 Full sync offers two strategies, selected with `--strategy`:
 
-- **`snapshot-stream` (default)** — A DBLog-style watermark snapshot interleaved with the trigger change stream. Tables are copied in primary-key-ordered, resumable chunks (`--chunk-size`, default 1024) while the audit-table stream is consumed concurrently; watermark windows reconcile snapshot reads against live changes (the log event wins). The result converges to a consistent image at the end position (≈ t2) and then keeps tracking live — it is **not** a frozen t1 snapshot. It uses bounded memory (O(chunk_size)) and prunes consumed rows from `surreal_sync_changes` as it goes, so the audit table does not grow for the whole snapshot. It requires a primary key on every selected table and writes a small `surreal_sync_signal` table to the source.
-- **`bulk`** — The original strategy: a monolithic `SELECT *` per table bracketed by t1/t2 checkpoints. The dump can mix row versions between t1 and t2, so a separate `incremental` run from t1 is required to make the target consistent at t2. Use this when a table has no usable primary key, or when writing the signal table to the source is not permitted.
+- **`interleaved-snapshot` (default)** — A DBLog-style watermark snapshot copied concurrently/interleaved with the trigger change stream. Tables are copied in primary-key-ordered, resumable chunks (`--chunk-size`, default 1024) while the audit-table stream is consumed concurrently; watermark windows reconcile snapshot reads against live changes (the log event wins). The result converges to a consistent image at the end position (≈ t2) and then keeps tracking live — it is **not** a frozen t1 snapshot. It uses bounded memory (O(chunk_size)) and prunes consumed rows from `surreal_sync_changes` as it goes, so the audit table does not grow for the whole snapshot (bounded retention). It requires a primary key on every selected table and writes a small `surreal_sync_signal` table to the source.
+- **`sequential-snapshot`** — The original strategy: a monolithic `SELECT *` per table bracketed by t1/t2 checkpoints, then a separate replay of the [t1,t2] change log via an `incremental` run from t1 to make the target consistent at t2 (the audit log is pinned for the whole snapshot: unbounded retention). Use this when a table has no usable primary key, or when writing the signal table to the source is not permitted.
 
 See [Full Sync Strategies](design.md#full-sync-strategies) for the side-by-side comparison and the consistency guarantee.
 
-**Behavior change for existing users:** `snapshot-stream` is now the default. Compared to the previous behavior, it creates a `surreal_sync_signal` table on the source and requires every selected table to have a primary key. Pass `--strategy bulk` to keep the previous monolithic full-sync behavior.
+**Behavior change for existing users:** `interleaved-snapshot` is now the default. Compared to the previous behavior, it creates a `surreal_sync_signal` table on the source and requires every selected table to have a primary key. Pass `--strategy sequential-snapshot` to keep the previous monolithic full-sync behavior. (The previous strategy values `snapshot-stream` and `bulk` have been renamed to `interleaved-snapshot` and `sequential-snapshot`.)
 
 ## Prerequisites
 
@@ -31,7 +31,7 @@ You can start a full sync via the `surreal-sync from mysql full` command like be
 export CONNECTION_STRING="mysql://root:root@mysql:3306/myapp"
 export SURREAL_ENDPOINT="ws://localhost:8000"
 
-# Full sync (snapshot-stream by default; automatically sets up triggers for incremental sync)
+# Full sync (interleaved-snapshot by default; automatically sets up triggers for incremental sync)
 surreal-sync from mysql full \
   # Source = MySQL settings
   --connection-string "$CONNECTION_STRING" \
@@ -45,7 +45,7 @@ surreal-sync from mysql full \
   --checkpoint-dir ".surreal-sync-checkpoints"
 ```
 
-By default this runs the `snapshot-stream` strategy (tune the chunk with `--chunk-size <N>`, default 1024). Add `--strategy bulk` to use the original monolithic strategy instead.
+By default this runs the `interleaved-snapshot` strategy (tune the chunk with `--chunk-size <N>`, default 1024). Add `--strategy sequential-snapshot` to use the original monolithic strategy instead.
 
 Checkpoint emission is enabled by providing a checkpoint store — either `--checkpoint-dir <DIR>` (filesystem) or `--checkpoints-surreal-table <TABLE>` (stored in SurrealDB). It is necessary when you want to start incremental syncs after the full sync, so the command knows where to continue the sync.
 
@@ -56,9 +56,9 @@ INFO surreal_sync::mysql: Emitted full sync start checkpoint (t1): mysql:sequenc
 INFO surreal_sync::mysql: Emitted full sync end checkpoint (t2): mysql:sequence:123
 ```
 
-With the **bulk** strategy you must specify t1 (not t2) as the starting point for incremental sync. This corresponds to the fact that bulk full sync may produce an inconsistent snapshot of the MySQL tables, depending on the MySQL isolation guarantee you chose. By reading and applying changes made since t1 instead of t2, when the incremental sync writes all the changes up to t2, the target SurrealDB tables can be viewed as consistent with the source tables at t2.
+With the **sequential-snapshot** strategy you must specify t1 (not t2) as the starting point for incremental sync. This corresponds to the fact that sequential-snapshot full sync may produce an inconsistent snapshot of the MySQL tables, depending on the MySQL isolation guarantee you chose. By reading and applying changes made since t1 instead of t2, when the incremental sync writes all the changes up to t2, the target SurrealDB tables can be viewed as consistent with the source tables at t2.
 
-With the **snapshot-stream** strategy the start and end checkpoints both record the consistent end position (≈ t2), because the snapshot is already reconciled against the live stream via watermarks. Start incremental sync from either, or prefer the combined [`sync`](#combined-snapshotstream-sync) command, which performs the handoff in one process.
+With the **interleaved-snapshot** strategy the start and end checkpoints both record the consistent end position (≈ t2), because the snapshot is already reconciled against the live stream via watermarks. Start incremental sync from either, or prefer the combined [`sync`](#combined-interleaved-snapshot-sync) command, which performs the handoff in one process.
 
 ## Incremental Sync
 
@@ -99,9 +99,9 @@ While the incremental sync is running, your application can continue writing to 
 
 Doing incremental sync does not necessarily incur downtime to your application, as long as the source MySQL database can serve the entire workloads.
 
-## Combined snapshot+stream sync
+## Combined interleaved snapshot sync
 
-With the `snapshot-stream` strategy you usually don't need two separate runs. The `sync` command runs the watermark snapshot and then continues incremental sync from the handed-off end position, in a single process:
+With the `interleaved-snapshot` strategy you usually don't need two separate runs. The `sync` command runs the watermark snapshot and then continues incremental sync from the handed-off end position, in a single process:
 
 ```bash
 surreal-sync from mysql sync \
@@ -147,7 +147,7 @@ SHOW TRIGGERS LIKE 'surreal_sync_%';
 
 ### Audit Table Cleanup
 
-The `snapshot-stream` strategy prunes consumed rows from `surreal_sync_changes` automatically as the stream is applied, keeping it bounded. For the `bulk` strategy (or long-running standalone `incremental` runs) the audit table may grow over time, so consider periodic cleanup:
+The `interleaved-snapshot` strategy prunes consumed rows from `surreal_sync_changes` automatically as the stream is applied, keeping it bounded. For the `sequential-snapshot` strategy (or long-running standalone `incremental` runs) the audit table may grow over time, so consider periodic cleanup:
 
 ```sql
 -- Check audit table size

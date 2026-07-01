@@ -9,8 +9,8 @@ use anyhow::Context;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use surreal_sink::SurrealSink;
 use surreal_sync::orchestrate_snapshot_then_incremental;
+use surreal_sync_interleaved_snapshot::{InterleavedSnapshotConfig, NoopCheckpointer};
 use surreal_sync_mysql_trigger_source::MySQLCheckpoint;
-use surreal_sync_snapshot_stream::{NoopCheckpointer, SnapshotStreamConfig};
 
 use super::{get_sdk_version, load_schema_if_provided, SdkVersion};
 use crate::{MySQLFullArgs, MySQLIncrementalArgs, MySQLSnapshotArgs, MySQLSyncArgs, SyncStrategy};
@@ -24,10 +24,14 @@ pub async fn run_full(args: MySQLFullArgs) -> anyhow::Result<()> {
     .await?;
 
     match (args.strategy, sdk_version) {
-        (SyncStrategy::Bulk, SdkVersion::V2) => run_full_v2(args).await,
-        (SyncStrategy::Bulk, SdkVersion::V3) => run_full_v3(args).await,
-        (SyncStrategy::SnapshotStream, SdkVersion::V2) => run_full_snapshot_stream_v2(args).await,
-        (SyncStrategy::SnapshotStream, SdkVersion::V3) => run_full_snapshot_stream_v3(args).await,
+        (SyncStrategy::SequentialSnapshot, SdkVersion::V2) => run_full_v2(args).await,
+        (SyncStrategy::SequentialSnapshot, SdkVersion::V3) => run_full_v3(args).await,
+        (SyncStrategy::InterleavedSnapshot, SdkVersion::V2) => {
+            run_full_interleaved_snapshot_v2(args).await
+        }
+        (SyncStrategy::InterleavedSnapshot, SdkVersion::V3) => {
+            run_full_interleaved_snapshot_v3(args).await
+        }
     }
 }
 
@@ -304,7 +308,7 @@ async fn run_incremental_v2(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
 }
 
 // =============================================================================
-// Watermark snapshot+stream strategy
+// Interleaved snapshot strategy
 // =============================================================================
 
 /// Resolve the MySQL database name from the explicit option or the connection's
@@ -324,7 +328,7 @@ async fn resolve_mysql_database(
     current.ok_or_else(|| anyhow::anyhow!("No MySQL database selected; pass --database"))
 }
 
-/// Run a MySQL watermark snapshot+stream full sync, emitting the handoff
+/// Run a MySQL interleaved snapshot full sync, emitting the handoff
 /// position as a checkpoint (when checkpoint storage is configured) so a later
 /// `incremental` run can resume from the consistent end position.
 async fn mysql_snapshot_full<S, St>(
@@ -340,9 +344,9 @@ where
 {
     let pool = surreal_sync_mysql_trigger_source::new_mysql_pool(&connection_string)?;
     let database = resolve_mysql_database(&pool, &database).await?;
-    let config = SnapshotStreamConfig { chunk_size };
+    let config = InterleavedSnapshotConfig { chunk_size };
     let mut checkpointer = NoopCheckpointer;
-    let final_seq = surreal_sync_mysql_trigger_source::run_mysql_snapshot_stream(
+    let final_seq = surreal_sync_mysql_trigger_source::run_interleaved_snapshot_full_sync(
         pool,
         database,
         sink,
@@ -367,8 +371,8 @@ where
     Ok(())
 }
 
-async fn run_full_snapshot_stream_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting snapshot-stream full sync from MySQL to SurrealDB (SDK v2)");
+async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting interleaved snapshot full sync from MySQL to SurrealDB (SDK v2)");
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
     let surreal_opts = surreal2_sink::SurrealOpts {
@@ -429,8 +433,8 @@ async fn run_full_snapshot_stream_v2(args: MySQLFullArgs) -> anyhow::Result<()> 
     }
 }
 
-async fn run_full_snapshot_stream_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting snapshot-stream full sync from MySQL to SurrealDB (SDK v3)");
+async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
+    tracing::info!("Starting interleaved snapshot full sync from MySQL to SurrealDB (SDK v3)");
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
     let surreal_opts = surreal3_sink::SurrealOpts {
@@ -485,7 +489,7 @@ async fn run_full_snapshot_stream_v3(args: MySQLFullArgs) -> anyhow::Result<()> 
     }
 }
 
-/// Run the combined `from mysql sync` orchestrator: a watermark snapshot+stream
+/// Run the combined `from mysql sync` orchestrator: an interleaved snapshot
 /// full sync followed by incremental from the handed-off position, in one
 /// process.
 pub async fn run_sync(args: MySQLSyncArgs) -> anyhow::Result<()> {
@@ -501,7 +505,7 @@ pub async fn run_sync(args: MySQLSyncArgs) -> anyhow::Result<()> {
 }
 
 async fn run_sync_v2(args: MySQLSyncArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting snapshot+stream sync from MySQL to SurrealDB (SDK v2)");
+    tracing::info!("Starting interleaved snapshot sync from MySQL to SurrealDB (SDK v2)");
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
     let surreal_opts = surreal2_sink::SurrealOpts {
@@ -517,7 +521,7 @@ async fn run_sync_v2(args: MySQLSyncArgs) -> anyhow::Result<()> {
 }
 
 async fn run_sync_v3(args: MySQLSyncArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting snapshot+stream sync from MySQL to SurrealDB (SDK v3)");
+    tracing::info!("Starting interleaved snapshot sync from MySQL to SurrealDB (SDK v3)");
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
     let surreal_opts = surreal3_sink::SurrealOpts {
@@ -535,7 +539,7 @@ async fn run_sync_v3(args: MySQLSyncArgs) -> anyhow::Result<()> {
 async fn mysql_orchestrate<S: SurrealSink>(sink: &S, args: MySQLSyncArgs) -> anyhow::Result<()> {
     let pool = surreal_sync_mysql_trigger_source::new_mysql_pool(&args.connection_string)?;
     let database = resolve_mysql_database(&pool, &args.database).await?;
-    let config = SnapshotStreamConfig {
+    let config = InterleavedSnapshotConfig {
         chunk_size: args.chunk_size,
     };
 
@@ -557,7 +561,7 @@ async fn mysql_orchestrate<S: SurrealSink>(sink: &S, args: MySQLSyncArgs) -> any
     orchestrate_snapshot_then_incremental(
         async move {
             let mut checkpointer = NoopCheckpointer;
-            surreal_sync_mysql_trigger_source::run_mysql_snapshot_stream(
+            surreal_sync_mysql_trigger_source::run_interleaved_snapshot_full_sync(
                 snapshot_pool,
                 snapshot_db,
                 sink,

@@ -1,4 +1,4 @@
-//! E2E tests for the wal2json watermark snapshot+stream backend.
+//! E2E tests for the wal2json interleaved snapshot backend.
 //!
 //! These mirror the framework's guarantees against a real PostgreSQL slot and
 //! an in-memory SurrealDB sink: parity under concurrent writes, bounded chunk
@@ -11,10 +11,10 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use surreal2_sink::Surreal2Sink;
 use surreal_sink::SurrealSink;
-use surreal_sync_postgresql_wal2json_source::{Lsn, SourceOpts, Wal2JsonWatermarkSource};
-use surreal_sync_snapshot_stream::{
-    run_snapshot_stream, NoopCheckpointer, SnapshotStreamConfig, WatermarkSource,
+use surreal_sync_interleaved_snapshot::{
+    run_interleaved_snapshot, InterleavedSnapshotConfig, NoopCheckpointer, WatermarkSource,
 };
+use surreal_sync_postgresql_wal2json_source::{Lsn, SourceOpts, Wal2JsonWatermarkSource};
 use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
 use tokio_postgres::{Client as PgClient, NoTls};
@@ -120,7 +120,7 @@ fn source_opts(conn: &str, slot: &str) -> SourceOpts {
 /// Snapshot under concurrent INSERT/UPDATE/DELETE traffic must converge to
 /// source parity once the stream is caught up.
 #[tokio::test]
-async fn snapshot_stream_parity_under_concurrent_writes() -> Result<()> {
+async fn interleaved_snapshot_parity_under_concurrent_writes() -> Result<()> {
     let container = crate::shared::postgres().await;
     let conn = crate::shared::create_test_db(container, "wm_parity").await?;
 
@@ -156,9 +156,9 @@ async fn snapshot_stream_parity_under_concurrent_writes() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    let config = SnapshotStreamConfig { chunk_size: 8 };
+    let config = InterleavedSnapshotConfig { chunk_size: 8 };
     let mut checkpointer = NoopCheckpointer;
-    let result = run_snapshot_stream(&mut source, &sink, &config, &mut checkpointer).await?;
+    let result = run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer).await?;
 
     // Cheap bounded-memory check: the buffer never exceeds one chunk.
     assert!(
@@ -207,7 +207,7 @@ async fn slot_retention(client: &PgClient, slot: &str) -> Result<(Lsn, Option<Ls
 /// reclaimable after catch-up + CHECKPOINT rather than pinned for the whole
 /// snapshot.
 #[tokio::test]
-async fn snapshot_stream_bounded_wal_retention() -> Result<()> {
+async fn interleaved_snapshot_bounded_wal_retention() -> Result<()> {
     let container = crate::shared::postgres().await;
     let conn = crate::shared::create_test_db(container, "wm_wal").await?;
 
@@ -237,9 +237,9 @@ async fn snapshot_stream_bounded_wal_retention() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     });
 
-    let config = SnapshotStreamConfig { chunk_size: 8 };
+    let config = InterleavedSnapshotConfig { chunk_size: 8 };
     let mut checkpointer = NoopCheckpointer;
-    let result = run_snapshot_stream(&mut source, &sink, &config, &mut checkpointer).await?;
+    let result = run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer).await?;
     assert!(result.peak_buffered_rows <= config.chunk_size);
 
     writer.await??;
@@ -305,7 +305,7 @@ async fn snapshot_stream_bounded_wal_retention() -> Result<()> {
 /// The recorded peak buffered-row count must equal the chunk size and be
 /// independent of table size (two sizes, same small chunk).
 #[tokio::test]
-async fn snapshot_stream_peak_buffer_independent_of_table_size() -> Result<()> {
+async fn interleaved_snapshot_peak_buffer_independent_of_table_size() -> Result<()> {
     let container = crate::shared::postgres().await;
 
     async fn run_peak(conn: &str, slot: &str, rows: i32, chunk_size: usize) -> Result<usize> {
@@ -313,9 +313,10 @@ async fn snapshot_stream_peak_buffer_independent_of_table_size() -> Result<()> {
         seed_users(&setup, rows).await?;
         let (sink, _db) = mem_sink().await?;
         let mut source = Wal2JsonWatermarkSource::connect(&source_opts(conn, slot)).await?;
-        let config = SnapshotStreamConfig { chunk_size };
+        let config = InterleavedSnapshotConfig { chunk_size };
         let mut checkpointer = NoopCheckpointer;
-        let result = run_snapshot_stream(&mut source, &sink, &config, &mut checkpointer).await?;
+        let result =
+            run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer).await?;
         Ok(result.peak_buffered_rows)
     }
 

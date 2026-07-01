@@ -1,4 +1,4 @@
-//! End-to-end tests for the MySQL watermark snapshot+stream backend.
+//! End-to-end tests for the MySQL interleaved snapshot backend.
 //!
 //! These tests exercise the DBLog-style snapshot under concurrent writes
 //! (including a non-`id` single-column primary key and a composite primary key,
@@ -13,12 +13,12 @@ use anyhow::Result;
 use mysql_async::{prelude::*, Pool};
 use mysql_types::RowConversionConfig;
 use surreal_sink::SurrealSink;
+use surreal_sync_interleaved_snapshot::{
+    run_interleaved_snapshot, InterleavedSnapshotCheckpoint, InterleavedSnapshotConfig,
+    NoopCheckpointer, SnapshotCheckpointer, WatermarkSource,
+};
 use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
 use surreal_sync_mysql_trigger_source::{read_table_chunk, MySqlWatermarkSource};
-use surreal_sync_snapshot_stream::{
-    run_snapshot_stream, NoopCheckpointer, SnapshotCheckpointer, SnapshotStreamCheckpoint,
-    SnapshotStreamConfig, WatermarkSource,
-};
 use sync_core::{
     UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow, UniversalValue,
 };
@@ -231,7 +231,7 @@ async fn insert_baseline(pool: &Pool, rows: i32) -> Result<()> {
 }
 
 #[tokio::test]
-async fn test_mysql_snapshot_stream_parity_under_concurrent_writes() -> Result<()> {
+async fn test_mysql_interleaved_snapshot_parity_under_concurrent_writes() -> Result<()> {
     init_logging();
 
     let mut container = MySQLContainer::new("test-ss-parity");
@@ -300,8 +300,9 @@ async fn test_mysql_snapshot_stream_parity_under_concurrent_writes() -> Result<(
     });
 
     let sink = MemSink::default();
-    let config = SnapshotStreamConfig { chunk_size: 8 };
-    let result = run_snapshot_stream(&mut source, &sink, &config, &mut NoopCheckpointer).await?;
+    let config = InterleavedSnapshotConfig { chunk_size: 8 };
+    let result =
+        run_interleaved_snapshot(&mut source, &sink, &config, &mut NoopCheckpointer).await?;
 
     writer.await??;
 
@@ -346,7 +347,7 @@ struct CountingCheckpointer {
 
 #[async_trait::async_trait]
 impl SnapshotCheckpointer for CountingCheckpointer {
-    async fn save_progress(&mut self, _checkpoint: &SnapshotStreamCheckpoint) -> Result<()> {
+    async fn save_progress(&mut self, _checkpoint: &InterleavedSnapshotCheckpoint) -> Result<()> {
         let mut conn = self.pool.get_conn().await?;
         let count: Option<i64> = conn
             .query_first("SELECT COUNT(*) FROM surreal_sync_changes")
@@ -357,7 +358,7 @@ impl SnapshotCheckpointer for CountingCheckpointer {
 }
 
 #[tokio::test]
-async fn test_mysql_snapshot_stream_bounded_retention() -> Result<()> {
+async fn test_mysql_interleaved_snapshot_bounded_retention() -> Result<()> {
     init_logging();
 
     let mut container = MySQLContainer::new("test-ss-retention");
@@ -380,13 +381,13 @@ async fn test_mysql_snapshot_stream_bounded_retention() -> Result<()> {
 
     let sink = MemSink::default();
     let chunk_size = 8;
-    let config = SnapshotStreamConfig { chunk_size };
+    let config = InterleavedSnapshotConfig { chunk_size };
     let mut checkpointer = CountingCheckpointer {
         pool: pool.clone(),
         samples: Vec::new(),
     };
 
-    let result = run_snapshot_stream(&mut source, &sink, &config, &mut checkpointer).await?;
+    let result = run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer).await?;
 
     // Many windows were sampled (120 rows / chunk 8 -> ~16 chunks).
     assert!(
@@ -489,8 +490,9 @@ async fn test_mysql_adhoc_snapshot_adds_table_mid_stream() -> Result<()> {
     .await?;
 
     let sink = MemSink::default();
-    let config = SnapshotStreamConfig { chunk_size: 8 };
-    let result = run_snapshot_stream(&mut source, &sink, &config, &mut NoopCheckpointer).await?;
+    let config = InterleavedSnapshotConfig { chunk_size: 8 };
+    let result =
+        run_interleaved_snapshot(&mut source, &sink, &config, &mut NoopCheckpointer).await?;
 
     // Bounded memory holds across both the initial and the ad-hoc table.
     assert!(result.peak_buffered_rows <= config.chunk_size);

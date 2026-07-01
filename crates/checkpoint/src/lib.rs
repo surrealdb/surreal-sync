@@ -44,8 +44,8 @@ pub use manager::{CheckpointFileReader, NullStore, NullSyncManager, SyncManager}
 // Re-export phase types
 pub use phase::SyncPhase;
 
-// Re-export snapshot-stream checkpoint types
-pub use snapshot::{SnapshotStreamCheckpoint, SnapshotTableProgress};
+// Re-export interleaved-snapshot checkpoint types
+pub use snapshot::{InterleavedSnapshotCheckpoint, SnapshotTableProgress};
 
 // Re-export store trait and types
 pub use store::{CheckpointID, CheckpointStore, StoredCheckpoint};

@@ -1,4 +1,4 @@
-//! Unit tests for the watermark snapshot loop using an in-memory mock source.
+//! Unit tests for the interleaved snapshot loop using an in-memory mock source.
 //!
 //! These tests need no database: the mock source generates rows lazily and
 //! scripts change-stream events directly, so the conflict (dedup) cases and
@@ -17,8 +17,8 @@ use sync_core::{
 use uuid::Uuid;
 
 use crate::{
-    run_snapshot_stream, PkTuple, SnapshotSignal, SnapshotStreamConfig, StreamEvent, TableSpec,
-    WatermarkKind, WatermarkSource,
+    run_interleaved_snapshot, InterleavedSnapshotConfig, PkTuple, SnapshotSignal, StreamEvent,
+    TableSpec, WatermarkKind, WatermarkSource,
 };
 
 // ---------------------------------------------------------------------------
@@ -285,10 +285,10 @@ async fn window_dedup_lets_log_event_win() {
     let scripted = vec![vec![update_event(2), delete_event(3), create_event(4)]];
     let mut source = MockSource::new(spec, 3, scripted);
     let sink = MockSink::default();
-    let config = SnapshotStreamConfig { chunk_size: 16 };
+    let config = InterleavedSnapshotConfig { chunk_size: 16 };
     let mut checkpointer = crate::NoopCheckpointer;
 
-    let result = run_snapshot_stream(&mut source, &sink, &config, &mut checkpointer)
+    let result = run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer)
         .await
         .unwrap();
 
@@ -322,10 +322,10 @@ async fn unchanged_keys_are_emitted_from_buffer() {
     let spec = TableSpec::new("users", vec!["id".to_string()]);
     let mut source = MockSource::bulk(spec, 5);
     let sink = MockSink::default();
-    let config = SnapshotStreamConfig { chunk_size: 16 };
+    let config = InterleavedSnapshotConfig { chunk_size: 16 };
     let mut checkpointer = crate::NoopCheckpointer;
 
-    run_snapshot_stream(&mut source, &sink, &config, &mut checkpointer)
+    run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer)
         .await
         .unwrap();
 
@@ -347,10 +347,10 @@ async fn peak_for_table_size(total_rows: i64) -> (usize, usize) {
     let spec = TableSpec::new("users", vec!["id".to_string()]);
     let mut source = MockSource::bulk(spec, total_rows);
     let sink = MockSink::default();
-    let config = SnapshotStreamConfig { chunk_size: 4 };
+    let config = InterleavedSnapshotConfig { chunk_size: 4 };
     let mut checkpointer = crate::NoopCheckpointer;
 
-    let result = run_snapshot_stream(&mut source, &sink, &config, &mut checkpointer)
+    let result = run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer)
         .await
         .unwrap();
     (result.peak_buffered_rows, sink.upserts().len())
@@ -377,7 +377,7 @@ async fn bounded_memory_independent_of_table_size() {
 
 #[tokio::test]
 async fn progress_and_handoff_checkpoints_persist() {
-    use checkpoint::{FilesystemStore, SnapshotStreamCheckpoint, SyncManager, SyncPhase};
+    use checkpoint::{FilesystemStore, InterleavedSnapshotCheckpoint, SyncManager, SyncPhase};
     use tempfile::TempDir;
 
     let tmp = TempDir::new().unwrap();
@@ -387,14 +387,14 @@ async fn progress_and_handoff_checkpoints_persist() {
     let spec = TableSpec::new("users", vec!["id".to_string()]);
     let mut source = MockSource::bulk(spec, 10);
     let sink = MockSink::default();
-    let config = SnapshotStreamConfig { chunk_size: 4 };
+    let config = InterleavedSnapshotConfig { chunk_size: 4 };
 
-    let result = run_snapshot_stream(&mut source, &sink, &config, &mut checkpointer)
+    let result = run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer)
         .await
         .unwrap();
 
     // The latest per-chunk progress checkpoint reports the table fully copied.
-    let progress: SnapshotStreamCheckpoint = checkpointer
+    let progress: InterleavedSnapshotCheckpoint = checkpointer
         .manager()
         .read_checkpoint(SyncPhase::SnapshotProgress)
         .await
@@ -405,10 +405,12 @@ async fn progress_and_handoff_checkpoints_persist() {
     assert!(progress.all_done());
 
     // A handoff checkpoint records the final stream position.
-    let handoff =
-        SnapshotStreamCheckpoint::new(serde_json::to_value(result.final_position).unwrap(), vec![]);
+    let handoff = InterleavedSnapshotCheckpoint::new(
+        serde_json::to_value(result.final_position).unwrap(),
+        vec![],
+    );
     checkpointer.save_handoff(&handoff).await.unwrap();
-    let loaded: SnapshotStreamCheckpoint = checkpointer
+    let loaded: InterleavedSnapshotCheckpoint = checkpointer
         .manager()
         .read_checkpoint(SyncPhase::SnapshotHandoff)
         .await

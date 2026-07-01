@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use anyhow::Result;
-use checkpoint::{SnapshotStreamCheckpoint, SnapshotTableProgress};
+use checkpoint::{InterleavedSnapshotCheckpoint, SnapshotTableProgress};
 use surreal_sink::SurrealSink;
 use sync_core::UniversalRow;
 use tracing::info;
@@ -18,13 +18,13 @@ pub const DEFAULT_CHUNK_SIZE: usize = 1024;
 
 /// Configuration for a watermark snapshot run.
 #[derive(Debug, Clone)]
-pub struct SnapshotStreamConfig {
+pub struct InterleavedSnapshotConfig {
     /// Maximum number of rows read per chunk (the `LIMIT` of each keyset read).
     /// This structurally bounds the loop's buffered memory.
     pub chunk_size: usize,
 }
 
-impl Default for SnapshotStreamConfig {
+impl Default for InterleavedSnapshotConfig {
     fn default() -> Self {
         Self {
             chunk_size: DEFAULT_CHUNK_SIZE,
@@ -34,7 +34,7 @@ impl Default for SnapshotStreamConfig {
 
 /// Outcome of a completed watermark snapshot.
 #[derive(Debug, Clone)]
-pub struct SnapshotStreamResult<P: StreamPosition> {
+pub struct InterleavedSnapshotResult<P: StreamPosition> {
     /// The final stream position reached; downstream live processing resumes
     /// from here.
     pub final_position: P,
@@ -55,7 +55,7 @@ struct TableState {
 fn build_checkpoint<P: StreamPosition>(
     position: &P,
     progress: &[TableState],
-) -> Result<SnapshotStreamCheckpoint> {
+) -> Result<InterleavedSnapshotCheckpoint> {
     let tables = progress
         .iter()
         .map(|t| {
@@ -66,7 +66,7 @@ fn build_checkpoint<P: StreamPosition>(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(SnapshotStreamCheckpoint {
+    Ok(InterleavedSnapshotCheckpoint {
         stream_pos: serde_json::to_value(position)?,
         tables,
     })
@@ -89,12 +89,12 @@ fn build_checkpoint<P: StreamPosition>(
 ///
 /// On completion it returns the final stream position and the exact peak
 /// buffered-row count.
-pub async fn run_snapshot_stream<S, K, C>(
+pub async fn run_interleaved_snapshot<S, K, C>(
     source: &mut S,
     sink: &K,
-    config: &SnapshotStreamConfig,
+    config: &InterleavedSnapshotConfig,
     checkpointer: &mut C,
-) -> Result<SnapshotStreamResult<S::Position>>
+) -> Result<InterleavedSnapshotResult<S::Position>>
 where
     S: WatermarkSource,
     K: SurrealSink,
@@ -159,7 +159,7 @@ where
     }
 
     let final_position = source.current_position().await?;
-    Ok(SnapshotStreamResult {
+    Ok(InterleavedSnapshotResult {
         final_position,
         peak_buffered_rows,
     })
@@ -171,7 +171,7 @@ where
 async fn snapshot_one_table<S, K, C>(
     source: &mut S,
     sink: &K,
-    config: &SnapshotStreamConfig,
+    config: &InterleavedSnapshotConfig,
     checkpointer: &mut C,
     spec: &TableSpec,
     table_index: usize,

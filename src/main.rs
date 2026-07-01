@@ -87,18 +87,21 @@ use rustls::crypto::CryptoProvider;
 use std::path::PathBuf;
 use surreal_sync::SurrealOpts;
 
-/// Full-sync strategy for sources that support the watermark snapshot+stream
+/// Full-sync strategy for sources that support the interleaved snapshot
 /// framework (PostgreSQL wal2json, PostgreSQL trigger, MySQL).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, ValueEnum)]
 enum SyncStrategy {
-    /// DBLog-style watermark snapshot interleaved with the change stream:
-    /// resumable, bounded memory, and does not pin the source change log for
-    /// the whole snapshot. The default; requires a primary key on every table.
+    /// DBLog-style watermark snapshot copied concurrently/interleaved with the
+    /// change stream: resumable, bounded memory, and does not pin the source
+    /// change log for the whole snapshot (bounded retention). The default;
+    /// requires a primary key on every table.
     #[default]
-    SnapshotStream,
-    /// Monolithic `SELECT *` per table. Opt-out for tables without a usable
-    /// primary key or when writing watermark rows to the source is not allowed.
-    Bulk,
+    InterleavedSnapshot,
+    /// Monolithic `SELECT *` per table, then a separate replay of the [t1,t2]
+    /// change log on top. The source log is pinned for the whole snapshot
+    /// (unbounded retention). Opt-out for tables without a usable primary key
+    /// or when writing watermark rows to the source is not allowed.
+    SequentialSnapshot,
 }
 
 /// Default chunk size for the watermark snapshot (matches Debezium's
@@ -530,11 +533,11 @@ struct PostgreSQLTriggerFullArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
-    /// Full-sync strategy (snapshot-stream is the default for this source)
+    /// Full-sync strategy (interleaved-snapshot is the default for this source)
     #[arg(long, value_enum, default_value_t = SyncStrategy::default())]
     strategy: SyncStrategy,
 
-    /// Rows read per keyset chunk when using the snapshot-stream strategy
+    /// Rows read per keyset chunk when using the interleaved-snapshot strategy
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
 
@@ -693,11 +696,11 @@ struct MySQLFullArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
-    /// Full-sync strategy (snapshot-stream is the default for this source)
+    /// Full-sync strategy (interleaved-snapshot is the default for this source)
     #[arg(long, value_enum, default_value_t = SyncStrategy::default())]
     strategy: SyncStrategy,
 
-    /// Rows read per keyset chunk when using the snapshot-stream strategy
+    /// Rows read per keyset chunk when using the interleaved-snapshot strategy
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
 
@@ -875,11 +878,11 @@ struct PostgreSQLLogicalFullArgs {
     #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
     checkpoints_surreal_table: Option<String>,
 
-    /// Full-sync strategy (snapshot-stream is the default for this source)
+    /// Full-sync strategy (interleaved-snapshot is the default for this source)
     #[arg(long, value_enum, default_value_t = SyncStrategy::default())]
     strategy: SyncStrategy,
 
-    /// Rows read per keyset chunk when using the snapshot-stream strategy
+    /// Rows read per keyset chunk when using the interleaved-snapshot strategy
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
 

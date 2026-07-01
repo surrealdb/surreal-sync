@@ -66,7 +66,7 @@
 The PostgreSQL wal2json source is a Change Data Capture (CDC) implementation for surreal-sync that enables real-time data synchronization from PostgreSQL databases to SurrealDB using PostgreSQL's logical replication capabilities with the wal2json output plugin.
 
 **Key Capabilities:**
-- **Full Sync**: Complete database migration with schema discovery and data transfer, via two strategies (`snapshot-stream` by default, or `bulk`)
+- **Full Sync**: Complete database migration with schema discovery and data transfer, via two strategies (`interleaved-snapshot` by default, or `sequential-snapshot`)
 - **Incremental Sync**: Real-time change streaming for inserts, updates, and deletes
 - **Combined `sync`**: One-process watermark snapshot that hands off to incremental at the consistent end position
 - **At-Least-Once Delivery**: Guarantees no data loss through peek-process-advance pattern
@@ -77,12 +77,12 @@ The PostgreSQL wal2json source is a Change Data Capture (CDC) implementation for
 
 Full sync supports two strategies, selected with `--strategy`:
 
-- **`snapshot-stream` (default)** — A DBLog-style watermark snapshot interleaved with the WAL change stream. Tables are copied in primary-key-ordered, resumable chunks (`--chunk-size`, default 1024) while the logical replication stream is consumed concurrently; watermark windows reconcile snapshot reads against live changes (the log event wins). The result converges to a consistent image at the end LSN (≈ t2) and then keeps tracking live — it is **not** a frozen t1 snapshot. It uses bounded memory (O(chunk_size)) and advances the replication slot (`restart_lsn`) as the stream is consumed, so WAL is freed continuously instead of being pinned for the whole snapshot. It requires a primary key on every selected table and writes a small `surreal_sync_signal` table to the source (whose inserts the slot captures as watermarks).
-- **`bulk`** — The original strategy: a monolithic `SELECT *` per table bracketed by t1/t2 LSN checkpoints. Because the slot must retain all WAL from t1 until a separate `incremental` run from t1 catches up to t2, WAL retention grows with the full snapshot duration. Use this when a table has no usable primary key, or when writing the signal table to the source is not permitted.
+- **`interleaved-snapshot` (default)** — A DBLog-style watermark snapshot copied concurrently/interleaved with the WAL change stream. Tables are copied in primary-key-ordered, resumable chunks (`--chunk-size`, default 1024) while the logical replication stream is consumed concurrently; watermark windows reconcile snapshot reads against live changes (the log event wins). The result converges to a consistent image at the end LSN (≈ t2) and then keeps tracking live — it is **not** a frozen t1 snapshot. It uses bounded memory (O(chunk_size)) and advances the replication slot (`restart_lsn`) as the stream is consumed, so WAL is freed continuously instead of being pinned for the whole snapshot (bounded retention). It requires a primary key on every selected table and writes a small `surreal_sync_signal` table to the source (whose inserts the slot captures as watermarks).
+- **`sequential-snapshot`** — The original strategy: a monolithic `SELECT *` per table bracketed by t1/t2 LSN checkpoints, then a separate replay of the [t1,t2] WAL via an `incremental` run from t1. Because the slot must retain all WAL from t1 until that replay catches up to t2, WAL retention grows with the full snapshot duration (unbounded retention). Use this when a table has no usable primary key, or when writing the signal table to the source is not permitted.
 
 See [Full Sync Strategies](design.md#full-sync-strategies) for the side-by-side comparison and the consistency guarantee.
 
-**Behavior change for existing users:** `snapshot-stream` is now the default. Compared to the previous behavior, it creates a `surreal_sync_signal` table on the source and requires every selected table to have a primary key. Pass `--strategy bulk` to keep the previous monolithic full-sync behavior.
+**Behavior change for existing users:** `interleaved-snapshot` is now the default. Compared to the previous behavior, it creates a `surreal_sync_signal` table on the source and requires every selected table to have a primary key. Pass `--strategy sequential-snapshot` to keep the previous monolithic full-sync behavior. (The previous strategy values `snapshot-stream` and `bulk` have been renamed to `interleaved-snapshot` and `sequential-snapshot`.)
 
 ## Prerequisites
 
@@ -121,8 +121,8 @@ The PostgreSQL wal2json source consists of several key components:
 For implementation details on the connection model, transaction handling, at-least-once delivery pattern, and LSN-based checkpointing, see the documentation in [logical_replication.rs](../crates/postgresql-wal2json-source/src/logical_replication.rs#L1-L78).
 
 **Key Points for Users:**
-- **With `bulk`, full sync creates two checkpoints** - t1 is captured BEFORE the snapshot (use this for incremental sync), t2 AFTER it completes (for reference only). Incremental sync always starts from t1, not t2, so no changes are missed regardless of isolation level. See [the test implementation](../tests/postgresql_logical/postgresql_logical_incremental_sync_only_cli.rs#L88-L95) for reference.
-- **With `snapshot-stream`, the recorded position is the consistent end position** (≈ t2) - the snapshot is reconciled against the live stream via watermarks, so you start incremental from that single position (or use the combined `sync` command, which does the handoff in one process).
+- **With `sequential-snapshot`, full sync creates two checkpoints** - t1 is captured BEFORE the snapshot (use this for incremental sync), t2 AFTER it completes (for reference only). Incremental sync always starts from t1, not t2, so no changes are missed regardless of isolation level. See [the test implementation](../tests/postgresql_logical/postgresql_logical_incremental_sync_only_cli.rs#L88-L95) for reference.
+- **With `interleaved-snapshot`, the recorded position is the consistent end position** (≈ t2) - the snapshot is reconciled against the live stream via watermarks, so you start incremental from that single position (or use the combined `sync` command, which does the handoff in one process).
 - **At-least-once delivery** - Changes may be replayed if processing fails, so ensure your processing logic is idempotent.
 - **Transaction consistency** - All changes within a PostgreSQL transaction are processed as a batch.
 
@@ -192,12 +192,12 @@ surreal-sync from postgresql full \
 - `--surreal-endpoint`: SurrealDB WebSocket endpoint
 - `--surreal-username`: SurrealDB username
 - `--surreal-password`: SurrealDB password
-- `--strategy`: Full-sync strategy, `snapshot-stream` (default) or `bulk`
-- `--chunk-size`: Rows read per keyset chunk for the `snapshot-stream` strategy (default: 1024)
+- `--strategy`: Full-sync strategy, `interleaved-snapshot` (default) or `sequential-snapshot`
+- `--chunk-size`: Rows read per keyset chunk for the `interleaved-snapshot` strategy (default: 1024)
 - `--checkpoint-dir`: Directory to store checkpoint files (mutually exclusive with `--checkpoints-surreal-table`)
 - `--checkpoints-surreal-table`: SurrealDB table to store checkpoints (mutually exclusive with `--checkpoint-dir`)
 
-> Checkpoint emission is enabled by providing a checkpoint store (`--checkpoint-dir` or `--checkpoints-surreal-table`). With `snapshot-stream`, the recorded position is the consistent end position; with `bulk`, the t1/t2 LSNs are recorded.
+> Checkpoint emission is enabled by providing a checkpoint store (`--checkpoint-dir` or `--checkpoints-surreal-table`). With `interleaved-snapshot`, the recorded position is the consistent end position; with `sequential-snapshot`, the t1/t2 LSNs are recorded.
 
 ### Incremental Sync Command
 
@@ -224,7 +224,7 @@ surreal-sync from postgresql incremental \
 
 ### Combined `sync` Command
 
-With the `snapshot-stream` strategy you usually don't need two separate runs. The `sync` command runs the watermark snapshot and then continues incremental sync from the handed-off end LSN, in a single process:
+With the `interleaved-snapshot` strategy you usually don't need two separate runs. The `sync` command runs the watermark snapshot and then continues incremental sync from the handed-off end LSN, in a single process:
 
 ```bash
 surreal-sync from postgresql sync \

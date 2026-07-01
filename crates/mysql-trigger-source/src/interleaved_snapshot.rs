@@ -1,7 +1,7 @@
-//! Watermark-based snapshot+stream full sync for MySQL.
+//! Watermark-based interleaved snapshot full sync for MySQL.
 //!
 //! This module implements the generic [`WatermarkSource`] backend trait for the
-//! MySQL trigger source, driving a DBLog-style incremental snapshot: user tables
+//! MySQL trigger source, driving a DBLog-style interleaved snapshot: user tables
 //! are copied in primary-key-ordered chunks concurrently with consuming the
 //! `surreal_sync_changes` audit stream, using low/high watermarks to reconcile
 //! snapshot reads against live changes.
@@ -21,9 +21,9 @@ use anyhow::{anyhow, Result};
 use json_types::{convert_id_to_universal_value, JsonValueWithSchema};
 use mysql_async::{prelude::*, Pool, Row, Value};
 use surreal_sink::SurrealSink;
-use surreal_sync_snapshot_stream::{
-    run_snapshot_stream, PkTuple, SnapshotCheckpointer, SnapshotSignal, SnapshotStreamConfig,
-    SnapshotStreamResult, StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
+use surreal_sync_interleaved_snapshot::{
+    run_interleaved_snapshot, InterleavedSnapshotConfig, InterleavedSnapshotResult, PkTuple,
+    SnapshotCheckpointer, SnapshotSignal, StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
 };
 use sync_core::{
     DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,
@@ -492,13 +492,13 @@ pub async fn request_snapshot(pool: Pool, database: String, tables: &[String]) -
     Ok(())
 }
 
-/// Run a watermark snapshot+stream sync for MySQL, returning the final audit
+/// Run an interleaved snapshot sync for MySQL, returning the final audit
 /// `sequence_id` that downstream incremental/live processing should resume from.
-pub async fn run_mysql_snapshot_stream<S, C>(
+pub async fn run_interleaved_snapshot_full_sync<S, C>(
     pool: Pool,
     database: String,
     sink: &S,
-    config: &SnapshotStreamConfig,
+    config: &InterleavedSnapshotConfig,
     checkpointer: &mut C,
 ) -> Result<i64>
 where
@@ -506,25 +506,26 @@ where
     C: SnapshotCheckpointer,
 {
     let result =
-        run_mysql_snapshot_stream_result(pool, database, sink, config, checkpointer).await?;
+        run_interleaved_snapshot_full_sync_result(pool, database, sink, config, checkpointer)
+            .await?;
     Ok(result.final_position)
 }
 
-/// Like [`run_mysql_snapshot_stream`] but returns the full
-/// [`SnapshotStreamResult`] (including the exact peak buffered-row count).
-pub async fn run_mysql_snapshot_stream_result<S, C>(
+/// Like [`run_interleaved_snapshot_full_sync`] but returns the full
+/// [`InterleavedSnapshotResult`] (including the exact peak buffered-row count).
+pub async fn run_interleaved_snapshot_full_sync_result<S, C>(
     pool: Pool,
     database: String,
     sink: &S,
-    config: &SnapshotStreamConfig,
+    config: &InterleavedSnapshotConfig,
     checkpointer: &mut C,
-) -> Result<SnapshotStreamResult<i64>>
+) -> Result<InterleavedSnapshotResult<i64>>
 where
     S: SurrealSink,
     C: SnapshotCheckpointer,
 {
     let mut source = MySqlWatermarkSource::new(pool, database).await?;
-    run_snapshot_stream(&mut source, sink, config, checkpointer).await
+    run_interleaved_snapshot(&mut source, sink, config, checkpointer).await
 }
 
 /// Enumerate the user tables to snapshot, excluding the audit and signal tables

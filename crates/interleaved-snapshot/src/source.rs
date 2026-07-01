@@ -10,7 +10,7 @@ use crate::types::{
 
 /// A source capable of driving a DBLog-style watermark snapshot.
 ///
-/// The generic loop ([`crate::run_snapshot_stream`]) owns the algorithm; a
+/// The generic loop ([`crate::run_interleaved_snapshot`]) owns the algorithm; a
 /// backend supplies the source-specific pieces: how to enumerate tables, read
 /// primary-key-ordered chunks, write watermark rows that surface in the change
 /// stream, consume that stream, report the current position, and free already

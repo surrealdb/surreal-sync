@@ -1,5 +1,4 @@
-//! End-to-end tests for the PostgreSQL trigger watermark snapshot+stream
-//! backend.
+//! End-to-end tests for the PostgreSQL trigger interleaved snapshot backend.
 //!
 //! These exercise the real audit-table/trigger machinery against a Docker
 //! PostgreSQL instance, but stay small and deterministic (a few hundred rows,
@@ -18,10 +17,10 @@ use sync_core::{
 };
 use tokio_postgres::{Client, NoTls};
 
-use surreal_sync_postgresql_trigger_source::{PostgresTriggerWatermarkSource, SourceOpts};
-use surreal_sync_snapshot_stream::{
-    run_snapshot_stream, NoopCheckpointer, SnapshotStreamConfig, WatermarkSource,
+use surreal_sync_interleaved_snapshot::{
+    run_interleaved_snapshot, InterleavedSnapshotConfig, NoopCheckpointer, WatermarkSource,
 };
+use surreal_sync_postgresql_trigger_source::{PostgresTriggerWatermarkSource, SourceOpts};
 
 // ---------------------------------------------------------------------------
 // In-memory sink that mirrors final row state (last write / change wins).
@@ -152,7 +151,7 @@ async fn drain_remaining(source: &mut PostgresTriggerWatermarkSource, sink: &Moc
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn snapshot_stream_parity_under_concurrent_writes() {
+async fn interleaved_snapshot_parity_under_concurrent_writes() {
     let container = crate::shared::postgres().await;
     let uri = container.connection_string.clone();
     let table = "ss_parity";
@@ -197,9 +196,9 @@ async fn snapshot_stream_parity_under_concurrent_writes() {
     });
 
     let sink = MockSink::default();
-    let config = SnapshotStreamConfig { chunk_size: 8 };
+    let config = InterleavedSnapshotConfig { chunk_size: 8 };
     let mut checkpointer = NoopCheckpointer;
-    run_snapshot_stream(&mut source, &sink, &config, &mut checkpointer)
+    run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer)
         .await
         .unwrap();
 
@@ -242,7 +241,7 @@ async fn snapshot_stream_parity_under_concurrent_writes() {
 }
 
 #[tokio::test]
-async fn snapshot_stream_bounded_audit_retention() {
+async fn interleaved_snapshot_bounded_audit_retention() {
     let container = crate::shared::postgres().await;
     let uri = container.connection_string.clone();
     let table = "ss_retain";
@@ -258,9 +257,9 @@ async fn snapshot_stream_bounded_audit_retention() {
         .unwrap();
 
     let sink = MockSink::default();
-    let config = SnapshotStreamConfig { chunk_size: 8 };
+    let config = InterleavedSnapshotConfig { chunk_size: 8 };
     let mut checkpointer = NoopCheckpointer;
-    let result = run_snapshot_stream(&mut source, &sink, &config, &mut checkpointer)
+    let result = run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer)
         .await
         .unwrap();
 
@@ -296,7 +295,7 @@ async fn snapshot_stream_bounded_audit_retention() {
 }
 
 #[tokio::test]
-async fn snapshot_stream_peak_buffer_within_chunk_size() {
+async fn interleaved_snapshot_peak_buffer_within_chunk_size() {
     let container = crate::shared::postgres().await;
     let uri = container.connection_string.clone();
     let table = "ss_peak";
@@ -312,9 +311,9 @@ async fn snapshot_stream_peak_buffer_within_chunk_size() {
         .unwrap();
 
     let sink = MockSink::default();
-    let config = SnapshotStreamConfig { chunk_size: 16 };
+    let config = InterleavedSnapshotConfig { chunk_size: 16 };
     let mut checkpointer = NoopCheckpointer;
-    let result = run_snapshot_stream(&mut source, &sink, &config, &mut checkpointer)
+    let result = run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer)
         .await
         .unwrap();
 

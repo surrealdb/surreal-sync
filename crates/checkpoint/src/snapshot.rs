@@ -1,7 +1,7 @@
-//! Resumable checkpoint for watermark-based snapshot streaming.
+//! Resumable checkpoint for the watermark-based interleaved snapshot strategy.
 //!
 //! Unlike the scalar full-sync checkpoints (which carry a single stream
-//! position), a watermark snapshot copies tables in primary-key-ordered
+//! position), an interleaved snapshot copies tables in primary-key-ordered
 //! chunks while concurrently consuming the change stream. To resume after a
 //! crash it must remember both the current stream position and how far each
 //! table has been copied.
@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Progress for a single table within a watermark snapshot.
+/// Progress for a single table within an interleaved snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SnapshotTableProgress {
     /// Table name.
@@ -27,10 +27,10 @@ pub struct SnapshotTableProgress {
     pub done: bool,
 }
 
-/// Resumable checkpoint describing the state of an in-progress watermark
+/// Resumable checkpoint describing the state of an in-progress interleaved
 /// snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SnapshotStreamCheckpoint {
+pub struct InterleavedSnapshotCheckpoint {
     /// Current stream position, serialized as JSON.
     ///
     /// On resume the snapshot continues consuming the change stream from this
@@ -41,7 +41,7 @@ pub struct SnapshotStreamCheckpoint {
     pub tables: Vec<SnapshotTableProgress>,
 }
 
-impl SnapshotStreamCheckpoint {
+impl InterleavedSnapshotCheckpoint {
     /// Create a new snapshot checkpoint.
     pub fn new(stream_pos: serde_json::Value, tables: Vec<SnapshotTableProgress>) -> Self {
         Self { stream_pos, tables }
@@ -53,8 +53,8 @@ impl SnapshotStreamCheckpoint {
     }
 }
 
-impl crate::Checkpoint for SnapshotStreamCheckpoint {
-    const DATABASE_TYPE: &'static str = "snapshot_stream";
+impl crate::Checkpoint for InterleavedSnapshotCheckpoint {
+    const DATABASE_TYPE: &'static str = "interleaved_snapshot";
 
     fn to_cli_string(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
@@ -70,8 +70,8 @@ mod tests {
     use super::*;
     use crate::{Checkpoint, CheckpointFile, SyncPhase};
 
-    fn sample() -> SnapshotStreamCheckpoint {
-        SnapshotStreamCheckpoint::new(
+    fn sample() -> InterleavedSnapshotCheckpoint {
+        InterleavedSnapshotCheckpoint::new(
             serde_json::json!("0/16B3748"),
             vec![
                 SnapshotTableProgress {
@@ -92,7 +92,7 @@ mod tests {
     fn cli_string_roundtrip() {
         let original = sample();
         let s = original.to_cli_string();
-        let decoded = SnapshotStreamCheckpoint::from_cli_string(&s).unwrap();
+        let decoded = InterleavedSnapshotCheckpoint::from_cli_string(&s).unwrap();
         assert_eq!(original, decoded);
     }
 
@@ -102,9 +102,9 @@ mod tests {
         let file = CheckpointFile::new(&original, SyncPhase::SnapshotProgress).unwrap();
         assert_eq!(
             file.database_type(),
-            SnapshotStreamCheckpoint::DATABASE_TYPE
+            InterleavedSnapshotCheckpoint::DATABASE_TYPE
         );
-        let decoded: SnapshotStreamCheckpoint = file.parse().unwrap();
+        let decoded: InterleavedSnapshotCheckpoint = file.parse().unwrap();
         assert_eq!(original, decoded);
     }
 

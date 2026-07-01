@@ -206,10 +206,14 @@ pub async fn run_full(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<()> {
     .await?;
 
     match (args.strategy, sdk_version) {
-        (SyncStrategy::Bulk, SdkVersion::V2) => run_full_v2(args).await,
-        (SyncStrategy::Bulk, SdkVersion::V3) => run_full_v3(args).await,
-        (SyncStrategy::SnapshotStream, SdkVersion::V2) => run_full_snapshot_stream_v2(args).await,
-        (SyncStrategy::SnapshotStream, SdkVersion::V3) => run_full_snapshot_stream_v3(args).await,
+        (SyncStrategy::SequentialSnapshot, SdkVersion::V2) => run_full_v2(args).await,
+        (SyncStrategy::SequentialSnapshot, SdkVersion::V3) => run_full_v3(args).await,
+        (SyncStrategy::InterleavedSnapshot, SdkVersion::V2) => {
+            run_full_interleaved_snapshot_v2(args).await
+        }
+        (SyncStrategy::InterleavedSnapshot, SdkVersion::V3) => {
+            run_full_interleaved_snapshot_v3(args).await
+        }
     }
 }
 
@@ -553,7 +557,7 @@ async fn run_incremental_v3(args: ResolvedWal2jsonIncrementalArgs) -> anyhow::Re
 }
 
 // =============================================================================
-// Watermark snapshot+stream strategy
+// Interleaved snapshot strategy
 // =============================================================================
 
 fn wal2json_source_opts(
@@ -571,7 +575,7 @@ fn wal2json_source_opts(
     }
 }
 
-/// Run a wal2json watermark snapshot+stream full sync, emitting the handoff LSN
+/// Run a wal2json interleaved snapshot full sync, emitting the handoff LSN
 /// as a checkpoint (when checkpoint storage is configured) so a later
 /// `incremental` run can resume from the consistent end position.
 async fn wal2json_snapshot_full<S, St>(
@@ -584,7 +588,7 @@ where
     S: SurrealSink,
     St: CheckpointStore,
 {
-    let final_lsn = surreal_sync_postgresql_wal2json_source::run_snapshot_stream_full_sync(
+    let final_lsn = surreal_sync_postgresql_wal2json_source::run_interleaved_snapshot_full_sync(
         sink,
         source_opts,
         chunk_size,
@@ -607,9 +611,9 @@ where
     Ok(())
 }
 
-async fn run_full_snapshot_stream_v2(args: ResolvedWal2jsonFullArgs) -> anyhow::Result<()> {
+async fn run_full_interleaved_snapshot_v2(args: ResolvedWal2jsonFullArgs) -> anyhow::Result<()> {
     tracing::info!(
-        "Starting snapshot-stream full sync from PostgreSQL (logical replication) to SurrealDB (SDK v2)"
+        "Starting interleaved snapshot full sync from PostgreSQL (logical replication) to SurrealDB (SDK v2)"
     );
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
@@ -662,9 +666,9 @@ async fn run_full_snapshot_stream_v2(args: ResolvedWal2jsonFullArgs) -> anyhow::
     }
 }
 
-async fn run_full_snapshot_stream_v3(args: ResolvedWal2jsonFullArgs) -> anyhow::Result<()> {
+async fn run_full_interleaved_snapshot_v3(args: ResolvedWal2jsonFullArgs) -> anyhow::Result<()> {
     tracing::info!(
-        "Starting snapshot-stream full sync from PostgreSQL (logical replication) to SurrealDB (SDK v3)"
+        "Starting interleaved snapshot full sync from PostgreSQL (logical replication) to SurrealDB (SDK v3)"
     );
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
@@ -726,7 +730,7 @@ pub async fn run_sync(args: PostgreSQLLogicalSyncArgs) -> anyhow::Result<()> {
 
 async fn run_sync_v2(args: PostgreSQLLogicalSyncArgs) -> anyhow::Result<()> {
     tracing::info!(
-        "Starting snapshot+stream sync from PostgreSQL (logical replication) to SurrealDB (SDK v2)"
+        "Starting interleaved snapshot sync from PostgreSQL (logical replication) to SurrealDB (SDK v2)"
     );
     let _schema = load_schema_if_provided(&args.schema_file)?;
     let surreal_opts = surreal2_sink::SurrealOpts {
@@ -743,7 +747,7 @@ async fn run_sync_v2(args: PostgreSQLLogicalSyncArgs) -> anyhow::Result<()> {
 
 async fn run_sync_v3(args: PostgreSQLLogicalSyncArgs) -> anyhow::Result<()> {
     tracing::info!(
-        "Starting snapshot+stream sync from PostgreSQL (logical replication) to SurrealDB (SDK v3)"
+        "Starting interleaved snapshot sync from PostgreSQL (logical replication) to SurrealDB (SDK v3)"
     );
     let _schema = load_schema_if_provided(&args.schema_file)?;
     let surreal_opts = surreal3_sink::SurrealOpts {
@@ -784,7 +788,7 @@ async fn wal2json_orchestrate<S: SurrealSink>(
 
     orchestrate_snapshot_then_incremental(
         async move {
-            surreal_sync_postgresql_wal2json_source::run_snapshot_stream_full_sync(
+            surreal_sync_postgresql_wal2json_source::run_interleaved_snapshot_full_sync(
                 sink,
                 snapshot_opts,
                 chunk_size,

@@ -1,13 +1,13 @@
 //! Persisting resumable snapshot progress.
 //!
 //! The watermark loop is decoupled from any concrete storage: it builds a
-//! [`SnapshotStreamCheckpoint`] after each chunk and hands it to a
+//! [`InterleavedSnapshotCheckpoint`] after each chunk and hands it to a
 //! [`SnapshotCheckpointer`]. A no-op implementation is provided for tests, and
 //! [`ManagerCheckpointer`] bridges to the shared [`SyncManager`] /
 //! [`CheckpointStore`] JSON-blob storage.
 
 use anyhow::Result;
-use checkpoint::{CheckpointStore, SnapshotStreamCheckpoint, SyncManager, SyncPhase};
+use checkpoint::{CheckpointStore, InterleavedSnapshotCheckpoint, SyncManager, SyncPhase};
 
 /// Receives resumable snapshot checkpoints emitted per chunk.
 #[async_trait::async_trait]
@@ -15,7 +15,7 @@ pub trait SnapshotCheckpointer: Send {
     /// Persist progress made so far. Called after each chunk is durably
     /// applied to the sink and before the corresponding change-log data is
     /// freed.
-    async fn save_progress(&mut self, checkpoint: &SnapshotStreamCheckpoint) -> Result<()>;
+    async fn save_progress(&mut self, checkpoint: &InterleavedSnapshotCheckpoint) -> Result<()>;
 }
 
 /// A checkpointer that discards progress. Useful for tests and one-shot runs
@@ -25,7 +25,7 @@ pub struct NoopCheckpointer;
 
 #[async_trait::async_trait]
 impl SnapshotCheckpointer for NoopCheckpointer {
-    async fn save_progress(&mut self, _checkpoint: &SnapshotStreamCheckpoint) -> Result<()> {
+    async fn save_progress(&mut self, _checkpoint: &InterleavedSnapshotCheckpoint) -> Result<()> {
         Ok(())
     }
 }
@@ -44,7 +44,7 @@ impl<S: CheckpointStore> ManagerCheckpointer<S> {
 
     /// Persist the final checkpoint under the handoff phase, recording the
     /// position downstream incremental/live processing should resume from.
-    pub async fn save_handoff(&self, checkpoint: &SnapshotStreamCheckpoint) -> Result<()> {
+    pub async fn save_handoff(&self, checkpoint: &InterleavedSnapshotCheckpoint) -> Result<()> {
         self.manager
             .emit_checkpoint(checkpoint, SyncPhase::SnapshotHandoff)
             .await
@@ -58,7 +58,7 @@ impl<S: CheckpointStore> ManagerCheckpointer<S> {
 
 #[async_trait::async_trait]
 impl<S: CheckpointStore> SnapshotCheckpointer for ManagerCheckpointer<S> {
-    async fn save_progress(&mut self, checkpoint: &SnapshotStreamCheckpoint) -> Result<()> {
+    async fn save_progress(&mut self, checkpoint: &InterleavedSnapshotCheckpoint) -> Result<()> {
         self.manager
             .emit_checkpoint(checkpoint, SyncPhase::SnapshotProgress)
             .await

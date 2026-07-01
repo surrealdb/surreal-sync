@@ -1,4 +1,4 @@
-//! Watermark snapshot+stream backend for the PostgreSQL trigger source.
+//! Interleaved snapshot backend for the PostgreSQL trigger source.
 //!
 //! This implements the generic [`WatermarkSource`] contract on top of the
 //! trigger-based audit table (`surreal_sync_changes`). The stream position is
@@ -21,9 +21,9 @@ use tokio::sync::Mutex;
 use tokio_postgres::Client;
 use uuid::Uuid;
 
-use surreal_sync_snapshot_stream::{
-    run_snapshot_stream, PkTuple, SnapshotCheckpointer, SnapshotSignal, SnapshotStreamConfig,
-    StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
+use surreal_sync_interleaved_snapshot::{
+    run_interleaved_snapshot, InterleavedSnapshotConfig, PkTuple, SnapshotCheckpointer,
+    SnapshotSignal, StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
 };
 
 use crate::incremental_sync::{ChangeStream, IncrementalSource, PostgresIncrementalSource};
@@ -123,9 +123,10 @@ impl PostgresTriggerWatermarkSource {
                     surreal_sync_postgresql::get_primary_key_columns(&c, table).await?;
                 if pk_columns.is_empty() {
                     anyhow::bail!(
-                        "Table '{table}' has no primary key; the snapshot-stream strategy requires \
-                         a primary key on every table. Re-run with --strategy bulk to copy this \
-                         source without watermark snapshots."
+                        "Table '{table}' has no primary key; the interleaved-snapshot strategy \
+                         requires a primary key on every table. Re-run with \
+                         --strategy sequential-snapshot to copy this source without watermark \
+                         snapshots."
                     );
                 }
                 tables.push(TableSpec::new(table.clone(), pk_columns));
@@ -382,13 +383,13 @@ pub async fn request_snapshot(from_opts: &SourceOpts, tables: &[String]) -> Resu
     Ok(())
 }
 
-/// Run a watermark snapshot+stream full sync of every primary-keyed user table
+/// Run an interleaved snapshot full sync of every primary-keyed user table
 /// from PostgreSQL (trigger source) into `surreal`, returning the final audit
 /// `sequence_id` to hand off to incremental/live processing.
-pub async fn run_snapshot_stream_full_sync<S, C>(
+pub async fn run_interleaved_snapshot_full_sync<S, C>(
     surreal: &S,
     from_opts: &SourceOpts,
-    config: &SnapshotStreamConfig,
+    config: &InterleavedSnapshotConfig,
     checkpointer: &mut C,
 ) -> Result<i64>
 where
@@ -396,6 +397,6 @@ where
     C: SnapshotCheckpointer,
 {
     let mut source = PostgresTriggerWatermarkSource::setup(from_opts).await?;
-    let result = run_snapshot_stream(&mut source, surreal, config, checkpointer).await?;
+    let result = run_interleaved_snapshot(&mut source, surreal, config, checkpointer).await?;
     Ok(result.final_position)
 }

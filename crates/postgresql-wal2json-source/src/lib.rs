@@ -65,5 +65,6 @@ pub use incremental_sync::run_incremental_sync;
 pub use logical_replication::{ChangeAtLsn, Client, Slot};
 pub use sync::{State, StateID, Store};
 pub use watermark_source::{
-    request_snapshot, run_snapshot_stream_full_sync, Lsn, Wal2JsonWatermarkSource, SIGNAL_TABLE,
+    request_snapshot, run_interleaved_snapshot_full_sync, Lsn, Wal2JsonWatermarkSource,
+    SIGNAL_TABLE,
 };

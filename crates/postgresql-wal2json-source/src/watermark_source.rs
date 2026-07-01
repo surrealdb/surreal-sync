@@ -1,11 +1,11 @@
 //! Watermark snapshot backend for PostgreSQL wal2json.
 //!
 //! This module implements the generic
-//! [`WatermarkSource`](surreal_sync_snapshot_stream::WatermarkSource) trait on
-//! top of the existing logical-replication slot. It lets the DBLog-style
-//! snapshot+stream framework copy tables in primary-key-ordered chunks while
-//! concurrently consuming the WAL change stream, deduplicating snapshot reads
-//! against live changes via low/high watermark rows written to a dedicated
+//! [`WatermarkSource`](surreal_sync_interleaved_snapshot::WatermarkSource) trait
+//! on top of the existing logical-replication slot. It lets the DBLog-style
+//! interleaved snapshot framework copy tables in primary-key-ordered chunks
+//! while concurrently consuming the WAL change stream, deduplicating snapshot
+//! reads against live changes via low/high watermark rows written to a dedicated
 //! signal table.
 //!
 //! Key pieces:
@@ -15,7 +15,7 @@
 //!   text is wrong (e.g. `"0/9"` would sort after `"0/10"`), so [`Lsn`] parses
 //!   both halves as integers and orders on the `(segment, offset)` pair.
 //! - [`Wal2JsonWatermarkSource`]: the backend itself.
-//! - [`run_snapshot_stream_full_sync`]: a small entry point that builds the
+//! - [`run_interleaved_snapshot_full_sync`]: a small entry point that builds the
 //!   backend, runs the framework loop, and returns the final stream position so
 //!   a downstream orchestrator can hand it to the existing incremental runner.
 
@@ -26,8 +26,8 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use surreal_sink::SurrealSink;
-use surreal_sync_snapshot_stream::{
-    run_snapshot_stream, NoopCheckpointer, PkTuple, SnapshotSignal, SnapshotStreamConfig,
+use surreal_sync_interleaved_snapshot::{
+    run_interleaved_snapshot, InterleavedSnapshotConfig, NoopCheckpointer, PkTuple, SnapshotSignal,
     StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
 };
 use sync_core::{UniversalChange, UniversalChangeOp, UniversalRow, UniversalValue};
@@ -403,9 +403,10 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
                     .await?;
             if pk_columns.is_empty() {
                 anyhow::bail!(
-                    "Table '{table}' has no primary key; the snapshot-stream strategy requires a \
-                     primary key on every table. Re-run with --strategy bulk to copy this source \
-                     without watermark snapshots."
+                    "Table '{table}' has no primary key; the interleaved-snapshot strategy \
+                     requires a primary key on every table. Re-run with \
+                     --strategy sequential-snapshot to copy this source without watermark \
+                     snapshots."
                 );
             }
             specs.push(TableSpec::new(table, pk_columns));
@@ -631,21 +632,21 @@ pub async fn request_snapshot(from_opts: &SourceOpts, tables: &[String]) -> Resu
     Ok(())
 }
 
-/// Run a watermark snapshot+stream full sync from PostgreSQL to SurrealDB.
+/// Run an interleaved snapshot full sync from PostgreSQL to SurrealDB.
 ///
 /// Builds the wal2json backend, runs the generic framework loop, and returns
 /// the final stream position. A downstream orchestrator hands this position to
 /// the existing incremental runner to continue live replication from exactly
 /// where the snapshot finished.
-pub async fn run_snapshot_stream_full_sync<S: SurrealSink>(
+pub async fn run_interleaved_snapshot_full_sync<S: SurrealSink>(
     surreal: &S,
     from_opts: SourceOpts,
     chunk_size: usize,
 ) -> Result<Lsn> {
     let mut source = Wal2JsonWatermarkSource::connect(&from_opts).await?;
-    let config = SnapshotStreamConfig { chunk_size };
+    let config = InterleavedSnapshotConfig { chunk_size };
     let mut checkpointer = NoopCheckpointer;
-    let result = run_snapshot_stream(&mut source, surreal, &config, &mut checkpointer).await?;
+    let result = run_interleaved_snapshot(&mut source, surreal, &config, &mut checkpointer).await?;
     info!(
         "wal2json watermark snapshot complete (final LSN: {}, peak buffered rows: {})",
         result.final_position, result.peak_buffered_rows
