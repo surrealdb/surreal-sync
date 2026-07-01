@@ -83,6 +83,18 @@ pub struct Config {
     /// Security protocol. Omit for plain Kafka with no auth.
     #[clap(long, value_enum)]
     pub security_protocol: Option<SecurityProtocol>,
+    /// Path to CA certificate file for broker verification
+    #[clap(long, env = "KAFKA_SSL_CA_LOCATION")]
+    pub ssl_ca_location: Option<String>,
+    /// Path to client certificate file for mTLS
+    #[clap(long, env = "KAFKA_SSL_CERTIFICATE_LOCATION")]
+    pub ssl_certificate_location: Option<String>,
+    /// Path to client private key file for mTLS
+    #[clap(long, env = "KAFKA_SSL_KEY_LOCATION")]
+    pub ssl_key_location: Option<String>,
+    /// Password for the client private key
+    #[clap(long, env = "KAFKA_SSL_KEY_PASSWORD")]
+    pub ssl_key_password: Option<String>,
 }
 
 /// Run incremental sync from Kafka to SurrealDB.
@@ -120,6 +132,10 @@ pub async fn run_incremental_sync<S: SurrealSink + Send + Sync + 'static>(
         sasl_password: config.sasl_password,
         sasl_mechanism: config.sasl_mechanism,
         security_protocol: config.security_protocol,
+        ssl_ca_location: config.ssl_ca_location,
+        ssl_certificate_location: config.ssl_certificate_location,
+        ssl_key_location: config.ssl_key_location,
+        ssl_key_password: config.ssl_key_password,
         ..Default::default()
     };
 

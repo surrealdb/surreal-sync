@@ -15,7 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Kafka client
-rdkafka = { version = "0.38", features = ["tokio"] }
+rdkafka = { version = "0.38", features = ["tokio", "sasl"] }
 
 # Protobuf support
 protobuf = "3.5"
@@ -28,6 +28,7 @@ anyhow = { version = "1.0.100", features = ["backtrace"] }
 
 # Utilities
 chrono = "0.4"
+tempfile = "3.27"
 
 # Logging
 tracing = "0.1"

@@ -131,6 +131,10 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         sasl_password: None,
         sasl_mechanism: None,
         security_protocol: None,
+        ssl_ca_location: None,
+        ssl_certificate_location: None,
+        ssl_key_location: None,
+        ssl_key_password: None,
     };
 
     // Run sync with a short deadline (just enough to consume existing messages)
@@ -187,6 +191,10 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
                 sasl_password: None,
                 sasl_mechanism: None,
                 security_protocol: None,
+                ssl_ca_location: None,
+                ssl_certificate_location: None,
+                ssl_key_location: None,
+                ssl_key_password: None,
             };
 
             let deadline = Utc::now() + chrono::Duration::seconds(5);
@@ -235,6 +243,10 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
                 sasl_password: None,
                 sasl_mechanism: None,
                 security_protocol: None,
+                ssl_ca_location: None,
+                ssl_certificate_location: None,
+                ssl_key_location: None,
+                ssl_key_password: None,
             };
 
             let deadline = Utc::now() + chrono::Duration::seconds(5);
@@ -306,6 +318,10 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
                 sasl_password: None,
                 sasl_mechanism: None,
                 security_protocol: None,
+                ssl_ca_location: None,
+                ssl_certificate_location: None,
+                ssl_key_location: None,
+                ssl_key_password: None,
             };
 
             let deadline = Utc::now() + chrono::Duration::seconds(5);
@@ -354,6 +370,10 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
                 sasl_password: None,
                 sasl_mechanism: None,
                 security_protocol: None,
+                ssl_ca_location: None,
+                ssl_certificate_location: None,
+                ssl_key_location: None,
+                ssl_key_password: None,
             };
 
             let deadline = Utc::now() + chrono::Duration::seconds(5);

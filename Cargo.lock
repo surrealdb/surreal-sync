@@ -7432,6 +7432,7 @@ dependencies = [
  "protobuf",
  "protobuf-codegen",
  "rdkafka",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
