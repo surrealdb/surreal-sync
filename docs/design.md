@@ -78,7 +78,7 @@ This is the approach currently used with our Neo4j source. This is mainly becaus
 See the source-specific documentation for implementation details:
 
 - **[MongoDB](mongodb.md)**: Change streams and resume token management
-- **[MySQL](mysql.md)**: Trigger-based CDC with sequence checkpointing
+- **[MySQL](mysql.md)**: Trigger-based CDC with sequence checkpointing ([legacy sequential-snapshot guide](mysql/legacy.md))
 - **[PostgreSQL](postgresql.md)**: Trigger-based CDC with sequence checkpointing
 - **[Neo4j](neo4j.md)**: Timestamp-based tracking with deletion limitations
 - **[JSONL](jsonl.md)**: File-based bulk import (no incremental sync)

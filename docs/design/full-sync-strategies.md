@@ -13,7 +13,7 @@ The original strategy. Full sync reads each table with a monolithic `SELECT *`, 
 
 Because a plain `SELECT *` is not a database-wide consistent read, the dump can mix row versions seen anywhere between t1 and t2. Consistency is recovered in a *separate* incremental run that replays the entire change log from t1 on top of the snapshot using idempotent UPSERTs; once it reaches t2 the target equals the source as of t2.
 
-- Invocation: two CLI runs — `full` (`--strategy sequential-snapshot`) then `incremental --incremental-from <t1>`.
+- Invocation: two CLI runs — `full` (`--strategy sequential-snapshot`) then `incremental --incremental-from <t1>`. For MySQL, see [MySQL Legacy Full Sync](../mysql/legacy.md).
 - Snapshot vs stream: sequential. The stream is replayed *after* the snapshot.
 - Memory: the whole table is materialized per `SELECT *`.
 - Source change-log retention: the source must retain the entire change log from t1 until the incremental run catches up (the replication slot pins WAL; trigger audit rows pile up). Backlog grows with the full snapshot duration.
@@ -31,7 +31,7 @@ The DBLog/Debezium-style incremental snapshot. The change stream is consumed *co
 - Ad-hoc / add-table re-snapshot while streaming: supported via the signal table.
 - Requirements: every selected table needs a usable primary key, and `surreal-sync` writes a `surreal_sync_signal` table (and watermark rows) to the source.
 
-`interleaved-snapshot` is the **default** for PostgreSQL (both the wal2json and trigger sources) and MySQL. Use it whenever the source supports it. Opt out with `--strategy sequential-snapshot` when a selected table has no usable primary key, or when writing the watermark/signal table to the source is not permitted.
+`interleaved-snapshot` is the **default** for PostgreSQL (both the wal2json and trigger sources) and MySQL. Use it whenever the source supports it. Opt out with `--strategy sequential-snapshot` when a selected table has no usable primary key, or when writing the watermark/signal table to the source is not permitted. For MySQL sequential-snapshot usage, see [MySQL Legacy Full Sync](../mysql/legacy.md).
 
 ### Consistency guarantee (consistent at the end, then live)
 
