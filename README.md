@@ -36,12 +36,6 @@ surreal-sync from postgresql-trigger full -c surreal-sync.toml
 surreal-sync from postgresql incremental -c surreal-sync.toml
 ```
 
-## Full Sync Strategies (PostgreSQL & MySQL)
-
-For PostgreSQL and MySQL, full sync offers two strategies selected with `--strategy`: `interleaved-snapshot` (the default, a DBLog-style watermark snapshot with bounded memory and bounded change-log retention) and `sequential-snapshot` (the original monolithic snapshot plus change-log replay). `interleaved-snapshot` requires a primary key on every selected table and writes a small `surreal_sync_signal` table to the source; use `--strategy sequential-snapshot` to keep the previous behavior.
-
-See [docs/design/full-sync-strategies.md](docs/design/full-sync-strategies.md) for the side-by-side comparison, the consistency guarantee, and the bounded-memory/bounded-retention analysis.
-
 See source-specific guides for more details:
 
 - **[MongoDB](docs/mongodb.md)**: Full and incremental sync using change streams
