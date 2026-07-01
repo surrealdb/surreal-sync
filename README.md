@@ -55,7 +55,7 @@ surreal-sync from postgresql snapshot --connection-string ... --tables new_table
 
 **Recommendation:** use `interleaved-snapshot` whenever the source supports it. Opt out with `--strategy sequential-snapshot` for tables without a usable primary key, or when writing watermark rows to the source is not permitted.
 
-> **Behavior change:** `interleaved-snapshot` is now the **default** for PostgreSQL and MySQL. Compared to the previous behavior it creates a `surreal_sync_signal` table on the source and requires a primary key on every selected table. Pass `--strategy sequential-snapshot` to keep the previous full-sync behavior. (The previous strategy values `snapshot-stream` and `bulk` have been renamed to `interleaved-snapshot` and `sequential-snapshot`.) See [docs/design.md](docs/design.md#full-sync-strategies) for details.
+> **Behavior change:** `interleaved-snapshot` is now the **default** for PostgreSQL and MySQL. Compared to the previous behavior it creates a `surreal_sync_signal` table on the source and requires a primary key on every selected table. Pass `--strategy sequential-snapshot` to keep the previous full-sync behavior. (The previous strategy values `snapshot-stream` and `bulk` have been renamed to `interleaved-snapshot` and `sequential-snapshot`.) See [docs/design/full-sync-strategies.md](docs/design/full-sync-strategies.md) for details.
 
 See source-specific guides for more details:
 
