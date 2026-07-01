@@ -2712,24 +2712,6 @@ dependencies = [
 
 [[package]]
 name = "geo"
-version = "0.31.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2fc1a1678e54befc9b4bcab6cd43b8e7f834ae8ea121118b0fd8c42747675b4a"
-dependencies = [
- "earcutr",
- "float_next_after",
- "geo-types",
- "geographiclib-rs",
- "i_overlay",
- "log",
- "num-traits",
- "robust",
- "rstar 0.12.2",
- "spade",
-]
-
-[[package]]
-name = "geo"
 version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f3901269ec6d4f6068d3f09e5f02f995bd076398dcd1dfec407cd230b02d11b"
@@ -7273,7 +7255,7 @@ dependencies = [
  "clap",
  "csv",
  "futures",
- "geo 0.31.0",
+ "geo 0.32.0",
  "geo-types",
  "json-types",
  "kafka-types",
@@ -7529,7 +7511,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "futures",
- "geo 0.31.0",
+ "geo 0.32.0",
  "geo-types",
  "log",
  "neo4j-types",
