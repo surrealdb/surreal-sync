@@ -544,8 +544,38 @@ pub struct RowConversionConfig {
     pub boolean_columns: Vec<String>,
     /// Column names that are SET type (comma-separated values -> array)
     pub set_columns: Vec<String>,
+    /// Column names that hold JSON even though they do not arrive as
+    /// `MYSQL_TYPE_JSON` over the wire. MariaDB implements `JSON` as a
+    /// `LONGTEXT` alias, so its JSON columns arrive as `MYSQL_TYPE_BLOB`; listing
+    /// them here makes them convert to a nested JSON value like native MySQL JSON.
+    pub json_columns: Vec<String>,
     /// JSON field configuration (for nested paths within JSON columns)
     pub json_config: Option<JsonConversionConfig>,
+}
+
+/// Convert a raw MySQL value that holds JSON text into a `TypedValue`, applying
+/// the optional per-field `json_config`. Returns `None` when the value is not
+/// UTF-8 bytes or does not parse as JSON, so callers can fall back to their
+/// standard conversion path.
+fn convert_json_column(
+    raw_value: &Value,
+    json_config: Option<&JsonConversionConfig>,
+) -> Option<TypedValue> {
+    let bytes = match raw_value {
+        Value::Bytes(bytes) => bytes,
+        _ => return None,
+    };
+    let s = String::from_utf8(bytes.clone()).ok()?;
+    let json_value = serde_json::from_str::<serde_json::Value>(&s).ok()?;
+    let default_config;
+    let config = match json_config {
+        Some(cfg) => cfg,
+        None => {
+            default_config = JsonConversionConfig::default();
+            &default_config
+        }
+    };
+    Some(json_to_typed_value_with_config(json_value, "", config))
 }
 
 /// Convert a MySQL row to a HashMap of TypedValues.
@@ -573,6 +603,7 @@ pub fn row_to_typed_values(
                 .map(|cols| cols.iter().map(|s| s.to_string()).collect())
                 .unwrap_or_default(),
             set_columns: Vec::new(),
+            json_columns: Vec::new(),
             json_config: json_config.cloned(),
         },
     )
@@ -629,19 +660,17 @@ pub fn row_to_typed_values_with_config(
             }
         }
 
-        // For JSON columns with config, use special conversion
-        if column_type == ColumnType::MYSQL_TYPE_JSON {
-            if let Some(ref json_config) = config.json_config {
-                if let Value::Bytes(bytes) = &raw_value {
-                    if let Ok(s) = String::from_utf8(bytes.clone()) {
-                        if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&s) {
-                            let typed_value =
-                                json_to_typed_value_with_config(json_value, "", json_config);
-                            result.insert(column_name, typed_value);
-                            continue;
-                        }
-                    }
-                }
+        // Treat a column as JSON when it arrives as native MySQL JSON, or when
+        // it is a MariaDB JSON column (a `LONGTEXT` alias that arrives as
+        // `MYSQL_TYPE_BLOB`) named in `json_columns`. Parse the bytes as JSON,
+        // falling back to standard conversion (e.g. text) if parsing fails.
+        let is_json_column = column_type == ColumnType::MYSQL_TYPE_JSON
+            || config.json_columns.contains(&column_name);
+        if is_json_column {
+            if let Some(typed_value) = convert_json_column(&raw_value, config.json_config.as_ref())
+            {
+                result.insert(column_name, typed_value);
+                continue;
             }
         }
 

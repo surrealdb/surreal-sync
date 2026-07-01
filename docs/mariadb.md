@@ -1,16 +1,14 @@
-# Surreal-Sync for MySQL
+# Surreal-Sync for MariaDB
 
-`surreal-sync from mysql` is a sub-command to `surreal-sync` that exports MySQL tables to SurrealDB tables.
-
-> **MariaDB is also supported.** MariaDB speaks the MySQL wire protocol, so it uses this same `mysql` sub-command and trigger-based source. See [Surreal-Sync for MariaDB](mariadb.md) for MariaDB-specific examples and the one nuance (JSON stored as a `LONGTEXT` alias).
+`surreal-sync from mysql` also syncs MariaDB. MariaDB speaks the MySQL wire protocol and supports every SQL construct surreal-sync relies on (triggers, `JSON_OBJECT`/`JSON_EXTRACT`, `information_schema`), so it is **fully supported through the same trigger-based source that MySQL uses** — you use the `mysql` sub-command and the `mysql://` connection scheme against your MariaDB server. See the one behavioural nuance in [MariaDB notes](#mariadb-notes) below.
 
 The default **interleaved-snapshot** workflow copies tables in resumable, primary-key-ordered chunks while continuously consuming the trigger-based change stream. Watermark reconciliation aligns each chunk with live changes (the log event wins), so the target converges to a **consistent image at the end position** and can keep tracking live — it is not an inconsistent monolithic dump. Use the combined `sync` command for a single-process snapshot plus incremental handoff.
 
-> **Other strategies:** For the legacy sequential-snapshot workflow (inconsistent monolithic snapshot plus a separate incremental replay from t1), see [MySQL Legacy Full Sync](mysql/legacy.md).
+> **Other strategies:** For the legacy sequential-snapshot workflow (inconsistent monolithic snapshot plus a separate incremental replay from t1), see [MySQL Legacy Full Sync](mysql/legacy.md) — the same guide applies to MariaDB (use your MariaDB `mysql://` connection string).
 
 ## How It Works
 
-`surreal-sync from mysql` supports `full`, `incremental`, a combined `sync`, and an ad-hoc `snapshot` command.
+`surreal-sync from mysql` supports `full`, `incremental`, a combined `sync`, and an ad-hoc `snapshot` command against MariaDB.
 
 Change capture is trigger-based: an audit table (`surreal_sync_changes`) populated by per-table triggers provides resumable, sequence-based checkpointing. A potential alternative would be to read the binlog; `surreal-sync` may add a binlog-based backend in the future.
 
@@ -18,7 +16,7 @@ See [Full Sync Strategies](design/full-sync-strategies.md) for the consistency g
 
 ## Prerequisites
 
-You need appropriate permissions to create triggers and tables in the MySQL database, because sync relies on database triggers to capture changes.
+You need appropriate permissions to create triggers and tables in the MariaDB database, because sync relies on database triggers to capture changes.
 
 Every table you select for sync must have a usable primary key. `surreal-sync` also writes a small `surreal_sync_signal` table on the source for watermark signalling.
 
@@ -27,7 +25,7 @@ Every table you select for sync must have a usable primary key. `surreal-sync` a
 The `sync` command is the standard entry point. It runs the watermark snapshot and continues incremental sync from the handed-off end position in one process — no separate incremental replay pass is needed to reach consistency.
 
 ```bash
-export CONNECTION_STRING="mysql://root:root@mysql:3306/myapp"
+export CONNECTION_STRING="mysql://root:root@mariadb:3306/myapp"
 export SURREAL_ENDPOINT="ws://localhost:8000"
 
 surreal-sync from mysql sync \
@@ -52,7 +50,7 @@ surreal-sync from mysql sync \
 Use `full` when you want a one-time snapshot without immediately continuing incremental sync — for example, to bulk-load data and run `incremental` on a schedule later. Interleaved-snapshot is the default (`--chunk-size`, default 1024).
 
 ```bash
-export CONNECTION_STRING="mysql://root:root@mysql:3306/myapp"
+export CONNECTION_STRING="mysql://root:root@mariadb:3306/myapp"
 export SURREAL_ENDPOINT="ws://localhost:8000"
 
 surreal-sync from mysql full \
@@ -99,7 +97,7 @@ surreal-sync from mysql incremental \
 
 `--incremental-from` is the end-position checkpoint; `--timeout` controls how long the run continues (useful for batched or scheduled runs).
 
-While incremental sync is running, your application can continue writing to MySQL without downtime, as long as the source can serve the workload.
+While incremental sync is running, your application can continue writing to MariaDB without downtime, as long as the source can serve the workload.
 
 ## Ad-hoc Snapshots (Signalling)
 
@@ -113,6 +111,12 @@ surreal-sync from mysql snapshot \
 ```
 
 - `--tables` (required): comma-separated tables to snapshot.
+
+## MariaDB notes
+
+MariaDB behaves identically to MySQL for surreal-sync with a single nuance around JSON. MariaDB implements the `JSON` type as an **alias for `LONGTEXT`** (with an automatic `json_valid(...)` `CHECK` constraint) rather than as a native JSON type. As a result, JSON columns arrive over the wire as text/blob and report `longtext` in `information_schema`, so a naive reader would sync them as escaped strings instead of nested objects.
+
+surreal-sync handles this automatically: it **detects JSON columns** on both engines — for MySQL via `information_schema.COLUMNS` (`DATA_TYPE = 'json'`), and for MariaDB via the `json_valid(...)` `CHECK` constraints recorded in `information_schema` — and treats those columns as JSON on every read path (full snapshot, interleaved snapshot, and the trigger-based incremental stream, where the audit triggers wrap the value with `JSON_EXTRACT(NEW.col, '$')`). Nested JSON therefore syncs to real SurrealDB objects on MariaDB just as it does on MySQL, with no extra configuration.
 
 ## Troubleshooting
 
@@ -130,4 +134,4 @@ Interleaved-snapshot prunes consumed rows from `surreal_sync_changes` as the str
 
 ## Data Type Support
 
-See [MySQL Data Types](mysql-data-types.md) for data type mapping information.
+See [MySQL Data Types](mysql-data-types.md) for data type mapping information; MariaDB uses the same mappings (including the JSON handling described in [MariaDB notes](#mariadb-notes)).
