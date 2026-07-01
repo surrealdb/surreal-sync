@@ -2,7 +2,7 @@
 //!
 //! Provides a `SurrealDbContainer` that runs SurrealDB in-memory via Docker
 //! with dynamic port binding. The Docker image defaults to
-//! `surrealdb/surrealdb:v2.3.7` and can be overridden with the
+//! `surrealdb/surrealdb:v2.6.5` and can be overridden with the
 //! `SURREALDB_IMAGE` environment variable.
 
 use anyhow::{Context, Result};
@@ -12,7 +12,7 @@ use tracing::{debug, info};
 
 use crate::SurrealMajorVersion;
 
-const DEFAULT_IMAGE: &str = "surrealdb/surrealdb:v2.3.7";
+const DEFAULT_IMAGE: &str = "surrealdb/surrealdb:v2.6.5";
 
 /// A test SurrealDB container backed by Docker with dynamic port binding.
 pub struct SurrealDbContainer {
@@ -27,7 +27,7 @@ impl SurrealDbContainer {
     /// Creates a new container configuration.
     ///
     /// The Docker image is read from `SURREALDB_IMAGE` env var, falling back
-    /// to `surrealdb/surrealdb:v2.3.7`.
+    /// to `surrealdb/surrealdb:v2.6.5`.
     pub fn new(container_name: &str) -> Self {
         let image = std::env::var("SURREALDB_IMAGE").unwrap_or_else(|_| DEFAULT_IMAGE.to_string());
         Self {

@@ -4,6 +4,18 @@ updates:
   directory: "/"
   schedule:
     interval: "weekly"
+  ignore:
+    # surreal-sync depends on both SurrealDB SDK 2.x and 3.x simultaneously via
+    # Cargo package aliasing (surrealdb2 / surrealdb3). Never cross-upgrade one
+    # major line into the other (e.g. 2.x -> 3.x); each line should only receive
+    # within-major updates. See https://github.com/surrealdb/surreal-sync/pull/88.
+    #
+    # Known limitation: Dependabot can under-update when Cargo.lock holds two
+    # versions of the same crate (https://github.com/dependabot/dependabot-core/issues/8050).
+    # If the 3.x line stops getting PRs, bump it manually with
+    # `cargo update -p surrealdb@3.x`.
+    - dependency-name: "surrealdb"
+      update-types: ["version-update:semver-major"]
 - package-ecosystem: "github-actions"
   directory: "/"
   schedule:
