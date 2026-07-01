@@ -38,24 +38,9 @@ surreal-sync from postgresql incremental -c surreal-sync.toml
 
 ## Full Sync Strategies (PostgreSQL & MySQL)
 
-For PostgreSQL (both the trigger and wal2json sources) and MySQL, full sync offers two strategies, selected with `--strategy`:
+For PostgreSQL and MySQL, full sync offers two strategies selected with `--strategy`: `interleaved-snapshot` (the default, a DBLog-style watermark snapshot with bounded memory and bounded change-log retention) and `sequential-snapshot` (the original monolithic snapshot plus change-log replay). `interleaved-snapshot` requires a primary key on every selected table and writes a small `surreal_sync_signal` table to the source; use `--strategy sequential-snapshot` to keep the previous behavior.
 
-- **`interleaved-snapshot` (default)** — A DBLog-style watermark snapshot copied concurrently/interleaved with the change stream. Tables are copied in primary-key-ordered, resumable chunks (`--chunk-size`, default 1024) while changes stream concurrently. The target converges to a **consistent image at the end position (≈ t2), then tracks live** — not a frozen t1 snapshot. It uses **bounded memory** (O(chunk_size), independent of table size) and **bounded retention** (the source change log is freed as it is consumed, rather than pinned for the whole snapshot). It also supports ad-hoc / add-table re-snapshots while streaming.
-- **`sequential-snapshot`** — The original monolithic `SELECT *` per table with t1/t2 checkpoints, then a separate replay of the [t1,t2] change log via an `incremental` run from t1. The source must retain the entire change log from t1 until catch-up (unbounded retention).
-
-Use the combined `sync` command to run the snapshot and hand off to incremental in one process, and the `snapshot` command to request an ad-hoc snapshot of additional tables against a running `sync`:
-
-```bash
-# One-process interleaved-snapshot + incremental
-surreal-sync from postgresql sync --connection-string ... --to-namespace ns --to-database db
-
-# Ask a running `sync` to also snapshot more tables
-surreal-sync from postgresql snapshot --connection-string ... --tables new_table
-```
-
-**Recommendation:** use `interleaved-snapshot` whenever the source supports it. Opt out with `--strategy sequential-snapshot` for tables without a usable primary key, or when writing watermark rows to the source is not permitted.
-
-> **Behavior change:** `interleaved-snapshot` is now the **default** for PostgreSQL and MySQL. Compared to the previous behavior it creates a `surreal_sync_signal` table on the source and requires a primary key on every selected table. Pass `--strategy sequential-snapshot` to keep the previous full-sync behavior. (The previous strategy values `snapshot-stream` and `bulk` have been renamed to `interleaved-snapshot` and `sequential-snapshot`.) See [docs/design/full-sync-strategies.md](docs/design/full-sync-strategies.md) for details.
+See [docs/design/full-sync-strategies.md](docs/design/full-sync-strategies.md) for the side-by-side comparison, the consistency guarantee, and the bounded-memory/bounded-retention analysis.
 
 See source-specific guides for more details:
 
