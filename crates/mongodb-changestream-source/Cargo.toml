@@ -39,5 +39,5 @@ base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3.27"
-surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+surrealdb = { version = "3.0.1", features = ["protocol-ws", "kv-mem"] }
 surreal2-types = { path = "../surreal2-types" }

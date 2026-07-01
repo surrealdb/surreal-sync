@@ -1387,7 +1387,6 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-version",
- "surrealdb 2.3.7",
  "surrealdb 3.0.1",
  "tempfile",
  "tokio",
@@ -2887,6 +2886,10 @@ name = "hashbrown"
 version = "0.14.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
+dependencies = [
+ "ahash 0.8.12",
+ "allocator-api2",
+]
 
 [[package]]
 name = "hashbrown"
@@ -4015,7 +4018,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal2-types",
- "surrealdb 2.3.7",
+ "surrealdb 2.6.5",
  "sync-core",
  "thiserror 2.0.18",
  "tokio",
@@ -4483,15 +4486,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nanoid"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ffa00dec017b5b1a8b7cf5e2c008bfda1aa7e0697ac1508b491fdf2622fb4d8"
-dependencies = [
- "rand 0.8.5",
-]
-
-[[package]]
 name = "ndarray"
 version = "0.15.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4909,7 +4903,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -5471,7 +5465,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "syn 2.0.103",
@@ -7299,7 +7293,7 @@ dependencies = [
  "surreal2-types",
  "surreal3-sink",
  "surreal3-types",
- "surrealdb 2.3.7",
+ "surrealdb 2.6.5",
  "surrealdb 3.0.1",
  "sync-core",
  "tempfile",
@@ -7333,7 +7327,6 @@ dependencies = [
  "surreal-version",
  "surreal2-sink",
  "surreal3-sink",
- "surrealdb 2.3.7",
  "surrealdb 3.0.1",
  "sync-core",
  "tempfile",
@@ -7392,7 +7385,6 @@ dependencies = [
  "surreal-version",
  "surreal2-sink",
  "surreal3-sink",
- "surrealdb 2.3.7",
  "surrealdb 3.0.1",
  "sync-core",
  "tokio",
@@ -7460,7 +7452,7 @@ dependencies = [
  "serde_json",
  "surreal-sink",
  "surreal2-types",
- "surrealdb 2.3.7",
+ "surrealdb 3.0.1",
  "sync-core",
  "tempfile",
  "tokio",
@@ -7486,7 +7478,7 @@ dependencies = [
  "serde_json",
  "surreal-sink",
  "surreal-sync-interleaved-snapshot",
- "surrealdb 2.3.7",
+ "surrealdb 3.0.1",
  "sync-core",
  "tempfile",
  "tokio",
@@ -7515,7 +7507,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sink",
- "surrealdb 2.3.7",
+ "surrealdb 3.0.1",
  "sync-core",
  "tempfile",
  "tokio",
@@ -7567,7 +7559,7 @@ dependencies = [
  "surreal-sink",
  "surreal-sync-interleaved-snapshot",
  "surreal-sync-postgresql",
- "surrealdb 2.3.7",
+ "surrealdb 3.0.1",
  "sync-core",
  "tempfile",
  "tokio",
@@ -7596,7 +7588,7 @@ dependencies = [
  "surreal-sync-interleaved-snapshot",
  "surreal-sync-postgresql",
  "surreal2-sink",
- "surrealdb 2.3.7",
+ "surrealdb 3.0.1",
  "sync-core",
  "tempfile",
  "tokio",
@@ -7625,7 +7617,7 @@ dependencies = [
  "async-trait",
  "serde_json",
  "surreal-client",
- "surrealdb 2.3.7",
+ "surrealdb 3.0.1",
  "tracing",
 ]
 
@@ -7638,7 +7630,7 @@ dependencies = [
  "log",
  "surreal-sink",
  "surreal2-types",
- "surrealdb 2.3.7",
+ "surrealdb 3.0.1",
  "sync-core",
  "tokio",
  "tracing",
@@ -7657,7 +7649,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
- "surrealdb 2.3.7",
+ "surrealdb 3.0.1",
  "sync-core",
  "thiserror 2.0.18",
  "tokio",
@@ -7717,9 +7709,9 @@ dependencies = [
 
 [[package]]
 name = "surrealdb"
-version = "2.3.7"
+version = "2.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5545940eb21920f4eb3fbdd4a805c68c9917e9ee95b805d7702c0a6cf61ed4d0"
+checksum = "3429154a8b5a98ca39100ba45ef49ae046fb1d0869dff78d78a2670b1b278982"
 dependencies = [
  "arrayvec",
  "async-channel",
@@ -7743,7 +7735,7 @@ dependencies = [
  "serde",
  "serde-content",
  "serde_json",
- "surrealdb-core 2.3.7",
+ "surrealdb-core 2.6.5",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite 0.23.1",
@@ -7796,9 +7788,9 @@ dependencies = [
 
 [[package]]
 name = "surrealdb-core"
-version = "2.3.7"
+version = "2.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04c0c3d3e8e8156a1f15e3f146b8e40d7a0197e89abea6c4aa0178d06d11e6d1"
+checksum = "ba423d9e7e665e4c735a1d4669c3a067135e4a574edf88af215f7f2b815e70ed"
 dependencies = [
  "addr",
  "affinitypool 0.3.1",
@@ -7828,6 +7820,7 @@ dependencies = [
  "geo 0.28.0",
  "geo-types",
  "getrandom 0.3.4",
+ "hashbrown 0.14.5",
  "hex",
  "http 1.4.0",
  "ipnet",
@@ -7835,7 +7828,6 @@ dependencies = [
  "lexicmp 0.1.0",
  "linfa-linalg",
  "md-5",
- "nanoid",
  "ndarray 0.15.6",
  "ndarray-stats 0.5.1",
  "num-traits",
@@ -7986,7 +7978,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-version",
- "surrealdb 2.3.7",
+ "surrealdb 2.6.5",
  "surrealdb 3.0.1",
  "tokio",
  "tracing",
@@ -9274,7 +9266,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]

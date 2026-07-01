@@ -21,7 +21,7 @@ tracing = "0.1"
 async-trait = "0.1"
 
 # SurrealDB for checkpoint storage
-surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+surrealdb = { version = "3.0.1", features = ["protocol-ws", "kv-mem"] }
 
 [dev-dependencies]
 tokio = { version = "1.49", features = ["full", "test-util"] }

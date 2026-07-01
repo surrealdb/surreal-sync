@@ -53,7 +53,7 @@ surreal3-sink = { path = "../surreal3-sink" }
 surreal-version = { path = "../surreal-version" }
 
 # SurrealDB for tests
-surrealdb = { version = "2.3.7", features = ["protocol-ws", "kv-mem"] }
+surrealdb = { version = "3.0.1", features = ["protocol-ws", "kv-mem"] }
 surrealdb3 = { version = "=3.0.1", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
 
 # HTTP test server
