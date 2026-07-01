@@ -12,13 +12,18 @@
 //! CLI flags take precedence over config file values when both are provided.
 
 use anyhow::Context;
-use checkpoint::Checkpoint;
+use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use std::path::PathBuf;
-use surreal_sync::SurrealOpts;
+use surreal_sink::SurrealSink;
+use surreal_sync::{orchestrate_snapshot_then_incremental, SurrealOpts};
+use surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint;
 
 use super::{get_sdk_version, load_schema_if_provided, SdkVersion};
 use crate::config::load_config;
-use crate::{PostgreSQLLogicalFullArgs, PostgreSQLLogicalIncrementalArgs};
+use crate::{
+    PostgreSQLLogicalFullArgs, PostgreSQLLogicalIncrementalArgs, PostgreSQLLogicalSnapshotArgs,
+    PostgreSQLLogicalSyncArgs, SyncStrategy,
+};
 use surreal_sync_postgresql_wal2json_source::toml_config::{
     Wal2jsonFullSource, Wal2jsonIncrementalSource,
 };
@@ -35,6 +40,8 @@ struct ResolvedWal2jsonFullArgs {
     schema_file: Option<PathBuf>,
     checkpoint_dir: Option<String>,
     checkpoints_surreal_table: Option<String>,
+    strategy: SyncStrategy,
+    chunk_size: usize,
     surreal: SurrealOpts,
 }
 
@@ -82,6 +89,8 @@ fn resolve_full_args(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<Resolved
             checkpoints_surreal_table: args
                 .checkpoints_surreal_table
                 .or(pg.checkpoints_surreal_table),
+            strategy: args.strategy,
+            chunk_size: args.chunk_size,
             surreal: SurrealOpts {
                 surreal_endpoint: sink.endpoint,
                 surreal_username: sink.username,
@@ -108,6 +117,8 @@ fn resolve_full_args(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<Resolved
             schema_file: args.schema_file,
             checkpoint_dir: args.checkpoint_dir,
             checkpoints_surreal_table: args.checkpoints_surreal_table,
+            strategy: args.strategy,
+            chunk_size: args.chunk_size,
             surreal: args.surreal,
         })
     }
@@ -185,7 +196,7 @@ fn resolve_incremental_args(
 
 // ---- Public entry points ----
 
-/// Run PostgreSQL WAL-based full sync, dispatching to appropriate SDK version.
+/// Run PostgreSQL WAL-based full sync, dispatching by strategy then SDK version.
 pub async fn run_full(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<()> {
     let args = resolve_full_args(args)?;
     let sdk_version = get_sdk_version(
@@ -194,9 +205,15 @@ pub async fn run_full(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<()> {
     )
     .await?;
 
-    match sdk_version {
-        SdkVersion::V2 => run_full_v2(args).await,
-        SdkVersion::V3 => run_full_v3(args).await,
+    match (args.strategy, sdk_version) {
+        (SyncStrategy::SequentialSnapshot, SdkVersion::V2) => run_full_v2(args).await,
+        (SyncStrategy::SequentialSnapshot, SdkVersion::V3) => run_full_v3(args).await,
+        (SyncStrategy::InterleavedSnapshot, SdkVersion::V2) => {
+            run_full_interleaved_snapshot_v2(args).await
+        }
+        (SyncStrategy::InterleavedSnapshot, SdkVersion::V3) => {
+            run_full_interleaved_snapshot_v3(args).await
+        }
     }
 }
 
@@ -536,5 +553,274 @@ async fn run_incremental_v3(args: ResolvedWal2jsonIncrementalArgs) -> anyhow::Re
     )
     .await?;
 
+    Ok(())
+}
+
+// =============================================================================
+// Interleaved snapshot strategy
+// =============================================================================
+
+fn wal2json_source_opts(
+    connection_string: &str,
+    slot: &str,
+    tables: Vec<String>,
+    schema: &str,
+) -> surreal_sync_postgresql_wal2json_source::SourceOpts {
+    surreal_sync_postgresql_wal2json_source::SourceOpts {
+        connection_string: connection_string.to_string(),
+        slot_name: slot.to_string(),
+        tables,
+        schema: schema.to_string(),
+        relation_tables: vec![],
+    }
+}
+
+/// Run a wal2json interleaved snapshot full sync, emitting the handoff LSN
+/// as a checkpoint (when checkpoint storage is configured) so a later
+/// `incremental` run can resume from the consistent end position.
+async fn wal2json_snapshot_full<S, St>(
+    sink: &S,
+    source_opts: surreal_sync_postgresql_wal2json_source::SourceOpts,
+    chunk_size: usize,
+    manager: Option<&SyncManager<St>>,
+) -> anyhow::Result<()>
+where
+    S: SurrealSink,
+    St: CheckpointStore,
+{
+    let final_lsn = surreal_sync_postgresql_wal2json_source::run_interleaved_snapshot_full_sync(
+        sink,
+        source_opts,
+        chunk_size,
+    )
+    .await?;
+
+    if let Some(manager) = manager {
+        let checkpoint = PostgreSQLLogicalCheckpoint {
+            lsn: final_lsn.to_pg_string(),
+            timestamp: chrono::Utc::now(),
+        };
+        manager
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
+            .await?;
+        manager
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
+            .await?;
+    }
+    tracing::info!("Watermark snapshot full sync completed (final LSN: {final_lsn})");
+    Ok(())
+}
+
+async fn run_full_interleaved_snapshot_v2(args: ResolvedWal2jsonFullArgs) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting interleaved snapshot full sync from PostgreSQL (logical replication) to SurrealDB (SDK v2)"
+    );
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint.clone(),
+        surreal_username: args.surreal.surreal_username.clone(),
+        surreal_password: args.surreal.surreal_password.clone(),
+    };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let source_opts = wal2json_source_opts(
+        &args.connection_string,
+        &args.slot,
+        args.tables.clone(),
+        &args.schema,
+    );
+
+    match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
+        (Some(dir), None) => {
+            let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
+            wal2json_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
+        }
+        (None, Some(table)) => {
+            let checkpoint_surreal = surreal2_sink::surreal_connect(
+                &surreal_opts,
+                &args.to_namespace,
+                &args.to_database,
+            )
+            .await?;
+            let manager = SyncManager::new(checkpoint::Surreal2Store::new(
+                checkpoint_surreal,
+                table.clone(),
+            ));
+            wal2json_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
+        }
+        (None, None) => {
+            wal2json_snapshot_full::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                None,
+            )
+            .await
+        }
+        (Some(_), Some(_)) => {
+            anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
+        }
+    }
+}
+
+async fn run_full_interleaved_snapshot_v3(args: ResolvedWal2jsonFullArgs) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting interleaved snapshot full sync from PostgreSQL (logical replication) to SurrealDB (SDK v3)"
+    );
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint.clone(),
+        surreal_username: args.surreal.surreal_username.clone(),
+        surreal_password: args.surreal.surreal_password.clone(),
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
+    let source_opts = wal2json_source_opts(
+        &args.connection_string,
+        &args.slot,
+        args.tables.clone(),
+        &args.schema,
+    );
+
+    match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
+        (Some(dir), None) => {
+            let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
+            wal2json_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
+        }
+        (None, Some(table)) => {
+            let manager = SyncManager::new(checkpoint_surreal3::Surreal3Store::new(
+                surreal,
+                table.clone(),
+            ));
+            wal2json_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
+        }
+        (None, None) => {
+            wal2json_snapshot_full::<_, checkpoint::NullStore>(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                None,
+            )
+            .await
+        }
+        (Some(_), Some(_)) => {
+            anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
+        }
+    }
+}
+
+/// Run the combined `from postgresql sync` orchestrator.
+pub async fn run_sync(args: PostgreSQLLogicalSyncArgs) -> anyhow::Result<()> {
+    let sdk_version = get_sdk_version(
+        &args.surreal.surreal_endpoint,
+        args.surreal.surreal_sdk_version.as_deref(),
+    )
+    .await?;
+    match sdk_version {
+        SdkVersion::V2 => run_sync_v2(args).await,
+        SdkVersion::V3 => run_sync_v3(args).await,
+    }
+}
+
+async fn run_sync_v2(args: PostgreSQLLogicalSyncArgs) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting interleaved snapshot sync from PostgreSQL (logical replication) to SurrealDB (SDK v2)"
+    );
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+    let surreal_opts = surreal2_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint.clone(),
+        surreal_username: args.surreal.surreal_username.clone(),
+        surreal_password: args.surreal.surreal_password.clone(),
+    };
+    let surreal =
+        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    wal2json_orchestrate(&sink, args).await
+}
+
+async fn run_sync_v3(args: PostgreSQLLogicalSyncArgs) -> anyhow::Result<()> {
+    tracing::info!(
+        "Starting interleaved snapshot sync from PostgreSQL (logical replication) to SurrealDB (SDK v3)"
+    );
+    let _schema = load_schema_if_provided(&args.schema_file)?;
+    let surreal_opts = surreal3_sink::SurrealOpts {
+        surreal_endpoint: args.surreal.surreal_endpoint.clone(),
+        surreal_username: args.surreal.surreal_username.clone(),
+        surreal_password: args.surreal.surreal_password.clone(),
+    };
+    let surreal =
+        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
+            .await?;
+    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+    wal2json_orchestrate(&sink, args).await
+}
+
+async fn wal2json_orchestrate<S: SurrealSink>(
+    sink: &S,
+    args: PostgreSQLLogicalSyncArgs,
+) -> anyhow::Result<()> {
+    let timeout_seconds: i64 = args
+        .timeout
+        .parse()
+        .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
+    let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
+
+    let snapshot_opts = wal2json_source_opts(
+        &args.connection_string,
+        &args.slot,
+        args.tables.clone(),
+        &args.schema,
+    );
+    let incremental_opts = wal2json_source_opts(
+        &args.connection_string,
+        &args.slot,
+        args.tables.clone(),
+        &args.schema,
+    );
+    let chunk_size = args.chunk_size;
+
+    orchestrate_snapshot_then_incremental(
+        async move {
+            surreal_sync_postgresql_wal2json_source::run_interleaved_snapshot_full_sync(
+                sink,
+                snapshot_opts,
+                chunk_size,
+            )
+            .await
+        },
+        |lsn| PostgreSQLLogicalCheckpoint {
+            lsn: lsn.to_pg_string(),
+            timestamp: chrono::Utc::now(),
+        },
+        |from_checkpoint| {
+            surreal_sync_postgresql_wal2json_source::run_incremental_sync(
+                sink,
+                incremental_opts,
+                from_checkpoint,
+                deadline,
+                None,
+            )
+        },
+    )
+    .await
+}
+
+/// Emit an ad-hoc `execute-snapshot` signal so a running `sync` snapshots the
+/// requested tables.
+pub async fn run_snapshot_signal(args: PostgreSQLLogicalSnapshotArgs) -> anyhow::Result<()> {
+    let source_opts =
+        wal2json_source_opts(&args.connection_string, &args.slot, vec![], &args.schema);
+    surreal_sync_postgresql_wal2json_source::request_snapshot(&source_opts, &args.tables).await?;
+    tracing::info!(
+        "Requested ad-hoc snapshot of tables {:?} via execute-snapshot signal",
+        args.tables
+    );
     Ok(())
 }

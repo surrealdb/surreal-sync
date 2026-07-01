@@ -2,122 +2,129 @@
 
 `surreal-sync from mysql` is a sub-command to `surreal-sync` that exports MySQL tables to SurrealDB tables.
 
-It supports inconsistent full syncs and consistent incremental syncs, and together provides ability to reproduce consistent snapshots from the source MySQL tables onto the target SurrealDB tables.
+The default **interleaved-snapshot** workflow copies tables in resumable, primary-key-ordered chunks while continuously consuming the trigger-based change stream. Watermark reconciliation aligns each chunk with live changes (the log event wins), so the target converges to a **consistent image at the end position** and can keep tracking live — it is not an inconsistent monolithic dump. Use the combined `sync` command for a single-process snapshot plus incremental handoff.
+
+> **Other strategies:** For the legacy sequential-snapshot workflow (inconsistent monolithic snapshot plus a separate incremental replay from t1), see [MySQL Legacy Full Sync](mysql/legacy.md).
 
 ## How It Works
 
-`surreal-sync from mysql` supports two types of syncs, `full` and `incremental`.
+`surreal-sync from mysql` supports `full`, `incremental`, a combined `sync`, and an ad-hoc `snapshot` command.
 
-The full sync uses standard MySQL queries to dump the table rows. As you might already know, it does not guarantee something like "snapshot isolation at the table or the database level".
+Change capture is trigger-based: an audit table (`surreal_sync_changes`) populated by per-table triggers provides resumable, sequence-based checkpointing. A potential alternative would be to read the binlog; `surreal-sync` may add a binlog-based backend in the future.
 
-A full sync result can contain various versions of rows contained in the source MySQL tables, from the starting time to the ending time of the full sync.
-
-The incremental sync uses a trigger-based approach with an audit table to capture changes. It provides a resumable change capture by tracking changes in a separate table and using sequence-based checkpointing.
-
-A potential alternative would be to read binlog- `surreal-sync` may potentially support alternative incremental sync backend that relies on binlog reading and parsing.
+See [Full Sync Strategies](design/full-sync-strategies.md) for the consistency guarantee and strategy comparison.
 
 ## Prerequisites
 
-You need appropriate permissions to create triggers and tables in the MySQL database for incremental syncs, because the incremental sync relies on database triggers to capture changes.
+You need appropriate permissions to create triggers and tables in the MySQL database, because sync relies on database triggers to capture changes.
 
-## Full Sync
+Every table you select for sync must have a usable primary key. `surreal-sync` also writes a small `surreal_sync_signal` table on the source for watermark signalling.
 
-You can start a full sync via the `surreal-sync from mysql full` command like below:
+## Combined sync (recommended)
+
+The `sync` command is the standard entry point. It runs the watermark snapshot and continues incremental sync from the handed-off end position in one process — no separate incremental replay pass is needed to reach consistency.
 
 ```bash
 export CONNECTION_STRING="mysql://root:root@mysql:3306/myapp"
 export SURREAL_ENDPOINT="ws://localhost:8000"
 
-# Full sync (automatically sets up triggers for incremental sync)
-surreal-sync from mysql full \
-  # Source = MySQL settings
+surreal-sync from mysql sync \
   --connection-string "$CONNECTION_STRING" \
   --database "myapp" \
-  # Target = SurrealDB settings
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \
   --surreal-password "root" \
   --to-namespace "production" \
   --to-database "migrated_data" \
-  --emit-checkpoints
+  --tables "users,orders" \
+  --chunk-size 1024 \
+  --timeout 3600
 ```
 
-`--emit-checkpoints` is optional but necessary when you want to start incremental syncs after the full sync to enable the command to know where to continue the sync.
+- `--chunk-size <N>`: rows read per keyset chunk during the snapshot phase (default 1024).
+- `--timeout <SECONDS>`: how long the incremental phase runs after the snapshot completes (default 3600).
+- `--tables`: comma-separated tables (empty means all tables).
 
-A `surreal-sync` with the `emit-checkpoints` flag will produce logs like those below:
+## Full Sync
+
+Use `full` when you want a one-time snapshot without immediately continuing incremental sync — for example, to bulk-load data and run `incremental` on a schedule later. Interleaved-snapshot is the default (`--chunk-size`, default 1024).
+
+```bash
+export CONNECTION_STRING="mysql://root:root@mysql:3306/myapp"
+export SURREAL_ENDPOINT="ws://localhost:8000"
+
+surreal-sync from mysql full \
+  --connection-string "$CONNECTION_STRING" \
+  --database "myapp" \
+  --surreal-endpoint "$SURREAL_ENDPOINT" \
+  --surreal-username "root" \
+  --surreal-password "root" \
+  --to-namespace "production" \
+  --to-database "migrated_data" \
+  --checkpoint-dir ".surreal-sync-checkpoints"
+```
+
+Provide a checkpoint store (`--checkpoint-dir` or `--checkpoints-surreal-table`) so `incremental` can resume from the end position.
+
+Example log output:
 
 ```
 INFO surreal_sync::mysql: Emitted full sync start checkpoint (t1): mysql:sequence:0
 INFO surreal_sync::mysql: Emitted full sync end checkpoint (t2): mysql:sequence:123
 ```
 
-To continue incremental sync after this full sync, you need to specify t1 (not t2) as the starting point for incremental sync.
-
-This corresponds to the fact that the `surreal-sync from mysql`'s full sync may produce inconsistent snapshot of the MySQL tables, depending on the nature of the MySQL isolation guarantee you chose.
-
-By reading and applying changes made since t1 instead of t2, when the incremental sync writes all the changes up to t2, the target SurrealDB tables can be viewed as consistent with the source tables at t2.
+The `(t1)` / `(t2)` labels are log names for the bracketing positions. With interleaved-snapshot, **both checkpoints record the same consistent end position** — start `incremental` from either file.
 
 ## Incremental Sync
 
-You must run full sync first to generate the checkpoint and set up the necessary triggers - incremental sync needs this infrastructure.
+Prefer [`sync`](#combined-sync-recommended) when starting a new migration. If you already ran `full`, use `incremental` to continue live tracking from the end position (not a replay pass to fix inconsistency):
 
 ```bash
-# Find the checkpoint file
-ls ./.surreal-sync-checkpoints/checkpoint_full_sync_start_*.json
-
-# Extract sequence ID for incremental sync
-NUM=$(cat ./.surreal-sync-checkpoints/checkpoint_full_sync_start_*.json | jq -r '.checkpoint.MySQL.sequence')
+NUM=$(cat ./.surreal-sync-checkpoints/checkpoint_full_sync_end_*.json | jq -r '.checkpoint.MySQL.sequence')
 CHECKPOINT="mysql:sequence:$NUM"
-```
 
-With the proper checkpoint, an incremental sync can be triggered via `surreal-sync from mysql incremental`:
-
-```bash
 surreal-sync from mysql incremental \
-  # Source = MySQL settings
   --connection-string "$CONNECTION_STRING" \
   --database "myapp" \
-  # Target = SurrealDB settings
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \
   --surreal-password "root" \
   --to-namespace "production" \
   --to-database "migrated_data" \
-  # Using the checkpoint from full sync
   --incremental-from "$CHECKPOINT" \
   --timeout 1m
 ```
 
-The `incremental-from` specifies the t1 checkpoint explained previously, and `timeout` specifies when the incremental sync should stop.
+`--incremental-from` is the end-position checkpoint; `--timeout` controls how long the run continues (useful for batched or scheduled runs).
 
-The `timeout` is necessary when you want to run incremental sync in batches, or run it periodically rather than in a persistent process. Depending on how you want to keep incremental sync running, you should put surreal-sync under a process manager or under a container orchestration system that handles automatic retries, with or without the specific `timeout`.
+While incremental sync is running, your application can continue writing to MySQL without downtime, as long as the source can serve the workload.
 
-While the incremental sync is running, your application can continue writing to MySQL.
+## Ad-hoc Snapshots (Signalling)
 
-Doing incremental sync does not necessarily incur downtime to your application, as long as the source MySQL database can serve the entire workloads.
+While a `sync` is streaming, you can snapshot additional tables on the fly. The `snapshot` command inserts an `execute-snapshot` signal row into `surreal_sync_signal`; the running `sync` picks it up and snapshots the requested tables while streaming continues:
+
+```bash
+surreal-sync from mysql snapshot \
+  --connection-string "$CONNECTION_STRING" \
+  --database "myapp" \
+  --tables "new_table,another_table"
+```
+
+- `--tables` (required): comma-separated tables to snapshot.
 
 ## Troubleshooting
 
 ### Missing Triggers
 
-If incremental sync is not capturing changes, ensure triggers are created during full sync:
+If incremental sync is not capturing changes, ensure triggers were created during `full` or `sync`:
 
 ```sql
--- Check for triggers
 SHOW TRIGGERS LIKE 'surreal_sync_%';
 ```
 
-### Audit Table Cleanup
+### Audit Table Growth
 
-The `surreal_sync_changes` audit table may grow over time. Consider periodic cleanup:
-
-```sql
--- Check audit table size
-SELECT COUNT(*) FROM surreal_sync_changes;
-
--- Clean up old records (after they've been synced)
-DELETE FROM surreal_sync_changes WHERE changed_at < DATE_SUB(NOW(), INTERVAL 30 DAY);
-```
+Interleaved-snapshot prunes consumed rows from `surreal_sync_changes` as the stream is applied, keeping retention bounded during snapshot and streaming. A long-lived standalone `incremental` process can still let the table grow — monitor size and prune synced rows if needed.
 
 ## Data Type Support
 

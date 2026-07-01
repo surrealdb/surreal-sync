@@ -70,6 +70,12 @@ pub trait ChangeStream: Send + Sync {
     /// Returns None when no more changes are available
     async fn next(&mut self) -> Option<Result<UniversalChange>>;
 
+    /// Like [`ChangeStream::next`], but also yields the source `sequence_id`
+    /// (stream position) of the change, so callers can track per-change
+    /// positions for watermark-based reconciliation.
+    /// Returns None when no more changes are available.
+    async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>>;
+
     /// Get the current checkpoint of the stream
     /// This can be used to resume from this position later
     fn checkpoint(&self) -> Option<MySQLCheckpoint>;
@@ -150,7 +156,8 @@ pub struct MySQLChangeStream {
     connection: Option<Conn>,
     #[allow(dead_code)]
     server_id: u32,
-    buffer: Vec<UniversalChange>,
+    /// Buffered changes, each paired with its source `sequence_id`.
+    buffer: Vec<(i64, UniversalChange)>,
     last_sequence_id: i64,
     database_schema: Option<DatabaseSchema>,
 }
@@ -254,7 +261,7 @@ impl MySQLChangeStream {
         Ok(result)
     }
 
-    async fn fetch_changes(&mut self) -> Result<Vec<UniversalChange>> {
+    async fn fetch_changes(&mut self) -> Result<Vec<(i64, UniversalChange)>> {
         let conn = self
             .connection
             .as_mut()
@@ -366,11 +373,9 @@ impl MySQLChangeStream {
             };
 
             // Create change record using universal types
-            changes.push(UniversalChange::new(
-                op,
-                table_name.clone(),
-                record_id,
-                universal_data,
+            changes.push((
+                sequence_id,
+                UniversalChange::new(op, table_name.clone(), record_id, universal_data),
             ));
 
             self.last_sequence_id = sequence_id;
@@ -383,6 +388,14 @@ impl MySQLChangeStream {
 #[async_trait]
 impl ChangeStream for MySQLChangeStream {
     async fn next(&mut self) -> Option<Result<UniversalChange>> {
+        match self.next_with_sequence_id().await {
+            Some(Ok((_seq, change))) => Some(Ok(change)),
+            Some(Err(e)) => Some(Err(e)),
+            None => None,
+        }
+    }
+
+    async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>> {
         // Return buffered changes first
         if !self.buffer.is_empty() {
             return Some(Ok(self.buffer.remove(0)));

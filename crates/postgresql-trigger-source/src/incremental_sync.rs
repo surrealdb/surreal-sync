@@ -58,6 +58,12 @@ pub trait ChangeStream: Send + Sync {
     /// Returns None when no more changes are available
     async fn next(&mut self) -> Option<Result<UniversalChange>>;
 
+    /// Like [`ChangeStream::next`], but also yields the source `sequence_id`
+    /// (stream position) of the change, so callers can track per-change
+    /// positions for watermark-based reconciliation.
+    /// Returns None when no more changes are available.
+    async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>>;
+
     /// Get the current checkpoint of the stream
     /// This can be used to resume from this position later
     fn checkpoint(&self) -> Option<PostgreSQLCheckpoint>;
@@ -578,7 +584,8 @@ pub struct PostgresChangeStream {
     client: Arc<Mutex<Client>>,
     tracking_table: String,
     last_sequence: i64,
-    buffer: Vec<UniversalChange>,
+    /// Buffered changes, each paired with its source `sequence_id`.
+    buffer: Vec<(i64, UniversalChange)>,
     empty_poll_count: usize,
     database_schema: Option<DatabaseSchema>,
     /// Mapping of table names to their primary key column names
@@ -604,7 +611,7 @@ impl PostgresChangeStream {
         })
     }
 
-    async fn fetch_changes(&mut self) -> Result<Vec<UniversalChange>> {
+    async fn fetch_changes(&mut self) -> Result<Vec<(i64, UniversalChange)>> {
         log::debug!(
             "PostgresChangeStream::fetch_changes() called, last_sequence: {}",
             self.last_sequence
@@ -831,7 +838,10 @@ impl PostgresChangeStream {
             } else {
                 Some(universal_data)
             };
-            changes.push(UniversalChange::new(op, table_name, record_id, data));
+            changes.push((
+                sequence_id,
+                UniversalChange::new(op, table_name, record_id, data),
+            ));
 
             self.last_sequence = sequence_id;
         }
@@ -843,8 +853,16 @@ impl PostgresChangeStream {
 #[async_trait]
 impl ChangeStream for PostgresChangeStream {
     async fn next(&mut self) -> Option<Result<UniversalChange>> {
+        match self.next_with_sequence_id().await {
+            Some(Ok((_seq, change))) => Some(Ok(change)),
+            Some(Err(e)) => Some(Err(e)),
+            None => None,
+        }
+    }
+
+    async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>> {
         log::debug!(
-            "🔄 PostgresChangeStream::next() called, empty_poll_count: {}, last_sequence: {}",
+            "🔄 PostgresChangeStream::next_with_sequence_id() called, empty_poll_count: {}, last_sequence: {}",
             self.empty_poll_count,
             self.last_sequence
         );

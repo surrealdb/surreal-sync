@@ -6,6 +6,7 @@
 pub mod checkpoint;
 mod full_sync;
 mod incremental_sync;
+mod interleaved_snapshot;
 pub mod schema;
 pub mod toml_config;
 
@@ -14,6 +15,9 @@ pub use full_sync::run_full_sync;
 pub use incremental_sync::{
     run_incremental_sync, ChangeStream, IncrementalSource, PostgresChangeStream,
     PostgresIncrementalSource,
+};
+pub use interleaved_snapshot::{
+    request_snapshot, run_interleaved_snapshot_full_sync, PostgresTriggerWatermarkSource,
 };
 
 /// PostgreSQL source connection options (trigger-specific)

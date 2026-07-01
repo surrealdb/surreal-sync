@@ -25,6 +25,7 @@ mod file;
 mod filesystem;
 mod manager;
 mod phase;
+mod snapshot;
 pub mod store;
 mod surreal2;
 
@@ -42,6 +43,9 @@ pub use manager::{CheckpointFileReader, NullStore, NullSyncManager, SyncManager}
 
 // Re-export phase types
 pub use phase::SyncPhase;
+
+// Re-export interleaved-snapshot checkpoint types
+pub use snapshot::{InterleavedSnapshotCheckpoint, SnapshotTableProgress};
 
 // Re-export store trait and types
 pub use store::{CheckpointID, CheckpointStore, StoredCheckpoint};
@@ -246,6 +250,8 @@ fn parse_sync_phase(phase: &str) -> anyhow::Result<SyncPhase> {
     match phase {
         "full_sync_start" => Ok(SyncPhase::FullSyncStart),
         "full_sync_end" => Ok(SyncPhase::FullSyncEnd),
+        "snapshot_progress" => Ok(SyncPhase::SnapshotProgress),
+        "snapshot_handoff" => Ok(SyncPhase::SnapshotHandoff),
         other => Err(anyhow::anyhow!("Unknown sync phase: {other}")),
     }
 }

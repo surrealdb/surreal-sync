@@ -7,10 +7,12 @@ description = "MySQL trigger-based sync for surreal-sync"
 [dependencies]
 mysql_async = "0.36"
 surreal-sink = { path = "../surreal-sink" }
+surreal-sync-interleaved-snapshot = { path = "../interleaved-snapshot" }
 sync-core = { path = "../sync-core" }
 checkpoint = { path = "../checkpoint" }
 mysql-types = { path = "../mysql-types" }
 json-types = { path = "../json-types" }
+uuid = { version = "1.10", features = ["v4", "serde"] }
 tokio = { version = "1.49", features = ["full"] }
 tokio-stream = "0.1"
 anyhow = "1.0.100"

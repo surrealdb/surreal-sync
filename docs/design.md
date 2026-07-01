@@ -29,17 +29,25 @@ t1 ════════════════════ t2 ────�
 The user can treat the target SurrealDB as consistent with the source DB
 since t2.
 
+## Full Sync Strategies
+
+For PostgreSQL and MySQL, `surreal-sync` offers two full-sync strategies that reach the same end state — a target consistent with the source — but differ in how the snapshot relates to the change stream. The **interleaved snapshot** strategy (the default) copies the table snapshot concurrently with the change stream, giving bounded memory and bounded log retention. The **sequential snapshot** strategy takes a monolithic snapshot first and then replays the whole change log on top, which pins the source log for the entire snapshot (unbounded retention).
+
+See [Full Sync Strategies](design/full-sync-strategies.md) for the detailed side-by-side comparison, the consistency guarantee, and the bounded-memory/bounded-retention analysis.
+
 ## Consistency Guarantee
 
 `surreal-sync` is designed to provide consistent sync results even when the source database is not even configured to use Snapshot Isolation or greater.
 
-If the source database is not SI or greater, the full sync dump would contain inconsistent snapshot of the source that mixes data between t1 and t2. Even in this case, `surreal-sync` can provide consistent results with t2 and later.
+With the **sequential snapshot** strategy, the full sync dump would contain an inconsistent snapshot of the source that mixes data between t1 and t2 if the source is not SI or greater. Even in this case, `surreal-sync` can provide consistent results with t2 and later.
 
 It does so by setting up the incremental sync infrastructure BEFORE the initial full sync begins, attempting to incrementally sync changes from t1 until t2, to provide the consistent result at t2.
 
 Note that t1 will occasionally occur before the start of a full sync because it is not always possible to obtain the exact starting time (for example, the GTID of the transaction) of the full sync.
 
 Similarly, t2 will occasionally occur after the termination of full sync because it is not always possible to obtain the exact ending time of the full sync.
+
+With the **interleaved snapshot** strategy, consistency does not depend on the source's isolation level at all: the snapshot is reconciled against the live stream via watermarks, so the target converges to a consistent image at the end position (≈ t2) and then tracks live. See [Consistency guarantee](design/full-sync-strategies.md#consistency-guarantee-consistent-at-the-end-then-live) for details.
 
 ## Database-Specific Implementations
 
@@ -70,7 +78,8 @@ This is the approach currently used with our Neo4j source. This is mainly becaus
 See the source-specific documentation for implementation details:
 
 - **[MongoDB](mongodb.md)**: Change streams and resume token management
-- **[MySQL](mysql.md)**: Trigger-based CDC with sequence checkpointing
-- **[PostgreSQL](postgresql.md)**: Trigger-based CDC with sequence checkpointing
+- **[MySQL](mysql.md)**: Trigger-based CDC with sequence checkpointing ([legacy sequential-snapshot guide](mysql/legacy.md))
+- **[PostgreSQL](postgresql.md)**: Trigger-based CDC with sequence checkpointing ([legacy sequential-snapshot guide](postgresql/legacy.md))
+- **[PostgreSQL (wal2json)](postgresql-wal2json-source.md)**: Logical replication with wal2json ([legacy sequential-snapshot guide](postgresql-wal2json/legacy.md))
 - **[Neo4j](neo4j.md)**: Timestamp-based tracking with deletion limitations
 - **[JSONL](jsonl.md)**: File-based bulk import (no incremental sync)

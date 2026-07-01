@@ -7282,7 +7282,9 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "surreal-sink",
  "surreal-sync-csv-source",
+ "surreal-sync-interleaved-snapshot",
  "surreal-sync-jsonl-source",
  "surreal-sync-kafka-producer",
  "surreal-sync-kafka-source",
@@ -7357,6 +7359,23 @@ dependencies = [
  "tokio-test",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "surreal-sync-interleaved-snapshot"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "checkpoint",
+ "serde",
+ "serde_json",
+ "surreal-sink",
+ "sync-core",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -7466,6 +7485,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sink",
+ "surreal-sync-interleaved-snapshot",
  "surrealdb 2.3.7",
  "sync-core",
  "tempfile",
@@ -7473,6 +7493,7 @@ dependencies = [
  "tokio-stream",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -7544,6 +7565,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sink",
+ "surreal-sync-interleaved-snapshot",
  "surreal-sync-postgresql",
  "surrealdb 2.3.7",
  "sync-core",
@@ -7561,6 +7583,7 @@ name = "surreal-sync-postgresql-wal2json-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "checkpoint",
  "chrono",
  "clap",
@@ -7570,6 +7593,7 @@ dependencies = [
  "serde",
  "serde_json",
  "surreal-sink",
+ "surreal-sync-interleaved-snapshot",
  "surreal-sync-postgresql",
  "surreal2-sink",
  "surrealdb 2.3.7",

@@ -82,10 +82,31 @@
 //! - PostgreSQL: `postgresql:sequence:123` (trigger-based audit table)
 //! - MySQL: `mysql:sequence:456` (trigger-based audit table)
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use rustls::crypto::CryptoProvider;
 use std::path::PathBuf;
 use surreal_sync::SurrealOpts;
+
+/// Full-sync strategy for sources that support the interleaved snapshot
+/// framework (PostgreSQL wal2json, PostgreSQL trigger, MySQL).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, ValueEnum)]
+enum SyncStrategy {
+    /// DBLog-style watermark snapshot copied concurrently/interleaved with the
+    /// change stream: resumable, bounded memory, and does not pin the source
+    /// change log for the whole snapshot (bounded retention). The default;
+    /// requires a primary key on every table.
+    #[default]
+    InterleavedSnapshot,
+    /// Monolithic `SELECT *` per table, then a separate replay of the [t1,t2]
+    /// change log on top. The source log is pinned for the whole snapshot
+    /// (unbounded retention). Opt-out for tables without a usable primary key
+    /// or when writing watermark rows to the source is not allowed.
+    SequentialSnapshot,
+}
+
+/// Default chunk size for the watermark snapshot (matches Debezium's
+/// incremental snapshot default).
+const DEFAULT_CHUNK_SIZE: usize = 1024;
 
 // Load testing imports
 use loadtest_populate_csv::CSVPopulateArgs;
@@ -471,6 +492,11 @@ enum PostgreSQLTriggerCommands {
     Full(PostgreSQLTriggerFullArgs),
     /// Incremental sync from PostgreSQL using triggers
     Incremental(PostgreSQLTriggerIncrementalArgs),
+    /// Combined snapshot+stream full sync that hands off to incremental in one
+    /// process (watermark strategy)
+    Sync(PostgreSQLTriggerSyncArgs),
+    /// Trigger an ad-hoc snapshot of additional tables against a running `sync`
+    Snapshot(PostgreSQLTriggerSnapshotArgs),
 }
 
 #[derive(Args)]
@@ -506,6 +532,14 @@ struct PostgreSQLTriggerFullArgs {
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
+
+    /// Full-sync strategy (interleaved-snapshot is the default for this source)
+    #[arg(long, value_enum, default_value_t = SyncStrategy::default())]
+    strategy: SyncStrategy,
+
+    /// Rows read per keyset chunk when using the interleaved-snapshot strategy
+    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -559,6 +593,54 @@ struct PostgreSQLTriggerIncrementalArgs {
     surreal: SurrealOpts,
 }
 
+/// Combined snapshot+stream sync for the PostgreSQL trigger source.
+#[derive(Args)]
+struct PostgreSQLTriggerSyncArgs {
+    /// PostgreSQL connection string (must include database name)
+    #[arg(long, env = "POSTGRESQL_URI")]
+    connection_string: String,
+
+    /// Tables to sync (comma-separated, empty means all tables)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
+    /// Target SurrealDB namespace
+    #[arg(long)]
+    to_namespace: String,
+
+    /// Target SurrealDB database
+    #[arg(long)]
+    to_database: String,
+
+    /// Rows read per keyset chunk during the snapshot phase
+    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
+
+    /// Maximum time to run the incremental phase (in seconds, default: 3600)
+    #[arg(long, default_value = "3600")]
+    timeout: String,
+
+    /// Schema file for type-aware conversion
+    #[arg(long, value_name = "PATH")]
+    schema_file: Option<PathBuf>,
+
+    #[command(flatten)]
+    surreal: SurrealOpts,
+}
+
+/// Trigger an ad-hoc snapshot of additional tables for the PostgreSQL trigger
+/// source by inserting an execute-snapshot signal row.
+#[derive(Args)]
+struct PostgreSQLTriggerSnapshotArgs {
+    /// PostgreSQL connection string (must include database name)
+    #[arg(long, env = "POSTGRESQL_URI")]
+    connection_string: String,
+
+    /// Tables to snapshot (comma-separated)
+    #[arg(long, value_delimiter = ',', required = true)]
+    tables: Vec<String>,
+}
+
 // =============================================================================
 // MySQL Commands and Args
 // =============================================================================
@@ -569,6 +651,11 @@ enum MySQLCommands {
     Full(MySQLFullArgs),
     /// Incremental sync from MySQL using triggers
     Incremental(MySQLIncrementalArgs),
+    /// Combined snapshot+stream full sync that hands off to incremental in one
+    /// process (watermark strategy)
+    Sync(MySQLSyncArgs),
+    /// Trigger an ad-hoc snapshot of additional tables against a running `sync`
+    Snapshot(MySQLSnapshotArgs),
 }
 
 #[derive(Args)]
@@ -608,6 +695,14 @@ struct MySQLFullArgs {
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
+
+    /// Full-sync strategy (interleaved-snapshot is the default for this source)
+    #[arg(long, value_enum, default_value_t = SyncStrategy::default())]
+    strategy: SyncStrategy,
+
+    /// Rows read per keyset chunk when using the interleaved-snapshot strategy
+    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -664,6 +759,66 @@ struct MySQLIncrementalArgs {
     surreal: SurrealOpts,
 }
 
+/// Combined snapshot+stream sync for MySQL.
+#[derive(Args)]
+struct MySQLSyncArgs {
+    /// MySQL connection string
+    #[arg(long, env = "MYSQL_URI")]
+    connection_string: String,
+
+    /// MySQL database name (extracted from connection string if not provided)
+    #[arg(long, env = "MYSQL_DATABASE")]
+    database: Option<String>,
+
+    /// Tables to sync (comma-separated, empty means all tables)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
+    /// MySQL JSON paths that contain boolean values stored as 0/1
+    #[arg(long, value_delimiter = ',', env = "MYSQL_BOOLEAN_PATHS")]
+    boolean_paths: Option<Vec<String>>,
+
+    /// Target SurrealDB namespace
+    #[arg(long)]
+    to_namespace: String,
+
+    /// Target SurrealDB database
+    #[arg(long)]
+    to_database: String,
+
+    /// Rows read per keyset chunk during the snapshot phase
+    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
+
+    /// Maximum time to run the incremental phase (in seconds, default: 3600)
+    #[arg(long, default_value = "3600")]
+    timeout: String,
+
+    /// Schema file for type-aware conversion
+    #[arg(long, value_name = "PATH")]
+    schema_file: Option<PathBuf>,
+
+    #[command(flatten)]
+    surreal: SurrealOpts,
+}
+
+/// Trigger an ad-hoc snapshot of additional tables for MySQL by inserting an
+/// execute-snapshot signal row.
+#[derive(Args)]
+struct MySQLSnapshotArgs {
+    /// MySQL connection string
+    #[arg(long, env = "MYSQL_URI")]
+    connection_string: String,
+
+    /// MySQL database name (extracted from connection string if not provided)
+    #[arg(long, env = "MYSQL_DATABASE")]
+    database: Option<String>,
+
+    /// Tables to snapshot (comma-separated)
+    #[arg(long, value_delimiter = ',', required = true)]
+    tables: Vec<String>,
+}
+
 // =============================================================================
 // PostgreSQL WAL-based Logical Replication Commands and Args
 // =============================================================================
@@ -674,6 +829,11 @@ enum PostgreSQLLogicalCommands {
     Full(PostgreSQLLogicalFullArgs),
     /// Incremental sync from PostgreSQL using logical replication
     Incremental(PostgreSQLLogicalIncrementalArgs),
+    /// Combined snapshot+stream full sync that hands off to incremental in one
+    /// process (watermark strategy)
+    Sync(PostgreSQLLogicalSyncArgs),
+    /// Trigger an ad-hoc snapshot of additional tables against a running `sync`
+    Snapshot(PostgreSQLLogicalSnapshotArgs),
 }
 
 #[derive(Args)]
@@ -717,6 +877,14 @@ struct PostgreSQLLogicalFullArgs {
     /// SurrealDB table name for storing checkpoints (e.g., "surreal_sync_checkpoints")
     #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
     checkpoints_surreal_table: Option<String>,
+
+    /// Full-sync strategy (interleaved-snapshot is the default for this source)
+    #[arg(long, value_enum, default_value_t = SyncStrategy::default())]
+    strategy: SyncStrategy,
+
+    /// Rows read per keyset chunk when using the interleaved-snapshot strategy
+    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -776,6 +944,70 @@ struct PostgreSQLLogicalIncrementalArgs {
 
     #[command(flatten)]
     surreal: SurrealOpts,
+}
+
+/// Combined snapshot+stream sync for the PostgreSQL wal2json source.
+#[derive(Args)]
+struct PostgreSQLLogicalSyncArgs {
+    /// PostgreSQL connection string (must include database name)
+    #[arg(long)]
+    connection_string: String,
+
+    /// Replication slot name
+    #[arg(long, default_value = "surreal_sync_slot")]
+    slot: String,
+
+    /// Tables to sync (comma-separated, empty means all tables)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
+    /// PostgreSQL schema
+    #[arg(long, default_value = "public")]
+    schema: String,
+
+    /// Target SurrealDB namespace
+    #[arg(long)]
+    to_namespace: String,
+
+    /// Target SurrealDB database
+    #[arg(long)]
+    to_database: String,
+
+    /// Rows read per keyset chunk during the snapshot phase
+    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
+
+    /// Maximum time to run the incremental phase (in seconds, default: 3600)
+    #[arg(long, default_value = "3600")]
+    timeout: String,
+
+    /// Schema file for type-aware conversion
+    #[arg(long, value_name = "PATH")]
+    schema_file: Option<PathBuf>,
+
+    #[command(flatten)]
+    surreal: SurrealOpts,
+}
+
+/// Trigger an ad-hoc snapshot of additional tables for the PostgreSQL wal2json
+/// source by inserting an execute-snapshot signal row.
+#[derive(Args)]
+struct PostgreSQLLogicalSnapshotArgs {
+    /// PostgreSQL connection string (must include database name)
+    #[arg(long)]
+    connection_string: String,
+
+    /// Replication slot name
+    #[arg(long, default_value = "surreal_sync_slot")]
+    slot: String,
+
+    /// PostgreSQL schema
+    #[arg(long, default_value = "public")]
+    schema: String,
+
+    /// Tables to snapshot (comma-separated)
+    #[arg(long, value_delimiter = ',', required = true)]
+    tables: Vec<String>,
 }
 
 // =============================================================================
@@ -1031,10 +1263,18 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
             PostgreSQLTriggerCommands::Incremental(args) => {
                 from::postgresql_trigger::run_incremental(args).await?
             }
+            PostgreSQLTriggerCommands::Sync(args) => {
+                from::postgresql_trigger::run_sync(args).await?
+            }
+            PostgreSQLTriggerCommands::Snapshot(args) => {
+                from::postgresql_trigger::run_snapshot_signal(args).await?
+            }
         },
         FromSource::MySQL { command } => match command {
             MySQLCommands::Full(args) => from::mysql::run_full(args).await?,
             MySQLCommands::Incremental(args) => from::mysql::run_incremental(args).await?,
+            MySQLCommands::Sync(args) => from::mysql::run_sync(args).await?,
+            MySQLCommands::Snapshot(args) => from::mysql::run_snapshot_signal(args).await?,
         },
         FromSource::PostgreSQL { command } => match command {
             PostgreSQLLogicalCommands::Full(args) => {
@@ -1042,6 +1282,12 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
             }
             PostgreSQLLogicalCommands::Incremental(args) => {
                 from::postgresql_wal2json::run_incremental(args).await?
+            }
+            PostgreSQLLogicalCommands::Sync(args) => {
+                from::postgresql_wal2json::run_sync(args).await?
+            }
+            PostgreSQLLogicalCommands::Snapshot(args) => {
+                from::postgresql_wal2json::run_snapshot_signal(args).await?
             }
         },
         FromSource::Kafka(args) => from::kafka::run(args).await?,

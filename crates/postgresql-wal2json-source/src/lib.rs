@@ -51,6 +51,7 @@ mod logical_replication;
 pub mod sync;
 pub mod toml_config;
 mod wal2json;
+mod watermark_source;
 
 // Make testing module available for integration tests
 #[doc(hidden)]
@@ -61,5 +62,9 @@ pub use checkpoint::PostgreSQLLogicalCheckpoint;
 pub use config::Config;
 pub use full_sync::{run_full_sync, SourceOpts};
 pub use incremental_sync::run_incremental_sync;
-pub use logical_replication::{Client, Slot};
+pub use logical_replication::{ChangeAtLsn, Client, Slot};
 pub use sync::{State, StateID, Store};
+pub use watermark_source::{
+    request_snapshot, run_interleaved_snapshot_full_sync, Lsn, Wal2JsonWatermarkSource,
+    SIGNAL_TABLE,
+};

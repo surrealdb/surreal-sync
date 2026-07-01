@@ -8,6 +8,7 @@ pub mod checkpoint;
 mod client;
 mod full_sync;
 mod incremental_sync;
+mod interleaved_snapshot;
 mod schema;
 mod source;
 
@@ -17,8 +18,12 @@ pub mod testing;
 pub use change_tracking::setup_mysql_change_tracking;
 pub use checkpoint::{get_current_checkpoint, MySQLCheckpoint};
 pub use client::new_mysql_pool;
-pub use full_sync::run_full_sync;
+pub use full_sync::{get_primary_key_columns, read_table_chunk, run_full_sync, TableChunk};
 pub use incremental_sync::run_incremental_sync;
+pub use interleaved_snapshot::{
+    request_snapshot, run_interleaved_snapshot_full_sync,
+    run_interleaved_snapshot_full_sync_result, MySqlWatermarkSource,
+};
 pub use source::{ChangeStream, IncrementalSource, MySQLChangeStream, MySQLIncrementalSource};
 
 /// MySQL source connection options

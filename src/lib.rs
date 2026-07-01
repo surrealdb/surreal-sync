@@ -51,6 +51,35 @@ use clap::Parser;
 
 pub mod testing;
 
+/// Run a watermark snapshot+stream full sync and then continue with the
+/// source's existing incremental runner from the handed-off stream position,
+/// all in one process.
+///
+/// This is the shared orchestration used by every `from <source> sync`
+/// subcommand. The snapshot phase returns its final stream position `P`;
+/// `convert_handoff` turns `P` into the source's incremental checkpoint type
+/// (an LSN checkpoint for wal2json, a `sequence_id` checkpoint for the trigger
+/// sources); `run_incremental` then resumes live replication from exactly that
+/// position. Because the snapshot is consistent at `P`, no replay window is
+/// needed — incremental simply continues from `P`.
+pub async fn orchestrate_snapshot_then_incremental<P, C, SnapFut, IncFut>(
+    run_snapshot: SnapFut,
+    convert_handoff: impl FnOnce(P) -> C,
+    run_incremental: impl FnOnce(C) -> IncFut,
+) -> anyhow::Result<()>
+where
+    SnapFut: std::future::Future<Output = anyhow::Result<P>>,
+    IncFut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    tracing::info!("Starting snapshot+stream full sync (snapshot phase)");
+    let position = run_snapshot.await?;
+    let checkpoint = convert_handoff(position);
+    tracing::info!("Snapshot phase complete; continuing with incremental sync from handoff");
+    run_incremental(checkpoint).await?;
+    tracing::info!("snapshot+stream sync completed successfully");
+    Ok(())
+}
+
 // Re-export CSV and JSONL crates for convenience
 pub use surreal_sync_csv_source as csv;
 pub use surreal_sync_jsonl_source as jsonl;
