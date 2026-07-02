@@ -106,6 +106,9 @@ jobs:
           -f crates/postgresql-wal2json-source/Dockerfile.postgres16.wal2json \
           crates/postgresql-wal2json-source
 
+    - name: Pre-pull MySQL/MariaDB binlog test images
+      run: docker pull mysql:8.0 && docker pull mariadb:11.4
+
     - name: Run unit + integration tests (nextest shard ${{ matrix.shard }}/3)
       env:
         SURREAL_SYNC_BIN: ${{ github.workspace }}/target/ci/surreal-sync

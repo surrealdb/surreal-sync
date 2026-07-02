@@ -1,0 +1,321 @@
+//! MySQL binlog full sync implementation.
+
+use std::collections::HashMap;
+
+use anyhow::Result;
+use checkpoint::Checkpoint;
+use checkpoint::{CheckpointStore, SyncManager, SyncPhase};
+use mysql_async::{prelude::*, Pool, Row};
+use mysql_types::{row_to_typed_values_with_config, RowConversionConfig};
+use surreal_sink::SurrealSink;
+use sync_core::{UniversalRow, UniversalType, UniversalValue};
+use tracing::{debug, info};
+
+use crate::checkpoint::{get_current_checkpoint, BinlogCheckpoint};
+use crate::client::{
+    connect_binlog_client, new_mysql_pool, resolve_database, show_master_status, use_database,
+};
+use crate::schema::collect_mysql_database_schema;
+use crate::signal::SIGNAL_TABLE;
+use crate::{SourceOpts, SyncOpts};
+
+#[derive(Clone, Debug, Default)]
+struct TableSchemaInfo {
+    boolean_columns: Vec<String>,
+    set_columns: Vec<String>,
+    json_columns: Vec<String>,
+}
+
+pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
+    surreal: &S,
+    from_opts: &SourceOpts,
+    sync_opts: &SyncOpts,
+    sync_manager: Option<&SyncManager<CS>>,
+) -> Result<()> {
+    info!("Starting MySQL binlog full sync to SurrealDB");
+
+    let pool = new_mysql_pool(&from_opts.connection_string)?;
+    let database = resolve_database(&pool, from_opts).await?;
+    let mut conn = pool.get_conn().await?;
+    use_database(&mut conn, &database).await?;
+
+    let binlog_client = connect_binlog_client(from_opts).await?;
+
+    if let Some(manager) = sync_manager {
+        let checkpoint = get_current_checkpoint(&binlog_client)?;
+        manager
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
+            .await?;
+        info!(
+            "Emitted full sync start checkpoint (t1): {}",
+            checkpoint.to_cli_string()
+        );
+    }
+
+    let schema_info = collect_schema_info(&mut conn, &database).await?;
+    let tables = get_user_tables(&mut conn, &database, from_opts).await?;
+    info!("Found {} tables to migrate", tables.len());
+
+    let mut total_migrated = 0;
+    for table_name in &tables {
+        info!("Migrating table: {table_name}");
+        let count = migrate_table(
+            &mut conn,
+            surreal,
+            table_name,
+            sync_opts,
+            schema_info.get(table_name),
+        )
+        .await?;
+        total_migrated += count;
+        info!("Migrated {count} records from table {table_name}");
+    }
+
+    if let Some(manager) = sync_manager {
+        let checkpoint = get_current_checkpoint(&binlog_client)?;
+        manager
+            .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
+            .await?;
+        info!(
+            "Emitted full sync end checkpoint (t2): {}",
+            checkpoint.to_cli_string()
+        );
+    }
+
+    drop(conn);
+    pool.disconnect().await?;
+    info!("MySQL binlog full sync completed: {total_migrated} total records migrated");
+    Ok(())
+}
+
+async fn collect_schema_info(
+    conn: &mut mysql_async::Conn,
+    database: &str,
+) -> Result<HashMap<String, TableSchemaInfo>> {
+    let mut schema_info: HashMap<String, TableSchemaInfo> = HashMap::new();
+
+    let boolean_rows: Vec<Row> = conn
+        .query(
+            r#"
+            SELECT TABLE_NAME, COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND COLUMN_TYPE = 'tinyint(1)'
+            ORDER BY TABLE_NAME, COLUMN_NAME
+            "#,
+        )
+        .await?;
+    for row in boolean_rows {
+        let table_name: String = row.get("TABLE_NAME").unwrap_or_default();
+        let column_name: String = row.get("COLUMN_NAME").unwrap_or_default();
+        schema_info
+            .entry(table_name)
+            .or_default()
+            .boolean_columns
+            .push(column_name);
+    }
+
+    let set_rows: Vec<Row> = conn
+        .query(
+            r#"
+            SELECT TABLE_NAME, COLUMN_NAME
+            FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND DATA_TYPE = 'set'
+            ORDER BY TABLE_NAME, COLUMN_NAME
+            "#,
+        )
+        .await?;
+    for row in set_rows {
+        let table_name: String = row.get("TABLE_NAME").unwrap_or_default();
+        let column_name: String = row.get("COLUMN_NAME").unwrap_or_default();
+        schema_info
+            .entry(table_name)
+            .or_default()
+            .set_columns
+            .push(column_name);
+    }
+
+    let json_columns_by_table =
+        surreal_sync_mysql_trigger_source::json_columns::get_json_columns(conn, database).await?;
+    for (table_name, columns) in json_columns_by_table {
+        schema_info.entry(table_name).or_default().json_columns = columns;
+    }
+
+    Ok(schema_info)
+}
+
+async fn get_user_tables(
+    conn: &mut mysql_async::Conn,
+    database: &str,
+    from_opts: &SourceOpts,
+) -> Result<Vec<String>> {
+    if !from_opts.tables.is_empty() {
+        return Ok(from_opts.tables.clone());
+    }
+    let rows: Vec<Row> = conn
+        .query(format!(
+            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES \
+             WHERE TABLE_SCHEMA = '{database}' \
+             AND TABLE_TYPE = 'BASE TABLE' \
+             AND TABLE_NAME NOT IN ('{SIGNAL_TABLE}')"
+        ))
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| row.get::<String, _>("TABLE_NAME"))
+        .collect())
+}
+
+pub async fn get_primary_key_columns(
+    conn: &mut mysql_async::Conn,
+    database: &str,
+    table: &str,
+) -> Result<Vec<String>> {
+    let rows: Vec<Row> = conn
+        .query(format!(
+            "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
+             WHERE TABLE_SCHEMA = '{database}' AND TABLE_NAME = '{table}' \
+             AND CONSTRAINT_NAME = 'PRIMARY' \
+             ORDER BY ORDINAL_POSITION"
+        ))
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| row.get::<String, _>("COLUMN_NAME"))
+        .collect())
+}
+
+async fn migrate_table<S: SurrealSink>(
+    conn: &mut mysql_async::Conn,
+    surreal: &S,
+    table_name: &str,
+    sync_opts: &SyncOpts,
+    schema_info: Option<&TableSchemaInfo>,
+) -> Result<usize> {
+    let database: Option<String> = conn.query_first("SELECT DATABASE()").await?;
+    let database = database.ok_or_else(|| anyhow::anyhow!("no database selected"))?;
+    let pk_columns = get_primary_key_columns(conn, &database, table_name).await?;
+
+    let boolean_columns = schema_info
+        .map(|s| s.boolean_columns.clone())
+        .unwrap_or_default();
+    let set_columns = schema_info
+        .map(|s| s.set_columns.clone())
+        .unwrap_or_default();
+    let json_columns = schema_info
+        .map(|s| s.json_columns.clone())
+        .unwrap_or_default();
+
+    let rows: Vec<Row> = conn
+        .query(format!("SELECT * FROM `{table_name}`"))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to query table {table_name}: {e}"))?;
+
+    let config = RowConversionConfig {
+        boolean_columns,
+        set_columns,
+        json_columns,
+        json_config: None,
+    };
+
+    let mut batch = Vec::new();
+    let mut total_processed = 0;
+    for (row_index, row) in rows.iter().enumerate() {
+        let typed_values = row_to_typed_values_with_config(row, &config)?;
+        let values: HashMap<String, UniversalValue> = typed_values
+            .into_iter()
+            .map(|(k, tv)| (k, tv.value))
+            .collect();
+        let id = extract_primary_key_value(&values, &pk_columns)?;
+        let fields: HashMap<String, UniversalValue> = values
+            .into_iter()
+            .filter(|(k, _)| !pk_columns.contains(k))
+            .collect();
+        batch.push(UniversalRow::new(
+            table_name.to_string(),
+            row_index as u64,
+            id,
+            fields,
+        ));
+
+        if batch.len() >= sync_opts.batch_size {
+            if !sync_opts.dry_run {
+                surreal.write_universal_rows(&batch).await?;
+            }
+            total_processed += batch.len();
+            batch.clear();
+        }
+    }
+
+    if !batch.is_empty() {
+        if !sync_opts.dry_run {
+            surreal.write_universal_rows(&batch).await?;
+        }
+        total_processed += batch.len();
+    }
+
+    debug!("Processed {total_processed} rows from {table_name}");
+    Ok(total_processed)
+}
+
+pub async fn read_table_chunk(
+    conn: &mut mysql_async::Conn,
+    table_name: &str,
+    pk_columns: &[String],
+    after: Option<&[UniversalValue]>,
+    limit: usize,
+    config: &RowConversionConfig,
+) -> Result<Vec<UniversalRow>> {
+    surreal_sync_mysql_trigger_source::read_table_chunk(
+        conn, table_name, pk_columns, after, limit, config,
+    )
+    .await
+    .map(|chunk| chunk.rows)
+}
+
+fn extract_primary_key_value(
+    values: &HashMap<String, UniversalValue>,
+    pk_columns: &[String],
+) -> Result<UniversalValue> {
+    if pk_columns.len() == 1 {
+        return values
+            .get(&pk_columns[0])
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing pk column '{}'", pk_columns[0]));
+    }
+    let mut parts = Vec::new();
+    for col in pk_columns {
+        parts.push(
+            values
+                .get(col)
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("missing pk column '{col}'"))?,
+        );
+    }
+    Ok(UniversalValue::Array {
+        elements: parts,
+        element_type: Box::new(UniversalType::Text),
+    })
+}
+
+#[allow(dead_code)]
+pub async fn capture_binlog_checkpoint(
+    pool: &Pool,
+    from_opts: &SourceOpts,
+) -> Result<BinlogCheckpoint> {
+    let mut conn = pool.get_conn().await?;
+    let (file, pos) = show_master_status(&mut conn).await?;
+    Ok(BinlogCheckpoint {
+        flavor: from_opts.flavor.unwrap_or(binlog_protocol::Flavor::MySql),
+        position: binlog_protocol::BinlogPosition::file_pos(file, pos),
+        timestamp: chrono::Utc::now(),
+    })
+}
+
+#[allow(dead_code)]
+pub async fn load_schema(pool: &Pool, database: &str) -> Result<sync_core::DatabaseSchema> {
+    let mut conn = pool.get_conn().await?;
+    use_database(&mut conn, database).await?;
+    collect_mysql_database_schema(&mut conn).await
+}

@@ -193,6 +193,13 @@ enum FromSource {
         command: PostgreSQLLogicalCommands,
     },
 
+    /// Sync from MySQL/MariaDB using binlog CDC (supports full and incremental)
+    #[command(name = "mysql-binlog")]
+    MySQLBinlog {
+        #[command(subcommand)]
+        command: MySQLBinlogCommands,
+    },
+
     /// Sync from Kafka topics (incremental-only)
     #[command(name = "kafka")]
     Kafka(KafkaArgs),
@@ -820,6 +827,233 @@ struct MySQLSnapshotArgs {
 }
 
 // =============================================================================
+// MySQL Binlog Commands and Args
+// =============================================================================
+
+/// Engine flavor override for binlog CDC (auto-detected from server when omitted).
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum MySQLBinlogFlavorArg {
+    #[value(name = "mysql")]
+    MySql,
+    #[value(name = "mariadb")]
+    MariaDb,
+}
+
+impl From<MySQLBinlogFlavorArg> for surreal_sync_mysql_binlog_source::Flavor {
+    fn from(value: MySQLBinlogFlavorArg) -> Self {
+        match value {
+            MySQLBinlogFlavorArg::MySql => Self::MySql,
+            MySQLBinlogFlavorArg::MariaDb => Self::MariaDb,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum MySQLBinlogCommands {
+    /// Full sync from MySQL/MariaDB binlog
+    Full(MySQLBinlogFullArgs),
+    /// Incremental sync from MySQL/MariaDB binlog
+    Incremental(MySQLBinlogIncrementalArgs),
+    /// Combined snapshot+stream full sync that hands off to incremental in one process
+    Sync(MySQLBinlogSyncArgs),
+    /// Trigger an ad-hoc snapshot of additional tables against a running `sync`
+    Snapshot(MySQLBinlogSnapshotArgs),
+}
+
+#[derive(Args)]
+struct MySQLBinlogFullArgs {
+    /// MySQL connection string
+    #[arg(long, env = "MYSQL_URI")]
+    connection_string: String,
+
+    /// MySQL database name (extracted from connection string if not provided)
+    #[arg(long, env = "MYSQL_DATABASE")]
+    database: Option<String>,
+
+    /// Tables to sync (comma-separated, empty means all tables)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
+    /// MySQL JSON paths that contain boolean values stored as 0/1
+    #[arg(long, value_delimiter = ',', env = "MYSQL_BOOLEAN_PATHS")]
+    boolean_paths: Option<Vec<String>>,
+
+    /// Unique replica server id for this binlog consumer (random if omitted)
+    #[arg(long)]
+    server_id: Option<u32>,
+
+    /// Override auto-detected engine flavor (mysql or mariadb)
+    #[arg(long, value_enum)]
+    flavor: Option<MySQLBinlogFlavorArg>,
+
+    /// Target SurrealDB namespace
+    #[arg(long)]
+    to_namespace: String,
+
+    /// Target SurrealDB database
+    #[arg(long)]
+    to_database: String,
+
+    /// Directory to write checkpoint files (mutually exclusive with --checkpoints-surreal-table)
+    #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
+    checkpoint_dir: Option<String>,
+
+    /// SurrealDB table for storing checkpoints (mutually exclusive with --checkpoint-dir)
+    #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
+    checkpoints_surreal_table: Option<String>,
+
+    /// Schema file for type-aware conversion
+    #[arg(long, value_name = "PATH")]
+    schema_file: Option<PathBuf>,
+
+    /// Full-sync strategy (interleaved-snapshot is the default for this source)
+    #[arg(long, value_enum, default_value_t = SyncStrategy::default())]
+    strategy: SyncStrategy,
+
+    /// Rows read per keyset chunk when using the interleaved-snapshot strategy
+    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
+
+    #[command(flatten)]
+    surreal: SurrealOpts,
+}
+
+#[derive(Args)]
+struct MySQLBinlogIncrementalArgs {
+    /// MySQL connection string
+    #[arg(long, env = "MYSQL_URI")]
+    connection_string: String,
+
+    /// MySQL database name (extracted from connection string if not provided)
+    #[arg(long, env = "MYSQL_DATABASE")]
+    database: Option<String>,
+
+    /// Tables to sync (comma-separated, empty means all tables)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
+    /// MySQL JSON paths that contain boolean values stored as 0/1
+    #[arg(long, value_delimiter = ',', env = "MYSQL_BOOLEAN_PATHS")]
+    boolean_paths: Option<Vec<String>>,
+
+    /// Unique replica server id for this binlog consumer (random if omitted)
+    #[arg(long)]
+    server_id: Option<u32>,
+
+    /// Override auto-detected engine flavor (mysql or mariadb)
+    #[arg(long, value_enum)]
+    flavor: Option<MySQLBinlogFlavorArg>,
+
+    /// Target SurrealDB namespace
+    #[arg(long)]
+    to_namespace: String,
+
+    /// Target SurrealDB database
+    #[arg(long)]
+    to_database: String,
+
+    /// Start incremental sync from this checkpoint (e.g. mysql-binlog:file:mysql-bin.000003:195)
+    /// If not provided, checkpoint is read from --checkpoints-surreal-table
+    #[arg(long)]
+    incremental_from: Option<String>,
+
+    /// SurrealDB table for reading checkpoints (alternative to --incremental-from)
+    #[arg(long, value_name = "TABLE")]
+    checkpoints_surreal_table: Option<String>,
+
+    /// Stop incremental sync when reaching this checkpoint (optional)
+    #[arg(long)]
+    incremental_to: Option<String>,
+
+    /// Maximum time to run incremental sync (in seconds, default: 3600)
+    #[arg(long, default_value = "3600")]
+    timeout: String,
+
+    /// Schema file for type-aware conversion
+    #[arg(long, value_name = "PATH")]
+    schema_file: Option<PathBuf>,
+
+    #[command(flatten)]
+    surreal: SurrealOpts,
+}
+
+/// Combined snapshot+stream sync for MySQL/MariaDB binlog.
+#[derive(Args)]
+struct MySQLBinlogSyncArgs {
+    /// MySQL connection string
+    #[arg(long, env = "MYSQL_URI")]
+    connection_string: String,
+
+    /// MySQL database name (extracted from connection string if not provided)
+    #[arg(long, env = "MYSQL_DATABASE")]
+    database: Option<String>,
+
+    /// Tables to sync (comma-separated, empty means all tables)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
+    /// MySQL JSON paths that contain boolean values stored as 0/1
+    #[arg(long, value_delimiter = ',', env = "MYSQL_BOOLEAN_PATHS")]
+    boolean_paths: Option<Vec<String>>,
+
+    /// Unique replica server id for this binlog consumer (random if omitted)
+    #[arg(long)]
+    server_id: Option<u32>,
+
+    /// Override auto-detected engine flavor (mysql or mariadb)
+    #[arg(long, value_enum)]
+    flavor: Option<MySQLBinlogFlavorArg>,
+
+    /// Target SurrealDB namespace
+    #[arg(long)]
+    to_namespace: String,
+
+    /// Target SurrealDB database
+    #[arg(long)]
+    to_database: String,
+
+    /// Rows read per keyset chunk during the snapshot phase
+    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
+
+    /// Maximum time to run the incremental phase (in seconds, default: 3600)
+    #[arg(long, default_value = "3600")]
+    timeout: String,
+
+    /// Schema file for type-aware conversion
+    #[arg(long, value_name = "PATH")]
+    schema_file: Option<PathBuf>,
+
+    #[command(flatten)]
+    surreal: SurrealOpts,
+}
+
+/// Trigger an ad-hoc snapshot of additional tables for MySQL binlog by inserting
+/// an execute-snapshot signal row.
+#[derive(Args)]
+struct MySQLBinlogSnapshotArgs {
+    /// MySQL connection string
+    #[arg(long, env = "MYSQL_URI")]
+    connection_string: String,
+
+    /// MySQL database name (extracted from connection string if not provided)
+    #[arg(long, env = "MYSQL_DATABASE")]
+    database: Option<String>,
+
+    /// Unique replica server id for this binlog consumer (random if omitted)
+    #[arg(long)]
+    server_id: Option<u32>,
+
+    /// Override auto-detected engine flavor (mysql or mariadb)
+    #[arg(long, value_enum)]
+    flavor: Option<MySQLBinlogFlavorArg>,
+
+    /// Tables to snapshot (comma-separated)
+    #[arg(long, value_delimiter = ',', required = true)]
+    tables: Vec<String>,
+}
+
+// =============================================================================
 // PostgreSQL WAL-based Logical Replication Commands and Args
 // =============================================================================
 
@@ -1275,6 +1509,16 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
             MySQLCommands::Incremental(args) => from::mysql::run_incremental(args).await?,
             MySQLCommands::Sync(args) => from::mysql::run_sync(args).await?,
             MySQLCommands::Snapshot(args) => from::mysql::run_snapshot_signal(args).await?,
+        },
+        FromSource::MySQLBinlog { command } => match command {
+            MySQLBinlogCommands::Full(args) => from::mysql_binlog::run_full(args).await?,
+            MySQLBinlogCommands::Incremental(args) => {
+                from::mysql_binlog::run_incremental(args).await?
+            }
+            MySQLBinlogCommands::Sync(args) => from::mysql_binlog::run_sync(args).await?,
+            MySQLBinlogCommands::Snapshot(args) => {
+                from::mysql_binlog::run_snapshot_signal(args).await?
+            }
         },
         FromSource::PostgreSQL { command } => match command {
             PostgreSQLLogicalCommands::Full(args) => {

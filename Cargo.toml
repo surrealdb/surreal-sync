@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kafka-source", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql", "crates/postgresql-wal2json-source", "crates/postgresql-trigger-source", "crates/csv-source", "crates/jsonl-source", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/loadtest-populate", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surreal2-types", "crates/surreal3-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify-surreal2", "crates/loadtest-verify-surreal3", "crates/surreal-sink", "crates/surreal2-sink", "crates/surreal3-sink", "crates/surreal-client", "crates/surreal2-client", "crates/surreal3-client", "crates/surreal-version", "crates/mongodb-changestream-source", "crates/neo4j-source", "crates/checkpoint", "crates/checkpoint-surreal3", "crates/mysql-trigger-source", "crates/loadtest-distributed", "crates/surrealdb-multi-sdk-demo", "crates/interleaved-snapshot"]
+members = ["crates/binlog-protocol", "crates/mysql-binlog-source", "crates/kafka-source", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql", "crates/postgresql-wal2json-source", "crates/postgresql-trigger-source", "crates/csv-source", "crates/jsonl-source", "crates/file", "crates/sync-core", "crates/loadtest-generator", "crates/loadtest-populate", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surreal2-types", "crates/surreal3-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify-surreal2", "crates/loadtest-verify-surreal3", "crates/surreal-sink", "crates/surreal2-sink", "crates/surreal3-sink", "crates/surreal-client", "crates/surreal2-client", "crates/surreal3-client", "crates/surreal-version", "crates/mongodb-changestream-source", "crates/neo4j-source", "crates/checkpoint", "crates/checkpoint-surreal3", "crates/mysql-trigger-source", "crates/loadtest-distributed", "crates/surrealdb-multi-sdk-demo", "crates/interleaved-snapshot"]
 resolver = "2"
 
 [package]
@@ -127,6 +127,9 @@ surreal-sync-neo4j-source = { path = "crates/neo4j-source" }
 # MySQL trigger-based sync
 surreal-sync-mysql-trigger-source = { path = "crates/mysql-trigger-source" }
 
+# MySQL/MariaDB binlog CDC sync
+surreal-sync-mysql-binlog-source = { path = "crates/mysql-binlog-source" }
+
 # PostgreSQL trigger-based sync
 surreal-sync-postgresql-trigger-source = { path = "crates/postgresql-trigger-source" }
 
@@ -135,6 +138,9 @@ surreal-sync-postgresql = { path = "crates/postgresql" }
 
 # Watermark-based interleaved snapshot full-sync framework
 surreal-sync-interleaved-snapshot = { path = "crates/interleaved-snapshot" }
+
+# Binlog protocol (Flavor for binlog test containers)
+binlog-protocol = { path = "crates/binlog-protocol" }
 
 # Version-independent sink trait (used by the interleaved-snapshot orchestrator)
 surreal-sink = { path = "crates/surreal-sink" }

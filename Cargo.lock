@@ -1049,6 +1049,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "binlog-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "byteorder",
+ "bytes",
+ "crc32fast",
+ "hex",
+ "insta",
+ "libc",
+ "mysql_async",
+ "rsa",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "bit-set"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1544,6 +1568,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "console"
+version = "0.16.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fe5f465a4f6fee88fad41b85d990f84c835335e85b5d9e6e63e0d06d28cba7c"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1655,9 +1690,9 @@ dependencies = [
 
 [[package]]
 name = "crc32fast"
-version = "1.4.2"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a97769d94ddab943e4510d138150169a2758b5ef3eb191a9ee688de3e23ef7b3"
+checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if",
 ]
@@ -2310,6 +2345,12 @@ checksum = "3d248bdd43ce613d87415282f69b9bb99d947d290b10962dd6c56233312c2ad5"
 dependencies = [
  "log",
 ]
+
+[[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
 
 [[package]]
 name = "encoding_rs"
@@ -3521,6 +3562,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "insta"
+version = "1.48.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "86f0f8fee8c926415c58d6ae43a08523a26faccb2323f5e6b644fe7dd4ef6b82"
+dependencies = [
+ "console",
+ "once_cell",
+ "serde",
+ "similar",
+ "tempfile",
+]
+
+[[package]]
 name = "ipconfig"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4459,9 +4513,12 @@ name = "mysql-types"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "binlog-protocol",
  "chrono",
+ "hex",
  "json-types",
  "mysql_async",
+ "rust_decimal",
  "serde",
  "serde_json",
  "sync-core",
@@ -6245,6 +6302,7 @@ dependencies = [
  "pkcs1",
  "pkcs8 0.10.2",
  "rand_core 0.6.4",
+ "sha2",
  "signature 2.2.0",
  "spki 0.7.3",
  "subtle",
@@ -6984,6 +7042,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
 name = "simple_asn1"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7247,6 +7311,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "base64 0.22.1",
+ "binlog-protocol",
  "bson",
  "checkpoint",
  "checkpoint-surreal3",
@@ -7292,6 +7357,7 @@ dependencies = [
  "surreal-sync-kafka-producer",
  "surreal-sync-kafka-source",
  "surreal-sync-mongodb-changestream-source",
+ "surreal-sync-mysql-binlog-source",
  "surreal-sync-mysql-trigger-source",
  "surreal-sync-neo4j-source",
  "surreal-sync-postgresql",
@@ -7470,6 +7536,33 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tracing",
+]
+
+[[package]]
+name = "surreal-sync-mysql-binlog-source"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "binlog-protocol",
+ "checkpoint",
+ "chrono",
+ "json-types",
+ "libc",
+ "mysql-types",
+ "mysql_async",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "surreal-sink",
+ "surreal-sync-interleaved-snapshot",
+ "surreal-sync-mysql-trigger-source",
+ "sync-core",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

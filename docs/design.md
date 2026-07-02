@@ -57,13 +57,13 @@ Each database uses the most appropriate change detection method:
 
 `surreal-sync` uses a native CDC feature provided in the source database if possible/implemented.
 
-Currently, our MongoDB source uses MongoDB Change Streams for incremental syncs.
+Currently, our MongoDB source uses MongoDB Change Streams for incremental syncs. PostgreSQL logical replication ([wal2json source](postgresql-wal2json-source.md)) and MySQL/MariaDB binlog replication ([binlog source](mysql-binlog.md)) also use native CDC.
 
 ### Trigger-Based CDC
 
 `surreal-sync` uses trigger-based approaches whenever a native CDC feature is nonexistent, or considered not appropriate for various reasons.
 
-Currently, our PostgreSQL and MySQL sources use triggers and audit tables updated via the triggers. It turned out to be sufficient to provide sequence-based checkpoints to full and incremental sync results and reproduce consistent snapshots onto the target SurrealDB tables.
+Currently, our PostgreSQL and MySQL trigger sources use triggers and audit tables updated via the triggers. It turned out to be sufficient to provide sequence-based checkpoints to full and incremental sync results and reproduce consistent snapshots onto the target SurrealDB tables. MySQL and MariaDB also support the [binlog source](mysql-binlog.md) as an alternative that does not require triggers.
 
 ### Timestamp-Based
 
@@ -80,6 +80,7 @@ See the source-specific documentation for implementation details:
 - **[MongoDB](mongodb.md)**: Change streams and resume token management
 - **[MySQL](mysql.md)**: Trigger-based CDC with sequence checkpointing ([legacy sequential-snapshot guide](mysql/legacy.md))
 - **[MariaDB](mariadb.md)**: Same trigger-based source as MySQL (JSON stored as a `LONGTEXT` alias is detected and synced as nested objects)
+- **[MySQL/MariaDB (binlog)](mysql-binlog.md)**: Binlog-based logical replication with file+offset or GTID checkpoints
 - **[PostgreSQL](postgresql.md)**: Trigger-based CDC with sequence checkpointing ([legacy sequential-snapshot guide](postgresql/legacy.md))
 - **[PostgreSQL (wal2json)](postgresql-wal2json-source.md)**: Logical replication with wal2json ([legacy sequential-snapshot guide](postgresql-wal2json/legacy.md))
 - **[Neo4j](neo4j.md)**: Timestamp-based tracking with deletion limitations

@@ -1,0 +1,231 @@
+---
+source: crates/binlog-protocol/tests/replay_captured.rs
+expression: snapshot
+---
+[
+  {
+    "kind": "FormatDescription",
+    "checksum_alg": 0
+  },
+  {
+    "kind": "Gtid",
+    "gtid": "MySql { source_id: [218, 83, 188, 50, 117, 239, 17, 241, 161, 152, 6, 79, 10, 174, 73, 211], gno: 11 }"
+  },
+  {
+    "kind": "Query",
+    "database": "\u0000\u0000\u0000\u0000\u0000\u0001 \u0000�E\u0000",
+    "query_prefix": "\u0000\u0000\u0000\u0006\u0003std\u0004-\u0000-\u0000�\u0000\f\u0001bcd_fixture\u0000\u0010\u0001\u0011"
+  },
+  {
+    "kind": "Gtid",
+    "gtid": "MySql { source_id: [218, 83, 188, 50, 117, 239, 17, 241, 161, 152, 6, 79, 10, 174, 73, 211], gno: 12 }"
+  },
+  {
+    "kind": "Query",
+    "database": "\u0000\u0000\u0000\u0000\u0000\u0001 \u0000�E\u0000",
+    "query_prefix": "\u0000\u0000\u0000\u0006\u0003std\u0004-\u0000-\u0000�\u0000\u0005\u0006SYSTEM\u0012�\u0000bcd_fi"
+  },
+  {
+    "kind": "TableMap",
+    "database": "bcd_fixture",
+    "table": "wire_fixture"
+  },
+  {
+    "kind": "Rows",
+    "table": "wire_fixture",
+    "row_op": "insert",
+    "cells": [
+      1,
+      "pk-alpha",
+      -9223372036854775807,
+      "12345.67890",
+      3.141590118408203,
+      "hello-binlog",
+      "000200180012000100130001000501000c140061620374776f",
+      "1",
+      "3",
+      "aa",
+      2024,
+      {
+        "day": 15,
+        "month": 6,
+        "year": 2024
+      },
+      {
+        "hour": -994,
+        "micros": 500,
+        "minute": 18,
+        "second": 0
+      },
+      {
+        "day": 15,
+        "hour": 10,
+        "micros": 123,
+        "minute": 30,
+        "month": 6,
+        "second": 0,
+        "year": 2024
+      },
+      678260070000,
+      "ޭ��\u0001#Eg",
+      "000000000101000000000000000000f03f0000000000000040"
+    ],
+    "zero_log_pos": false
+  },
+  {
+    "kind": "Xid",
+    "xid": "xid=21"
+  },
+  {
+    "kind": "Gtid",
+    "gtid": "MySql { source_id: [218, 83, 188, 50, 117, 239, 17, 241, 161, 152, 6, 79, 10, 174, 73, 211], gno: 13 }"
+  },
+  {
+    "kind": "Query",
+    "database": "\u0000\u0000\u0000\u0000\u0000\u0001 \u0000�E\u0000",
+    "query_prefix": "\u0000\u0000\u0000\u0006\u0003std\u0004-\u0000-\u0000�\u0000\t\u0001\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0012�\u0000bcd_f"
+  },
+  {
+    "kind": "TableMap",
+    "database": "bcd_fixture",
+    "table": "wire_fixture"
+  },
+  {
+    "kind": "Rows",
+    "table": "wire_fixture",
+    "row_op": "update",
+    "before": [
+      1,
+      "pk-alpha",
+      -9223372036854775807,
+      "12345.67890",
+      3.141590118408203,
+      "hello-binlog",
+      "000200180012000100130001000501000c140061620374776f",
+      "1",
+      "3",
+      "aa",
+      2024,
+      {
+        "day": 15,
+        "month": 6,
+        "year": 2024
+      },
+      {
+        "hour": -994,
+        "micros": 500,
+        "minute": 18,
+        "second": 0
+      },
+      {
+        "day": 15,
+        "hour": 10,
+        "micros": 123,
+        "minute": 30,
+        "month": 6,
+        "second": 0,
+        "year": 2024
+      },
+      678260070000,
+      "ޭ��\u0001#Eg",
+      "000000000101000000000000000000f03f0000000000000040"
+    ],
+    "after": [
+      1,
+      "pk-alpha",
+      -9223372036854775807,
+      "99999.99000",
+      3.141590118408203,
+      "updated",
+      "000200180012000100130001000501000c140061620374776f",
+      "2",
+      "6",
+      "aa",
+      2024,
+      {
+        "day": 15,
+        "month": 6,
+        "year": 2024
+      },
+      {
+        "hour": -994,
+        "micros": 500,
+        "minute": 18,
+        "second": 0
+      },
+      {
+        "day": 15,
+        "hour": 10,
+        "micros": 123,
+        "minute": 30,
+        "month": 6,
+        "second": 0,
+        "year": 2024
+      },
+      678260070000,
+      "ޭ��\u0001#Eg",
+      "000000000101000000000000000000f03f0000000000000040"
+    ],
+    "zero_log_pos": false
+  },
+  {
+    "kind": "Xid",
+    "xid": "xid=22"
+  },
+  {
+    "kind": "Gtid",
+    "gtid": "MySql { source_id: [218, 83, 188, 50, 117, 239, 17, 241, 161, 152, 6, 79, 10, 174, 73, 211], gno: 14 }"
+  },
+  {
+    "kind": "Query",
+    "database": "\u0000\u0000\u0000\u0000\u0000\u0001 \u0000�E\u0000",
+    "query_prefix": "\u0000\u0000\u0000\u0006\u0003std\u0004-\u0000-\u0000�\u0000\u0012�\u0000bcd_fixture\u0000BE"
+  },
+  {
+    "kind": "TableMap",
+    "database": "bcd_fixture",
+    "table": "wire_fixture"
+  },
+  {
+    "kind": "Rows",
+    "table": "wire_fixture",
+    "row_op": "delete",
+    "cells": [
+      1,
+      "pk-alpha",
+      -9223372036854775807,
+      "99999.99000",
+      3.141590118408203,
+      "updated",
+      "000200180012000100130001000501000c140061620374776f",
+      "2",
+      "6",
+      "aa",
+      2024,
+      {
+        "day": 15,
+        "month": 6,
+        "year": 2024
+      },
+      {
+        "hour": -994,
+        "micros": 500,
+        "minute": 18,
+        "second": 0
+      },
+      {
+        "day": 15,
+        "hour": 10,
+        "micros": 123,
+        "minute": 30,
+        "month": 6,
+        "second": 0,
+        "year": 2024
+      },
+      678260070000,
+      "ޭ��\u0001#Eg",
+      "000000000101000000000000000000f03f0000000000000040"
+    ],
+    "zero_log_pos": false
+  }
+]
