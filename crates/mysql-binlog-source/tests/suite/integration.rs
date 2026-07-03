@@ -5,8 +5,12 @@ use std::time::Duration;
 
 use anyhow::Result;
 use binlog_protocol::{BinlogClient, EventBody, ReplicaOptions, RowChange, SslMode};
+use checkpoint::Checkpoint;
 use mysql_async::prelude::*;
-use surreal_sync_mysql_binlog_source::{run_incremental_sync, BinlogCheckpoint, SourceOpts};
+use surreal_sync_mysql_binlog_source::{
+    run_incremental_sync_with_checkpoints, BinlogCheckpoint, IncrementalSyncOptions, SourceOpts,
+};
+use sync_core::{UniversalChange, UniversalValue};
 
 struct MemSink {
     changes: std::sync::Mutex<Vec<String>>,
@@ -44,6 +48,36 @@ impl surreal_sink::SurrealSink for MemSink {
     }
 }
 
+struct CaptureSink {
+    changes: std::sync::Mutex<Vec<UniversalChange>>,
+}
+
+#[async_trait::async_trait]
+impl surreal_sink::SurrealSink for CaptureSink {
+    async fn write_universal_rows(&self, _rows: &[sync_core::UniversalRow]) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn write_universal_relations(
+        &self,
+        _relations: &[sync_core::UniversalRelation],
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn apply_universal_change(&self, change: &UniversalChange) -> anyhow::Result<()> {
+        self.changes.lock().expect("lock").push(change.clone());
+        Ok(())
+    }
+
+    async fn apply_universal_relation_change(
+        &self,
+        _change: &sync_core::UniversalRelationChange,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 async fn connect_client(conn_str: &str, server_id: u32) -> Result<BinlogClient> {
     let binlog_conn = crate::shared::repl_connection_string(conn_str);
     let (host, port, user, pass, _) = crate::shared::parse_mysql_uri(&binlog_conn)?;
@@ -59,6 +93,7 @@ async fn connect_client(conn_str: &str, server_id: u32) -> Result<BinlogClient> 
         mariadb_flags: binlog_protocol::MariaDbDumpFlags {
             send_annotate_rows: true,
         },
+        mariadb_gtid_strict_mode: binlog_protocol::MariaDbGtidStrictMode::ServerDefault,
     })
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))
@@ -88,7 +123,8 @@ async fn dml_and_transaction_boundaries_observed() -> Result<()> {
 
     let mut table_maps: HashMap<u64, binlog_protocol::TableMapEvent> = HashMap::new();
     let mut ops = Vec::new();
-    for _ in 0..100 {
+    // Generous budget so full-suite parallel container load can't starve this poll.
+    for _ in 0..300 {
         let events = client
             .next_events(32)
             .await
@@ -125,6 +161,85 @@ async fn dml_and_transaction_boundaries_observed() -> Result<()> {
     assert!(ops.contains(&"update"));
     assert!(ops.contains(&"delete"));
     assert!(ops.contains(&"xid"));
+
+    drop(conn);
+    pool.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn mysql_partial_json_update_is_applied_as_full_json_change() -> Result<()> {
+    crate::shared::init_logging();
+    let container = crate::shared::shared_mysql_binlog().await;
+    if container.flavor() != binlog_protocol::Flavor::MySql {
+        return Ok(());
+    }
+    let db_name = "integ_partial_json";
+    let conn_str = crate::shared::create_test_db(container, db_name).await?;
+
+    let pool = mysql_async::Pool::from_url(&conn_str)?;
+    let mut conn = pool.get_conn().await?;
+    conn.query_drop("CREATE TABLE docs (id INT PRIMARY KEY, doc JSON NOT NULL)")
+        .await?;
+    conn.exec_drop(
+        "INSERT INTO docs (id, doc) VALUES (1, JSON_OBJECT('nested', JSON_OBJECT('count', 1), 'pad', REPEAT('x', 2048)))",
+        (),
+    )
+    .await?;
+
+    let mut client = connect_client(&conn_str, 9_003_004).await?;
+    crate::shared::start_binlog_at_master_end(&mut client, &conn_str).await?;
+    let checkpoint = BinlogCheckpoint {
+        flavor: container.flavor(),
+        position: client.current_position(),
+        timestamp: chrono::Utc::now(),
+    };
+    drop(client);
+
+    conn.query_drop("SET SESSION binlog_row_value_options = 'PARTIAL_JSON'")
+        .await?;
+    conn.exec_drop(
+        "UPDATE docs SET doc = JSON_SET(doc, '$.nested.count', 42) WHERE id = 1",
+        (),
+    )
+    .await?;
+
+    let sink = CaptureSink {
+        changes: std::sync::Mutex::new(Vec::new()),
+    };
+    let source_opts = SourceOpts {
+        connection_string: conn_str.clone(),
+        database: Some(db_name.to_string()),
+        tables: vec!["docs".to_string()],
+        server_id: Some(9_003_005),
+        flavor: Some(container.flavor()),
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+    };
+    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+        &sink,
+        source_opts,
+        checkpoint,
+        IncrementalSyncOptions::batch(
+            Some(chrono::Utc::now() + chrono::Duration::seconds(5)),
+            None,
+        ),
+        None,
+    )
+    .await?;
+
+    let changes = sink.changes.lock().expect("lock").clone();
+    let update = changes
+        .iter()
+        .find(|change| change.table == "docs")
+        .expect("expected docs update");
+    let data = update.data.as_ref().expect("update data");
+    let Some(UniversalValue::Json(json)) = data.get("doc") else {
+        panic!("expected JSON doc value, got {:?}", data.get("doc"));
+    };
+    assert_eq!(json["nested"]["count"], serde_json::json!(42));
+    assert_eq!(json["pad"], serde_json::json!("x".repeat(2048)));
 
     drop(conn);
     pool.disconnect().await?;
@@ -173,15 +288,22 @@ async fn gtid_checkpoint_resume_applies_subsequent_changes() -> Result<()> {
         tables: vec!["widgets".to_string()],
         server_id: Some(9_003_003),
         flavor: Some(container.flavor()),
-        mysql_boolean_paths: None,
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
     };
 
-    run_incremental_sync(
+    let tmp = tempfile::TempDir::new()?;
+    let manager = checkpoint::SyncManager::new(checkpoint::FilesystemStore::new(tmp.path()));
+    run_incremental_sync_with_checkpoints(
         &sink,
         source_opts,
         checkpoint,
-        chrono::Utc::now() + chrono::Duration::seconds(30),
-        None,
+        IncrementalSyncOptions::batch(
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            None,
+        ),
+        Some(&manager),
     )
     .await?;
 
@@ -194,6 +316,81 @@ async fn gtid_checkpoint_resume_applies_subsequent_changes() -> Result<()> {
         applied.len() >= 2,
         "expected at least two incremental changes, got {applied:?}"
     );
+    let persisted: BinlogCheckpoint = manager
+        .read_checkpoint(checkpoint::SyncPhase::FullSyncEnd)
+        .await?;
+    assert_ne!(
+        persisted.position,
+        BinlogCheckpoint::from_cli_string("file:mysql-bin.000001:4")?.position,
+        "incremental sync should persist a real stream checkpoint"
+    );
+
+    drop(conn);
+    pool.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn ddl_refreshes_schema_before_subsequent_rows() -> Result<()> {
+    crate::shared::init_logging();
+    let container = crate::shared::shared_mysql_binlog().await;
+    let db_name = "integ_ddl_refresh";
+    let conn_str = crate::shared::create_test_db(container, db_name).await?;
+
+    let pool = mysql_async::Pool::from_url(&conn_str)?;
+    let mut conn = pool.get_conn().await?;
+    conn.query_drop("CREATE TABLE widgets (id INT PRIMARY KEY, status ENUM('new'))")
+        .await?;
+
+    let mut client = connect_client(&conn_str, 9_003_030).await?;
+    crate::shared::start_binlog_at_master_end(&mut client, &conn_str).await?;
+    let checkpoint = BinlogCheckpoint {
+        flavor: container.flavor(),
+        position: client.current_position(),
+        timestamp: chrono::Utc::now(),
+    };
+    drop(client);
+
+    conn.query_drop("ALTER TABLE widgets MODIFY status ENUM('new','done')")
+        .await?;
+    conn.exec_drop("INSERT INTO widgets (id, status) VALUES (1, 'done')", ())
+        .await?;
+
+    let sink = CaptureSink {
+        changes: std::sync::Mutex::new(Vec::new()),
+    };
+    let source_opts = SourceOpts {
+        connection_string: conn_str.clone(),
+        database: Some(db_name.to_string()),
+        tables: vec!["widgets".to_string()],
+        server_id: Some(9_003_031),
+        flavor: Some(container.flavor()),
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+    };
+
+    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+        &sink,
+        source_opts,
+        checkpoint,
+        IncrementalSyncOptions::batch(
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            None,
+        ),
+        None,
+    )
+    .await?;
+
+    let changes = sink.changes.lock().expect("lock").clone();
+    let status = changes
+        .iter()
+        .find_map(|change| change.data.as_ref()?.get("status"))
+        .expect("status field should be present after DDL refresh");
+    match status {
+        UniversalValue::Enum { value, .. } => assert_eq!(value, "done"),
+        other => panic!("expected refreshed ENUM label, got {other:?}"),
+    }
 
     drop(conn);
     pool.disconnect().await?;
@@ -252,14 +449,19 @@ async fn mariadb_gtid_checkpoint_resume_applies_subsequent_changes() -> Result<(
         tables: vec!["widgets".to_string()],
         server_id: Some(9_004_002),
         flavor: Some(container.flavor()),
-        mysql_boolean_paths: None,
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
     };
 
-    run_incremental_sync(
+    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
         &sink,
         source_opts,
         checkpoint,
-        chrono::Utc::now() + chrono::Duration::seconds(30),
+        IncrementalSyncOptions::batch(
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            None,
+        ),
         None,
     )
     .await?;
@@ -317,7 +519,8 @@ async fn repl_user_can_stream_changes() -> Result<()> {
 
     let mut table_maps = HashMap::new();
     let mut saw = false;
-    for _ in 0..60 {
+    // Generous budget so full-suite parallel container load can't starve this poll.
+    for _ in 0..300 {
         let events = client
             .next_events(16)
             .await
@@ -347,24 +550,490 @@ async fn repl_user_can_stream_changes() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test]
+async fn mysql_runtime_checkpoint_is_gtid() -> Result<()> {
+    crate::shared::init_logging();
+    let container = crate::shared::shared_mysql_binlog().await;
+    let db_name = "integ_mysql_gtid";
+    let conn_str = crate::shared::create_test_db(container, db_name).await?;
+
+    let pool = mysql_async::Pool::from_url(&conn_str)?;
+    let mut conn = pool.get_conn().await?;
+    conn.query_drop("CREATE TABLE widgets (id INT PRIMARY KEY, n INT)")
+        .await?;
+
+    // Start from the current master position via file+pos. On a GTID-enabled
+    // MySQL server the stream still carries GTID_LOG_EVENTs, so the tracker must
+    // accumulate them and report a MySqlGtid runtime position.
+    let mut client = connect_client(&conn_str, 9_003_010).await?;
+    crate::shared::start_binlog_at_master_end(&mut client, &conn_str).await?;
+
+    conn.exec_drop("INSERT INTO widgets (id, n) VALUES (1, 1)", ())
+        .await?;
+    drain_items_events(&mut client).await?;
+
+    let position = client.current_position();
+    assert!(
+        matches!(position, binlog_protocol::BinlogPosition::MySqlGtid { .. }),
+        "expected a MySqlGtid runtime checkpoint on a GTID-enabled MySQL server, got {position:?}"
+    );
+
+    drop(conn);
+    pool.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn sequential_full_sync_captures_real_master_position() -> Result<()> {
+    use checkpoint::{Checkpoint, SyncManager, SyncPhase};
+    use surreal_sync_mysql_binlog_source::{run_full_sync, SyncOpts};
+
+    crate::shared::init_logging();
+    let container = crate::shared::shared_mysql_binlog().await;
+    let db_name = "integ_seq_full";
+    let conn_str = crate::shared::create_test_db(container, db_name).await?;
+
+    let pool = mysql_async::Pool::from_url(&conn_str)?;
+    let mut conn = pool.get_conn().await?;
+    conn.query_drop("CREATE TABLE gadgets (id INT PRIMARY KEY, n INT)")
+        .await?;
+    conn.exec_drop("INSERT INTO gadgets (id, n) VALUES (1, 10)", ())
+        .await?;
+    conn.exec_drop("INSERT INTO gadgets (id, n) VALUES (2, 20)", ())
+        .await?;
+
+    let tmp = tempfile::TempDir::new()?;
+    let manager = SyncManager::new(checkpoint::FilesystemStore::new(tmp.path()));
+
+    let sink = MemSink {
+        changes: std::sync::Mutex::new(Vec::new()),
+    };
+    let source_opts = SourceOpts {
+        connection_string: conn_str.clone(),
+        database: Some(db_name.to_string()),
+        tables: vec!["gadgets".to_string()],
+        server_id: Some(9_003_020),
+        flavor: Some(container.flavor()),
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+    };
+    let sync_opts = SyncOpts {
+        batch_size: 1000,
+        dry_run: false,
+    };
+
+    run_full_sync(&sink, &source_opts, &sync_opts, Some(&manager)).await?;
+
+    let end: BinlogCheckpoint = manager.read_checkpoint(SyncPhase::FullSyncEnd).await?;
+    assert_ne!(
+        end.to_cli_string(),
+        "file:mysql-bin.000001:4",
+        "FullSyncEnd must capture the real master position, not the placeholder"
+    );
+
+    // A post-snapshot insert must be captured by incremental resume from the end
+    // checkpoint (no gap beyond at-least-once).
+    conn.exec_drop("INSERT INTO gadgets (id, n) VALUES (3, 30)", ())
+        .await?;
+
+    let inc_sink = MemSink {
+        changes: std::sync::Mutex::new(Vec::new()),
+    };
+    let inc_opts = SourceOpts {
+        connection_string: conn_str.clone(),
+        database: Some(db_name.to_string()),
+        tables: vec!["gadgets".to_string()],
+        server_id: Some(9_003_021),
+        flavor: Some(container.flavor()),
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+    };
+    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+        &inc_sink,
+        inc_opts,
+        end,
+        IncrementalSyncOptions::batch(
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            None,
+        ),
+        None,
+    )
+    .await?;
+
+    let applied = inc_sink.changes.lock().expect("lock").clone();
+    assert!(
+        applied.iter().any(|s| s.contains("gadgets")),
+        "expected the post-snapshot insert to be captured after resuming from FullSyncEnd, got {applied:?}"
+    );
+
+    drop(conn);
+    pool.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn interleaved_snapshot_cancel_persists_lower_bound_and_skips_end() -> Result<()> {
+    use tokio_util::sync::CancellationToken;
+
+    crate::shared::init_logging();
+    let container = crate::shared::shared_mysql_binlog().await;
+    let db_name = "integ_interleaved_cancel";
+    let conn_str = crate::shared::create_test_db(container, db_name).await?;
+
+    let pool = mysql_async::Pool::from_url(&conn_str)?;
+    let mut conn = pool.get_conn().await?;
+    conn.query_drop("CREATE TABLE widgets (id INT PRIMARY KEY, n INT)")
+        .await?;
+    for i in 1..=50 {
+        conn.exec_drop("INSERT INTO widgets (id, n) VALUES (?, ?)", (i, i))
+            .await?;
+    }
+
+    let source_opts = SourceOpts {
+        connection_string: conn_str.clone(),
+        database: Some(db_name.to_string()),
+        tables: vec!["widgets".to_string()],
+        server_id: Some(9_003_070),
+        flavor: Some(container.flavor()),
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+    };
+
+    let sink = MemSink {
+        changes: std::sync::Mutex::new(Vec::new()),
+    };
+    let tmp = tempfile::TempDir::new()?;
+    let manager = checkpoint::SyncManager::new(checkpoint::FilesystemStore::new(tmp.path()));
+
+    // Pre-cancel: the snapshot emits FullSyncStart (the streaming lower bound)
+    // before copying rows, then unwinds at the first stream poll.
+    let cancel = CancellationToken::new();
+    cancel.cancel();
+
+    let outcome = surreal_sync_mysql_binlog_source::run_interleaved_snapshot_full_sync(
+        &sink,
+        &source_opts,
+        8,
+        cancel,
+        Some(&manager),
+    )
+    .await?;
+
+    assert!(
+        outcome.cancelled,
+        "expected the snapshot to report cancelled"
+    );
+
+    // FullSyncStart (lower bound) must be persisted so a restart re-snapshots
+    // and resumes streaming from here without missing changes.
+    let start: BinlogCheckpoint = manager
+        .read_checkpoint(checkpoint::SyncPhase::FullSyncStart)
+        .await?;
+    assert_eq!(start.position, outcome.start.position);
+
+    // FullSyncEnd must NOT have been emitted on cancellation.
+    assert!(
+        manager
+            .read_checkpoint::<BinlogCheckpoint>(checkpoint::SyncPhase::FullSyncEnd)
+            .await
+            .is_err(),
+        "FullSyncEnd must not be written when the snapshot is cancelled"
+    );
+
+    drop(conn);
+    pool.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn rename_table_mid_stream_keeps_tracking_new_name() -> Result<()> {
+    crate::shared::init_logging();
+    let container = crate::shared::shared_mysql_binlog().await;
+    let db_name = "integ_rename";
+    let conn_str = crate::shared::create_test_db(container, db_name).await?;
+
+    let pool = mysql_async::Pool::from_url(&conn_str)?;
+    let mut conn = pool.get_conn().await?;
+    conn.query_drop("CREATE TABLE widgets (id INT PRIMARY KEY, n INT)")
+        .await?;
+
+    let mut client = connect_client(&conn_str, 9_003_040).await?;
+    crate::shared::start_binlog_at_master_end(&mut client, &conn_str).await?;
+    let checkpoint = BinlogCheckpoint {
+        flavor: container.flavor(),
+        position: client.current_position(),
+        timestamp: chrono::Utc::now(),
+    };
+    drop(client);
+
+    // Rename a SYNCED table mid-stream, then write to the new name.
+    conn.query_drop("RENAME TABLE widgets TO widgets_v2")
+        .await?;
+    conn.exec_drop("INSERT INTO widgets_v2 (id, n) VALUES (1, 42)", ())
+        .await?;
+
+    let sink = CaptureSink {
+        changes: std::sync::Mutex::new(Vec::new()),
+    };
+    let source_opts = SourceOpts {
+        connection_string: conn_str.clone(),
+        database: Some(db_name.to_string()),
+        // The user syncs "widgets"; after RENAME the stream must follow to
+        // "widgets_v2" instead of silently filtering the change out.
+        tables: vec!["widgets".to_string()],
+        server_id: Some(9_003_041),
+        flavor: Some(container.flavor()),
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+    };
+
+    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+        &sink,
+        source_opts,
+        checkpoint,
+        IncrementalSyncOptions::batch(
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            None,
+        ),
+        None,
+    )
+    .await?;
+
+    let changes = sink.changes.lock().expect("lock").clone();
+    assert!(
+        changes.iter().any(|c| c.table == "widgets_v2"),
+        "expected a change on the renamed table 'widgets_v2', got {changes:?}"
+    );
+
+    drop(conn);
+    pool.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancellation_stops_follow_and_flushes_resumable_checkpoint() -> Result<()> {
+    use tokio_util::sync::CancellationToken;
+
+    crate::shared::init_logging();
+    let container = crate::shared::shared_mysql_binlog().await;
+    let db_name = "integ_cancel";
+    let conn_str = crate::shared::create_test_db(container, db_name).await?;
+
+    let pool = mysql_async::Pool::from_url(&conn_str)?;
+    let mut conn = pool.get_conn().await?;
+    conn.query_drop("CREATE TABLE widgets (id INT PRIMARY KEY, n INT)")
+        .await?;
+
+    let mut client = connect_client(&conn_str, 9_003_050).await?;
+    crate::shared::start_binlog_at_master_end(&mut client, &conn_str).await?;
+    let checkpoint = BinlogCheckpoint {
+        flavor: container.flavor(),
+        position: client.current_position(),
+        timestamp: chrono::Utc::now(),
+    };
+    drop(client);
+
+    conn.exec_drop("INSERT INTO widgets (id, n) VALUES (1, 1)", ())
+        .await?;
+
+    let sink = MemSink {
+        changes: std::sync::Mutex::new(Vec::new()),
+    };
+    let source_opts = SourceOpts {
+        connection_string: conn_str.clone(),
+        database: Some(db_name.to_string()),
+        tables: vec!["widgets".to_string()],
+        server_id: Some(9_003_051),
+        flavor: Some(container.flavor()),
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+    };
+
+    let tmp = tempfile::TempDir::new()?;
+    let manager = checkpoint::SyncManager::new(checkpoint::FilesystemStore::new(tmp.path()));
+    let cancel = CancellationToken::new();
+
+    // Cancel a continuous follow after a short delay; the sync must return
+    // cleanly (not error, not hang) after flushing a checkpoint.
+    let canceller = cancel.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        canceller.cancel();
+    });
+
+    run_incremental_sync_with_checkpoints(
+        &sink,
+        source_opts,
+        checkpoint,
+        IncrementalSyncOptions::follow(None).with_cancel(cancel),
+        Some(&manager),
+    )
+    .await?;
+
+    let applied = sink.changes.lock().expect("lock").clone();
+    assert!(
+        applied.iter().any(|s| s.contains("widgets")),
+        "expected the pre-cancel insert to be applied, got {applied:?}"
+    );
+
+    // A resumable checkpoint must have been flushed on the way out.
+    let persisted: BinlogCheckpoint = manager
+        .read_checkpoint(checkpoint::SyncPhase::FullSyncEnd)
+        .await?;
+
+    // Resume from the flushed checkpoint and observe a subsequent insert.
+    conn.exec_drop("INSERT INTO widgets (id, n) VALUES (2, 2)", ())
+        .await?;
+    let resume_sink = MemSink {
+        changes: std::sync::Mutex::new(Vec::new()),
+    };
+    let resume_opts = SourceOpts {
+        connection_string: conn_str.clone(),
+        database: Some(db_name.to_string()),
+        tables: vec!["widgets".to_string()],
+        server_id: Some(9_003_052),
+        flavor: Some(container.flavor()),
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+    };
+    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+        &resume_sink,
+        resume_opts,
+        persisted,
+        IncrementalSyncOptions::batch(
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            None,
+        ),
+        None,
+    )
+    .await?;
+    let resumed = resume_sink.changes.lock().expect("lock").clone();
+    assert!(
+        resumed.iter().any(|s| s.contains("widgets")),
+        "expected the post-cancel insert to be captured on resume, got {resumed:?}"
+    );
+
+    drop(conn);
+    pool.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn start_at_head_checkpoint_resumes_from_current_position() -> Result<()> {
+    crate::shared::init_logging();
+    let container = crate::shared::shared_mysql_binlog().await;
+    let db_name = "integ_head";
+    let conn_str = crate::shared::create_test_db(container, db_name).await?;
+
+    let pool = mysql_async::Pool::from_url(&conn_str)?;
+    let mut conn = pool.get_conn().await?;
+    conn.query_drop("CREATE TABLE widgets (id INT PRIMARY KEY, n INT)")
+        .await?;
+    // Rows written BEFORE capturing head must NOT be replayed.
+    conn.exec_drop("INSERT INTO widgets (id, n) VALUES (1, 1)", ())
+        .await?;
+
+    let source_opts = SourceOpts {
+        connection_string: conn_str.clone(),
+        database: Some(db_name.to_string()),
+        tables: vec!["widgets".to_string()],
+        server_id: Some(9_003_060),
+        flavor: Some(container.flavor()),
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+    };
+
+    // Explicit "start at head": capture the current master position.
+    let head = surreal_sync_mysql_binlog_source::capture_head_checkpoint(&source_opts).await?;
+
+    // Rows written AFTER capturing head must be applied.
+    conn.exec_drop("INSERT INTO widgets (id, n) VALUES (2, 2)", ())
+        .await?;
+
+    let sink = CaptureSink {
+        changes: std::sync::Mutex::new(Vec::new()),
+    };
+    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+        &sink,
+        source_opts,
+        head,
+        IncrementalSyncOptions::batch(
+            Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
+            None,
+        ),
+        None,
+    )
+    .await?;
+
+    let changes = sink.changes.lock().expect("lock").clone();
+    let widget_ids: Vec<i64> = changes
+        .iter()
+        .filter(|c| c.table == "widgets")
+        .filter_map(|c| match &c.id {
+            UniversalValue::Int64(v) => Some(*v),
+            UniversalValue::Int32(v) => Some(*v as i64),
+            UniversalValue::Int8 { value, .. } => Some(*value as i64),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        widget_ids.contains(&2),
+        "expected the post-head insert (id=2) to be applied, got ids {widget_ids:?}"
+    );
+    assert!(
+        !widget_ids.contains(&1),
+        "the pre-head insert (id=1) must NOT be replayed when starting at head, got {widget_ids:?}"
+    );
+
+    drop(conn);
+    pool.disconnect().await?;
+    Ok(())
+}
+
 async fn drain_items_events(client: &mut BinlogClient) -> Result<()> {
     let mut table_maps = HashMap::new();
-    for _ in 0..60 {
+    let mut saw_target_row = false;
+    // Generous budget so full-suite parallel container load can't starve this poll.
+    for _ in 0..300 {
         let events = client
             .next_events(32)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))?;
         for event in events {
-            if let EventBody::TableMap(tm) = event.body {
-                table_maps.insert(tm.table_id, tm);
-            } else if let EventBody::Rows(rows) = event.body {
-                if table_maps
-                    .get(&rows.table_id)
-                    .is_some_and(|tm| tm.table == "widgets" || tm.table == "items")
-                {
+            match event.body {
+                EventBody::TableMap(tm) => {
+                    table_maps.insert(tm.table_id, tm);
+                }
+                EventBody::Rows(rows) => {
+                    if table_maps
+                        .get(&rows.table_id)
+                        .is_some_and(|tm| tm.table == "widgets" || tm.table == "items")
+                    {
+                        saw_target_row = true;
+                    }
+                }
+                EventBody::Xid(_) if saw_target_row => {
                     client.commit(client.current_position());
                     return Ok(());
                 }
+                _ => {}
+            }
+            if saw_target_row
+                && matches!(
+                    client.current_position(),
+                    binlog_protocol::BinlogPosition::MySqlGtid { .. }
+                        | binlog_protocol::BinlogPosition::MariaDbGtid { .. }
+                )
+            {
+                client.commit(client.current_position());
+                return Ok(());
             }
         }
         tokio::time::sleep(Duration::from_millis(50)).await;

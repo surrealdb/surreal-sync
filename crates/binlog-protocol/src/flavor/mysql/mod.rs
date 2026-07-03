@@ -6,5 +6,5 @@ pub mod gtid_set;
 pub mod position;
 pub mod txn_payload;
 
-pub use gtid_set::MySqlGtidSet;
+pub use gtid_set::{Gtid, MySqlGtidSet};
 pub use position::MySqlPositionTracker;

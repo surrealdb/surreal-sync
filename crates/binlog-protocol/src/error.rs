@@ -11,6 +11,9 @@ pub enum Error {
     #[error("unsupported event type {event_type} for flavor {flavor:?}")]
     UnsupportedEvent { flavor: Flavor, event_type: u8 },
 
+    #[error("unsupported feature: {0}")]
+    UnsupportedFeature(String),
+
     #[error("gtid parse error: {0}")]
     GtidParse(String),
 
@@ -20,8 +23,8 @@ pub enum Error {
     #[error("encrypted binlog is not supported")]
     EncryptedBinlog,
 
-    #[error("ssl is not supported in this version")]
-    SslNotSupported,
+    #[error("ssl error: {0}")]
+    Ssl(String),
 
     #[error("authentication error: {0}")]
     Auth(String),

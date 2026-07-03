@@ -848,6 +848,72 @@ impl From<MySQLBinlogFlavorArg> for surreal_sync_mysql_binlog_source::Flavor {
     }
 }
 
+/// MariaDB `@slave_gtid_strict_mode` behavior for GTID resume sessions.
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum MariaDbGtidStrictModeArg {
+    #[default]
+    ServerDefault,
+    On,
+    Off,
+}
+
+impl From<MariaDbGtidStrictModeArg> for surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode {
+    fn from(value: MariaDbGtidStrictModeArg) -> Self {
+        match value {
+            MariaDbGtidStrictModeArg::ServerDefault => Self::ServerDefault,
+            MariaDbGtidStrictModeArg::On => Self::On,
+            MariaDbGtidStrictModeArg::Off => Self::Off,
+        }
+    }
+}
+
+/// TLS behavior for the raw MySQL binlog replication connection.
+#[derive(Clone, Copy, Debug, Default, ValueEnum)]
+enum MySQLBinlogTlsModeArg {
+    #[default]
+    Disabled,
+    Preferred,
+    Required,
+}
+
+#[derive(Clone, Debug, Args, Default)]
+struct MySQLBinlogTlsArgs {
+    /// TLS mode for the raw binlog replication connection
+    #[arg(long, value_enum, default_value_t = MySQLBinlogTlsModeArg::default())]
+    tls_mode: MySQLBinlogTlsModeArg,
+
+    /// PEM CA bundle used to verify the MySQL server certificate
+    #[arg(long, value_name = "PATH")]
+    tls_ca: Option<String>,
+
+    /// PEM client certificate for MySQL TLS client auth
+    #[arg(long, value_name = "PATH")]
+    tls_cert: Option<String>,
+
+    /// PEM private key for MySQL TLS client auth
+    #[arg(long, value_name = "PATH")]
+    tls_key: Option<String>,
+}
+
+impl MySQLBinlogTlsArgs {
+    fn ssl_mode(&self) -> surreal_sync_mysql_binlog_source::SslMode {
+        let options = surreal_sync_mysql_binlog_source::SslOptions {
+            ca: self.tls_ca.clone(),
+            cert: self.tls_cert.clone(),
+            key: self.tls_key.clone(),
+        };
+        match self.tls_mode {
+            MySQLBinlogTlsModeArg::Disabled => surreal_sync_mysql_binlog_source::SslMode::Disabled,
+            MySQLBinlogTlsModeArg::Preferred => {
+                surreal_sync_mysql_binlog_source::SslMode::Preferred(options)
+            }
+            MySQLBinlogTlsModeArg::Required => {
+                surreal_sync_mysql_binlog_source::SslMode::Required(options)
+            }
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum MySQLBinlogCommands {
     /// Full sync from MySQL/MariaDB binlog
@@ -874,10 +940,6 @@ struct MySQLBinlogFullArgs {
     #[arg(long, value_delimiter = ',')]
     tables: Vec<String>,
 
-    /// MySQL JSON paths that contain boolean values stored as 0/1
-    #[arg(long, value_delimiter = ',', env = "MYSQL_BOOLEAN_PATHS")]
-    boolean_paths: Option<Vec<String>>,
-
     /// Unique replica server id for this binlog consumer (random if omitted)
     #[arg(long)]
     server_id: Option<u32>,
@@ -885,6 +947,13 @@ struct MySQLBinlogFullArgs {
     /// Override auto-detected engine flavor (mysql or mariadb)
     #[arg(long, value_enum)]
     flavor: Option<MySQLBinlogFlavorArg>,
+
+    /// MariaDB @slave_gtid_strict_mode for GTID resume sessions
+    #[arg(long, value_enum, default_value_t = MariaDbGtidStrictModeArg::default())]
+    mariadb_gtid_strict_mode: MariaDbGtidStrictModeArg,
+
+    #[command(flatten)]
+    tls: MySQLBinlogTlsArgs,
 
     /// Target SurrealDB namespace
     #[arg(long)]
@@ -901,10 +970,6 @@ struct MySQLBinlogFullArgs {
     /// SurrealDB table for storing checkpoints (mutually exclusive with --checkpoint-dir)
     #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
     checkpoints_surreal_table: Option<String>,
-
-    /// Schema file for type-aware conversion
-    #[arg(long, value_name = "PATH")]
-    schema_file: Option<PathBuf>,
 
     /// Full-sync strategy (interleaved-snapshot is the default for this source)
     #[arg(long, value_enum, default_value_t = SyncStrategy::default())]
@@ -932,10 +997,6 @@ struct MySQLBinlogIncrementalArgs {
     #[arg(long, value_delimiter = ',')]
     tables: Vec<String>,
 
-    /// MySQL JSON paths that contain boolean values stored as 0/1
-    #[arg(long, value_delimiter = ',', env = "MYSQL_BOOLEAN_PATHS")]
-    boolean_paths: Option<Vec<String>>,
-
     /// Unique replica server id for this binlog consumer (random if omitted)
     #[arg(long)]
     server_id: Option<u32>,
@@ -943,6 +1004,13 @@ struct MySQLBinlogIncrementalArgs {
     /// Override auto-detected engine flavor (mysql or mariadb)
     #[arg(long, value_enum)]
     flavor: Option<MySQLBinlogFlavorArg>,
+
+    /// MariaDB @slave_gtid_strict_mode for GTID resume sessions
+    #[arg(long, value_enum, default_value_t = MariaDbGtidStrictModeArg::default())]
+    mariadb_gtid_strict_mode: MariaDbGtidStrictModeArg,
+
+    #[command(flatten)]
+    tls: MySQLBinlogTlsArgs,
 
     /// Target SurrealDB namespace
     #[arg(long)]
@@ -952,26 +1020,44 @@ struct MySQLBinlogIncrementalArgs {
     #[arg(long)]
     to_database: String,
 
-    /// Start incremental sync from this checkpoint (e.g. mysql-binlog:file:mysql-bin.000003:195)
-    /// If not provided, checkpoint is read from --checkpoints-surreal-table
+    /// Start incremental sync from this checkpoint (e.g. mysql-binlog:file:mysql-bin.000003:195).
+    /// Use `head` to start from the current master position. If omitted, the
+    /// checkpoint is read from the configured checkpoint store (starting at head
+    /// when the store is empty).
     #[arg(long)]
     incremental_from: Option<String>,
 
-    /// SurrealDB table for reading checkpoints (alternative to --incremental-from)
-    #[arg(long, value_name = "TABLE")]
+    /// SurrealDB table for reading/writing checkpoints (alternative to --incremental-from)
+    #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
     checkpoints_surreal_table: Option<String>,
 
+    /// Directory for reading/writing binlog checkpoints
+    #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
+    checkpoint_dir: Option<String>,
+
     /// Stop incremental sync when reaching this checkpoint (optional)
-    #[arg(long)]
+    #[arg(long, conflicts_with = "until")]
     incremental_to: Option<String>,
 
-    /// Maximum time to run incremental sync (in seconds, default: 3600)
-    #[arg(long, default_value = "3600")]
-    timeout: String,
+    /// Stop batch incremental sync when reaching this binlog checkpoint
+    #[arg(long, conflicts_with = "incremental_to")]
+    until: Option<String>,
 
-    /// Schema file for type-aware conversion
-    #[arg(long, value_name = "PATH")]
-    schema_file: Option<PathBuf>,
+    /// Run continuously until shutdown/deadline/cancel
+    #[arg(long, conflicts_with = "batch")]
+    follow: bool,
+
+    /// Run bounded catch-up mode (default for incremental)
+    #[arg(long, conflicts_with = "follow")]
+    batch: bool,
+
+    /// Persist stream checkpoints at this interval in seconds
+    #[arg(long, default_value = "10")]
+    checkpoint_interval: u64,
+
+    /// Maximum time to run incremental sync (seconds); default is 3600 in batch mode
+    #[arg(long)]
+    timeout: Option<String>,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -992,10 +1078,6 @@ struct MySQLBinlogSyncArgs {
     #[arg(long, value_delimiter = ',')]
     tables: Vec<String>,
 
-    /// MySQL JSON paths that contain boolean values stored as 0/1
-    #[arg(long, value_delimiter = ',', env = "MYSQL_BOOLEAN_PATHS")]
-    boolean_paths: Option<Vec<String>>,
-
     /// Unique replica server id for this binlog consumer (random if omitted)
     #[arg(long)]
     server_id: Option<u32>,
@@ -1003,6 +1085,13 @@ struct MySQLBinlogSyncArgs {
     /// Override auto-detected engine flavor (mysql or mariadb)
     #[arg(long, value_enum)]
     flavor: Option<MySQLBinlogFlavorArg>,
+
+    /// MariaDB @slave_gtid_strict_mode for GTID resume sessions
+    #[arg(long, value_enum, default_value_t = MariaDbGtidStrictModeArg::default())]
+    mariadb_gtid_strict_mode: MariaDbGtidStrictModeArg,
+
+    #[command(flatten)]
+    tls: MySQLBinlogTlsArgs,
 
     /// Target SurrealDB namespace
     #[arg(long)]
@@ -1016,13 +1105,33 @@ struct MySQLBinlogSyncArgs {
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
 
-    /// Maximum time to run the incremental phase (in seconds, default: 3600)
-    #[arg(long, default_value = "3600")]
-    timeout: String,
+    /// Directory to persist snapshot and stream checkpoints
+    #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
+    checkpoint_dir: Option<String>,
 
-    /// Schema file for type-aware conversion
-    #[arg(long, value_name = "PATH")]
-    schema_file: Option<PathBuf>,
+    /// SurrealDB table for persisting snapshot and stream checkpoints
+    #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
+    checkpoints_surreal_table: Option<String>,
+
+    /// Run continuously after snapshot handoff (default for sync)
+    #[arg(long, conflicts_with = "batch")]
+    follow: bool,
+
+    /// Stop after bounded catch-up instead of following continuously
+    #[arg(long, conflicts_with = "follow")]
+    batch: bool,
+
+    /// Stop batch/follow stream phase at this binlog checkpoint
+    #[arg(long)]
+    until: Option<String>,
+
+    /// Persist stream checkpoints at this interval in seconds
+    #[arg(long, default_value = "10")]
+    checkpoint_interval: u64,
+
+    /// Maximum time to run the stream phase (seconds); omitted sync follows indefinitely
+    #[arg(long)]
+    timeout: Option<String>,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -1555,4 +1664,56 @@ async fn handle_loadtest_command(command: LoadtestCommand) -> anyhow::Result<()>
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mysql_binlog_tls_args_default_to_disabled() {
+        let args = MySQLBinlogTlsArgs::default();
+        assert!(matches!(
+            args.ssl_mode(),
+            surreal_sync_mysql_binlog_source::SslMode::Disabled
+        ));
+    }
+
+    #[test]
+    fn mysql_binlog_tls_args_preserve_ca_and_client_cert_paths() {
+        let args = MySQLBinlogTlsArgs {
+            tls_mode: MySQLBinlogTlsModeArg::Required,
+            tls_ca: Some("ca.pem".to_string()),
+            tls_cert: Some("client.pem".to_string()),
+            tls_key: Some("client-key.pem".to_string()),
+        };
+        let surreal_sync_mysql_binlog_source::SslMode::Required(options) = args.ssl_mode() else {
+            panic!("expected required TLS mode");
+        };
+        assert_eq!(options.ca.as_deref(), Some("ca.pem"));
+        assert_eq!(options.cert.as_deref(), Some("client.pem"));
+        assert_eq!(options.key.as_deref(), Some("client-key.pem"));
+    }
+
+    #[test]
+    fn mariadb_gtid_strict_mode_arg_maps_to_source_option() {
+        assert_eq!(
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::from(
+                MariaDbGtidStrictModeArg::ServerDefault
+            ),
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault
+        );
+        assert_eq!(
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::from(
+                MariaDbGtidStrictModeArg::On
+            ),
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::On
+        );
+        assert_eq!(
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::from(
+                MariaDbGtidStrictModeArg::Off
+            ),
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::Off
+        );
+    }
 }

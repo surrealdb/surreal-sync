@@ -130,7 +130,7 @@ pub fn table_id_from_post_header(
 pub(crate) fn rows_event_six_byte_table_id(raw_type_code: u8, flavor: Flavor) -> bool {
     match flavor {
         Flavor::MariaDb => matches!(raw_type_code, 23..=25 | 30..=32),
-        Flavor::MySql => matches!(raw_type_code, 30..=32),
+        Flavor::MySql => matches!(raw_type_code, 30..=32 | 39),
     }
 }
 
@@ -389,7 +389,11 @@ impl QueryEvent {
         let _exec_time = crate::shared::buf::read_u32_le(&mut payload)?;
         let db_len = read_u8(&mut payload)? as usize;
         let _error_code = read_u16_le(&mut payload)?;
-        let _status_vars_len = read_u16_le(&mut payload)?;
+        let status_vars_len = read_u16_le(&mut payload)? as usize;
+        if payload.len() < status_vars_len + db_len + 1 {
+            return Err(Error::UnexpectedEof);
+        }
+        payload = &payload[status_vars_len..];
         let database = if db_len > 0 {
             let db = String::from_utf8_lossy(&payload[..db_len]).into_owned();
             payload = &payload[db_len..];
@@ -397,6 +401,9 @@ impl QueryEvent {
         } else {
             String::new()
         };
+        if payload.first() == Some(&0) {
+            payload = &payload[1..];
+        }
         let sql = String::from_utf8_lossy(payload).into_owned();
         Ok(Self {
             thread_id,
@@ -404,6 +411,47 @@ impl QueryEvent {
             sql,
         })
     }
+
+    pub fn first_keyword(&self) -> Option<&str> {
+        first_sql_keyword(&self.sql)
+    }
+
+    pub fn is_transaction_begin(&self) -> bool {
+        matches!(
+            self.first_keyword(),
+            Some(keyword) if keyword.eq_ignore_ascii_case("BEGIN")
+                || keyword.eq_ignore_ascii_case("START")
+                || keyword.eq_ignore_ascii_case("XA")
+        )
+    }
+
+    pub fn is_gtid_commit_boundary(&self) -> bool {
+        matches!(
+            self.first_keyword(),
+            Some(keyword) if keyword.eq_ignore_ascii_case("CREATE")
+                || keyword.eq_ignore_ascii_case("ALTER")
+                || keyword.eq_ignore_ascii_case("DROP")
+                || keyword.eq_ignore_ascii_case("RENAME")
+                || keyword.eq_ignore_ascii_case("TRUNCATE")
+                || keyword.eq_ignore_ascii_case("GRANT")
+                || keyword.eq_ignore_ascii_case("REVOKE")
+        )
+    }
+}
+
+pub fn first_sql_keyword(sql: &str) -> Option<&str> {
+    let trimmed = sql.trim_start();
+    let start = trimmed
+        .find(|ch: char| ch.is_ascii_alphabetic())
+        .unwrap_or(0);
+    let trimmed = &trimmed[start..];
+    if trimmed.is_empty() {
+        return None;
+    }
+    let end = trimmed
+        .find(|ch: char| !ch.is_ascii_alphabetic())
+        .unwrap_or(trimmed.len());
+    Some(&trimmed[..end])
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

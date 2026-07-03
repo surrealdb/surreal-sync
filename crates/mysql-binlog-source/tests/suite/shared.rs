@@ -74,6 +74,7 @@ impl BinlogContainer {
                 "--enforce-gtid-consistency=ON",
                 "--server-id=1",
                 "--log-slave-updates=ON",
+                "--binlog-row-value-options=",
             ],
             Flavor::MariaDb => &[
                 "--log-bin=mysql-bin",
@@ -209,6 +210,10 @@ pub async fn ensure_binlog_repl_user(conn_str: &str, flavor: Flavor) -> anyhow::
         }
     };
     conn.query_drop(create_user).await?;
+    if flavor == Flavor::MySql {
+        conn.query_drop("SET GLOBAL binlog_row_value_options = ''")
+            .await?;
+    }
     conn.query_drop("GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'surreal_sync'@'%'")
         .await?;
     conn.query_drop("FLUSH PRIVILEGES").await?;

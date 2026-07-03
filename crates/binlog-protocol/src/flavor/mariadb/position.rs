@@ -1,6 +1,5 @@
+use crate::event::{EventBody, RawEvent};
 use crate::flavor::mariadb::gtid_list::{MariaDbGtid, MariaDbGtidList};
-use crate::shared::event_header::EventHeader;
-use crate::shared::event_type::EventType;
 use crate::shared::events::sanitize_binlog_file;
 use crate::shared::position::PositionTracker;
 use crate::types::BinlogPosition;
@@ -31,7 +30,8 @@ impl MariaDbPositionTracker {
         }
     }
 
-    pub fn on_event(&mut self, header: &EventHeader, file: &str, event_type: EventType) {
+    pub fn on_event(&mut self, event: &RawEvent, file: &str) {
+        let header = &event.header;
         self.file = file.to_string();
         // MariaDB 11.4+ may emit log_pos=0; track via file_offset + event_size.
         if header.log_pos > 0 {
@@ -40,16 +40,17 @@ impl MariaDbPositionTracker {
             self.file_offset = header.file_offset + u64::from(header.event_size);
         }
 
-        match event_type {
-            EventType::MariaDbGtid => {}
-            EventType::Xid | EventType::Rotate | EventType::Query => {
-                if let (Some(ref mut list), Some(gtid)) =
-                    (&mut self.gtid_list, self.pending_gtid.take())
-                {
-                    let _ = list.add(gtid);
-                }
-            }
+        match &event.body {
+            EventBody::Gtid(_) => {}
+            EventBody::Xid(_) => self.fold_pending_gtid(),
+            EventBody::Query(query) if query.is_gtid_commit_boundary() => self.fold_pending_gtid(),
             _ => {}
+        }
+    }
+
+    fn fold_pending_gtid(&mut self) {
+        if let (Some(ref mut list), Some(gtid)) = (&mut self.gtid_list, self.pending_gtid.take()) {
+            let _ = list.add(gtid);
         }
     }
 
@@ -65,8 +66,8 @@ impl MariaDbPositionTracker {
 }
 
 impl PositionTracker for MariaDbPositionTracker {
-    fn on_header(&mut self, header: &EventHeader, file: &str) {
-        self.on_event(header, file, header.event_type);
+    fn on_event(&mut self, event: &RawEvent, file: &str) {
+        MariaDbPositionTracker::on_event(self, event, file);
     }
 
     fn position(&self) -> BinlogPosition {
@@ -90,6 +91,116 @@ impl PositionTracker for MariaDbPositionTracker {
                 self.gtid_list = Some(executed);
             }
             _ => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shared::event_header::EventHeader;
+    use crate::shared::event_type::EventType;
+    use crate::types::{QueryEvent, XidEvent};
+
+    fn header(event_type: EventType, log_pos: u32) -> EventHeader {
+        EventHeader {
+            timestamp: 0,
+            raw_type_code: event_type.code(),
+            event_type,
+            server_id: 1,
+            event_size: 40,
+            log_pos,
+            flags: 0,
+            file_offset: 0,
+        }
+    }
+
+    fn event(event_type: EventType, log_pos: u32, body: EventBody) -> RawEvent {
+        RawEvent {
+            header: header(event_type, log_pos),
+            body,
+        }
+    }
+
+    fn query(sql: &str) -> EventBody {
+        EventBody::Query(QueryEvent {
+            thread_id: 1,
+            database: "test".to_string(),
+            sql: sql.to_string(),
+        })
+    }
+
+    fn seeded_tracker() -> MariaDbPositionTracker {
+        MariaDbPositionTracker::with_gtid_list(MariaDbGtidList::parse("0-1-10").unwrap())
+    }
+
+    #[test]
+    fn begin_query_does_not_advance_pending_gtid() {
+        let mut tracker = seeded_tracker();
+        tracker.set_pending_gtid(MariaDbGtid {
+            domain_id: 0,
+            server_id: 1,
+            sequence: 11,
+        });
+
+        tracker.on_event(
+            &event(EventType::Query, 150, query("BEGIN")),
+            "mysql-bin.000001",
+        );
+
+        match tracker.position() {
+            BinlogPosition::MariaDbGtid { executed } => {
+                assert_eq!(executed.to_connect_state(), "0-1-10");
+            }
+            other => panic!("expected MariaDbGtid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn xid_advances_pending_gtid() {
+        let mut tracker = seeded_tracker();
+        tracker.set_pending_gtid(MariaDbGtid {
+            domain_id: 0,
+            server_id: 1,
+            sequence: 11,
+        });
+
+        tracker.on_event(
+            &event(EventType::Xid, 200, EventBody::Xid(XidEvent { xid: 42 })),
+            "mysql-bin.000001",
+        );
+
+        match tracker.position() {
+            BinlogPosition::MariaDbGtid { executed } => {
+                assert_eq!(executed.to_connect_state(), "0-1-11");
+            }
+            other => panic!("expected MariaDbGtid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ddl_query_advances_pending_gtid() {
+        let mut tracker = seeded_tracker();
+        tracker.set_pending_gtid(MariaDbGtid {
+            domain_id: 0,
+            server_id: 1,
+            sequence: 11,
+        });
+
+        tracker.on_event(
+            &event(
+                EventType::Query,
+                200,
+                query("CREATE TABLE widgets (id INT)"),
+            ),
+            "mysql-bin.000001",
+        );
+
+        match tracker.position() {
+            BinlogPosition::MariaDbGtid { executed } => {
+                assert_eq!(executed.to_connect_state(), "0-1-11");
+            }
+            other => panic!("expected MariaDbGtid, got {other:?}"),
         }
     }
 }

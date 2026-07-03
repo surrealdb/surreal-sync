@@ -19,6 +19,10 @@ sha2 = "0.10"
 rsa = { version = "0.9", features = ["sha2"] }
 
 hex = "0.4"
+zstd = "0.13.3"
+tokio-rustls = "0.26.4"
+rustls-pemfile = "2.2.0"
+webpki-roots = "1.0.8"
 
 [dev-dependencies]
 hex = "0.4"

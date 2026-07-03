@@ -85,6 +85,14 @@ pub fn normalize_cell(cell: &CellValue) -> serde_json::Value {
             serde_json::json!(hex::encode(v))
         }
         CellValue::JsonText(v) => serde_json::json!(v),
+        CellValue::JsonDiff(diffs) => serde_json::json!(diffs
+            .iter()
+            .map(|diff| serde_json::json!({
+                "op": format!("{:?}", diff.operation),
+                "path": diff.path,
+                "data": diff.data.as_ref().map(hex::encode),
+            }))
+            .collect::<Vec<_>>()),
         CellValue::Date { year, month, day } => {
             serde_json::json!({ "year": year, "month": month, "day": day })
         }

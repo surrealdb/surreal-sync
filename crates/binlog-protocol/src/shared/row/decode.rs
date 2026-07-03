@@ -2,11 +2,11 @@ use crate::error::Error;
 use crate::flavor::Flavor;
 use crate::shared::buf::{
     read_bitmap, read_bytes, read_f32_le, read_f64_le, read_i16_le, read_i24_le, read_i32_le,
-    read_i64_le, read_i8, read_u16_le, read_u24_le, read_u32_le, read_u64_le, read_u8,
-    read_uint_be,
+    read_i64_le, read_i8, read_lenenc_int, read_u16_le, read_u24_le, read_u32_le, read_u64_le,
+    read_u8, read_uint_be,
 };
 use crate::shared::column_type::*;
-use crate::types::{CellValue, ColumnDef, ColumnMetadata};
+use crate::types::{CellValue, ColumnDef, ColumnMetadata, JsonDiff, JsonDiffOperation};
 use rust_decimal::Decimal;
 
 pub fn decode_cell(
@@ -526,6 +526,16 @@ pub fn decode_row_with_bitmap(
     columns_bitmap: &[u8],
     flavor: Flavor,
 ) -> Result<Vec<CellValue>, Error> {
+    decode_row_with_bitmap_and_json_partials(payload, columns, columns_bitmap, flavor, |_| false)
+}
+
+pub fn decode_row_with_bitmap_and_json_partials(
+    payload: &mut &[u8],
+    columns: &[ColumnDef],
+    columns_bitmap: &[u8],
+    flavor: Flavor,
+    is_partial_json_column: impl Fn(usize) -> bool,
+) -> Result<Vec<CellValue>, Error> {
     let present_count = present_column_count(columns_bitmap, columns.len());
     let null_bitmap = read_bitmap(payload, present_count)?;
     let mut values = Vec::with_capacity(columns.len());
@@ -537,7 +547,15 @@ pub fn decode_row_with_bitmap(
             values.push(CellValue::Null);
             null_idx += 1;
         } else {
-            values.push(decode_cell(column, flavor, payload).map_err(|e| {
+            let cell = if flavor == Flavor::MySql
+                && column.column_type == MYSQL_TYPE_JSON
+                && is_partial_json_column(idx)
+            {
+                decode_json_diff_cell(column, payload)
+            } else {
+                decode_cell(column, flavor, payload)
+            };
+            values.push(cell.map_err(|e| {
                 Error::Protocol(format!(
                     "column {idx} type {}: {e} ({} bytes left)",
                     column.column_type,
@@ -548,4 +566,41 @@ pub fn decode_row_with_bitmap(
         }
     }
     Ok(values)
+}
+
+fn decode_json_diff_cell(column: &ColumnDef, payload: &mut &[u8]) -> Result<CellValue, Error> {
+    let bytes = read_blob(payload, blob_len(&column.metadata))?;
+    let mut diffs_payload = bytes.as_slice();
+    let mut diffs = Vec::new();
+    while !diffs_payload.is_empty() {
+        let before = diffs_payload.len();
+        let operation = match read_u8(&mut diffs_payload)? {
+            0 => JsonDiffOperation::Replace,
+            1 => JsonDiffOperation::Insert,
+            2 => JsonDiffOperation::Remove,
+            other => {
+                return Err(Error::CellDecode(format!(
+                    "unsupported JSON diff operation {other}"
+                )))
+            }
+        };
+        let path_len = read_lenenc_int(&mut diffs_payload)? as usize;
+        let path = String::from_utf8(read_bytes(&mut diffs_payload, path_len)?)
+            .map_err(|e| Error::CellDecode(format!("invalid JSON diff path: {e}")))?;
+        let data = if operation == JsonDiffOperation::Remove {
+            None
+        } else {
+            let data_len = read_lenenc_int(&mut diffs_payload)? as usize;
+            Some(read_bytes(&mut diffs_payload, data_len)?)
+        };
+        if diffs_payload.len() >= before {
+            return Err(Error::Protocol("JSON diff decode made no progress".into()));
+        }
+        diffs.push(JsonDiff {
+            operation,
+            path,
+            data,
+        });
+    }
+    Ok(CellValue::JsonDiff(diffs))
 }

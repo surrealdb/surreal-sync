@@ -1,8 +1,8 @@
-use crate::shared::event_header::EventHeader;
+use crate::event::RawEvent;
 use crate::types::BinlogPosition;
 
 pub(crate) trait PositionTracker: Send {
-    fn on_header(&mut self, header: &EventHeader, file: &str);
+    fn on_event(&mut self, event: &RawEvent, file: &str);
     fn position(&self) -> BinlogPosition;
     fn commit(&mut self, position: BinlogPosition);
 }

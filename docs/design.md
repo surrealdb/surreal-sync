@@ -80,7 +80,7 @@ See the source-specific documentation for implementation details:
 - **[MongoDB](mongodb.md)**: Change streams and resume token management
 - **[MySQL](mysql.md)**: Trigger-based CDC with sequence checkpointing ([legacy sequential-snapshot guide](mysql/legacy.md))
 - **[MariaDB](mariadb.md)**: Same trigger-based source as MySQL (JSON stored as a `LONGTEXT` alias is detected and synced as nested objects)
-- **[MySQL/MariaDB (binlog)](mysql-binlog.md)**: Binlog-based logical replication with file+offset or GTID checkpoints
+- **[MySQL/MariaDB (binlog)](mysql-binlog.md)**: Triggerless binlog CDC — snapshot → stream → resume with GTID (failover-safe) or file+offset checkpoints, continuous follow and bounded batch modes
 - **[PostgreSQL](postgresql.md)**: Trigger-based CDC with sequence checkpointing ([legacy sequential-snapshot guide](postgresql/legacy.md))
 - **[PostgreSQL (wal2json)](postgresql-wal2json-source.md)**: Logical replication with wal2json ([legacy sequential-snapshot guide](postgresql-wal2json/legacy.md))
 - **[Neo4j](neo4j.md)**: Timestamp-based tracking with deletion limitations

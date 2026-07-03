@@ -21,6 +21,7 @@ surreal-sink = { path = "../surreal-sink" }
 surreal-sync-interleaved-snapshot = { path = "../interleaved-snapshot" }
 sync-core = { path = "../sync-core" }
 tokio = { version = "1.49", features = ["full"] }
+tokio-util = { version = "0.7" }
 tracing = "0.1"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 

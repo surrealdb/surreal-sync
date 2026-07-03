@@ -12,6 +12,8 @@ pub enum EventType {
     Xid,
     Heartbeat,
     MySqlGtid,
+    AnonymousGtid,
+    PreviousGtids,
     TransactionPayload,
     PartialUpdateRows,
     MariaDbGtid,
@@ -39,8 +41,10 @@ impl EventType {
             31 => EventType::UpdateRows,
             32 => EventType::DeleteRows,
             33 => EventType::MySqlGtid,
-            34 => EventType::TransactionPayload,
-            35 => EventType::PartialUpdateRows,
+            34 => EventType::AnonymousGtid,
+            35 => EventType::PreviousGtids,
+            39 => EventType::PartialUpdateRows,
+            40 => EventType::TransactionPayload,
             160 => EventType::AnnotateRows,
             161 => EventType::BinlogCheckpoint,
             162 => EventType::MariaDbGtid,
@@ -62,8 +66,10 @@ impl EventType {
             EventType::Xid => 16,
             EventType::Heartbeat => 27,
             EventType::MySqlGtid => 33,
-            EventType::TransactionPayload => 34,
-            EventType::PartialUpdateRows => 35,
+            EventType::AnonymousGtid => 34,
+            EventType::PreviousGtids => 35,
+            EventType::PartialUpdateRows => 39,
+            EventType::TransactionPayload => 40,
             EventType::MariaDbGtid => 162,
             EventType::GtidList => 163,
             EventType::AnnotateRows => 160,
@@ -79,9 +85,14 @@ impl EventType {
                 Flavor::MySql,
                 EventType::MariaDbGtid | EventType::GtidList | EventType::AnnotateRows,
             ) => EventType::Unknown(self.code()),
-            (Flavor::MariaDb, EventType::MySqlGtid | EventType::TransactionPayload) => {
-                EventType::Unknown(self.code())
-            }
+            (
+                Flavor::MariaDb,
+                EventType::MySqlGtid
+                | EventType::AnonymousGtid
+                | EventType::PreviousGtids
+                | EventType::TransactionPayload
+                | EventType::PartialUpdateRows,
+            ) => EventType::Unknown(self.code()),
             _ => self,
         }
     }

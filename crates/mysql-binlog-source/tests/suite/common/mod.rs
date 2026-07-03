@@ -228,7 +228,9 @@ fn source_opts(conn: &str) -> SourceOpts {
         tables: vec![],
         server_id: Some(9_010_001),
         flavor: None,
-        mysql_boolean_paths: None,
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
     }
 }
 

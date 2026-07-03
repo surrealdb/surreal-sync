@@ -54,6 +54,7 @@ impl MySQLBinlogContainer {
                 "--enforce-gtid-consistency=ON",
                 "--server-id=1",
                 "--log-slave-updates=ON",
+                "--binlog-row-value-options=",
             ],
             Flavor::MariaDb => &[
                 "--log-bin=mysql-bin",

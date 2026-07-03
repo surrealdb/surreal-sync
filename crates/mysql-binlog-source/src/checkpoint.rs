@@ -20,7 +20,11 @@ impl checkpoint::Checkpoint for BinlogCheckpoint {
         match &self.position {
             BinlogPosition::FilePos { file, pos } => format!("file:{file}:{pos}"),
             BinlogPosition::MySqlGtid { executed } => format!("gtid:{executed}"),
-            BinlogPosition::MariaDbGtid { executed } => format!("gtid:{executed}"),
+            // Use the compact connect-state form (comma, no space) so the string
+            // re-parses to the same multi-domain list.
+            BinlogPosition::MariaDbGtid { executed } => {
+                format!("gtid:{}", executed.to_connect_state())
+            }
         }
     }
 
@@ -52,20 +56,25 @@ impl checkpoint::Checkpoint for BinlogCheckpoint {
                 })
             }
             "gtid" => {
-                if body.contains('-') && !body.contains(':') && body.split('-').count() == 3 {
-                    let executed = MariaDbGtidList::parse(body)
-                        .map_err(|e| anyhow!("invalid MariaDB GTID checkpoint: {e}"))?;
-                    Ok(Self {
-                        flavor: Flavor::MariaDb,
-                        position: BinlogPosition::MariaDbGtid { executed },
-                        timestamp: Utc::now(),
-                    })
-                } else {
+                // Disambiguate MariaDB vs MySQL GTID robustly: a MySQL GTID set is
+                // a UUID + `:` + interval list (e.g.
+                // `d4c17f0c-...-0800270a0001:1-107`), while a MariaDB GTID is a
+                // `domain-server-sequence` triple, optionally a comma-separated
+                // list of them (e.g. `0-1-270,1-7-42`) with no `:` anywhere.
+                if body.contains(':') {
                     let executed = MySqlGtidSet::parse(body)
                         .map_err(|e| anyhow!("invalid MySQL GTID checkpoint: {e}"))?;
                     Ok(Self {
                         flavor: Flavor::MySql,
                         position: BinlogPosition::MySqlGtid { executed },
+                        timestamp: Utc::now(),
+                    })
+                } else {
+                    let executed = MariaDbGtidList::parse(body)
+                        .map_err(|e| anyhow!("invalid MariaDB GTID checkpoint: {e}"))?;
+                    Ok(Self {
+                        flavor: Flavor::MariaDb,
+                        position: BinlogPosition::MariaDbGtid { executed },
                         timestamp: Utc::now(),
                     })
                 }
@@ -174,6 +183,37 @@ mod tests {
         let decoded = BinlogCheckpoint::from_cli_string(&cli).unwrap();
         assert_eq!(decoded.flavor, Flavor::MariaDb);
         assert_eq!(decoded.position, original.position);
+    }
+
+    #[test]
+    fn mariadb_multi_domain_gtid_checkpoint_cli_roundtrip() {
+        let original = BinlogCheckpoint {
+            flavor: Flavor::MariaDb,
+            position: BinlogPosition::MariaDbGtid {
+                executed: MariaDbGtidList::parse("0-1-270,1-7-42").unwrap(),
+            },
+            timestamp: Utc::now(),
+        };
+        let cli = original.to_cli_string();
+        // Compact comma-separated form (no space) matching to_connect_state.
+        assert_eq!(cli, "gtid:0-1-270,1-7-42");
+        let decoded = BinlogCheckpoint::from_cli_string(&cli).unwrap();
+        assert_eq!(decoded.flavor, Flavor::MariaDb);
+        assert_eq!(decoded.position, original.position);
+        // The CLI string must re-parse to an identical value.
+        let redecoded = BinlogCheckpoint::from_cli_string(&decoded.to_cli_string()).unwrap();
+        assert_eq!(redecoded.position, original.position);
+    }
+
+    #[test]
+    fn multi_domain_gtid_not_misrouted_to_mysql() {
+        // A comma-separated MariaDB list must NOT be parsed as a MySQL GTID set.
+        let decoded = BinlogCheckpoint::from_cli_string("gtid:0-1-270,1-7-42").unwrap();
+        assert_eq!(decoded.flavor, Flavor::MariaDb);
+        assert!(matches!(
+            decoded.position,
+            BinlogPosition::MariaDbGtid { .. }
+        ));
     }
 
     #[test]

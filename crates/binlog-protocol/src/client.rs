@@ -20,10 +20,10 @@ enum Tracker {
 }
 
 impl Tracker {
-    fn on_header(&mut self, header: &EventHeader, file: &str) {
+    fn on_event(&mut self, event: &RawEvent, file: &str) {
         match self {
-            Tracker::MySql(t) => t.on_header(header, file),
-            Tracker::MariaDb(t) => t.on_header(header, file),
+            Tracker::MySql(t) => t.on_event(event, file),
+            Tracker::MariaDb(t) => t.on_event(event, file),
         }
     }
 
@@ -47,11 +47,28 @@ impl Tracker {
         }
     }
 
+    /// Record a MySQL `GTID_LOG_EVENT` marker so the tracker folds it into the
+    /// executed set at the next commit boundary (analogous to
+    /// `set_pending_mariadb_gtid`).
+    fn set_pending_mysql_gtid(&mut self, gtid: crate::flavor::mysql::Gtid) {
+        if let Tracker::MySql(t) = self {
+            t.set_pending_gtid(gtid);
+        }
+    }
+
     /// Seed the MariaDB tracker with a GTID list so runtime positions are
     /// reported (and accumulated) as `BinlogPosition::MariaDbGtid`.
     fn seed_mariadb_gtid_list(&mut self, list: crate::flavor::mariadb::MariaDbGtidList) {
         if let Tracker::MariaDb(t) = self {
             t.seed_gtid_list(list);
+        }
+    }
+
+    /// Seed the MySQL tracker with a GTID set so runtime positions are reported
+    /// (and accumulated) as `BinlogPosition::MySqlGtid` after a GTID-based resume.
+    fn seed_mysql_gtid_set(&mut self, set: crate::flavor::mysql::MySqlGtidSet) {
+        if let Tracker::MySql(t) = self {
+            t.seed_gtid_set(set);
         }
     }
 }
@@ -74,7 +91,15 @@ impl BinlogClient {
     pub async fn connect(opts: ReplicaOptions) -> Result<Self, Error> {
         let mut channel = PacketChannel::connect(&opts.host, opts.port).await?;
         let hs = handshake(&mut channel).await?;
-        authenticate(&mut channel, &hs, &opts.username, &opts.password, &opts.ssl).await?;
+        authenticate(
+            &mut channel,
+            &hs,
+            &opts.host,
+            &opts.username,
+            &opts.password,
+            &opts.ssl,
+        )
+        .await?;
 
         let flavor = opts
             .flavor
@@ -158,13 +183,19 @@ impl BinlogClient {
             ResumePosition::MySqlGtid(set) => {
                 channel.reset_seq();
                 dump_gtid::encode_dump_gtid(channel, self.opts.server_id, &set).await?;
+                self.tracker.seed_mysql_gtid_set(set);
                 return Ok(());
             }
             ResumePosition::MariaDbGtid(list) => {
                 // MariaDB has no COM_BINLOG_DUMP_GTID. Resume by registering the
                 // connect state and issuing COM_BINLOG_DUMP with an empty
                 // filename / position 4 — the server streams from the GTID list.
-                register::register_gtid_session_vars(channel, &list).await?;
+                register::register_gtid_session_vars(
+                    channel,
+                    &list,
+                    self.opts.mariadb_gtid_strict_mode,
+                )
+                .await?;
                 self.tracker.seed_mariadb_gtid_list(list);
                 self.binlog_file.clear();
                 self.binlog_pos = 4;
@@ -242,8 +273,7 @@ impl BinlogClient {
                 ))
             })?;
             self.stream.advance(&event.header, &event.body);
-            self.tracker
-                .on_header(&event.header, self.stream.current_file());
+            self.tracker.on_event(&event, self.stream.current_file());
             self.handle_side_effects(&event);
             if let EventBody::TransactionPayload(inner) = event.body {
                 out.extend(inner);
@@ -291,18 +321,24 @@ impl BinlogClient {
                 self.binlog_pos = r.position as u32;
             }
         }
-        if let EventBody::Gtid(crate::types::GtidMarker::MariaDb {
-            domain_id,
-            server_id,
-            sequence,
-        }) = event.body
-        {
-            self.tracker
-                .set_pending_mariadb_gtid(crate::flavor::mariadb::MariaDbGtid {
-                    domain_id,
-                    server_id,
-                    sequence,
-                });
+        match event.body {
+            EventBody::Gtid(crate::types::GtidMarker::MariaDb {
+                domain_id,
+                server_id,
+                sequence,
+            }) => {
+                self.tracker
+                    .set_pending_mariadb_gtid(crate::flavor::mariadb::MariaDbGtid {
+                        domain_id,
+                        server_id,
+                        sequence,
+                    });
+            }
+            EventBody::Gtid(crate::types::GtidMarker::MySql { source_id, gno }) => {
+                self.tracker
+                    .set_pending_mysql_gtid(crate::flavor::mysql::Gtid { source_id, gno });
+            }
+            _ => {}
         }
     }
 }

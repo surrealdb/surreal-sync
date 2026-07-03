@@ -124,6 +124,7 @@ pub enum CellValue {
     Bit(Vec<u8>),
     JsonBytes(Vec<u8>),
     JsonText(String),
+    JsonDiff(Vec<JsonDiff>),
     Date {
         year: u16,
         month: u8,
@@ -146,6 +147,20 @@ pub enum CellValue {
     },
     TimestampMillis(u64),
     Year(u16),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JsonDiffOperation {
+    Replace,
+    Insert,
+    Remove,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JsonDiff {
+    pub operation: JsonDiffOperation,
+    pub path: String,
+    pub data: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

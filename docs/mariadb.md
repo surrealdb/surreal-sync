@@ -10,7 +10,7 @@ The default **interleaved-snapshot** workflow copies tables in resumable, primar
 
 `surreal-sync from mysql` supports `full`, `incremental`, a combined `sync`, and an ad-hoc `snapshot` command against MariaDB.
 
-Change capture is trigger-based: an audit table (`surreal_sync_changes`) populated by per-table triggers provides resumable, sequence-based checkpointing. For binlog-based CDC without triggers, see [MySQL/MariaDB Binlog Source](mysql-binlog.md).
+Change capture is trigger-based: an audit table (`surreal_sync_changes`) populated by per-table triggers provides resumable, sequence-based checkpointing. If you cannot (or would rather not) create triggers, or you need failover-safe GTID checkpoints and a long-lived continuous follower, use the triggerless [MySQL/MariaDB Binlog Source](mysql-binlog.md) instead.
 
 See [Full Sync Strategies](design/full-sync-strategies.md) for the consistency guarantee and strategy comparison.
 

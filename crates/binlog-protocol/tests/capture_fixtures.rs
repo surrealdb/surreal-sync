@@ -279,6 +279,7 @@ async fn connect_client(conn_str: &str, flavor: Flavor, server_id: u32) -> Resul
         mariadb_flags: binlog_protocol::MariaDbDumpFlags {
             send_annotate_rows: true,
         },
+        mariadb_gtid_strict_mode: binlog_protocol::MariaDbGtidStrictMode::ServerDefault,
     })
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))

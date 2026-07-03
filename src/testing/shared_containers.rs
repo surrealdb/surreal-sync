@@ -242,6 +242,10 @@ pub async fn setup_binlog_user(
         }
     };
     conn.query_drop(create_user).await?;
+    if container.flavor() == binlog_protocol::Flavor::MySql {
+        conn.query_drop("SET GLOBAL binlog_row_value_options = ''")
+            .await?;
+    }
     conn.query_drop("GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'surreal_sync'@'%'")
         .await?;
     conn.query_drop(format!(

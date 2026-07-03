@@ -4,7 +4,10 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 use binlog_protocol::{CdcChange, CellValue, ColumnDef, RowChange, TableMapEvent};
-use mysql_types::{binlog_cell_to_universal_value, BinlogColumnMeta, RowConversionConfig};
+use mysql_types::{
+    apply_mysql_json_diffs_to_cell, binlog_cell_to_universal_value, BinlogColumnMeta,
+    RowConversionConfig,
+};
 use sync_core::{
     DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalType, UniversalValue,
 };
@@ -28,7 +31,8 @@ pub fn cdc_change_to_universal(
         RowChange::Insert(values) => (UniversalChangeOp::Create, values.as_slice()),
         RowChange::Update { before, after } => {
             let pk_indices = pk_column_indices(column_names, &pk_columns);
-            update_merged = merge_update_cells(before, after, &pk_indices);
+            update_merged = merge_update_cells(before, after, &pk_indices)
+                .map_err(|e| anyhow!("apply partial JSON update: {e}"))?;
             (UniversalChangeOp::Update, update_merged.as_slice())
         }
         RowChange::Delete(values) => (UniversalChangeOp::Delete, values.as_slice()),
@@ -204,10 +208,17 @@ fn fix_enum_value_from_index(
     } else if (index as usize) <= allowed.len() {
         allowed[(index as usize) - 1].clone()
     } else {
-        tracing::debug!(
+        // Out-of-range means the wire index has no matching label in the schema
+        // we collected — typically schema drift (labels changed/removed between
+        // schema capture and this event). We surface it as a data-quality signal
+        // rather than aborting the whole stream on one row, and preserve the raw
+        // index so the value is not lost. See docs/mysql-binlog.md (behavior matrix).
+        tracing::warn!(
             column = column_name,
             index,
-            "ENUM index out of range; keeping raw index value"
+            allowed_len = allowed.len(),
+            "ENUM index out of range for collected schema (possible label drift); \
+             keeping raw index value"
         );
         return value;
     };
@@ -229,24 +240,26 @@ fn merge_update_cells(
     before: &[CellValue],
     after: &[CellValue],
     pk_indices: &[usize],
-) -> Vec<CellValue> {
+) -> Result<Vec<CellValue>> {
     debug_assert_eq!(before.len(), after.len());
     before
         .iter()
         .zip(after.iter())
         .enumerate()
-        .map(|(idx, (prev, next))| {
+        .map(|(idx, (prev, next))| -> Result<CellValue> {
             if pk_indices.contains(&idx) {
-                match prev {
+                return Ok(match prev {
                     CellValue::Null => next.clone(),
                     other => other.clone(),
-                }
-            } else {
-                match next {
-                    CellValue::Null => prev.clone(),
-                    other => other.clone(),
-                }
+                });
             }
+            if let CellValue::JsonDiff(diffs) = next {
+                return apply_mysql_json_diffs_to_cell(prev, diffs).map_err(Into::into);
+            }
+            Ok(match next {
+                CellValue::Null => prev.clone(),
+                other => other.clone(),
+            })
         })
         .collect()
 }

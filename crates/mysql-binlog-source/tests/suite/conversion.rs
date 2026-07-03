@@ -32,6 +32,7 @@ async fn connect_client(
         mariadb_flags: binlog_protocol::MariaDbDumpFlags {
             send_annotate_rows: true,
         },
+        mariadb_gtid_strict_mode: binlog_protocol::MariaDbGtidStrictMode::ServerDefault,
     })
     .await
     .map_err(|e| anyhow::anyhow!("{e}"))
@@ -41,7 +42,9 @@ async fn wait_for_users_insert(
     client: &mut BinlogClient,
 ) -> Result<(CdcChange, binlog_protocol::TableMapEvent)> {
     let mut table_maps: HashMap<u64, binlog_protocol::TableMapEvent> = HashMap::new();
-    for _ in 0..80 {
+    // Budget generously: under full-suite parallel container load a single INSERT
+    // can take well over the old 8s window to surface on the wire.
+    for _ in 0..300 {
         let events = client
             .next_events(32)
             .await
@@ -84,7 +87,9 @@ async fn wait_for_change(
     table: &str,
 ) -> Result<(CdcChange, binlog_protocol::TableMapEvent)> {
     let mut table_maps: HashMap<u64, binlog_protocol::TableMapEvent> = HashMap::new();
-    for _ in 0..80 {
+    // Budget generously: under full-suite parallel container load a single change
+    // can take well over the old 8s window to surface on the wire.
+    for _ in 0..300 {
         let events = client
             .next_events(32)
             .await

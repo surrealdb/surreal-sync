@@ -26,13 +26,14 @@ async fn mariadb_11_4_intra_txn_zero_log_pos_still_advances_position() -> Result
         port,
         username: user,
         password: pass,
-        server_id: 9_004_001,
+        server_id: 9_004_050,
         ssl: SslMode::Disabled,
         blocking_poll: Duration::from_millis(200),
         flavor: Some(binlog_protocol::Flavor::MariaDb),
         mariadb_flags: binlog_protocol::MariaDbDumpFlags {
             send_annotate_rows: true,
         },
+        mariadb_gtid_strict_mode: binlog_protocol::MariaDbGtidStrictMode::ServerDefault,
     })
     .await
     .context("connect binlog client")?;

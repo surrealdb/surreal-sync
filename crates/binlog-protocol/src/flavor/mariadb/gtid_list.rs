@@ -60,10 +60,13 @@ impl MariaDbGtidList {
 }
 
 impl fmt::Display for MariaDbGtidList {
+    /// Render the compact comma-separated form (no spaces) so `Display` output is
+    /// identical to [`MariaDbGtidList::to_connect_state`] and re-parses via
+    /// [`MariaDbGtidList::parse`] — CLI checkpoint strings must round-trip exactly.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (idx, gtid) in self.gtids.iter().enumerate() {
             if idx > 0 {
-                write!(f, ", ")?;
+                write!(f, ",")?;
             }
             write!(f, "{gtid}")?;
         }
@@ -97,5 +100,24 @@ mod tests {
     fn parse_gtid_list() {
         let list = MariaDbGtidList::parse("0-1-270").unwrap();
         assert_eq!(list.gtids.len(), 1);
+    }
+
+    #[test]
+    fn multi_domain_display_matches_connect_state_and_reparses() {
+        let list = MariaDbGtidList::parse("0-1-270,1-7-42").unwrap();
+        assert_eq!(list.gtids.len(), 2);
+        // Display and to_connect_state must be identical (comma, no space) so CLI
+        // strings are consistent and re-parseable.
+        assert_eq!(list.to_string(), "0-1-270,1-7-42");
+        assert_eq!(list.to_string(), list.to_connect_state());
+        let reparsed = MariaDbGtidList::parse(&list.to_string()).unwrap();
+        assert_eq!(reparsed, list);
+    }
+
+    #[test]
+    fn parse_tolerates_spaces_after_comma() {
+        // Older Display output used ", "; ensure such strings still parse.
+        let list = MariaDbGtidList::parse("0-1-270, 1-7-42").unwrap();
+        assert_eq!(list, MariaDbGtidList::parse("0-1-270,1-7-42").unwrap());
     }
 }

@@ -1,28 +1,49 @@
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::fs::File;
+use std::io::BufReader;
+use std::sync::Arc;
+
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::TlsConnector;
 
 use crate::error::Error;
-use crate::options::SslMode;
+use crate::options::{SslMode, SslOptions};
 
 const UTF8_MB4_GENERAL_CI: u16 = 0x002d;
 const CLIENT_PROTOCOL_41: u32 = 512;
+const CLIENT_SSL: u32 = 2048;
 const CLIENT_SECURE_CONNECTION: u32 = 32768;
 const CLIENT_PLUGIN_AUTH: u32 = 524288;
 
+trait AsyncReadWrite: AsyncRead + AsyncWrite + Unpin {}
+
+impl<T> AsyncReadWrite for T where T: AsyncRead + AsyncWrite + Unpin {}
+
 pub struct PacketChannel {
-    stream: TcpStream,
+    stream: Box<dyn AsyncReadWrite + Send + Sync>,
     seq: u8,
+    tls_active: bool,
 }
 
 impl PacketChannel {
     pub async fn connect(host: &str, port: u16) -> Result<Self, Error> {
         let addr = format!("{host}:{port}");
         let stream = TcpStream::connect(&addr).await?;
-        Ok(Self { stream, seq: 0 })
+        Ok(Self {
+            stream: Box::new(stream),
+            seq: 0,
+            tls_active: false,
+        })
     }
 
     pub fn from_stream(stream: TcpStream) -> Self {
-        Self { stream, seq: 0 }
+        Self {
+            stream: Box::new(stream),
+            seq: 0,
+            tls_active: false,
+        }
     }
 
     pub async fn read_packet(&mut self) -> Result<Vec<u8>, Error> {
@@ -83,6 +104,27 @@ impl PacketChannel {
     pub fn sequence(&self) -> u8 {
         self.seq
     }
+
+    pub fn tls_active(&self) -> bool {
+        self.tls_active
+    }
+
+    async fn upgrade_tls(&mut self, host: &str, options: &SslOptions) -> Result<(), Error> {
+        let config = tls_config(options)?;
+        let server_name = ServerName::try_from(host.to_string())
+            .map_err(|e| Error::Ssl(format!("invalid TLS server name '{host}': {e}")))?;
+        let (placeholder, _) = tokio::io::duplex(0);
+        let placeholder = Box::new(placeholder);
+        let stream = std::mem::replace(&mut self.stream, placeholder);
+        let connector = TlsConnector::from(Arc::new(config));
+        let tls_stream = connector
+            .connect(server_name, stream)
+            .await
+            .map_err(|e| Error::Ssl(format!("TLS handshake failed: {e}")))?;
+        self.stream = Box::new(tls_stream);
+        self.tls_active = true;
+        Ok(())
+    }
 }
 
 pub async fn encode_binlog_dump_async(
@@ -140,15 +182,14 @@ pub async fn handshake(channel: &mut PacketChannel) -> Result<Handshake, Error> 
 pub async fn authenticate(
     channel: &mut PacketChannel,
     handshake: &Handshake,
+    host: &str,
     username: &str,
     password: &str,
     ssl: &SslMode,
 ) -> Result<(), Error> {
-    if !matches!(ssl, SslMode::Disabled) {
-        return Err(Error::SslNotSupported);
-    }
+    negotiate_tls(channel, handshake, host, ssl).await?;
 
-    let auth = build_auth_packet(handshake, username, password)?;
+    let auth = build_auth_packet(handshake, username, password, channel.tls_active())?;
     channel.write_packet(&auth).await?;
     let mut packet = channel.read_packet().await?;
 
@@ -173,7 +214,12 @@ pub async fn authenticate(
                         return Ok(());
                     }
                     Some(0x04) => {
-                        // Full auth over cleartext (non-SSL local testing).
+                        if !channel.tls_active() {
+                            return Err(Error::Auth(
+                                "caching_sha2_password full authentication requires TLS; use --tls-mode preferred or required"
+                                    .into(),
+                            ));
+                        }
                         let mut response = password.as_bytes().to_vec();
                         response.push(0);
                         channel.write_packet(&response).await?;
@@ -208,6 +254,30 @@ pub async fn authenticate(
     }
 }
 
+async fn negotiate_tls(
+    channel: &mut PacketChannel,
+    handshake: &Handshake,
+    host: &str,
+    ssl: &SslMode,
+) -> Result<(), Error> {
+    let Some(options) = ssl.options() else {
+        return Ok(());
+    };
+    if handshake.capabilities & CLIENT_SSL == 0 {
+        return match ssl {
+            SslMode::Preferred(_) => Ok(()),
+            SslMode::Required(_) => Err(Error::Ssl(
+                "server does not advertise CLIENT_SSL capability".into(),
+            )),
+            SslMode::Disabled => Ok(()),
+        };
+    }
+
+    let request = build_ssl_request(true);
+    channel.write_packet(&request).await?;
+    channel.upgrade_tls(host, options).await
+}
+
 async fn drain_auth_tail(channel: &mut PacketChannel) -> Result<(), Error> {
     while let Ok(Ok(packet)) =
         tokio::time::timeout(std::time::Duration::from_millis(25), channel.read_packet()).await
@@ -222,9 +292,13 @@ fn build_auth_packet(
     handshake: &Handshake,
     username: &str,
     password: &str,
+    use_ssl: bool,
 ) -> Result<Vec<u8>, Error> {
     let mut buf = Vec::new();
-    let capabilities = CLIENT_PROTOCOL_41 | CLIENT_SECURE_CONNECTION | CLIENT_PLUGIN_AUTH;
+    let mut capabilities = CLIENT_PROTOCOL_41 | CLIENT_SECURE_CONNECTION | CLIENT_PLUGIN_AUTH;
+    if use_ssl {
+        capabilities |= CLIENT_SSL;
+    }
     buf.extend_from_slice(&capabilities.to_le_bytes());
     buf.extend_from_slice(&1_000_000u32.to_le_bytes());
     buf.push(UTF8_MB4_GENERAL_CI as u8);
@@ -241,6 +315,20 @@ fn build_auth_packet(
         buf.push(0);
     }
     Ok(buf)
+}
+
+fn build_ssl_request(use_ssl: bool) -> Vec<u8> {
+    let mut capabilities = CLIENT_PROTOCOL_41 | CLIENT_SECURE_CONNECTION | CLIENT_PLUGIN_AUTH;
+    if use_ssl {
+        capabilities |= CLIENT_SSL;
+    }
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&capabilities.to_le_bytes());
+    buf.extend_from_slice(&1_000_000u32.to_le_bytes());
+    buf.push(UTF8_MB4_GENERAL_CI as u8);
+    buf.extend_from_slice(&[0u8; 19]);
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf
 }
 
 fn auth_response(plugin: &str, password: &str, scramble: &[u8]) -> Vec<u8> {
@@ -304,6 +392,54 @@ fn auth_switch_response(
         return Ok(caching_sha2_password_response(password, plugin_data));
     }
     Err(Error::Auth(format!("unsupported auth plugin: {plugin}")))
+}
+
+fn tls_config(options: &SslOptions) -> Result<ClientConfig, Error> {
+    let mut roots = RootCertStore::empty();
+    if let Some(ca) = &options.ca {
+        let certs = load_certs(ca)?;
+        let (added, ignored) = roots.add_parsable_certificates(certs);
+        if added == 0 {
+            return Err(Error::Ssl(format!(
+                "no usable CA certificates found in {ca} (ignored {ignored})"
+            )));
+        }
+    } else {
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    }
+
+    let builder = ClientConfig::builder().with_root_certificates(roots);
+    match (&options.cert, &options.key) {
+        (Some(cert), Some(key)) => {
+            let certs = load_certs(cert)?;
+            let key = load_private_key(key)?;
+            builder
+                .with_client_auth_cert(certs, key)
+                .map_err(|e| Error::Ssl(format!("invalid client TLS certificate/key: {e}")))
+        }
+        (None, None) => Ok(builder.with_no_client_auth()),
+        (Some(_), None) | (None, Some(_)) => Err(Error::Ssl(
+            "--tls-cert and --tls-key must be provided together".into(),
+        )),
+    }
+}
+
+fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>, Error> {
+    let file = File::open(path)
+        .map_err(|e| Error::Ssl(format!("failed to open TLS certificate file {path}: {e}")))?;
+    let mut reader = BufReader::new(file);
+    rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| Error::Ssl(format!("failed to parse TLS certificates from {path}: {e}")))
+}
+
+fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>, Error> {
+    let file = File::open(path)
+        .map_err(|e| Error::Ssl(format!("failed to open TLS private key file {path}: {e}")))?;
+    let mut reader = BufReader::new(file);
+    rustls_pemfile::private_key(&mut reader)
+        .map_err(|e| Error::Ssl(format!("failed to parse TLS private key from {path}: {e}")))?
+        .ok_or_else(|| Error::Ssl(format!("no private key found in {path}")))
 }
 
 fn parse_handshake(packet: &[u8]) -> Result<Handshake, Error> {

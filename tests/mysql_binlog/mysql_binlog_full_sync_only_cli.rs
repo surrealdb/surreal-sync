@@ -54,8 +54,6 @@ async fn test_mysql_binlog_full_sync_cli() -> Result<(), Box<dyn std::error::Err
         "root",
         "--surreal-password",
         "root",
-        "--boolean-paths",
-        "all_types_users.metadata=settings.notifications",
     ];
 
     let output = execute_surreal_sync(&args)?;

@@ -11,7 +11,7 @@ use surreal_sink::SurrealSink;
 use sync_core::{UniversalRow, UniversalType, UniversalValue};
 use tracing::{debug, info};
 
-use crate::checkpoint::{get_current_checkpoint, BinlogCheckpoint};
+use crate::checkpoint::BinlogCheckpoint;
 use crate::client::{
     connect_binlog_client, new_mysql_pool, resolve_database, show_master_status, use_database,
 };
@@ -32,6 +32,28 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     sync_opts: &SyncOpts,
     sync_manager: Option<&SyncManager<CS>>,
 ) -> Result<()> {
+    run_full_sync_cancellable(
+        surreal,
+        from_opts,
+        sync_opts,
+        sync_manager,
+        &tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+}
+
+/// [`run_full_sync`] with cooperative cancellation. On cancel, the snapshot
+/// stops between tables/batches and returns cleanly **without** emitting a
+/// `FullSyncEnd` checkpoint: the `FullSyncStart` position (the streaming lower
+/// bound captured before the dump) remains the safe resume point, so a
+/// subsequent run re-dumps and streams from there with no missed changes.
+pub async fn run_full_sync_cancellable<S: SurrealSink, CS: CheckpointStore>(
+    surreal: &S,
+    from_opts: &SourceOpts,
+    sync_opts: &SyncOpts,
+    sync_manager: Option<&SyncManager<CS>>,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> Result<()> {
     info!("Starting MySQL binlog full sync to SurrealDB");
 
     let pool = new_mysql_pool(&from_opts.connection_string)?;
@@ -39,10 +61,15 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     let mut conn = pool.get_conn().await?;
     use_database(&mut conn, &database).await?;
 
-    let binlog_client = connect_binlog_client(from_opts).await?;
+    // Detect the server flavor via a short-lived binlog handshake so the captured
+    // checkpoints prefer GTID when the server runs in GTID mode.
+    let flavor = connect_binlog_client(from_opts).await?.flavor();
 
     if let Some(manager) = sync_manager {
-        let checkpoint = get_current_checkpoint(&binlog_client)?;
+        // The sequential strategy replays the binlog from the position captured
+        // BEFORE the dump, so the start checkpoint must be the real master
+        // position (SHOW MASTER STATUS / GTID), not the placeholder default.
+        let checkpoint = capture_binlog_checkpoint(&pool, flavor).await?;
         manager
             .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
             .await?;
@@ -58,6 +85,15 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 
     let mut total_migrated = 0;
     for table_name in &tables {
+        if cancel.is_cancelled() {
+            info!(
+                "Cancellation requested during full sync; stopping before table '{table_name}'. \
+                 Resume point remains the FullSyncStart position."
+            );
+            drop(conn);
+            pool.disconnect().await?;
+            return Ok(());
+        }
         info!("Migrating table: {table_name}");
         let count = migrate_table(
             &mut conn,
@@ -65,14 +101,26 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
             table_name,
             sync_opts,
             schema_info.get(table_name),
+            cancel,
         )
         .await?;
         total_migrated += count;
         info!("Migrated {count} records from table {table_name}");
+        if cancel.is_cancelled() {
+            info!(
+                "Cancellation requested after table '{table_name}'; stopping full sync. \
+                 Resume point remains the FullSyncStart position."
+            );
+            drop(conn);
+            pool.disconnect().await?;
+            return Ok(());
+        }
     }
 
     if let Some(manager) = sync_manager {
-        let checkpoint = get_current_checkpoint(&binlog_client)?;
+        // Capture the real master position after the dump so `incremental` resumes
+        // exactly where the snapshot ended.
+        let checkpoint = capture_binlog_checkpoint(&pool, flavor).await?;
         manager
             .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
             .await?;
@@ -192,6 +240,7 @@ async fn migrate_table<S: SurrealSink>(
     table_name: &str,
     sync_opts: &SyncOpts,
     schema_info: Option<&TableSchemaInfo>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<usize> {
     let database: Option<String> = conn.query_first("SELECT DATABASE()").await?;
     let database = database.ok_or_else(|| anyhow::anyhow!("no database selected"))?;
@@ -245,6 +294,10 @@ async fn migrate_table<S: SurrealSink>(
             }
             total_processed += batch.len();
             batch.clear();
+            if cancel.is_cancelled() {
+                debug!("Cancellation requested mid-table '{table_name}'; stopping batch writes");
+                return Ok(total_processed);
+            }
         }
     }
 
@@ -299,18 +352,96 @@ fn extract_primary_key_value(
     })
 }
 
-#[allow(dead_code)]
+/// Resolve a "start at head" checkpoint for incremental sync: the server's
+/// current master position (GTID when in GTID mode, else file+offset). Resuming
+/// from it streams only changes committed after this instant — the explicit,
+/// resumable equivalent of "start fresh from the current position".
+pub async fn capture_head_checkpoint(from_opts: &SourceOpts) -> Result<BinlogCheckpoint> {
+    let pool = new_mysql_pool(&from_opts.connection_string)?;
+    let flavor = connect_binlog_client(from_opts).await?.flavor();
+    let checkpoint = capture_binlog_checkpoint(&pool, flavor).await?;
+    pool.disconnect().await?;
+    Ok(checkpoint)
+}
+
+/// Capture the current master position as a checkpoint, preferring a
+/// rotation/failover-safe GTID position when the server runs in GTID mode and
+/// falling back to file+offset (`SHOW MASTER STATUS`) otherwise.
 pub async fn capture_binlog_checkpoint(
     pool: &Pool,
-    from_opts: &SourceOpts,
+    flavor: binlog_protocol::Flavor,
 ) -> Result<BinlogCheckpoint> {
+    use binlog_protocol::{BinlogPosition, Flavor};
+
     let mut conn = pool.get_conn().await?;
-    let (file, pos) = show_master_status(&mut conn).await?;
+
+    let gtid_position: Option<BinlogPosition> = match flavor {
+        Flavor::MySql => {
+            let raw: Option<String> = conn.query_first("SELECT @@global.gtid_executed").await?;
+            parse_mysql_gtid_executed(raw.as_deref())?
+        }
+        Flavor::MariaDb => {
+            let raw: Option<String> = conn.query_first("SELECT @@global.gtid_binlog_pos").await?;
+            parse_mariadb_gtid_binlog_pos(raw.as_deref())?
+        }
+    };
+
+    let position = match gtid_position {
+        Some(position) => position,
+        None => {
+            let (file, pos) = show_master_status(&mut conn).await?;
+            BinlogPosition::file_pos(file, pos)
+        }
+    };
+
     Ok(BinlogCheckpoint {
-        flavor: from_opts.flavor.unwrap_or(binlog_protocol::Flavor::MySql),
-        position: binlog_protocol::BinlogPosition::file_pos(file, pos),
+        flavor,
+        position,
         timestamp: chrono::Utc::now(),
     })
+}
+
+/// Parse a MySQL `@@global.gtid_executed` value into a checkpoint position.
+///
+/// - `None` / empty (whitespace only) → `Ok(None)`: no GTID history yet, so the
+///   caller falls back to `SHOW MASTER STATUS` file+offset.
+/// - a valid non-empty set → `Ok(Some(..))`.
+/// - a non-empty but unparseable value → `Err`. We must never silently downgrade
+///   a GTID position to file+offset, which could skip or replay transactions
+///   (mirrors `client::resume_gtid_list_from_pos`).
+fn parse_mysql_gtid_executed(raw: Option<&str>) -> Result<Option<binlog_protocol::BinlogPosition>> {
+    use binlog_protocol::{BinlogPosition, MySqlGtidSet};
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    // gtid_executed may span multiple lines for multi-interval sets.
+    let cleaned = raw.replace(['\n', '\r'], "");
+    let trimmed = cleaned.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let executed = MySqlGtidSet::parse(trimmed)
+        .map_err(|e| anyhow::anyhow!("failed to parse @@global.gtid_executed '{trimmed}': {e}"))?;
+    Ok(Some(BinlogPosition::MySqlGtid { executed }))
+}
+
+/// Parse a MariaDB `@@global.gtid_binlog_pos` value into a checkpoint position.
+/// Same hard-error semantics as [`parse_mysql_gtid_executed`].
+fn parse_mariadb_gtid_binlog_pos(
+    raw: Option<&str>,
+) -> Result<Option<binlog_protocol::BinlogPosition>> {
+    use binlog_protocol::{BinlogPosition, MariaDbGtidList};
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let executed = MariaDbGtidList::parse(trimmed).map_err(|e| {
+        anyhow::anyhow!("failed to parse @@global.gtid_binlog_pos '{trimmed}': {e}")
+    })?;
+    Ok(Some(BinlogPosition::MariaDbGtid { executed }))
 }
 
 #[allow(dead_code)]
@@ -318,4 +449,59 @@ pub async fn load_schema(pool: &Pool, database: &str) -> Result<sync_core::Datab
     let mut conn = pool.get_conn().await?;
     use_database(&mut conn, database).await?;
     collect_mysql_database_schema(&mut conn).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use binlog_protocol::BinlogPosition;
+
+    #[test]
+    fn mysql_gtid_executed_empty_falls_back() {
+        assert!(parse_mysql_gtid_executed(None).unwrap().is_none());
+        assert!(parse_mysql_gtid_executed(Some("")).unwrap().is_none());
+        assert!(parse_mysql_gtid_executed(Some("  \n ")).unwrap().is_none());
+    }
+
+    #[test]
+    fn mysql_gtid_executed_valid_is_gtid() {
+        let pos = parse_mysql_gtid_executed(Some("d4c17f0c-8c11-11e1-9ed1-0800270a0001:1-107"))
+            .unwrap()
+            .expect("valid gtid set");
+        assert!(matches!(pos, BinlogPosition::MySqlGtid { .. }));
+    }
+
+    #[test]
+    fn mysql_gtid_executed_malformed_is_hard_error() {
+        let err = parse_mysql_gtid_executed(Some("not-a-gtid"))
+            .expect_err("malformed non-empty gtid_executed must error");
+        assert!(
+            format!("{err}").contains("gtid_executed"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn mariadb_gtid_pos_empty_falls_back() {
+        assert!(parse_mariadb_gtid_binlog_pos(None).unwrap().is_none());
+        assert!(parse_mariadb_gtid_binlog_pos(Some(" ")).unwrap().is_none());
+    }
+
+    #[test]
+    fn mariadb_gtid_pos_valid_is_gtid() {
+        let pos = parse_mariadb_gtid_binlog_pos(Some("0-1-270,1-7-42"))
+            .unwrap()
+            .expect("valid gtid list");
+        assert!(matches!(pos, BinlogPosition::MariaDbGtid { .. }));
+    }
+
+    #[test]
+    fn mariadb_gtid_pos_malformed_is_hard_error() {
+        let err = parse_mariadb_gtid_binlog_pos(Some("not-a-gtid"))
+            .expect_err("malformed non-empty gtid_binlog_pos must error");
+        assert!(
+            format!("{err}").contains("gtid_binlog_pos"),
+            "unexpected error: {err}"
+        );
+    }
 }

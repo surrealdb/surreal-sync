@@ -10,7 +10,7 @@ use crate::shared::events::{
 use crate::types::GtidMarker;
 
 fn rows_event_v2_var_header(raw_type_code: u8) -> bool {
-    matches!(raw_type_code, 30..=32)
+    matches!(raw_type_code, 30..=32 | 39)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -36,7 +36,14 @@ pub enum EventBody {
 pub struct EventParser {
     flavor: Flavor,
     checksum: bool,
-    checksum_verified: bool,
+    /// Set when checksums are negotiated out-of-band via `SET
+    /// @master_binlog_checksum` (see [`enable_checksum`]). A live
+    /// COM_BINLOG_DUMP stream carries a per-event CRC32 whenever this session
+    /// variable is set, even though the FORMAT_DESCRIPTION event's declared
+    /// `checksum_alg` describes the *on-disk* binlog and is frequently 0. When
+    /// forced, the FDE must not downgrade `checksum` to false, otherwise the
+    /// trailing CRC would leak into event bodies.
+    checksum_forced: bool,
     post_header_lengths: Vec<u8>,
     table_maps: std::collections::HashMap<u64, TableMapEvent>,
 }
@@ -46,7 +53,7 @@ impl EventParser {
         Self {
             flavor,
             checksum: false,
-            checksum_verified: false,
+            checksum_forced: false,
             post_header_lengths: Vec::new(),
             table_maps: std::collections::HashMap::new(),
         }
@@ -54,7 +61,7 @@ impl EventParser {
 
     pub fn enable_checksum(&mut self) {
         self.checksum = true;
-        self.checksum_verified = true;
+        self.checksum_forced = true;
     }
 
     pub fn checksum_enabled(&self) -> bool {
@@ -66,8 +73,9 @@ impl EventParser {
         let parsed_body = match event_type {
             EventType::FormatDescription => {
                 let fde = FormatDescriptionEvent::parse(body)?;
-                self.checksum = fde.checksum_alg != 0;
-                self.checksum_verified = self.checksum;
+                // A manually-negotiated stream checksum (SET @master_binlog_checksum)
+                // must not be downgraded by the FDE's on-disk checksum_alg (often 0).
+                self.checksum = self.checksum_forced || fde.checksum_alg != 0;
                 self.post_header_lengths = fde.post_header_lengths.clone();
                 EventBody::FormatDescription(fde)
             }
@@ -127,10 +135,23 @@ impl EventParser {
                 EventBody::TransactionPayload(inner)
             }
             EventType::StartEncryption => return Err(Error::EncryptedBinlog),
+            EventType::PartialUpdateRows => {
+                let post_header_len = self.post_header_len(header.raw_type_code);
+                let tm = self.table_map_for_body(body, header.raw_type_code)?;
+                EventBody::Rows(RowsEvent::parse_partial_update(
+                    body,
+                    &tm.columns,
+                    self.flavor,
+                    rows_event_six_byte_table_id(header.raw_type_code, self.flavor),
+                    rows_event_v2_var_header(header.raw_type_code),
+                    post_header_len,
+                )?)
+            }
             EventType::GtidList
+            | EventType::AnonymousGtid
+            | EventType::PreviousGtids
             | EventType::AnnotateRows
             | EventType::BinlogCheckpoint
-            | EventType::PartialUpdateRows
             | EventType::Unknown(_) => EventBody::Ignored,
         };
 
@@ -149,7 +170,7 @@ impl EventParser {
             return self.post_header_lengths[idx - 1] as usize;
         }
         match raw_type_code {
-            30..=32 => ROWS_HEADER_LEN_V2,
+            30..=32 | 39 => ROWS_HEADER_LEN_V2,
             23..=25 => 6,
             19 => 8,
             _ => 8,

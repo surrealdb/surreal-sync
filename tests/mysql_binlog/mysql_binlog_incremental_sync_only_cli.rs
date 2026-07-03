@@ -94,8 +94,9 @@ async fn test_mysql_binlog_incremental_sync_cli() -> Result<(), Box<dyn std::err
         "root",
         "--incremental-from",
         &checkpoint_string,
+        "--batch",
         "--timeout",
-        "120",
+        "10",
     ];
 
     let incremental_output = execute_surreal_sync(&incremental_args)?;

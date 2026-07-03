@@ -1,6 +1,6 @@
 ---
 source: crates/binlog-protocol/tests/replay_captured.rs
-assertion_line: 32
+assertion_line: 30
 expression: snapshot
 ---
 [
@@ -14,8 +14,8 @@ expression: snapshot
   },
   {
     "kind": "Query",
-    "database": "\u0000\u0000\u0000\u0000\u0001\u0001\u0000\u0000 T\u0000",
-    "query_prefix": "\u0000\u0000\u0000\u0006\u0003std\u0004\u0000\t\u0000\t\u0000\t�\u0014\u0000\u0000\u0000\u0000\u0000\u0000\u0000bcd_fixt"
+    "database": "bcd_fixture",
+    "query_prefix": "CREATE TABLE wire_fixture (\n    "
   },
   {
     "kind": "Gtid",

@@ -1,7 +1,7 @@
 //! Binlog cell → `UniversalValue` conversion.
 
 use binlog_protocol::column_types::*;
-use binlog_protocol::{CellValue, ColumnMetadata};
+use binlog_protocol::{CellValue, ColumnMetadata, JsonDiff, JsonDiffOperation};
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
 use sync_core::{TypedValue, UniversalType, UniversalValue};
 
@@ -331,9 +331,245 @@ fn parse_json_bytes(
     Ok(json_to_typed_value_with_config(json_value, "", config))
 }
 
-fn parse_mysql_json_binary(bytes: &[u8]) -> Result<serde_json::Value, String> {
+pub fn apply_mysql_json_diffs_to_cell(
+    base: &CellValue,
+    diffs: &[JsonDiff],
+) -> Result<CellValue, ConversionError> {
+    let mut value = match base {
+        CellValue::JsonBytes(bytes) => {
+            parse_mysql_json_binary(bytes).map_err(ConversionError::InvalidJson)?
+        }
+        CellValue::JsonText(s) | CellValue::String(s) => {
+            serde_json::from_str::<serde_json::Value>(s)
+                .map_err(|e| ConversionError::InvalidJson(e.to_string()))?
+        }
+        CellValue::Null => serde_json::Value::Null,
+        other => return Err(type_mismatch("json base", other)),
+    };
+
+    for diff in diffs {
+        let data = match (&diff.operation, &diff.data) {
+            (JsonDiffOperation::Remove, None) => None,
+            (JsonDiffOperation::Remove, Some(_)) => {
+                return Err(ConversionError::InvalidJson(
+                    "REMOVE JSON diff unexpectedly carried data".into(),
+                ))
+            }
+            (_, Some(bytes)) => {
+                Some(parse_mysql_json_binary(bytes).map_err(ConversionError::InvalidJson)?)
+            }
+            (_, None) => {
+                return Err(ConversionError::InvalidJson(format!(
+                    "{:?} JSON diff missing data",
+                    diff.operation
+                )))
+            }
+        };
+        apply_json_diff(&mut value, &diff.operation, &diff.path, data)?;
+    }
+
+    serde_json::to_string(&value)
+        .map(CellValue::JsonText)
+        .map_err(|e| ConversionError::InvalidJson(e.to_string()))
+}
+
+pub fn parse_mysql_json_binary(bytes: &[u8]) -> Result<serde_json::Value, String> {
     let mut input = bytes;
     parse_jsonb_value(&mut input)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum JsonPathLeg {
+    Key(String),
+    Index(usize),
+}
+
+fn apply_json_diff(
+    root: &mut serde_json::Value,
+    operation: &JsonDiffOperation,
+    path: &str,
+    data: Option<serde_json::Value>,
+) -> Result<(), ConversionError> {
+    let legs = parse_json_path(path)?;
+    if legs.is_empty() {
+        match operation {
+            JsonDiffOperation::Replace | JsonDiffOperation::Insert => {
+                *root = data.expect("checked above");
+            }
+            JsonDiffOperation::Remove => {
+                *root = serde_json::Value::Null;
+            }
+        }
+        return Ok(());
+    }
+
+    let (parent_legs, last) = legs.split_at(legs.len() - 1);
+    let Some(parent) = navigate_json_path_mut(root, parent_legs) else {
+        if *operation == JsonDiffOperation::Insert {
+            return Ok(());
+        }
+        return Err(ConversionError::InvalidJson(format!(
+            "JSON diff path parent not found: {path}"
+        )));
+    };
+
+    match (&last[0], operation) {
+        (JsonPathLeg::Key(key), JsonDiffOperation::Replace) => {
+            let Some(obj) = parent.as_object_mut() else {
+                return Err(ConversionError::InvalidJson(format!(
+                    "JSON diff path is not an object: {path}"
+                )));
+            };
+            if !obj.contains_key(key) {
+                return Err(ConversionError::InvalidJson(format!(
+                    "JSON diff replace key not found: {path}"
+                )));
+            }
+            obj.insert(key.clone(), data.expect("checked above"));
+        }
+        (JsonPathLeg::Key(key), JsonDiffOperation::Insert) => {
+            let Some(obj) = parent.as_object_mut() else {
+                return Ok(());
+            };
+            obj.entry(key.clone())
+                .or_insert_with(|| data.expect("checked above"));
+        }
+        (JsonPathLeg::Key(key), JsonDiffOperation::Remove) => {
+            let Some(obj) = parent.as_object_mut() else {
+                return Err(ConversionError::InvalidJson(format!(
+                    "JSON diff path is not an object: {path}"
+                )));
+            };
+            obj.remove(key);
+        }
+        (JsonPathLeg::Index(index), JsonDiffOperation::Replace) => {
+            let Some(arr) = parent.as_array_mut() else {
+                return Err(ConversionError::InvalidJson(format!(
+                    "JSON diff path is not an array: {path}"
+                )));
+            };
+            let Some(slot) = arr.get_mut(*index) else {
+                return Err(ConversionError::InvalidJson(format!(
+                    "JSON diff replace index not found: {path}"
+                )));
+            };
+            *slot = data.expect("checked above");
+        }
+        (JsonPathLeg::Index(index), JsonDiffOperation::Insert) => {
+            let Some(arr) = parent.as_array_mut() else {
+                return Ok(());
+            };
+            if *index <= arr.len() {
+                arr.insert(*index, data.expect("checked above"));
+            }
+        }
+        (JsonPathLeg::Index(index), JsonDiffOperation::Remove) => {
+            let Some(arr) = parent.as_array_mut() else {
+                return Err(ConversionError::InvalidJson(format!(
+                    "JSON diff path is not an array: {path}"
+                )));
+            };
+            if *index < arr.len() {
+                arr.remove(*index);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn navigate_json_path_mut<'a>(
+    mut value: &'a mut serde_json::Value,
+    legs: &[JsonPathLeg],
+) -> Option<&'a mut serde_json::Value> {
+    for leg in legs {
+        value = match leg {
+            JsonPathLeg::Key(key) => value.as_object_mut()?.get_mut(key)?,
+            JsonPathLeg::Index(index) => value.as_array_mut()?.get_mut(*index)?,
+        };
+    }
+    Some(value)
+}
+
+fn parse_json_path(path: &str) -> Result<Vec<JsonPathLeg>, ConversionError> {
+    let mut chars = path.chars().peekable();
+    if chars.next() != Some('$') {
+        return Err(ConversionError::InvalidJson(format!(
+            "JSON diff path must start with '$': {path}"
+        )));
+    }
+    let mut legs = Vec::new();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '.' => {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    legs.push(JsonPathLeg::Key(read_quoted_path_key(&mut chars, path)?));
+                } else {
+                    let mut key = String::new();
+                    while let Some(&next) = chars.peek() {
+                        if next == '.' || next == '[' {
+                            break;
+                        }
+                        key.push(next);
+                        chars.next();
+                    }
+                    if key.is_empty() {
+                        return Err(ConversionError::InvalidJson(format!(
+                            "empty JSON path key: {path}"
+                        )));
+                    }
+                    legs.push(JsonPathLeg::Key(key));
+                }
+            }
+            '[' => {
+                let mut index = String::new();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next == ']' {
+                        break;
+                    }
+                    index.push(next);
+                }
+                let index = index.parse::<usize>().map_err(|_| {
+                    ConversionError::InvalidJson(format!("unsupported JSON path index: {path}"))
+                })?;
+                legs.push(JsonPathLeg::Index(index));
+            }
+            _ => {
+                return Err(ConversionError::InvalidJson(format!(
+                    "unsupported JSON path syntax: {path}"
+                )))
+            }
+        }
+    }
+    Ok(legs)
+}
+
+fn read_quoted_path_key<I>(
+    chars: &mut std::iter::Peekable<I>,
+    path: &str,
+) -> Result<String, ConversionError>
+where
+    I: Iterator<Item = char>,
+{
+    let mut key = String::new();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' => return Ok(key),
+            '\\' => {
+                let Some(escaped) = chars.next() else {
+                    return Err(ConversionError::InvalidJson(format!(
+                        "unterminated escape in JSON path: {path}"
+                    )));
+                };
+                key.push(escaped);
+            }
+            other => key.push(other),
+        }
+    }
+    Err(ConversionError::InvalidJson(format!(
+        "unterminated quoted JSON path key: {path}"
+    )))
 }
 
 const JSONB_SMALL_OBJECT: u8 = 0x00;
@@ -749,6 +985,7 @@ fn is_uuid_format(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use binlog_protocol::{JsonDiff, JsonDiffOperation};
     use chrono::Datelike;
     use rust_decimal::Decimal;
     use std::str::FromStr;
@@ -760,6 +997,21 @@ mod tests {
 
     fn convert(cell: &CellValue, column: &BinlogColumnMeta) -> UniversalValue {
         binlog_cell_to_universal_value(cell, column, &RowConversionConfig::default()).unwrap()
+    }
+
+    #[test]
+    fn applies_mysql_partial_json_replace_diff() {
+        let cell = apply_mysql_json_diffs_to_cell(
+            &CellValue::JsonText(r#"{"a":false,"b":[1,2]}"#.into()),
+            &[JsonDiff {
+                operation: JsonDiffOperation::Replace,
+                path: "$.a".into(),
+                data: Some(vec![0x04, 0x01]),
+            }],
+        )
+        .expect("apply diff");
+
+        assert_eq!(cell, CellValue::JsonText(r#"{"a":true,"b":[1,2]}"#.into()));
     }
 
     #[test]

@@ -1,14 +1,18 @@
 use crate::error::Error;
 use crate::flavor::Flavor;
-use crate::shared::buf::{read_bytes, read_lenenc_int, read_u16_le, read_u32_le, read_u6_le};
+use crate::shared::buf::{
+    read_bitmap, read_bytes, read_lenenc_int, read_u16_le, read_u32_le, read_u6_le,
+};
+use crate::shared::column_type::MYSQL_TYPE_JSON;
 use crate::shared::events::ROWS_HEADER_LEN_V2;
-use crate::shared::row::decode_row_with_bitmap;
+use crate::shared::row::{decode_row_with_bitmap, decode_row_with_bitmap_and_json_partials};
 use crate::types::{ColumnDef, RowChange};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RowsKind {
     Write,
     Update,
+    PartialUpdate,
     Delete,
 }
 
@@ -87,6 +91,25 @@ impl RowsEvent {
             e
         })
     }
+
+    pub fn parse_partial_update(
+        body: &[u8],
+        columns: &[ColumnDef],
+        flavor: Flavor,
+        six_byte_table_id: bool,
+        v2_var_header: bool,
+        post_header_len: usize,
+    ) -> Result<Self, Error> {
+        parse_rows(
+            body,
+            columns,
+            flavor,
+            six_byte_table_id,
+            v2_var_header,
+            post_header_len,
+            RowsKind::PartialUpdate,
+        )
+    }
 }
 
 fn parse_rows(
@@ -120,7 +143,7 @@ fn parse_rows(
 
     let bitmap_len = width.div_ceil(8);
     let columns_before = read_bytes(&mut payload, bitmap_len)?;
-    let columns_after = if kind == RowsKind::Update {
+    let columns_after = if matches!(kind, RowsKind::Update | RowsKind::PartialUpdate) {
         read_bytes(&mut payload, bitmap_len)?
     } else {
         columns_before.clone()
@@ -134,6 +157,19 @@ fn parse_rows(
                 let before =
                     decode_row_with_bitmap(&mut payload, columns, &columns_before, flavor)?;
                 let after = decode_row_with_bitmap(&mut payload, columns, &columns_after, flavor)?;
+                rows.push(RowChange::Update { before, after });
+            }
+            RowsKind::PartialUpdate => {
+                let before =
+                    decode_row_with_bitmap(&mut payload, columns, &columns_before, flavor)?;
+                let partial_json_columns = read_partial_json_columns(&mut payload, columns)?;
+                let after = decode_row_with_bitmap_and_json_partials(
+                    &mut payload,
+                    columns,
+                    &columns_after,
+                    flavor,
+                    |idx| partial_json_columns.get(idx).copied().unwrap_or(false),
+                )?;
                 rows.push(RowChange::Update { before, after });
             }
             RowsKind::Write | RowsKind::Delete => {
@@ -153,6 +189,46 @@ fn parse_rows(
         flags,
         rows,
     })
+}
+
+fn read_partial_json_columns(
+    payload: &mut &[u8],
+    columns: &[ColumnDef],
+) -> Result<Vec<bool>, Error> {
+    let value_options = read_lenenc_int(payload)?;
+    let mut partial_columns = vec![false; columns.len()];
+    if value_options & 1 == 0 {
+        return Ok(partial_columns);
+    }
+    if value_options & !1 != 0 {
+        return Err(Error::Protocol(format!(
+            "unsupported PARTIAL_UPDATE_ROWS value_options=0x{value_options:x}"
+        )));
+    }
+
+    let json_column_count = columns
+        .iter()
+        .filter(|col| col.column_type == MYSQL_TYPE_JSON)
+        .count();
+    let bits = read_bitmap(payload, json_column_count)?;
+    let mut json_idx = 0usize;
+    for (idx, col) in columns.iter().enumerate() {
+        if col.column_type != MYSQL_TYPE_JSON {
+            continue;
+        }
+        partial_columns[idx] = bit_is_set(&bits, json_idx);
+        json_idx += 1;
+    }
+    Ok(partial_columns)
+}
+
+fn bit_is_set(bitmap: &[u8], index: usize) -> bool {
+    let byte = index / 8;
+    let bit = index % 8;
+    bitmap
+        .get(byte)
+        .map(|b| (b >> bit) & 1 == 1)
+        .unwrap_or(false)
 }
 
 /// Skip the v2 variable-length post-header (NDB/partition extra row info).

@@ -8,8 +8,8 @@ use binlog_protocol::{BinlogClient, CdcChange, EventBody, RowChange, TableMapEve
 use mysql_async::{prelude::*, Pool};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
-    run_interleaved_snapshot, InterleavedSnapshotConfig, PkTuple, SnapshotCheckpointer,
-    SnapshotSignal, StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
+    run_interleaved_snapshot, InterleavedSnapshotConfig, NoopCheckpointer, PkTuple, SnapshotSignal,
+    StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
 };
 use sync_core::{
     DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,
@@ -54,6 +54,7 @@ pub struct BinlogWatermarkSource {
     table_maps: HashMap<u64, TableMapEvent>,
     confirmed: BinlogStreamPosition,
     watermarks: Mutex<WatermarkIds>,
+    cancel: tokio_util::sync::CancellationToken,
 }
 
 impl BinlogWatermarkSource {
@@ -105,7 +106,26 @@ impl BinlogWatermarkSource {
             table_maps: HashMap::new(),
             confirmed,
             watermarks: Mutex::new(WatermarkIds::default()),
+            cancel: tokio_util::sync::CancellationToken::new(),
         })
+    }
+
+    /// Attach a cancellation token so a running interleaved snapshot/stream can
+    /// be stopped gracefully (SIGINT/SIGTERM in the CLI, or a test).
+    pub fn with_cancel(mut self, cancel: tokio_util::sync::CancellationToken) -> Self {
+        self.cancel = cancel;
+        self
+    }
+
+    /// The stream position captured at connect time — the streaming lower bound
+    /// that must be persisted BEFORE the snapshot so a stop/restart re-snapshots
+    /// and resumes streaming from here without missing changes.
+    pub fn start_checkpoint(&self) -> BinlogCheckpoint {
+        BinlogCheckpoint {
+            flavor: self.binlog.flavor(),
+            position: self.confirmed.position.clone(),
+            timestamp: chrono::Utc::now(),
+        }
     }
 
     fn conversion_config(&self, table: &str) -> RowConversionConfig {
@@ -145,6 +165,53 @@ impl BinlogWatermarkSource {
             pk,
             change: universal,
         })
+    }
+
+    /// Track `RENAME TABLE old TO new` for tables we snapshot/stream so live
+    /// events on the new name keep flowing (and per-table PK metadata follows).
+    fn apply_table_renames(&mut self, renames: &[crate::ddl::TableRename]) {
+        for rename in renames {
+            let Some(spec) = self.tables.iter_mut().find(|t| t.table == rename.old) else {
+                continue;
+            };
+            info!(
+                "RENAME TABLE '{}' -> '{}': tracking renamed table under new name",
+                rename.old, rename.new
+            );
+            let pk_columns = spec.pk_columns.clone();
+            spec.table = rename.new.clone();
+            if let Some(cols) = self.column_names_by_table.remove(&rename.old) {
+                self.column_names_by_table.insert(rename.new.clone(), cols);
+            }
+            let mut pk_guard = self.pk_by_table.lock().expect("pk_by_table lock poisoned");
+            if let Some(pk) = pk_guard.remove(&rename.old) {
+                pk_guard.insert(rename.new.clone(), pk);
+            } else {
+                pk_guard.insert(rename.new.clone(), pk_columns);
+            }
+        }
+    }
+
+    async fn refresh_schema_metadata(&mut self) -> Result<()> {
+        let mut conn = self.pool.get_conn().await?;
+        use_database(&mut conn, &self.database).await?;
+        self.schema = collect_mysql_database_schema(&mut conn).await?;
+        self.json_columns = surreal_sync_mysql_trigger_source::json_columns::get_json_columns(
+            &mut conn,
+            &self.database,
+        )
+        .await?;
+
+        self.column_names_by_table.clear();
+        for table in &self.tables {
+            self.column_names_by_table.insert(
+                table.table.clone(),
+                get_table_column_names_ordinal(&mut conn, &table.table).await?,
+            );
+        }
+        self.conversion_by_table = conversions_from_schema(&self.schema, &self.json_columns);
+        self.table_maps.clear();
+        Ok(())
     }
 }
 
@@ -208,11 +275,19 @@ impl WatermarkSource for BinlogWatermarkSource {
             (guard.low, guard.high)
         };
 
-        let events = self
-            .binlog
-            .next_events(32)
-            .await
-            .map_err(|e| anyhow!("{e}"))?;
+        // Cooperative cancellation: interrupt the blocking binlog read so the
+        // interleaved snapshot/stream can stop promptly. The lower-bound
+        // checkpoint is persisted before the snapshot begins, so unwinding here
+        // is safe (a restart re-snapshots and resumes from that lower bound).
+        let events = tokio::select! {
+            biased;
+            _ = self.cancel.cancelled() => {
+                return Err(anyhow!("interleaved snapshot cancelled"));
+            }
+            result = self.binlog.next_events(32) => {
+                result.map_err(|e| anyhow!("{e}"))?
+            }
+        };
         if events.is_empty() {
             tokio::time::sleep(tokio::time::Duration::from_millis(25)).await;
             return Ok(Vec::new());
@@ -221,13 +296,33 @@ impl WatermarkSource for BinlogWatermarkSource {
         let mut out = Vec::new();
         for event in events {
             match event.body {
+                EventBody::Query(query) => {
+                    if crate::ddl::is_table_affecting_ddl(&query, &self.database) {
+                        info!(
+                            "Refreshing MySQL binlog watermark metadata after DDL: {}",
+                            query.sql
+                        );
+                        self.apply_table_renames(&crate::ddl::parse_table_renames(&query.sql));
+                        self.refresh_schema_metadata().await?;
+                    }
+                }
                 EventBody::TableMap(tm) => {
                     self.table_maps.insert(tm.table_id, tm);
                 }
                 EventBody::Rows(rows) => {
-                    let Some(table_map) = self.table_maps.get(&rows.table_id).cloned() else {
-                        continue;
-                    };
+                    // A row event is always preceded by its TableMap in-stream; a
+                    // missing map would silently drop the change, so fail loudly.
+                    let table_map =
+                        self.table_maps
+                            .get(&rows.table_id)
+                            .cloned()
+                            .ok_or_else(|| {
+                                anyhow!(
+                                    "binlog row event for table_id {} has no preceding TableMap; \
+                                 refusing to silently drop the change",
+                                    rows.table_id
+                                )
+                            })?;
                     if table_map.database != self.database {
                         continue;
                     }
@@ -477,25 +572,92 @@ pub async fn request_snapshot(pool: &Pool, database: &str, tables: &[String]) ->
     Ok(())
 }
 
-pub async fn run_interleaved_snapshot_full_sync<S, C>(
+/// Outcome of an interleaved snapshot full sync.
+#[derive(Debug, Clone)]
+pub struct InterleavedFullSyncOutcome {
+    /// Streaming lower bound captured (and persisted, if a store is configured)
+    /// BEFORE the snapshot began.
+    pub start: BinlogCheckpoint,
+    /// Consistent position reached at snapshot completion; incremental streaming
+    /// resumes from here. Equals `start` when the snapshot was cancelled.
+    pub end: BinlogCheckpoint,
+    /// True when the snapshot was interrupted by cancellation before completing.
+    pub cancelled: bool,
+}
+
+/// Run an interleaved snapshot full sync with graceful cancellation and correct
+/// resume semantics:
+///
+/// 1. Capture the current stream position and, if a checkpoint store is
+///    configured, persist it as `FullSyncStart` **before** copying any rows.
+///    This is the streaming lower bound: a stop/restart re-snapshots and resumes
+///    streaming from here, so no change committed during the snapshot is missed.
+/// 2. Copy every table in primary-key chunks while consuming the live stream.
+/// 3. On success, persist the final consistent position as `FullSyncEnd`.
+/// 4. On cancellation, return cleanly without emitting `FullSyncEnd` — the
+///    persisted `FullSyncStart` remains the safe resume point.
+pub async fn run_interleaved_snapshot_full_sync<S, St>(
     surreal: &S,
     from_opts: &SourceOpts,
-    config: InterleavedSnapshotConfig,
-    checkpointer: &mut C,
-) -> Result<BinlogCheckpoint>
+    chunk_size: usize,
+    cancel: tokio_util::sync::CancellationToken,
+    manager: Option<&checkpoint::SyncManager<St>>,
+) -> Result<InterleavedFullSyncOutcome>
 where
     S: SurrealSink,
-    C: SnapshotCheckpointer,
+    St: checkpoint::CheckpointStore,
 {
-    let mut source = BinlogWatermarkSource::connect(from_opts).await?;
-    let result = run_interleaved_snapshot(&mut source, surreal, &config, checkpointer).await?;
-    info!(
-        "binlog watermark snapshot complete (final position {:?}, peak buffered rows: {})",
-        result.final_position.position, result.peak_buffered_rows
-    );
-    Ok(BinlogCheckpoint {
-        flavor: source.binlog.flavor(),
-        position: result.final_position.position,
-        timestamp: chrono::Utc::now(),
-    })
+    use checkpoint::{Checkpoint, SyncPhase};
+
+    let mut source = BinlogWatermarkSource::connect(from_opts)
+        .await?
+        .with_cancel(cancel.clone());
+
+    let start = source.start_checkpoint();
+    if let Some(manager) = manager {
+        manager
+            .emit_checkpoint(&start, SyncPhase::FullSyncStart)
+            .await?;
+        info!(
+            "Emitted interleaved snapshot start checkpoint (streaming lower bound): {}",
+            start.to_cli_string()
+        );
+    }
+
+    let config = InterleavedSnapshotConfig { chunk_size };
+    match run_interleaved_snapshot(&mut source, surreal, &config, &mut NoopCheckpointer).await {
+        Ok(result) => {
+            let end = BinlogCheckpoint {
+                flavor: source.binlog.flavor(),
+                position: result.final_position.position,
+                timestamp: chrono::Utc::now(),
+            };
+            info!(
+                "binlog watermark snapshot complete (final position {:?}, peak buffered rows: {})",
+                end.position, result.peak_buffered_rows
+            );
+            if let Some(manager) = manager {
+                manager
+                    .emit_checkpoint(&end, SyncPhase::FullSyncEnd)
+                    .await?;
+            }
+            Ok(InterleavedFullSyncOutcome {
+                start,
+                end,
+                cancelled: false,
+            })
+        }
+        Err(e) if cancel.is_cancelled() => {
+            info!(
+                "Interleaved snapshot cancelled before completion ({e}); \
+                 FullSyncStart remains the resume point"
+            );
+            Ok(InterleavedFullSyncOutcome {
+                end: start.clone(),
+                start,
+                cancelled: true,
+            })
+        }
+        Err(e) => Err(e),
+    }
 }
