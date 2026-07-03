@@ -427,6 +427,144 @@ MariaDB behaves like MySQL for surreal-sync binlog CDC, with these nuances:
 
 **GTID resume.** MariaDB does not implement MySQL's `COM_BINLOG_DUMP_GTID`. surreal-sync resumes the MariaDB-native way: it reads the current position from `@@global.gtid_binlog_pos`, sets the session variables `@slave_connect_state` and `@slave_gtid_ignore_duplicates`, then issues a plain `COM_BINLOG_DUMP` with an empty filename and position 4 — the server streams from the connect state. Runtime checkpoints accumulate as MariaDB GTID lists (e.g. `gtid:0-1-270`); multi-domain positions round-trip as comma-separated lists (`gtid:0-1-270,1-7-42`) through the CLI and checkpoint store. `@slave_gtid_strict_mode` is left at the server default unless `--mariadb-gtid-strict-mode on` or `--mariadb-gtid-strict-mode off` is provided.
 
+## Manual smoke test
+
+Quick end-to-end check with Docker (`mysql:8.0` / `mariadb:11.4`). Health checks and SQL use **`docker exec`** — host `mysql`/`mysqladmin` are not required (and may hang if absent). If you have the MySQL client installed locally, you may substitute host commands instead. Smoke runs use bounded **`--batch --timeout`**; use **`--follow`** for long-lived replication (see [Continuous vs batch operation](#continuous-vs-batch-operation)).
+
+### Shared setup
+
+```bash
+cargo build
+export SYNC=./target/debug/surreal-sync
+
+docker rm -f surreal-smoke mysql-binlog-smoke mariadb-binlog-smoke 2>/dev/null
+docker run --name surreal-smoke -p 8000:8000 -d surrealdb/surrealdb:v2.6.5 \
+  start --user root --pass root memory
+
+export SURREAL_URL=http://127.0.0.1:8000
+export CHECKPOINT_DIR=.surreal-sync-checkpoints-smoke
+export DB=myapp
+```
+
+### MySQL 8.0 (port 3306)
+
+```bash
+docker run --name mysql-binlog-smoke \
+  -e MYSQL_ROOT_PASSWORD=testpass \
+  -e MYSQL_DATABASE=myapp \
+  -p 3306:3306 -d mysql:8.0 \
+  --log-bin=mysql-bin \
+  --binlog-format=ROW \
+  --gtid-mode=ON \
+  --enforce-gtid-consistency=ON \
+  --server-id=1 \
+  --log-slave-updates=ON \
+  --binlog-row-value-options=
+
+until docker exec mysql-binlog-smoke mysqladmin ping -h127.0.0.1 -uroot -ptestpass --silent 2>/dev/null; do sleep 1; done
+
+docker exec -i mysql-binlog-smoke mysql -uroot -ptestpass myapp <<'SQL'
+CREATE TABLE IF NOT EXISTS users (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(255) NOT NULL
+);
+INSERT INTO users (name) VALUES ('alice');
+CREATE USER IF NOT EXISTS 'surreal_sync'@'%'
+  IDENTIFIED WITH mysql_native_password BY 'surreal_sync_pass';
+SET GLOBAL binlog_row_value_options = '';
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'surreal_sync'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX
+  ON myapp.* TO 'surreal_sync'@'%';
+FLUSH PRIVILEGES;
+SQL
+
+export MYSQL_URL=mysql://surreal_sync:surreal_sync_pass@127.0.0.1:3306/myapp
+
+rm -rf "$CHECKPOINT_DIR"
+$SYNC from mysql-binlog sync \
+  --connection-string "$MYSQL_URL" \
+  --database "$DB" --tables users \
+  --surreal-endpoint "$SURREAL_URL" --surreal-username root --surreal-password root \
+  --to-namespace test --to-database mysql_binlog \
+  --server-id 100001 --checkpoint-dir "$CHECKPOINT_DIR" \
+  --batch --timeout 25
+
+docker exec -i mysql-binlog-smoke mysql -uroot -ptestpass myapp \
+  -e "INSERT INTO users (name) VALUES ('bob');"
+
+$SYNC from mysql-binlog incremental \
+  --connection-string "$MYSQL_URL" \
+  --database "$DB" --tables users \
+  --surreal-endpoint "$SURREAL_URL" --surreal-username root --surreal-password root \
+  --to-namespace test --to-database mysql_binlog \
+  --server-id 100001 --checkpoint-dir "$CHECKPOINT_DIR" \
+  --batch --timeout 25
+```
+
+### MariaDB 11.4 (port 3307)
+
+MariaDB images ship `mariadb-admin` / `mariadb` instead of `mysqladmin` / `mysql`.
+
+```bash
+docker run --name mariadb-binlog-smoke \
+  -e MYSQL_ROOT_PASSWORD=testpass \
+  -e MYSQL_DATABASE=myapp \
+  -p 3307:3306 -d mariadb:11.4 \
+  --log-bin=mysql-bin \
+  --binlog-format=ROW \
+  --server-id=1 \
+  --gtid-strict-mode=ON
+
+until docker exec mariadb-binlog-smoke mariadb-admin ping -h127.0.0.1 -uroot -ptestpass --silent 2>/dev/null; do sleep 1; done
+
+docker exec -i mariadb-binlog-smoke mariadb -uroot -ptestpass myapp <<'SQL'
+CREATE TABLE IF NOT EXISTS users (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(255) NOT NULL
+);
+INSERT INTO users (name) VALUES ('alice');
+CREATE USER IF NOT EXISTS 'surreal_sync'@'%' IDENTIFIED BY 'surreal_sync_pass';
+GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'surreal_sync'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX
+  ON myapp.* TO 'surreal_sync'@'%';
+FLUSH PRIVILEGES;
+SQL
+
+export MARIADB_URL=mysql://surreal_sync:surreal_sync_pass@127.0.0.1:3307/myapp
+
+rm -rf "$CHECKPOINT_DIR"
+$SYNC from mysql-binlog sync \
+  --connection-string "$MARIADB_URL" \
+  --database "$DB" --tables users \
+  --flavor mariadb --mariadb-gtid-strict-mode on \
+  --surreal-endpoint "$SURREAL_URL" --surreal-username root --surreal-password root \
+  --to-namespace test --to-database mariadb_binlog \
+  --server-id 100002 --checkpoint-dir "$CHECKPOINT_DIR" \
+  --batch --timeout 25
+
+docker exec -i mariadb-binlog-smoke mariadb -uroot -ptestpass myapp \
+  -e "INSERT INTO users (name) VALUES ('bob');"
+
+$SYNC from mysql-binlog incremental \
+  --connection-string "$MARIADB_URL" \
+  --database "$DB" --tables users \
+  --flavor mariadb --mariadb-gtid-strict-mode on \
+  --surreal-endpoint "$SURREAL_URL" --surreal-username root --surreal-password root \
+  --to-namespace test --to-database mariadb_binlog \
+  --server-id 100002 --checkpoint-dir "$CHECKPOINT_DIR" \
+  --batch --timeout 25
+```
+
+### Verify (optional)
+
+```bash
+curl -s -X POST "$SURREAL_URL/sql" -u root:root \
+  -H "Accept: application/json" -H "NS: test" -H "DB: mysql_binlog" \
+  --data "SELECT * FROM users;"
+```
+
+Automated e2e: `make build-debug && cargo test -p surreal-sync --test mysql_binlog -- --nocapture`
+
 ## Troubleshooting
 
 ### Binlog consumer cannot connect
