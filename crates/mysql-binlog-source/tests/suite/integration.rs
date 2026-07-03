@@ -201,6 +201,85 @@ async fn gtid_checkpoint_resume_applies_subsequent_changes() -> Result<()> {
 }
 
 #[tokio::test]
+async fn mariadb_gtid_checkpoint_resume_applies_subsequent_changes() -> Result<()> {
+    crate::shared::init_logging();
+    let container = crate::shared::shared_mariadb_binlog().await;
+    let db_name = "integ_gtid_mdb";
+    let conn_str = crate::shared::create_test_db(container, db_name).await?;
+
+    let pool = mysql_async::Pool::from_url(&conn_str)?;
+    let mut conn = pool.get_conn().await?;
+    conn.query_drop("CREATE TABLE widgets (id INT PRIMARY KEY, n INT)")
+        .await?;
+
+    let mut client = connect_client(&conn_str, 9_004_001).await?;
+    // Start in GTID mode so the captured checkpoint is a MariaDbGtid position.
+    crate::shared::start_binlog_at_mariadb_gtid_end(&mut client, &conn_str).await?;
+
+    conn.exec_drop("INSERT INTO widgets (id, n) VALUES (1, 1)", ())
+        .await?;
+    // Drain first insert so checkpoint is past it.
+    drain_items_events(&mut client).await?;
+
+    let position = client.current_position();
+    assert!(
+        matches!(
+            position,
+            binlog_protocol::BinlogPosition::MariaDbGtid { .. }
+        ),
+        "expected a MariaDbGtid runtime checkpoint, got {position:?}"
+    );
+
+    let checkpoint = BinlogCheckpoint {
+        flavor: container.flavor(),
+        position,
+        timestamp: chrono::Utc::now(),
+    };
+
+    drop(client);
+
+    conn.exec_drop("INSERT INTO widgets (id, n) VALUES (2, 2)", ())
+        .await?;
+    conn.exec_drop("INSERT INTO widgets (id, n) VALUES (3, 3)", ())
+        .await?;
+
+    let sink = MemSink {
+        changes: std::sync::Mutex::new(Vec::new()),
+    };
+    let source_opts = SourceOpts {
+        connection_string: conn_str.clone(),
+        database: Some(db_name.to_string()),
+        tables: vec!["widgets".to_string()],
+        server_id: Some(9_004_002),
+        flavor: Some(container.flavor()),
+        mysql_boolean_paths: None,
+    };
+
+    run_incremental_sync(
+        &sink,
+        source_opts,
+        checkpoint,
+        chrono::Utc::now() + chrono::Duration::seconds(30),
+        None,
+    )
+    .await?;
+
+    let applied = sink.changes.lock().expect("lock").clone();
+    assert!(
+        applied.iter().any(|s| s.contains("widgets")),
+        "expected widget changes, got {applied:?}"
+    );
+    assert!(
+        applied.len() >= 2,
+        "expected at least two incremental changes after GTID resume, got {applied:?}"
+    );
+
+    drop(conn);
+    pool.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn repl_user_can_stream_changes() -> Result<()> {
     crate::shared::init_logging();
     let container = crate::shared::shared_mysql_binlog().await;

@@ -13,18 +13,32 @@ pub fn verify_crc32(data: &[u8], expected: u32) -> Result<(), Error> {
 }
 
 /// Return the event body slice, stripping a CRC32 footer from the full event when present.
-pub fn event_body(full_event: &[u8], _checksum_enabled: bool) -> Result<&[u8], Error> {
+pub fn event_body(full_event: &[u8], checksum_enabled: bool) -> Result<&[u8], Error> {
     if full_event.len() < EventHeader::HEADER_LEN {
         return Err(Error::UnexpectedEof);
     }
     let header = EventHeader::parse(&full_event[..EventHeader::HEADER_LEN], 0)?;
+    let has_footer_room = full_event.len() >= EventHeader::HEADER_LEN + 4;
     let mut end = full_event.len();
-    if !matches!(
-        header.event_type,
-        EventType::FormatDescription | EventType::Rotate
-    ) && full_event.len() >= EventHeader::HEADER_LEN + 4
-    {
-        end = full_event.len() - 4;
+    match header.event_type {
+        // The FORMAT_DESCRIPTION event carries the checksum algorithm byte as its
+        // last body byte, so its footer is handled by the parser, not stripped here.
+        EventType::FormatDescription => {}
+        // ROTATE events (including the artificial "fake" rotate emitted at stream
+        // start, which has log_pos == 0) carry a CRC32 footer whenever checksums
+        // are negotiated. It must be stripped: otherwise the trailing CRC bytes
+        // leak into the binlog filename and, when the first CRC byte happens to be
+        // an ASCII digit, corrupt the tracked position (e.g. `mysql-bin.0000035`).
+        EventType::Rotate => {
+            if checksum_enabled && has_footer_room {
+                end = full_event.len() - 4;
+            }
+        }
+        _ => {
+            if has_footer_room {
+                end = full_event.len() - 4;
+            }
+        }
     }
     Ok(&full_event[EventHeader::HEADER_LEN..end])
 }

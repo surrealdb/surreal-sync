@@ -17,7 +17,7 @@ Changes are read by registering as a binlog replica (`COM_REGISTER_SLAVE` / `COM
 Checkpoints record a resumable binlog position:
 
 - **File + byte offset** (`file:mysql-bin.000003:195`) — works on both MySQL and MariaDB.
-- **GTID** — MySQL uses a UUID-based GTID set (`gtid:uuid:1-107`); MariaDB uses domain-server-sequence form (`gtid:0-1-270`). When GTID mode is enabled on the server, GTID checkpoints are preferred because they survive binlog file rotation cleanly.
+- **GTID** — MySQL uses a UUID-based GTID set (`gtid:uuid:1-107`); MariaDB uses domain-server-sequence form (`gtid:0-1-270`, and a comma-separated list `gtid:0-1-270,1-7-42` for multiple domains). When GTID mode is enabled on the server, GTID checkpoints are preferred because they survive binlog file rotation cleanly. On MariaDB, surreal-sync captures the runtime position from `@@global.gtid_binlog_pos` and emits GTID checkpoints by default (see [MariaDB notes](#mariadb-notes)).
 
 See [Full Sync Strategies](design/full-sync-strategies.md) for the consistency guarantee and strategy comparison.
 
@@ -211,6 +211,8 @@ MariaDB behaves identically to MySQL for surreal-sync binlog CDC with two nuance
 **JSON columns.** MariaDB implements the `JSON` type as an **alias for `LONGTEXT`** (with an automatic `json_valid(...)` `CHECK` constraint) rather than as a native JSON type. In binlog ROW events, JSON column values arrive as text. surreal-sync **detects JSON columns** on both engines — for MySQL via `information_schema.COLUMNS` (`DATA_TYPE = 'json'`), and for MariaDB via the `json_valid(...)` `CHECK` constraints recorded in `information_schema` — and parses those columns into nested objects on every read path (full snapshot, interleaved snapshot, and the binlog incremental stream). Nested JSON therefore syncs to real SurrealDB objects on MariaDB just as it does on MySQL, with no extra configuration.
 
 **MariaDB 11.4+ position tracking.** Transaction events on MariaDB 11.4+ may report `log_pos = 0` in event headers. surreal-sync uses file offset and event size to compute durable checkpoints instead, so you do not need `binlog_legacy_event_pos=ON`.
+
+**MariaDB GTID resume.** MariaDB does not implement MySQL's `COM_BINLOG_DUMP_GTID` command. surreal-sync resumes by GTID the MariaDB-native way: it captures the current position from `@@global.gtid_binlog_pos`, sets the session variables `@slave_connect_state`, `@slave_gtid_strict_mode`, and `@slave_gtid_ignore_duplicates`, and then issues a plain `COM_BINLOG_DUMP` with an empty filename and position 4 — the server streams from the connect state. GTID positions accumulate as transactions are applied, so runtime checkpoints are emitted as MariaDB GTID lists (e.g. `gtid:0-1-270`). Multi-domain positions are preserved as a comma-separated list. The last-known file+byte offset is still tracked underneath as a fallback, but the GTID list is authoritative for MariaDB GTID checkpoints. If `@@global.gtid_binlog_pos` is empty (fresh server) or GTID cannot be parsed, surreal-sync falls back to a file+offset checkpoint.
 
 ## Troubleshooting
 

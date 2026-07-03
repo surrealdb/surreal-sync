@@ -1,5 +1,6 @@
 ---
 source: crates/binlog-protocol/tests/replay_captured.rs
+assertion_line: 32
 expression: snapshot
 ---
 [
@@ -9,7 +10,7 @@ expression: snapshot
   },
   {
     "kind": "Gtid",
-    "gtid": "MariaDb { domain_id: 0, server_id: 0, sequence: 687865856 }"
+    "gtid": "MariaDb { domain_id: 0, server_id: 1, sequence: 6 }"
   },
   {
     "kind": "Query",
@@ -18,7 +19,7 @@ expression: snapshot
   },
   {
     "kind": "Gtid",
-    "gtid": "MariaDb { domain_id: 0, server_id: 0, sequence: 201326592 }"
+    "gtid": "MariaDb { domain_id: 0, server_id: 1, sequence: 7 }"
   },
   {
     "kind": "TableMap",
@@ -73,7 +74,7 @@ expression: snapshot
   },
   {
     "kind": "Gtid",
-    "gtid": "MariaDb { domain_id: 0, server_id: 0, sequence: 201326592 }"
+    "gtid": "MariaDb { domain_id: 0, server_id: 1, sequence: 8 }"
   },
   {
     "kind": "TableMap",
@@ -164,7 +165,7 @@ expression: snapshot
   },
   {
     "kind": "Gtid",
-    "gtid": "MariaDb { domain_id: 0, server_id: 0, sequence: 201326592 }"
+    "gtid": "MariaDb { domain_id: 0, server_id: 1, sequence: 9 }"
   },
   {
     "kind": "TableMap",
@@ -219,7 +220,7 @@ expression: snapshot
   },
   {
     "kind": "Gtid",
-    "gtid": "MariaDb { domain_id: 0, server_id: 0, sequence: 201326592 }"
+    "gtid": "MariaDb { domain_id: 0, server_id: 1, sequence: 10 }"
   },
   {
     "kind": "TableMap",

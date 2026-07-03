@@ -61,6 +61,7 @@ pub fn cdc_change_to_universal(
         let mut universal = binlog_cell_to_universal_value(cell, &meta, &config)
             .map_err(|e| anyhow!("convert column '{column_name}': {e}"))?;
         universal = fix_set_value_from_bitmask(column_name, table_def, universal);
+        universal = fix_enum_value_from_index(column_name, table_def, universal);
         values.insert(column_name.clone(), universal);
     }
 
@@ -163,6 +164,60 @@ fn fix_set_value_from_bitmask(
     }
 }
 
+/// Recover an ENUM label from the 1-based numeric index carried on the binlog wire.
+///
+/// The binlog encodes ENUM values as a 1-based index (index 0 is the special
+/// empty/invalid value `''`). The decode layer only sees that index, so this
+/// post-process rewrites the value into the schema label — mirroring how
+/// [`fix_set_value_from_bitmask`] recovers SET labels from a bitmask.
+fn fix_enum_value_from_index(
+    column_name: &str,
+    table_def: &sync_core::TableDefinition,
+    value: UniversalValue,
+) -> UniversalValue {
+    let Some(UniversalType::Enum { values: allowed }) = table_def.get_column_type(column_name)
+    else {
+        return value;
+    };
+    if allowed.is_empty() {
+        return value;
+    }
+
+    let index = match &value {
+        UniversalValue::Enum { value: s, .. } => s.parse::<i64>().ok(),
+        UniversalValue::Text(s) => s.parse::<i64>().ok(),
+        UniversalValue::VarChar { value: s, .. } => s.parse::<i64>().ok(),
+        UniversalValue::Char { value: s, .. } => s.parse::<i64>().ok(),
+        UniversalValue::Int8 { value, .. } => Some(i64::from(*value)),
+        UniversalValue::Int16(v) => Some(i64::from(*v)),
+        UniversalValue::Int32(v) => Some(i64::from(*v)),
+        UniversalValue::Int64(v) => Some(*v),
+        _ => return value,
+    };
+    let Some(index) = index else {
+        return value;
+    };
+
+    // MySQL/MariaDB ENUM is 1-based; index 0 (or empty) is the special `''` value.
+    let label = if index <= 0 {
+        String::new()
+    } else if (index as usize) <= allowed.len() {
+        allowed[(index as usize) - 1].clone()
+    } else {
+        tracing::debug!(
+            column = column_name,
+            index,
+            "ENUM index out of range; keeping raw index value"
+        );
+        return value;
+    };
+
+    UniversalValue::Enum {
+        value: label,
+        allowed_values: allowed.clone(),
+    }
+}
+
 fn pk_column_indices(column_names: &[String], pk_columns: &[String]) -> Vec<usize> {
     pk_columns
         .iter()
@@ -222,4 +277,107 @@ fn extract_primary_key(
         elements: parts,
         element_type: Box::new(UniversalType::Text),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sync_core::{ColumnDefinition, TableDefinition};
+
+    fn table_with_column(name: &str, ty: UniversalType) -> TableDefinition {
+        TableDefinition::new(
+            "t",
+            ColumnDefinition::new("id", UniversalType::Int32),
+            vec![ColumnDefinition::new(name, ty)],
+        )
+    }
+
+    #[test]
+    fn enum_index_maps_to_label() {
+        let table = table_with_column(
+            "status",
+            UniversalType::Enum {
+                values: vec!["active".into(), "inactive".into(), "pending".into()],
+            },
+        );
+        // Binlog decodes ENUM as a 1-based index; the source layer sees it as Char.
+        let value = UniversalValue::char("2", 8);
+        let fixed = fix_enum_value_from_index("status", &table, value);
+        match fixed {
+            UniversalValue::Enum {
+                value,
+                allowed_values,
+            } => {
+                assert_eq!(value, "inactive");
+                assert_eq!(allowed_values, vec!["active", "inactive", "pending"]);
+            }
+            other => panic!("expected Enum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enum_index_zero_is_empty_value() {
+        let table = table_with_column(
+            "status",
+            UniversalType::Enum {
+                values: vec!["active".into(), "inactive".into()],
+            },
+        );
+        let fixed = fix_enum_value_from_index("status", &table, UniversalValue::Text("0".into()));
+        match fixed {
+            UniversalValue::Enum { value, .. } => assert_eq!(value, ""),
+            other => panic!("expected Enum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enum_index_out_of_range_keeps_raw_value() {
+        let table = table_with_column(
+            "status",
+            UniversalType::Enum {
+                values: vec!["active".into(), "inactive".into()],
+            },
+        );
+        let fixed = fix_enum_value_from_index("status", &table, UniversalValue::Text("9".into()));
+        assert_eq!(fixed, UniversalValue::Text("9".into()));
+    }
+
+    #[test]
+    fn enum_from_enum_variant_index() {
+        let table = table_with_column(
+            "status",
+            UniversalType::Enum {
+                values: vec!["red".into(), "green".into(), "blue".into()],
+            },
+        );
+        let value = UniversalValue::enum_value("3", vec![]);
+        let fixed = fix_enum_value_from_index("status", &table, value);
+        match fixed {
+            UniversalValue::Enum { value, .. } => assert_eq!(value, "blue"),
+            other => panic!("expected Enum, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_bitmask_maps_to_labels() {
+        let table = table_with_column(
+            "tags",
+            UniversalType::Set {
+                values: vec!["read".into(), "write".into(), "execute".into()],
+            },
+        );
+        // Binlog decodes SET as a numeric bitmask string; read|execute = bits 0 and 2 = 5.
+        let value = UniversalValue::set(vec!["5".into()], vec![]);
+        let fixed = fix_set_value_from_bitmask("tags", &table, value);
+        match fixed {
+            UniversalValue::Set {
+                elements,
+                allowed_values,
+            } => {
+                assert_eq!(elements, vec!["read", "execute"]);
+                assert_eq!(allowed_values, vec!["read", "write", "execute"]);
+            }
+            other => panic!("expected Set, got {other:?}"),
+        }
+    }
 }

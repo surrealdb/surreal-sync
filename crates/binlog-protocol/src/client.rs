@@ -46,6 +46,14 @@ impl Tracker {
             t.set_pending_gtid(gtid);
         }
     }
+
+    /// Seed the MariaDB tracker with a GTID list so runtime positions are
+    /// reported (and accumulated) as `BinlogPosition::MariaDbGtid`.
+    fn seed_mariadb_gtid_list(&mut self, list: crate::flavor::mariadb::MariaDbGtidList) {
+        if let Tracker::MariaDb(t) = self {
+            t.seed_gtid_list(list);
+        }
+    }
 }
 
 pub struct BinlogClient {
@@ -152,8 +160,18 @@ impl BinlogClient {
                 dump_gtid::encode_dump_gtid(channel, self.opts.server_id, &set).await?;
                 return Ok(());
             }
-            ResumePosition::MariaDbGtid(_) => {
-                // MariaDB GTID resume uses classic dump + gtid list tracking in v1
+            ResumePosition::MariaDbGtid(list) => {
+                // MariaDB has no COM_BINLOG_DUMP_GTID. Resume by registering the
+                // connect state and issuing COM_BINLOG_DUMP with an empty
+                // filename / position 4 — the server streams from the GTID list.
+                register::register_gtid_session_vars(channel, &list).await?;
+                self.tracker.seed_mariadb_gtid_list(list);
+                self.binlog_file.clear();
+                self.binlog_pos = 4;
+                self.stream.set_file_and_offset("", 4);
+                channel.reset_seq();
+                encode_binlog_dump_async(channel, self.opts.server_id, "", 4).await?;
+                return Ok(());
             }
         }
 

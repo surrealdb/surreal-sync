@@ -3,8 +3,12 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use binlog_protocol::{BinlogClient, MariaDbDumpFlags, ReplicaOptions, ResumePosition, SslMode};
+use binlog_protocol::{
+    BinlogClient, Flavor, MariaDbDumpFlags, MariaDbGtidList, ReplicaOptions, ResumePosition,
+    SslMode,
+};
 use mysql_async::{prelude::*, Pool, Row};
+use tracing::{debug, info};
 
 use crate::SourceOpts;
 
@@ -98,6 +102,33 @@ pub async fn start_binlog_from_checkpoint(
 }
 
 pub async fn start_binlog_at_end(client: &mut BinlogClient, pool: &Pool) -> Result<()> {
+    // On MariaDB, prefer GTID-based resume so runtime checkpoints survive binlog
+    // rotation. MariaDB has no COM_BINLOG_DUMP_GTID; the client seeds
+    // @slave_connect_state from @@global.gtid_binlog_pos instead. Fall back to
+    // file+pos when GTID is empty/unavailable (or for MySQL).
+    if client.flavor() == Flavor::MariaDb {
+        let mut conn = pool.get_conn().await?;
+        let gtid_pos: Option<String> = conn.query_first("SELECT @@global.gtid_binlog_pos").await?;
+        drop(conn);
+        if let Some(raw) = gtid_pos {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                match MariaDbGtidList::parse(trimmed) {
+                    Ok(list) => {
+                        info!("Starting MariaDB binlog in GTID mode at gtid_binlog_pos={trimmed}");
+                        return client
+                            .start_stream(ResumePosition::MariaDbGtid(list))
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{e}"));
+                    }
+                    Err(e) => {
+                        debug!("Failed to parse gtid_binlog_pos '{trimmed}': {e}; using file+pos");
+                    }
+                }
+            }
+        }
+    }
+
     let mut conn = pool.get_conn().await?;
     let (file, pos) = show_master_status(&mut conn).await?;
     drop(conn);

@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use binlog_protocol::{BinlogClient, Flavor, ResumePosition};
+use binlog_protocol::{BinlogClient, Flavor, MariaDbGtidList, ResumePosition};
 use tokio::sync::OnceCell;
 
 static CONTAINER_NAMES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -301,6 +301,27 @@ pub async fn start_binlog_at_master_end(
             file,
             pos: pos as u32,
         })
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+}
+
+/// Start a MariaDB binlog stream in GTID mode at the server's current
+/// `@@global.gtid_binlog_pos`, so runtime checkpoints are `MariaDbGtid`.
+pub async fn start_binlog_at_mariadb_gtid_end(
+    client: &mut BinlogClient,
+    conn_str: &str,
+) -> anyhow::Result<()> {
+    let pool = mysql_async::Pool::from_url(conn_str)?;
+    let mut conn = pool.get_conn().await?;
+    use mysql_async::prelude::*;
+    let gtid_pos: Option<String> = conn.query_first("SELECT @@global.gtid_binlog_pos").await?;
+    drop(conn);
+    drop(pool);
+    let raw = gtid_pos.unwrap_or_default();
+    let list = MariaDbGtidList::parse(raw.trim())
+        .map_err(|e| anyhow::anyhow!("parse gtid_binlog_pos '{raw}': {e}"))?;
+    client
+        .start_stream(ResumePosition::MariaDbGtid(list))
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))
 }

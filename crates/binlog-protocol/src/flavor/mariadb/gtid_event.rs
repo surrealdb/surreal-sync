@@ -2,12 +2,16 @@ use crate::error::Error;
 use crate::shared::buf::{read_u32_le, read_u64_le, read_u8};
 use crate::types::GtidMarker;
 
-pub fn parse(body: &[u8]) -> Result<GtidMarker, Error> {
+/// Parse a MariaDB `GTID_EVENT` (type 0xA2) body.
+///
+/// The wire layout is `seq_no (u64 LE) + domain_id (u32 LE) + flags2 (u8) + ...`;
+/// the `server_id` is carried in the common event header (not the body), so it is
+/// supplied by the caller.
+pub fn parse(body: &[u8], server_id: u32) -> Result<GtidMarker, Error> {
     let mut payload = body;
-    let _commit_flag = read_u8(&mut payload)?;
-    let domain_id = read_u32_le(&mut payload)?;
-    let server_id = read_u32_le(&mut payload)?;
     let sequence = read_u64_le(&mut payload)?;
+    let domain_id = read_u32_le(&mut payload)?;
+    let _flags2 = read_u8(&mut payload)?;
     Ok(GtidMarker::MariaDb {
         domain_id,
         server_id,

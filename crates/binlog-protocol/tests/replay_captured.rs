@@ -3,9 +3,7 @@
 mod captured;
 
 use binlog_protocol::{BinlogBytesReader, Flavor};
-use captured::support::{
-    capture_sql_block, flavor_from_meta, load_fixture, normalize_events,
-};
+use captured::support::{capture_sql_block, flavor_from_meta, load_fixture, normalize_events};
 
 fn replay_fixture(base: &str, table: &str) {
     let (bytes, meta) = load_fixture(base);
@@ -24,7 +22,13 @@ fn replay_fixture(base: &str, table: &str) {
     );
 
     let snapshot = normalize_events(events, table);
-    insta::assert_json_snapshot!(format!("{base}_events"), snapshot);
+    // Sort map keys so the snapshot is stable regardless of whether any crate in
+    // the build graph enables `serde_json/preserve_order` (feature unification
+    // otherwise flips struct/map key ordering between single-crate and
+    // workspace-wide test runs).
+    insta::with_settings!({sort_maps => true}, {
+        insta::assert_json_snapshot!(format!("{base}_events"), snapshot);
+    });
 }
 
 #[test]

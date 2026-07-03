@@ -29,8 +29,33 @@ impl MariaDbGtidList {
     }
 
     pub fn add(&mut self, gtid: MariaDbGtid) -> Result<(), Error> {
+        // A MariaDB GTID position holds a single entry per replication domain —
+        // the most advanced sequence. Replace any existing entry for this domain
+        // when the incoming sequence is newer, so accumulated runtime positions
+        // stay clean (and monotonic) rather than growing without bound.
+        if let Some(existing) = self
+            .gtids
+            .iter()
+            .find(|g| g.domain_id == gtid.domain_id)
+            .cloned()
+        {
+            if existing.sequence >= gtid.sequence {
+                return Ok(());
+            }
+            self.gtids.remove(&existing);
+        }
         self.gtids.insert(gtid);
         Ok(())
+    }
+
+    /// Serialize as the compact comma-separated form MariaDB expects for
+    /// `@slave_connect_state` / `gtid_slave_pos` (e.g. `0-1-270,1-7-42`).
+    pub fn to_connect_state(&self) -> String {
+        self.gtids
+            .iter()
+            .map(|g| g.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
     }
 }
 

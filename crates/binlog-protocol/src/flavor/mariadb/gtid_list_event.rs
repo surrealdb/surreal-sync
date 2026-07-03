@@ -1,26 +1,27 @@
 use crate::error::Error;
-use crate::flavor::mariadb::gtid_list::MariaDbGtidList;
-use crate::shared::buf::read_u64_le;
+use crate::flavor::mariadb::gtid_list::{MariaDbGtid, MariaDbGtidList};
+use crate::shared::buf::{read_u32_le, read_u64_le};
 
+/// Parse a MariaDB `GTID_LIST` event body.
+///
+/// Layout: `count (u32 LE)` followed by `count` entries of
+/// `domain_id (u32 LE) + server_id (u32 LE) + seq_no (u64 LE)`.
 pub fn parse(body: &[u8]) -> Result<MariaDbGtidList, Error> {
     let mut payload = body;
-    let _count = read_u64_le(&mut payload)?;
+    let count = read_u32_le(&mut payload)? as usize;
     let mut list = MariaDbGtidList::default();
-    while payload.len() >= 4 + 4 + 8 {
-        let gtid = crate::flavor::mariadb::gtid_event::parse(payload)?;
-        if let crate::types::GtidMarker::MariaDb {
+    for _ in 0..count {
+        if payload.len() < 16 {
+            break;
+        }
+        let domain_id = read_u32_le(&mut payload)?;
+        let server_id = read_u32_le(&mut payload)?;
+        let sequence = read_u64_le(&mut payload)?;
+        list.add(MariaDbGtid {
             domain_id,
             server_id,
             sequence,
-        } = gtid
-        {
-            list.add(crate::flavor::mariadb::gtid_list::MariaDbGtid {
-                domain_id,
-                server_id,
-                sequence,
-            })?;
-        }
-        payload = &payload[4 + 4 + 8 + 1..];
+        })?;
     }
     Ok(list)
 }

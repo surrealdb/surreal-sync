@@ -118,9 +118,10 @@ impl EventParser {
             EventType::Query => EventBody::Query(QueryEvent::parse(body)?),
             EventType::Heartbeat => EventBody::Heartbeat(HeartbeatEvent::parse(body)?),
             EventType::MySqlGtid => EventBody::Gtid(crate::flavor::mysql::gtid_event::parse(body)?),
-            EventType::MariaDbGtid => {
-                EventBody::Gtid(crate::flavor::mariadb::gtid_event::parse(body)?)
-            }
+            EventType::MariaDbGtid => EventBody::Gtid(crate::flavor::mariadb::gtid_event::parse(
+                body,
+                header.server_id,
+            )?),
             EventType::TransactionPayload => {
                 let inner = crate::flavor::mysql::txn_payload::unwrap(body, self)?;
                 EventBody::TransactionPayload(inner)

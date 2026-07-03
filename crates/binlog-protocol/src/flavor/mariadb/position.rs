@@ -56,6 +56,12 @@ impl MariaDbPositionTracker {
     pub fn set_pending_gtid(&mut self, gtid: MariaDbGtid) {
         self.pending_gtid = Some(gtid);
     }
+
+    /// Enter GTID tracking mode seeded with `list`. Subsequent GTID events are
+    /// accumulated into the list and `position()` reports `MariaDbGtid`.
+    pub fn seed_gtid_list(&mut self, list: MariaDbGtidList) {
+        self.gtid_list = Some(list);
+    }
 }
 
 impl PositionTracker for MariaDbPositionTracker {
