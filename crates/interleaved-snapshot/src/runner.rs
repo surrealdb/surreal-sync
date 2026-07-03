@@ -165,6 +165,46 @@ where
     })
 }
 
+/// Snapshot a fixed set of tables (for example after an ad-hoc
+/// `execute-snapshot` signal during steady-state streaming) without re-running
+/// the initial [`WatermarkSource::snapshot_tables`] enumeration.
+pub async fn run_adhoc_snapshot_tables<S, K, C>(
+    source: &mut S,
+    sink: &K,
+    tables: Vec<TableSpec>,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+) -> Result<()>
+where
+    S: WatermarkSource,
+    K: SurrealSink,
+    C: SnapshotCheckpointer,
+{
+    let mut progress: Vec<TableState> = tables
+        .iter()
+        .map(|t| TableState {
+            name: t.table.clone(),
+            last_pk: None,
+            done: false,
+        })
+        .collect();
+    let mut peak_buffered_rows = 0usize;
+    for (table_index, spec) in tables.iter().enumerate() {
+        snapshot_one_table(
+            source,
+            sink,
+            config,
+            checkpointer,
+            spec,
+            table_index,
+            &mut progress,
+            &mut peak_buffered_rows,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// Snapshot a single table in primary-key-ordered chunks, applying the same
 /// low/high watermark dedup window per chunk and checkpointing after each one.
 #[allow(clippy::too_many_arguments)]

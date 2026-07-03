@@ -7,6 +7,7 @@ use anyhow::Result;
 use binlog_protocol::{CdcChange, EventBody, TableMapEvent};
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use chrono::{DateTime, Utc};
+use mysql_async::prelude::Queryable;
 use surreal_sink::SurrealSink;
 use tracing::{debug, info};
 
@@ -17,23 +18,22 @@ use crate::client::{
     use_database,
 };
 use crate::schema::{collect_mysql_database_schema, get_table_column_names_ordinal};
+use crate::signal::{create_signal_table_sql, poll_execute_snapshot_signals};
+use crate::watermark_source::{run_adhoc_snapshots_for_tables, BinlogWatermarkSource};
 use crate::SourceOpts;
 
-#[derive(Clone, Debug)]
-pub enum IncrementalRunMode {
-    Batch {
-        deadline: Option<DateTime<Utc>>,
-        until: Option<BinlogCheckpoint>,
-    },
-    Follow {
-        deadline: Option<DateTime<Utc>>,
-    },
-}
+/// Default chunk size for ad-hoc snapshots during steady-state streaming.
+pub const DEFAULT_STREAM_CHUNK_SIZE: usize = 1024;
 
 #[derive(Clone, Debug)]
 pub struct IncrementalSyncOptions {
-    pub run_mode: IncrementalRunMode,
+    /// Optional wall-clock stop for the stream phase.
+    pub deadline: Option<DateTime<Utc>>,
+    /// Optional exact binlog/GTID stop bound for the stream phase.
+    pub until: Option<BinlogCheckpoint>,
     pub checkpoint_interval: Duration,
+    /// Rows read per keyset chunk when handling ad-hoc snapshot signals.
+    pub chunk_size: usize,
     /// Cooperative cancellation signal. When cancelled, the sync loop flushes a
     /// final resumable checkpoint and returns cleanly (SIGINT/SIGTERM in the CLI;
     /// tests can trigger it directly). Defaults to a never-cancelled token.
@@ -41,18 +41,12 @@ pub struct IncrementalSyncOptions {
 }
 
 impl IncrementalSyncOptions {
-    pub fn batch(deadline: Option<DateTime<Utc>>, until: Option<BinlogCheckpoint>) -> Self {
+    pub fn stream(deadline: Option<DateTime<Utc>>, until: Option<BinlogCheckpoint>) -> Self {
         Self {
-            run_mode: IncrementalRunMode::Batch { deadline, until },
+            deadline,
+            until,
             checkpoint_interval: Duration::from_secs(10),
-            cancel: tokio_util::sync::CancellationToken::new(),
-        }
-    }
-
-    pub fn follow(deadline: Option<DateTime<Utc>>) -> Self {
-        Self {
-            run_mode: IncrementalRunMode::Follow { deadline },
-            checkpoint_interval: Duration::from_secs(10),
+            chunk_size: DEFAULT_STREAM_CHUNK_SIZE,
             cancel: tokio_util::sync::CancellationToken::new(),
         }
     }
@@ -74,7 +68,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
         surreal,
         from_opts,
         from_checkpoint,
-        IncrementalSyncOptions::batch(None, None),
+        IncrementalSyncOptions::stream(None, None),
         None,
     )
     .await
@@ -100,6 +94,7 @@ where
     let database = resolve_database(&pool, &from_opts).await?;
     let mut conn = pool.get_conn().await?;
     use_database(&mut conn, &database).await?;
+    conn.query_drop(create_signal_table_sql()).await?;
 
     let mut schema = collect_mysql_database_schema(&mut conn).await?;
     let mut json_columns =
@@ -123,7 +118,7 @@ where
 
     loop {
         // Graceful cancellation (SIGINT/SIGTERM): flush a final resumable
-        // checkpoint and stop cleanly. Checked in both batch and follow modes.
+        // checkpoint and stop cleanly.
         if options.cancel.is_cancelled() {
             persist_checkpoint(
                 checkpoint_manager,
@@ -136,7 +131,7 @@ where
             break;
         }
 
-        if let Some(deadline) = options_deadline(&options) {
+        if let Some(deadline) = options.deadline {
             if Utc::now() >= deadline {
                 persist_checkpoint(
                     checkpoint_manager,
@@ -150,7 +145,7 @@ where
             }
         }
 
-        if let Some(target) = options_until(&options) {
+        if let Some(target) = options.until.as_ref() {
             if client.current_position() >= target.position {
                 persist_checkpoint(
                     checkpoint_manager,
@@ -174,6 +169,19 @@ where
             .await?;
             last_checkpoint_emit = std::time::Instant::now();
         }
+
+        // Poll for ad-hoc execute-snapshot signals so `snapshot` subcommand
+        // requests are honored during steady-state streaming.
+        client = handle_snapshot_signals(
+            surreal,
+            &pool,
+            &database,
+            &from_opts,
+            client,
+            &mut table_filter,
+            &options,
+        )
+        .await?;
 
         let events = tokio::select! {
             result = client.next_events(32) => {
@@ -243,7 +251,7 @@ where
 
                     for row_change in rows.rows {
                         let position = client.current_position();
-                        if let Some(target) = options_until(&options) {
+                        if let Some(target) = options.until.as_ref() {
                             if position >= target.position {
                                 persist_checkpoint(
                                     checkpoint_manager,
@@ -321,6 +329,48 @@ where
     Ok(())
 }
 
+async fn handle_snapshot_signals<S: SurrealSink>(
+    surreal: &S,
+    pool: &mysql_async::Pool,
+    database: &str,
+    from_opts: &SourceOpts,
+    client: binlog_protocol::BinlogClient,
+    table_filter: &mut Option<Vec<String>>,
+    options: &IncrementalSyncOptions,
+) -> Result<binlog_protocol::BinlogClient> {
+    let signals = poll_execute_snapshot_signals(pool, database).await?;
+    if signals.is_empty() {
+        return Ok(client);
+    }
+
+    let mut wm = BinlogWatermarkSource::wrap_active_binlog_client(
+        pool.clone(),
+        database.to_string(),
+        from_opts,
+        client,
+        options.cancel.clone(),
+    )
+    .await?;
+
+    for signal in signals {
+        info!(
+            "ad-hoc snapshot signal {} requesting tables {:?}",
+            signal.id, signal.tables
+        );
+        if let Some(ref mut tables) = table_filter {
+            for name in &signal.tables {
+                if !tables.contains(name) {
+                    tables.push(name.clone());
+                }
+            }
+        }
+        run_adhoc_snapshots_for_tables(&mut wm, surreal, &signal.tables, options.chunk_size)
+            .await?;
+    }
+
+    Ok(wm.into_binlog_client())
+}
+
 /// Update the synced-table filter so a `RENAME TABLE old TO new` keeps tracking
 /// the renamed table under its new name. If the filter is `None` (all tables)
 /// there is nothing to adjust. When a synced `old` is renamed, `new` is added
@@ -341,21 +391,6 @@ fn apply_renames_to_filter(filter: &mut Option<Vec<String>>, renames: &[crate::d
                 rename.new
             );
         }
-    }
-}
-
-fn options_deadline(options: &IncrementalSyncOptions) -> Option<DateTime<Utc>> {
-    match &options.run_mode {
-        IncrementalRunMode::Batch { deadline, .. } | IncrementalRunMode::Follow { deadline } => {
-            *deadline
-        }
-    }
-}
-
-fn options_until(options: &IncrementalSyncOptions) -> Option<&BinlogCheckpoint> {
-    match &options.run_mode {
-        IncrementalRunMode::Batch { until, .. } => until.as_ref(),
-        IncrementalRunMode::Follow { .. } => None,
     }
 }
 

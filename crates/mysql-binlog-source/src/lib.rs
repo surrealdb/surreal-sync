@@ -22,8 +22,7 @@ pub use checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogStreamPosit
 pub use flavor::Flavor;
 pub use full_sync::{capture_head_checkpoint, run_full_sync, run_full_sync_cancellable};
 pub use incremental_sync::{
-    run_incremental_sync, run_incremental_sync_with_checkpoints, IncrementalRunMode,
-    IncrementalSyncOptions,
+    run_incremental_sync, run_incremental_sync_with_checkpoints, IncrementalSyncOptions,
 };
 pub use signal::SIGNAL_TABLE;
 pub use watermark_source::{

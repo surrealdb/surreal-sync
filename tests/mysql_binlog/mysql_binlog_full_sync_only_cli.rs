@@ -1,4 +1,4 @@
-//! MySQL binlog all-types full sync CLI E2E test.
+//! MySQL binlog all-types snapshot-only CLI E2E test.
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
@@ -7,7 +7,7 @@ use surreal_sync::testing::{
 };
 
 #[tokio::test]
-async fn test_mysql_binlog_full_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_mysql_binlog_snapshot_only_cli() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter("surreal_sync=info")
         .try_init()
@@ -39,7 +39,9 @@ async fn test_mysql_binlog_full_sync_cli() -> Result<(), Box<dyn std::error::Err
     let args = [
         "from",
         "mysql-binlog",
-        "full",
+        "sync",
+        "--snapshot-mode",
+        "only",
         "--connection-string",
         &mysql_conn_str,
         "--database",
@@ -57,12 +59,12 @@ async fn test_mysql_binlog_full_sync_cli() -> Result<(), Box<dyn std::error::Err
     ];
 
     let output = execute_surreal_sync(&args)?;
-    assert_cli_success(&output, "MySQL binlog all-types full sync CLI");
+    assert_cli_success(&output, "MySQL binlog snapshot-only sync CLI");
 
     assert_synced_auto(
         &conn,
         &dataset,
-        "MySQL binlog full sync CLI",
+        "MySQL binlog snapshot-only sync CLI",
         SourceDatabase::MySQL,
     )
     .await?;

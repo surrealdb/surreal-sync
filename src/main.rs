@@ -916,151 +916,22 @@ impl MySQLBinlogTlsArgs {
 
 #[derive(Subcommand)]
 enum MySQLBinlogCommands {
-    /// Full sync from MySQL/MariaDB binlog
-    Full(MySQLBinlogFullArgs),
-    /// Incremental sync from MySQL/MariaDB binlog
-    Incremental(MySQLBinlogIncrementalArgs),
-    /// Combined snapshot+stream full sync that hands off to incremental in one process
-    Sync(MySQLBinlogSyncArgs),
+    /// Snapshot and/or stream sync from MySQL/MariaDB binlog
+    Sync(Box<MySQLBinlogSyncArgs>),
     /// Trigger an ad-hoc snapshot of additional tables against a running `sync`
     Snapshot(MySQLBinlogSnapshotArgs),
 }
 
-#[derive(Args)]
-struct MySQLBinlogFullArgs {
-    /// MySQL connection string
-    #[arg(long, env = "MYSQL_URI")]
-    connection_string: String,
-
-    /// MySQL database name (extracted from connection string if not provided)
-    #[arg(long, env = "MYSQL_DATABASE")]
-    database: Option<String>,
-
-    /// Tables to sync (comma-separated, empty means all tables)
-    #[arg(long, value_delimiter = ',')]
-    tables: Vec<String>,
-
-    /// Unique replica server id for this binlog consumer (random if omitted)
-    #[arg(long)]
-    server_id: Option<u32>,
-
-    /// Override auto-detected engine flavor (mysql or mariadb)
-    #[arg(long, value_enum)]
-    flavor: Option<MySQLBinlogFlavorArg>,
-
-    /// MariaDB @slave_gtid_strict_mode for GTID resume sessions
-    #[arg(long, value_enum, default_value_t = MariaDbGtidStrictModeArg::default())]
-    mariadb_gtid_strict_mode: MariaDbGtidStrictModeArg,
-
-    #[command(flatten)]
-    tls: MySQLBinlogTlsArgs,
-
-    /// Target SurrealDB namespace
-    #[arg(long)]
-    to_namespace: String,
-
-    /// Target SurrealDB database
-    #[arg(long)]
-    to_database: String,
-
-    /// Directory to write checkpoint files (mutually exclusive with --checkpoints-surreal-table)
-    #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
-    checkpoint_dir: Option<String>,
-
-    /// SurrealDB table for storing checkpoints (mutually exclusive with --checkpoint-dir)
-    #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
-    checkpoints_surreal_table: Option<String>,
-
-    /// Full-sync strategy (interleaved-snapshot is the default for this source)
-    #[arg(long, value_enum, default_value_t = SyncStrategy::default())]
-    strategy: SyncStrategy,
-
-    /// Rows read per keyset chunk when using the interleaved-snapshot strategy
-    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
-    chunk_size: usize,
-
-    #[command(flatten)]
-    surreal: SurrealOpts,
-}
-
-#[derive(Args)]
-struct MySQLBinlogIncrementalArgs {
-    /// MySQL connection string
-    #[arg(long, env = "MYSQL_URI")]
-    connection_string: String,
-
-    /// MySQL database name (extracted from connection string if not provided)
-    #[arg(long, env = "MYSQL_DATABASE")]
-    database: Option<String>,
-
-    /// Tables to sync (comma-separated, empty means all tables)
-    #[arg(long, value_delimiter = ',')]
-    tables: Vec<String>,
-
-    /// Unique replica server id for this binlog consumer (random if omitted)
-    #[arg(long)]
-    server_id: Option<u32>,
-
-    /// Override auto-detected engine flavor (mysql or mariadb)
-    #[arg(long, value_enum)]
-    flavor: Option<MySQLBinlogFlavorArg>,
-
-    /// MariaDB @slave_gtid_strict_mode for GTID resume sessions
-    #[arg(long, value_enum, default_value_t = MariaDbGtidStrictModeArg::default())]
-    mariadb_gtid_strict_mode: MariaDbGtidStrictModeArg,
-
-    #[command(flatten)]
-    tls: MySQLBinlogTlsArgs,
-
-    /// Target SurrealDB namespace
-    #[arg(long)]
-    to_namespace: String,
-
-    /// Target SurrealDB database
-    #[arg(long)]
-    to_database: String,
-
-    /// Start incremental sync from this checkpoint (e.g. mysql-binlog:file:mysql-bin.000003:195).
-    /// Use `head` to start from the current master position. If omitted, the
-    /// checkpoint is read from the configured checkpoint store (starting at head
-    /// when the store is empty).
-    #[arg(long)]
-    incremental_from: Option<String>,
-
-    /// SurrealDB table for reading/writing checkpoints (alternative to --incremental-from)
-    #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
-    checkpoints_surreal_table: Option<String>,
-
-    /// Directory for reading/writing binlog checkpoints
-    #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
-    checkpoint_dir: Option<String>,
-
-    /// Stop incremental sync when reaching this checkpoint (optional)
-    #[arg(long, conflicts_with = "until")]
-    incremental_to: Option<String>,
-
-    /// Stop batch incremental sync when reaching this binlog checkpoint
-    #[arg(long, conflicts_with = "incremental_to")]
-    until: Option<String>,
-
-    /// Run continuously until shutdown/deadline/cancel
-    #[arg(long, conflicts_with = "batch")]
-    follow: bool,
-
-    /// Run bounded catch-up mode (default for incremental)
-    #[arg(long, conflicts_with = "follow")]
-    batch: bool,
-
-    /// Persist stream checkpoints at this interval in seconds
-    #[arg(long, default_value = "10")]
-    checkpoint_interval: u64,
-
-    /// Maximum time to run incremental sync (seconds); default is 3600 in batch mode
-    #[arg(long)]
-    timeout: Option<String>,
-
-    #[command(flatten)]
-    surreal: SurrealOpts,
+/// Controls whether `sync` runs an initial snapshot, streams only, or snapshots only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum BinlogSnapshotModeArg {
+    /// Interleaved snapshot then continuous stream (default).
+    #[default]
+    Initial,
+    /// Stream only from `--from` or the checkpoint store (no snapshot).
+    Never,
+    /// Snapshot only, then exit (no stream).
+    Only,
 }
 
 /// Combined snapshot+stream sync for MySQL/MariaDB binlog.
@@ -1101,7 +972,29 @@ struct MySQLBinlogSyncArgs {
     #[arg(long)]
     to_database: String,
 
-    /// Rows read per keyset chunk during the snapshot phase
+    /// Snapshot phase: initial (snapshot then stream), never (stream only), only (snapshot then exit)
+    #[arg(long, value_enum, default_value_t = BinlogSnapshotModeArg::default())]
+    snapshot_mode: BinlogSnapshotModeArg,
+
+    /// Stream resume/start position (`head` = current master, or a checkpoint string).
+    /// Used with `never` and when resuming `initial`. If omitted, reads from the checkpoint store
+    /// (falling back to head when empty).
+    #[arg(long)]
+    from: Option<String>,
+
+    /// Stop the stream phase after this wall-clock duration (e.g. 3600s, 30m, 300).
+    #[arg(long, value_name = "DURATION", conflicts_with = "stop_at")]
+    stop_after: Option<String>,
+
+    /// Stop the stream phase at this binlog checkpoint
+    #[arg(long, value_name = "CHECKPOINT", conflicts_with = "stop_after")]
+    stop_at: Option<String>,
+
+    /// Full-sync strategy for the snapshot phase (interleaved-snapshot is the default)
+    #[arg(long, value_enum, default_value_t = SyncStrategy::default())]
+    strategy: SyncStrategy,
+
+    /// Rows read per keyset chunk during snapshot phases
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
 
@@ -1113,25 +1006,9 @@ struct MySQLBinlogSyncArgs {
     #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
     checkpoints_surreal_table: Option<String>,
 
-    /// Run continuously after snapshot handoff (default for sync)
-    #[arg(long, conflicts_with = "batch")]
-    follow: bool,
-
-    /// Stop after bounded catch-up instead of following continuously
-    #[arg(long, conflicts_with = "follow")]
-    batch: bool,
-
-    /// Stop batch/follow stream phase at this binlog checkpoint
-    #[arg(long)]
-    until: Option<String>,
-
     /// Persist stream checkpoints at this interval in seconds
     #[arg(long, default_value = "10")]
     checkpoint_interval: u64,
-
-    /// Maximum time to run the stream phase (seconds); omitted sync follows indefinitely
-    #[arg(long)]
-    timeout: Option<String>,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -1620,11 +1497,7 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
             MySQLCommands::Snapshot(args) => from::mysql::run_snapshot_signal(args).await?,
         },
         FromSource::MySQLBinlog { command } => match command {
-            MySQLBinlogCommands::Full(args) => from::mysql_binlog::run_full(args).await?,
-            MySQLBinlogCommands::Incremental(args) => {
-                from::mysql_binlog::run_incremental(args).await?
-            }
-            MySQLBinlogCommands::Sync(args) => from::mysql_binlog::run_sync(args).await?,
+            MySQLBinlogCommands::Sync(args) => from::mysql_binlog::run_sync(*args).await?,
             MySQLBinlogCommands::Snapshot(args) => {
                 from::mysql_binlog::run_snapshot_signal(args).await?
             }

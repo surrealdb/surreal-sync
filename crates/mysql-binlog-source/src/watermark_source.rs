@@ -8,8 +8,9 @@ use binlog_protocol::{BinlogClient, CdcChange, EventBody, RowChange, TableMapEve
 use mysql_async::{prelude::*, Pool};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
-    run_interleaved_snapshot, InterleavedSnapshotConfig, NoopCheckpointer, PkTuple, SnapshotSignal,
-    StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
+    run_adhoc_snapshot_tables, run_interleaved_snapshot, InterleavedSnapshotConfig,
+    NoopCheckpointer, PkTuple, SnapshotSignal, StreamEvent, TableSpec, WatermarkKind,
+    WatermarkSource,
 };
 use sync_core::{
     DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,
@@ -24,7 +25,9 @@ use crate::client::{
 };
 use crate::full_sync::{get_primary_key_columns, read_table_chunk};
 use crate::schema::{collect_mysql_database_schema, get_table_column_names_ordinal};
-use crate::signal::{create_signal_table_sql, EXECUTE_SNAPSHOT_KIND, SIGNAL_TABLE};
+use crate::signal::{
+    create_signal_table_sql, poll_execute_snapshot_signals, EXECUTE_SNAPSHOT_KIND, SIGNAL_TABLE,
+};
 use crate::SourceOpts;
 use mysql_types::RowConversionConfig;
 
@@ -115,6 +118,67 @@ impl BinlogWatermarkSource {
     pub fn with_cancel(mut self, cancel: tokio_util::sync::CancellationToken) -> Self {
         self.cancel = cancel;
         self
+    }
+
+    /// Wrap an already-positioned binlog client for ad-hoc snapshot windows
+    /// during steady-state incremental streaming (same replica session).
+    pub(crate) async fn wrap_active_binlog_client(
+        pool: Pool,
+        database: String,
+        from_opts: &SourceOpts,
+        binlog: BinlogClient,
+        cancel: tokio_util::sync::CancellationToken,
+    ) -> Result<Self> {
+        let mut conn = pool.get_conn().await?;
+        use_database(&mut conn, &database).await?;
+        conn.query_drop(create_signal_table_sql()).await?;
+
+        let schema = collect_mysql_database_schema(&mut conn).await?;
+        let json_columns =
+            surreal_sync_mysql_trigger_source::json_columns::get_json_columns(&mut conn, &database)
+                .await?;
+
+        let mut tables = Vec::new();
+        let mut pk_by_table = HashMap::new();
+        let mut column_names_by_table = HashMap::new();
+        for table_name in get_snapshot_tables(&mut conn, &database, from_opts).await? {
+            let pk_columns = get_primary_key_columns(&mut conn, &database, &table_name).await?;
+            if pk_columns.is_empty() {
+                return Err(anyhow!(
+                    "Table '{table_name}' has no primary key; watermark snapshot requires a primary key"
+                ));
+            }
+            column_names_by_table.insert(
+                table_name.clone(),
+                get_table_column_names_ordinal(&mut conn, &table_name).await?,
+            );
+            pk_by_table.insert(table_name.clone(), pk_columns.clone());
+            tables.push(TableSpec::new(table_name, pk_columns));
+        }
+
+        let conversion_by_table = conversions_from_schema(&schema, &json_columns);
+        let confirmed = BinlogStreamPosition::from(get_current_checkpoint(&binlog)?);
+
+        Ok(Self {
+            pool,
+            database,
+            binlog,
+            schema,
+            json_columns,
+            column_names_by_table,
+            tables,
+            pk_by_table: Mutex::new(pk_by_table),
+            conversion_by_table,
+            table_maps: HashMap::new(),
+            confirmed,
+            watermarks: Mutex::new(WatermarkIds::default()),
+            cancel,
+        })
+    }
+
+    /// Return the underlying binlog client after ad-hoc snapshot work.
+    pub(crate) fn into_binlog_client(self) -> BinlogClient {
+        self.binlog
     }
 
     /// The stream position captured at connect time — the streaming lower bound
@@ -375,31 +439,7 @@ impl WatermarkSource for BinlogWatermarkSource {
     }
 
     async fn read_signals(&mut self) -> Result<Vec<SnapshotSignal>> {
-        let mut conn = self.pool.get_conn().await?;
-        use_database(&mut conn, &self.database).await?;
-        let rows: Vec<mysql_async::Row> = conn
-            .exec(
-                format!(
-                    "SELECT id, tables FROM {SIGNAL_TABLE} \
-                     WHERE kind = ? AND consumed = 0 ORDER BY id"
-                ),
-                (EXECUTE_SNAPSHOT_KIND,),
-            )
-            .await?;
-
-        let mut signals = Vec::new();
-        for row in rows {
-            let id: String = row.get(0).ok_or_else(|| anyhow!("missing signal id"))?;
-            let tables_json: Option<String> = row.get(1);
-            let tables = parse_signal_tables(tables_json.as_deref());
-            conn.exec_drop(
-                format!("UPDATE {SIGNAL_TABLE} SET consumed = 1 WHERE id = ?"),
-                (id.clone(),),
-            )
-            .await?;
-            signals.push(SnapshotSignal { id, tables });
-        }
-        Ok(signals)
+        poll_execute_snapshot_signals(&self.pool, &self.database).await
     }
 
     async fn resolve_tables(&self, names: &[String]) -> Result<Vec<TableSpec>> {
@@ -504,10 +544,19 @@ fn normalize_row_pk(row: &mut UniversalRow, pk_columns: &[String]) {
     }
 }
 
-fn parse_signal_tables(payload: Option<&str>) -> Vec<String> {
-    payload
-        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
-        .unwrap_or_default()
+/// Run watermark-window snapshots for tables named in ad-hoc signals.
+pub(crate) async fn run_adhoc_snapshots_for_tables<S: SurrealSink>(
+    source: &mut BinlogWatermarkSource,
+    surreal: &S,
+    table_names: &[String],
+    chunk_size: usize,
+) -> Result<()> {
+    if table_names.is_empty() {
+        return Ok(());
+    }
+    let specs = source.resolve_tables(table_names).await?;
+    let config = InterleavedSnapshotConfig { chunk_size };
+    run_adhoc_snapshot_tables(source, surreal, specs, &config, &mut NoopCheckpointer).await
 }
 
 async fn get_snapshot_tables(

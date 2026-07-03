@@ -1,4 +1,4 @@
-//! MySQL binlog all-types incremental sync CLI E2E test.
+//! MySQL binlog stream-only CLI E2E test (snapshot then catch-up stream).
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::surreal::{assert_synced_auto, cleanup_surrealdb_auto, connect_auto};
@@ -7,7 +7,7 @@ use surreal_sync::testing::{
 };
 
 #[tokio::test]
-async fn test_mysql_binlog_incremental_sync_cli() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_mysql_binlog_stream_only_cli() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter("surreal_sync=info")
         .try_init()
@@ -18,7 +18,7 @@ async fn test_mysql_binlog_incremental_sync_cli() -> Result<(), Box<dyn std::err
     let test_id = generate_test_id();
     let dataset = create_unified_full_dataset();
 
-    let checkpoint_dir = format!(".test-mysql-binlog-incr-cli-checkpoints-{test_id}");
+    let checkpoint_dir = format!(".test-mysql-binlog-stream-cli-checkpoints-{test_id}");
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
     let test_conn_str =
@@ -38,10 +38,12 @@ async fn test_mysql_binlog_incremental_sync_cli() -> Result<(), Box<dyn std::err
     cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     let mysql_conn_str = test_conn_str.clone();
-    let full_sync_args = [
+    let snapshot_args = [
         "from",
         "mysql-binlog",
-        "full",
+        "sync",
+        "--snapshot-mode",
+        "only",
         "--connection-string",
         &mysql_conn_str,
         "--database",
@@ -60,8 +62,8 @@ async fn test_mysql_binlog_incremental_sync_cli() -> Result<(), Box<dyn std::err
         &checkpoint_dir,
     ];
 
-    let output = execute_surreal_sync(&full_sync_args)?;
-    assert_cli_success(&output, "MySQL binlog all-types full sync CLI");
+    let output = execute_surreal_sync(&snapshot_args)?;
+    assert_cli_success(&output, "MySQL binlog snapshot phase CLI");
 
     surreal_sync::testing::checkpoint::verify_t1_t2_checkpoints(&checkpoint_dir)?;
 
@@ -74,10 +76,12 @@ async fn test_mysql_binlog_incremental_sync_cli() -> Result<(), Box<dyn std::err
         checkpoint_file.parse()?;
     let checkpoint_string = binlog_checkpoint.to_cli_string();
 
-    let incremental_args = [
+    let stream_args = [
         "from",
         "mysql-binlog",
-        "incremental",
+        "sync",
+        "--snapshot-mode",
+        "never",
         "--connection-string",
         &mysql_conn_str,
         "--database",
@@ -92,23 +96,19 @@ async fn test_mysql_binlog_incremental_sync_cli() -> Result<(), Box<dyn std::err
         "root",
         "--surreal-password",
         "root",
-        "--incremental-from",
+        "--from",
         &checkpoint_string,
-        "--batch",
-        "--timeout",
-        "10",
+        "--stop-after",
+        "10s",
     ];
 
-    let incremental_output = execute_surreal_sync(&incremental_args)?;
-    assert_cli_success(
-        &incremental_output,
-        "MySQL binlog all-types incremental sync CLI",
-    );
+    let stream_output = execute_surreal_sync(&stream_args)?;
+    assert_cli_success(&stream_output, "MySQL binlog stream-only sync CLI");
 
     assert_synced_auto(
         &conn,
         &dataset,
-        "MySQL binlog incremental sync CLI",
+        "MySQL binlog stream-only sync CLI",
         SourceDatabase::MySQL,
     )
     .await?;

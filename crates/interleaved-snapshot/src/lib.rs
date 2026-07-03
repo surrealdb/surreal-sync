@@ -33,8 +33,8 @@ mod tests;
 
 pub use checkpointer::{ManagerCheckpointer, NoopCheckpointer, SnapshotCheckpointer};
 pub use runner::{
-    run_interleaved_snapshot, InterleavedSnapshotConfig, InterleavedSnapshotResult,
-    DEFAULT_CHUNK_SIZE,
+    run_adhoc_snapshot_tables, run_interleaved_snapshot, InterleavedSnapshotConfig,
+    InterleavedSnapshotResult, DEFAULT_CHUNK_SIZE,
 };
 pub use source::WatermarkSource;
 pub use types::{PkTuple, SnapshotSignal, StreamEvent, StreamPosition, TableSpec, WatermarkKind};

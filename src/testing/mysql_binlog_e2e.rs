@@ -211,7 +211,7 @@ async fn run_binlog_incremental_e2e_inner(
                 &sink,
                 source_opts,
                 sync_checkpoint,
-                IncrementalSyncOptions::batch(
+                IncrementalSyncOptions::stream(
                     Some(chrono::Utc::now() + chrono::Duration::seconds(10)),
                     None,
                 ),
@@ -228,7 +228,7 @@ async fn run_binlog_incremental_e2e_inner(
                 &sink,
                 source_opts,
                 sync_checkpoint,
-                IncrementalSyncOptions::batch(
+                IncrementalSyncOptions::stream(
                     Some(chrono::Utc::now() + chrono::Duration::seconds(10)),
                     None,
                 ),

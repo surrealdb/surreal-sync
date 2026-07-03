@@ -221,7 +221,7 @@ async fn mysql_partial_json_update_is_applied_as_full_json_change() -> Result<()
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::batch(
+        IncrementalSyncOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(5)),
             None,
         ),
@@ -299,7 +299,7 @@ async fn gtid_checkpoint_resume_applies_subsequent_changes() -> Result<()> {
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::batch(
+        IncrementalSyncOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -374,7 +374,7 @@ async fn ddl_refreshes_schema_before_subsequent_rows() -> Result<()> {
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::batch(
+        IncrementalSyncOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -458,7 +458,7 @@ async fn mariadb_gtid_checkpoint_resume_applies_subsequent_changes() -> Result<(
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::batch(
+        IncrementalSyncOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -654,7 +654,7 @@ async fn sequential_full_sync_captures_real_master_position() -> Result<()> {
         &inc_sink,
         inc_opts,
         end,
-        IncrementalSyncOptions::batch(
+        IncrementalSyncOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -795,7 +795,7 @@ async fn rename_table_mid_stream_keeps_tracking_new_name() -> Result<()> {
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::batch(
+        IncrementalSyncOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -870,7 +870,7 @@ async fn cancellation_stops_follow_and_flushes_resumable_checkpoint() -> Result<
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::follow(None).with_cancel(cancel),
+        IncrementalSyncOptions::stream(None, None).with_cancel(cancel),
         Some(&manager),
     )
     .await?;
@@ -906,7 +906,7 @@ async fn cancellation_stops_follow_and_flushes_resumable_checkpoint() -> Result<
         &resume_sink,
         resume_opts,
         persisted,
-        IncrementalSyncOptions::batch(
+        IncrementalSyncOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -964,7 +964,7 @@ async fn start_at_head_checkpoint_resumes_from_current_position() -> Result<()> 
         &sink,
         source_opts,
         head,
-        IncrementalSyncOptions::batch(
+        IncrementalSyncOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -990,6 +990,82 @@ async fn start_at_head_checkpoint_resumes_from_current_position() -> Result<()> 
     assert!(
         !widget_ids.contains(&1),
         "the pre-head insert (id=1) must NOT be replayed when starting at head, got {widget_ids:?}"
+    );
+
+    drop(conn);
+    pool.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn steady_state_stream_honors_execute_snapshot_signal() -> Result<()> {
+    use surreal_sync_mysql_binlog_source::request_snapshot;
+
+    crate::shared::init_logging();
+    let container = crate::shared::shared_mysql_binlog().await;
+    let db_name = "integ_adhoc_stream";
+    let conn_str = crate::shared::create_test_db(container, db_name).await?;
+
+    let pool = mysql_async::Pool::from_url(&conn_str)?;
+    let mut conn = pool.get_conn().await?;
+    conn.query_drop("CREATE TABLE items (id INT PRIMARY KEY, val INT)")
+        .await?;
+    for i in 1..=10 {
+        conn.exec_drop("INSERT INTO items (id, val) VALUES (?, ?)", (i, i * 10))
+            .await?;
+    }
+
+    let mut client = connect_client(&conn_str, 9_003_070).await?;
+    crate::shared::start_binlog_at_master_end(&mut client, &conn_str).await?;
+    let checkpoint = BinlogCheckpoint {
+        flavor: container.flavor(),
+        position: client.current_position(),
+        timestamp: chrono::Utc::now(),
+    };
+    drop(client);
+
+    conn.query_drop("CREATE TABLE extra (id INT PRIMARY KEY, score INT)")
+        .await?;
+    for i in 1..=8 {
+        conn.exec_drop("INSERT INTO extra (id, score) VALUES (?, ?)", (i, i * 7))
+            .await?;
+    }
+    request_snapshot(&pool, db_name, &["extra".to_string()]).await?;
+
+    let sink = crate::common::MemSink::default();
+    let source_opts = SourceOpts {
+        connection_string: conn_str.clone(),
+        database: Some(db_name.to_string()),
+        tables: vec!["items".to_string()],
+        server_id: Some(9_003_071),
+        flavor: Some(container.flavor()),
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+    };
+
+    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+        &sink,
+        source_opts,
+        checkpoint,
+        IncrementalSyncOptions::stream(
+            Some(chrono::Utc::now() + chrono::Duration::seconds(60)),
+            None,
+        ),
+        None,
+    )
+    .await?;
+
+    let items = sink.value_map("items", "val").await;
+    assert!(
+        items.is_empty(),
+        "items were inserted before stream start and are not in the table filter snapshot path"
+    );
+    let extra = sink.value_map("extra", "score").await;
+    assert_eq!(
+        extra.len(),
+        8,
+        "extra table should be snapshotted via execute-snapshot signal during stream"
     );
 
     drop(conn);
