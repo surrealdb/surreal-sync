@@ -142,21 +142,24 @@ pub async fn encode_binlog_dump_async(
     channel.write_command(0x12, &payload).await
 }
 
+/// COM_REGISTER_SLAVE replica host/username/password are protocol placeholders after client
+/// auth; MySQL requires length-prefixed empty strings, not real credentials.
+const REGISTER_SLAVE_UNUSED_FIELD: &str = "";
+
+fn write_length_prefixed_string(buf: &mut Vec<u8>, value: &str) {
+    buf.push(value.len() as u8);
+    buf.extend_from_slice(value.as_bytes());
+}
+
 pub async fn encode_register_slave(
     channel: &mut PacketChannel,
     server_id: u32,
-    host: &str,
-    username: &str,
-    password: &str,
 ) -> Result<(), Error> {
     let mut payload = Vec::new();
     payload.extend_from_slice(&server_id.to_le_bytes());
-    payload.push(host.len() as u8);
-    payload.extend_from_slice(host.as_bytes());
-    payload.push(username.len() as u8);
-    payload.extend_from_slice(username.as_bytes());
-    payload.push(password.len() as u8);
-    payload.extend_from_slice(password.as_bytes());
+    write_length_prefixed_string(&mut payload, REGISTER_SLAVE_UNUSED_FIELD);
+    write_length_prefixed_string(&mut payload, REGISTER_SLAVE_UNUSED_FIELD);
+    write_length_prefixed_string(&mut payload, REGISTER_SLAVE_UNUSED_FIELD);
     payload.extend_from_slice(&3306u16.to_le_bytes());
     payload.extend_from_slice(&0u32.to_le_bytes()); // replication rank
     payload.extend_from_slice(&0u32.to_le_bytes()); // master server id

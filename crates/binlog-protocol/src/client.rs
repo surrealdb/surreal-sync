@@ -148,7 +148,7 @@ impl BinlogClient {
             .ok_or_else(|| Error::Protocol("not connected".into()))?;
 
         channel.reset_seq();
-        encode_register_slave(channel, self.opts.server_id, "", "", "").await?;
+        encode_register_slave(channel, self.opts.server_id).await?;
 
         if self.flavor == Flavor::MySql || self.flavor == Flavor::MariaDb {
             channel.reset_seq();
