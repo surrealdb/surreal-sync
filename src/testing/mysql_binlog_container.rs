@@ -1,9 +1,10 @@
 //! Docker container management for MySQL/MariaDB binlog CDC testing.
 //!
-//! Uses stock `mysql:8.0` / `mariadb:11.4` images with replication server flags
-//! passed as `docker run` command arguments (no custom Dockerfile).
+//! Uses stock MySQL/MariaDB images (see `scripts/test-images.env`) with replication
+//! server flags passed as `docker run` command arguments (no custom Dockerfile).
 
 use anyhow::{Context, Result};
+use binlog_protocol::test_images::{mariadb_binlog_image, mysql_binlog_image};
 use binlog_protocol::Flavor;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -22,12 +23,14 @@ impl MySQLBinlogContainer {
     /// Creates a MySQL 8.0 binlog container configuration. Call [`start`](Self::start)
     /// before using the connection.
     pub fn new(container_name: &str) -> Self {
-        Self::with_image(container_name, "mysql:8.0", Flavor::MySql)
+        let image = mysql_binlog_image();
+        Self::with_image(container_name, &image, Flavor::MySql)
     }
 
-    /// Creates a MariaDB 11.4 binlog container configuration (pinned for 11.4+ position tests).
+    /// Creates a MariaDB binlog container configuration (pinned for 11.4+ position tests).
     pub fn mariadb(container_name: &str) -> Self {
-        Self::with_image(container_name, "mariadb:11.4", Flavor::MariaDb)
+        let image = mariadb_binlog_image();
+        Self::with_image(container_name, &image, Flavor::MariaDb)
     }
 
     /// Creates a container configuration for an arbitrary MySQL-compatible image.

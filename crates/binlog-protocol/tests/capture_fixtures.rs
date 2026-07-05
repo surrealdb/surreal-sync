@@ -9,6 +9,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use binlog_protocol::test_images::{mariadb_binlog_image, mysql_binlog_image};
 use binlog_protocol::{BinlogClient, EventBody, Flavor, ReplicaOptions, ResumePosition, SslMode};
 use captured::support::{
     capture_sql_block, delete_sql, fixture_paths, mariadb_txn_sql, primary_insert_sql, update_sql,
@@ -51,11 +52,13 @@ struct BinlogContainer {
 
 impl BinlogContainer {
     fn mysql(name: &str) -> Self {
-        Self::with_image(name, "mysql:8.0", Flavor::MySql)
+        let image = mysql_binlog_image();
+        Self::with_image(name, &image, Flavor::MySql)
     }
 
     fn mariadb(name: &str) -> Self {
-        Self::with_image(name, "mariadb:11.4", Flavor::MariaDb)
+        let image = mariadb_binlog_image();
+        Self::with_image(name, &image, Flavor::MariaDb)
     }
 
     fn with_image(name: &str, image: &str, flavor: Flavor) -> Self {

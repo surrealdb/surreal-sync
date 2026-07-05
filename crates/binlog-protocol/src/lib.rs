@@ -12,6 +12,8 @@ mod options;
 mod shared;
 mod types;
 
+pub mod test_images;
+
 pub use bytes_reader::BinlogBytesReader;
 pub use cdc_stream::{CdcChange, CdcStream};
 pub use client::BinlogClient;

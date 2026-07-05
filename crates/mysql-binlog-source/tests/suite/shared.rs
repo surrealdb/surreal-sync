@@ -5,6 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use binlog_protocol::test_images::{mariadb_binlog_image, mysql_binlog_image};
 use binlog_protocol::{BinlogClient, Flavor, MariaDbGtidList, ResumePosition};
 use tokio::sync::OnceCell;
 
@@ -44,11 +45,13 @@ pub struct BinlogContainer {
 
 impl BinlogContainer {
     pub fn mysql(name: &str) -> Self {
-        Self::with_image(name, "mysql:8.0", Flavor::MySql)
+        let image = mysql_binlog_image();
+        Self::with_image(name, &image, Flavor::MySql)
     }
 
     pub fn mariadb(name: &str) -> Self {
-        Self::with_image(name, "mariadb:11.4", Flavor::MariaDb)
+        let image = mariadb_binlog_image();
+        Self::with_image(name, &image, Flavor::MariaDb)
     }
 
     fn with_image(name: &str, image: &str, flavor: Flavor) -> Self {

@@ -438,11 +438,12 @@ MariaDB behaves like MySQL for surreal-sync binlog CDC, with these nuances:
 
 ## Manual smoke test
 
-Quick end-to-end check with Docker (`mysql:8.0` / `mariadb:11.4`). Health checks and SQL use **`docker exec`** — host `mysql`/`mysqladmin` are not required. Smoke runs use bounded **`--stop-after`**; omit stop flags for long-lived replication.
+Quick end-to-end check with Docker. Image tags match `scripts/test-images.env` (same as `make test` and CI). Health checks and SQL use **`docker exec`** — host `mysql`/`mysqladmin` are not required. Smoke runs use bounded **`--stop-after`**; omit stop flags for long-lived replication.
 
 ### Shared setup
 
 ```bash
+set -a && source scripts/test-images.env && set +a
 cargo build
 export SYNC=./target/debug/surreal-sync
 
@@ -461,7 +462,7 @@ export DB=myapp
 docker run --name mysql-binlog-smoke \
   -e MYSQL_ROOT_PASSWORD=testpass \
   -e MYSQL_DATABASE=myapp \
-  -p 3306:3306 -d mysql:8.0 \
+  -p 3306:3306 -d "$MYSQL_BINLOG_IMAGE" \
   --log-bin=mysql-bin \
   --binlog-format=ROW \
   --gtid-mode=ON \
@@ -520,7 +521,7 @@ MariaDB images ship `mariadb-admin` / `mariadb` instead of `mysqladmin` / `mysql
 docker run --name mariadb-binlog-smoke \
   -e MYSQL_ROOT_PASSWORD=testpass \
   -e MYSQL_DATABASE=myapp \
-  -p 3307:3306 -d mariadb:11.4 \
+  -p 3307:3306 -d "$MARIADB_BINLOG_IMAGE" \
   --log-bin=mysql-bin \
   --binlog-format=ROW \
   --server-id=1 \
