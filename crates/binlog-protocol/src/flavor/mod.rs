@@ -1,10 +1,6 @@
 pub mod mariadb;
 pub mod mysql;
 
-#[allow(dead_code)]
-use crate::error::Error;
-use crate::options::ResumePosition;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Flavor {
     MySql,
@@ -22,11 +18,4 @@ impl Flavor {
             Flavor::MariaDb => "mariadb",
         }
     }
-}
-
-#[allow(dead_code)]
-pub trait ReplicationConnector: Send {
-    fn flavor(&self) -> Flavor;
-    fn register(&mut self) -> Result<(), Error>;
-    fn dump(&mut self, resume: &ResumePosition) -> Result<(), Error>;
 }
