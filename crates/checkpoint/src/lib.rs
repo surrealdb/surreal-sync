@@ -149,17 +149,19 @@ pub async fn get_checkpoint_for_phase<P: AsRef<std::path::Path>>(
     let phase_str = phase.as_str();
 
     // Find checkpoint file matching the phase
-    let checkpoint_files: Vec<_> = std::fs::read_dir(checkpoint_dir.as_ref())?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.contains(phase_str) && name.ends_with(".json"))
-                .unwrap_or(false)
-        })
-        .collect();
+    let mut checkpoint_files = Vec::new();
+    let mut entries = tokio::fs::read_dir(checkpoint_dir.as_ref()).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.contains(phase_str) && name.ends_with(".json"))
+            .unwrap_or(false)
+        {
+            checkpoint_files.push(path);
+        }
+    }
 
     if checkpoint_files.is_empty() {
         return Err(anyhow::anyhow!(
@@ -168,7 +170,7 @@ pub async fn get_checkpoint_for_phase<P: AsRef<std::path::Path>>(
     }
 
     // Read the matching checkpoint file - it's stored as StoredCheckpoint format
-    let checkpoint_content = std::fs::read_to_string(checkpoint_files[0].path())?;
+    let checkpoint_content = tokio::fs::read_to_string(&checkpoint_files[0]).await?;
     let stored: StoredCheckpoint = serde_json::from_str(&checkpoint_content)?;
 
     // Convert StoredCheckpoint to CheckpointFile
@@ -210,24 +212,26 @@ pub async fn get_first_checkpoint_from_dir<P: AsRef<std::path::Path>>(
     checkpoint_dir: P,
 ) -> anyhow::Result<CheckpointFile> {
     // Find all JSON files in the checkpoint directory
-    let checkpoint_files: Vec<_> = std::fs::read_dir(checkpoint_dir.as_ref())?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext == "json")
-                .unwrap_or(false)
-        })
-        .collect();
+    let mut checkpoint_files = Vec::new();
+    let mut entries = tokio::fs::read_dir(checkpoint_dir.as_ref()).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext == "json")
+            .unwrap_or(false)
+        {
+            checkpoint_files.push(path);
+        }
+    }
 
     if checkpoint_files.is_empty() {
         return Err(anyhow::anyhow!("No checkpoint files found in directory"));
     }
 
     // Read the first checkpoint file - it's stored as StoredCheckpoint format
-    let checkpoint_content = std::fs::read_to_string(checkpoint_files[0].path())?;
+    let checkpoint_content = tokio::fs::read_to_string(&checkpoint_files[0]).await?;
     let stored: StoredCheckpoint = serde_json::from_str(&checkpoint_content)?;
 
     // Parse phase string to SyncPhase enum

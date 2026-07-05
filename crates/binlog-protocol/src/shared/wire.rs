@@ -1,5 +1,4 @@
-use std::fs::File;
-use std::io::BufReader;
+use std::io::Cursor;
 use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -110,7 +109,7 @@ impl PacketChannel {
     }
 
     async fn upgrade_tls(&mut self, host: &str, options: &SslOptions) -> Result<(), Error> {
-        let config = tls_config(options)?;
+        let config = tls_config(options).await?;
         let server_name = ServerName::try_from(host.to_string())
             .map_err(|e| Error::Ssl(format!("invalid TLS server name '{host}': {e}")))?;
         let (placeholder, _) = tokio::io::duplex(0);
@@ -397,10 +396,10 @@ fn auth_switch_response(
     Err(Error::Auth(format!("unsupported auth plugin: {plugin}")))
 }
 
-fn tls_config(options: &SslOptions) -> Result<ClientConfig, Error> {
+async fn tls_config(options: &SslOptions) -> Result<ClientConfig, Error> {
     let mut roots = RootCertStore::empty();
     if let Some(ca) = &options.ca {
-        let certs = load_certs(ca)?;
+        let certs = load_certs(ca).await?;
         let (added, ignored) = roots.add_parsable_certificates(certs);
         if added == 0 {
             return Err(Error::Ssl(format!(
@@ -414,8 +413,8 @@ fn tls_config(options: &SslOptions) -> Result<ClientConfig, Error> {
     let builder = ClientConfig::builder().with_root_certificates(roots);
     match (&options.cert, &options.key) {
         (Some(cert), Some(key)) => {
-            let certs = load_certs(cert)?;
-            let key = load_private_key(key)?;
+            let certs = load_certs(cert).await?;
+            let key = load_private_key(key).await?;
             builder
                 .with_client_auth_cert(certs, key)
                 .map_err(|e| Error::Ssl(format!("invalid client TLS certificate/key: {e}")))
@@ -427,19 +426,21 @@ fn tls_config(options: &SslOptions) -> Result<ClientConfig, Error> {
     }
 }
 
-fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>, Error> {
-    let file = File::open(path)
+async fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>, Error> {
+    let bytes = tokio::fs::read(path)
+        .await
         .map_err(|e| Error::Ssl(format!("failed to open TLS certificate file {path}: {e}")))?;
-    let mut reader = BufReader::new(file);
+    let mut reader = Cursor::new(bytes);
     rustls_pemfile::certs(&mut reader)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| Error::Ssl(format!("failed to parse TLS certificates from {path}: {e}")))
 }
 
-fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>, Error> {
-    let file = File::open(path)
+async fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>, Error> {
+    let bytes = tokio::fs::read(path)
+        .await
         .map_err(|e| Error::Ssl(format!("failed to open TLS private key file {path}: {e}")))?;
-    let mut reader = BufReader::new(file);
+    let mut reader = Cursor::new(bytes);
     rustls_pemfile::private_key(&mut reader)
         .map_err(|e| Error::Ssl(format!("failed to parse TLS private key from {path}: {e}")))?
         .ok_or_else(|| Error::Ssl(format!("no private key found in {path}")))

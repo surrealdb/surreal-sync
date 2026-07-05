@@ -6,7 +6,7 @@ description = "MySQL/MariaDB binlog replication protocol for surreal-sync"
 license = "MIT"
 
 [dependencies]
-tokio = { version = "1.49", features = ["net", "io-util", "time", "rt", "macros"] }
+tokio = { version = "1.49", features = ["net", "io-util", "time", "rt", "macros", "fs"] }
 bytes = "1.12"
 thiserror = "2.0"
 tracing = "0.1"

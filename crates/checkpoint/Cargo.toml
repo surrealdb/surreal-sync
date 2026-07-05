@@ -19,6 +19,7 @@ tracing = "0.1"
 
 # Async
 async-trait = "0.1"
+tokio = { version = "1.49", features = ["fs"] }
 
 # SurrealDB for checkpoint storage
 surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
