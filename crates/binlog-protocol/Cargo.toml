@@ -2,7 +2,7 @@
 name = "binlog-protocol"
 version = "0.1.0"
 edition = "2021"
-description = "MySQL/MariaDB binlog replication protocol for surreal-sync"
+description = "MySQL/MariaDB binlog ROW-format replication protocol for surreal-sync"
 license = "MIT"
 
 [dependencies]
