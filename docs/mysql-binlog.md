@@ -6,7 +6,7 @@ The end-to-end model mirrors a mature CDC pipeline (Debezium-style **snapshot �
 
 1. **Snapshot** the selected tables into SurrealDB.
 2. **Stream** binlog changes and apply them, converging the target to a consistent image.
-3. **Resume** from a durable checkpoint (GTID or file+offset) after any restart, failover, or repointing.
+3. **Resume** from a durable checkpoint store after any restart, failover, or repointing.
 
 > **Trigger-based alternative:** If you cannot enable binlog replication or prefer audit triggers, see [Surreal-Sync for MySQL](mysql.md) and [Surreal-Sync for MariaDB](mariadb.md).
 
@@ -31,9 +31,9 @@ surreal-sync from mysql-binlog sync \
   --checkpoint-dir ".surreal-sync-checkpoints"
 ```
 
-This performs an interleaved snapshot, hands off to streaming in the same process, persists checkpoints as it goes, and keeps running until `SIGINT`/`SIGTERM` or a fatal error. Point it at a checkpoint store (`--checkpoint-dir` or `--checkpoints-surreal-table`) so it can resume where it left off.
+This performs an interleaved snapshot, hands off to streaming in the same process, and persists checkpoints to your store as it goes. Stop with `SIGINT`/`SIGTERM` and **restart the same command** — surreal-sync reads the latest position from the store.
 
-Everything else in this document explains the pieces behind that command and the operational modes around it.
+The sections below cover modes, prerequisites, and operations behind that command.
 
 ## How it works
 
@@ -49,7 +49,7 @@ Use `--snapshot-mode` on `sync` to choose the phase mix:
 | `--snapshot-mode` | Behavior |
 |-------------------|----------|
 | `initial` (default) | Interleaved snapshot, then continuous stream. |
-| `never` | Stream only from `--from` or the checkpoint store. |
+| `never` | Stream only from the checkpoint store (optional `--from` override). |
 | `only` | Snapshot only, emit checkpoint, exit (no stream). |
 
 Changes are read by registering as a binlog replica (`COM_REGISTER_SLAVE` followed by `COM_BINLOG_DUMP`, or `COM_BINLOG_DUMP_GTID` on MySQL 8). Row-format events (`WRITE_ROWS`, `UPDATE_ROWS`, `DELETE_ROWS`, and MySQL `PARTIAL_UPDATE_ROWS`) are decoded and applied to SurrealDB. MySQL partial JSON row updates (`binlog_row_value_options=PARTIAL_JSON`) are reconstructed into the final JSON document before the change is applied, so normal MySQL 8 partial JSON logging can stay enabled. Every event's CRC32 checksum is verified before it is parsed, so a corrupt or truncated event fails loudly rather than being silently mis-decoded.
@@ -64,10 +64,10 @@ Every `sync` run — in any `--snapshot-mode` — is designed to be **started, s
 
 | You want to… | Command | Where it starts |
 |--------------|---------|-----------------|
-| Bulk-load once, stream later | `sync --snapshot-mode only` → `sync --snapshot-mode never --from <end>` | Snapshot from an empty target; stream from the snapshot's end position. |
+| Bulk-load once, stream later | `sync --snapshot-mode only` → `sync --snapshot-mode never` (same checkpoint store) | Snapshot from an empty target; stream picks up the persisted end checkpoint. |
 | Migrate **and** keep tracking in one process | `sync` (default `initial`) | Snapshot, then hand off to streaming at the snapshot's consistent end. |
-| Stream only, from the current head | `sync --snapshot-mode never --from head` (or an empty checkpoint store) | The server's current position — only changes **after** start are applied. |
-| Stream only, from a known point | `sync --snapshot-mode never --from <gtid\|file:pos>` | Exactly that checkpoint. |
+| Stream only, from the current head | `sync --snapshot-mode never` with an empty checkpoint store | Server's current position — only changes **after** start are applied. |
+| Stream only, explicit start (advanced) | `sync --snapshot-mode never --from <checkpoint>` | Override the store with an explicit position (`head` or a checkpoint string). |
 
 ### Stop / cancel (graceful, at any time)
 
@@ -81,7 +81,7 @@ There is no data loss on cancel: worst case, a restart re-does an unfinished sna
 
 ### Restart / resume
 
-- **Stream phase** resumes from the persisted GTID/file checkpoint (from `--checkpoints-surreal-table`/`--checkpoint-dir`, or an explicit `--from`). GTID checkpoints also survive failover/repointing (see [Failover and repointing](#failover-and-repointing)).
+- **Stream phase** resumes from the checkpoint store (`--checkpoint-dir` or `--checkpoints-surreal-table`). Surreal-sync auto-captures GTID or file+offset positions as it runs; GTID checkpoints also survive failover/repointing (see [Failover and repointing](#failover-and-repointing)).
 - **`only` that completed** emits `FullSyncEnd`; `sync --snapshot-mode never` from that checkpoint continues with no gap. A snapshot that was cancelled/crashed mid-run is re-run from scratch, but because `FullSyncStart` was captured **before** the snapshot, no committed change between start and the eventual streaming handoff is lost.
 - **`initial` restart** re-runs the snapshot (idempotent upserts) and resumes streaming from the checkpoint. Because the streaming lower bound (`FullSyncStart`) is persisted before the snapshot copies rows, changes that happened *during* a snapshot that was later interrupted are still streamed after restart — the interleaved handoff never leaves a gap.
 
@@ -94,23 +94,25 @@ There is no data loss on cancel: worst case, a restart re-does an unfinished sna
 
 ## Checkpoints
 
-A checkpoint is a durable record of the exact binlog position surreal-sync has consumed. Resuming from a checkpoint replays every change after that position and nothing before it. Two forms exist:
+Checkpoints record the binlog position surreal-sync has consumed. Resuming replays every change after that position and nothing before it.
 
-- **File + byte offset** (`file:mysql-bin.000003:195`) — works on both MySQL and MariaDB. Tied to a specific binlog file on a specific server; it does **not** survive failover to a different server, and breaks if the referenced file has been purged.
-- **GTID** (global transaction identifier) — server-independent and rotation-safe, so it is preferred whenever GTID mode is enabled:
-  - **MySQL** uses a UUID-based GTID set: `gtid:d4c17f0c-8c11-11e1-9ed1-0800270a0001:1-107`.
-  - **MariaDB** uses `domain-server-sequence` form: `gtid:0-1-270`, and a comma-separated list `gtid:0-1-270,1-7-42` for multiple replication domains.
-
-surreal-sync emits GTID checkpoints during both snapshot and streaming whenever the server runs in GTID mode, and file+offset checkpoints otherwise. GTID and file+offset checkpoints are interchangeable inputs to `--from` and to a checkpoint store.
-
-### Checkpoint stores
+### Checkpoint store (default)
 
 Pass exactly one of:
 
 - `--checkpoint-dir <DIR>` — JSON checkpoint files on disk.
-- `--checkpoints-surreal-table <TABLE>` — checkpoints stored in a SurrealDB table (convenient for long-lived services and containers).
+- `--checkpoints-surreal-table <TABLE>` — checkpoints in a SurrealDB table (good for containers and supervised services).
 
-Checkpoints are written at snapshot start (`t1`), snapshot end (`t2`), and periodically while streaming (`--checkpoint-interval`, default 10 seconds).
+Checkpoints are written at snapshot start, snapshot end, and periodically while streaming (`--checkpoint-interval`, default 10 seconds). **Restart the same `sync` command** after any stop — surreal-sync reads the latest position from the store.
+
+### Position formats (auto-captured)
+
+Surreal-sync captures and persists positions automatically; operators rarely type these. Optional `--from` accepts an explicit override (`head`, or a checkpoint string). Internally:
+
+- **GTID** — rotation- and failover-safe when GTID mode is enabled (preferred).
+- **File + byte offset** — per-server; does not survive failover or purged logs.
+
+Malformed checkpoint strings are hard errors — no silent downgrade from GTID to file+offset.
 
 ## Stream stop bounds
 
@@ -129,7 +131,7 @@ Optional bounds (mutually exclusive):
 | CDC only | `snapshot.mode=never` | `sync --snapshot-mode never` |
 | Snapshot only | `snapshot.mode=initial_only` / one-shot snapshot | `sync --snapshot-mode only` |
 | Ad-hoc table snapshot | `execute-snapshot` signalling | `snapshot` subcommand + signal polling during stream |
-| Resume offset | Kafka Connect offsets | `--from` / checkpoint store (GTID or file+offset) |
+| Resume offset | Kafka Connect offsets | Checkpoint store; optional `--from` override |
 
 ## Prerequisites
 
@@ -268,13 +270,13 @@ WantedBy=multi-user.target
 | Flag | Default | Purpose |
 |------|---------|---------|
 | `--snapshot-mode` | `initial` | `initial` \| `never` \| `only` |
-| `--from` | checkpoint store / required | Stream start: `head`, checkpoint string, or read from store |
+| `--checkpoint-dir` / `--checkpoints-surreal-table` | (required for resume) | Durable checkpoint store |
+| `--from` | store | Advanced: explicit stream start (`head` or checkpoint string) |
 | `--stop-after` | (none) | Wall-clock stream stop (`30m`, `3600s`, `300`) |
 | `--stop-at` | (none) | Exact binlog/GTID stop bound |
 | `--strategy` | `interleaved-snapshot` | Snapshot algorithm |
 | `--chunk-size` | `1024` | Rows per keyset chunk during snapshot |
 | `--checkpoint-interval` | `10` | Seconds between stream checkpoint writes |
-| `--checkpoint-dir` / `--checkpoints-surreal-table` | (none) | Durable checkpoint store |
 | `--tables` | all tables | Comma-separated table filter |
 | `--server-id` | random | Unique replica id |
 | `--flavor` | auto-detect | `mysql` or `mariadb` |
@@ -297,47 +299,22 @@ surreal-sync from mysql-binlog sync \
 
 ### Stream-only example
 
-```bash
-CHECKPOINT="gtid:d4c17f0c-8c11-11e1-9ed1-0800270a0001:1-107"
-
-surreal-sync from mysql-binlog sync \
-  --snapshot-mode never \
-  --from "$CHECKPOINT" \
-  --connection-string "$CONNECTION_STRING" \
-  --database "myapp" \
-  --surreal-endpoint "$SURREAL_ENDPOINT" \
-  --surreal-username "root" \
-  --surreal-password "root" \
-  --to-namespace "production" \
-  --to-database "migrated_data"
-```
-
-Or read the checkpoint from a SurrealDB table instead of `--from`:
+Resume from the checkpoint store (same flags as the happy path, plus `--snapshot-mode never`):
 
 ```bash
 surreal-sync from mysql-binlog sync \
   --snapshot-mode never \
   --connection-string "$CONNECTION_STRING" \
   --database "myapp" \
-  --checkpoints-surreal-table "sync_checkpoints" \
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \
   --surreal-password "root" \
   --to-namespace "production" \
-  --to-database "migrated_data"
+  --to-database "migrated_data" \
+  --checkpoint-dir ".surreal-sync-checkpoints"
 ```
 
-`--from` accepts these forms (the `mysql-binlog:` prefix is optional):
-
-| Form | Example | Engine |
-|------|---------|--------|
-| File + offset | `file:mysql-bin.000003:195` | MySQL and MariaDB |
-| MySQL GTID set | `gtid:d4c17f0c-8c11-11e1-9ed1-0800270a0001:1-107` | MySQL 8 (GTID mode) |
-| MariaDB GTID | `gtid:0-1-270` | MariaDB |
-| MariaDB multi-domain GTID | `gtid:0-1-270,1-7-42` | MariaDB |
-| Current head | `head` | MySQL and MariaDB |
-
-A malformed checkpoint string is a **hard error** — surreal-sync never silently downgrades a GTID checkpoint to file+offset. An empty checkpoint store with no `--from` falls back to **start at head**.
+Advanced: `--from head` or `--from <checkpoint-string>` overrides the store when you need an explicit start position.
 
 Use `--stop-after` or `--stop-at` for bounded catch-up jobs; omit both for continuous streaming until shutdown.
 
@@ -504,7 +481,6 @@ docker exec -i mysql-binlog-smoke mysql -uroot -ptestpass myapp \
 
 $SYNC from mysql-binlog sync \
   --snapshot-mode never \
-  --from "$(cat "$CHECKPOINT_DIR"/FullSyncStart.json | jq -r .checkpoint)" \
   --connection-string "$MYSQL_URL" \
   --database "$DB" --tables users \
   --surreal-endpoint "$SURREAL_URL" --surreal-username root --surreal-password root \
@@ -559,7 +535,6 @@ docker exec -i mariadb-binlog-smoke mariadb -uroot -ptestpass myapp \
 
 $SYNC from mysql-binlog sync \
   --snapshot-mode never \
-  --from "$(cat "$CHECKPOINT_DIR"/FullSyncStart.json | jq -r .checkpoint)" \
   --connection-string "$MARIADB_URL" \
   --database "$DB" --tables users \
   --flavor mariadb --mariadb-gtid-strict-mode on \
