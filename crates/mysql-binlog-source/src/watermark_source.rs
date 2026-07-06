@@ -8,9 +8,9 @@ use binlog_protocol::{BinlogClient, CdcChange, EventBody, RowChange, TableMapEve
 use mysql_async::{prelude::*, Pool};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
-    run_adhoc_snapshot_tables, run_interleaved_snapshot, InterleavedSnapshotConfig,
-    NoopCheckpointer, PkTuple, SnapshotSignal, StreamEvent, TableSpec, WatermarkKind,
-    WatermarkSource,
+    run_adhoc_snapshot_tables, run_interleaved_snapshot_with_resume, InterleavedSnapshotConfig,
+    NoopCheckpointer, PkTuple, SnapshotCheckpointer, SnapshotSignal, StreamEvent, TableSpec,
+    WatermarkKind, WatermarkSource,
 };
 use sync_core::{
     DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,
@@ -21,14 +21,17 @@ use uuid::Uuid;
 use crate::change::cdc_change_to_universal;
 use crate::checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogStreamPosition};
 use crate::client::{
-    connect_binlog_client, new_mysql_pool, resolve_database, start_binlog_at_end, use_database,
+    connect_binlog_client, new_mysql_pool, resolve_database, start_binlog_at_end,
+    start_binlog_from_checkpoint, use_database,
 };
 use crate::full_sync::{get_primary_key_columns, read_table_chunk};
+use crate::handoff::{emit_handoff_metadata, HandoffKind, SyncHandoffMetadata};
 use crate::schema::{collect_mysql_database_schema, get_table_column_names_ordinal};
 use crate::signal::{
     create_signal_table_sql, poll_execute_snapshot_signals, EXECUTE_SNAPSHOT_KIND, SIGNAL_TABLE,
 };
 use crate::SourceOpts;
+use checkpoint::InterleavedSnapshotCheckpoint;
 use mysql_types::RowConversionConfig;
 
 #[derive(Default)]
@@ -60,8 +63,42 @@ pub struct BinlogWatermarkSource {
     cancel: tokio_util::sync::CancellationToken,
 }
 
+/// Options for [`BinlogWatermarkSource::connect_with_options`].
+#[derive(Clone, Debug)]
+pub struct ConnectOptions {
+    /// When set, position the binlog client at this checkpoint instead of the current head.
+    pub start_at: Option<BinlogCheckpoint>,
+    /// When set, only include these tables in the snapshot set.
+    pub tables_filter: Option<Vec<String>>,
+    pub cancel: tokio_util::sync::CancellationToken,
+}
+
+impl ConnectOptions {
+    pub fn with_cancel(mut self, cancel: tokio_util::sync::CancellationToken) -> Self {
+        self.cancel = cancel;
+        self
+    }
+}
+
+impl Default for ConnectOptions {
+    fn default() -> Self {
+        Self {
+            start_at: None,
+            tables_filter: None,
+            cancel: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+}
+
 impl BinlogWatermarkSource {
     pub async fn connect(from_opts: &SourceOpts) -> Result<Self> {
+        Self::connect_with_options(from_opts, ConnectOptions::default()).await
+    }
+
+    pub async fn connect_with_options(
+        from_opts: &SourceOpts,
+        options: ConnectOptions,
+    ) -> Result<Self> {
         let pool = new_mysql_pool(&from_opts.connection_string)?;
         let database = resolve_database(&pool, from_opts).await?;
         let mut conn = pool.get_conn().await?;
@@ -73,10 +110,16 @@ impl BinlogWatermarkSource {
             surreal_sync_mysql_trigger_source::json_columns::get_json_columns(&mut conn, &database)
                 .await?;
 
+        let mut table_names = get_snapshot_tables(&mut conn, &database, from_opts).await?;
+        if let Some(filter) = &options.tables_filter {
+            let allowed: std::collections::HashSet<_> = filter.iter().cloned().collect();
+            table_names.retain(|name| allowed.contains(name));
+        }
+
         let mut tables = Vec::new();
         let mut pk_by_table = HashMap::new();
         let mut column_names_by_table = HashMap::new();
-        for table_name in get_snapshot_tables(&mut conn, &database, from_opts).await? {
+        for table_name in table_names {
             let pk_columns = get_primary_key_columns(&mut conn, &database, &table_name).await?;
             if pk_columns.is_empty() {
                 return Err(anyhow!(
@@ -93,7 +136,11 @@ impl BinlogWatermarkSource {
 
         let conversion_by_table = conversions_from_schema(&schema, &json_columns);
         let mut binlog = connect_binlog_client(from_opts).await?;
-        start_binlog_at_end(&mut binlog, &pool).await?;
+        if let Some(checkpoint) = &options.start_at {
+            start_binlog_from_checkpoint(&mut binlog, checkpoint).await?;
+        } else {
+            start_binlog_at_end(&mut binlog, &pool).await?;
+        }
         let confirmed = BinlogStreamPosition::from(get_current_checkpoint(&binlog)?);
 
         Ok(Self {
@@ -109,8 +156,17 @@ impl BinlogWatermarkSource {
             table_maps: HashMap::new(),
             confirmed,
             watermarks: Mutex::new(WatermarkIds::default()),
-            cancel: tokio_util::sync::CancellationToken::new(),
+            cancel: options.cancel,
         })
+    }
+
+    /// Resolve the table names that would be snapshotted for these source options.
+    pub async fn resolve_snapshot_table_names(from_opts: &SourceOpts) -> Result<Vec<String>> {
+        let pool = new_mysql_pool(&from_opts.connection_string)?;
+        let database = resolve_database(&pool, from_opts).await?;
+        let mut conn = pool.get_conn().await?;
+        use_database(&mut conn, &database).await?;
+        get_snapshot_tables(&mut conn, &database, from_opts).await
     }
 
     /// Attach a cancellation token so a running interleaved snapshot/stream can
@@ -179,6 +235,10 @@ impl BinlogWatermarkSource {
     /// Return the underlying binlog client after ad-hoc snapshot work.
     pub(crate) fn into_binlog_client(self) -> BinlogClient {
         self.binlog
+    }
+
+    pub(crate) fn current_checkpoint(&self) -> Result<BinlogCheckpoint> {
+        get_current_checkpoint(&self.binlog)
     }
 
     /// The stream position captured at connect time — the streaming lower bound
@@ -621,6 +681,33 @@ pub async fn request_snapshot(pool: &Pool, database: &str, tables: &[String]) ->
     Ok(())
 }
 
+/// Options controlling interleaved snapshot restart and table selection.
+#[derive(Clone, Debug)]
+pub struct InterleavedFullSyncOptions {
+    /// Resume from a saved per-chunk snapshot progress checkpoint.
+    pub resume_progress: Option<InterleavedSnapshotCheckpoint>,
+    /// Snapshot only these tables (subset of the configured table list).
+    pub tables_filter: Option<Vec<String>>,
+    /// Position the binlog client here instead of the current head.
+    pub start_at: Option<BinlogCheckpoint>,
+    /// When false, skip emitting `FullSyncStart` (restart paths).
+    pub emit_full_sync_start: bool,
+    /// Handoff kind recorded in metadata for tables completed in this run.
+    pub handoff_kind: HandoffKind,
+}
+
+impl Default for InterleavedFullSyncOptions {
+    fn default() -> Self {
+        Self {
+            resume_progress: None,
+            tables_filter: None,
+            start_at: None,
+            emit_full_sync_start: true,
+            handoff_kind: HandoffKind::Initial,
+        }
+    }
+}
+
 /// Outcome of an interleaved snapshot full sync.
 #[derive(Debug, Clone)]
 pub struct InterleavedFullSyncOutcome {
@@ -651,6 +738,7 @@ pub async fn run_interleaved_snapshot_full_sync<S, St>(
     chunk_size: usize,
     cancel: tokio_util::sync::CancellationToken,
     manager: Option<&checkpoint::SyncManager<St>>,
+    options: InterleavedFullSyncOptions,
 ) -> Result<InterleavedFullSyncOutcome>
 where
     S: SurrealSink,
@@ -658,23 +746,53 @@ where
 {
     use checkpoint::{Checkpoint, SyncPhase};
 
-    let mut source = BinlogWatermarkSource::connect(from_opts)
-        .await?
-        .with_cancel(cancel.clone());
+    let connect_opts = ConnectOptions {
+        start_at: options.start_at.clone(),
+        tables_filter: options.tables_filter.clone(),
+        cancel: cancel.clone(),
+    };
+    let mut source = BinlogWatermarkSource::connect_with_options(from_opts, connect_opts).await?;
 
-    let start = source.start_checkpoint();
-    if let Some(manager) = manager {
-        manager
-            .emit_checkpoint(&start, SyncPhase::FullSyncStart)
-            .await?;
-        info!(
-            "Emitted interleaved snapshot start checkpoint (streaming lower bound): {}",
-            start.to_cli_string()
-        );
-    }
+    let start = if options.emit_full_sync_start {
+        let start = source.start_checkpoint();
+        if let Some(manager) = manager {
+            manager
+                .emit_checkpoint(&start, SyncPhase::FullSyncStart)
+                .await?;
+            info!(
+                "Emitted interleaved snapshot start checkpoint (streaming lower bound): {}",
+                start.to_cli_string()
+            );
+        }
+        start
+    } else {
+        source.start_checkpoint()
+    };
 
     let config = InterleavedSnapshotConfig { chunk_size };
-    match run_interleaved_snapshot(&mut source, surreal, &config, &mut NoopCheckpointer).await {
+    let resume_ref = options.resume_progress.as_ref();
+    let snapshot_result = if let Some(manager) = manager {
+        let mut checkpointer = ManagerRefCheckpointer { manager };
+        run_interleaved_snapshot_with_resume(
+            &mut source,
+            surreal,
+            &config,
+            &mut checkpointer,
+            resume_ref,
+        )
+        .await
+    } else {
+        run_interleaved_snapshot_with_resume(
+            &mut source,
+            surreal,
+            &config,
+            &mut NoopCheckpointer,
+            resume_ref,
+        )
+        .await
+    };
+
+    match snapshot_result {
         Ok(result) => {
             let end = BinlogCheckpoint {
                 flavor: source.binlog.flavor(),
@@ -689,6 +807,15 @@ where
                 manager
                     .emit_checkpoint(&end, SyncPhase::FullSyncEnd)
                     .await?;
+                let existing = crate::handoff::read_handoff_metadata(manager).await?;
+                write_handoff_metadata_for_tables(
+                    manager,
+                    source.tables.iter().map(|t| t.table.clone()).collect(),
+                    options.handoff_kind,
+                    &end.position,
+                    existing,
+                )
+                .await?;
             }
             Ok(InterleavedFullSyncOutcome {
                 start,
@@ -709,4 +836,188 @@ where
         }
         Err(e) => Err(e),
     }
+}
+
+/// Merge completed tables into handoff metadata and persist it.
+pub(crate) async fn write_handoff_metadata_for_tables<St: checkpoint::CheckpointStore>(
+    manager: &checkpoint::SyncManager<St>,
+    table_names: Vec<String>,
+    kind: HandoffKind,
+    stream_pos: &binlog_protocol::BinlogPosition,
+    existing: Option<SyncHandoffMetadata>,
+) -> Result<()> {
+    let mut metadata = existing.unwrap_or_else(|| SyncHandoffMetadata::new(stream_pos.clone()));
+    metadata.merge_tables(&table_names, kind, stream_pos.clone());
+    emit_handoff_metadata(manager, &metadata).await
+}
+
+/// Refresh the stream position in handoff metadata without changing the table set.
+pub(crate) async fn refresh_handoff_metadata_stream_pos<St: checkpoint::CheckpointStore>(
+    manager: &checkpoint::SyncManager<St>,
+    stream_pos: binlog_protocol::BinlogPosition,
+    existing: Option<SyncHandoffMetadata>,
+) -> Result<()> {
+    if let Some(mut metadata) = existing {
+        metadata.refresh_stream_pos(stream_pos);
+        emit_handoff_metadata(manager, &metadata).await
+    } else {
+        Ok(())
+    }
+}
+
+struct ManagerRefCheckpointer<'a, St: checkpoint::CheckpointStore> {
+    manager: &'a checkpoint::SyncManager<St>,
+}
+
+#[async_trait::async_trait]
+impl<St: checkpoint::CheckpointStore> SnapshotCheckpointer for ManagerRefCheckpointer<'_, St> {
+    async fn save_progress(&mut self, checkpoint: &InterleavedSnapshotCheckpoint) -> Result<()> {
+        self.manager
+            .emit_checkpoint(checkpoint, checkpoint::SyncPhase::SnapshotProgress)
+            .await?;
+        Ok(())
+    }
+}
+
+/// Run the initial interleaved snapshot phase with restart-aware table selection.
+///
+/// Reads snapshot progress, handoff metadata, and position checkpoints from the
+/// store and chooses between full snapshot, resume, delta snapshot, or skip.
+pub async fn run_initial_interleaved_snapshot<S, St>(
+    surreal: &S,
+    from_opts: &SourceOpts,
+    chunk_size: usize,
+    cancel: tokio_util::sync::CancellationToken,
+    manager: Option<&checkpoint::SyncManager<St>>,
+) -> Result<InitialInterleavedOutcome>
+where
+    S: SurrealSink,
+    St: checkpoint::CheckpointStore,
+{
+    use crate::handoff::{read_handoff_metadata, tables_pending_snapshot};
+    use checkpoint::{Checkpoint, SyncPhase};
+
+    let requested_tables = BinlogWatermarkSource::resolve_snapshot_table_names(from_opts).await?;
+
+    if let Some(manager) = manager {
+        if let Ok(progress) = manager
+            .read_checkpoint::<InterleavedSnapshotCheckpoint>(SyncPhase::SnapshotProgress)
+            .await
+        {
+            if !progress.all_done() {
+                info!("Resuming interleaved snapshot from saved per-chunk progress");
+                let start_at = stream_pos_from_snapshot_checkpoint(&progress, from_opts).await?;
+                let outcome = run_interleaved_snapshot_full_sync(
+                    surreal,
+                    from_opts,
+                    chunk_size,
+                    cancel,
+                    Some(manager),
+                    InterleavedFullSyncOptions {
+                        resume_progress: Some(progress),
+                        start_at: Some(start_at),
+                        emit_full_sync_start: false,
+                        handoff_kind: HandoffKind::Initial,
+                        ..InterleavedFullSyncOptions::default()
+                    },
+                )
+                .await?;
+                return Ok(InitialInterleavedOutcome {
+                    snapshot_skipped: false,
+                    sync_outcome: Some(outcome),
+                });
+            }
+        }
+
+        let metadata = read_handoff_metadata(manager).await?;
+        if let Ok(end) = manager
+            .read_checkpoint::<BinlogCheckpoint>(SyncPhase::FullSyncEnd)
+            .await
+        {
+            if metadata
+                .as_ref()
+                .is_some_and(|m| !m.snapshotted_tables.is_empty())
+            {
+                let metadata = metadata.unwrap();
+                let pending = tables_pending_snapshot(&requested_tables, &metadata);
+                if pending.is_empty() {
+                    info!(
+                        "All requested tables already snapshotted; skipping snapshot and streaming from {}",
+                        end.to_cli_string()
+                    );
+                    return Ok(InitialInterleavedOutcome {
+                        snapshot_skipped: true,
+                        sync_outcome: Some(InterleavedFullSyncOutcome {
+                            start: end.clone(),
+                            end,
+                            cancelled: false,
+                        }),
+                    });
+                }
+                info!(
+                    "Snapshotted tables {:?}; running delta snapshot for {:?}",
+                    metadata.snapshotted_names(),
+                    pending
+                );
+                let outcome = run_interleaved_snapshot_full_sync(
+                    surreal,
+                    from_opts,
+                    chunk_size,
+                    cancel,
+                    Some(manager),
+                    InterleavedFullSyncOptions {
+                        tables_filter: Some(pending),
+                        start_at: Some(end),
+                        emit_full_sync_start: false,
+                        handoff_kind: HandoffKind::Initial,
+                        ..InterleavedFullSyncOptions::default()
+                    },
+                )
+                .await?;
+                return Ok(InitialInterleavedOutcome {
+                    snapshot_skipped: false,
+                    sync_outcome: Some(outcome),
+                });
+            }
+        }
+    }
+
+    let outcome = run_interleaved_snapshot_full_sync(
+        surreal,
+        from_opts,
+        chunk_size,
+        cancel,
+        manager,
+        InterleavedFullSyncOptions {
+            handoff_kind: HandoffKind::Initial,
+            ..InterleavedFullSyncOptions::default()
+        },
+    )
+    .await?;
+    Ok(InitialInterleavedOutcome {
+        snapshot_skipped: false,
+        sync_outcome: Some(outcome),
+    })
+}
+
+async fn stream_pos_from_snapshot_checkpoint(
+    progress: &InterleavedSnapshotCheckpoint,
+    from_opts: &SourceOpts,
+) -> Result<BinlogCheckpoint> {
+    let stream: BinlogStreamPosition = serde_json::from_value(progress.stream_pos.clone())?;
+    let flavor = from_opts
+        .flavor
+        .unwrap_or(binlog_protocol::Flavor::MySql);
+    Ok(BinlogCheckpoint {
+        flavor,
+        position: stream.position,
+        timestamp: chrono::Utc::now(),
+    })
+}
+
+/// Result of the initial interleaved snapshot planning step.
+#[derive(Debug, Clone)]
+pub struct InitialInterleavedOutcome {
+    pub snapshot_skipped: bool,
+    pub sync_outcome: Option<InterleavedFullSyncOutcome>,
 }

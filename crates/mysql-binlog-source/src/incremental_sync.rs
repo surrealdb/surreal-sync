@@ -17,9 +17,13 @@ use crate::client::{
     connect_binlog_client, new_mysql_pool, resolve_database, start_binlog_from_checkpoint,
     use_database,
 };
+use crate::handoff::{read_handoff_metadata, HandoffKind};
 use crate::schema::{collect_mysql_database_schema, get_table_column_names_ordinal};
 use crate::signal::{create_signal_table_sql, poll_execute_snapshot_signals};
-use crate::watermark_source::{run_adhoc_snapshots_for_tables, BinlogWatermarkSource};
+use crate::watermark_source::{
+    refresh_handoff_metadata_stream_pos, run_adhoc_snapshots_for_tables,
+    write_handoff_metadata_for_tables, BinlogWatermarkSource,
+};
 use crate::SourceOpts;
 
 /// Default chunk size for ad-hoc snapshots during steady-state streaming.
@@ -180,6 +184,7 @@ where
             client,
             &mut table_filter,
             &options,
+            checkpoint_manager,
         )
         .await?;
 
@@ -329,7 +334,8 @@ where
     Ok(())
 }
 
-async fn handle_snapshot_signals<S: SurrealSink>(
+#[allow(clippy::too_many_arguments)]
+async fn handle_snapshot_signals<S, St>(
     surreal: &S,
     pool: &mysql_async::Pool,
     database: &str,
@@ -337,7 +343,12 @@ async fn handle_snapshot_signals<S: SurrealSink>(
     client: binlog_protocol::BinlogClient,
     table_filter: &mut Option<Vec<String>>,
     options: &IncrementalSyncOptions,
-) -> Result<binlog_protocol::BinlogClient> {
+    checkpoint_manager: Option<&SyncManager<St>>,
+) -> Result<binlog_protocol::BinlogClient>
+where
+    S: SurrealSink,
+    St: CheckpointStore,
+{
     let signals = poll_execute_snapshot_signals(pool, database).await?;
     if signals.is_empty() {
         return Ok(client);
@@ -366,6 +377,22 @@ async fn handle_snapshot_signals<S: SurrealSink>(
         }
         run_adhoc_snapshots_for_tables(&mut wm, surreal, &signal.tables, options.chunk_size)
             .await?;
+
+        if let Some(manager) = checkpoint_manager {
+            let checkpoint = wm.current_checkpoint()?;
+            manager
+                .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
+                .await?;
+            let existing = read_handoff_metadata(manager).await?;
+            write_handoff_metadata_for_tables(
+                manager,
+                signal.tables.clone(),
+                HandoffKind::AdHoc,
+                &checkpoint.position,
+                existing,
+            )
+            .await?;
+        }
     }
 
     Ok(wm.into_binlog_client())
@@ -424,6 +451,8 @@ async fn persist_checkpoint<St: CheckpointStore>(
     manager
         .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
         .await?;
+    let existing = read_handoff_metadata(manager).await?;
+    refresh_handoff_metadata_stream_pos(manager, checkpoint.position.clone(), existing).await?;
     *last = Some(checkpoint);
     Ok(())
 }

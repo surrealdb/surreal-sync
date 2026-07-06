@@ -6,6 +6,7 @@ mod client;
 mod ddl;
 mod flavor;
 mod full_sync;
+mod handoff;
 mod incremental_sync;
 mod schema;
 mod signal;
@@ -21,13 +22,17 @@ pub use change::cdc_change_to_universal;
 pub use checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogStreamPosition};
 pub use flavor::Flavor;
 pub use full_sync::{capture_head_checkpoint, run_full_sync, run_full_sync_cancellable};
+pub use handoff::{
+    emit_handoff_metadata, read_handoff_metadata, tables_pending_snapshot, HandoffKind,
+    SyncHandoffMetadata, TableHandoffEntry,
+};
 pub use incremental_sync::{
     run_incremental_sync, run_incremental_sync_with_checkpoints, IncrementalSyncOptions,
 };
 pub use signal::SIGNAL_TABLE;
 pub use watermark_source::{
-    request_snapshot, run_interleaved_snapshot_full_sync, BinlogWatermarkSource,
-    InterleavedFullSyncOutcome,
+    request_snapshot, run_initial_interleaved_snapshot, run_interleaved_snapshot_full_sync,
+    BinlogWatermarkSource, ConnectOptions, InterleavedFullSyncOptions, InterleavedFullSyncOutcome,
 };
 
 /// MySQL binlog source connection options.

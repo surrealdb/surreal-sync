@@ -83,7 +83,10 @@ There is no data loss on cancel: worst case, a restart re-does an unfinished sna
 
 - **Stream phase** resumes from the checkpoint store (`--checkpoint-dir` or `--checkpoints-surreal-table`). Surreal-sync auto-captures GTID or file+offset positions as it runs; GTID checkpoints also survive failover/repointing (see [Failover and repointing](#failover-and-repointing)).
 - **`only` that completed** emits `FullSyncEnd`; `sync --snapshot-mode never` from that checkpoint continues with no gap. A snapshot that was cancelled/crashed mid-run is re-run from scratch, but because `FullSyncStart` was captured **before** the snapshot, no committed change between start and the eventual streaming handoff is lost.
-- **`initial` restart** re-runs the snapshot (idempotent upserts) and resumes streaming from the checkpoint. Because the streaming lower bound (`FullSyncStart`) is persisted before the snapshot copies rows, changes that happened *during* a snapshot that was later interrupted are still streamed after restart — the interleaved handoff never leaves a gap.
+- **`initial` restart** reads `SyncHandoffMetadata` to learn which tables already completed snapshot handoff. Tables still in `--tables` that are not yet recorded are snapshotted; already-handshotted tables are skipped (idempotent upserts would be safe, but skipping saves work). If every requested table is already handshotted, the snapshot phase is skipped and streaming resumes from `FullSyncEnd`. Mid-snapshot crashes resume from `SnapshotProgress` per-chunk checkpoints when available. Ad-hoc snapshots requested during streaming (`snapshot` CLI / execute-snapshot signal) append completed table names to the same metadata registry immediately after each batch.
+- **Expanded `--tables` after stop** — restart with additional tables in `--tables`; only the new tables are snapshotted, then streaming continues from the stored position.
+
+Because the streaming lower bound (`FullSyncStart`) is persisted before the snapshot copies rows, changes that happened *during* a snapshot that was later interrupted are still streamed after restart — the interleaved handoff never leaves a gap.
 
 ### Consistency & idempotency guarantees
 
@@ -103,7 +106,7 @@ Pass exactly one of:
 - `--checkpoint-dir <DIR>` — JSON checkpoint files on disk.
 - `--checkpoints-surreal-table <TABLE>` — checkpoints in a SurrealDB table (good for containers and supervised services).
 
-Checkpoints are written at snapshot start, snapshot end, and periodically while streaming (`--checkpoint-interval`, default 10 seconds). **Restart the same `sync` command** after any stop — surreal-sync reads the latest position from the store.
+Checkpoints are written at snapshot start, snapshot end, periodically while streaming (`--checkpoint-interval`, default 10 seconds), and when ad-hoc snapshot batches complete. A separate `SyncHandoffMetadata` checkpoint (same store, distinct phase) records which tables finished snapshot handoff and the stream position they align with; it is refreshed on the same interval as stream checkpoints during incremental sync. **Restart the same `sync` command** after any stop — surreal-sync reads the latest position from the store.
 
 ### Position formats (auto-captured)
 

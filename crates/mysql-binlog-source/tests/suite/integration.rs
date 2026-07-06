@@ -719,6 +719,7 @@ async fn interleaved_snapshot_cancel_persists_lower_bound_and_skips_end() -> Res
         8,
         cancel,
         Some(&manager),
+        surreal_sync_mysql_binlog_source::InterleavedFullSyncOptions::default(),
     )
     .await?;
 

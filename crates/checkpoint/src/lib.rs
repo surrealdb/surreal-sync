@@ -256,6 +256,7 @@ fn parse_sync_phase(phase: &str) -> anyhow::Result<SyncPhase> {
         "full_sync_end" => Ok(SyncPhase::FullSyncEnd),
         "snapshot_progress" => Ok(SyncPhase::SnapshotProgress),
         "snapshot_handoff" => Ok(SyncPhase::SnapshotHandoff),
+        "sync_handoff_metadata" => Ok(SyncPhase::SyncHandoffMetadata),
         other => Err(anyhow::anyhow!("Unknown sync phase: {other}")),
     }
 }

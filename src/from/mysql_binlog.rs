@@ -10,8 +10,8 @@ use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use surreal_sink::SurrealSink;
 use surreal_sync_mysql_binlog_source::{
     request_snapshot, run_full_sync_cancellable, run_incremental_sync_with_checkpoints,
-    run_interleaved_snapshot_full_sync, BinlogCheckpoint, IncrementalSyncOptions, SourceOpts,
-    SyncOpts,
+    run_initial_interleaved_snapshot, run_interleaved_snapshot_full_sync, BinlogCheckpoint,
+    IncrementalSyncOptions, InterleavedFullSyncOptions, SourceOpts, SyncOpts,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -207,9 +207,15 @@ where
 {
     match strategy {
         SyncStrategy::InterleavedSnapshot => {
-            let outcome =
-                run_interleaved_snapshot_full_sync(sink, source_opts, chunk_size, cancel, manager)
-                    .await?;
+            let outcome = run_interleaved_snapshot_full_sync(
+                sink,
+                source_opts,
+                chunk_size,
+                cancel,
+                manager,
+                InterleavedFullSyncOptions::default(),
+            )
+            .await?;
             if outcome.cancelled {
                 tracing::info!(
                     "Binlog watermark snapshot cancelled; resume from FullSyncStart: {}",
@@ -363,16 +369,15 @@ where
         BinlogSnapshotModeArg::Initial => {
             let interleaved_outcome = match strategy {
                 SyncStrategy::InterleavedSnapshot => {
-                    binlog_snapshot_full(
+                    let initial = run_initial_interleaved_snapshot(
                         sink,
                         &source_opts,
-                        strategy,
                         chunk_size,
                         cancel.clone(),
-                        &sync_opts,
                         checkpoint_manager,
                     )
-                    .await?
+                    .await?;
+                    initial.sync_outcome
                 }
                 SyncStrategy::SequentialSnapshot => {
                     binlog_snapshot_full(

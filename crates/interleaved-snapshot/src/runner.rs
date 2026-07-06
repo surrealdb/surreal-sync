@@ -72,6 +72,55 @@ fn build_checkpoint<P: StreamPosition>(
     })
 }
 
+fn table_state_from_progress(t: &SnapshotTableProgress) -> Result<TableState> {
+    let last_pk = match &t.last_pk {
+        None => None,
+        Some(v) => Some(serde_json::from_value(v.clone())?),
+    };
+    Ok(TableState {
+        name: t.name.clone(),
+        last_pk,
+        done: t.done,
+    })
+}
+
+fn init_snapshot_state(
+    all_tables: Vec<TableSpec>,
+    resume: Option<&InterleavedSnapshotCheckpoint>,
+) -> Result<(VecDeque<TableSpec>, HashSet<String>, Vec<TableState>)> {
+    let progress_by_name: HashMap<String, &SnapshotTableProgress> = resume
+        .map(|cp| cp.tables.iter().map(|t| (t.name.clone(), t)).collect())
+        .unwrap_or_default();
+
+    let progress: Vec<TableState> = all_tables
+        .iter()
+        .map(|spec| {
+            if let Some(saved) = progress_by_name.get(&spec.table) {
+                table_state_from_progress(saved)
+            } else {
+                Ok(TableState {
+                    name: spec.table.clone(),
+                    last_pk: None,
+                    done: false,
+                })
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let queue: VecDeque<TableSpec> = all_tables
+        .into_iter()
+        .filter(|spec| {
+            progress_by_name
+                .get(&spec.table)
+                .map(|t| !t.done)
+                .unwrap_or(true)
+        })
+        .collect();
+
+    let seen: HashSet<String> = progress.iter().map(|t| t.name.clone()).collect();
+    Ok((queue, seen, progress))
+}
+
 /// Run a watermark snapshot, copying every table reported by `source` in
 /// primary-key-ordered chunks while concurrently consuming and applying the
 /// source's change stream to `sink`.
@@ -100,18 +149,25 @@ where
     K: SurrealSink,
     C: SnapshotCheckpointer,
 {
-    // The set of tables still to snapshot. Seeded with the initial set and
-    // extended on the fly by ad-hoc `execute-snapshot` signals.
-    let mut queue: VecDeque<TableSpec> = source.snapshot_tables().await?.into_iter().collect();
-    let mut seen: HashSet<String> = queue.iter().map(|s| s.table.clone()).collect();
-    let mut progress: Vec<TableState> = queue
-        .iter()
-        .map(|t| TableState {
-            name: t.table.clone(),
-            last_pk: None,
-            done: false,
-        })
-        .collect();
+    run_interleaved_snapshot_with_resume(source, sink, config, checkpointer, None).await
+}
+
+/// Like [`run_interleaved_snapshot`], but resumes from a saved per-chunk
+/// checkpoint when `resume` is set.
+pub async fn run_interleaved_snapshot_with_resume<S, K, C>(
+    source: &mut S,
+    sink: &K,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+    resume: Option<&InterleavedSnapshotCheckpoint>,
+) -> Result<InterleavedSnapshotResult<S::Position>>
+where
+    S: WatermarkSource,
+    K: SurrealSink,
+    C: SnapshotCheckpointer,
+{
+    let all_tables = source.snapshot_tables().await?;
+    let (mut queue, mut seen, mut progress) = init_snapshot_state(all_tables, resume)?;
 
     let mut peak_buffered_rows = 0usize;
 

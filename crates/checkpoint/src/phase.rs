@@ -39,6 +39,13 @@ pub enum SyncPhase {
     /// This records the final stream position the snapshot reached. Downstream
     /// incremental/live processing continues from exactly this position.
     SnapshotHandoff,
+
+    /// Registry of tables that completed snapshot handoff for a binlog sync run.
+    ///
+    /// Separate from position-only [`FullSyncEnd`] checkpoints so
+    /// `read_latest_binlog_checkpoint` stays unchanged. Used to skip already
+    /// snapshotted tables on `initial` restart and to track ad-hoc snapshots.
+    SyncHandoffMetadata,
 }
 
 impl SyncPhase {
@@ -53,6 +60,7 @@ impl SyncPhase {
             SyncPhase::FullSyncEnd => "full_sync_end",
             SyncPhase::SnapshotProgress => "snapshot_progress",
             SyncPhase::SnapshotHandoff => "snapshot_handoff",
+            SyncPhase::SyncHandoffMetadata => "sync_handoff_metadata",
         }
     }
 }
