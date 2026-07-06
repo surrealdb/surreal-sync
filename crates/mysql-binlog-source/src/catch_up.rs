@@ -8,7 +8,7 @@ use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::checkpoint::{BinlogCheckpoint, BinlogStreamPosition};
+use crate::checkpoint::{BinlogCheckpoint, BinlogReconciliationPos};
 
 /// How a table entered the coverage registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,7 +130,7 @@ pub fn max_binlog_checkpoint(candidates: &[BinlogCheckpoint]) -> BinlogCheckpoin
     debug_assert!(!candidates.is_empty());
     candidates
         .iter()
-        .max_by_key(|cp| BinlogStreamPosition::from(cp.position.clone()))
+        .max_by_key(|cp| BinlogReconciliationPos::from(cp.position.clone()))
         .expect("non-empty")
         .clone()
 }

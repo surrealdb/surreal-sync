@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::checkpointer::SnapshotCheckpointer;
 use crate::source::WatermarkSource;
-use crate::types::{PkTuple, StreamPosition, TableSpec, WatermarkKind};
+use crate::types::{PkTuple, ReconciliationPos, TableSpec, WatermarkKind};
 
 /// Default chunk size (matches Debezium's incremental snapshot default).
 pub const DEFAULT_CHUNK_SIZE: usize = 1024;
@@ -34,7 +34,7 @@ impl Default for InterleavedSnapshotConfig {
 
 /// Outcome of a completed watermark snapshot.
 #[derive(Debug, Clone)]
-pub struct InterleavedSnapshotResult<P: StreamPosition> {
+pub struct InterleavedSnapshotResult<P: ReconciliationPos> {
     /// The final stream position reached; downstream live processing resumes
     /// from here.
     pub final_position: P,
@@ -52,7 +52,7 @@ struct TableState {
     done: bool,
 }
 
-fn build_checkpoint<P: StreamPosition>(
+fn build_checkpoint<P: ReconciliationPos>(
     position: &P,
     progress: &[TableState],
 ) -> Result<InterleavedSnapshotCheckpoint> {
@@ -67,7 +67,7 @@ fn build_checkpoint<P: StreamPosition>(
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(InterleavedSnapshotCheckpoint {
-        stream_pos: serde_json::to_value(position)?,
+        reconciliation_pos: serde_json::to_value(position)?,
         tables,
     })
 }
@@ -132,8 +132,8 @@ fn init_snapshot_state(
 ///    and while inside the open window drops any buffered row whose primary
 ///    key also appears as an event (the log event wins);
 /// 3. on window close, flushes the surviving buffered rows as upserts;
-/// 4. checkpoints `{stream_pos, per-table last_pk}` and calls
-///    [`WatermarkSource::commit_consumed`] so the source can free applied
+/// 4. checkpoints `{reconciliation_pos, per-table last_pk}` and calls
+///    [`WatermarkSource::commit_reconciled`] so the source can free applied
 ///    change-log data.
 ///
 /// On completion it returns the final stream position and the exact peak
@@ -297,7 +297,7 @@ where
             checkpointer
                 .save_progress(&build_checkpoint(&position, progress)?)
                 .await?;
-            source.commit_consumed(position).await?;
+            source.commit_reconciled(position).await?;
             break;
         }
 
@@ -326,7 +326,7 @@ where
         let mut in_window = false;
         let mut window_closed = false;
         while !window_closed {
-            let events = source.next_stream_events().await?;
+            let events = source.next_reconciliation_events().await?;
             for event in events {
                 if let Some(watermark_id) = event.pk.single_uuid() {
                     if watermark_id == low_id {
@@ -360,7 +360,7 @@ where
         checkpointer
             .save_progress(&build_checkpoint(&position, progress)?)
             .await?;
-        source.commit_consumed(position).await?;
+        source.commit_reconciled(position).await?;
 
         if table_done {
             break;

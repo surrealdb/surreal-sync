@@ -93,25 +93,25 @@ pub fn get_current_checkpoint(client: &binlog_protocol::BinlogClient) -> Result<
     })
 }
 
-/// Ordered stream position wrapper for interleaved snapshot.
+/// Ordered reconciliation position wrapper for interleaved snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct BinlogStreamPosition {
+pub struct BinlogReconciliationPos {
     pub position: BinlogPosition,
 }
 
-impl BinlogStreamPosition {
+impl BinlogReconciliationPos {
     pub fn new(position: BinlogPosition) -> Self {
         Self { position }
     }
 }
 
-impl From<BinlogPosition> for BinlogStreamPosition {
+impl From<BinlogPosition> for BinlogReconciliationPos {
     fn from(position: BinlogPosition) -> Self {
         Self { position }
     }
 }
 
-impl From<BinlogCheckpoint> for BinlogStreamPosition {
+impl From<BinlogCheckpoint> for BinlogReconciliationPos {
     fn from(checkpoint: BinlogCheckpoint) -> Self {
         Self {
             position: checkpoint.position,
@@ -276,9 +276,9 @@ mod tests {
     }
 
     #[test]
-    fn stream_position_orders_file_pos() {
-        let a = BinlogStreamPosition::new(BinlogPosition::file_pos("mysql-bin.000001", 10));
-        let b = BinlogStreamPosition::new(BinlogPosition::file_pos("mysql-bin.000001", 20));
+    fn reconciliation_position_orders_file_pos() {
+        let a = BinlogReconciliationPos::new(BinlogPosition::file_pos("mysql-bin.000001", 10));
+        let b = BinlogReconciliationPos::new(BinlogPosition::file_pos("mysql-bin.000001", 20));
         assert!(a < b);
     }
 }

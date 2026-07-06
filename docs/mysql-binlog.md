@@ -8,6 +8,11 @@ The end-to-end model mirrors a mature CDC pipeline (Debezium-style **snapshot �
 2. **Stream** binlog changes and apply them, converging the target to a consistent image.
 3. **Resume** from a durable checkpoint store after any restart, failover, or repointing.
 
+### Terminology
+
+- **Reconciliation** — interleaved snapshot binlog consumption: watermark-window dedup while tables are copied during the initial snapshot phase.
+- **Replication tail** — post-handoff steady CDC: continuous binlog apply after snapshot handoff completes (`FullSyncEnd` / `CatchUpProgress`).
+
 > **Trigger-based alternative:** If you cannot enable binlog replication or prefer audit triggers, see [Surreal-Sync for MySQL](mysql.md) and [Surreal-Sync for MariaDB](mariadb.md).
 
 ## The happy path
@@ -73,7 +78,7 @@ Every `sync` run — in any `--snapshot-mode` — is designed to be **started, s
 
 `SIGINT` (Ctrl-C) or `SIGTERM` stops **any** mode cleanly and **flushes a resumable checkpoint on the way out**:
 
-- **Streaming phase** (`initial` after snapshot, or `never`) — finishes the in-flight read, persists the latest streamed position, and exits `0`.
+- **Replication tail phase** (`initial` after snapshot, or `never`) — finishes the in-flight read, persists the latest streamed position, and exits `0`.
 - **`only` snapshot** — stops before the next table/chunk boundary. It deliberately does **not** emit `FullSyncEnd`, so the persisted `FullSyncStart` (the master position captured before any rows were copied) remains the resume point.
 - **`initial` snapshot** — emits `FullSyncStart` (the streaming lower bound) *before* copying any rows, so a cancel during the snapshot leaves a checkpoint that guarantees no streamed change is missed on the next run.
 
@@ -224,7 +229,7 @@ surreal-sync offers two strategies to move from an empty target to a live-tracki
 
 ### Interleaved snapshot (default, recommended)
 
-The default strategy copies tables in resumable, primary-key-ordered chunks **while** consuming the live binlog. It brackets each chunk with low/high **watermarks** written to `surreal_sync_signal` and reconciles overlapping changes (the live log event wins). The result converges to a **consistent image at the streaming position** — not an inconsistent point-in-time dump — and the same process keeps tracking afterward. This is the Debezium "incremental snapshot" model.
+The default strategy copies tables in resumable, primary-key-ordered chunks **while** consuming the live binlog (**reconciliation**). It brackets each chunk with low/high **watermarks** written to `surreal_sync_signal` and reconciles overlapping changes (the live log event wins). The result converges to a **consistent image at the handoff position** — not an inconsistent point-in-time dump — and the same process enters the **replication tail** afterward. This is the Debezium "incremental snapshot" model.
 
 Use `sync` for the all-in-one experience, or `sync --snapshot-mode only` followed by `sync --snapshot-mode never` if you want to schedule the two phases separately.
 

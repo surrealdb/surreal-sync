@@ -9,7 +9,7 @@ use mysql_async::{prelude::*, Pool};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
     run_adhoc_snapshot_tables, run_interleaved_snapshot_with_resume, InterleavedSnapshotConfig,
-    NoopCheckpointer, PkTuple, SnapshotCheckpointer, SnapshotSignal, StreamEvent, TableSpec,
+    NoopCheckpointer, PkTuple, SnapshotCheckpointer, SnapshotSignal, ReconciliationEvent, TableSpec,
     WatermarkKind, WatermarkSource,
 };
 use sync_core::{
@@ -22,7 +22,7 @@ use crate::catch_up::{
     emit_catch_up_progress, read_catch_up_progress, CatchUpProgress, CoverageKind,
 };
 use crate::change::cdc_change_to_universal;
-use crate::checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogStreamPosition};
+use crate::checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogReconciliationPos};
 use crate::client::{
     connect_binlog_client, new_mysql_pool, resolve_database, start_binlog_at_end,
     start_binlog_from_checkpoint, use_database,
@@ -60,7 +60,7 @@ pub struct BinlogWatermarkSource {
     pk_by_table: Mutex<HashMap<String, Vec<String>>>,
     conversion_by_table: HashMap<String, TableConversion>,
     table_maps: HashMap<u64, TableMapEvent>,
-    confirmed: BinlogStreamPosition,
+    confirmed: BinlogReconciliationPos,
     watermarks: Mutex<WatermarkIds>,
     cancel: tokio_util::sync::CancellationToken,
 }
@@ -143,7 +143,7 @@ impl BinlogWatermarkSource {
         } else {
             start_binlog_at_end(&mut binlog, &pool).await?;
         }
-        let confirmed = BinlogStreamPosition::from(get_current_checkpoint(&binlog)?);
+        let confirmed = BinlogReconciliationPos::from(get_current_checkpoint(&binlog)?);
 
         Ok(Self {
             pool,
@@ -215,7 +215,7 @@ impl BinlogWatermarkSource {
         }
 
         let conversion_by_table = conversions_from_schema(&schema, &json_columns);
-        let confirmed = BinlogStreamPosition::from(get_current_checkpoint(&binlog)?);
+        let confirmed = BinlogReconciliationPos::from(get_current_checkpoint(&binlog)?);
 
         Ok(Self {
             pool,
@@ -272,7 +272,7 @@ impl BinlogWatermarkSource {
         &self,
         change: &CdcChange,
         table_map: &TableMapEvent,
-    ) -> Result<StreamEvent<BinlogStreamPosition>> {
+    ) -> Result<ReconciliationEvent<BinlogReconciliationPos>> {
         let column_names = self
             .column_names_by_table
             .get(&change.table)
@@ -285,8 +285,8 @@ impl BinlogWatermarkSource {
             &self.json_columns,
         )?;
         let pk = pk_tuple_from_primary_key(&universal.id);
-        Ok(StreamEvent {
-            position: BinlogStreamPosition::new(change.position.clone()),
+        Ok(ReconciliationEvent {
+            position: BinlogReconciliationPos::new(change.position.clone()),
             table: change.table.clone(),
             pk,
             change: universal,
@@ -343,7 +343,7 @@ impl BinlogWatermarkSource {
 
 #[async_trait::async_trait]
 impl WatermarkSource for BinlogWatermarkSource {
-    type Position = BinlogStreamPosition;
+    type Position = BinlogReconciliationPos;
 
     async fn snapshot_tables(&self) -> Result<Vec<TableSpec>> {
         Ok(self.tables.clone())
@@ -395,7 +395,7 @@ impl WatermarkSource for BinlogWatermarkSource {
         Ok(())
     }
 
-    async fn next_stream_events(&mut self) -> Result<Vec<StreamEvent<Self::Position>>> {
+    async fn next_reconciliation_events(&mut self) -> Result<Vec<ReconciliationEvent<Self::Position>>> {
         let (low, high) = {
             let guard = self.watermarks.lock().expect("watermark lock poisoned");
             (guard.low, guard.high)
@@ -455,7 +455,7 @@ impl WatermarkSource for BinlogWatermarkSource {
 
                     for row_change in rows.rows {
                         let position = self.binlog.current_position();
-                        self.confirmed = BinlogStreamPosition::new(position.clone());
+                        self.confirmed = BinlogReconciliationPos::new(position.clone());
                         let change = CdcChange {
                             position,
                             database: table_map.database.clone(),
@@ -492,7 +492,7 @@ impl WatermarkSource for BinlogWatermarkSource {
         Ok(self.confirmed.clone())
     }
 
-    async fn commit_consumed(&mut self, position: Self::Position) -> Result<()> {
+    async fn commit_reconciled(&mut self, position: Self::Position) -> Result<()> {
         if position > self.confirmed {
             self.confirmed = position.clone();
         }
@@ -533,13 +533,13 @@ fn signal_insert_to_event(
     values: &[binlog_protocol::CellValue],
     low: Option<Uuid>,
     high: Option<Uuid>,
-) -> Result<Option<StreamEvent<BinlogStreamPosition>>> {
+) -> Result<Option<ReconciliationEvent<BinlogReconciliationPos>>> {
     let id = signal_uuid_from_row(values)?;
     if Some(id) != low && Some(id) != high {
         return Ok(None);
     }
-    Ok(Some(StreamEvent {
-        position: BinlogStreamPosition::new(change.position.clone()),
+    Ok(Some(ReconciliationEvent {
+        position: BinlogReconciliationPos::new(change.position.clone()),
         table: SIGNAL_TABLE.to_string(),
         pk: PkTuple::new(vec![UniversalValue::Uuid(id)]),
         change: UniversalChange::new(
@@ -896,7 +896,7 @@ where
         {
             if !progress.all_done() {
                 info!("Resuming interleaved snapshot from saved per-chunk progress");
-                let start_at = stream_pos_from_snapshot_checkpoint(&progress, from_opts).await?;
+                let start_at = reconciliation_pos_from_snapshot_checkpoint(&progress, from_opts).await?;
                 let outcome = run_interleaved_snapshot_full_sync(
                     surreal,
                     from_opts,
@@ -997,11 +997,11 @@ where
     })
 }
 
-async fn stream_pos_from_snapshot_checkpoint(
+async fn reconciliation_pos_from_snapshot_checkpoint(
     progress: &InterleavedSnapshotCheckpoint,
     from_opts: &SourceOpts,
 ) -> Result<BinlogCheckpoint> {
-    let stream: BinlogStreamPosition = serde_json::from_value(progress.stream_pos.clone())?;
+    let stream: BinlogReconciliationPos = serde_json::from_value(progress.reconciliation_pos.clone())?;
     let flavor = from_opts.flavor.unwrap_or(binlog_protocol::Flavor::MySql);
     Ok(BinlogCheckpoint {
         flavor,

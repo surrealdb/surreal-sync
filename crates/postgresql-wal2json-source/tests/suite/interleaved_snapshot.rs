@@ -90,7 +90,7 @@ async fn drain_to_catch_up(
 ) -> Result<()> {
     let signal_table = source.signal_table().to_string();
     loop {
-        let events = source.next_stream_events().await?;
+        let events = source.next_reconciliation_events().await?;
         if events.is_empty() {
             break;
         }
@@ -102,7 +102,7 @@ async fn drain_to_catch_up(
             sink.apply_universal_change(&event.change).await?;
         }
         let pos = source.current_position().await?;
-        source.commit_consumed(pos).await?;
+        source.commit_reconciled(pos).await?;
     }
     Ok(())
 }
@@ -253,7 +253,7 @@ async fn interleaved_snapshot_bounded_wal_retention() -> Result<()> {
 
     // The slot must have been advanced during the snapshot, not pinned: its
     // confirmed-flush position moved past the creation point as the per-window
-    // `commit_consumed` calls freed consumed WAL logically.
+    // `commit_reconciled` calls freed consumed WAL logically.
     let (_, confirmed_after, _) = slot_retention(&setup, slot).await?;
     let confirmed_after = confirmed_after.expect("confirmed_flush_lsn set after consuming windows");
     if let Some(before) = confirmed_before {

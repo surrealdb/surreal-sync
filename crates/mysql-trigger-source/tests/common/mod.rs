@@ -202,7 +202,7 @@ async fn source_value_map(
 /// skipping watermark rows. Terminates once the stream is exhausted.
 async fn drain_stream(source: &mut MySqlWatermarkSource, sink: &MemSink) -> Result<()> {
     loop {
-        let events = source.next_stream_events().await?;
+        let events = source.next_reconciliation_events().await?;
         if events.is_empty() {
             break;
         }

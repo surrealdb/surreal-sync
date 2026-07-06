@@ -202,7 +202,7 @@ async fn source_value_map(
 async fn drain_stream(source: &mut BinlogWatermarkSource, sink: &MemSink) -> Result<()> {
     let mut idle = 0u32;
     loop {
-        let events = source.next_stream_events().await?;
+        let events = source.next_reconciliation_events().await?;
         if events.is_empty() {
             idle += 1;
             if idle >= 80 {

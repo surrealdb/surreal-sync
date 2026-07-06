@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use surreal_sync_interleaved_snapshot::{
     run_interleaved_snapshot, InterleavedSnapshotConfig, PkTuple, SnapshotCheckpointer,
-    SnapshotSignal, StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
+    SnapshotSignal, ReconciliationEvent, TableSpec, WatermarkKind, WatermarkSource,
 };
 
 use crate::incremental_sync::{ChangeStream, IncrementalSource, PostgresIncrementalSource};
@@ -247,7 +247,7 @@ impl WatermarkSource for PostgresTriggerWatermarkSource {
         Ok(())
     }
 
-    async fn next_stream_events(&mut self) -> Result<Vec<StreamEvent<i64>>> {
+    async fn next_reconciliation_events(&mut self) -> Result<Vec<ReconciliationEvent<i64>>> {
         match self.stream.next_with_sequence_id().await {
             Some(Ok((sequence_id, change))) => {
                 if sequence_id > self.last_consumed {
@@ -269,7 +269,7 @@ impl WatermarkSource for PostgresTriggerWatermarkSource {
                     }
                 }
 
-                Ok(vec![StreamEvent {
+                Ok(vec![ReconciliationEvent {
                     position: sequence_id,
                     table: change.table.clone(),
                     pk,
@@ -285,7 +285,7 @@ impl WatermarkSource for PostgresTriggerWatermarkSource {
         self.query_stream_position().await
     }
 
-    async fn commit_consumed(&mut self, position: i64) -> Result<()> {
+    async fn commit_reconciled(&mut self, position: i64) -> Result<()> {
         // Prune only rows the stream has actually consumed: never advance past
         // `last_consumed` (would drop unapplied changes) nor past the resumable
         // checkpoint position handed in by the loop.

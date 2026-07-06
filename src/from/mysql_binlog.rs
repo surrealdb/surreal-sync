@@ -9,9 +9,9 @@ use anyhow::Context;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager};
 use surreal_sink::SurrealSink;
 use surreal_sync_mysql_binlog_source::{
-    request_snapshot, run_full_sync_cancellable, run_incremental_sync_with_checkpoints,
+    request_snapshot, run_full_sync_cancellable, run_replication_tail_with_checkpoints,
     run_initial_interleaved_snapshot, run_interleaved_snapshot_full_sync, BinlogCheckpoint,
-    IncrementalSyncOptions, InterleavedFullSyncOptions, SourceOpts, SyncOpts,
+    ReplicationTailOptions, InterleavedFullSyncOptions, SourceOpts, SyncOpts,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -110,20 +110,20 @@ fn parse_stop_after_deadline(
     })
 }
 
-fn binlog_stream_options(args: &MySQLBinlogSyncArgs) -> anyhow::Result<IncrementalSyncOptions> {
+fn binlog_stream_options(args: &MySQLBinlogSyncArgs) -> anyhow::Result<ReplicationTailOptions> {
     let until_checkpoint = args
         .stop_at
         .as_ref()
         .map(|s| BinlogCheckpoint::from_cli_string(s))
         .transpose()?;
     let deadline = parse_stop_after_deadline(args.stop_after.as_deref())?;
-    let mut options = IncrementalSyncOptions::stream(deadline, until_checkpoint);
+    let mut options = ReplicationTailOptions::stream(deadline, until_checkpoint);
     options.checkpoint_interval = std::time::Duration::from_secs(args.checkpoint_interval);
     options.chunk_size = args.chunk_size;
     Ok(options)
 }
 
-async fn read_latest_binlog_checkpoint<St: CheckpointStore>(
+async fn read_latest_replication_checkpoint<St: CheckpointStore>(
     manager: &SyncManager<St>,
 ) -> anyhow::Result<BinlogCheckpoint> {
     use checkpoint::SyncPhase;
@@ -171,7 +171,7 @@ async fn checkpoint_from_arg_or_store<St: CheckpointStore>(
         }
         (None, Some(manager)) => {
             tracing::info!("Reading latest checkpoint from configured checkpoint store");
-            match read_latest_binlog_checkpoint(manager).await {
+            match read_latest_replication_checkpoint(manager).await {
                 Ok(checkpoint) => Ok(checkpoint),
                 Err(read_err) => {
                     tracing::info!(
@@ -367,7 +367,7 @@ where
             let from_checkpoint =
                 checkpoint_from_arg_or_store(&from_explicit, checkpoint_manager, &source_opts)
                     .await?;
-            run_incremental_sync_with_checkpoints(
+            run_replication_tail_with_checkpoints(
                 sink,
                 source_opts,
                 from_checkpoint,
@@ -413,7 +413,7 @@ where
                     );
                     return Ok(());
                 }
-                run_incremental_sync_with_checkpoints(
+                run_replication_tail_with_checkpoints(
                     sink,
                     source_opts,
                     outcome.end,
@@ -423,7 +423,7 @@ where
                 .await
             } else if strategy == SyncStrategy::SequentialSnapshot {
                 let from_checkpoint = match checkpoint_manager {
-                    Some(manager) => read_latest_binlog_checkpoint(manager).await?,
+                    Some(manager) => read_latest_replication_checkpoint(manager).await?,
                     None => {
                         checkpoint_from_arg_or_store::<checkpoint::NullStore>(
                             &from_explicit,
@@ -433,7 +433,7 @@ where
                         .await?
                     }
                 };
-                run_incremental_sync_with_checkpoints(
+                run_replication_tail_with_checkpoints(
                     sink,
                     source_opts,
                     from_checkpoint,

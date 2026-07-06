@@ -1,4 +1,4 @@
-//! MySQL binlog incremental sync (apply then commit).
+//! MySQL binlog replication tail (post-handoff steady CDC).
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -29,7 +29,7 @@ use crate::SourceOpts;
 pub const DEFAULT_STREAM_CHUNK_SIZE: usize = 1024;
 
 #[derive(Clone, Debug)]
-pub struct IncrementalSyncOptions {
+pub struct ReplicationTailOptions {
     /// Optional wall-clock stop for the stream phase.
     pub deadline: Option<DateTime<Utc>>,
     /// Optional exact binlog/GTID stop bound for the stream phase.
@@ -43,7 +43,7 @@ pub struct IncrementalSyncOptions {
     pub cancel: tokio_util::sync::CancellationToken,
 }
 
-impl IncrementalSyncOptions {
+impl ReplicationTailOptions {
     pub fn stream(deadline: Option<DateTime<Utc>>, until: Option<BinlogCheckpoint>) -> Self {
         Self {
             deadline,
@@ -62,26 +62,26 @@ impl IncrementalSyncOptions {
     }
 }
 
-pub async fn run_incremental_sync<S: SurrealSink>(
+pub async fn run_replication_tail<S: SurrealSink>(
     surreal: &S,
     from_opts: SourceOpts,
     from_checkpoint: BinlogCheckpoint,
 ) -> Result<()> {
-    run_incremental_sync_with_checkpoints::<S, checkpoint::NullStore>(
+    run_replication_tail_with_checkpoints::<S, checkpoint::NullStore>(
         surreal,
         from_opts,
         from_checkpoint,
-        IncrementalSyncOptions::stream(None, None),
+        ReplicationTailOptions::stream(None, None),
         None,
     )
     .await
 }
 
-pub async fn run_incremental_sync_with_checkpoints<S, St>(
+pub async fn run_replication_tail_with_checkpoints<S, St>(
     surreal: &S,
     from_opts: SourceOpts,
     from_checkpoint: BinlogCheckpoint,
-    options: IncrementalSyncOptions,
+    options: ReplicationTailOptions,
     checkpoint_manager: Option<&SyncManager<St>>,
 ) -> Result<()>
 where
@@ -341,7 +341,7 @@ async fn handle_snapshot_signals<S, St>(
     from_opts: &SourceOpts,
     client: binlog_protocol::BinlogClient,
     table_filter: &mut Option<Vec<String>>,
-    options: &IncrementalSyncOptions,
+    options: &ReplicationTailOptions,
     checkpoint_manager: Option<&SyncManager<St>>,
 ) -> Result<binlog_protocol::BinlogClient>
 where
@@ -419,7 +419,7 @@ fn apply_renames_to_filter(filter: &mut Option<Vec<String>>, renames: &[crate::d
 
 fn should_emit_checkpoint(
     enabled: bool,
-    options: &IncrementalSyncOptions,
+    options: &ReplicationTailOptions,
     last_emit: std::time::Instant,
 ) -> bool {
     enabled

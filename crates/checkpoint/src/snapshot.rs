@@ -31,20 +31,24 @@ pub struct SnapshotTableProgress {
 /// snapshot.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct InterleavedSnapshotCheckpoint {
-    /// Current stream position, serialized as JSON.
+    /// Current reconciliation stream position, serialized as JSON.
     ///
     /// On resume the snapshot continues consuming the change stream from this
     /// position; on completion this is the position handed off to downstream
-    /// incremental/live processing.
-    pub stream_pos: serde_json::Value,
+    /// replication-tail processing.
+    #[serde(alias = "stream_pos")]
+    pub reconciliation_pos: serde_json::Value,
     /// Per-table copy progress.
     pub tables: Vec<SnapshotTableProgress>,
 }
 
 impl InterleavedSnapshotCheckpoint {
     /// Create a new snapshot checkpoint.
-    pub fn new(stream_pos: serde_json::Value, tables: Vec<SnapshotTableProgress>) -> Self {
-        Self { stream_pos, tables }
+    pub fn new(reconciliation_pos: serde_json::Value, tables: Vec<SnapshotTableProgress>) -> Self {
+        Self {
+            reconciliation_pos,
+            tables,
+        }
     }
 
     /// Whether every table has been fully copied.

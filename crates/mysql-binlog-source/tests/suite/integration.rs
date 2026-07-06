@@ -8,8 +8,8 @@ use binlog_protocol::{BinlogClient, EventBody, ReplicaOptions, RowChange, SslMod
 use checkpoint::Checkpoint;
 use mysql_async::prelude::*;
 use surreal_sync_mysql_binlog_source::{
-    run_incremental_sync_with_checkpoints, BinlogCheckpoint, CatchUpProgress,
-    IncrementalSyncOptions, SourceOpts,
+    run_replication_tail_with_checkpoints, BinlogCheckpoint, CatchUpProgress,
+    ReplicationTailOptions, SourceOpts,
 };
 use sync_core::{UniversalChange, UniversalValue};
 
@@ -218,11 +218,11 @@ async fn mysql_partial_json_update_is_applied_as_full_json_change() -> Result<()
         mariadb_gtid_strict_mode:
             surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
     };
-    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+    run_replication_tail_with_checkpoints::<_, checkpoint::NullStore>(
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::stream(
+        ReplicationTailOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(5)),
             None,
         ),
@@ -296,11 +296,11 @@ async fn gtid_checkpoint_resume_applies_subsequent_changes() -> Result<()> {
 
     let tmp = tempfile::TempDir::new()?;
     let manager = checkpoint::SyncManager::new(checkpoint::FilesystemStore::new(tmp.path()));
-    run_incremental_sync_with_checkpoints(
+    run_replication_tail_with_checkpoints(
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::stream(
+        ReplicationTailOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -371,11 +371,11 @@ async fn ddl_refreshes_schema_before_subsequent_rows() -> Result<()> {
             surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
     };
 
-    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+    run_replication_tail_with_checkpoints::<_, checkpoint::NullStore>(
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::stream(
+        ReplicationTailOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -455,11 +455,11 @@ async fn mariadb_gtid_checkpoint_resume_applies_subsequent_changes() -> Result<(
             surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
     };
 
-    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+    run_replication_tail_with_checkpoints::<_, checkpoint::NullStore>(
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::stream(
+        ReplicationTailOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -651,11 +651,11 @@ async fn sequential_full_sync_captures_real_master_position() -> Result<()> {
         mariadb_gtid_strict_mode:
             surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
     };
-    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+    run_replication_tail_with_checkpoints::<_, checkpoint::NullStore>(
         &inc_sink,
         inc_opts,
         end,
-        IncrementalSyncOptions::stream(
+        ReplicationTailOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -793,11 +793,11 @@ async fn rename_table_mid_stream_keeps_tracking_new_name() -> Result<()> {
             surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
     };
 
-    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+    run_replication_tail_with_checkpoints::<_, checkpoint::NullStore>(
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::stream(
+        ReplicationTailOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -868,11 +868,11 @@ async fn cancellation_stops_follow_and_flushes_resumable_checkpoint() -> Result<
         canceller.cancel();
     });
 
-    run_incremental_sync_with_checkpoints(
+    run_replication_tail_with_checkpoints(
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::stream(None, None).with_cancel(cancel),
+        ReplicationTailOptions::stream(None, None).with_cancel(cancel),
         Some(&manager),
     )
     .await?;
@@ -911,11 +911,11 @@ async fn cancellation_stops_follow_and_flushes_resumable_checkpoint() -> Result<
         mariadb_gtid_strict_mode:
             surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
     };
-    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+    run_replication_tail_with_checkpoints::<_, checkpoint::NullStore>(
         &resume_sink,
         resume_opts,
         progress.position,
-        IncrementalSyncOptions::stream(
+        ReplicationTailOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -969,11 +969,11 @@ async fn start_at_head_checkpoint_resumes_from_current_position() -> Result<()> 
     let sink = CaptureSink {
         changes: std::sync::Mutex::new(Vec::new()),
     };
-    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+    run_replication_tail_with_checkpoints::<_, checkpoint::NullStore>(
         &sink,
         source_opts,
         head,
-        IncrementalSyncOptions::stream(
+        ReplicationTailOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,
         ),
@@ -1053,11 +1053,11 @@ async fn steady_state_stream_honors_execute_snapshot_signal() -> Result<()> {
             surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
     };
 
-    run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
+    run_replication_tail_with_checkpoints::<_, checkpoint::NullStore>(
         &sink,
         source_opts,
         checkpoint,
-        IncrementalSyncOptions::stream(
+        ReplicationTailOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(60)),
             None,
         ),

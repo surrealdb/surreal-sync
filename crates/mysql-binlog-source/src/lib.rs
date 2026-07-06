@@ -23,11 +23,11 @@ pub use catch_up::{
     CatchUpProgress, CoverageKind, TableCoverageEntry,
 };
 pub use change::cdc_change_to_universal;
-pub use checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogStreamPosition};
+pub use checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogReconciliationPos};
 pub use flavor::Flavor;
 pub use full_sync::{capture_head_checkpoint, run_full_sync, run_full_sync_cancellable};
 pub use incremental_sync::{
-    run_incremental_sync, run_incremental_sync_with_checkpoints, IncrementalSyncOptions,
+    run_replication_tail, run_replication_tail_with_checkpoints, ReplicationTailOptions,
 };
 pub use signal::SIGNAL_TABLE;
 pub use watermark_source::{

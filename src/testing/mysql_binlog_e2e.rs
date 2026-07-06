@@ -9,7 +9,7 @@ use crate::testing::surreal::{
 };
 use crate::testing::{create_unified_full_dataset, SourceDatabase, TestConfig};
 use surreal_sync_mysql_binlog_source::{
-    BinlogCheckpoint, IncrementalSyncOptions, SourceOpts, SyncOpts,
+    BinlogCheckpoint, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
 
 /// Which MySQL-compatible engine a binlog e2e test runs against.
@@ -204,14 +204,14 @@ async fn run_binlog_incremental_e2e_inner(
     match &conn {
         SurrealConnection::V2(client) => {
             let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_mysql_binlog_source::run_incremental_sync_with_checkpoints::<
+            surreal_sync_mysql_binlog_source::run_replication_tail_with_checkpoints::<
                 _,
                 checkpoint::NullStore,
             >(
                 &sink,
                 source_opts,
                 sync_checkpoint,
-                IncrementalSyncOptions::stream(
+                ReplicationTailOptions::stream(
                     Some(chrono::Utc::now() + chrono::Duration::seconds(10)),
                     None,
                 ),
@@ -221,14 +221,14 @@ async fn run_binlog_incremental_e2e_inner(
         }
         SurrealConnection::V3(client) => {
             let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_mysql_binlog_source::run_incremental_sync_with_checkpoints::<
+            surreal_sync_mysql_binlog_source::run_replication_tail_with_checkpoints::<
                 _,
                 checkpoint::NullStore,
             >(
                 &sink,
                 source_opts,
                 sync_checkpoint,
-                IncrementalSyncOptions::stream(
+                ReplicationTailOptions::stream(
                     Some(chrono::Utc::now() + chrono::Duration::seconds(10)),
                     None,
                 ),
