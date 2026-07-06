@@ -118,10 +118,7 @@ fn test_checkpoint_file_accessors() {
 fn test_sync_phase_as_str() {
     assert_eq!(SyncPhase::FullSyncStart.as_str(), "full_sync_start");
     assert_eq!(SyncPhase::FullSyncEnd.as_str(), "full_sync_end");
-    assert_eq!(
-        SyncPhase::SyncHandoffMetadata.as_str(),
-        "sync_handoff_metadata"
-    );
+    assert_eq!(SyncPhase::CatchUpProgress.as_str(), "catch_up_progress");
 }
 
 #[test]

@@ -1,12 +1,12 @@
 //! MySQL/MariaDB binlog CDC source for surreal-sync.
 
+mod catch_up;
 mod change;
 mod checkpoint;
 mod client;
 mod ddl;
 mod flavor;
 mod full_sync;
-mod handoff;
 mod incremental_sync;
 mod schema;
 mod signal;
@@ -18,14 +18,14 @@ pub mod testing;
 pub use testing::{MariaDBBinlogContainer, MySQLBinlogContainer};
 
 pub use binlog_protocol::{MariaDbGtidStrictMode, SslMode, SslOptions};
+pub use catch_up::{
+    emit_catch_up_progress, max_binlog_checkpoint, read_catch_up_progress, tables_pending_snapshot,
+    CatchUpProgress, CoverageKind, TableCoverageEntry,
+};
 pub use change::cdc_change_to_universal;
 pub use checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogStreamPosition};
 pub use flavor::Flavor;
 pub use full_sync::{capture_head_checkpoint, run_full_sync, run_full_sync_cancellable};
-pub use handoff::{
-    emit_handoff_metadata, read_handoff_metadata, tables_pending_snapshot, HandoffKind,
-    SyncHandoffMetadata, TableHandoffEntry,
-};
 pub use incremental_sync::{
     run_incremental_sync, run_incremental_sync_with_checkpoints, IncrementalSyncOptions,
 };

@@ -40,12 +40,12 @@ pub enum SyncPhase {
     /// incremental/live processing continues from exactly this position.
     SnapshotHandoff,
 
-    /// Registry of tables that completed snapshot handoff for a binlog sync run.
+    /// Catch-up progress for binlog sync: stream position plus table coverage.
     ///
-    /// Separate from position-only [`FullSyncEnd`] checkpoints so
-    /// `read_latest_binlog_checkpoint` stays unchanged. Used to skip already
-    /// snapshotted tables on `initial` restart and to track ad-hoc snapshots.
-    SyncHandoffMetadata,
+    /// Updated during incremental sync (position only) and when snapshot batches
+    /// complete (position plus covered tables). [`FullSyncEnd`] remains the
+    /// immutable t2 boundary written once at snapshot handoff completion.
+    CatchUpProgress,
 }
 
 impl SyncPhase {
@@ -60,7 +60,7 @@ impl SyncPhase {
             SyncPhase::FullSyncEnd => "full_sync_end",
             SyncPhase::SnapshotProgress => "snapshot_progress",
             SyncPhase::SnapshotHandoff => "snapshot_handoff",
-            SyncPhase::SyncHandoffMetadata => "sync_handoff_metadata",
+            SyncPhase::CatchUpProgress => "catch_up_progress",
         }
     }
 }

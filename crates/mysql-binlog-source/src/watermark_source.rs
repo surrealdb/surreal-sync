@@ -18,6 +18,9 @@ use sync_core::{
 use tracing::info;
 use uuid::Uuid;
 
+use crate::catch_up::{
+    emit_catch_up_progress, read_catch_up_progress, CatchUpProgress, CoverageKind,
+};
 use crate::change::cdc_change_to_universal;
 use crate::checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogStreamPosition};
 use crate::client::{
@@ -25,7 +28,6 @@ use crate::client::{
     start_binlog_from_checkpoint, use_database,
 };
 use crate::full_sync::{get_primary_key_columns, read_table_chunk};
-use crate::handoff::{emit_handoff_metadata, HandoffKind, SyncHandoffMetadata};
 use crate::schema::{collect_mysql_database_schema, get_table_column_names_ordinal};
 use crate::signal::{
     create_signal_table_sql, poll_execute_snapshot_signals, EXECUTE_SNAPSHOT_KIND, SIGNAL_TABLE,
@@ -692,8 +694,8 @@ pub struct InterleavedFullSyncOptions {
     pub start_at: Option<BinlogCheckpoint>,
     /// When false, skip emitting `FullSyncStart` (restart paths).
     pub emit_full_sync_start: bool,
-    /// Handoff kind recorded in metadata for tables completed in this run.
-    pub handoff_kind: HandoffKind,
+    /// Coverage kind recorded for tables completed in this run.
+    pub coverage_kind: CoverageKind,
 }
 
 impl Default for InterleavedFullSyncOptions {
@@ -703,7 +705,7 @@ impl Default for InterleavedFullSyncOptions {
             tables_filter: None,
             start_at: None,
             emit_full_sync_start: true,
-            handoff_kind: HandoffKind::Initial,
+            coverage_kind: CoverageKind::Initial,
         }
     }
 }
@@ -807,12 +809,12 @@ where
                 manager
                     .emit_checkpoint(&end, SyncPhase::FullSyncEnd)
                     .await?;
-                let existing = crate::handoff::read_handoff_metadata(manager).await?;
-                write_handoff_metadata_for_tables(
+                let existing = read_catch_up_progress(manager).await?;
+                write_catch_up_for_tables(
                     manager,
                     source.tables.iter().map(|t| t.table.clone()).collect(),
-                    options.handoff_kind,
-                    &end.position,
+                    options.coverage_kind,
+                    &end,
                     existing,
                 )
                 .await?;
@@ -838,31 +840,17 @@ where
     }
 }
 
-/// Merge completed tables into handoff metadata and persist it.
-pub(crate) async fn write_handoff_metadata_for_tables<St: checkpoint::CheckpointStore>(
+/// Merge completed tables into catch-up progress and persist it.
+pub(crate) async fn write_catch_up_for_tables<St: checkpoint::CheckpointStore>(
     manager: &checkpoint::SyncManager<St>,
     table_names: Vec<String>,
-    kind: HandoffKind,
-    stream_pos: &binlog_protocol::BinlogPosition,
-    existing: Option<SyncHandoffMetadata>,
+    kind: CoverageKind,
+    checkpoint: &crate::checkpoint::BinlogCheckpoint,
+    existing: Option<CatchUpProgress>,
 ) -> Result<()> {
-    let mut metadata = existing.unwrap_or_else(|| SyncHandoffMetadata::new(stream_pos.clone()));
-    metadata.merge_tables(&table_names, kind, stream_pos.clone());
-    emit_handoff_metadata(manager, &metadata).await
-}
-
-/// Refresh the stream position in handoff metadata without changing the table set.
-pub(crate) async fn refresh_handoff_metadata_stream_pos<St: checkpoint::CheckpointStore>(
-    manager: &checkpoint::SyncManager<St>,
-    stream_pos: binlog_protocol::BinlogPosition,
-    existing: Option<SyncHandoffMetadata>,
-) -> Result<()> {
-    if let Some(mut metadata) = existing {
-        metadata.refresh_stream_pos(stream_pos);
-        emit_handoff_metadata(manager, &metadata).await
-    } else {
-        Ok(())
-    }
+    let mut progress = existing.unwrap_or_else(|| CatchUpProgress::new(checkpoint.clone()));
+    progress.merge_tables(&table_names, kind, checkpoint);
+    emit_catch_up_progress(manager, &progress).await
 }
 
 struct ManagerRefCheckpointer<'a, St: checkpoint::CheckpointStore> {
@@ -881,7 +869,7 @@ impl<St: checkpoint::CheckpointStore> SnapshotCheckpointer for ManagerRefCheckpo
 
 /// Run the initial interleaved snapshot phase with restart-aware table selection.
 ///
-/// Reads snapshot progress, handoff metadata, and position checkpoints from the
+/// Reads snapshot progress, catch-up progress, and position checkpoints from the
 /// store and chooses between full snapshot, resume, delta snapshot, or skip.
 pub async fn run_initial_interleaved_snapshot<S, St>(
     surreal: &S,
@@ -894,7 +882,9 @@ where
     S: SurrealSink,
     St: checkpoint::CheckpointStore,
 {
-    use crate::handoff::{read_handoff_metadata, tables_pending_snapshot};
+    use crate::catch_up::{
+        emit_catch_up_progress, read_catch_up_progress, tables_pending_snapshot,
+    };
     use checkpoint::{Checkpoint, SyncPhase};
 
     let requested_tables = BinlogWatermarkSource::resolve_snapshot_table_names(from_opts).await?;
@@ -917,7 +907,7 @@ where
                         resume_progress: Some(progress),
                         start_at: Some(start_at),
                         emit_full_sync_start: false,
-                        handoff_kind: HandoffKind::Initial,
+                        coverage_kind: CoverageKind::Initial,
                         ..InterleavedFullSyncOptions::default()
                     },
                 )
@@ -929,17 +919,24 @@ where
             }
         }
 
-        let metadata = read_handoff_metadata(manager).await?;
+        let mut progress = read_catch_up_progress(manager).await?;
+        if let Some(ref mut catch_up) = progress {
+            let before = catch_up.covered_tables.len();
+            catch_up.prune_to_requested(&requested_tables);
+            if catch_up.covered_tables.len() != before {
+                emit_catch_up_progress(manager, catch_up).await?;
+            }
+        }
         if let Ok(end) = manager
             .read_checkpoint::<BinlogCheckpoint>(SyncPhase::FullSyncEnd)
             .await
         {
-            if metadata
+            if progress
                 .as_ref()
-                .is_some_and(|m| !m.snapshotted_tables.is_empty())
+                .is_some_and(|p| !p.covered_tables.is_empty())
             {
-                let metadata = metadata.unwrap();
-                let pending = tables_pending_snapshot(&requested_tables, &metadata);
+                let catch_up = progress.unwrap();
+                let pending = tables_pending_snapshot(&requested_tables, &catch_up);
                 if pending.is_empty() {
                     info!(
                         "All requested tables already snapshotted; skipping snapshot and streaming from {}",
@@ -956,7 +953,7 @@ where
                 }
                 info!(
                     "Snapshotted tables {:?}; running delta snapshot for {:?}",
-                    metadata.snapshotted_names(),
+                    catch_up.covered_names(),
                     pending
                 );
                 let outcome = run_interleaved_snapshot_full_sync(
@@ -969,7 +966,7 @@ where
                         tables_filter: Some(pending),
                         start_at: Some(end),
                         emit_full_sync_start: false,
-                        handoff_kind: HandoffKind::Initial,
+                        coverage_kind: CoverageKind::Initial,
                         ..InterleavedFullSyncOptions::default()
                     },
                 )
@@ -989,7 +986,7 @@ where
         cancel,
         manager,
         InterleavedFullSyncOptions {
-            handoff_kind: HandoffKind::Initial,
+            coverage_kind: CoverageKind::Initial,
             ..InterleavedFullSyncOptions::default()
         },
     )
@@ -1005,9 +1002,7 @@ async fn stream_pos_from_snapshot_checkpoint(
     from_opts: &SourceOpts,
 ) -> Result<BinlogCheckpoint> {
     let stream: BinlogStreamPosition = serde_json::from_value(progress.stream_pos.clone())?;
-    let flavor = from_opts
-        .flavor
-        .unwrap_or(binlog_protocol::Flavor::MySql);
+    let flavor = from_opts.flavor.unwrap_or(binlog_protocol::Flavor::MySql);
     Ok(BinlogCheckpoint {
         flavor,
         position: stream.position,

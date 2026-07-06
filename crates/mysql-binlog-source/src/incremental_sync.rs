@@ -11,18 +11,17 @@ use mysql_async::prelude::Queryable;
 use surreal_sink::SurrealSink;
 use tracing::{debug, info};
 
+use crate::catch_up::{read_catch_up_progress, CatchUpProgress, CoverageKind};
 use crate::change::cdc_change_to_universal;
 use crate::checkpoint::BinlogCheckpoint;
 use crate::client::{
     connect_binlog_client, new_mysql_pool, resolve_database, start_binlog_from_checkpoint,
     use_database,
 };
-use crate::handoff::{read_handoff_metadata, HandoffKind};
 use crate::schema::{collect_mysql_database_schema, get_table_column_names_ordinal};
 use crate::signal::{create_signal_table_sql, poll_execute_snapshot_signals};
 use crate::watermark_source::{
-    refresh_handoff_metadata_stream_pos, run_adhoc_snapshots_for_tables,
-    write_handoff_metadata_for_tables, BinlogWatermarkSource,
+    run_adhoc_snapshots_for_tables, write_catch_up_for_tables, BinlogWatermarkSource,
 };
 use crate::SourceOpts;
 
@@ -380,15 +379,12 @@ where
 
         if let Some(manager) = checkpoint_manager {
             let checkpoint = wm.current_checkpoint()?;
-            manager
-                .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
-                .await?;
-            let existing = read_handoff_metadata(manager).await?;
-            write_handoff_metadata_for_tables(
+            let existing = read_catch_up_progress(manager).await?;
+            write_catch_up_for_tables(
                 manager,
                 signal.tables.clone(),
-                HandoffKind::AdHoc,
-                &checkpoint.position,
+                CoverageKind::AdHoc,
+                &checkpoint,
                 existing,
             )
             .await?;
@@ -448,11 +444,12 @@ async fn persist_checkpoint<St: CheckpointStore>(
     {
         return Ok(());
     }
+    let existing = read_catch_up_progress(manager).await?;
+    let mut progress = existing.unwrap_or_else(|| CatchUpProgress::new(checkpoint.clone()));
+    progress.update_position(checkpoint.clone());
     manager
-        .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
+        .emit_checkpoint(&progress, SyncPhase::CatchUpProgress)
         .await?;
-    let existing = read_handoff_metadata(manager).await?;
-    refresh_handoff_metadata_stream_pos(manager, checkpoint.position.clone(), existing).await?;
     *last = Some(checkpoint);
     Ok(())
 }

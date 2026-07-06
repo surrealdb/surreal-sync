@@ -8,7 +8,8 @@ use binlog_protocol::{BinlogClient, EventBody, ReplicaOptions, RowChange, SslMod
 use checkpoint::Checkpoint;
 use mysql_async::prelude::*;
 use surreal_sync_mysql_binlog_source::{
-    run_incremental_sync_with_checkpoints, BinlogCheckpoint, IncrementalSyncOptions, SourceOpts,
+    run_incremental_sync_with_checkpoints, BinlogCheckpoint, CatchUpProgress,
+    IncrementalSyncOptions, SourceOpts,
 };
 use sync_core::{UniversalChange, UniversalValue};
 
@@ -316,11 +317,11 @@ async fn gtid_checkpoint_resume_applies_subsequent_changes() -> Result<()> {
         applied.len() >= 2,
         "expected at least two incremental changes, got {applied:?}"
     );
-    let persisted: BinlogCheckpoint = manager
-        .read_checkpoint(checkpoint::SyncPhase::FullSyncEnd)
+    let persisted: CatchUpProgress = manager
+        .read_checkpoint(checkpoint::SyncPhase::CatchUpProgress)
         .await?;
     assert_ne!(
-        persisted.position,
+        persisted.position.position,
         BinlogCheckpoint::from_cli_string("file:mysql-bin.000001:4")?.position,
         "incremental sync should persist a real stream checkpoint"
     );
@@ -882,10 +883,17 @@ async fn cancellation_stops_follow_and_flushes_resumable_checkpoint() -> Result<
         "expected the pre-cancel insert to be applied, got {applied:?}"
     );
 
-    // A resumable checkpoint must have been flushed on the way out.
-    let persisted: BinlogCheckpoint = manager
-        .read_checkpoint(checkpoint::SyncPhase::FullSyncEnd)
+    // A resumable CatchUpProgress checkpoint must have been flushed on the way out.
+    let progress: CatchUpProgress = manager
+        .read_checkpoint(checkpoint::SyncPhase::CatchUpProgress)
         .await?;
+    assert!(
+        manager
+            .read_checkpoint::<BinlogCheckpoint>(checkpoint::SyncPhase::FullSyncEnd)
+            .await
+            .is_err(),
+        "stream heartbeats must not overwrite FullSyncEnd"
+    );
 
     // Resume from the flushed checkpoint and observe a subsequent insert.
     conn.exec_drop("INSERT INTO widgets (id, n) VALUES (2, 2)", ())
@@ -906,7 +914,7 @@ async fn cancellation_stops_follow_and_flushes_resumable_checkpoint() -> Result<
     run_incremental_sync_with_checkpoints::<_, checkpoint::NullStore>(
         &resume_sink,
         resume_opts,
-        persisted,
+        progress.position,
         IncrementalSyncOptions::stream(
             Some(chrono::Utc::now() + chrono::Duration::seconds(30)),
             None,

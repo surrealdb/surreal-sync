@@ -6,7 +6,7 @@
 //! - `from mysql-binlog snapshot` — ad-hoc execute-snapshot signal insert
 
 use anyhow::Context;
-use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
+use checkpoint::{Checkpoint, CheckpointStore, SyncManager};
 use surreal_sink::SurrealSink;
 use surreal_sync_mysql_binlog_source::{
     request_snapshot, run_full_sync_cancellable, run_incremental_sync_with_checkpoints,
@@ -126,16 +126,26 @@ fn binlog_stream_options(args: &MySQLBinlogSyncArgs) -> anyhow::Result<Increment
 async fn read_latest_binlog_checkpoint<St: CheckpointStore>(
     manager: &SyncManager<St>,
 ) -> anyhow::Result<BinlogCheckpoint> {
-    match manager.read_checkpoint(SyncPhase::FullSyncEnd).await {
-        Ok(checkpoint) => Ok(checkpoint),
-        Err(end_err) => manager
+    use checkpoint::SyncPhase;
+    use surreal_sync_mysql_binlog_source::{max_binlog_checkpoint, CatchUpProgress};
+
+    let catch_up = manager
+        .read_checkpoint::<CatchUpProgress>(SyncPhase::CatchUpProgress)
+        .await
+        .ok();
+    let full_sync_end = manager
+        .read_checkpoint::<BinlogCheckpoint>(SyncPhase::FullSyncEnd)
+        .await
+        .ok();
+
+    match (catch_up, full_sync_end) {
+        (Some(progress), Some(end)) => Ok(max_binlog_checkpoint(&[progress.position, end])),
+        (Some(progress), None) => Ok(progress.position),
+        (None, Some(end)) => Ok(end),
+        (None, None) => manager
             .read_checkpoint(SyncPhase::FullSyncStart)
             .await
-            .with_context(|| {
-                format!(
-                    "Failed to read FullSyncEnd checkpoint ({end_err}); also failed to read FullSyncStart"
-                )
-            }),
+            .with_context(|| "No CatchUpProgress, FullSyncEnd, or FullSyncStart checkpoint found"),
     }
 }
 

@@ -11,6 +11,9 @@ use surreal_sink::SurrealSink;
 use sync_core::{UniversalRow, UniversalType, UniversalValue};
 use tracing::{debug, info};
 
+use crate::catch_up::{
+    emit_catch_up_progress, read_catch_up_progress, CatchUpProgress, CoverageKind,
+};
 use crate::checkpoint::BinlogCheckpoint;
 use crate::client::{
     connect_binlog_client, new_mysql_pool, resolve_database, show_master_status, use_database,
@@ -128,6 +131,12 @@ pub async fn run_full_sync_cancellable<S: SurrealSink, CS: CheckpointStore>(
             "Emitted full sync end checkpoint (t2): {}",
             checkpoint.to_cli_string()
         );
+
+        let table_names = tables.to_vec();
+        let existing = read_catch_up_progress(manager).await?;
+        let mut progress = existing.unwrap_or_else(|| CatchUpProgress::new(checkpoint.clone()));
+        progress.merge_tables(&table_names, CoverageKind::Initial, &checkpoint);
+        emit_catch_up_progress(manager, &progress).await?;
     }
 
     drop(conn);

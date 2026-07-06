@@ -256,7 +256,9 @@ fn parse_sync_phase(phase: &str) -> anyhow::Result<SyncPhase> {
         "full_sync_end" => Ok(SyncPhase::FullSyncEnd),
         "snapshot_progress" => Ok(SyncPhase::SnapshotProgress),
         "snapshot_handoff" => Ok(SyncPhase::SnapshotHandoff),
-        "sync_handoff_metadata" => Ok(SyncPhase::SyncHandoffMetadata),
+        "catch_up_progress" => Ok(SyncPhase::CatchUpProgress),
+        // Dev fallback for checkpoint dirs written before the CatchUpProgress rename.
+        "sync_handoff_metadata" => Ok(SyncPhase::CatchUpProgress),
         other => Err(anyhow::anyhow!("Unknown sync phase: {other}")),
     }
 }
