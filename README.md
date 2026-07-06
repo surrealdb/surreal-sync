@@ -41,7 +41,7 @@ See source-specific guides for more details:
 - **[MongoDB](docs/mongodb.md)**: Full and incremental sync using change streams
 - **[MySQL](docs/mysql.md)**: Full and incremental sync using trigger-based CDC + sequence checkpoints
 - **[MariaDB](docs/mariadb.md)**: Full and incremental sync via the same trigger-based source as MySQL
-- **[MySQL/MariaDB (binlog)](docs/mysql-binlog.md)**: Triggerless binlog CDC — snapshot, stream, and resume via a checkpoint store (`--checkpoint-dir` or `--checkpoints-surreal-table`); restart the same command after stop or repoint
+- **[MySQL/MariaDB (binlog)](docs/mysql-binlog.md)**: Full and incremental sync using triggerless CDC via the binary log
 - **[PostgreSQL (Trigger-based)](docs/postgresql.md)**: Full and incremental sync using trigger-based CDC + sequence checkpoints
 - **[PostgreSQL (wal2json)](docs/postgresql-wal2json-source.md)**: Full and incremental sync using logical replication with wal2json plugin
 - **[Neo4j](docs/neo4j.md)**: Full and incremental sync using timestamp-based tracking
