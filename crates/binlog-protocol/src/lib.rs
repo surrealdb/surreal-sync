@@ -1,7 +1,8 @@
 //! MySQL/MariaDB binlog replication protocol for CDC from `binlog_format=ROW` sources
-//! (not STATEMENT/MIXED). Handles row-change opcodes 23–25 and V1 variants 30–32
-//! (MySQL 39), with post-header lengths driven by the format-description event;
-//! `ROWS_HEADER_LEN_V2` is the MySQL wire-layout name for those V1 events, not `binlog_format`.
+//! (not STATEMENT/MIXED). Handles row opcodes 23–25 (MariaDB typical) and MySQL
+//! `WRITE/UPDATE/DELETE_ROWS_EVENT_V1` opcodes 30–32, plus MySQL-only opcode 39
+//! (`PARTIAL_UPDATE_ROWS`). Post-header lengths follow the format-description event;
+//! `ROWS_HEADER_LEN_V2` is the V1 wire-layout name, not `binlog_format`.
 
 mod bytes_reader;
 mod cdc_stream;
