@@ -29,8 +29,8 @@ fn parse_signal_tables(payload: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Poll pending `execute-snapshot` signal rows and mark them consumed.
-pub(crate) async fn poll_execute_snapshot_signals(
+/// Read pending `execute-snapshot` rows without marking them consumed.
+pub(crate) async fn read_pending_execute_snapshot_signals(
     pool: &Pool,
     database: &str,
 ) -> Result<Vec<SnapshotSignal>> {
@@ -51,12 +51,23 @@ pub(crate) async fn poll_execute_snapshot_signals(
         let id: String = row.get(0).ok_or_else(|| anyhow!("missing signal id"))?;
         let tables_json: Option<String> = row.get(1);
         let tables = parse_signal_tables(tables_json.as_deref());
-        conn.exec_drop(
-            format!("UPDATE {SIGNAL_TABLE} SET consumed = 1 WHERE id = ?"),
-            (id.clone(),),
-        )
-        .await?;
         signals.push(SnapshotSignal { id, tables });
     }
     Ok(signals)
+}
+
+/// Mark one `execute-snapshot` row consumed after its snapshot succeeds.
+pub(crate) async fn acknowledge_execute_snapshot_signal(
+    pool: &Pool,
+    database: &str,
+    signal_id: &str,
+) -> Result<()> {
+    let mut conn = pool.get_conn().await?;
+    use_database(&mut conn, database).await?;
+    conn.exec_drop(
+        format!("UPDATE {SIGNAL_TABLE} SET consumed = 1 WHERE id = ?"),
+        (signal_id,),
+    )
+    .await?;
+    Ok(())
 }

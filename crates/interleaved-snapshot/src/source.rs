@@ -63,6 +63,12 @@ pub trait WatermarkSource: Send {
     /// resumable checkpoint position.
     async fn commit_reconciled(&mut self, position: Self::Position) -> Result<()>;
 
+    /// Hook after a table finishes snapshot copy (all chunks done).
+    async fn on_table_snapshot_complete(&mut self, table: &str) -> Result<()> {
+        let _ = table;
+        Ok(())
+    }
+
     /// Return any pending ad-hoc snapshot signals. Backends without signalling
     /// support may return an empty vector.
     async fn read_signals(&mut self) -> Result<Vec<SnapshotSignal>>;

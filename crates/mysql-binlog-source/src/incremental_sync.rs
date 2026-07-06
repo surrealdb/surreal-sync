@@ -11,7 +11,7 @@ use mysql_async::prelude::Queryable;
 use surreal_sink::SurrealSink;
 use tracing::{debug, info};
 
-use crate::catch_up::{read_catch_up_progress, CatchUpProgress, CoverageKind};
+use crate::catch_up::{emit_catch_up_progress, read_catch_up_progress, CatchUpProgress, CoverageKind};
 use crate::change::cdc_change_to_universal;
 use crate::checkpoint::BinlogCheckpoint;
 use crate::client::{
@@ -19,7 +19,10 @@ use crate::client::{
     use_database,
 };
 use crate::schema::{collect_mysql_database_schema, get_table_column_names_ordinal};
-use crate::signal::{create_signal_table_sql, poll_execute_snapshot_signals};
+use crate::signal::{
+    acknowledge_execute_snapshot_signal, create_signal_table_sql,
+    read_pending_execute_snapshot_signals,
+};
 use crate::watermark_source::{
     run_adhoc_snapshots_for_tables, write_catch_up_for_tables, BinlogWatermarkSource,
 };
@@ -113,6 +116,16 @@ where
 
     let mut client = connect_binlog_client(&from_opts).await?;
     start_binlog_from_checkpoint(&mut client, &from_checkpoint).await?;
+
+    if let (Some(manager), false) = (checkpoint_manager, from_opts.tables.is_empty()) {
+        if let Some(mut progress) = read_catch_up_progress(manager).await? {
+            let before = progress.covered_tables.len();
+            progress.prune_to_requested(&from_opts.tables);
+            if progress.covered_tables.len() != before {
+                emit_catch_up_progress(manager, &progress).await?;
+            }
+        }
+    }
 
     let mut table_maps: HashMap<u64, TableMapEvent> = HashMap::new();
     let mut total_changes = 0u64;
@@ -348,7 +361,7 @@ where
     S: SurrealSink,
     St: CheckpointStore,
 {
-    let signals = poll_execute_snapshot_signals(pool, database).await?;
+    let signals = read_pending_execute_snapshot_signals(pool, database).await?;
     if signals.is_empty() {
         return Ok(client);
     }
@@ -374,8 +387,16 @@ where
                 }
             }
         }
-        run_adhoc_snapshots_for_tables(&mut wm, surreal, &signal.tables, options.chunk_size)
-            .await?;
+        run_adhoc_snapshots_for_tables(
+            &mut wm,
+            surreal,
+            &signal.tables,
+            options.chunk_size,
+            checkpoint_manager,
+        )
+        .await?;
+
+        acknowledge_execute_snapshot_signal(pool, database, &signal.id).await?;
 
         if let Some(manager) = checkpoint_manager {
             let checkpoint = wm.current_checkpoint()?;

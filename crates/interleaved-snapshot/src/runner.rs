@@ -293,6 +293,7 @@ where
 
         if rows.is_empty() {
             progress[table_index].done = true;
+            source.on_table_snapshot_complete(&spec.table).await?;
             let position = source.current_position().await?;
             checkpointer
                 .save_progress(&build_checkpoint(&position, progress)?)
@@ -354,6 +355,7 @@ where
         let table_done = chunk_len < config.chunk_size;
         if table_done {
             progress[table_index].done = true;
+            source.on_table_snapshot_complete(&spec.table).await?;
         }
 
         let position = source.current_position().await?;

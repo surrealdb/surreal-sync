@@ -1,6 +1,6 @@
 //! Binlog-backed watermark source for interleaved snapshot sync.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
@@ -30,7 +30,8 @@ use crate::client::{
 use crate::full_sync::{get_primary_key_columns, read_table_chunk};
 use crate::schema::{collect_mysql_database_schema, get_table_column_names_ordinal};
 use crate::signal::{
-    create_signal_table_sql, poll_execute_snapshot_signals, EXECUTE_SNAPSHOT_KIND, SIGNAL_TABLE,
+    acknowledge_execute_snapshot_signal, create_signal_table_sql,
+    read_pending_execute_snapshot_signals, EXECUTE_SNAPSHOT_KIND, SIGNAL_TABLE,
 };
 use crate::SourceOpts;
 use checkpoint::InterleavedSnapshotCheckpoint;
@@ -63,6 +64,10 @@ pub struct BinlogWatermarkSource {
     confirmed: BinlogReconciliationPos,
     watermarks: Mutex<WatermarkIds>,
     cancel: tokio_util::sync::CancellationToken,
+    /// Signal ids already handed to the interleaved runner this run.
+    delivered_signal_ids: Mutex<HashSet<String>>,
+    /// Tables still being snapshotted per pending signal id.
+    signals_awaiting_ack: Mutex<HashMap<String, HashSet<String>>>,
 }
 
 /// Options for [`BinlogWatermarkSource::connect_with_options`].
@@ -159,6 +164,8 @@ impl BinlogWatermarkSource {
             confirmed,
             watermarks: Mutex::new(WatermarkIds::default()),
             cancel: options.cancel,
+            delivered_signal_ids: Mutex::new(HashSet::new()),
+            signals_awaiting_ack: Mutex::new(HashMap::new()),
         })
     }
 
@@ -231,6 +238,8 @@ impl BinlogWatermarkSource {
             confirmed,
             watermarks: Mutex::new(WatermarkIds::default()),
             cancel,
+            delivered_signal_ids: Mutex::new(HashSet::new()),
+            signals_awaiting_ack: Mutex::new(HashMap::new()),
         })
     }
 
@@ -241,6 +250,29 @@ impl BinlogWatermarkSource {
 
     pub(crate) fn current_checkpoint(&self) -> Result<BinlogCheckpoint> {
         get_current_checkpoint(&self.binlog)
+    }
+
+    async fn try_acknowledge_signals_for_table(&self, table: &str) -> Result<()> {
+        let mut to_ack = Vec::new();
+        {
+            let mut awaiting = self
+                .signals_awaiting_ack
+                .lock()
+                .expect("signals_awaiting_ack lock poisoned");
+            for (id, tables) in awaiting.iter_mut() {
+                tables.remove(table);
+                if tables.is_empty() {
+                    to_ack.push(id.clone());
+                }
+            }
+            for id in &to_ack {
+                awaiting.remove(id);
+            }
+        }
+        for id in to_ack {
+            acknowledge_execute_snapshot_signal(&self.pool, &self.database, &id).await?;
+        }
+        Ok(())
     }
 
     /// The stream position captured at connect time — the streaming lower bound
@@ -501,7 +533,33 @@ impl WatermarkSource for BinlogWatermarkSource {
     }
 
     async fn read_signals(&mut self) -> Result<Vec<SnapshotSignal>> {
-        poll_execute_snapshot_signals(&self.pool, &self.database).await
+        let pending =
+            read_pending_execute_snapshot_signals(&self.pool, &self.database).await?;
+        let mut out = Vec::new();
+        let mut delivered = self
+            .delivered_signal_ids
+            .lock()
+            .expect("delivered_signal_ids lock poisoned");
+        let mut awaiting = self
+            .signals_awaiting_ack
+            .lock()
+            .expect("signals_awaiting_ack lock poisoned");
+        for signal in pending {
+            if delivered.contains(&signal.id) {
+                continue;
+            }
+            delivered.insert(signal.id.clone());
+            awaiting.insert(
+                signal.id.clone(),
+                signal.tables.iter().cloned().collect(),
+            );
+            out.push(signal);
+        }
+        Ok(out)
+    }
+
+    async fn on_table_snapshot_complete(&mut self, table: &str) -> Result<()> {
+        self.try_acknowledge_signals_for_table(table).await
     }
 
     async fn resolve_tables(&self, names: &[String]) -> Result<Vec<TableSpec>> {
@@ -607,18 +665,28 @@ fn normalize_row_pk(row: &mut UniversalRow, pk_columns: &[String]) {
 }
 
 /// Run watermark-window snapshots for tables named in ad-hoc signals.
-pub(crate) async fn run_adhoc_snapshots_for_tables<S: SurrealSink>(
+pub(crate) async fn run_adhoc_snapshots_for_tables<S: SurrealSink, St: checkpoint::CheckpointStore>(
     source: &mut BinlogWatermarkSource,
     surreal: &S,
     table_names: &[String],
     chunk_size: usize,
+    checkpoint_manager: Option<&checkpoint::SyncManager<St>>,
 ) -> Result<()> {
     if table_names.is_empty() {
         return Ok(());
     }
     let specs = source.resolve_tables(table_names).await?;
     let config = InterleavedSnapshotConfig { chunk_size };
-    run_adhoc_snapshot_tables(source, surreal, specs, &config, &mut NoopCheckpointer).await
+    match checkpoint_manager {
+        Some(manager) => {
+            let mut checkpointer = ManagerRefCheckpointer { manager };
+            run_adhoc_snapshot_tables(source, surreal, specs, &config, &mut checkpointer).await
+        }
+        None => {
+            let mut checkpointer = NoopCheckpointer;
+            run_adhoc_snapshot_tables(source, surreal, specs, &config, &mut checkpointer).await
+        }
+    }
 }
 
 async fn get_snapshot_tables(
