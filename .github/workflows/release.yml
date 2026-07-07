@@ -29,10 +29,12 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             binary_name: surreal-sync
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            binary_name: surreal-sync
-            continue-on-error: true
+          # Musl static builds fail to cross-compile rdkafka SASL (sasl2-sys /
+          # krb5-src / rdkafka-sys). GNU and macOS targets cover release artifacts.
+          # - target: x86_64-unknown-linux-musl
+          #   os: ubuntu-latest
+          #   binary_name: surreal-sync
+          #   continue-on-error: true
           # - target: aarch64-unknown-linux-musl
           #   os: ubuntu-latest
           #   binary_name: surreal-sync
