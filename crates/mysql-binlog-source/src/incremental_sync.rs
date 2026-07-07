@@ -18,8 +18,8 @@ use crate::catch_up::{
 use crate::change::cdc_change_to_universal;
 use crate::checkpoint::BinlogCheckpoint;
 use crate::client::{
-    connect_binlog_client, new_mysql_pool, resolve_database, start_binlog_from_checkpoint,
-    use_database,
+    connect_binlog_client_with_poll, new_mysql_pool, resolve_database,
+    start_binlog_from_checkpoint, use_database, DEFAULT_BINLOG_POLL_TIMEOUT,
 };
 use crate::schema::{collect_mysql_database_schema, get_table_column_names_ordinal};
 use crate::signal::{
@@ -34,6 +34,12 @@ use crate::SourceOpts;
 /// Default chunk size for ad-hoc snapshots during steady-state streaming.
 pub const DEFAULT_STREAM_CHUNK_SIZE: usize = 1024;
 
+/// Default `next_events` batch size in the replication tail loop.
+pub const DEFAULT_BINLOG_EVENT_BATCH_SIZE: usize = 32;
+
+/// Default sleep when a replication tail poll returns no events.
+pub const DEFAULT_REPLICATION_TAIL_IDLE_SLEEP: Duration = Duration::from_millis(100);
+
 #[derive(Clone, Debug)]
 pub struct ReplicationTailOptions {
     /// Optional wall-clock stop for the stream phase.
@@ -43,6 +49,12 @@ pub struct ReplicationTailOptions {
     pub checkpoint_interval: Duration,
     /// Rows read per keyset chunk when handling ad-hoc snapshot signals.
     pub chunk_size: usize,
+    /// Max events requested per `next_events` call in the replication tail loop.
+    pub event_batch_size: usize,
+    /// Sleep when a poll returns no events before retrying.
+    pub idle_sleep: Duration,
+    /// Blocking read timeout for binlog packet polls on the replication client.
+    pub binlog_poll_timeout: Duration,
     /// Cooperative cancellation signal. When cancelled, the sync loop flushes a
     /// final resumable checkpoint and returns cleanly (SIGINT/SIGTERM in the CLI;
     /// tests can trigger it directly). Defaults to a never-cancelled token.
@@ -56,6 +68,9 @@ impl ReplicationTailOptions {
             until,
             checkpoint_interval: Duration::from_secs(10),
             chunk_size: DEFAULT_STREAM_CHUNK_SIZE,
+            event_batch_size: DEFAULT_BINLOG_EVENT_BATCH_SIZE,
+            idle_sleep: DEFAULT_REPLICATION_TAIL_IDLE_SLEEP,
+            binlog_poll_timeout: DEFAULT_BINLOG_POLL_TIMEOUT,
             cancel: tokio_util::sync::CancellationToken::new(),
         }
     }
@@ -122,7 +137,8 @@ where
     let effective_tables = effective_sync_tables(&from_opts.tables, catch_up.as_ref());
     let mut table_filter = effective_tables.clone();
 
-    let mut client = connect_binlog_client(&from_opts).await?;
+    let mut client =
+        connect_binlog_client_with_poll(&from_opts, options.binlog_poll_timeout).await?;
     start_binlog_from_checkpoint(&mut client, &from_checkpoint).await?;
 
     if let (Some(manager), Some(ref effective)) = (checkpoint_manager, &effective_tables) {
@@ -209,7 +225,7 @@ where
         .await?;
 
         let events = tokio::select! {
-            result = client.next_events(32) => {
+            result = client.next_events(options.event_batch_size) => {
                 result.map_err(|e| anyhow::anyhow!("binlog read failed: {e}"))?
             }
             _ = options.cancel.cancelled() => {
@@ -226,7 +242,7 @@ where
         };
 
         if events.is_empty() {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            tokio::time::sleep(options.idle_sleep).await;
             continue;
         }
 

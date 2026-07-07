@@ -285,9 +285,16 @@ WantedBy=multi-user.target
 | `--strategy` | `interleaved-snapshot` | Snapshot algorithm |
 | `--chunk-size` | `1024` | Rows per keyset chunk during snapshot |
 | `--checkpoint-interval` | `10` | Seconds between stream checkpoint writes |
+| `--binlog-poll-timeout-ms` | `500` | Blocking read timeout for binlog polls in the replication tail |
+| `--idle-sleep-ms` | `100` | Sleep when a replication tail poll returns no events |
+| `--binlog-event-batch-size` | `32` | Max events per binlog read in the replication tail loop |
 | `--tables` | all tables | Comma-separated table filter |
 | `--server-id` | random | Unique replica id |
 | `--flavor` | auto-detect | `mysql` or `mariadb` |
+
+### Replication tail tuning (advanced)
+
+After snapshot handoff, the **replication tail** polls the binlog in a loop: each iteration calls `next_events` (bounded by `--binlog-event-batch-size`), waits up to `--binlog-poll-timeout-ms` for a packet, then sleeps `--idle-sleep-ms` when no events arrive. Defaults (`32`, `500`, `100`) match prior hard-coded behavior; lower poll timeouts and idle sleep increase CPU use but reduce catch-up latency on quiet streams.
 
 ### Snapshot-only example
 

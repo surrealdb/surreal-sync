@@ -11,6 +11,9 @@ use tracing::info;
 
 use crate::SourceOpts;
 
+/// Default blocking read timeout for binlog packet polls (`ReplicaOptions::blocking_poll`).
+pub const DEFAULT_BINLOG_POLL_TIMEOUT: Duration = Duration::from_millis(500);
+
 /// Parse host/port/username/password/database from a mysql:// URI.
 pub fn parse_mysql_uri(uri: &str) -> Result<(String, u16, String, String, Option<String>)> {
     let rest = uri
@@ -39,6 +42,13 @@ pub fn new_mysql_pool(connection_string: &str) -> Result<Pool> {
 }
 
 pub async fn connect_binlog_client(from_opts: &SourceOpts) -> Result<BinlogClient> {
+    connect_binlog_client_with_poll(from_opts, DEFAULT_BINLOG_POLL_TIMEOUT).await
+}
+
+pub async fn connect_binlog_client_with_poll(
+    from_opts: &SourceOpts,
+    blocking_poll: Duration,
+) -> Result<BinlogClient> {
     let connection_string = binlog_connection_string(&from_opts.connection_string);
     let (host, port, username, password, _) = parse_mysql_uri(&connection_string)?;
     let server_id = from_opts.server_id.unwrap_or_else(random_server_id);
@@ -49,7 +59,7 @@ pub async fn connect_binlog_client(from_opts: &SourceOpts) -> Result<BinlogClien
         password,
         server_id,
         ssl: from_opts.ssl.clone(),
-        blocking_poll: Duration::from_millis(500),
+        blocking_poll,
         flavor: from_opts.flavor,
         mariadb_flags: MariaDbDumpFlags {
             send_annotate_rows: true,

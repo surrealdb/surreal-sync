@@ -1010,6 +1010,18 @@ struct MySQLBinlogSyncArgs {
     #[arg(long, default_value = "10")]
     checkpoint_interval: u64,
 
+    /// Blocking read timeout for binlog packet polls during the replication tail (milliseconds)
+    #[arg(long, default_value = "500")]
+    binlog_poll_timeout_ms: u64,
+
+    /// Sleep when a replication tail poll returns no events (milliseconds)
+    #[arg(long, default_value = "100")]
+    idle_sleep_ms: u64,
+
+    /// Max events requested per binlog read in the replication tail loop
+    #[arg(long, default_value_t = 32)]
+    binlog_event_batch_size: usize,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }

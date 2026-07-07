@@ -120,6 +120,9 @@ fn binlog_stream_options(args: &MySQLBinlogSyncArgs) -> anyhow::Result<Replicati
     let mut options = ReplicationTailOptions::stream(deadline, until_checkpoint);
     options.checkpoint_interval = std::time::Duration::from_secs(args.checkpoint_interval);
     options.chunk_size = args.chunk_size;
+    options.binlog_poll_timeout = std::time::Duration::from_millis(args.binlog_poll_timeout_ms);
+    options.idle_sleep = std::time::Duration::from_millis(args.idle_sleep_ms);
+    options.event_batch_size = args.binlog_event_batch_size;
     Ok(options)
 }
 
