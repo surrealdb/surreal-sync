@@ -462,13 +462,10 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
     async fn next_reconciliation_events(&mut self) -> Result<Vec<ReconciliationEvent<Lsn>>> {
         let (changes, nextlsn) = self.slot.peek_with_positions().await?;
 
-        // Carry the batch commit position. The framework orders events by
-        // delivery, so the per-row LSN is irrelevant; what matters is that the
-        // reported position is the commit point (monotonic in delivery order).
-        let position = if nextlsn.is_empty() {
-            self.confirmed
+        let batch_commit = if nextlsn.is_empty() {
+            None
         } else {
-            Lsn::parse(&nextlsn)?
+            Some(Lsn::parse(&nextlsn)?)
         };
 
         // Snapshot the active watermark pair once for this batch so signal-table
@@ -487,7 +484,7 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
         // LSNs) is still delivered in its correct commit position.
         let mut out = Vec::new();
         for change in changes.iter().skip(self.returned_since_advance) {
-            if let Some((table, pk, change)) = action_to_event(&change.action) {
+            if let Some((table, pk, event_change)) = action_to_event(&change.action) {
                 let emit = if table == self.signal_table {
                     pk.single_uuid()
                         .is_some_and(|id| Some(id) == low || Some(id) == high)
@@ -495,19 +492,28 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
                     true
                 };
                 if emit {
+                    let event_position = batch_commit.unwrap_or(self.confirmed);
                     out.push(ReconciliationEvent {
-                        position,
+                        position: event_position,
                         table,
                         pk,
-                        change,
+                        change: event_change,
                     });
                 }
             }
             self.returned_since_advance += 1;
+            let change_lsn = Lsn::parse(&change.lsn)?;
+            if change_lsn > self.confirmed {
+                self.confirmed = change_lsn;
+            }
         }
 
-        if position > self.confirmed {
-            self.confirmed = position;
+        if self.returned_since_advance >= changes.len() {
+            if let Some(commit_lsn) = batch_commit {
+                if commit_lsn > self.confirmed {
+                    self.confirmed = commit_lsn;
+                }
+            }
         }
 
         if out.is_empty() {
@@ -524,6 +530,20 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
     }
 
     async fn commit_reconciled(&mut self, position: Lsn) -> Result<()> {
+        // Do not advance the slot while a peek batch still has changes that
+        // have not been surfaced to the framework; advancing would drop them.
+        let (changes, _) = self.slot.peek_with_positions().await?;
+        if self.returned_since_advance < changes.len() {
+            debug!(
+                "Deferring slot {} advance at {}: {}/{} peeked changes surfaced",
+                self.slot_name,
+                position,
+                self.returned_since_advance,
+                changes.len()
+            );
+            return Ok(());
+        }
+
         // Monotonic: never move the slot backwards, and never past the
         // checkpointed (consumed) position handed in here.
         if self.last_advanced.is_none_or(|prev| position > prev) {

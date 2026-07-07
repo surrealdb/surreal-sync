@@ -272,9 +272,6 @@ fn pk_value_to_sql(value: &UniversalValue) -> Result<Box<dyn ToSql + Sync + Send
     match value {
         UniversalValue::Int16(v) => Ok(Box::new(*v)),
         UniversalValue::Int32(v) => Ok(Box::new(*v)),
-        UniversalValue::Int64(v) if (*v >= i32::MIN as i64) && (*v <= i32::MAX as i64) => {
-            Ok(Box::new(*v as i32))
-        }
         UniversalValue::Int64(v) => Ok(Box::new(*v)),
         UniversalValue::Text(v) => Ok(Box::new(v.clone())),
         UniversalValue::VarChar { value, .. } => Ok(Box::new(value.clone())),
