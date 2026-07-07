@@ -88,8 +88,8 @@ There is no data loss on cancel: worst case, a restart re-does an unfinished sna
 
 - **Stream phase** resumes from the checkpoint store (`--checkpoint-dir` or `--checkpoints-surreal-table`). Surreal-sync auto-captures GTID or file+offset positions as it runs; GTID checkpoints also survive failover/repointing (see [Failover and repointing](#failover-and-repointing)).
 - **`only` that completed** emits `FullSyncEnd`; `sync --snapshot-mode never` from that checkpoint continues with no gap. A snapshot that was cancelled/crashed mid-run is re-run from scratch, but because `FullSyncStart` was captured **before** the snapshot, no committed change between start and the eventual streaming handoff is lost.
-- **`initial` restart** reads `CatchUpProgress` to learn which tables already completed snapshot handoff. Tables still in the effective sync set that are not yet recorded are snapshotted; already-covered tables are skipped (idempotent upserts would be safe, but skipping saves work). If every table in the effective set is already covered, the snapshot phase is skipped and streaming resumes from the latest position (`CatchUpProgress` or `FullSyncEnd`, whichever is ahead). Mid-snapshot crashes resume from `SnapshotProgress` per-chunk checkpoints when available. Ad-hoc snapshots requested during streaming (`snapshot` CLI / execute-snapshot signal) append completed table names to `CatchUpProgress` immediately after each batch — those tables remain in the effective sync set on restart even if you do not add them to `--tables` again.
-- **Expanded `--tables` after stop** — restart with additional tables in `--tables`; only the new tables are snapshotted, then streaming continues from the stored position.
+- **`initial` restart** reads `CatchUpProgress` to learn which tables already completed snapshot handoff. Tables still in the effective sync set that are not yet recorded are snapshotted; already-covered tables are skipped (idempotent upserts would be safe, but skipping saves work). If every table in the effective set is already covered, the snapshot phase is skipped and streaming resumes from the latest position (`CatchUpProgress` or `FullSyncEnd`, whichever is ahead). Mid-snapshot crashes resume from `SnapshotProgress` per-chunk checkpoints when available. Ad-hoc snapshots requested during streaming (`snapshot` CLI / execute-snapshot signal) append completed table names to `CatchUpProgress` immediately after each batch — those tables stay in the effective sync set on restart, remembered alongside your `--tables` starting set.
+- **Add tables in `--tables` on restart** — include additional table names in `--tables` when you restart; surreal-sync snapshots only tables not yet recorded in the checkpoint, then streaming continues from the stored position.
 
 Because the streaming lower bound (`FullSyncStart`) is persisted before the snapshot copies rows, changes that happened *during* a snapshot that was later interrupted are still streamed after restart — the interleaved handoff never leaves a gap.
 
@@ -348,14 +348,17 @@ surreal-sync from mysql-binlog snapshot \
 
 - `--tables` (required): comma-separated tables to snapshot.
 
-### Standard workflow: add tables without expanding `--tables` on restart
+### Adding tables to a running sync
 
-1. Start sync with an initial scope, e.g. `--tables users,orders` and a checkpoint store.
-2. While streaming, add more tables with `snapshot --tables products` (no sync restart needed).
-3. Stop or crash; restart sync with the **same** `--tables users,orders` (you do not need to remember to add `products`).
-4. surreal-sync reads `CatchUpProgress.covered_tables`, sees `products` already snapshotted, skips re-snapshot, and **streams `products` in the replication tail** along with `users` and `orders`.
+Typical workflow when your table scope grows over time:
 
-`--tables` sets the **initial** sync scope. Ad-hoc snapshots extend the **durable** scope via `CatchUpProgress` — on restart the effective sync set is the union of `--tables` and covered tables from the checkpoint. To **stop** syncing a table that is still recorded in `CatchUpProgress`, remove it from `--tables` **and** edit or reset the checkpoint entry (or start a fresh checkpoint store); removing `--tables` alone does not drop tables that were added via ad-hoc snapshot.
+1. **Start sync** with your initial tables and a checkpoint store, e.g. `--tables users,orders`.
+2. **While sync is streaming**, add more tables without stopping: `snapshot --tables products`.
+3. **Stop or crash** — then **restart the same `sync` command** (same flags, same `--tables users,orders`). Tables you added with `snapshot` are remembered in the checkpoint; surreal-sync skips re-snapshot for them and **streams all snapshotted tables** — `users`, `orders`, and `products` — in the replication tail.
+
+`--tables` defines your starting set. Each ad-hoc snapshot records completed table names in `CatchUpProgress.covered_tables`; on restart the effective sync set is the union of `--tables` and every table listed there. You can also add tables by including new names in `--tables` on a later restart — only tables not yet in the checkpoint are snapshotted.
+
+To **stop** syncing a table that is still recorded in `CatchUpProgress`, remove it from `--tables` **and** edit or reset the checkpoint entry (or start a fresh checkpoint store); removing `--tables` alone does not drop tables that were added via ad-hoc snapshot.
 
 ## Type fidelity
 
