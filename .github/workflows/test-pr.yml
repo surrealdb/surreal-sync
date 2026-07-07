@@ -64,8 +64,8 @@ jobs:
       with:
         tool: nextest
 
-    - name: Build stripped CLI binary (used by CLI tests)
-      run: cargo build -p surreal-sync --profile ci
+    - name: Build CLI + all test binaries
+      run: cargo build --workspace --profile ci --bins --tests
 
     - name: Archive test binaries
       run: cargo nextest archive --workspace --cargo-profile ci --profile ci --archive-file nextest.tar.zst
