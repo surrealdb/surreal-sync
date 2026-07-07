@@ -1,11 +1,11 @@
 //! UUID value generator.
 
-use rand::Rng;
+use rand::RngExt;
 use sync_core::UniversalValue;
 use uuid::Uuid;
 
 /// Generate a random UUID v4 using the provided RNG.
-pub fn generate_uuid_v4<R: Rng>(rng: &mut R) -> UniversalValue {
+pub fn generate_uuid_v4<R: RngExt>(rng: &mut R) -> UniversalValue {
     // Generate 16 random bytes
     let mut bytes = [0u8; 16];
     rng.fill(&mut bytes);

@@ -10,18 +10,18 @@ pub mod static_value;
 pub mod timestamp;
 pub mod uuid;
 
-use rand::Rng;
+use rand::RngExt;
 use sync_core::{GeneratorConfig, UniversalType, UniversalValue};
 
 /// Trait for generating values.
 pub trait ValueGenerator {
     /// Generate a value using the given RNG and row index.
-    fn generate<R: Rng>(&self, rng: &mut R, index: u64) -> UniversalValue;
+    fn generate<R: RngExt>(&self, rng: &mut R, index: u64) -> UniversalValue;
 }
 
 /// Generate a value based on the generator configuration.
 /// Uses default string type for arrays.
-pub fn generate_value<R: Rng + Clone>(
+pub fn generate_value<R: RngExt>(
     config: &GeneratorConfig,
     rng: &mut R,
     seed: u64,
@@ -32,7 +32,7 @@ pub fn generate_value<R: Rng + Clone>(
 
 /// Generate a value based on the generator configuration with optional type hint.
 /// The target_type is used for type-aware conversion (e.g., arrays with int elements).
-pub fn generate_value_typed<R: Rng + Clone>(
+pub fn generate_value_typed<R: RngExt>(
     config: &GeneratorConfig,
     rng: &mut R,
     seed: u64,
