@@ -52,6 +52,13 @@ jobs:
           rustup toolchain install
           rustup target add ${{ matrix.target }}
 
+      - name: Install system build dependencies
+        if: contains(matrix.target, 'linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake libssl-dev libsasl2-dev pkg-config protobuf-compiler
+
       - name: Install cross-compilation tools
         if: matrix.os == 'ubuntu-latest'
         run: |
