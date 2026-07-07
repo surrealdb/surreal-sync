@@ -19,7 +19,8 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::catch_up::{
-    emit_catch_up_progress, read_catch_up_progress, CatchUpProgress, CoverageKind,
+    effective_sync_tables, emit_catch_up_progress, read_catch_up_progress, CatchUpProgress,
+    CoverageKind,
 };
 use crate::change::cdc_change_to_universal;
 use crate::checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogReconciliationPos};
@@ -956,7 +957,7 @@ where
     };
     use checkpoint::{Checkpoint, SyncPhase};
 
-    let requested_tables = BinlogWatermarkSource::resolve_snapshot_table_names(from_opts).await?;
+    let base_tables = BinlogWatermarkSource::resolve_snapshot_table_names(from_opts).await?;
 
     if let Some(manager) = manager {
         if let Ok(progress) = manager
@@ -990,6 +991,8 @@ where
         }
 
         let mut progress = read_catch_up_progress(manager).await?;
+        let requested_tables = effective_sync_tables(&base_tables, progress.as_ref())
+            .unwrap_or_else(|| base_tables.clone());
         if let Some(ref mut catch_up) = progress {
             let before = catch_up.covered_tables.len();
             catch_up.prune_to_requested(&requested_tables);

@@ -115,6 +115,28 @@ impl Checkpoint for CatchUpProgress {
     }
 }
 
+/// Effective table filter when `--tables` is non-empty: union of CLI names and
+/// tables already recorded in catch-up progress (e.g. ad-hoc snapshots).
+///
+/// Returns `None` when `requested` is empty (sync all tables).
+pub fn effective_sync_tables(
+    requested: &[String],
+    catch_up: Option<&CatchUpProgress>,
+) -> Option<Vec<String>> {
+    if requested.is_empty() {
+        return None;
+    }
+    let mut names: HashSet<String> = requested.iter().cloned().collect();
+    if let Some(progress) = catch_up {
+        for entry in &progress.covered_tables {
+            names.insert(entry.name.clone());
+        }
+    }
+    let mut out: Vec<String> = names.into_iter().collect();
+    out.sort();
+    Some(out)
+}
+
 /// Tables in `requested` that are not yet recorded in catch-up progress.
 pub fn tables_pending_snapshot(requested: &[String], progress: &CatchUpProgress) -> Vec<String> {
     let done = progress.covered_names();
@@ -265,6 +287,39 @@ mod tests {
         progress.merge_tables(&["a".to_string()], CoverageKind::Initial, &checkpoint);
         let pending = tables_pending_snapshot(&["a".to_string(), "b".to_string()], &progress);
         assert_eq!(pending, vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn effective_sync_tables_unions_requested_and_covered() {
+        let pos = BinlogPosition::file_pos("mysql-bin.000001", 4);
+        let checkpoint = test_checkpoint(pos);
+        let mut progress = CatchUpProgress::new(checkpoint.clone());
+        progress.merge_tables(&["c".to_string()], CoverageKind::AdHoc, &checkpoint);
+        let effective = effective_sync_tables(&["a".to_string(), "b".to_string()], Some(&progress))
+            .expect("non-empty requested");
+        assert_eq!(effective, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn effective_sync_tables_empty_requested_is_none() {
+        let pos = BinlogPosition::file_pos("mysql-bin.000001", 4);
+        let checkpoint = test_checkpoint(pos);
+        let mut progress = CatchUpProgress::new(checkpoint.clone());
+        progress.merge_tables(&["c".to_string()], CoverageKind::AdHoc, &checkpoint);
+        assert!(effective_sync_tables(&[], Some(&progress)).is_none());
+    }
+
+    #[test]
+    fn adhoc_covered_table_included_without_cli_flag() {
+        let pos = BinlogPosition::file_pos("mysql-bin.000001", 100);
+        let checkpoint = test_checkpoint(pos.clone());
+        let mut progress = CatchUpProgress::new(checkpoint.clone());
+        progress.merge_tables(&["c".to_string()], CoverageKind::AdHoc, &checkpoint);
+        let cli_tables = vec!["a".to_string(), "b".to_string()];
+        let effective = effective_sync_tables(&cli_tables, Some(&progress)).unwrap();
+        assert!(effective.contains(&"c".to_string()));
+        let pending = tables_pending_snapshot(&effective, &progress);
+        assert_eq!(pending, vec!["a".to_string(), "b".to_string()]);
     }
 
     #[test]

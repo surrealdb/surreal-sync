@@ -19,8 +19,8 @@ pub use testing::{MariaDBBinlogContainer, MySQLBinlogContainer};
 
 pub use binlog_protocol::{MariaDbGtidStrictMode, SslMode, SslOptions};
 pub use catch_up::{
-    emit_catch_up_progress, max_binlog_checkpoint, read_catch_up_progress, tables_pending_snapshot,
-    CatchUpProgress, CoverageKind, TableCoverageEntry,
+    effective_sync_tables, emit_catch_up_progress, max_binlog_checkpoint, read_catch_up_progress,
+    tables_pending_snapshot, CatchUpProgress, CoverageKind, TableCoverageEntry,
 };
 pub use change::cdc_change_to_universal;
 pub use checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogReconciliationPos};

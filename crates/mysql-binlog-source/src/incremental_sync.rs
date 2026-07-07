@@ -12,7 +12,8 @@ use surreal_sink::SurrealSink;
 use tracing::{debug, info};
 
 use crate::catch_up::{
-    emit_catch_up_progress, read_catch_up_progress, CatchUpProgress, CoverageKind,
+    effective_sync_tables, emit_catch_up_progress, read_catch_up_progress, CatchUpProgress,
+    CoverageKind,
 };
 use crate::change::cdc_change_to_universal;
 use crate::checkpoint::BinlogCheckpoint;
@@ -110,19 +111,24 @@ where
             .await?;
 
     let mut column_names_cache: HashMap<String, Vec<String>> = HashMap::new();
-    let mut table_filter: Option<Vec<String>> = if from_opts.tables.is_empty() {
+
+    let catch_up = if from_opts.tables.is_empty() {
         None
+    } else if let Some(manager) = checkpoint_manager {
+        read_catch_up_progress(manager).await?
     } else {
-        Some(from_opts.tables.clone())
+        None
     };
+    let effective_tables = effective_sync_tables(&from_opts.tables, catch_up.as_ref());
+    let mut table_filter = effective_tables.clone();
 
     let mut client = connect_binlog_client(&from_opts).await?;
     start_binlog_from_checkpoint(&mut client, &from_checkpoint).await?;
 
-    if let (Some(manager), false) = (checkpoint_manager, from_opts.tables.is_empty()) {
-        if let Some(mut progress) = read_catch_up_progress(manager).await? {
+    if let (Some(manager), Some(ref effective)) = (checkpoint_manager, &effective_tables) {
+        if let Some(mut progress) = catch_up {
             let before = progress.covered_tables.len();
-            progress.prune_to_requested(&from_opts.tables);
+            progress.prune_to_requested(effective);
             if progress.covered_tables.len() != before {
                 emit_catch_up_progress(manager, &progress).await?;
             }
