@@ -64,6 +64,8 @@ pub struct WalWatermarkSource {
     cancel: tokio_util::sync::CancellationToken,
     delivered_signal_ids: Mutex<HashSet<String>>,
     signals_awaiting_ack: Mutex<HashMap<String, HashSet<String>>>,
+    /// Cache of primary-key column type OIDs per table for keyset cursor coercion.
+    pk_type_cache: AsyncMutex<HashMap<String, HashMap<String, u32>>>,
 }
 
 /// Options for [`WalWatermarkSource::connect_with_options`].
@@ -240,6 +242,7 @@ impl WalWatermarkSource {
             cancel,
             delivered_signal_ids: Mutex::new(HashSet::new()),
             signals_awaiting_ack: Mutex::new(HashMap::new()),
+            pk_type_cache: AsyncMutex::new(HashMap::new()),
         })
     }
 
@@ -323,6 +326,62 @@ impl WalWatermarkSource {
     }
 }
 
+/// PostgreSQL type OIDs for integer primary-key columns.
+const OID_INT2: u32 = 21;
+const OID_INT4: u32 = 23;
+const OID_INT8: u32 = 20;
+
+impl WalWatermarkSource {
+    async fn column_type_oids(&self, table: &str) -> Result<HashMap<String, u32>> {
+        if let Some(types) = self.pk_type_cache.lock().await.get(table) {
+            return Ok(types.clone());
+        }
+        let client = self.sql.lock().await;
+        let rows = client
+            .query(
+                "SELECT attname, atttypid::oid::int8
+                 FROM pg_attribute
+                 WHERE attrelid = to_regclass($1) AND attnum > 0 AND NOT attisdropped",
+                &[&table],
+            )
+            .await
+            .map_err(|e| anyhow!("Failed to read column types for keyset cursor coercion: {e}"))?;
+        let mut types = HashMap::new();
+        for row in rows {
+            let name: String = row.get(0);
+            let oid: i64 = row.get(1);
+            types.insert(name, oid as u32);
+        }
+        self.pk_type_cache
+            .lock()
+            .await
+            .insert(table.to_string(), types.clone());
+        Ok(types)
+    }
+
+    async fn coerce_after(
+        &self,
+        table: &TableSpec,
+        after: &PkTuple,
+    ) -> Result<Vec<UniversalValue>> {
+        let types = self.column_type_oids(&table.table).await?;
+        let mut out = Vec::with_capacity(after.0.len());
+        for (col, value) in table.pk_columns.iter().zip(after.0.iter()) {
+            let coerced = match (value, types.get(col).copied()) {
+                (UniversalValue::Int64(n), Some(OID_INT4)) => UniversalValue::Int32(*n as i32),
+                (UniversalValue::Int64(n), Some(OID_INT2)) => UniversalValue::Int16(*n as i16),
+                (UniversalValue::Int32(n), Some(OID_INT8)) => UniversalValue::Int64(*n as i64),
+                (UniversalValue::Int32(n), Some(OID_INT2)) => UniversalValue::Int16(*n as i16),
+                (UniversalValue::Int16(n), Some(OID_INT8)) => UniversalValue::Int64(*n as i64),
+                (UniversalValue::Int16(n), Some(OID_INT4)) => UniversalValue::Int32(*n as i32),
+                (other, _) => other.clone(),
+            };
+            out.push(coerced);
+        }
+        Ok(out)
+    }
+}
+
 #[async_trait::async_trait]
 impl WatermarkSource for WalWatermarkSource {
     type Position = WalReconciliationPos;
@@ -337,13 +396,16 @@ impl WatermarkSource for WalWatermarkSource {
         after: Option<&PkTuple>,
         limit: usize,
     ) -> Result<Vec<UniversalRow>> {
+        let after_values: Option<Vec<UniversalValue>> = match after {
+            Some(pk) => Some(self.coerce_after(table, pk).await?),
+            None => None,
+        };
         let client = self.sql.lock().await;
-        let after_values = after.map(|pk| pk.0.as_slice());
         let chunk = read_table_chunk(
             &client,
             &table.table,
             &table.pk_columns,
-            after_values,
+            after_values.as_deref(),
             limit,
             Some(&self.db_schema),
         )
