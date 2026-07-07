@@ -1,7 +1,7 @@
 //! Array value generators.
 
 use rand::seq::{IndexedRandom, SliceRandom};
-use rand::Rng;
+use rand::RngExt;
 use sync_core::{UniversalType, UniversalValue};
 
 /// Convert a string value to the appropriate UniversalValue based on the target type.
@@ -64,7 +64,7 @@ fn string_to_typed_value(s: &str, target_type: &UniversalType) -> UniversalValue
 }
 
 /// Generate an array by sampling from a pool of values.
-pub fn generate_sample_array<R: Rng>(
+pub fn generate_sample_array<R: RngExt>(
     rng: &mut R,
     pool: &[String],
     min_length: usize,
@@ -75,7 +75,7 @@ pub fn generate_sample_array<R: Rng>(
 }
 
 /// Generate an array by sampling from a pool of values with type-aware conversion.
-pub fn generate_sample_array_typed<R: Rng>(
+pub fn generate_sample_array_typed<R: RngExt>(
     rng: &mut R,
     pool: &[String],
     min_length: usize,
@@ -106,7 +106,7 @@ pub fn generate_sample_array_typed<R: Rng>(
 }
 
 /// Generate an array by sampling unique items from a pool.
-pub fn generate_unique_sample_array<R: Rng>(
+pub fn generate_unique_sample_array<R: RngExt>(
     rng: &mut R,
     pool: &[String],
     min_length: usize,

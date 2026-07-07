@@ -1,22 +1,22 @@
 //! Numeric value generators.
 
-use rand::Rng;
+use rand::RngExt;
 use sync_core::UniversalValue;
 
 /// Generate a random integer in the given range (inclusive).
-pub fn generate_int_range<R: Rng>(rng: &mut R, min: i64, max: i64) -> UniversalValue {
+pub fn generate_int_range<R: RngExt>(rng: &mut R, min: i64, max: i64) -> UniversalValue {
     UniversalValue::Int64(rng.random_range(min..=max))
 }
 
 /// Generate a random float in the given range (inclusive).
-pub fn generate_float_range<R: Rng>(rng: &mut R, min: f64, max: f64) -> UniversalValue {
+pub fn generate_float_range<R: RngExt>(rng: &mut R, min: f64, max: f64) -> UniversalValue {
     UniversalValue::Float64(rng.random_range(min..=max))
 }
 
 /// Generate a random decimal in the given range.
 ///
 /// The decimal is stored as a string with 2 decimal places.
-pub fn generate_decimal_range<R: Rng>(rng: &mut R, min: f64, max: f64) -> UniversalValue {
+pub fn generate_decimal_range<R: RngExt>(rng: &mut R, min: f64, max: f64) -> UniversalValue {
     let value = rng.random_range(min..=max);
     // Format with 2 decimal places by default
     UniversalValue::Decimal {
@@ -27,7 +27,7 @@ pub fn generate_decimal_range<R: Rng>(rng: &mut R, min: f64, max: f64) -> Univer
 }
 
 /// Generate a random duration in the given range (in seconds).
-pub fn generate_duration_range<R: Rng>(
+pub fn generate_duration_range<R: RngExt>(
     rng: &mut R,
     min_secs: u64,
     max_secs: u64,

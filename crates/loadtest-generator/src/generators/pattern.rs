@@ -5,12 +5,12 @@
 //! - `{uuid}` - random UUID
 //! - `{rand:N}` - random N-digit number
 
-use rand::Rng;
+use rand::RngExt;
 use sync_core::UniversalValue;
 use uuid::Uuid;
 
 /// Generate a string based on a pattern with placeholders.
-pub fn generate_pattern<R: Rng>(pattern: &str, rng: &mut R, index: u64) -> UniversalValue {
+pub fn generate_pattern<R: RngExt>(pattern: &str, rng: &mut R, index: u64) -> UniversalValue {
     let mut result = pattern.to_string();
 
     // Replace {index}
@@ -42,7 +42,7 @@ pub fn generate_pattern<R: Rng>(pattern: &str, rng: &mut R, index: u64) -> Unive
 }
 
 /// Generate a random number with exactly N digits.
-fn generate_random_digits<R: Rng>(rng: &mut R, digits: usize) -> String {
+fn generate_random_digits<R: RngExt>(rng: &mut R, digits: usize) -> String {
     if digits == 0 {
         return String::new();
     }

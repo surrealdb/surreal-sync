@@ -270,10 +270,10 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
     println!("{csv_content}");
 
     // Verify CSV content has the expected age values (not empty)
-    // Age values changed after adding seed offset to timestamp_range (RNG sequence shift)
+    // Age values changed after rand 0.10 timestamp loop refactor (RNG sequence shift)
     assert!(csv_content.contains(",51,"), "CSV should contain age 51");
     assert!(csv_content.contains(",20,"), "CSV should contain age 20");
-    assert!(csv_content.contains(",26,"), "CSV should contain age 26");
+    assert!(csv_content.contains(",18,"), "CSV should contain age 18");
 
     // Test 3: Sync to SurrealDB and query directly
     let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
