@@ -1,10 +1,8 @@
-# Surreal-Sync for MySQL
+# Surreal-Sync for MySQL (trigger-based)
 
-`surreal-sync from mysql` is a sub-command to `surreal-sync` that exports MySQL tables to SurrealDB tables.
+> **Start with binlog CDC.** For most MySQL/MariaDB migrations, use [`surreal-sync from mysql-binlog sync`](mysql-binlog.md) — no triggers or audit tables, GTID-safe resume, and a long-lived follower.
 
-> **MariaDB is also supported.** MariaDB speaks the MySQL wire protocol, so it uses this same `mysql` sub-command and trigger-based source. See [Surreal-Sync for MariaDB](mariadb.md) for MariaDB-specific examples and the one nuance (JSON stored as a `LONGTEXT` alias).
-
-The default **interleaved-snapshot** workflow copies tables in resumable, primary-key-ordered chunks while continuously consuming the trigger-based change stream. Watermark reconciliation aligns each chunk with live changes (the log event wins), so the target converges to a **consistent image at the end position** and can keep tracking live — it is not an inconsistent monolithic dump. Use the combined `sync` command for a single-process snapshot plus incremental handoff.
+This guide covers **trigger-based** sync (`surreal-sync from mysql`) when binlog is not an option: no replication privileges, managed MySQL without binlog access, cannot enable ROW-format binlog, or policy constraints on the source. MariaDB uses the same sub-command; see [Surreal-Sync for MariaDB](mariadb.md).
 
 > **Other strategies:** For the legacy sequential-snapshot workflow (inconsistent monolithic snapshot plus a separate incremental replay from t1), see [MySQL Legacy Full Sync](mysql/legacy.md).
 
@@ -12,7 +10,7 @@ The default **interleaved-snapshot** workflow copies tables in resumable, primar
 
 `surreal-sync from mysql` supports `full`, `incremental`, a combined `sync`, and an ad-hoc `snapshot` command.
 
-Change capture is trigger-based: an audit table (`surreal_sync_changes`) populated by per-table triggers provides resumable, sequence-based checkpointing. If you cannot (or would rather not) create triggers, or you need failover-safe GTID checkpoints and a long-lived continuous follower, use the triggerless [MySQL/MariaDB Binlog Source](mysql-binlog.md) instead.
+Per-table triggers write to `surreal_sync_changes` for resumable, sequence-based checkpointing. The default **interleaved-snapshot** workflow copies tables in resumable chunks while consuming the trigger change stream; watermark reconciliation aligns each chunk with live changes (the log event wins), converging to a **consistent image at the end position**. Use `sync` for snapshot plus incremental handoff in one process.
 
 See [Full Sync Strategies](design/full-sync-strategies.md) for the consistency guarantee and strategy comparison.
 
@@ -22,9 +20,9 @@ You need appropriate permissions to create triggers and tables in the MySQL data
 
 Every table you select for sync must have a usable primary key. `surreal-sync` also writes a small `surreal_sync_signal` table on the source for watermark signalling.
 
-## Combined sync (recommended)
+## Combined sync
 
-The `sync` command is the standard entry point. It runs the watermark snapshot and continues incremental sync from the handed-off end position in one process — no separate incremental replay pass is needed to reach consistency.
+The `sync` command runs the watermark snapshot and continues incremental sync from the handed-off end position in one process — no separate incremental replay pass is needed to reach consistency.
 
 ```bash
 export CONNECTION_STRING="mysql://root:root@mysql:3306/myapp"
@@ -79,7 +77,7 @@ The `(t1)` / `(t2)` labels are log names for the bracketing positions. With inte
 
 ## Incremental Sync
 
-Prefer [`sync`](#combined-sync-recommended) when starting a new migration. If you already ran `full`, use `incremental` to continue live tracking from the end position (not a replay pass to fix inconsistency):
+Prefer [`sync`](#combined-sync) when starting a new migration. If you already ran `full`, use `incremental` to continue live tracking from the end position (not a replay pass to fix inconsistency):
 
 ```bash
 NUM=$(cat ./.surreal-sync-checkpoints/checkpoint_full_sync_end_*.json | jq -r '.checkpoint.MySQL.sequence')
