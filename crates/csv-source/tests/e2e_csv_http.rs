@@ -53,7 +53,7 @@ async fn serve_csv_with_path(Path(filename): Path<String>) -> Response {
 async fn start_test_server() -> anyhow::Result<(String, tokio::task::JoinHandle<()>)> {
     let app = Router::new()
         .route("/test.csv", get(serve_csv))
-        .route("/data/:filename", get(serve_csv_with_path))
+        .route("/data/{filename}", get(serve_csv_with_path))
         .layer(ServiceBuilder::new());
 
     let listener = TcpListener::bind("0.0.0.0:0").await?;
