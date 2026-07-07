@@ -23,7 +23,8 @@ use mysql_async::{prelude::*, Pool, Row, Value};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
     run_interleaved_snapshot, InterleavedSnapshotConfig, InterleavedSnapshotResult, PkTuple,
-    SnapshotCheckpointer, SnapshotSignal, ReconciliationEvent, TableSpec, WatermarkKind, WatermarkSource,
+    ReconciliationEvent, SnapshotCheckpointer, SnapshotSignal, TableSpec, WatermarkKind,
+    WatermarkSource,
 };
 use sync_core::{
     DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,
@@ -313,7 +314,9 @@ impl WatermarkSource for MySqlWatermarkSource {
         Ok(())
     }
 
-    async fn next_reconciliation_events(&mut self) -> Result<Vec<ReconciliationEvent<Self::Position>>> {
+    async fn next_reconciliation_events(
+        &mut self,
+    ) -> Result<Vec<ReconciliationEvent<Self::Position>>> {
         let mut conn = self.pool.get_conn().await?;
         let last = self.last_sequence_id.load(Ordering::SeqCst);
 

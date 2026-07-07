@@ -9,9 +9,9 @@ use anyhow::Context;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager};
 use surreal_sink::SurrealSink;
 use surreal_sync_mysql_binlog_source::{
-    request_snapshot, run_full_sync_cancellable, run_replication_tail_with_checkpoints,
-    run_initial_interleaved_snapshot, run_interleaved_snapshot_full_sync, BinlogCheckpoint,
-    ReplicationTailOptions, InterleavedFullSyncOptions, SourceOpts, SyncOpts,
+    request_snapshot, run_full_sync_cancellable, run_initial_interleaved_snapshot,
+    run_interleaved_snapshot_full_sync, run_replication_tail_with_checkpoints, BinlogCheckpoint,
+    InterleavedFullSyncOptions, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
 use tokio_util::sync::CancellationToken;
 

@@ -11,7 +11,9 @@ use mysql_async::prelude::Queryable;
 use surreal_sink::SurrealSink;
 use tracing::{debug, info};
 
-use crate::catch_up::{emit_catch_up_progress, read_catch_up_progress, CatchUpProgress, CoverageKind};
+use crate::catch_up::{
+    emit_catch_up_progress, read_catch_up_progress, CatchUpProgress, CoverageKind,
+};
 use crate::change::cdc_change_to_universal;
 use crate::checkpoint::BinlogCheckpoint;
 use crate::client::{

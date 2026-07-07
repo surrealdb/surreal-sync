@@ -22,8 +22,8 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 
 use surreal_sync_interleaved_snapshot::{
-    run_interleaved_snapshot, InterleavedSnapshotConfig, PkTuple, SnapshotCheckpointer,
-    SnapshotSignal, ReconciliationEvent, TableSpec, WatermarkKind, WatermarkSource,
+    run_interleaved_snapshot, InterleavedSnapshotConfig, PkTuple, ReconciliationEvent,
+    SnapshotCheckpointer, SnapshotSignal, TableSpec, WatermarkKind, WatermarkSource,
 };
 
 use crate::incremental_sync::{ChangeStream, IncrementalSource, PostgresIncrementalSource};

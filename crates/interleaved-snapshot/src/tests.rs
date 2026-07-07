@@ -18,8 +18,7 @@ use uuid::Uuid;
 
 use crate::{
     run_interleaved_snapshot, InterleavedSnapshotConfig, PkTuple, ReconciliationEvent,
-    SnapshotSignal,
-    TableSpec, WatermarkKind, WatermarkSource,
+    SnapshotSignal, TableSpec, WatermarkKind, WatermarkSource,
 };
 
 // ---------------------------------------------------------------------------

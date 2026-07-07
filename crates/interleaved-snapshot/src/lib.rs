@@ -37,7 +37,9 @@ pub use runner::{
     InterleavedSnapshotConfig, InterleavedSnapshotResult, DEFAULT_CHUNK_SIZE,
 };
 pub use source::WatermarkSource;
-pub use types::{PkTuple, ReconciliationEvent, ReconciliationPos, SnapshotSignal, TableSpec, WatermarkKind};
+pub use types::{
+    PkTuple, ReconciliationEvent, ReconciliationPos, SnapshotSignal, TableSpec, WatermarkKind,
+};
 
 // Re-export the resumable checkpoint types the framework produces.
 pub use checkpoint::{InterleavedSnapshotCheckpoint, SnapshotTableProgress};

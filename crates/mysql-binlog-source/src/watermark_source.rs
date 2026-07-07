@@ -9,8 +9,8 @@ use mysql_async::{prelude::*, Pool};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
     run_adhoc_snapshot_tables, run_interleaved_snapshot_with_resume, InterleavedSnapshotConfig,
-    NoopCheckpointer, PkTuple, SnapshotCheckpointer, SnapshotSignal, ReconciliationEvent, TableSpec,
-    WatermarkKind, WatermarkSource,
+    NoopCheckpointer, PkTuple, ReconciliationEvent, SnapshotCheckpointer, SnapshotSignal,
+    TableSpec, WatermarkKind, WatermarkSource,
 };
 use sync_core::{
     DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,
@@ -427,7 +427,9 @@ impl WatermarkSource for BinlogWatermarkSource {
         Ok(())
     }
 
-    async fn next_reconciliation_events(&mut self) -> Result<Vec<ReconciliationEvent<Self::Position>>> {
+    async fn next_reconciliation_events(
+        &mut self,
+    ) -> Result<Vec<ReconciliationEvent<Self::Position>>> {
         let (low, high) = {
             let guard = self.watermarks.lock().expect("watermark lock poisoned");
             (guard.low, guard.high)
@@ -533,8 +535,7 @@ impl WatermarkSource for BinlogWatermarkSource {
     }
 
     async fn read_signals(&mut self) -> Result<Vec<SnapshotSignal>> {
-        let pending =
-            read_pending_execute_snapshot_signals(&self.pool, &self.database).await?;
+        let pending = read_pending_execute_snapshot_signals(&self.pool, &self.database).await?;
         let mut out = Vec::new();
         let mut delivered = self
             .delivered_signal_ids
@@ -549,10 +550,7 @@ impl WatermarkSource for BinlogWatermarkSource {
                 continue;
             }
             delivered.insert(signal.id.clone());
-            awaiting.insert(
-                signal.id.clone(),
-                signal.tables.iter().cloned().collect(),
-            );
+            awaiting.insert(signal.id.clone(), signal.tables.iter().cloned().collect());
             out.push(signal);
         }
         Ok(out)
@@ -665,7 +663,10 @@ fn normalize_row_pk(row: &mut UniversalRow, pk_columns: &[String]) {
 }
 
 /// Run watermark-window snapshots for tables named in ad-hoc signals.
-pub(crate) async fn run_adhoc_snapshots_for_tables<S: SurrealSink, St: checkpoint::CheckpointStore>(
+pub(crate) async fn run_adhoc_snapshots_for_tables<
+    S: SurrealSink,
+    St: checkpoint::CheckpointStore,
+>(
     source: &mut BinlogWatermarkSource,
     surreal: &S,
     table_names: &[String],
@@ -964,7 +965,8 @@ where
         {
             if !progress.all_done() {
                 info!("Resuming interleaved snapshot from saved per-chunk progress");
-                let start_at = reconciliation_pos_from_snapshot_checkpoint(&progress, from_opts).await?;
+                let start_at =
+                    reconciliation_pos_from_snapshot_checkpoint(&progress, from_opts).await?;
                 let outcome = run_interleaved_snapshot_full_sync(
                     surreal,
                     from_opts,
@@ -1069,7 +1071,8 @@ async fn reconciliation_pos_from_snapshot_checkpoint(
     progress: &InterleavedSnapshotCheckpoint,
     from_opts: &SourceOpts,
 ) -> Result<BinlogCheckpoint> {
-    let stream: BinlogReconciliationPos = serde_json::from_value(progress.reconciliation_pos.clone())?;
+    let stream: BinlogReconciliationPos =
+        serde_json::from_value(progress.reconciliation_pos.clone())?;
     let flavor = from_opts.flavor.unwrap_or(binlog_protocol::Flavor::MySql);
     Ok(BinlogCheckpoint {
         flavor,

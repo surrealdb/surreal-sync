@@ -27,8 +27,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
-    run_interleaved_snapshot, InterleavedSnapshotConfig, NoopCheckpointer, PkTuple, SnapshotSignal,
-    ReconciliationEvent, TableSpec, WatermarkKind, WatermarkSource,
+    run_interleaved_snapshot, InterleavedSnapshotConfig, NoopCheckpointer, PkTuple,
+    ReconciliationEvent, SnapshotSignal, TableSpec, WatermarkKind, WatermarkSource,
 };
 use sync_core::{UniversalChange, UniversalChangeOp, UniversalRow, UniversalValue};
 use tokio::sync::Mutex;
