@@ -12,6 +12,7 @@
 //! - `postgresql_wal2json`: PostgreSQL WAL-based logical replication sync
 //! - `mysql`: MySQL trigger-based CDC sync
 //! - `mysql_binlog`: MySQL/MariaDB binlog CDC sync
+//! - `postgresql_wal`: PostgreSQL pgoutput WAL CDC sync
 //! - `kafka`: Kafka streaming sync
 //! - `csv`: CSV file import
 //! - `jsonl`: JSONL file import
@@ -25,6 +26,7 @@ pub mod mysql;
 pub mod mysql_binlog;
 pub mod neo4j;
 pub mod postgresql_trigger;
+pub mod postgresql_wal;
 pub mod postgresql_wal2json;
 
 // Re-export common utilities (crate-internal only)

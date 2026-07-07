@@ -1,0 +1,2 @@
+mod postgresql_wal_full_sync_only_cli;
+mod postgresql_wal_incremental_sync_only_cli;

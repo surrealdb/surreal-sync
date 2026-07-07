@@ -245,10 +245,10 @@ pub async fn read_table_chunk(
 fn extract_pk_cursor_values(row: &Row, pk_columns: &[String]) -> Result<Vec<UniversalValue>> {
     let mut values = Vec::with_capacity(pk_columns.len());
     for col in pk_columns {
-        let value = if let Ok(v) = row.try_get::<_, i64>(col.as_str()) {
-            UniversalValue::Int64(v)
-        } else if let Ok(v) = row.try_get::<_, i32>(col.as_str()) {
+        let value = if let Ok(v) = row.try_get::<_, i32>(col.as_str()) {
             UniversalValue::Int32(v)
+        } else if let Ok(v) = row.try_get::<_, i64>(col.as_str()) {
+            UniversalValue::Int64(v)
         } else if let Ok(v) = row.try_get::<_, i16>(col.as_str()) {
             UniversalValue::Int16(v)
         } else if let Ok(v) = row.try_get::<_, String>(col.as_str()) {
@@ -272,6 +272,9 @@ fn pk_value_to_sql(value: &UniversalValue) -> Result<Box<dyn ToSql + Sync + Send
     match value {
         UniversalValue::Int16(v) => Ok(Box::new(*v)),
         UniversalValue::Int32(v) => Ok(Box::new(*v)),
+        UniversalValue::Int64(v) if (*v >= i32::MIN as i64) && (*v <= i32::MAX as i64) => {
+            Ok(Box::new(*v as i32))
+        }
         UniversalValue::Int64(v) => Ok(Box::new(*v)),
         UniversalValue::Text(v) => Ok(Box::new(v.clone())),
         UniversalValue::VarChar { value, .. } => Ok(Box::new(value.clone())),
@@ -332,10 +335,10 @@ fn convert_row_to_keys_and_universal_values(
     } else if pk_columns.len() == 1 {
         // Single primary key column - extract its value
         let pk_col = &pk_columns[0];
-        if let Ok(id) = row.try_get::<_, i64>(pk_col.as_str()) {
+        let id = if let Ok(id) = row.try_get::<_, i32>(pk_col.as_str()) {
+            UniversalValue::Int32(id)
+        } else if let Ok(id) = row.try_get::<_, i64>(pk_col.as_str()) {
             UniversalValue::Int64(id)
-        } else if let Ok(id) = row.try_get::<_, i32>(pk_col.as_str()) {
-            UniversalValue::Int64(id as i64)
         } else if let Ok(id) = row.try_get::<_, String>(pk_col.as_str()) {
             UniversalValue::Text(id)
         } else if let Ok(id) = row.try_get::<_, uuid::Uuid>(pk_col.as_str()) {
@@ -344,7 +347,8 @@ fn convert_row_to_keys_and_universal_values(
             return Err(anyhow::anyhow!(
                 "Failed to extract primary key value from column '{pk_col}' - unsupported data type",
             ));
-        }
+        };
+        id
     } else {
         let mut vs = Vec::new();
         for col in pk_columns {
@@ -352,10 +356,10 @@ fn convert_row_to_keys_and_universal_values(
                 UniversalValue::Text(val)
             } else if let Ok(val) = row.try_get::<_, uuid::Uuid>(col.as_str()) {
                 UniversalValue::Uuid(val)
+            } else if let Ok(val) = row.try_get::<_, i32>(col.as_str()) {
+                UniversalValue::Int32(val)
             } else if let Ok(val) = row.try_get::<_, i64>(col.as_str()) {
                 UniversalValue::Int64(val)
-            } else if let Ok(val) = row.try_get::<_, i32>(col.as_str()) {
-                UniversalValue::Int64(val as i64)
             } else {
                 return Err(anyhow::anyhow!(
                     "Failed to extract composite primary key value from column '{col}' - unsupported data type",

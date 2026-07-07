@@ -19,6 +19,8 @@ pub mod mysql_e2e;
 pub mod neo4j;
 pub mod postgresql;
 pub mod postgresql_cleanup;
+pub mod postgresql_wal_container;
+pub mod postgresql_wal_e2e;
 pub mod posts;
 pub mod relations;
 pub mod schema;

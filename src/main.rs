@@ -200,6 +200,13 @@ enum FromSource {
         command: MySQLBinlogCommands,
     },
 
+    /// Sync from PostgreSQL using pgoutput logical replication (WAL CDC)
+    #[command(name = "postgresql-wal")]
+    PostgreSQLWal {
+        #[command(subcommand)]
+        command: PostgreSQLWalCommands,
+    },
+
     /// Sync from Kafka topics (incremental-only)
     #[command(name = "kafka")]
     Kafka(KafkaArgs),
@@ -1052,6 +1059,113 @@ struct MySQLBinlogSnapshotArgs {
 }
 
 // =============================================================================
+// PostgreSQL pgoutput WAL Commands and Args
+// =============================================================================
+
+#[derive(Subcommand)]
+enum PostgreSQLWalCommands {
+    /// Snapshot and/or stream sync from PostgreSQL pgoutput WAL
+    Sync(Box<PostgreSQLWalSyncArgs>),
+    /// Trigger an ad-hoc snapshot of additional tables against a running `sync`
+    Snapshot(PostgreSQLWalSnapshotArgs),
+}
+
+/// Combined snapshot+stream sync for PostgreSQL pgoutput WAL.
+#[derive(Args)]
+struct PostgreSQLWalSyncArgs {
+    /// PostgreSQL connection string
+    #[arg(long, env = "POSTGRESQL_URI")]
+    connection_string: String,
+
+    /// PostgreSQL schema (default: public)
+    #[arg(long, default_value = "public")]
+    schema: String,
+
+    /// Tables to sync (comma-separated, empty means all tables)
+    #[arg(long, value_delimiter = ',')]
+    tables: Vec<String>,
+
+    /// Logical replication slot name
+    #[arg(long, default_value = "surreal_sync_slot")]
+    slot: String,
+
+    /// Publication name for pgoutput
+    #[arg(long, default_value = "surreal_sync_pub")]
+    publication: String,
+
+    /// Target SurrealDB namespace
+    #[arg(long)]
+    to_namespace: String,
+
+    /// Target SurrealDB database
+    #[arg(long)]
+    to_database: String,
+
+    /// Snapshot phase: initial (snapshot then stream), never (stream only), only (snapshot then exit)
+    #[arg(long, value_enum, default_value_t = BinlogSnapshotModeArg::default())]
+    snapshot_mode: BinlogSnapshotModeArg,
+
+    /// Stream resume/start position (`head` = current WAL head, or an LSN checkpoint string).
+    #[arg(long)]
+    from: Option<String>,
+
+    /// Stop the stream phase after this wall-clock duration (e.g. 3600s, 30m, 300).
+    #[arg(long, value_name = "DURATION", conflicts_with = "stop_at")]
+    stop_after: Option<String>,
+
+    /// Stop the stream phase at this WAL LSN checkpoint
+    #[arg(long, value_name = "CHECKPOINT", conflicts_with = "stop_after")]
+    stop_at: Option<String>,
+
+    /// Full-sync strategy for the snapshot phase (interleaved-snapshot is the default)
+    #[arg(long, value_enum, default_value_t = SyncStrategy::default())]
+    strategy: SyncStrategy,
+
+    /// Rows read per keyset chunk during snapshot phases
+    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
+    chunk_size: usize,
+
+    /// Directory to persist snapshot and stream checkpoints
+    #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
+    checkpoint_dir: Option<String>,
+
+    /// SurrealDB table for persisting snapshot and stream checkpoints
+    #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
+    checkpoints_surreal_table: Option<String>,
+
+    /// Persist stream checkpoints at this interval in seconds
+    #[arg(long, default_value = "10")]
+    checkpoint_interval: u64,
+
+    /// Blocking read timeout for WAL event polls during the replication tail (milliseconds)
+    #[arg(long, default_value = "500")]
+    wal_poll_timeout_ms: u64,
+
+    /// Sleep when a replication tail poll returns no events (milliseconds)
+    #[arg(long, default_value = "100")]
+    idle_sleep_ms: u64,
+
+    /// Max events requested per WAL read in the replication tail loop
+    #[arg(long, default_value_t = 32)]
+    wal_event_batch_size: usize,
+
+    #[command(flatten)]
+    surreal: SurrealOpts,
+}
+
+/// Trigger an ad-hoc snapshot of additional tables for PostgreSQL WAL.
+#[derive(Args)]
+struct PostgreSQLWalSnapshotArgs {
+    /// PostgreSQL connection string
+    #[arg(long, env = "POSTGRESQL_URI")]
+    connection_string: String,
+
+    /// Tables to snapshot (comma-separated)
+    #[arg(long, value_delimiter = ',', required = true)]
+    tables: Vec<String>,
+}
+
+// =============================================================================
 // PostgreSQL WAL-based Logical Replication Commands and Args
 // =============================================================================
 
@@ -1512,6 +1626,12 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
             MySQLBinlogCommands::Sync(args) => from::mysql_binlog::run_sync(*args).await?,
             MySQLBinlogCommands::Snapshot(args) => {
                 from::mysql_binlog::run_snapshot_signal(args).await?
+            }
+        },
+        FromSource::PostgreSQLWal { command } => match command {
+            PostgreSQLWalCommands::Sync(args) => from::postgresql_wal::run_sync(*args).await?,
+            PostgreSQLWalCommands::Snapshot(args) => {
+                from::postgresql_wal::run_snapshot_signal(args).await?
             }
         },
         FromSource::PostgreSQL { command } => match command {
