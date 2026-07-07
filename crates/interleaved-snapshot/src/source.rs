@@ -5,7 +5,7 @@ use sync_core::UniversalRow;
 use uuid::Uuid;
 
 use crate::types::{
-    PkTuple, SnapshotSignal, StreamEvent, StreamPosition, TableSpec, WatermarkKind,
+    PkTuple, ReconciliationEvent, ReconciliationPos, SnapshotSignal, TableSpec, WatermarkKind,
 };
 
 /// A source capable of driving a DBLog-style watermark snapshot.
@@ -20,13 +20,13 @@ use crate::types::{
 ///
 /// [`write_watermark`](WatermarkSource::write_watermark) inserts a row into a
 /// signal table keyed by the given UUID. That insert must subsequently appear
-/// in [`next_stream_events`](WatermarkSource::next_stream_events) as a
-/// [`StreamEvent`] whose [`PkTuple`] is the single watermark UUID, so the loop
+/// in [`next_reconciliation_events`](WatermarkSource::next_reconciliation_events) as a
+/// [`ReconciliationEvent`] whose [`PkTuple`] is the single watermark UUID, so the loop
 /// can detect when its low/high watermarks pass by in stream order.
 #[async_trait::async_trait]
 pub trait WatermarkSource: Send {
     /// The change-stream position type for this source.
-    type Position: StreamPosition;
+    type Position: ReconciliationPos;
 
     /// Enumerate the tables to snapshot, each with its ordered primary key
     /// columns.
@@ -50,7 +50,9 @@ pub trait WatermarkSource: Send {
     /// Return the next batch of change-stream events (including watermark
     /// rows). May return an empty batch when no events are currently
     /// available.
-    async fn next_stream_events(&mut self) -> Result<Vec<StreamEvent<Self::Position>>>;
+    async fn next_reconciliation_events(
+        &mut self,
+    ) -> Result<Vec<ReconciliationEvent<Self::Position>>>;
 
     /// Report the current change-stream position.
     async fn current_position(&self) -> Result<Self::Position>;
@@ -59,7 +61,13 @@ pub trait WatermarkSource: Send {
     /// applied, allowing the backend to free it (advance a replication slot,
     /// prune consumed audit rows, etc.). Backends must never free past the
     /// resumable checkpoint position.
-    async fn commit_consumed(&mut self, position: Self::Position) -> Result<()>;
+    async fn commit_reconciled(&mut self, position: Self::Position) -> Result<()>;
+
+    /// Hook after a table finishes snapshot copy (all chunks done).
+    async fn on_table_snapshot_complete(&mut self, table: &str) -> Result<()> {
+        let _ = table;
+        Ok(())
+    }
 
     /// Return any pending ad-hoc snapshot signals. Backends without signalling
     /// support may return an empty vector.

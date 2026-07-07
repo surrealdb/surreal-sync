@@ -19,7 +19,7 @@
 //! - **Resumable**: progress is checkpointed per chunk via
 //!   [`SnapshotCheckpointer`], so a crash resumes at the last copied primary
 //!   key rather than restarting the table.
-//! - **Bounded retention**: [`WatermarkSource::commit_consumed`] is called as
+//! - **Bounded retention**: [`WatermarkSource::commit_reconciled`] is called as
 //!   the stream is applied, so the source can free change-log data continuously
 //!   instead of pinning it for the whole snapshot.
 
@@ -33,11 +33,13 @@ mod tests;
 
 pub use checkpointer::{ManagerCheckpointer, NoopCheckpointer, SnapshotCheckpointer};
 pub use runner::{
-    run_interleaved_snapshot, InterleavedSnapshotConfig, InterleavedSnapshotResult,
-    DEFAULT_CHUNK_SIZE,
+    run_adhoc_snapshot_tables, run_interleaved_snapshot, run_interleaved_snapshot_with_resume,
+    InterleavedSnapshotConfig, InterleavedSnapshotResult, DEFAULT_CHUNK_SIZE,
 };
 pub use source::WatermarkSource;
-pub use types::{PkTuple, SnapshotSignal, StreamEvent, StreamPosition, TableSpec, WatermarkKind};
+pub use types::{
+    PkTuple, ReconciliationEvent, ReconciliationPos, SnapshotSignal, TableSpec, WatermarkKind,
+};
 
 // Re-export the resumable checkpoint types the framework produces.
 pub use checkpoint::{InterleavedSnapshotCheckpoint, SnapshotTableProgress};

@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 sync-core = { path = "../sync-core" }
 json-types = { path = "../json-types" }
+binlog-protocol = { path = "../binlog-protocol" }
 mysql_async = { version = "0.36" }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
@@ -18,3 +19,5 @@ base64 = "0.22"
 
 [dev-dependencies]
 tokio = { version = "1.49", features = ["full"] }
+rust_decimal = "1.39"
+hex = "0.4"

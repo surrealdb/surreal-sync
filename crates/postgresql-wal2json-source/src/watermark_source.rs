@@ -27,8 +27,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
-    run_interleaved_snapshot, InterleavedSnapshotConfig, NoopCheckpointer, PkTuple, SnapshotSignal,
-    StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
+    run_interleaved_snapshot, InterleavedSnapshotConfig, NoopCheckpointer, PkTuple,
+    ReconciliationEvent, SnapshotSignal, TableSpec, WatermarkKind, WatermarkSource,
 };
 use sync_core::{UniversalChange, UniversalChangeOp, UniversalRow, UniversalValue};
 use tokio::sync::Mutex;
@@ -181,8 +181,8 @@ pub struct Wal2JsonWatermarkSource {
     ///
     /// `pg_logical_slot_peek_changes` does not consume, so each peek re-returns
     /// the same committed changes (in commit order) from the slot's restart
-    /// point. The slot is only advanced on `commit_consumed`; until then this
-    /// count lets `next_stream_events` skip the stable already-returned prefix
+    /// point. The slot is only advanced on `commit_reconciled`; until then this
+    /// count lets `next_reconciliation_events` skip the stable already-returned prefix
     /// rather than relying on per-row LSNs, which are not monotonic in commit
     /// order.
     returned_since_advance: usize,
@@ -459,7 +459,7 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
         Ok(())
     }
 
-    async fn next_stream_events(&mut self) -> Result<Vec<StreamEvent<Lsn>>> {
+    async fn next_reconciliation_events(&mut self) -> Result<Vec<ReconciliationEvent<Lsn>>> {
         let (changes, nextlsn) = self.slot.peek_with_positions().await?;
 
         // Carry the batch commit position. The framework orders events by
@@ -495,7 +495,7 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
                     true
                 };
                 if emit {
-                    out.push(StreamEvent {
+                    out.push(ReconciliationEvent {
                         position,
                         table,
                         pk,
@@ -523,7 +523,7 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
         Ok(self.confirmed)
     }
 
-    async fn commit_consumed(&mut self, position: Lsn) -> Result<()> {
+    async fn commit_reconciled(&mut self, position: Lsn) -> Result<()> {
         // Monotonic: never move the slot backwards, and never past the
         // checkpointed (consumed) position handed in here.
         if self.last_advanced.is_none_or(|prev| position > prev) {

@@ -12,6 +12,8 @@ pub mod full;
 pub mod mongodb;
 pub mod mongodb_container;
 pub mod mysql;
+pub mod mysql_binlog_container;
+pub mod mysql_binlog_e2e;
 pub mod mysql_cleanup;
 pub mod mysql_e2e;
 pub mod neo4j;

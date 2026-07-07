@@ -1,0 +1,36 @@
+[package]
+name = "binlog-protocol"
+version = "0.1.0"
+edition = "2021"
+description = "MySQL/MariaDB binlog ROW-format replication protocol for surreal-sync"
+license = "MIT"
+
+[dependencies]
+tokio = { version = "1.49", features = ["net", "io-util", "time", "rt", "macros", "fs"] }
+bytes = "1.12"
+thiserror = "2.0"
+tracing = "0.1"
+serde = { version = "1.0.228", features = ["derive"] }
+crc32fast = "1.5"
+rust_decimal = { version = "1.39", features = ["std"] }
+byteorder = "1.5"
+sha1 = "0.10"
+sha2 = "0.10"
+rsa = { version = "0.9", features = ["sha2"] }
+
+hex = "0.4"
+zstd = "0.13.3"
+tokio-rustls = "0.26.4"
+rustls-pemfile = "2.2.0"
+webpki-roots = "1.0.8"
+
+[dev-dependencies]
+hex = "0.4"
+tokio = { version = "1.49", features = ["full"] }
+mysql_async = "0.36"
+anyhow = "1.0.100"
+insta = { version = "1.48", features = ["json"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+libc = "0.2.183"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

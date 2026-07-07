@@ -106,6 +106,12 @@ jobs:
           -f crates/postgresql-wal2json-source/Dockerfile.postgres16.wal2json \
           crates/postgresql-wal2json-source
 
+    - name: Pre-pull MySQL/MariaDB binlog test images
+      run: make prepull-binlog-images
+
+    - name: Export binlog test image tags
+      run: make print-test-images >> $GITHUB_ENV
+
     - name: Run unit + integration tests (nextest shard ${{ matrix.shard }}/3)
       env:
         SURREAL_SYNC_BIN: ${{ github.workspace }}/target/ci/surreal-sync

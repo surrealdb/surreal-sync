@@ -134,7 +134,7 @@ fn opts(uri: &str) -> SourceOpts {
 /// never dropped an unapplied change (drained rows survived pruning).
 async fn drain_remaining(source: &mut PostgresTriggerWatermarkSource, sink: &MockSink) {
     loop {
-        let events = source.next_stream_events().await.unwrap();
+        let events = source.next_reconciliation_events().await.unwrap();
         if events.is_empty() {
             break;
         }

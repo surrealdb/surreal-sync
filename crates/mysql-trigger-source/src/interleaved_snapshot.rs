@@ -23,7 +23,8 @@ use mysql_async::{prelude::*, Pool, Row, Value};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
     run_interleaved_snapshot, InterleavedSnapshotConfig, InterleavedSnapshotResult, PkTuple,
-    SnapshotCheckpointer, SnapshotSignal, StreamEvent, TableSpec, WatermarkKind, WatermarkSource,
+    ReconciliationEvent, SnapshotCheckpointer, SnapshotSignal, TableSpec, WatermarkKind,
+    WatermarkSource,
 };
 use sync_core::{
     DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,
@@ -89,7 +90,7 @@ pub struct MySqlWatermarkSource {
     /// was not part of the initial snapshot set.
     pk_by_table: Mutex<HashMap<String, Vec<String>>>,
     conversion_by_table: HashMap<String, TableConversion>,
-    /// Highest audit `sequence_id` delivered through [`Self::next_stream_events`]
+    /// Highest audit `sequence_id` delivered through [`Self::next_reconciliation_events`]
     /// so far. Reads are resumed strictly after this, and it is the position the
     /// loop checkpoints / frees up to.
     last_sequence_id: AtomicI64,
@@ -313,7 +314,9 @@ impl WatermarkSource for MySqlWatermarkSource {
         Ok(())
     }
 
-    async fn next_stream_events(&mut self) -> Result<Vec<StreamEvent<Self::Position>>> {
+    async fn next_reconciliation_events(
+        &mut self,
+    ) -> Result<Vec<ReconciliationEvent<Self::Position>>> {
         let mut conn = self.pool.get_conn().await?;
         let last = self.last_sequence_id.load(Ordering::SeqCst);
 
@@ -353,7 +356,7 @@ impl WatermarkSource for MySqlWatermarkSource {
                 let id = Uuid::parse_str(&row_id)
                     .map_err(|e| anyhow!("invalid watermark id '{row_id}' in signal table: {e}"))?;
                 if Some(id) == low || Some(id) == high {
-                    events.push(StreamEvent {
+                    events.push(ReconciliationEvent {
                         position: sequence_id,
                         table: SIGNAL_TABLE.to_string(),
                         pk: PkTuple::new(vec![UniversalValue::Uuid(id)]),
@@ -390,7 +393,7 @@ impl WatermarkSource for MySqlWatermarkSource {
             let data = data.map(|obj| self.fields_from_new_data(&table_name, &pk_columns, obj));
 
             let change = UniversalChange::new(op, table_name.clone(), id, data);
-            events.push(StreamEvent {
+            events.push(ReconciliationEvent {
                 position: sequence_id,
                 table: table_name,
                 pk,
@@ -406,7 +409,7 @@ impl WatermarkSource for MySqlWatermarkSource {
         Ok(self.last_sequence_id.load(Ordering::SeqCst))
     }
 
-    async fn commit_consumed(&mut self, position: Self::Position) -> Result<()> {
+    async fn commit_reconciled(&mut self, position: Self::Position) -> Result<()> {
         let mut conn = self.pool.get_conn().await?;
         conn.exec_drop(
             format!("DELETE FROM {AUDIT_TABLE} WHERE sequence_id <= ?"),

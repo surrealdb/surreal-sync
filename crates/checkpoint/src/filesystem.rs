@@ -29,7 +29,7 @@ impl FilesystemStore {
 #[async_trait]
 impl CheckpointStore for FilesystemStore {
     async fn store_checkpoint(&self, id: &CheckpointID, checkpoint_data: String) -> Result<()> {
-        std::fs::create_dir_all(&self.dir)?;
+        tokio::fs::create_dir_all(&self.dir).await?;
 
         let stored = StoredCheckpoint {
             checkpoint_data,
@@ -43,13 +43,13 @@ impl CheckpointStore for FilesystemStore {
             .dir
             .join(format!("checkpoint_{}_{}.json", id.phase, timestamp));
 
-        std::fs::write(&filename, serde_json::to_string_pretty(&stored)?)?;
+        tokio::fs::write(&filename, serde_json::to_string_pretty(&stored)?).await?;
         tracing::info!("Stored checkpoint to {}", filename.display());
         Ok(())
     }
 
     async fn read_checkpoint(&self, id: &CheckpointID) -> Result<Option<StoredCheckpoint>> {
-        if !self.dir.exists() {
+        if !tokio::fs::try_exists(&self.dir).await.unwrap_or(false) {
             return Ok(None);
         }
 
@@ -58,11 +58,11 @@ impl CheckpointStore for FilesystemStore {
         let mut latest_file = None;
         let mut latest_time = None;
 
-        for entry in std::fs::read_dir(&self.dir)? {
-            let entry = entry?;
+        let mut entries = tokio::fs::read_dir(&self.dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
             let filename = entry.file_name().to_string_lossy().to_string();
             if filename.starts_with(&prefix) && filename.ends_with(".json") {
-                let modified = entry.metadata()?.modified()?;
+                let modified = entry.metadata().await?.modified()?;
                 if latest_time.is_none() || modified > latest_time.unwrap() {
                     latest_time = Some(modified);
                     latest_file = Some(entry.path());
@@ -72,7 +72,7 @@ impl CheckpointStore for FilesystemStore {
 
         match latest_file {
             Some(path) => {
-                let content = std::fs::read_to_string(path)?;
+                let content = tokio::fs::read_to_string(path).await?;
                 Ok(Some(serde_json::from_str(&content)?))
             }
             None => Ok(None),

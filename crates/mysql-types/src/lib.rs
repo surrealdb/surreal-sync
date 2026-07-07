@@ -29,11 +29,15 @@
 //! assert_eq!(ut, UniversalType::Int32);
 //! ```
 
+pub mod binlog;
 pub mod ddl;
 pub mod forward;
 pub mod reverse;
 pub mod schema;
 
+pub use binlog::{
+    apply_mysql_json_diffs_to_cell, binlog_cell_to_universal_value, BinlogColumnMeta,
+};
 pub use ddl::{MySQLDdl, ToDdl};
 pub use forward::MySQLValue;
 pub use reverse::{

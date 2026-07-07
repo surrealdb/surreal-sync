@@ -1,0 +1,36 @@
+# Repo-local cargo config.
+#
+# Goal: let a plain `cargo build` / `cargo test` succeed on macOS with Homebrew
+# `openssl@3` WITHOUT the developer manually exporting OpenSSL flags.
+#
+# Why this is needed: `rdkafka-sys` (pulled in by the kafka source/producer
+# crates) builds librdkafka statically from source. librdkafka's `configure`
+# (mklove) runs a `libcrypto` compile check that needs `openssl/ssl.h` on the
+# C include path, and `openssl-sys` needs to locate OpenSSL too. macOS ships no
+# pkg-config-discoverable OpenSSL by default, so these builds fail in a plain
+# shell.
+#
+# Cross-platform safety: cargo's `[env]` has no OS conditionals and applies on
+# every platform, so we ONLY set values that are harmless when the referenced
+# directories do not exist:
+#   * CFLAGS/CPPFLAGS (`-I<dir>`) and LDFLAGS (`-L<dir>`): the C compiler and
+#     linker silently ignore non-existent search directories, so pointing at
+#     Homebrew paths on Linux/CI is a no-op.
+#   * PKG_CONFIG_PATH: pkg-config skips non-existent entries, so on Linux the
+#     system OpenSSL (`libssl-dev`) is still discovered from the default path.
+# Both the Apple Silicon (`/opt/homebrew`) and Intel (`/usr/local`) Homebrew
+# prefixes are listed; only the one that exists on a given machine takes effect.
+#
+# We intentionally do NOT set OPENSSL_DIR/OPENSSL_ROOT_DIR here: pointing those
+# at a non-existent macOS path on Linux/CI WOULD break `openssl-sys`. On macOS,
+# `openssl-sys` locates OpenSSL via PKG_CONFIG_PATH below instead.
+#
+# `force = false` (the default) means these do not override variables already
+# present in the environment, so the Makefile's Darwin block (which computes the
+# real prefix via `brew --prefix openssl@3` and additionally exports
+# OPENSSL_DIR) still takes precedence when you build via `make`.
+[env]
+PKG_CONFIG_PATH = { value = "/opt/homebrew/opt/openssl@3/lib/pkgconfig:/usr/local/opt/openssl@3/lib/pkgconfig", force = false }
+CPPFLAGS = { value = "-I/opt/homebrew/opt/openssl@3/include -I/usr/local/opt/openssl@3/include", force = false }
+CFLAGS = { value = "-I/opt/homebrew/opt/openssl@3/include -I/usr/local/opt/openssl@3/include", force = false }
+LDFLAGS = { value = "-L/opt/homebrew/opt/openssl@3/lib -L/usr/local/opt/openssl@3/lib", force = false }

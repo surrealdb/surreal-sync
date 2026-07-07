@@ -39,6 +39,13 @@ pub enum SyncPhase {
     /// This records the final stream position the snapshot reached. Downstream
     /// incremental/live processing continues from exactly this position.
     SnapshotHandoff,
+
+    /// Catch-up progress for binlog sync: stream position plus table coverage.
+    ///
+    /// Updated during incremental sync (position only) and when snapshot batches
+    /// complete (position plus covered tables). [`FullSyncEnd`] remains the
+    /// immutable t2 boundary written once at snapshot handoff completion.
+    CatchUpProgress,
 }
 
 impl SyncPhase {
@@ -53,6 +60,7 @@ impl SyncPhase {
             SyncPhase::FullSyncEnd => "full_sync_end",
             SyncPhase::SnapshotProgress => "snapshot_progress",
             SyncPhase::SnapshotHandoff => "snapshot_handoff",
+            SyncPhase::CatchUpProgress => "catch_up_progress",
         }
     }
 }

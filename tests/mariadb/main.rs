@@ -1,2 +1,4 @@
+mod mariadb_binlog_full_sync_only_lib;
+mod mariadb_binlog_incremental_sync_only_lib;
 mod mariadb_full_sync_only_lib;
 mod mariadb_incremental_sync_only_lib;

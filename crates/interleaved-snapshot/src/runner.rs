@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::checkpointer::SnapshotCheckpointer;
 use crate::source::WatermarkSource;
-use crate::types::{PkTuple, StreamPosition, TableSpec, WatermarkKind};
+use crate::types::{PkTuple, ReconciliationPos, TableSpec, WatermarkKind};
 
 /// Default chunk size (matches Debezium's incremental snapshot default).
 pub const DEFAULT_CHUNK_SIZE: usize = 1024;
@@ -34,7 +34,7 @@ impl Default for InterleavedSnapshotConfig {
 
 /// Outcome of a completed watermark snapshot.
 #[derive(Debug, Clone)]
-pub struct InterleavedSnapshotResult<P: StreamPosition> {
+pub struct InterleavedSnapshotResult<P: ReconciliationPos> {
     /// The final stream position reached; downstream live processing resumes
     /// from here.
     pub final_position: P,
@@ -52,7 +52,7 @@ struct TableState {
     done: bool,
 }
 
-fn build_checkpoint<P: StreamPosition>(
+fn build_checkpoint<P: ReconciliationPos>(
     position: &P,
     progress: &[TableState],
 ) -> Result<InterleavedSnapshotCheckpoint> {
@@ -67,9 +67,58 @@ fn build_checkpoint<P: StreamPosition>(
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(InterleavedSnapshotCheckpoint {
-        stream_pos: serde_json::to_value(position)?,
+        reconciliation_pos: serde_json::to_value(position)?,
         tables,
     })
+}
+
+fn table_state_from_progress(t: &SnapshotTableProgress) -> Result<TableState> {
+    let last_pk = match &t.last_pk {
+        None => None,
+        Some(v) => Some(serde_json::from_value(v.clone())?),
+    };
+    Ok(TableState {
+        name: t.name.clone(),
+        last_pk,
+        done: t.done,
+    })
+}
+
+fn init_snapshot_state(
+    all_tables: Vec<TableSpec>,
+    resume: Option<&InterleavedSnapshotCheckpoint>,
+) -> Result<(VecDeque<TableSpec>, HashSet<String>, Vec<TableState>)> {
+    let progress_by_name: HashMap<String, &SnapshotTableProgress> = resume
+        .map(|cp| cp.tables.iter().map(|t| (t.name.clone(), t)).collect())
+        .unwrap_or_default();
+
+    let progress: Vec<TableState> = all_tables
+        .iter()
+        .map(|spec| {
+            if let Some(saved) = progress_by_name.get(&spec.table) {
+                table_state_from_progress(saved)
+            } else {
+                Ok(TableState {
+                    name: spec.table.clone(),
+                    last_pk: None,
+                    done: false,
+                })
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let queue: VecDeque<TableSpec> = all_tables
+        .into_iter()
+        .filter(|spec| {
+            progress_by_name
+                .get(&spec.table)
+                .map(|t| !t.done)
+                .unwrap_or(true)
+        })
+        .collect();
+
+    let seen: HashSet<String> = progress.iter().map(|t| t.name.clone()).collect();
+    Ok((queue, seen, progress))
 }
 
 /// Run a watermark snapshot, copying every table reported by `source` in
@@ -83,8 +132,8 @@ fn build_checkpoint<P: StreamPosition>(
 ///    and while inside the open window drops any buffered row whose primary
 ///    key also appears as an event (the log event wins);
 /// 3. on window close, flushes the surviving buffered rows as upserts;
-/// 4. checkpoints `{stream_pos, per-table last_pk}` and calls
-///    [`WatermarkSource::commit_consumed`] so the source can free applied
+/// 4. checkpoints `{reconciliation_pos, per-table last_pk}` and calls
+///    [`WatermarkSource::commit_reconciled`] so the source can free applied
 ///    change-log data.
 ///
 /// On completion it returns the final stream position and the exact peak
@@ -100,18 +149,25 @@ where
     K: SurrealSink,
     C: SnapshotCheckpointer,
 {
-    // The set of tables still to snapshot. Seeded with the initial set and
-    // extended on the fly by ad-hoc `execute-snapshot` signals.
-    let mut queue: VecDeque<TableSpec> = source.snapshot_tables().await?.into_iter().collect();
-    let mut seen: HashSet<String> = queue.iter().map(|s| s.table.clone()).collect();
-    let mut progress: Vec<TableState> = queue
-        .iter()
-        .map(|t| TableState {
-            name: t.table.clone(),
-            last_pk: None,
-            done: false,
-        })
-        .collect();
+    run_interleaved_snapshot_with_resume(source, sink, config, checkpointer, None).await
+}
+
+/// Like [`run_interleaved_snapshot`], but resumes from a saved per-chunk
+/// checkpoint when `resume` is set.
+pub async fn run_interleaved_snapshot_with_resume<S, K, C>(
+    source: &mut S,
+    sink: &K,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+    resume: Option<&InterleavedSnapshotCheckpoint>,
+) -> Result<InterleavedSnapshotResult<S::Position>>
+where
+    S: WatermarkSource,
+    K: SurrealSink,
+    C: SnapshotCheckpointer,
+{
+    let all_tables = source.snapshot_tables().await?;
+    let (mut queue, mut seen, mut progress) = init_snapshot_state(all_tables, resume)?;
 
     let mut peak_buffered_rows = 0usize;
 
@@ -165,6 +221,46 @@ where
     })
 }
 
+/// Snapshot a fixed set of tables (for example after an ad-hoc
+/// `execute-snapshot` signal during steady-state streaming) without re-running
+/// the initial [`WatermarkSource::snapshot_tables`] enumeration.
+pub async fn run_adhoc_snapshot_tables<S, K, C>(
+    source: &mut S,
+    sink: &K,
+    tables: Vec<TableSpec>,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+) -> Result<()>
+where
+    S: WatermarkSource,
+    K: SurrealSink,
+    C: SnapshotCheckpointer,
+{
+    let mut progress: Vec<TableState> = tables
+        .iter()
+        .map(|t| TableState {
+            name: t.table.clone(),
+            last_pk: None,
+            done: false,
+        })
+        .collect();
+    let mut peak_buffered_rows = 0usize;
+    for (table_index, spec) in tables.iter().enumerate() {
+        snapshot_one_table(
+            source,
+            sink,
+            config,
+            checkpointer,
+            spec,
+            table_index,
+            &mut progress,
+            &mut peak_buffered_rows,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 /// Snapshot a single table in primary-key-ordered chunks, applying the same
 /// low/high watermark dedup window per chunk and checkpointing after each one.
 #[allow(clippy::too_many_arguments)]
@@ -197,11 +293,12 @@ where
 
         if rows.is_empty() {
             progress[table_index].done = true;
+            source.on_table_snapshot_complete(&spec.table).await?;
             let position = source.current_position().await?;
             checkpointer
                 .save_progress(&build_checkpoint(&position, progress)?)
                 .await?;
-            source.commit_consumed(position).await?;
+            source.commit_reconciled(position).await?;
             break;
         }
 
@@ -230,7 +327,7 @@ where
         let mut in_window = false;
         let mut window_closed = false;
         while !window_closed {
-            let events = source.next_stream_events().await?;
+            let events = source.next_reconciliation_events().await?;
             for event in events {
                 if let Some(watermark_id) = event.pk.single_uuid() {
                     if watermark_id == low_id {
@@ -258,13 +355,14 @@ where
         let table_done = chunk_len < config.chunk_size;
         if table_done {
             progress[table_index].done = true;
+            source.on_table_snapshot_complete(&spec.table).await?;
         }
 
         let position = source.current_position().await?;
         checkpointer
             .save_progress(&build_checkpoint(&position, progress)?)
             .await?;
-        source.commit_consumed(position).await?;
+        source.commit_reconciled(position).await?;
 
         if table_done {
             break;

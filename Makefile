@@ -1,4 +1,6 @@
-.PHONY: test check fmt clippy build build-debug clean clean-logs help install-tools install-hooks system-deps prebuild-test-images services-info
+.PHONY: test check fmt clippy build build-debug clean clean-logs help install-tools install-hooks system-deps prebuild-test-images prepull-binlog-images print-test-images services-info
+
+include scripts/test-images.mk
 
 # Path to the debug CLI binary used by the *_cli integration tests.
 # We deliberately use the debug binary (not release) so the test path doesn't
@@ -94,9 +96,9 @@ build-debug:
 	cargo build
 	@echo "✅ Debug build complete"
 
-# Pre-build the custom PostgreSQL (wal2json) test image so the many parallel
-# test processes find it in Docker's layer cache instead of racing to build it.
-prebuild-test-images:
+# Pre-pull binlog images and pre-build the custom PostgreSQL (wal2json) test image
+# so parallel test processes find them in Docker's layer cache instead of racing.
+prebuild-test-images: prepull-binlog-images
 	@echo "🐳 Pre-building PostgreSQL wal2json test image..."
 	docker build -t postgres-wal2json-test \
 		-f crates/postgresql-wal2json-source/Dockerfile.postgres16.wal2json \

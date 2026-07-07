@@ -15,12 +15,12 @@ use uuid::Uuid;
 ///
 /// - PostgreSQL wal2json: an LSN `String` (lexicographically comparable).
 /// - PostgreSQL/MySQL trigger sources: an `i64` sequence id.
-pub trait StreamPosition:
+pub trait ReconciliationPos:
     Clone + Ord + Serialize + DeserializeOwned + Send + Sync + 'static
 {
 }
 
-impl<T> StreamPosition for T where
+impl<T> ReconciliationPos for T where
     T: Clone + Ord + Serialize + DeserializeOwned + Send + Sync + 'static
 {
 }
@@ -116,8 +116,8 @@ pub enum WatermarkKind {
 /// event is one whose primary key is the single watermark UUID
 /// (see [`PkTuple::single_uuid`]).
 #[derive(Debug, Clone)]
-pub struct StreamEvent<P: StreamPosition> {
-    /// Stream position of this event.
+pub struct ReconciliationEvent<P: ReconciliationPos> {
+    /// Reconciliation stream position of this event.
     pub position: P,
     /// Table the change applies to.
     pub table: String,

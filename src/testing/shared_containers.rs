@@ -7,6 +7,7 @@
 use std::sync::{Mutex, OnceLock};
 use tokio::sync::OnceCell;
 
+use crate::testing::mysql_binlog_container::MySQLBinlogContainer;
 use surreal_sync_postgresql::testing::container::PostgresContainer;
 use surreal_version::testing::SurrealDbContainer;
 
@@ -164,6 +165,99 @@ pub async fn create_mariadb_test_db(
     test_id: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
     create_mysql_test_db(container, test_id).await
+}
+
+/// Returns a shared MySQL binlog container, starting it on first call.
+pub async fn shared_mysql_binlog() -> &'static MySQLBinlogContainer {
+    static MY: OnceCell<MySQLBinlogContainer> = OnceCell::const_new();
+    MY.get_or_init(|| async {
+        let name = format!("shared-mysql-binlog-{}", std::process::id());
+        register_container(&name);
+        let mut c = MySQLBinlogContainer::new(&name);
+        c.start().expect("MySQL binlog start failed");
+        c.wait_until_ready(30)
+            .await
+            .expect("MySQL binlog not ready in 30s");
+        c
+    })
+    .await
+}
+
+/// Returns a shared MariaDB binlog container, starting it on first call.
+pub async fn shared_mariadb_binlog() -> &'static MySQLBinlogContainer {
+    static MDB: OnceCell<MySQLBinlogContainer> = OnceCell::const_new();
+    MDB.get_or_init(|| async {
+        let name = format!("shared-mariadb-binlog-{}", std::process::id());
+        register_container(&name);
+        let mut c = MySQLBinlogContainer::mariadb(&name);
+        c.start().expect("MariaDB binlog start failed");
+        c.wait_until_ready(60)
+            .await
+            .expect("MariaDB binlog not ready in 60s");
+        c
+    })
+    .await
+}
+
+/// Create a fresh database for a binlog CDC test and return its connection string.
+pub async fn create_binlog_test_db(
+    container: &MySQLBinlogContainer,
+    test_id: u64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let db_name = format!("test_{test_id}");
+    let pool = mysql_async::Pool::from_url(&container.connection_string)?;
+    let mut conn = pool.get_conn().await?;
+    use mysql_async::prelude::Queryable;
+    conn.query_drop(format!("CREATE DATABASE IF NOT EXISTS `{db_name}`"))
+        .await?;
+    drop(conn);
+    pool.disconnect().await?;
+
+    setup_binlog_user(container, &db_name).await?;
+
+    let test_conn = container
+        .connection_string
+        .replace("/testdb", &format!("/{db_name}"));
+    Ok(test_conn)
+}
+
+/// Creates a least-privilege replication user for binlog CDC tests.
+///
+/// Most tests use root; call this when exercising the non-root replication path.
+pub async fn setup_binlog_user(
+    container: &MySQLBinlogContainer,
+    database: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pool = mysql_async::Pool::from_url(&container.connection_string)?;
+    let mut conn = pool.get_conn().await?;
+    use mysql_async::prelude::Queryable;
+
+    let create_user = match container.flavor() {
+        binlog_protocol::Flavor::MySql => {
+            "CREATE USER IF NOT EXISTS 'surreal_sync'@'%' \
+             IDENTIFIED WITH mysql_native_password BY 'surreal_sync_pass'"
+        }
+        binlog_protocol::Flavor::MariaDb => {
+            "CREATE USER IF NOT EXISTS 'surreal_sync'@'%' IDENTIFIED BY 'surreal_sync_pass'"
+        }
+    };
+    conn.query_drop(create_user).await?;
+    if container.flavor() == binlog_protocol::Flavor::MySql {
+        conn.query_drop("SET GLOBAL binlog_row_value_options = ''")
+            .await?;
+    }
+    conn.query_drop("GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO 'surreal_sync'@'%'")
+        .await?;
+    conn.query_drop(format!(
+        "GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX, TRIGGER \
+         ON `{database}`.* TO 'surreal_sync'@'%'"
+    ))
+    .await?;
+    conn.query_drop("FLUSH PRIVILEGES").await?;
+
+    drop(conn);
+    pool.disconnect().await?;
+    Ok(())
 }
 
 /// Returns a shared MongoDB container, starting it on first call.

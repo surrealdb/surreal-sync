@@ -17,8 +17,8 @@ use sync_core::{
 use uuid::Uuid;
 
 use crate::{
-    run_interleaved_snapshot, InterleavedSnapshotConfig, PkTuple, SnapshotSignal, StreamEvent,
-    TableSpec, WatermarkKind, WatermarkSource,
+    run_interleaved_snapshot, InterleavedSnapshotConfig, PkTuple, ReconciliationEvent,
+    SnapshotSignal, TableSpec, WatermarkKind, WatermarkSource,
 };
 
 // ---------------------------------------------------------------------------
@@ -132,9 +132,9 @@ impl MockSource {
         Self::new(spec, total_rows, Vec::new())
     }
 
-    fn watermark_event(state: &mut MockState, id: Uuid) -> StreamEvent<i64> {
+    fn watermark_event(state: &mut MockState, id: Uuid) -> ReconciliationEvent<i64> {
         state.position += 1;
-        StreamEvent {
+        ReconciliationEvent {
             position: state.position,
             table: "surreal_sync_signal".to_string(),
             pk: PkTuple::new(vec![UniversalValue::Uuid(id)]),
@@ -185,7 +185,7 @@ impl WatermarkSource for MockSource {
         Ok(())
     }
 
-    async fn next_stream_events(&mut self) -> Result<Vec<StreamEvent<i64>>> {
+    async fn next_reconciliation_events(&mut self) -> Result<Vec<ReconciliationEvent<i64>>> {
         let mut state = self.state.lock().unwrap();
         let mut out = Vec::new();
 
@@ -200,7 +200,7 @@ impl WatermarkSource for MockSource {
         };
         for event in window {
             state.position += 1;
-            out.push(StreamEvent {
+            out.push(ReconciliationEvent {
                 position: state.position,
                 table: event.table,
                 pk: event.pk,
@@ -220,7 +220,7 @@ impl WatermarkSource for MockSource {
         Ok(self.state.lock().unwrap().position)
     }
 
-    async fn commit_consumed(&mut self, position: i64) -> Result<()> {
+    async fn commit_reconciled(&mut self, position: i64) -> Result<()> {
         self.state.lock().unwrap().consumed.push(position);
         Ok(())
     }
@@ -416,7 +416,7 @@ async fn progress_and_handoff_checkpoints_persist() {
         .await
         .unwrap();
     assert_eq!(
-        loaded.stream_pos,
+        loaded.reconciliation_pos,
         serde_json::to_value(result.final_position).unwrap()
     );
 }

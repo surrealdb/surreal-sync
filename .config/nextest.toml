@@ -34,6 +34,16 @@ fail-fast = false
 slow-timeout = { period = "90s", terminate-after = 5 }
 failure-output = "immediate-final"
 
+# Binlog e2e tests (tests/mysql_binlog/, tests/mariadb/*_binlog_*, and
+# crates/mysql-binlog-source/tests/suite/) spin stock MySQL/MariaDB binlog
+# images from scripts/test-images.env with replication enabled via docker run
+# server flags — no custom Dockerfile. They are container-bound like other e2e
+# tests (shared_containers.rs / mysql-binlog-source testing helpers): one
+# isolated stack per nextest process, keyed by PID. CI and `make test` pre-pull
+# both images via `make prepull-binlog-images` before nextest runs.
+# Partitions are by test count, not duration; slow binlog e2e may skew one shard's
+# wall-clock. Add a [profile.ci.overrides] filter only if measured CI time exceeds budget.
+
 # Ship the CLI binary alongside test binaries so shard runners can set SURREAL_SYNC_BIN.
 archive.include = [
   { path = "ci/surreal-sync", relative-to = "target" },
