@@ -1,11 +1,11 @@
-//! Shared Docker container helpers for postgresql-wal-source integration tests.
+//! Shared Docker container helpers for postgresql-pgoutput-source integration tests.
 
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use surreal_sync_postgresql_wal_source::{SourceOpts, WalCheckpoint};
+use surreal_sync_postgresql_pgoutput_source::{PgoutputCheckpoint, SourceOpts};
 use tokio::sync::OnceCell;
 use tokio_postgres::Client;
 
@@ -163,7 +163,7 @@ fn get_dynamic_port(container_name: &str) -> Result<u16> {
 
 static PG_WAL: OnceCell<WalContainer> = OnceCell::const_new();
 
-pub async fn shared_postgresql_wal() -> &'static WalContainer {
+pub async fn shared_postgresql_pgoutput() -> &'static WalContainer {
     PG_WAL
         .get_or_init(|| async {
             let name = format!("suite-pg-wal-{}", std::process::id());
@@ -227,8 +227,8 @@ pub async fn capture_head(
     slot: &str,
     publication: &str,
     tables: Vec<String>,
-) -> Result<WalCheckpoint> {
-    surreal_sync_postgresql_wal_source::capture_head_checkpoint(&source_opts(
+) -> Result<PgoutputCheckpoint> {
+    surreal_sync_postgresql_pgoutput_source::capture_head_checkpoint(&source_opts(
         conn_str,
         slot,
         publication,

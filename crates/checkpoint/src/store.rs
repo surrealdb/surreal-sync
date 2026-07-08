@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 /// Checkpoint identifier for storage
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CheckpointID {
-    /// Database type (e.g., "postgresql-wal2json", "mysql", "mongodb")
+    /// Database type (e.g., "postgresql-pgoutput", "postgresql-wal2json", "mysql", "mongodb")
     pub database_type: String,
     /// Sync phase ("full_sync_start" or "full_sync_end")
     pub phase: String,

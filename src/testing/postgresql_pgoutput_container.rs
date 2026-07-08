@@ -12,13 +12,13 @@ use tracing::{debug, info};
 const POSTGRES_IMAGE: &str = "postgres:16";
 
 /// A test PostgreSQL container with `wal_level=logical` and dynamic port binding.
-pub struct PostgresWalContainer {
+pub struct PostgresPgoutputContainer {
     pub container_name: String,
     pub host_port: u16,
     pub connection_string: String,
 }
 
-impl PostgresWalContainer {
+impl PostgresPgoutputContainer {
     /// Creates a container configuration. Call [`start`](Self::start) before use.
     pub fn new(container_name: &str) -> Self {
         Self {
@@ -164,7 +164,7 @@ impl PostgresWalContainer {
     }
 }
 
-impl Drop for PostgresWalContainer {
+impl Drop for PostgresPgoutputContainer {
     fn drop(&mut self) {
         let _ = self.stop();
     }

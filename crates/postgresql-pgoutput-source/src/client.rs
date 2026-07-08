@@ -143,7 +143,7 @@ pub async fn get_current_wal_lsn(client: &Client) -> Result<Lsn> {
 
 pub async fn start_wal_from_checkpoint(
     client: &mut PgWalClient,
-    checkpoint: &crate::WalCheckpoint,
+    checkpoint: &crate::PgoutputCheckpoint,
 ) -> Result<()> {
     client.start(Some(checkpoint.lsn)).await
 }

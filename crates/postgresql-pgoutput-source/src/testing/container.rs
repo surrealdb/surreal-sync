@@ -6,13 +6,13 @@ use tracing::{debug, info};
 
 const POSTGRES_IMAGE: &str = "postgres:16";
 
-pub struct PostgresWalContainer {
+pub struct PostgresPgoutputContainer {
     pub container_name: String,
     pub host_port: u16,
     pub connection_string: String,
 }
 
-impl PostgresWalContainer {
+impl PostgresPgoutputContainer {
     pub fn new(container_name: &str) -> Self {
         Self {
             container_name: container_name.to_string(),
@@ -105,7 +105,7 @@ impl PostgresWalContainer {
     }
 }
 
-impl Drop for PostgresWalContainer {
+impl Drop for PostgresPgoutputContainer {
     fn drop(&mut self) {
         let _ = self.stop();
     }

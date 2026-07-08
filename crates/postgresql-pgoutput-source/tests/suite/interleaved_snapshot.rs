@@ -8,7 +8,7 @@ use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
     run_interleaved_snapshot, InterleavedSnapshotConfig, NoopCheckpointer, WatermarkSource,
 };
-use surreal_sync_postgresql_wal_source::{SourceOpts, WalWatermarkSource, SIGNAL_TABLE};
+use surreal_sync_postgresql_pgoutput_source::{PgoutputWatermarkSource, SourceOpts, SIGNAL_TABLE};
 use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
 use tokio_postgres::{Client as PgClient, NoTls};
@@ -67,7 +67,10 @@ async fn surreal_users(db: &Surreal<Any>) -> Result<BTreeMap<i64, Option<String>
     Ok(rows.into_iter().map(|r| (r.id, r.val)).collect())
 }
 
-async fn drain_to_catch_up(source: &mut WalWatermarkSource, sink: &Surreal2Sink) -> Result<()> {
+async fn drain_to_catch_up(
+    source: &mut PgoutputWatermarkSource,
+    sink: &Surreal2Sink,
+) -> Result<()> {
     let signal_table = SIGNAL_TABLE.to_string();
     loop {
         let events = source.next_reconciliation_events().await?;
@@ -97,9 +100,9 @@ fn source_opts(conn: &str, slot: &str, publication: &str) -> SourceOpts {
 }
 
 #[tokio::test]
-async fn postgresql_wal_interleaved_snapshot_parity_under_concurrent_writes() -> Result<()> {
+async fn postgresql_pgoutput_interleaved_snapshot_parity_under_concurrent_writes() -> Result<()> {
     crate::shared::init_logging();
-    let container = crate::shared::shared_postgresql_wal().await;
+    let container = crate::shared::shared_postgresql_pgoutput().await;
     let conn = crate::shared::create_test_db(container, "wm_parity").await?;
 
     let setup = pg_connect(&conn).await?;
@@ -107,7 +110,8 @@ async fn postgresql_wal_interleaved_snapshot_parity_under_concurrent_writes() ->
 
     let (sink, db) = mem_sink().await?;
     let mut source =
-        WalWatermarkSource::connect(&source_opts(&conn, "wm_parity_slot", "wm_parity_pub")).await?;
+        PgoutputWatermarkSource::connect(&source_opts(&conn, "wm_parity_slot", "wm_parity_pub"))
+            .await?;
 
     let writer_conn = conn.clone();
     let writer = tokio::spawn(async move {

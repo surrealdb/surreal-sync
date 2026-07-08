@@ -1,23 +1,23 @@
 //! PostgreSQL pgoutput WAL CDC sync handlers.
 //!
-//! Source crate: crates/postgresql-wal-source/
+//! Source crate: crates/postgresql-pgoutput-source/
 //! CLI commands:
-//! - `from postgresql-wal sync` — snapshot and/or stream (see `--snapshot-mode`)
-//! - `from postgresql-wal snapshot` — ad-hoc execute-snapshot signal insert
+//! - `from postgresql-pgoutput sync` — snapshot and/or stream (see `--snapshot-mode`)
+//! - `from postgresql-pgoutput snapshot` — ad-hoc execute-snapshot signal insert
 
 use anyhow::Context;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager};
 use surreal_sink::SurrealSink;
-use surreal_sync_postgresql_wal_source::{
+use surreal_sync_postgresql_pgoutput_source::{
     request_snapshot, run_full_sync_cancellable, run_initial_interleaved_snapshot,
     run_interleaved_snapshot_full_sync, run_replication_tail_with_checkpoints,
-    InterleavedFullSyncOptions, ReplicationTailOptions, SourceOpts, SyncOpts, WalCheckpoint,
+    InterleavedFullSyncOptions, PgoutputCheckpoint, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
 use tokio_util::sync::CancellationToken;
 
 use super::{get_sdk_version, parse_duration_to_secs, SdkVersion};
 use crate::{
-    BinlogSnapshotModeArg, PostgreSQLWalSnapshotArgs, PostgreSQLWalSyncArgs, SyncStrategy,
+    BinlogSnapshotModeArg, PostgreSQLPgoutputSnapshotArgs, PostgreSQLPgoutputSyncArgs, SyncStrategy,
 };
 
 fn install_shutdown_token() -> CancellationToken {
@@ -54,7 +54,7 @@ async fn shutdown_signal() {
     }
 }
 
-fn wal_source_opts(args: &PostgreSQLWalSyncArgs) -> SourceOpts {
+fn wal_source_opts(args: &PostgreSQLPgoutputSyncArgs) -> SourceOpts {
     SourceOpts {
         connection_string: args.connection_string.clone(),
         schema: args.schema.clone(),
@@ -83,11 +83,11 @@ fn parse_stop_after_deadline(
     })
 }
 
-fn wal_stream_options(args: &PostgreSQLWalSyncArgs) -> anyhow::Result<ReplicationTailOptions> {
+fn wal_stream_options(args: &PostgreSQLPgoutputSyncArgs) -> anyhow::Result<ReplicationTailOptions> {
     let until_checkpoint = args
         .stop_at
         .as_ref()
-        .map(|s| WalCheckpoint::from_cli_string(s))
+        .map(|s| PgoutputCheckpoint::from_cli_string(s))
         .transpose()?;
     let deadline = parse_stop_after_deadline(args.stop_after.as_deref())?;
     let mut options = ReplicationTailOptions::stream(deadline, until_checkpoint);
@@ -100,21 +100,21 @@ fn wal_stream_options(args: &PostgreSQLWalSyncArgs) -> anyhow::Result<Replicatio
 
 async fn read_latest_replication_checkpoint<St: CheckpointStore>(
     manager: &SyncManager<St>,
-) -> anyhow::Result<WalCheckpoint> {
+) -> anyhow::Result<PgoutputCheckpoint> {
     use checkpoint::SyncPhase;
-    use surreal_sync_postgresql_wal_source::{max_wal_checkpoint, CatchUpProgress};
+    use surreal_sync_postgresql_pgoutput_source::{max_pgoutput_checkpoint, CatchUpProgress};
 
     let catch_up = manager
         .read_checkpoint::<CatchUpProgress>(SyncPhase::CatchUpProgress)
         .await
         .ok();
     let full_sync_end = manager
-        .read_checkpoint::<WalCheckpoint>(SyncPhase::FullSyncEnd)
+        .read_checkpoint::<PgoutputCheckpoint>(SyncPhase::FullSyncEnd)
         .await
         .ok();
 
     match (catch_up, full_sync_end) {
-        (Some(progress), Some(end)) => Ok(max_wal_checkpoint(&[progress.position, end])),
+        (Some(progress), Some(end)) => Ok(max_pgoutput_checkpoint(&[progress.position, end])),
         (Some(progress), None) => Ok(progress.position),
         (None, Some(end)) => Ok(end),
         (None, None) => manager
@@ -132,16 +132,16 @@ async fn checkpoint_from_arg_or_store<St: CheckpointStore>(
     explicit: &Option<String>,
     manager: Option<&SyncManager<St>>,
     source_opts: &SourceOpts,
-) -> anyhow::Result<WalCheckpoint> {
+) -> anyhow::Result<PgoutputCheckpoint> {
     if is_start_at_head(explicit) {
         tracing::info!("Starting stream at current WAL head");
-        return surreal_sync_postgresql_wal_source::capture_head_checkpoint(source_opts).await;
+        return surreal_sync_postgresql_pgoutput_source::capture_head_checkpoint(source_opts).await;
     }
 
     match (explicit, manager) {
         (Some(s), _) => {
             tracing::info!("Starting from checkpoint: {}", s);
-            WalCheckpoint::from_cli_string(s)
+            PgoutputCheckpoint::from_cli_string(s)
         }
         (None, Some(manager)) => {
             tracing::info!("Reading latest checkpoint from configured checkpoint store");
@@ -151,7 +151,8 @@ async fn checkpoint_from_arg_or_store<St: CheckpointStore>(
                     tracing::info!(
                         "No checkpoint found in store ({read_err}); starting at current WAL head"
                     );
-                    surreal_sync_postgresql_wal_source::capture_head_checkpoint(source_opts).await
+                    surreal_sync_postgresql_pgoutput_source::capture_head_checkpoint(source_opts)
+                        .await
                 }
             }
         }
@@ -169,7 +170,7 @@ async fn wal_snapshot_full<S, St>(
     cancel: CancellationToken,
     sync_opts: &SyncOpts,
     manager: Option<&SyncManager<St>>,
-) -> anyhow::Result<Option<surreal_sync_postgresql_wal_source::InterleavedFullSyncOutcome>>
+) -> anyhow::Result<Option<surreal_sync_postgresql_pgoutput_source::InterleavedFullSyncOutcome>>
 where
     S: SurrealSink,
     St: CheckpointStore,
@@ -206,8 +207,8 @@ where
     }
 }
 
-/// Run `from postgresql-wal sync`.
-pub async fn run_sync(args: PostgreSQLWalSyncArgs) -> anyhow::Result<()> {
+/// Run `from postgresql-pgoutput sync`.
+pub async fn run_sync(args: PostgreSQLPgoutputSyncArgs) -> anyhow::Result<()> {
     let sdk_version = get_sdk_version(
         &args.surreal.surreal_endpoint,
         args.surreal.surreal_sdk_version.as_deref(),
@@ -220,7 +221,10 @@ pub async fn run_sync(args: PostgreSQLWalSyncArgs) -> anyhow::Result<()> {
     }
 }
 
-async fn run_sync_v2(args: PostgreSQLWalSyncArgs, cancel: CancellationToken) -> anyhow::Result<()> {
+async fn run_sync_v2(
+    args: PostgreSQLPgoutputSyncArgs,
+    cancel: CancellationToken,
+) -> anyhow::Result<()> {
     tracing::info!("Starting PostgreSQL WAL sync to SurrealDB (SDK v2)");
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
@@ -258,7 +262,10 @@ async fn run_sync_v2(args: PostgreSQLWalSyncArgs, cancel: CancellationToken) -> 
     }
 }
 
-async fn run_sync_v3(args: PostgreSQLWalSyncArgs, cancel: CancellationToken) -> anyhow::Result<()> {
+async fn run_sync_v3(
+    args: PostgreSQLPgoutputSyncArgs,
+    cancel: CancellationToken,
+) -> anyhow::Result<()> {
     tracing::info!("Starting PostgreSQL WAL sync to SurrealDB (SDK v3)");
     let surreal_opts = surreal3_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
@@ -291,7 +298,7 @@ async fn run_sync_v3(args: PostgreSQLWalSyncArgs, cancel: CancellationToken) -> 
 
 async fn wal_orchestrate<S, St>(
     sink: &S,
-    args: PostgreSQLWalSyncArgs,
+    args: PostgreSQLPgoutputSyncArgs,
     cancel: CancellationToken,
     checkpoint_manager: Option<&SyncManager<St>>,
 ) -> anyhow::Result<()>
@@ -409,7 +416,7 @@ where
 
 /// Emit an ad-hoc execute-snapshot signal so a running `sync` snapshots the
 /// requested tables.
-pub async fn run_snapshot_signal(args: PostgreSQLWalSnapshotArgs) -> anyhow::Result<()> {
+pub async fn run_snapshot_signal(args: PostgreSQLPgoutputSnapshotArgs) -> anyhow::Result<()> {
     let source_opts = SourceOpts {
         connection_string: args.connection_string,
         schema: "public".to_string(),

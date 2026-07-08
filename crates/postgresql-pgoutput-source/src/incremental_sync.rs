@@ -16,7 +16,7 @@ use crate::catch_up::{
     CoverageKind,
 };
 use crate::change::cdc_change_to_universal;
-use crate::checkpoint::{get_current_checkpoint, WalCheckpoint};
+use crate::checkpoint::{get_current_checkpoint, PgoutputCheckpoint};
 use crate::client::{
     connect_wal_client, ensure_publication_for_source, new_sql_client, resolve_schema,
     start_wal_from_checkpoint,
@@ -27,7 +27,7 @@ use crate::ddl::{
 use crate::schema::{collect_postgresql_database_schema, get_table_column_names_ordinal};
 use crate::signal::{acknowledge_execute_snapshot_signal, read_pending_execute_snapshot_signals};
 use crate::watermark_source::{
-    run_adhoc_snapshots_for_tables, write_catch_up_for_tables, WalWatermarkSource,
+    run_adhoc_snapshots_for_tables, write_catch_up_for_tables, PgoutputWatermarkSource,
 };
 use crate::SourceOpts;
 
@@ -45,7 +45,7 @@ pub struct ReplicationTailOptions {
     /// Optional wall-clock stop for the stream phase.
     pub deadline: Option<DateTime<Utc>>,
     /// Optional exact WAL stop bound for the stream phase.
-    pub until: Option<WalCheckpoint>,
+    pub until: Option<PgoutputCheckpoint>,
     pub checkpoint_interval: Duration,
     /// Rows read per keyset chunk when handling ad-hoc snapshot signals.
     pub chunk_size: usize,
@@ -59,7 +59,7 @@ pub struct ReplicationTailOptions {
 }
 
 impl ReplicationTailOptions {
-    pub fn stream(deadline: Option<DateTime<Utc>>, until: Option<WalCheckpoint>) -> Self {
+    pub fn stream(deadline: Option<DateTime<Utc>>, until: Option<PgoutputCheckpoint>) -> Self {
         Self {
             deadline,
             until,
@@ -80,7 +80,7 @@ impl ReplicationTailOptions {
 pub async fn run_replication_tail<S: SurrealSink>(
     surreal: &S,
     from_opts: SourceOpts,
-    from_checkpoint: WalCheckpoint,
+    from_checkpoint: PgoutputCheckpoint,
 ) -> Result<()> {
     run_replication_tail_with_checkpoints::<S, checkpoint::NullStore>(
         surreal,
@@ -95,7 +95,7 @@ pub async fn run_replication_tail<S: SurrealSink>(
 pub async fn run_replication_tail_with_checkpoints<S, St>(
     surreal: &S,
     from_opts: SourceOpts,
-    from_checkpoint: WalCheckpoint,
+    from_checkpoint: PgoutputCheckpoint,
     options: ReplicationTailOptions,
     checkpoint_manager: Option<&SyncManager<St>>,
 ) -> Result<()>
@@ -150,7 +150,7 @@ where
     }
 
     let mut total_changes = 0u64;
-    let mut last_persisted_checkpoint: Option<WalCheckpoint> = None;
+    let mut last_persisted_checkpoint: Option<PgoutputCheckpoint> = None;
     let mut last_checkpoint_emit = std::time::Instant::now();
     let mut ddl_refresh_pending = false;
 
@@ -444,7 +444,7 @@ where
         return Ok(client);
     }
 
-    let mut wm = WalWatermarkSource::wrap_active_wal_client(
+    let mut wm = PgoutputWatermarkSource::wrap_active_wal_client(
         sql.clone(),
         schema.to_string(),
         from_opts,
@@ -528,7 +528,7 @@ fn should_emit_checkpoint(
 async fn persist_checkpoint<St: CheckpointStore>(
     manager: Option<&SyncManager<St>>,
     client: &PgWalClient,
-    last: &mut Option<WalCheckpoint>,
+    last: &mut Option<PgoutputCheckpoint>,
     force: bool,
 ) -> Result<()> {
     let Some(manager) = manager else {

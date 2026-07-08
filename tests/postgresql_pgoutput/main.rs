@@ -1,0 +1,2 @@
+mod postgresql_pgoutput_full_sync_only_cli;
+mod postgresql_pgoutput_incremental_sync_only_cli;

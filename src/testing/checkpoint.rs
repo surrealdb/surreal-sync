@@ -339,10 +339,10 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
             );
         }
 
-        "postgresql-wal" => {
-            let t1_checkpoint: surreal_sync_postgresql_wal_source::WalCheckpoint =
+        "postgresql-pgoutput" => {
+            let t1_checkpoint: surreal_sync_postgresql_pgoutput_source::PgoutputCheckpoint =
                 t1_file.parse()?;
-            let t2_checkpoint: surreal_sync_postgresql_wal_source::WalCheckpoint =
+            let t2_checkpoint: surreal_sync_postgresql_pgoutput_source::PgoutputCheckpoint =
                 t2_file.parse()?;
 
             assert!(

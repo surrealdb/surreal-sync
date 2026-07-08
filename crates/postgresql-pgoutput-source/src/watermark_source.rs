@@ -26,7 +26,7 @@ use crate::catch_up::{
     CoverageKind,
 };
 use crate::change::cdc_change_to_universal;
-use crate::checkpoint::{get_current_checkpoint, WalCheckpoint, WalReconciliationPos};
+use crate::checkpoint::{get_current_checkpoint, PgoutputCheckpoint, PgoutputReconciliationPos};
 use crate::client::{
     connect_wal_client, ensure_publication_for_source, new_sql_client, resolve_schema,
     start_wal_at_end, start_wal_from_checkpoint,
@@ -49,7 +49,7 @@ struct WatermarkIds {
     high: Option<Uuid>,
 }
 
-pub struct WalWatermarkSource {
+pub struct PgoutputWatermarkSource {
     sql: Arc<AsyncMutex<Client>>,
     schema: String,
     wal: PgWalClient,
@@ -59,7 +59,7 @@ pub struct WalWatermarkSource {
     pk_by_table: Mutex<HashMap<String, Vec<String>>>,
     prev_relations: HashMap<u32, RelationMeta>,
     ddl_refresh_pending: bool,
-    confirmed: WalReconciliationPos,
+    confirmed: PgoutputReconciliationPos,
     watermarks: Mutex<WatermarkIds>,
     cancel: tokio_util::sync::CancellationToken,
     delivered_signal_ids: Mutex<HashSet<String>>,
@@ -68,11 +68,11 @@ pub struct WalWatermarkSource {
     pk_type_cache: AsyncMutex<HashMap<String, HashMap<String, u32>>>,
 }
 
-/// Options for [`WalWatermarkSource::connect_with_options`].
+/// Options for [`PgoutputWatermarkSource::connect_with_options`].
 #[derive(Clone, Debug)]
 pub struct ConnectOptions {
     /// When set, position the WAL client at this checkpoint instead of the current head.
-    pub start_at: Option<WalCheckpoint>,
+    pub start_at: Option<PgoutputCheckpoint>,
     /// When set, only include these tables in the snapshot set.
     pub tables_filter: Option<Vec<String>>,
     pub cancel: tokio_util::sync::CancellationToken,
@@ -95,7 +95,7 @@ impl Default for ConnectOptions {
     }
 }
 
-impl WalWatermarkSource {
+impl PgoutputWatermarkSource {
     pub async fn connect(from_opts: &SourceOpts) -> Result<Self> {
         Self::connect_with_options(from_opts, ConnectOptions::default()).await
     }
@@ -148,12 +148,12 @@ impl WalWatermarkSource {
         self.wal
     }
 
-    pub(crate) fn current_checkpoint(&self) -> Result<WalCheckpoint> {
+    pub(crate) fn current_checkpoint(&self) -> Result<PgoutputCheckpoint> {
         get_current_checkpoint(&self.wal)
     }
 
-    pub fn start_checkpoint(&self) -> WalCheckpoint {
-        WalCheckpoint {
+    pub fn start_checkpoint(&self) -> PgoutputCheckpoint {
+        PgoutputCheckpoint {
             lsn: self.confirmed.lsn,
             timestamp: chrono::Utc::now(),
         }
@@ -164,7 +164,7 @@ impl WalWatermarkSource {
         sql: Arc<AsyncMutex<Client>>,
         schema: String,
         from_opts: &SourceOpts,
-        start_at: Option<WalCheckpoint>,
+        start_at: Option<PgoutputCheckpoint>,
         tables_filter: Option<Vec<String>>,
         cancel: tokio_util::sync::CancellationToken,
         existing_wal: Option<PgWalClient>,
@@ -225,7 +225,7 @@ impl WalWatermarkSource {
                 start_wal_at_end(&mut wal, &client).await?;
             }
         }
-        let confirmed = WalReconciliationPos::from(get_current_checkpoint(&wal)?);
+        let confirmed = PgoutputReconciliationPos::from(get_current_checkpoint(&wal)?);
 
         Ok(Self {
             sql,
@@ -274,7 +274,7 @@ impl WalWatermarkSource {
         &self,
         change: &CdcChange,
         relation: &RelationMeta,
-    ) -> Result<ReconciliationEvent<WalReconciliationPos>> {
+    ) -> Result<ReconciliationEvent<PgoutputReconciliationPos>> {
         let column_names = self
             .column_names_by_table
             .get(&change.table)
@@ -282,7 +282,7 @@ impl WalWatermarkSource {
         let universal = cdc_change_to_universal(change, relation, column_names, &self.db_schema)?;
         let pk = pk_tuple_from_primary_key(&universal.id);
         Ok(ReconciliationEvent {
-            position: WalReconciliationPos::new(change.position),
+            position: PgoutputReconciliationPos::new(change.position),
             table: change.table.clone(),
             pk,
             change: universal,
@@ -331,7 +331,7 @@ const OID_INT2: u32 = 21;
 const OID_INT4: u32 = 23;
 const OID_INT8: u32 = 20;
 
-impl WalWatermarkSource {
+impl PgoutputWatermarkSource {
     async fn column_type_oids(&self, table: &str) -> Result<HashMap<String, u32>> {
         if let Some(types) = self.pk_type_cache.lock().await.get(table) {
             return Ok(types.clone());
@@ -383,8 +383,8 @@ impl WalWatermarkSource {
 }
 
 #[async_trait::async_trait]
-impl WatermarkSource for WalWatermarkSource {
-    type Position = WalReconciliationPos;
+impl WatermarkSource for PgoutputWatermarkSource {
+    type Position = PgoutputReconciliationPos;
 
     async fn snapshot_tables(&self) -> Result<Vec<TableSpec>> {
         Ok(self.tables.clone())
@@ -527,7 +527,7 @@ impl WatermarkSource for WalWatermarkSource {
                         continue;
                     }
 
-                    self.confirmed = WalReconciliationPos::new(change.position);
+                    self.confirmed = PgoutputReconciliationPos::new(change.position);
 
                     if change.table == SIGNAL_TABLE {
                         if let RowChange::Insert { new } = &change.operation {
@@ -625,13 +625,13 @@ fn signal_insert_to_event(
     values: &pg_walstream::RowData,
     low: Option<Uuid>,
     high: Option<Uuid>,
-) -> Result<Option<ReconciliationEvent<WalReconciliationPos>>> {
+) -> Result<Option<ReconciliationEvent<PgoutputReconciliationPos>>> {
     let id = signal_uuid_from_row(values)?;
     if Some(id) != low && Some(id) != high {
         return Ok(None);
     }
     Ok(Some(ReconciliationEvent {
-        position: WalReconciliationPos::new(change.position),
+        position: PgoutputReconciliationPos::new(change.position),
         table: SIGNAL_TABLE.to_string(),
         pk: PkTuple::new(vec![UniversalValue::Uuid(id)]),
         change: UniversalChange::new(
@@ -737,7 +737,7 @@ pub async fn request_snapshot(from_opts: &SourceOpts, tables: &[String]) -> Resu
 pub struct InterleavedFullSyncOptions {
     pub resume_progress: Option<InterleavedSnapshotCheckpoint>,
     pub tables_filter: Option<Vec<String>>,
-    pub start_at: Option<WalCheckpoint>,
+    pub start_at: Option<PgoutputCheckpoint>,
     pub emit_full_sync_start: bool,
     pub coverage_kind: CoverageKind,
 }
@@ -757,8 +757,8 @@ impl Default for InterleavedFullSyncOptions {
 /// Outcome of an interleaved snapshot full sync.
 #[derive(Debug, Clone)]
 pub struct InterleavedFullSyncOutcome {
-    pub start: WalCheckpoint,
-    pub end: WalCheckpoint,
+    pub start: PgoutputCheckpoint,
+    pub end: PgoutputCheckpoint,
     pub cancelled: bool,
 }
 
@@ -781,7 +781,7 @@ where
         tables_filter: options.tables_filter.clone(),
         cancel: cancel.clone(),
     };
-    let mut source = WalWatermarkSource::connect_with_options(from_opts, connect_opts).await?;
+    let mut source = PgoutputWatermarkSource::connect_with_options(from_opts, connect_opts).await?;
 
     let start = if options.emit_full_sync_start {
         let start = source.start_checkpoint();
@@ -824,7 +824,7 @@ where
 
     match snapshot_result {
         Ok(result) => {
-            let end = WalCheckpoint {
+            let end = PgoutputCheckpoint {
                 lsn: result.final_position.lsn,
                 timestamp: chrono::Utc::now(),
             };
@@ -871,7 +871,7 @@ pub(crate) async fn write_catch_up_for_tables<St: checkpoint::CheckpointStore>(
     manager: &checkpoint::SyncManager<St>,
     table_names: Vec<String>,
     kind: CoverageKind,
-    checkpoint: &WalCheckpoint,
+    checkpoint: &PgoutputCheckpoint,
     existing: Option<CatchUpProgress>,
 ) -> Result<()> {
     let mut progress = existing.unwrap_or_else(|| CatchUpProgress::new(checkpoint.clone()));
@@ -883,7 +883,7 @@ pub(crate) async fn run_adhoc_snapshots_for_tables<
     S: SurrealSink,
     St: checkpoint::CheckpointStore,
 >(
-    source: &mut WalWatermarkSource,
+    source: &mut PgoutputWatermarkSource,
     surreal: &S,
     table_names: &[String],
     chunk_size: usize,
@@ -941,7 +941,7 @@ where
     use crate::catch_up::{emit_catch_up_progress, tables_pending_snapshot};
     use checkpoint::{Checkpoint, SyncPhase};
 
-    let base_tables = WalWatermarkSource::resolve_snapshot_table_names(from_opts).await?;
+    let base_tables = PgoutputWatermarkSource::resolve_snapshot_table_names(from_opts).await?;
 
     if let Some(manager) = manager {
         if let Ok(progress) = manager
@@ -984,7 +984,7 @@ where
             }
         }
         if let Ok(end) = manager
-            .read_checkpoint::<WalCheckpoint>(SyncPhase::FullSyncEnd)
+            .read_checkpoint::<PgoutputCheckpoint>(SyncPhase::FullSyncEnd)
             .await
         {
             if progress
@@ -1055,9 +1055,10 @@ where
 
 async fn reconciliation_checkpoint_from_snapshot_progress(
     progress: &InterleavedSnapshotCheckpoint,
-) -> Result<WalCheckpoint> {
-    let stream: WalReconciliationPos = serde_json::from_value(progress.reconciliation_pos.clone())?;
-    Ok(WalCheckpoint {
+) -> Result<PgoutputCheckpoint> {
+    let stream: PgoutputReconciliationPos =
+        serde_json::from_value(progress.reconciliation_pos.clone())?;
+    Ok(PgoutputCheckpoint {
         lsn: stream.lsn,
         timestamp: chrono::Utc::now(),
     })

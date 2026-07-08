@@ -7,13 +7,13 @@ use serde::{Deserialize, Serialize};
 
 /// PostgreSQL WAL CDC checkpoint persisted by surreal-sync.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct WalCheckpoint {
+pub struct PgoutputCheckpoint {
     pub lsn: Lsn,
     pub timestamp: DateTime<Utc>,
 }
 
-impl checkpoint::Checkpoint for WalCheckpoint {
-    const DATABASE_TYPE: &'static str = "postgresql-wal";
+impl checkpoint::Checkpoint for PgoutputCheckpoint {
+    const DATABASE_TYPE: &'static str = "postgresql-pgoutput";
 
     fn to_cli_string(&self) -> String {
         self.lsn.to_string()
@@ -21,7 +21,7 @@ impl checkpoint::Checkpoint for WalCheckpoint {
 
     fn from_cli_string(s: &str) -> Result<Self> {
         let s = s
-            .strip_prefix("postgresql-wal:")
+            .strip_prefix("postgresql-pgoutput:")
             .or_else(|| s.strip_prefix("lsn:"))
             .unwrap_or(s);
         Ok(Self {
@@ -31,8 +31,10 @@ impl checkpoint::Checkpoint for WalCheckpoint {
     }
 }
 
-pub fn get_current_checkpoint(client: &pgoutput_protocol::PgWalClient) -> Result<WalCheckpoint> {
-    Ok(WalCheckpoint {
+pub fn get_current_checkpoint(
+    client: &pgoutput_protocol::PgWalClient,
+) -> Result<PgoutputCheckpoint> {
+    Ok(PgoutputCheckpoint {
         lsn: client.current_position(),
         timestamp: Utc::now(),
     })
@@ -40,24 +42,24 @@ pub fn get_current_checkpoint(client: &pgoutput_protocol::PgWalClient) -> Result
 
 /// Ordered reconciliation position wrapper for interleaved snapshot.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct WalReconciliationPos {
+pub struct PgoutputReconciliationPos {
     pub lsn: Lsn,
 }
 
-impl WalReconciliationPos {
+impl PgoutputReconciliationPos {
     pub fn new(lsn: Lsn) -> Self {
         Self { lsn }
     }
 }
 
-impl From<Lsn> for WalReconciliationPos {
+impl From<Lsn> for PgoutputReconciliationPos {
     fn from(lsn: Lsn) -> Self {
         Self { lsn }
     }
 }
 
-impl From<WalCheckpoint> for WalReconciliationPos {
-    fn from(checkpoint: WalCheckpoint) -> Self {
+impl From<PgoutputCheckpoint> for PgoutputReconciliationPos {
+    fn from(checkpoint: PgoutputCheckpoint) -> Self {
         Self {
             lsn: checkpoint.lsn,
         }
@@ -72,12 +74,12 @@ mod tests {
 
     #[test]
     fn lsn_checkpoint_cli_roundtrip() {
-        let original = WalCheckpoint {
+        let original = PgoutputCheckpoint {
             lsn: Lsn::parse("0/1949850").unwrap(),
             timestamp: Utc::now(),
         };
         let cli = original.to_cli_string();
-        let decoded = WalCheckpoint::from_cli_string(&cli).unwrap();
+        let decoded = PgoutputCheckpoint::from_cli_string(&cli).unwrap();
         assert_eq!(decoded.lsn, original.lsn);
     }
 
@@ -86,7 +88,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let store = FilesystemStore::new(tmp.path());
         let manager = SyncManager::new(store);
-        let original = WalCheckpoint {
+        let original = PgoutputCheckpoint {
             lsn: Lsn::parse("0/100").unwrap(),
             timestamp: Utc::now(),
         };
@@ -94,7 +96,7 @@ mod tests {
             .emit_checkpoint(&original, SyncPhase::FullSyncEnd)
             .await
             .unwrap();
-        let loaded: WalCheckpoint = manager
+        let loaded: PgoutputCheckpoint = manager
             .read_checkpoint(SyncPhase::FullSyncEnd)
             .await
             .unwrap();

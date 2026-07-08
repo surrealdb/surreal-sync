@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use tokio::sync::OnceCell;
 
 use crate::testing::mysql_binlog_container::MySQLBinlogContainer;
-use crate::testing::postgresql_wal_container::PostgresWalContainer;
+use crate::testing::postgresql_pgoutput_container::PostgresPgoutputContainer;
 use surreal_sync_postgresql::testing::container::PostgresContainer;
 use surreal_version::testing::SurrealDbContainer;
 
@@ -175,12 +175,12 @@ pub async fn create_mariadb_test_db(
 }
 
 /// Returns a shared PostgreSQL pgoutput WAL container, starting it on first call.
-pub async fn shared_postgresql_wal() -> &'static PostgresWalContainer {
-    static PG: OnceCell<PostgresWalContainer> = OnceCell::const_new();
+pub async fn shared_postgresql_pgoutput() -> &'static PostgresPgoutputContainer {
+    static PG: OnceCell<PostgresPgoutputContainer> = OnceCell::const_new();
     PG.get_or_init(|| async {
         let name = format!("shared-pg-wal-{}", std::process::id());
         register_container(&name);
-        let mut c = PostgresWalContainer::new(&name);
+        let mut c = PostgresPgoutputContainer::new(&name);
         c.start().expect("PostgreSQL WAL start failed");
         c.wait_until_ready(30)
             .await
@@ -191,8 +191,8 @@ pub async fn shared_postgresql_wal() -> &'static PostgresWalContainer {
 }
 
 /// Create a fresh PostgreSQL database for a pgoutput WAL CDC test.
-pub async fn create_postgresql_wal_test_db(
-    container: &PostgresWalContainer,
+pub async fn create_postgresql_pgoutput_test_db(
+    container: &PostgresPgoutputContainer,
     test_id: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
     create_postgres_test_db_from_admin(&container.connection_string, test_id).await

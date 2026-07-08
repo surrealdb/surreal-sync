@@ -7582,8 +7582,8 @@ dependencies = [
  "surreal-sync-mysql-trigger-source",
  "surreal-sync-neo4j-source",
  "surreal-sync-postgresql",
+ "surreal-sync-postgresql-pgoutput-source",
  "surreal-sync-postgresql-trigger-source",
- "surreal-sync-postgresql-wal-source",
  "surreal-sync-postgresql-wal2json-source",
  "surreal-version",
  "surreal2-sink",
@@ -7866,6 +7866,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "surreal-sync-postgresql-pgoutput-source"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "checkpoint",
+ "chrono",
+ "libc",
+ "pg_walstream",
+ "pgoutput-protocol",
+ "postgres-types",
+ "postgresql-types",
+ "serde",
+ "serde_json",
+ "surreal-sink",
+ "surreal-sync-interleaved-snapshot",
+ "surreal-sync-postgresql",
+ "surreal2-sink",
+ "surrealdb 2.6.5",
+ "sync-core",
+ "tempfile",
+ "tokio",
+ "tokio-postgres",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "surreal-sync-postgresql-trigger-source"
 version = "0.1.0"
 dependencies = [
@@ -7895,36 +7925,6 @@ dependencies = [
  "tokio-stream",
  "toml",
  "tracing",
- "uuid",
-]
-
-[[package]]
-name = "surreal-sync-postgresql-wal-source"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "checkpoint",
- "chrono",
- "libc",
- "pg_walstream",
- "pgoutput-protocol",
- "postgres-types",
- "postgresql-types",
- "serde",
- "serde_json",
- "surreal-sink",
- "surreal-sync-interleaved-snapshot",
- "surreal-sync-postgresql",
- "surreal2-sink",
- "surrealdb 2.6.5",
- "sync-core",
- "tempfile",
- "tokio",
- "tokio-postgres",
- "tokio-util",
- "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 

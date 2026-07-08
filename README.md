@@ -44,6 +44,7 @@ See source-specific guides for more details:
 - **[MySQL/MariaDB (binlog)](docs/mysql-binlog.md)**: Full and incremental sync using the binary log
 - **[PostgreSQL (Trigger-based)](docs/postgresql.md)**: Full and incremental sync using trigger-based CDC + sequence checkpoints
 - **[PostgreSQL (wal2json)](docs/postgresql-wal2json-source.md)**: Full and incremental sync using logical replication with wal2json plugin
+- **[PostgreSQL (pgoutput)](docs/postgresql-pgoutput-source.md)**: Full and incremental sync using native logical replication (pgoutput)
 - **[Neo4j](docs/neo4j.md)**: Full and incremental sync using timestamp-based tracking
 - **[JSONL](docs/jsonl.md)**: Bulk import from JSON Lines files
 - **[Kafka](docs/kafka.md)**: Kafka consumer that subscribes to a topic, importing Kafka message payloads into SurrealDB with optional deduplication

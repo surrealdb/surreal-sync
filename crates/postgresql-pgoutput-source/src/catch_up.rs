@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use pgoutput_protocol::Lsn;
 use serde::{Deserialize, Serialize};
 
-use crate::checkpoint::{WalCheckpoint, WalReconciliationPos};
+use crate::checkpoint::{PgoutputCheckpoint, PgoutputReconciliationPos};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -29,14 +29,14 @@ pub struct TableCoverageEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CatchUpProgress {
     pub version: u32,
-    pub position: WalCheckpoint,
+    pub position: PgoutputCheckpoint,
     pub covered_tables: Vec<TableCoverageEntry>,
 }
 
 impl CatchUpProgress {
     pub const CURRENT_VERSION: u32 = 1;
 
-    pub fn new(position: WalCheckpoint) -> Self {
+    pub fn new(position: PgoutputCheckpoint) -> Self {
         Self {
             version: Self::CURRENT_VERSION,
             position,
@@ -55,7 +55,7 @@ impl CatchUpProgress {
         &mut self,
         table_names: &[String],
         kind: CoverageKind,
-        checkpoint: &WalCheckpoint,
+        checkpoint: &PgoutputCheckpoint,
     ) {
         self.position = checkpoint.clone();
         let now = Utc::now();
@@ -84,7 +84,7 @@ impl CatchUpProgress {
             .collect();
     }
 
-    pub fn update_position(&mut self, checkpoint: WalCheckpoint) {
+    pub fn update_position(&mut self, checkpoint: PgoutputCheckpoint) {
         self.position = checkpoint;
     }
 
@@ -96,7 +96,7 @@ impl CatchUpProgress {
 }
 
 impl Checkpoint for CatchUpProgress {
-    const DATABASE_TYPE: &'static str = "postgresql-wal";
+    const DATABASE_TYPE: &'static str = "postgresql-pgoutput";
 
     fn to_cli_string(&self) -> String {
         serde_json::to_string(self).unwrap_or_default()
@@ -134,11 +134,11 @@ pub fn tables_pending_snapshot(requested: &[String], progress: &CatchUpProgress)
         .collect()
 }
 
-pub fn max_wal_checkpoint(candidates: &[WalCheckpoint]) -> WalCheckpoint {
+pub fn max_pgoutput_checkpoint(candidates: &[PgoutputCheckpoint]) -> PgoutputCheckpoint {
     debug_assert!(!candidates.is_empty());
     candidates
         .iter()
-        .max_by_key(|cp| WalReconciliationPos::from(cp.lsn))
+        .max_by_key(|cp| PgoutputReconciliationPos::from(cp.lsn))
         .expect("non-empty")
         .clone()
 }

@@ -57,7 +57,7 @@ Each database uses the most appropriate change detection method:
 
 `surreal-sync` uses a native CDC feature provided in the source database if possible/implemented.
 
-Currently, our MongoDB source uses MongoDB Change Streams for incremental syncs. PostgreSQL logical replication ([wal2json source](postgresql-wal2json-source.md)) and MySQL/MariaDB binlog replication ([binlog source](mysql-binlog.md)) also use native CDC.
+Currently, our MongoDB source uses MongoDB Change Streams for incremental syncs. PostgreSQL logical replication ([wal2json source](postgresql-wal2json-source.md), [pgoutput source](postgresql-pgoutput-source.md)) and MySQL/MariaDB binlog replication ([binlog source](mysql-binlog.md)) also use native CDC.
 
 ### Trigger-Based CDC
 
@@ -83,5 +83,6 @@ See the source-specific documentation for implementation details:
 - **[MySQL/MariaDB (binlog)](mysql-binlog.md)**: Triggerless binlog CDC — snapshot → stream → resume with GTID (failover-safe) or file+offset checkpoints, continuous follow and bounded batch modes
 - **[PostgreSQL](postgresql.md)**: Trigger-based CDC with sequence checkpointing ([legacy sequential-snapshot guide](postgresql/legacy.md))
 - **[PostgreSQL (wal2json)](postgresql-wal2json-source.md)**: Logical replication with wal2json ([legacy sequential-snapshot guide](postgresql-wal2json/legacy.md))
+- **[PostgreSQL (pgoutput)](postgresql-pgoutput-source.md)**: Native logical replication with pgoutput (no wal2json plugin)
 - **[Neo4j](neo4j.md)**: Timestamp-based tracking with deletion limitations
 - **[JSONL](jsonl.md)**: File-based bulk import (no incremental sync)

@@ -201,10 +201,10 @@ enum FromSource {
     },
 
     /// Sync from PostgreSQL using pgoutput logical replication (WAL CDC)
-    #[command(name = "postgresql-wal")]
-    PostgreSQLWal {
+    #[command(name = "postgresql-pgoutput")]
+    PostgreSQLPgoutput {
         #[command(subcommand)]
-        command: PostgreSQLWalCommands,
+        command: PostgreSQLPgoutputCommands,
     },
 
     /// Sync from Kafka topics (incremental-only)
@@ -1063,16 +1063,16 @@ struct MySQLBinlogSnapshotArgs {
 // =============================================================================
 
 #[derive(Subcommand)]
-enum PostgreSQLWalCommands {
+enum PostgreSQLPgoutputCommands {
     /// Snapshot and/or stream sync from PostgreSQL pgoutput WAL
-    Sync(Box<PostgreSQLWalSyncArgs>),
+    Sync(Box<PostgreSQLPgoutputSyncArgs>),
     /// Trigger an ad-hoc snapshot of additional tables against a running `sync`
-    Snapshot(PostgreSQLWalSnapshotArgs),
+    Snapshot(PostgreSQLPgoutputSnapshotArgs),
 }
 
 /// Combined snapshot+stream sync for PostgreSQL pgoutput WAL.
 #[derive(Args)]
-struct PostgreSQLWalSyncArgs {
+struct PostgreSQLPgoutputSyncArgs {
     /// PostgreSQL connection string
     #[arg(long, env = "POSTGRESQL_URI")]
     connection_string: String,
@@ -1155,7 +1155,7 @@ struct PostgreSQLWalSyncArgs {
 
 /// Trigger an ad-hoc snapshot of additional tables for PostgreSQL WAL.
 #[derive(Args)]
-struct PostgreSQLWalSnapshotArgs {
+struct PostgreSQLPgoutputSnapshotArgs {
     /// PostgreSQL connection string
     #[arg(long, env = "POSTGRESQL_URI")]
     connection_string: String,
@@ -1628,10 +1628,12 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
                 from::mysql_binlog::run_snapshot_signal(args).await?
             }
         },
-        FromSource::PostgreSQLWal { command } => match command {
-            PostgreSQLWalCommands::Sync(args) => from::postgresql_wal::run_sync(*args).await?,
-            PostgreSQLWalCommands::Snapshot(args) => {
-                from::postgresql_wal::run_snapshot_signal(args).await?
+        FromSource::PostgreSQLPgoutput { command } => match command {
+            PostgreSQLPgoutputCommands::Sync(args) => {
+                from::postgresql_pgoutput::run_sync(*args).await?
+            }
+            PostgreSQLPgoutputCommands::Snapshot(args) => {
+                from::postgresql_pgoutput::run_snapshot_signal(args).await?
             }
         },
         FromSource::PostgreSQL { command } => match command {

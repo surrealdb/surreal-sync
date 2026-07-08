@@ -4,9 +4,9 @@ use crate::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
 use crate::testing::{create_unified_full_dataset, SourceDatabase, TestConfig};
-use surreal_sync_postgresql_wal_source::{
+use surreal_sync_postgresql_pgoutput_source::{
     capture_head_checkpoint, run_full_sync, run_replication_tail_with_checkpoints,
-    ReplicationTailOptions, SourceOpts, SyncOpts, WalCheckpoint,
+    PgoutputCheckpoint, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
 
 /// WAL replication identifiers for an isolated test database.
@@ -51,7 +51,7 @@ pub async fn connect_pg(
 }
 
 /// Run a full-sync-only e2e test against PostgreSQL reachable at `test_conn_str`.
-pub async fn run_postgresql_wal_full_sync_e2e(
+pub async fn run_postgresql_pgoutput_full_sync_e2e(
     test_conn_str: &str,
     test_id: u64,
     surreal_ws_endpoint: &str,
@@ -96,7 +96,7 @@ pub async fn run_postgresql_wal_full_sync_e2e(
     assert_synced_auto(
         &conn,
         &dataset,
-        "postgresql-wal full sync only",
+        "postgresql-pgoutput full sync only",
         SourceDatabase::PostgreSQL,
     )
     .await?;
@@ -108,7 +108,7 @@ pub async fn run_postgresql_wal_full_sync_e2e(
 
 /// Run an incremental-sync-only e2e test: empty snapshot captures a WAL checkpoint,
 /// rows are inserted, then the replication tail replays them.
-pub async fn run_postgresql_wal_incremental_e2e(
+pub async fn run_postgresql_pgoutput_incremental_e2e(
     test_conn_str: &str,
     test_id: u64,
     surreal_ws_endpoint: &str,
@@ -118,7 +118,7 @@ pub async fn run_postgresql_wal_incremental_e2e(
         .try_init()
         .ok();
 
-    let checkpoint_dir = format!(".test-postgresql-wal-incr-lib-checkpoints-{test_id}");
+    let checkpoint_dir = format!(".test-postgresql-pgoutput-incr-lib-checkpoints-{test_id}");
     crate::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
 
     let dataset = create_unified_full_dataset();
@@ -160,7 +160,7 @@ pub async fn run_postgresql_wal_incremental_e2e(
     let checkpoint_file =
         checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
             .await?;
-    let wal_checkpoint: WalCheckpoint = checkpoint_file.parse()?;
+    let wal_checkpoint: PgoutputCheckpoint = checkpoint_file.parse()?;
 
     match &conn {
         SurrealConnection::V2(client) => {
@@ -196,7 +196,7 @@ pub async fn run_postgresql_wal_incremental_e2e(
     assert_synced_auto(
         &conn,
         &dataset,
-        "postgresql-wal incremental sync only",
+        "postgresql-pgoutput incremental sync only",
         SourceDatabase::PostgreSQL,
     )
     .await?;
@@ -210,6 +210,6 @@ pub async fn run_postgresql_wal_incremental_e2e(
 pub async fn capture_wal_head_checkpoint(
     test_conn_str: &str,
     ids: &WalTestIds,
-) -> Result<WalCheckpoint, Box<dyn std::error::Error>> {
+) -> Result<PgoutputCheckpoint, Box<dyn std::error::Error>> {
     Ok(capture_head_checkpoint(&wal_source_opts(test_conn_str, ids)).await?)
 }

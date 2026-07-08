@@ -2,4 +2,4 @@
 
 mod container;
 
-pub use container::PostgresWalContainer;
+pub use container::PostgresPgoutputContainer;

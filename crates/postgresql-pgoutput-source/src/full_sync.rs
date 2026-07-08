@@ -13,7 +13,7 @@ use tracing::info;
 use crate::catch_up::{
     emit_catch_up_progress, read_catch_up_progress, CatchUpProgress, CoverageKind,
 };
-use crate::checkpoint::WalCheckpoint;
+use crate::checkpoint::PgoutputCheckpoint;
 use crate::client::{
     connect_wal_client, ensure_publication_for_source, get_current_wal_lsn, new_sql_client,
     resolve_schema,
@@ -166,7 +166,7 @@ async fn resolve_user_tables(
 /// Resolve a "start at head" checkpoint for incremental sync: the server's
 /// current WAL LSN. Resuming from it streams only changes committed after this
 /// instant.
-pub async fn capture_head_checkpoint(from_opts: &SourceOpts) -> Result<WalCheckpoint> {
+pub async fn capture_head_checkpoint(from_opts: &SourceOpts) -> Result<PgoutputCheckpoint> {
     let sql = new_sql_client(&from_opts.connection_string).await?;
     let schema = resolve_schema(from_opts).await;
     {
@@ -185,16 +185,16 @@ pub async fn capture_head_checkpoint(from_opts: &SourceOpts) -> Result<WalCheckp
     wal.ensure_replication_slot().await?;
     drop(wal);
 
-    Ok(WalCheckpoint {
+    Ok(PgoutputCheckpoint {
         lsn,
         timestamp: chrono::Utc::now(),
     })
 }
 
-async fn capture_wal_checkpoint(sql: &Arc<Mutex<Client>>) -> Result<WalCheckpoint> {
+async fn capture_wal_checkpoint(sql: &Arc<Mutex<Client>>) -> Result<PgoutputCheckpoint> {
     let client = sql.lock().await;
     let lsn = get_current_wal_lsn(&client).await?;
-    Ok(WalCheckpoint {
+    Ok(PgoutputCheckpoint {
         lsn,
         timestamp: chrono::Utc::now(),
     })

@@ -1,6 +1,6 @@
 # PostgreSQL pgoutput WAL Source
 
-`surreal-sync from postgresql-wal` replicates PostgreSQL tables into SurrealDB using native logical replication (`pgoutput`). It creates a replication slot and publication, reads row-level WAL changes, and applies them to SurrealDB — no triggers or wal2json plugin on the source.
+`surreal-sync from postgresql-pgoutput` replicates PostgreSQL tables into SurrealDB using native logical replication (`pgoutput`). It creates a replication slot and publication, reads row-level WAL changes, and applies them to SurrealDB — no triggers or wal2json plugin on the source.
 
 The end-to-end model mirrors the MySQL binlog and wal2json sources:
 
@@ -90,7 +90,7 @@ Every synced table must have a usable primary key. surreal-sync creates a public
 export CONNECTION_STRING="postgresql://surreal_sync:change_me@postgresql:5432/myapp"
 export SURREAL_ENDPOINT="ws://localhost:8000"
 
-surreal-sync from postgresql-wal sync \
+surreal-sync from postgresql-pgoutput sync \
   --connection-string "$CONNECTION_STRING" \
   --surreal-endpoint "$SURREAL_ENDPOINT" \
   --surreal-username "root" \
@@ -107,14 +107,14 @@ Use `--snapshot-mode only` followed by `--snapshot-mode never` to schedule snaps
 ## Automated tests
 
 ```bash
-make build-debug && cargo test -p surreal-sync --test postgresql_wal -- --nocapture
-cargo test -p surreal-sync-postgresql-wal-source --test suite -- --nocapture
+make build-debug && cargo test -p surreal-sync --test postgresql_pgoutput -- --nocapture
+cargo test -p surreal-sync-postgresql-pgoutput-source --test suite -- --nocapture
 ```
 
 Integration tests use stock `postgres:16` with `wal_level=logical` (no wal2json image build).
 
 ## References
 
-- Implementation: [crates/postgresql-wal-source/](../crates/postgresql-wal-source/) and [crates/pgoutput-protocol/](../crates/pgoutput-protocol/)
+- Implementation: [crates/postgresql-pgoutput-source/](../crates/postgresql-pgoutput-source/) and [crates/pgoutput-protocol/](../crates/pgoutput-protocol/)
 - [Full Sync Strategies](design/full-sync-strategies.md)
 - [PostgreSQL Logical Replication](https://www.postgresql.org/docs/current/logical-replication.html)

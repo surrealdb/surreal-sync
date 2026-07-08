@@ -1,5 +1,5 @@
 [package]
-name = "surreal-sync-postgresql-wal-source"
+name = "surreal-sync-postgresql-pgoutput-source"
 version = "0.1.0"
 edition = "2021"
 description = "PostgreSQL pgoutput WAL CDC sync for surreal-sync"
@@ -39,5 +39,5 @@ surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
 serde = { version = "1.0", features = ["derive"] }
 
 [lib]
-name = "surreal_sync_postgresql_wal_source"
+name = "surreal_sync_postgresql_pgoutput_source"
 path = "src/lib.rs"

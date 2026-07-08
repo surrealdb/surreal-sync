@@ -1,7 +1,7 @@
 //! DDL refresh and table-rename behaviour during steady-state streaming.
 
 use anyhow::Result;
-use surreal_sync_postgresql_wal_source::{
+use surreal_sync_postgresql_pgoutput_source::{
     run_replication_tail_with_checkpoints, ReplicationTailOptions,
 };
 use sync_core::{UniversalChange, UniversalValue};
@@ -39,7 +39,7 @@ impl surreal_sink::SurrealSink for CaptureSink {
 #[tokio::test]
 async fn ddl_refreshes_schema_before_subsequent_rows() -> Result<()> {
     crate::shared::init_logging();
-    let container = crate::shared::shared_postgresql_wal().await;
+    let container = crate::shared::shared_postgresql_pgoutput().await;
     let db_name = "integ_ddl_refresh";
     let conn_str = crate::shared::create_test_db(container, db_name).await?;
     let slot = "integ_ddl_slot";
@@ -98,7 +98,7 @@ async fn ddl_refreshes_schema_before_subsequent_rows() -> Result<()> {
 #[tokio::test]
 async fn rename_table_mid_stream_keeps_tracking_new_name() -> Result<()> {
     crate::shared::init_logging();
-    let container = crate::shared::shared_postgresql_wal().await;
+    let container = crate::shared::shared_postgresql_pgoutput().await;
     let db_name = "integ_rename";
     let conn_str = crate::shared::create_test_db(container, db_name).await?;
     let slot = "integ_rename_slot";
