@@ -339,6 +339,24 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
             );
         }
 
+        "postgresql-pgoutput" => {
+            let t1_checkpoint: surreal_sync_postgresql_pgoutput_source::PgoutputCheckpoint =
+                t1_file.parse()?;
+            let t2_checkpoint: surreal_sync_postgresql_pgoutput_source::PgoutputCheckpoint =
+                t2_file.parse()?;
+
+            assert!(
+                t2_checkpoint.lsn >= t1_checkpoint.lsn,
+                "t2 WAL LSN should be >= t1 WAL LSN: t1={}, t2={}",
+                t1_checkpoint.lsn,
+                t2_checkpoint.lsn
+            );
+            println!(
+                "Checkpoint content verification passed: PostgreSQL WAL LSNs show progression ({} → {})",
+                t1_checkpoint.lsn, t2_checkpoint.lsn
+            );
+        }
+
         "neo4j" => {
             // Neo4j: Timestamp progression
             let t1_checkpoint: surreal_sync_neo4j_source::Neo4jCheckpoint = t1_file.parse()?;

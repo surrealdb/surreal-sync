@@ -8,6 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use tokio::sync::OnceCell;
 
 use crate::testing::mysql_binlog_container::MySQLBinlogContainer;
+use crate::testing::postgresql_pgoutput_container::PostgresPgoutputContainer;
 use surreal_sync_postgresql::testing::container::PostgresContainer;
 use surreal_version::testing::SurrealDbContainer;
 
@@ -74,8 +75,14 @@ pub async fn create_postgres_test_db(
     container: &PostgresContainer,
     test_id: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
+    create_postgres_test_db_from_admin(&container.connection_string, test_id).await
+}
+
+async fn create_postgres_test_db_from_admin(
+    admin_conn_str: &str,
+    test_id: u64,
+) -> Result<String, Box<dyn std::error::Error>> {
     let db_name = format!("test_{test_id}");
-    let admin_conn_str = &container.connection_string;
 
     let (client, conn) = tokio_postgres::connect(admin_conn_str, tokio_postgres::NoTls).await?;
     tokio::spawn(async move {
@@ -165,6 +172,30 @@ pub async fn create_mariadb_test_db(
     test_id: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
     create_mysql_test_db(container, test_id).await
+}
+
+/// Returns a shared PostgreSQL pgoutput WAL container, starting it on first call.
+pub async fn shared_postgresql_pgoutput() -> &'static PostgresPgoutputContainer {
+    static PG: OnceCell<PostgresPgoutputContainer> = OnceCell::const_new();
+    PG.get_or_init(|| async {
+        let name = format!("shared-pg-wal-{}", std::process::id());
+        register_container(&name);
+        let mut c = PostgresPgoutputContainer::new(&name);
+        c.start().expect("PostgreSQL WAL start failed");
+        c.wait_until_ready(30)
+            .await
+            .expect("PostgreSQL WAL not ready in 30s");
+        c
+    })
+    .await
+}
+
+/// Create a fresh PostgreSQL database for a pgoutput WAL CDC test.
+pub async fn create_postgresql_pgoutput_test_db(
+    container: &PostgresPgoutputContainer,
+    test_id: u64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    create_postgres_test_db_from_admin(&container.connection_string, test_id).await
 }
 
 /// Returns a shared MySQL binlog container, starting it on first call.

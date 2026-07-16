@@ -48,6 +48,23 @@ pub async fn collect_database_schema(client: &Client) -> Result<DatabaseSchema> 
     }
 
     let mut table_columns: HashMap<String, Vec<(String, UniversalType)>> = HashMap::new();
+    let mut enum_labels: HashMap<String, Vec<String>> = HashMap::new();
+    let enum_rows = client
+        .query(
+            "SELECT t.typname, e.enumlabel
+             FROM pg_type t
+             JOIN pg_enum e ON e.enumtypid = t.oid
+             JOIN pg_namespace n ON n.oid = t.typnamespace
+             WHERE n.nspname = 'public'
+             ORDER BY t.typname, e.enumsortorder",
+            &[],
+        )
+        .await?;
+    for row in enum_rows {
+        let type_name: String = row.get(0);
+        let label: String = row.get(1);
+        enum_labels.entry(type_name).or_default().push(label);
+    }
 
     for row in column_rows {
         let table_name: String = row.get(0);
@@ -66,7 +83,17 @@ pub async fn collect_database_schema(client: &Client) -> Result<DatabaseSchema> 
             &data_type
         };
 
-        let universal_type = postgresql_column_to_universal_type(effective_type, precision, scale);
+        let universal_type = if effective_type.eq_ignore_ascii_case("USER-DEFINED") {
+            if let Some(labels) = enum_labels.get(&udt_name) {
+                UniversalType::Enum {
+                    values: labels.clone(),
+                }
+            } else {
+                postgresql_column_to_universal_type(effective_type, precision, scale)
+            }
+        } else {
+            postgresql_column_to_universal_type(effective_type, precision, scale)
+        };
 
         table_columns
             .entry(table_name)

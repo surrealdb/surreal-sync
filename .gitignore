@@ -36,3 +36,4 @@ Temporary Items
 # Checkpoint dirs created by tests / local sync runs
 .surreal-sync-checkpoints-test-*/
 .test-*/
+.reference/
