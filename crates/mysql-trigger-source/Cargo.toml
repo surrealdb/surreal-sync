@@ -9,6 +9,7 @@ mysql_async = "0.36"
 surreal-sink = { path = "../surreal-sink" }
 surreal-sync-interleaved-snapshot = { path = "../interleaved-snapshot" }
 sync-core = { path = "../sync-core" }
+sync-transform = { path = "../sync-transform" }
 checkpoint = { path = "../checkpoint" }
 mysql-types = { path = "../mysql-types" }
 json-types = { path = "../json-types" }
@@ -29,3 +30,6 @@ log = "0.4"
 tempfile = "3.27"
 surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+async-trait = "0.1"
+sync-transform = { path = "../sync-transform" }
+surreal2-sink = { path = "../surreal2-sink" }

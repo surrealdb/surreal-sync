@@ -11,13 +11,14 @@ pub mod schema;
 pub mod toml_config;
 
 pub use checkpoint::{get_current_checkpoint, PostgreSQLCheckpoint};
-pub use full_sync::run_full_sync;
+pub use full_sync::{run_full_sync, run_full_sync_with_transforms};
 pub use incremental_sync::{
-    run_incremental_sync, ChangeStream, IncrementalSource, PostgresChangeStream,
-    PostgresIncrementalSource,
+    run_incremental_sync, run_incremental_sync_with_transforms, ChangeStream, IncrementalSource,
+    PostgresChangeStream, PostgresIncrementalSource, ReplicationTailOptions,
 };
 pub use interleaved_snapshot::{
-    request_snapshot, run_interleaved_snapshot_full_sync, PostgresTriggerWatermarkSource,
+    request_snapshot, run_interleaved_snapshot_full_sync,
+    run_interleaved_snapshot_full_sync_with_transforms, PostgresTriggerWatermarkSource,
 };
 
 /// PostgreSQL source connection options (trigger-specific)

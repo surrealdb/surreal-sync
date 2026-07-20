@@ -19,11 +19,17 @@ pub mod testing;
 pub use change_tracking::setup_mysql_change_tracking;
 pub use checkpoint::{get_current_checkpoint, MySQLCheckpoint};
 pub use client::new_mysql_pool;
-pub use full_sync::{get_primary_key_columns, read_table_chunk, run_full_sync, TableChunk};
-pub use incremental_sync::run_incremental_sync;
+pub use full_sync::{
+    get_primary_key_columns, read_table_chunk, run_full_sync, run_full_sync_with_transforms,
+    TableChunk,
+};
+pub use incremental_sync::{
+    run_incremental_sync, run_incremental_sync_with_transforms, ReplicationTailOptions,
+};
 pub use interleaved_snapshot::{
     request_snapshot, run_interleaved_snapshot_full_sync,
-    run_interleaved_snapshot_full_sync_result, MySqlWatermarkSource,
+    run_interleaved_snapshot_full_sync_result, run_interleaved_snapshot_full_sync_with_transforms,
+    MySqlWatermarkSource,
 };
 pub use source::{ChangeStream, IncrementalSource, MySQLChangeStream, MySQLIncrementalSource};
 

@@ -22,8 +22,9 @@ use tokio_postgres::Client;
 use uuid::Uuid;
 
 use surreal_sync_interleaved_snapshot::{
-    run_interleaved_snapshot, InterleavedSnapshotConfig, PkTuple, ReconciliationEvent,
-    SnapshotCheckpointer, SnapshotSignal, TableSpec, WatermarkKind, WatermarkSource,
+    run_interleaved_snapshot_with_transforms, InterleavedSnapshotConfig, PkTuple,
+    ReconciliationEvent, SnapshotCheckpointer, SnapshotSignal, SnapshotTransforms, TableSpec,
+    WatermarkKind, WatermarkSource,
 };
 
 use crate::incremental_sync::{ChangeStream, IncrementalSource, PostgresIncrementalSource};
@@ -385,7 +386,7 @@ pub async fn request_snapshot(from_opts: &SourceOpts, tables: &[String]) -> Resu
 
 /// Run an interleaved snapshot full sync of every primary-keyed user table
 /// from PostgreSQL (trigger source) into `surreal`, returning the final audit
-/// `sequence_id` to hand off to incremental/live processing.
+/// `sequence_id` to hand off to incremental/live processing (identity transforms).
 pub async fn run_interleaved_snapshot_full_sync<S, C>(
     surreal: &S,
     from_opts: &SourceOpts,
@@ -396,7 +397,36 @@ where
     S: SurrealSink,
     C: SnapshotCheckpointer,
 {
+    run_interleaved_snapshot_full_sync_with_transforms(
+        surreal,
+        from_opts,
+        config,
+        checkpointer,
+        &SnapshotTransforms::identity(),
+    )
+    .await
+}
+
+/// Interleaved snapshot full sync with an explicit transform pipeline.
+pub async fn run_interleaved_snapshot_full_sync_with_transforms<S, C>(
+    surreal: &S,
+    from_opts: &SourceOpts,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+    transforms: &SnapshotTransforms,
+) -> Result<i64>
+where
+    S: SurrealSink,
+    C: SnapshotCheckpointer,
+{
     let mut source = PostgresTriggerWatermarkSource::setup(from_opts).await?;
-    let result = run_interleaved_snapshot(&mut source, surreal, config, checkpointer).await?;
+    let result = run_interleaved_snapshot_with_transforms(
+        &mut source,
+        surreal,
+        config,
+        checkpointer,
+        transforms,
+    )
+    .await?;
     Ok(result.final_position)
 }

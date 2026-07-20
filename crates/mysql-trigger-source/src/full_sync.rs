@@ -11,6 +11,7 @@ use mysql_types::{row_to_typed_values_with_config, RowConversionConfig};
 use std::collections::HashMap;
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalRow, UniversalType, UniversalValue};
+use sync_transform::{write_rows, ApplyOpts, Pipeline};
 use tracing::{debug, info};
 
 /// Sanitize connection string for logging (hide password)
@@ -28,20 +29,44 @@ fn sanitize_connection_string(uri: &str) -> String {
     uri.to_string()
 }
 
-/// Main entry point for MySQL to SurrealDB migration with checkpoint support
-///
-/// # Arguments
-/// * `surreal` - SurrealDB sink for writing data
-/// * `from_opts` - Source database options
-/// * `sync_opts` - Sync configuration options
-/// * `sync_manager` - Optional sync manager for checkpoint emission
+/// Main entry point for MySQL to SurrealDB migration with checkpoint support (identity).
 pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     surreal: &S,
     from_opts: &SourceOpts,
     sync_opts: &SyncOpts,
     sync_manager: Option<&SyncManager<CS>>,
 ) -> Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_full_sync_with_transforms(
+        surreal,
+        from_opts,
+        sync_opts,
+        sync_manager,
+        &pipeline,
+        &apply_opts,
+    )
+    .await
+}
+
+/// Full sync with an explicit transform pipeline.
+pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
+    surreal: &S,
+    from_opts: &SourceOpts,
+    sync_opts: &SyncOpts,
+    sync_manager: Option<&SyncManager<CS>>,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<()> {
     info!("Starting MySQL migration to SurrealDB");
+    if pipeline.is_identity() {
+        debug!("Full sync using identity transform pipeline");
+    } else {
+        info!(
+            stages = pipeline.len(),
+            "Full sync using transform pipeline"
+        );
+    }
 
     // Create connection pool with better error context
     let pool = Pool::from_url(&from_opts.source_uri).map_err(|e| {
@@ -114,6 +139,8 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
             sync_opts,
             &boolean_paths,
             schema_info.get(table_name),
+            pipeline,
+            apply_opts,
         )
         .await?;
 
@@ -281,6 +308,8 @@ async fn migrate_table<S: SurrealSink>(
     sync_opts: &SyncOpts,
     _json_path_overrides: &[String],
     schema_info: Option<&TableSchemaInfo>,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
 ) -> Result<usize> {
     // Get primary key columns for this table
     let database = get_current_database(conn).await?;
@@ -352,14 +381,14 @@ async fn migrate_table<S: SurrealSink>(
             let batch_size = batch.len();
 
             if !sync_opts.dry_run {
-                surreal.write_universal_rows(&batch).await?;
+                write_rows(surreal, pipeline, std::mem::take(&mut batch), apply_opts).await?;
             } else {
                 debug!(
                     "Dry-run: Would insert {} records into {}",
                     batch_size, table_name
                 );
+                batch.clear();
             }
-            batch.clear();
             total_processed += batch_size;
         }
     }
@@ -369,7 +398,7 @@ async fn migrate_table<S: SurrealSink>(
         let batch_size = batch.len();
 
         if !sync_opts.dry_run {
-            surreal.write_universal_rows(&batch).await?;
+            write_rows(surreal, pipeline, batch, apply_opts).await?;
         } else {
             debug!(
                 "Dry-run: Would insert {} records into {}",
