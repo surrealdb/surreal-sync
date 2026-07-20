@@ -7,7 +7,8 @@ use std::time::Duration;
 /// - [`Fail`](Self::Fail) (default): stop; do not commit the failed batch or any
 ///   later position. Operator restarts resume from the last successful commit.
 /// - [`Skip`](Self::Skip): log, do **not** write the failed batch, but still
-///   commit past it. This can lose data by explicit operator choice.
+///   call [`SourceDriver::note_sunk_events`](crate::SourceDriver::note_sunk_events)
+///   and commit past it. This can lose data by explicit operator choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FailurePolicy {
     /// Stop on failure; leave checkpoint unchanged for the failed batch.

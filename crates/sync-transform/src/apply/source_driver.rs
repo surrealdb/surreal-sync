@@ -245,8 +245,13 @@ pub trait SourceDriver: Send {
         Ok(None)
     }
 
-    /// Notify the driver that `count` events were successfully sunk (before
-    /// [`commit`](Self::commit)). Default: no-op.
+    /// Notify the driver that `count` events are accounted for before
+    /// [`commit`](Self::commit).
+    ///
+    /// Called after a successful sink apply, and also under
+    /// [`FailurePolicy::Skip`](crate::FailurePolicy::Skip) for batches that are
+    /// committed past without writing (so drivers that gate slot/cursor advance
+    /// on sunk counts do not stall). Default: no-op.
     fn note_sunk_events(&mut self, _count: u64) {}
 }
 

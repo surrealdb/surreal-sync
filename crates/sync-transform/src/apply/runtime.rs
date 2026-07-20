@@ -229,6 +229,8 @@ struct CompletedBatch<P> {
     #[allow(dead_code)]
     batch_id: u64,
     last_position: P,
+    /// Events in this batch (input count; for `Ok` prefer `events.len()`).
+    event_count: u64,
     result: Result<Vec<ApplyEvent>>,
 }
 
@@ -237,6 +239,7 @@ struct TransformOutcome<P> {
     seq: u64,
     batch_id: u64,
     last_position: P,
+    event_count: u64,
     result: Result<Vec<ApplyEvent>>,
 }
 
@@ -508,6 +511,7 @@ where
 
         let last_position = batch.last().expect("n > 0").position.clone();
         let events: Vec<ApplyEvent> = batch.into_iter().map(|pe| pe.event).collect();
+        let event_count = events.len() as u64;
 
         let batch_id = self.next_batch_id;
         self.next_batch_id = self.next_batch_id.saturating_add(1);
@@ -520,6 +524,7 @@ where
                 CompletedBatch {
                     batch_id,
                     last_position,
+                    event_count,
                     result: Ok(events),
                 },
             );
@@ -555,6 +560,7 @@ where
                 seq,
                 batch_id,
                 last_position,
+                event_count,
                 result,
             }
         });
@@ -604,6 +610,7 @@ where
             CompletedBatch {
                 batch_id: outcome.batch_id,
                 last_position: outcome.last_position,
+                event_count: outcome.event_count,
                 result: outcome.result,
             },
         );
@@ -634,13 +641,25 @@ where
                         self.next_to_apply += 1;
                     }
                     Err(e) => {
-                        self.fail_or_skip_driver(driver, batch.batch_id, batch.last_position, e)
-                            .await?;
+                        self.fail_or_skip_driver(
+                            driver,
+                            batch.batch_id,
+                            batch.last_position,
+                            batch.event_count.max(events.len() as u64),
+                            e,
+                        )
+                        .await?;
                     }
                 },
                 Err(e) => {
-                    self.fail_or_skip_driver(driver, batch.batch_id, batch.last_position, e)
-                        .await?;
+                    self.fail_or_skip_driver(
+                        driver,
+                        batch.batch_id,
+                        batch.last_position,
+                        batch.event_count,
+                        e,
+                    )
+                    .await?;
                 }
             }
         }
@@ -790,6 +809,7 @@ where
         driver: &mut impl SourceDriver<Position = P>,
         batch_id: u64,
         last_position: P,
+        event_count: u64,
         e: anyhow::Error,
     ) -> Result<()> {
         match self.opts.failure_policy {
@@ -803,6 +823,9 @@ where
                     error = %e,
                     "skipping failed batch (failure_policy=skip); committing past it"
                 );
+                // Account for skipped events so drivers that gate advance on
+                // note_sunk_events (e.g. wal2json slot) do not stall.
+                driver.note_sunk_events(event_count);
                 driver
                     .commit(last_position.clone())
                     .await

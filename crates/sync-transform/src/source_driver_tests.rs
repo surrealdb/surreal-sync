@@ -2,8 +2,9 @@
 
 use crate::test_support::{RecordingSink, ScriptedSourceDriver};
 use crate::{
-    run_source_runtime, write_relations, ApplyEvent, ApplyOpts, CheckpointPolicy, ControlSignal,
-    Pipeline, PositionedEvent, RuntimeExit, SourceDriver, SourceRuntimeOpts, StopReason,
+    run_source_runtime, run_source_runtime_with, write_relations, ApplyEvent, ApplyOpts,
+    CheckpointPolicy, ControlSignal, Pipeline, PositionedEvent, RuntimeExit, SourceDriver,
+    SourceRuntimeOpts, StopReason,
 };
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -471,4 +472,145 @@ async fn note_sunk_events_counts_after_sink_success() {
 
     assert_eq!(driver.sunk_events, 2);
     assert_eq!(driver.commits, vec![10, 20]);
+}
+
+/// Regression: failure_policy=Skip must still call `note_sunk_events` so drivers
+/// that gate slot/cursor advance on sunk counts (e.g. wal2json) do not stall.
+#[tokio::test]
+async fn failure_policy_skip_still_notes_sunk_events() {
+    use crate::test_support::{BatchScript, ScriptedTransformer};
+    use crate::FailurePolicy;
+    use std::sync::Arc;
+
+    let transformer = ScriptedTransformer::new(Pipeline::new())
+        .on_batch(1, BatchScript::fail_after(Duration::ZERO, "skip-me"))
+        .on_batch(2, BatchScript::succeed_after(Duration::ZERO));
+
+    let mut driver = ScriptedSourceDriver::new(vec![
+        PositionedEvent::change(change(1), 10u64),
+        PositionedEvent::change(change(2), 20u64),
+    ])
+    .commit_only();
+
+    let sink = RecordingSink::new();
+    let apply_opts = opts().with_failure_policy(FailurePolicy::Skip);
+
+    run_source_runtime_with(
+        &mut driver,
+        &sink,
+        Arc::new(transformer),
+        &apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await
+    .unwrap();
+
+    assert!(
+        sink.applied().is_empty() || sink.applied().len() == 1,
+        "failed batch must not be sunk; successor may be: {:?}",
+        sink.applied()
+    );
+    assert_eq!(
+        sink.applied().len(),
+        1,
+        "successor batch should still sink"
+    );
+    assert_eq!(
+        driver.sunk_events, 2,
+        "Skip must note_sunk_events for the failed batch so advance is not stuck"
+    );
+    assert_eq!(driver.commits, vec![10, 20]);
+}
+
+/// wal2json-style gate: commit only advances once every emitted event is noted.
+#[tokio::test]
+async fn failure_policy_skip_unblocks_gated_commit() {
+    use crate::test_support::{BatchScript, ScriptedTransformer};
+    use crate::FailurePolicy;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+
+    struct GatedDriver {
+        remaining: Vec<PositionedEvent<u64>>,
+        emitted: u64,
+        sunk: u64,
+        commits: Vec<u64>,
+        finished: bool,
+    }
+
+    #[async_trait]
+    impl SourceDriver for GatedDriver {
+        type Position = u64;
+
+        async fn poll_work(&mut self) -> anyhow::Result<Vec<PositionedEvent<u64>>> {
+            if self.finished || self.remaining.is_empty() {
+                self.finished = self.remaining.is_empty();
+                return Ok(Vec::new());
+            }
+            // Emit the whole peek batch at once (wal2json-like).
+            let events = std::mem::take(&mut self.remaining);
+            self.emitted = events.len() as u64;
+            self.sunk = 0;
+            Ok(events)
+        }
+
+        async fn commit(&mut self, position: u64) -> anyhow::Result<()> {
+            if self.sunk < self.emitted {
+                // Not ready to advance — same stuck path as pre-fix wal2json.
+                return Ok(());
+            }
+            self.commits.push(position);
+            self.emitted = 0;
+            self.sunk = 0;
+            self.finished = true;
+            Ok(())
+        }
+
+        fn is_finished(&self) -> bool {
+            self.finished
+        }
+
+        fn checkpoint_policy(&self) -> CheckpointPolicy {
+            CheckpointPolicy::CommitOnly
+        }
+
+        fn note_sunk_events(&mut self, count: u64) {
+            self.sunk = self.sunk.saturating_add(count);
+        }
+    }
+
+    let transformer = ScriptedTransformer::new(Pipeline::new())
+        .on_batch(1, BatchScript::fail_after(Duration::ZERO, "skip-me"))
+        .on_batch(2, BatchScript::succeed_after(Duration::ZERO));
+
+    let mut driver = GatedDriver {
+        remaining: vec![
+            PositionedEvent::change(change(1), 100u64),
+            PositionedEvent::change(change(2), 100u64), // shared peek LSN
+        ],
+        emitted: 0,
+        sunk: 0,
+        commits: Vec::new(),
+        finished: false,
+    };
+
+    let sink = RecordingSink::new();
+    let apply_opts = opts().with_failure_policy(FailurePolicy::Skip);
+
+    run_source_runtime_with(
+        &mut driver,
+        &sink,
+        Arc::new(transformer),
+        &apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        driver.commits,
+        vec![100],
+        "gated commit must advance after Skip notes sunk events"
+    );
+    assert_eq!(sink.applied().len(), 1);
 }
