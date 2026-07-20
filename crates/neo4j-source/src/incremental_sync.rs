@@ -21,8 +21,16 @@ use async_trait::async_trait;
 use chrono::Utc;
 use neo4rs::{Graph, Query};
 use std::collections::HashMap;
+use std::sync::Arc;
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalRelation, UniversalRow, UniversalType, UniversalValue};
+use sync_core::{
+    UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow, UniversalType,
+    UniversalValue,
+};
+use sync_transform::{
+    ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver, SourceRuntimeOpts,
+    StopReason,
+};
 
 /// A change from Neo4j (either a node or a relationship)
 #[derive(Debug, Clone)]
@@ -331,13 +339,46 @@ impl ChangeStream for Neo4jChangeStream {
     }
 
     fn checkpoint(&self) -> Option<Neo4jCheckpoint> {
+        let checkpoint_datetime =
+            chrono::DateTime::from_timestamp_millis(self.current_checkpoint)
+                .unwrap_or_else(Utc::now);
         Some(Neo4jCheckpoint {
-            timestamp: Utc::now(),
+            timestamp: checkpoint_datetime,
         })
     }
 }
 
-/// Apply incremental changes to SurrealDB
+/// Options for the Neo4j timestamp-tracking replication tail.
+#[derive(Clone, Debug)]
+pub struct ReplicationTailOptions {
+    /// Wall-clock stop for the stream phase.
+    pub deadline: chrono::DateTime<chrono::Utc>,
+    /// Optional timestamp stop bound.
+    pub until: Option<Neo4jCheckpoint>,
+    /// When true, drain changes without applying them.
+    pub dry_run: bool,
+    /// Batch hint used only for dry-run counting logs (apply uses ApplyOpts).
+    pub batch_size: usize,
+}
+
+impl ReplicationTailOptions {
+    /// Build options from the historical `run_incremental_sync` arguments.
+    pub fn stream(
+        deadline: chrono::DateTime<chrono::Utc>,
+        until: Option<Neo4jCheckpoint>,
+        dry_run: bool,
+        batch_size: usize,
+    ) -> Self {
+        Self {
+            deadline,
+            until,
+            dry_run,
+            batch_size,
+        }
+    }
+}
+
+/// Apply incremental changes to SurrealDB (identity path helper for dry-run).
 pub async fn apply_incremental_changes<S: SurrealSink>(
     surreal: &S,
     changes: Vec<IncrementalChange>,
@@ -380,14 +421,27 @@ pub async fn apply_incremental_changes<S: SurrealSink>(
     Ok(total_count)
 }
 
-/// Run incremental sync from Neo4j to SurrealDB
+fn incremental_change_to_positioned(
+    change: IncrementalChange,
+    position: i64,
+) -> PositionedEvent<i64> {
+    match change {
+        IncrementalChange::Node(row) => {
+            // Timestamp-based Neo4j sync is upsert-only (no delete detection).
+            let uc = UniversalChange::update(row.table, row.id, row.fields);
+            PositionedEvent::change(uc, position)
+        }
+        IncrementalChange::Relation(rel) => {
+            let rc = UniversalRelationChange::update(*rel);
+            PositionedEvent::relation_change(rc, position)
+        }
+    }
+}
+
+/// Run incremental sync from Neo4j to SurrealDB (identity transforms).
 ///
-/// This function implements the incremental sync logic:
-/// 1. Uses timestamp-based change tracking
-/// 2. Connects to both Neo4j and SurrealDB
-/// 3. Reads changes from the specified checkpoint
-/// 4. Applies changes to SurrealDB
-/// 5. Continues until caught up with current state
+/// Timestamp-based change tracking cannot detect deletes; deleted Neo4j
+/// entities remain in SurrealDB until a full resync/cleanup.
 pub async fn run_incremental_sync<S: SurrealSink>(
     surreal: &S,
     from_opts: SourceOpts,
@@ -396,6 +450,39 @@ pub async fn run_incremental_sync<S: SurrealSink>(
     deadline: chrono::DateTime<chrono::Utc>,
     target_checkpoint: Option<Neo4jCheckpoint>,
 ) -> anyhow::Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_incremental_sync_with_transforms(
+        surreal,
+        from_opts,
+        sync_opts.clone(),
+        from_checkpoint,
+        ReplicationTailOptions::stream(
+            deadline,
+            target_checkpoint,
+            sync_opts.dry_run,
+            sync_opts.batch_size,
+        ),
+        &pipeline,
+        &apply_opts,
+    )
+    .await
+}
+
+/// Incremental sync through the transform apply framework.
+///
+/// Nodes and relationships are emitted as mixed [`PositionedEvent`]s (row
+/// changes and relation changes) with the tracking-property timestamp as
+/// position. Deletes are not invented — Neo4j timestamp tracking cannot see them.
+pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
+    surreal: &S,
+    from_opts: SourceOpts,
+    sync_opts: SyncOpts,
+    from_checkpoint: Neo4jCheckpoint,
+    options: ReplicationTailOptions,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> anyhow::Result<()> {
     use checkpoint::Checkpoint;
 
     tracing::info!(
@@ -403,9 +490,18 @@ pub async fn run_incremental_sync<S: SurrealSink>(
         from_checkpoint.to_cli_string()
     );
 
-    // Use timestamp-based change tracking for incremental sync
+    if pipeline.is_identity() {
+        tracing::debug!("Incremental sync using identity transform pipeline");
+    } else {
+        tracing::info!(
+            stages = pipeline.len(),
+            max_in_flight = apply_opts.max_in_flight,
+            batch_size = apply_opts.batch_size,
+            "Incremental sync using transform pipeline"
+        );
+    }
+
     tracing::info!("Using timestamp-based change tracking for incremental sync");
-    // Extract timestamp from checkpoint and create graph
     let initial_timestamp = from_checkpoint.timestamp.timestamp_millis();
     let graph = crate::new_neo4j_client(&from_opts).await?;
 
@@ -413,73 +509,201 @@ pub async fn run_incremental_sync<S: SurrealSink>(
         graph,
         from_opts.neo4j_timezone.clone(),
         from_opts.neo4j_json_properties.clone(),
-        None,
+        Some(from_opts.change_tracking_property.clone()),
         from_opts.id_property.clone(),
         initial_timestamp,
         from_opts.composite_constituent.clone(),
     )?;
 
-    // Start reading changes
     let mut stream = source.get_changes().await?;
-    let mut total_applied = 0;
-    let mut batch = Vec::new();
 
-    // Process changes in batches
-    while let Some(change_result) = stream.next().await {
-        let change = change_result?;
-
-        // Check if we've reached the deadline
-        if chrono::Utc::now() >= deadline {
-            tracing::info!("Reached deadline: {deadline}, stopping incremental sync");
-            break;
-        }
-
-        // Check if we've reached the target checkpoint
-        if let Some(ref target) = target_checkpoint {
-            if let Some(current) = stream.checkpoint() {
-                if current.timestamp >= target.timestamp {
-                    tracing::info!(
-                        "Reached target checkpoint: {}, stopping incremental sync",
-                        target.to_cli_string()
-                    );
-                    break;
+    // Preserve dry-run: drain and count without applying through the framework.
+    if options.dry_run || sync_opts.dry_run {
+        let mut total_applied = 0;
+        let mut batch = Vec::new();
+        while let Some(change_result) = stream.next().await {
+            let change = change_result?;
+            if chrono::Utc::now() >= options.deadline {
+                tracing::info!(
+                    "Reached deadline: {}, stopping incremental sync",
+                    options.deadline
+                );
+                break;
+            }
+            if let Some(ref target) = options.until {
+                if let Some(current) = stream.checkpoint() {
+                    if current.timestamp >= target.timestamp {
+                        tracing::info!(
+                            "Reached target checkpoint: {}, stopping incremental sync",
+                            target.to_cli_string()
+                        );
+                        break;
+                    }
                 }
             }
+            batch.push(change);
+            if batch.len() >= sync_opts.batch_size.max(options.batch_size).max(1) {
+                let applied =
+                    apply_incremental_changes(surreal, std::mem::take(&mut batch), true).await?;
+                total_applied += applied;
+            }
         }
-
-        batch.push(change);
-
-        // Apply batch when it reaches the configured size
-        if batch.len() >= sync_opts.batch_size {
-            let applied =
-                apply_incremental_changes(surreal, batch.clone(), sync_opts.dry_run).await?;
-            total_applied += applied;
-
-            tracing::info!("Applied {} changes (total: {})", applied, total_applied);
-
-            batch.clear();
+        if !batch.is_empty() {
+            total_applied += apply_incremental_changes(surreal, batch, true).await?;
         }
+        tracing::info!(
+            "Incremental sync dry-run completed: {} total changes",
+            total_applied
+        );
+        source.cleanup().await?;
+        return Ok(());
     }
 
-    // Apply remaining changes
-    if !batch.is_empty() {
-        let applied = apply_incremental_changes(surreal, batch, sync_opts.dry_run).await?;
-        total_applied += applied;
+    let mut driver = Neo4jSourceDriver {
+        stream,
+        options: &options,
+        tracking_property: from_opts.change_tracking_property.clone(),
+        until_reached: false,
+        finished: false,
+        total_changes: 0,
+        last_position: initial_timestamp,
+    };
+
+    let runtime_opts = SourceRuntimeOpts::new();
+    let transformer = Arc::new(pipeline.clone());
+    let exit = sync_transform::run_source_runtime_with(
+        &mut driver,
+        surreal,
+        transformer,
+        apply_opts,
+        &runtime_opts,
+    )
+    .await?;
+
+    match exit {
+        sync_transform::RuntimeExit::Stopped(StopReason::Deadline) => {
+            tracing::info!("Reached deadline, stopping incremental sync");
+        }
+        sync_transform::RuntimeExit::Stopped(StopReason::Until) => {
+            tracing::info!("Reached target checkpoint, stopping incremental sync");
+        }
+        sync_transform::RuntimeExit::Stopped(StopReason::Finished) => {
+            tracing::info!("Neo4j source caught up (no more timestamped changes)");
+        }
+        sync_transform::RuntimeExit::Stopped(StopReason::Cancelled) => {
+            tracing::info!("Cancellation requested, stopping incremental sync");
+        }
     }
 
     tracing::info!(
         "Incremental sync completed: {} total changes applied",
-        total_applied
+        driver.total_changes
     );
 
-    // Update the transaction tracker if not in dry run mode
-    // Note: Transaction tracking update is only available for the custom tracking approach,
-    // not for CDC which manages its own cursor internally
-    if !sync_opts.dry_run {
-        tracing::info!(
-            "Incremental sync checkpoint tracking updated internally by the source implementation"
-        );
+    drop(driver);
+    source.cleanup().await?;
+    Ok(())
+}
+
+/// Neo4j timestamp CDC driver emitting mixed node/relation [`PositionedEvent`]s.
+struct Neo4jSourceDriver<'a> {
+    stream: Box<dyn ChangeStream>,
+    options: &'a ReplicationTailOptions,
+    tracking_property: String,
+    until_reached: bool,
+    finished: bool,
+    total_changes: u64,
+    last_position: i64,
+}
+
+#[async_trait::async_trait]
+impl SourceDriver for Neo4jSourceDriver<'_> {
+    type Position = i64;
+
+    async fn poll_work(&mut self) -> anyhow::Result<Vec<PositionedEvent<Self::Position>>> {
+        if self.stop_reason().is_some() || self.finished {
+            return Ok(Vec::new());
+        }
+
+        match self.stream.next().await {
+            None => {
+                self.finished = true;
+                Ok(Vec::new())
+            }
+            Some(Err(e)) => Err(e),
+            Some(Ok(change)) => {
+                let position = match &change {
+                    IncrementalChange::Node(row) => tracking_millis_from_fields(
+                        &row.fields,
+                        &self.tracking_property,
+                    )
+                    .unwrap_or(self.last_position),
+                    IncrementalChange::Relation(rel) => tracking_millis_from_fields(
+                        &rel.data,
+                        &self.tracking_property,
+                    )
+                    .unwrap_or(self.last_position),
+                };
+                self.last_position = self.last_position.max(position);
+
+                if let Some(ref target) = self.options.until {
+                    if self.last_position >= target.timestamp.timestamp_millis() {
+                        use checkpoint::Checkpoint;
+                        tracing::info!(
+                            "Reached target checkpoint: {}, stopping after this event",
+                            target.to_cli_string()
+                        );
+                        self.until_reached = true;
+                    }
+                }
+
+                Ok(vec![incremental_change_to_positioned(
+                    change,
+                    self.last_position,
+                )])
+            }
+        }
     }
 
-    Ok(())
+    async fn commit(&mut self, _position: Self::Position) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn checkpoint_policy(&self) -> CheckpointPolicy {
+        CheckpointPolicy::CommitOnly
+    }
+
+    fn stop_reason(&self) -> Option<StopReason> {
+        if chrono::Utc::now() >= self.options.deadline {
+            return Some(StopReason::Deadline);
+        }
+        if self.until_reached {
+            return Some(StopReason::Until);
+        }
+        None
+    }
+
+    fn note_sunk_events(&mut self, count: u64) {
+        self.total_changes = self.total_changes.saturating_add(count);
+        if self.total_changes.is_multiple_of(100) {
+            tracing::info!("Processed {} changes", self.total_changes);
+        }
+    }
+}
+
+fn tracking_millis_from_fields(
+    fields: &HashMap<String, UniversalValue>,
+    tracking_property: &str,
+) -> Option<i64> {
+    match fields.get(tracking_property) {
+        Some(UniversalValue::LocalDateTime(ts)) | Some(UniversalValue::ZonedDateTime(ts)) => {
+            Some(ts.timestamp_millis())
+        }
+        Some(UniversalValue::Int64(ms)) => Some(*ms),
+        _ => None,
+    }
 }

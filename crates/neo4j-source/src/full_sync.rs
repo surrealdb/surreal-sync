@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalRelation, UniversalRow, UniversalThingRef, UniversalValue};
+use sync_transform::{write_relations, write_rows, ApplyOpts, Pipeline};
 
 use crate::neo4j_checkpoint::Neo4jCheckpoint;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
@@ -125,11 +126,43 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     sync_opts: SyncOpts,
     sync_manager: Option<&SyncManager<CS>>,
 ) -> anyhow::Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_full_sync_with_transforms(
+        surreal,
+        from_opts,
+        sync_opts,
+        sync_manager,
+        &pipeline,
+        &apply_opts,
+    )
+    .await
+}
+
+/// Full sync through the transform framework via [`write_rows`] / [`write_relations`].
+///
+/// Neo4j deletes are not detected by timestamp tracking; this path is upsert-only.
+pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
+    surreal: &S,
+    from_opts: SourceOpts,
+    sync_opts: SyncOpts,
+    sync_manager: Option<&SyncManager<CS>>,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> anyhow::Result<()> {
     tracing::info!("Starting Neo4j migration");
     tracing::debug!(
         "migrate_from_neo4j function called with URI: {}",
         from_opts.source_uri
     );
+    if pipeline.is_identity() {
+        tracing::debug!("Full sync using identity transform pipeline");
+    } else {
+        tracing::info!(
+            stages = pipeline.len(),
+            "Full sync using transform pipeline"
+        );
+    }
 
     // Connect to Neo4j
     tracing::debug!("Connecting to Neo4j at: {}", from_opts.source_uri);
@@ -167,12 +200,21 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 
     // Migrate nodes first and track min/max timestamps
     let (nodes_migrated, nodes_min_ts, nodes_max_ts) =
-        migrate_neo4j_nodes(&graph, surreal, &sync_opts, &ctx, &from_opts).await?;
+        migrate_neo4j_nodes(&graph, surreal, &sync_opts, &ctx, &from_opts, pipeline, apply_opts)
+            .await?;
     total_migrated += nodes_migrated;
 
     // Then migrate relationships and track min/max timestamps
-    let (rels_migrated, rels_min_ts, rels_max_ts) =
-        migrate_neo4j_relationships(&graph, surreal, &sync_opts, &ctx, &from_opts).await?;
+    let (rels_migrated, rels_min_ts, rels_max_ts) = migrate_neo4j_relationships(
+        &graph,
+        surreal,
+        &sync_opts,
+        &ctx,
+        &from_opts,
+        pipeline,
+        apply_opts,
+    )
+    .await?;
     total_migrated += rels_migrated;
 
     // Compute overall min/max timestamps from both nodes and relationships
@@ -287,6 +329,8 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
     sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
     from_opts: &SourceOpts,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
 ) -> anyhow::Result<(
     usize,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -361,43 +405,45 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
             batch.push(universal_row);
 
             if batch.len() >= sync_opts.batch_size {
+                let batch_len = batch.len();
                 tracing::debug!(
-                    "Batch size reached ({}), processing batch for label: {}",
-                    batch.len(),
-                    label
+                    "Batch size reached ({batch_len}), processing batch for label: {label}",
                 );
                 if !sync_opts.dry_run {
-                    surreal.write_universal_rows(&batch).await?;
+                    write_rows(
+                        surreal,
+                        pipeline,
+                        std::mem::take(&mut batch),
+                        apply_opts,
+                    )
+                    .await?;
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
+                    batch.clear();
                 }
-                processed += batch.len();
-                total_migrated += batch.len();
-                tracing::info!("Processed {} nodes with label '{}'", processed, label);
-                batch.clear();
+                processed += batch_len;
+                total_migrated += batch_len;
+                tracing::info!("Processed {processed} nodes with label '{label}'");
             }
         }
 
         // Process remaining nodes in the last batch
         if !batch.is_empty() {
+            let final_len = batch.len();
             tracing::debug!(
-                "Processing final batch of {} nodes for label: {}",
-                batch.len(),
-                label
+                "Processing final batch of {final_len} nodes for label: {label}",
             );
             if !sync_opts.dry_run {
-                surreal.write_universal_rows(&batch).await?;
+                write_rows(surreal, pipeline, batch, apply_opts).await?;
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");
             }
-            processed += batch.len();
-            total_migrated += batch.len();
+            processed += final_len;
+            total_migrated += final_len;
         }
 
         tracing::info!(
-            "Completed migration of label '{}': {} nodes",
-            label,
-            processed
+            "Completed migration of label '{label}': {processed} nodes",
         );
     }
 
@@ -425,6 +471,8 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
     from_opts: &SourceOpts,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
 ) -> anyhow::Result<(
     usize,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -497,47 +545,45 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
             batch.push(universal_relation);
 
             if batch.len() >= sync_opts.batch_size {
+                let batch_len = batch.len();
                 tracing::debug!(
-                    "Batch size reached ({}), processing batch for type: {}",
-                    batch.len(),
-                    rel_type
+                    "Batch size reached ({batch_len}), processing batch for type: {rel_type}",
                 );
                 if !sync_opts.dry_run {
-                    surreal.write_universal_relations(&batch).await?;
+                    write_relations(
+                        surreal,
+                        pipeline,
+                        std::mem::take(&mut batch),
+                        apply_opts,
+                    )
+                    .await?;
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
+                    batch.clear();
                 }
-                processed += batch.len();
-                total_migrated += batch.len();
-                tracing::info!(
-                    "Processed {} relationships of type '{}'",
-                    processed,
-                    rel_type
-                );
-                batch.clear();
+                processed += batch_len;
+                total_migrated += batch_len;
+                tracing::info!("Processed {processed} relationships of type '{rel_type}'");
             }
         }
 
         // Process remaining relationships in the last batch
         if !batch.is_empty() {
+            let final_len = batch.len();
             tracing::debug!(
-                "Processing final batch of {} relationships for type: {}",
-                batch.len(),
-                rel_type
+                "Processing final batch of {final_len} relationships for type: {rel_type}",
             );
             if !sync_opts.dry_run {
-                surreal.write_universal_relations(&batch).await?;
+                write_relations(surreal, pipeline, batch, apply_opts).await?;
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");
             }
-            processed += batch.len();
-            total_migrated += batch.len();
+            processed += final_len;
+            total_migrated += final_len;
         }
 
         tracing::info!(
-            "Completed migration of relationship type '{}': {} relationships",
-            rel_type,
-            processed
+            "Completed migration of relationship type '{rel_type}': {processed} relationships",
         );
     }
 

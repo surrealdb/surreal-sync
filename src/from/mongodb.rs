@@ -8,6 +8,7 @@
 use anyhow::Context;
 use checkpoint::Checkpoint;
 
+use super::transforms::load_transforms_from_args;
 use super::{get_sdk_version, load_schema_if_provided, SdkVersion};
 use crate::{MongoDBFullArgs, MongoDBIncrementalArgs};
 
@@ -32,6 +33,8 @@ async fn run_full_v2(args: MongoDBFullArgs) -> anyhow::Result<()> {
     if args.surreal.dry_run {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
+
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     // Load and convert schema to DatabaseSchema for type-aware conversion
     let schema = load_schema_if_provided(&args.schema_file)?.map(|s| s.to_database_schema());
@@ -62,19 +65,19 @@ async fn run_full_v2(args: MongoDBFullArgs) -> anyhow::Result<()> {
     // Handle checkpoint storage
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
-            // Filesystem checkpoint storage
             let store = checkpoint::FilesystemStore::new(dir);
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_mongodb_changestream_source::run_full_sync(
+            surreal_sync_mongodb_changestream_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
                 sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (None, Some(table)) => {
-            // SurrealDB v2 checkpoint storage
             let checkpoint_surreal = surreal2_sink::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
@@ -83,25 +86,31 @@ async fn run_full_v2(args: MongoDBFullArgs) -> anyhow::Result<()> {
             .await?;
             let store = checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone());
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_mongodb_changestream_source::run_full_sync(
+            surreal_sync_mongodb_changestream_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
                 sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (None, None) => {
-            // No checkpoint storage - use simple migration
-            surreal_sync_mongodb_changestream_source::migrate_from_mongodb(
+            surreal_sync_mongodb_changestream_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(
                 &sink,
                 source_opts,
                 sync_opts,
+                None,
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (Some(_), Some(_)) => {
-            // Should be prevented by clap's conflicts_with
             anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
         }
     }
@@ -118,10 +127,10 @@ async fn run_full_v3(args: MongoDBFullArgs) -> anyhow::Result<()> {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
-    // Load and convert schema to DatabaseSchema for type-aware conversion
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+
     let schema = load_schema_if_provided(&args.schema_file)?.map(|s| s.to_database_schema());
 
-    // Connect to SurrealDB using v3 SDK
     let surreal_opts = surreal3_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
@@ -144,22 +153,21 @@ async fn run_full_v3(args: MongoDBFullArgs) -> anyhow::Result<()> {
         schema,
     };
 
-    // Handle checkpoint storage
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
-            // Filesystem checkpoint storage
             let store = checkpoint::FilesystemStore::new(dir);
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_mongodb_changestream_source::run_full_sync(
+            surreal_sync_mongodb_changestream_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
                 sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (None, Some(table)) => {
-            // SurrealDB v3 checkpoint storage
             let checkpoint_surreal = surreal3_sink::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
@@ -168,25 +176,31 @@ async fn run_full_v3(args: MongoDBFullArgs) -> anyhow::Result<()> {
             .await?;
             let store = checkpoint_surreal3::Surreal3Store::new(checkpoint_surreal, table.clone());
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_mongodb_changestream_source::run_full_sync(
+            surreal_sync_mongodb_changestream_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
                 sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (None, None) => {
-            // No checkpoint storage - use simple migration
-            surreal_sync_mongodb_changestream_source::migrate_from_mongodb(
+            surreal_sync_mongodb_changestream_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(
                 &sink,
                 source_opts,
                 sync_opts,
+                None,
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (Some(_), Some(_)) => {
-            // Should be prevented by clap's conflicts_with
             anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
         }
     }
@@ -217,9 +231,9 @@ async fn run_incremental_v2(args: MongoDBIncrementalArgs) -> anyhow::Result<()> 
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    // Get checkpoint from CLI arg or SurrealDB
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
@@ -229,12 +243,10 @@ async fn run_incremental_v2(args: MongoDBIncrementalArgs) -> anyhow::Result<()> 
     let from_checkpoint = match (&args.incremental_from, &args.checkpoints_surreal_table) {
         (Some(s), _) => {
             tracing::info!("Starting from checkpoint: {}", s);
-            // Explicit checkpoint from CLI
             surreal_sync_mongodb_changestream_source::MongoDBCheckpoint::from_cli_string(s)?
         }
         (None, Some(table)) => {
             tracing::info!("Reading checkpoint from SurrealDB table: {}", table);
-            // Read from SurrealDB v2 checkpoint storage
             let checkpoint_surreal = surreal2_sink::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
@@ -277,18 +289,20 @@ async fn run_incremental_v2(args: MongoDBIncrementalArgs) -> anyhow::Result<()> 
         collections: args.tables,
     };
 
-    // Connect to SurrealDB using v2 SDK
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
-    surreal_sync_mongodb_changestream_source::run_incremental_sync(
+    surreal_sync_mongodb_changestream_source::run_incremental_sync_with_transforms(
         &sink,
         source_opts,
         from_checkpoint,
-        deadline,
-        mongodb_to,
+        surreal_sync_mongodb_changestream_source::ReplicationTailOptions::stream(
+            deadline, mongodb_to,
+        ),
+        &pipeline,
+        &apply_opts,
     )
     .await?;
 
@@ -304,9 +318,9 @@ async fn run_incremental_v3(args: MongoDBIncrementalArgs) -> anyhow::Result<()> 
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    // Get checkpoint from CLI arg or SurrealDB
     let surreal_opts = surreal3_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
@@ -316,12 +330,10 @@ async fn run_incremental_v3(args: MongoDBIncrementalArgs) -> anyhow::Result<()> 
     let from_checkpoint = match (&args.incremental_from, &args.checkpoints_surreal_table) {
         (Some(s), _) => {
             tracing::info!("Starting from checkpoint: {}", s);
-            // Explicit checkpoint from CLI
             surreal_sync_mongodb_changestream_source::MongoDBCheckpoint::from_cli_string(s)?
         }
         (None, Some(table)) => {
             tracing::info!("Reading checkpoint from SurrealDB table: {}", table);
-            // Read from SurrealDB v3 checkpoint storage
             let checkpoint_surreal = surreal3_sink::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
@@ -364,18 +376,20 @@ async fn run_incremental_v3(args: MongoDBIncrementalArgs) -> anyhow::Result<()> 
         collections: args.tables,
     };
 
-    // Connect to SurrealDB using v3 SDK
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
     let sink = surreal3_sink::Surreal3Sink::new(surreal);
 
-    surreal_sync_mongodb_changestream_source::run_incremental_sync(
+    surreal_sync_mongodb_changestream_source::run_incremental_sync_with_transforms(
         &sink,
         source_opts,
         from_checkpoint,
-        deadline,
-        mongodb_to,
+        surreal_sync_mongodb_changestream_source::ReplicationTailOptions::stream(
+            deadline, mongodb_to,
+        ),
+        &pipeline,
+        &apply_opts,
     )
     .await?;
 

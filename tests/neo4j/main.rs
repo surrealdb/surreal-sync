@@ -3,3 +3,4 @@ mod neo4j_full_sync_only_cli;
 mod neo4j_full_sync_only_lib;
 mod neo4j_incremental_sync_only_cli;
 mod neo4j_incremental_sync_only_lib;
+mod neo4j_transforms_config_cli;

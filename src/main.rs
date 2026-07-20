@@ -266,6 +266,11 @@ struct MongoDBFullArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -312,6 +317,11 @@ struct MongoDBIncrementalArgs {
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
+
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -402,6 +412,11 @@ struct Neo4jFullArgs {
     #[arg(long, default_value = "id")]
     id_property: String,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -491,6 +506,11 @@ struct Neo4jIncrementalArgs {
     /// If a node does not have this property, the Neo4j internal node ID is used as fallback.
     #[arg(long, default_value = "id")]
     id_property: String,
+
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
 
     #[command(flatten)]
     surreal: SurrealOpts,

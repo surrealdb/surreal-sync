@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use surreal_sink::SurrealSink;
 use sync_core::{DatabaseSchema, UniversalRow, UniversalType, UniversalValue};
+use sync_transform::{write_rows, ApplyOpts, Pipeline};
 
 /// Source database connection options (MongoDB-specific, library type without clap)
 #[derive(Clone, Debug)]
@@ -55,24 +56,56 @@ pub async fn migrate_from_mongodb<S: SurrealSink>(
     run_full_sync::<S, checkpoint::NullStore>(surreal, from_opts, sync_opts, None).await
 }
 
-/// Enhanced version that supports checkpoint emission for incremental sync coordination
-///
-/// # Arguments
-/// * `surreal` - SurrealDB sink for writing data
-/// * `from_opts` - Source database options
-/// * `sync_opts` - Sync configuration options
-/// * `sync_manager` - Optional sync manager for checkpoint emission
+/// Full sync with identity transforms (checkpoint emission optional).
 pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     surreal: &S,
     from_opts: SourceOpts,
     sync_opts: SyncOpts,
     sync_manager: Option<&SyncManager<CS>>,
 ) -> anyhow::Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_full_sync_with_transforms(
+        surreal,
+        from_opts,
+        sync_opts,
+        sync_manager,
+        &pipeline,
+        &apply_opts,
+    )
+    .await
+}
+
+/// Full sync through the transform framework via [`write_rows`].
+///
+/// # Arguments
+/// * `surreal` - SurrealDB sink for writing data
+/// * `from_opts` - Source database options
+/// * `sync_opts` - Sync configuration options
+/// * `sync_manager` - Optional sync manager for checkpoint emission
+/// * `pipeline` - Transform pipeline (identity when empty)
+/// * `apply_opts` - Apply window options for the pipeline
+pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
+    surreal: &S,
+    from_opts: SourceOpts,
+    sync_opts: SyncOpts,
+    sync_manager: Option<&SyncManager<CS>>,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> anyhow::Result<()> {
     tracing::info!("Starting MongoDB migration");
     tracing::debug!(
         "migrate_from_mongodb function called with URI: {}",
         from_opts.source_uri
     );
+    if pipeline.is_identity() {
+        tracing::debug!("Full sync using identity transform pipeline");
+    } else {
+        tracing::info!(
+            stages = pipeline.len(),
+            "Full sync using transform pipeline"
+        );
+    }
 
     // Connect to MongoDB
     tracing::debug!(
@@ -214,49 +247,47 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
             batch.push(surreal_record);
 
             if batch.len() >= sync_opts.batch_size {
+                let batch_len = batch.len();
                 tracing::debug!(
-                    "Batch size reached ({}), processing batch for collection: {}",
-                    batch.len(),
-                    collection_name
+                    "Batch size reached ({batch_len}), processing batch for collection: {collection_name}",
                 );
                 if !sync_opts.dry_run {
-                    tracing::debug!("Migrating batch of {} documents to SurrealDB", batch.len());
-                    surreal.write_universal_rows(&batch).await?;
+                    tracing::debug!("Migrating batch of {batch_len} documents to SurrealDB");
+                    write_rows(
+                        surreal,
+                        pipeline,
+                        std::mem::take(&mut batch),
+                        apply_opts,
+                    )
+                    .await?;
                     tracing::debug!("Batch migration completed");
                 } else {
                     tracing::debug!("Dry-run mode: skipping actual migration of batch");
+                    batch.clear();
                 }
-                processed += batch.len();
-                total_migrated += batch.len();
+                processed += batch_len;
+                total_migrated += batch_len;
                 tracing::info!(
-                    "Processed {}/{} documents from '{}'",
-                    processed,
-                    total_docs,
-                    collection_name
+                    "Processed {processed}/{total_docs} documents from '{collection_name}'",
                 );
-                batch.clear();
             }
         }
 
         // Process remaining documents in the last batch
         if !batch.is_empty() {
+            let final_len = batch.len();
             tracing::debug!(
-                "Processing final batch of {} documents for collection: {}",
-                batch.len(),
-                collection_name
+                "Processing final batch of {final_len} documents for collection: {collection_name}",
             );
             if !sync_opts.dry_run {
-                tracing::debug!(
-                    "Migrating final batch of {} documents to SurrealDB",
-                    batch.len()
-                );
-                surreal.write_universal_rows(&batch).await?;
+                tracing::debug!("Migrating final batch of {final_len} documents to SurrealDB");
+                write_rows(surreal, pipeline, batch, apply_opts).await?;
                 tracing::debug!("Final batch migration completed");
             } else {
                 tracing::debug!("Dry-run mode: skipping actual migration of final batch");
             }
-            processed += batch.len();
-            total_migrated += batch.len();
+            processed += final_len;
+            total_migrated += final_len;
         }
 
         tracing::info!(

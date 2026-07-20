@@ -18,6 +18,9 @@ sync-core = { path = "../sync-core" }
 # Checkpoint management
 checkpoint = { path = "../checkpoint" }
 
+# Transform apply framework
+sync-transform = { path = "../sync-transform" }
+
 # Type conversion
 neo4j-types = { path = "../neo4j-types" }
 
@@ -43,3 +46,7 @@ serde_json = "1.0.145"
 tokio-test = "0.4"
 tempfile = "3.27"
 surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
+async-trait = "0.1"
+sync-transform = { path = "../sync-transform" }
+checkpoint = { path = "../checkpoint" }
+neo4rs = "0.9.0-rc.8"
