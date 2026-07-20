@@ -232,26 +232,52 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
 
             // Date/time types
             MYSQL_TYPE_DATE => {
-                let dt = extract_date(&mv.value)?;
-                let datetime = dt.and_hms_opt(0, 0, 0).unwrap().and_utc();
-                Ok(TypedValue::date(datetime))
+                match extract_date(&mv.value) {
+                    Ok(dt) => {
+                        let datetime = dt.and_hms_opt(0, 0, 0).unwrap().and_utc();
+                        Ok(TypedValue::date(datetime))
+                    }
+                    Err(ConversionError::InvalidDateTime(_)) => {
+                        // MySQL allows zero dates (0000-00-00). Emit as null.
+                        Ok(TypedValue::null(UniversalType::Date))
+                    }
+                    Err(e) => Err(e),
+                }
             }
 
             MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => {
-                let time = extract_time(&mv.value)?;
-                let today = chrono::Utc::now().date_naive();
-                let datetime = chrono::NaiveDateTime::new(today, time).and_utc();
-                Ok(TypedValue::time(datetime))
+                match extract_time(&mv.value) {
+                    Ok(time) => {
+                        let today = chrono::Utc::now().date_naive();
+                        let datetime = chrono::NaiveDateTime::new(today, time).and_utc();
+                        Ok(TypedValue::time(datetime))
+                    }
+                    Err(ConversionError::InvalidDateTime(_)) => {
+                        Ok(TypedValue::null(UniversalType::Time))
+                    }
+                    Err(e) => Err(e),
+                }
             }
 
             MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => {
-                let dt = extract_datetime(&mv.value)?;
-                Ok(TypedValue::datetime(dt))
+                match extract_datetime(&mv.value) {
+                    Ok(dt) => Ok(TypedValue::datetime(dt)),
+                    Err(ConversionError::InvalidDateTime(_)) => {
+                        // MySQL allows zero dates (0000-00-00 00:00:00). Emit as null.
+                        Ok(TypedValue::null(UniversalType::LocalDateTime))
+                    }
+                    Err(e) => Err(e),
+                }
             }
 
             MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => {
-                let dt = extract_datetime(&mv.value)?;
-                Ok(TypedValue::timestamptz(dt))
+                match extract_datetime(&mv.value) {
+                    Ok(dt) => Ok(TypedValue::timestamptz(dt)),
+                    Err(ConversionError::InvalidDateTime(_)) => {
+                        Ok(TypedValue::null(UniversalType::ZonedDateTime))
+                    }
+                    Err(e) => Err(e),
+                }
             }
 
             MYSQL_TYPE_YEAR => {

@@ -157,37 +157,44 @@ fn binlog_cell_to_typed_value(
         }
         MYSQL_TYPE_DATE => {
             let (year, month, day) = extract_date_parts(cell)?;
-            let date = NaiveDate::from_ymd_opt(year as i32, month as u32, day as u32).ok_or_else(
-                || {
-                    ConversionError::InvalidDateTime(format!(
-                        "invalid date components: year={year}, month={month}, day={day}"
-                    ))
-                },
-            )?;
-            Ok(TypedValue::date(
-                date.and_hms_opt(0, 0, 0).unwrap().and_utc(),
-            ))
+            match NaiveDate::from_ymd_opt(year as i32, month as u32, day as u32) {
+                Some(date) => Ok(TypedValue::date(
+                    date.and_hms_opt(0, 0, 0).unwrap().and_utc(),
+                )),
+                None => {
+                    // MySQL allows zero dates (0000-00-00). Emit as null.
+                    Ok(TypedValue::null(UniversalType::Date))
+                }
+            }
         }
         MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => {
             let (hour, minute, second, micros) = extract_time_parts(cell)?;
-            let today = Utc::now().date_naive();
-            let time = NaiveTime::from_hms_micro_opt(
+            match NaiveTime::from_hms_micro_opt(
                 hour.unsigned_abs(),
                 u32::from(minute),
                 u32::from(second),
                 micros,
-            )
-            .ok_or_else(|| {
-                ConversionError::InvalidDateTime(format!(
-                    "invalid time components: hour={hour}, minute={minute}, second={second}, micro={micros}"
-                ))
-            })?;
-            Ok(TypedValue::time(
-                chrono::NaiveDateTime::new(today, time).and_utc(),
-            ))
+            ) {
+                Some(time) => {
+                    let today = Utc::now().date_naive();
+                    Ok(TypedValue::time(
+                        chrono::NaiveDateTime::new(today, time).and_utc(),
+                    ))
+                }
+                None => {
+                    Ok(TypedValue::null(UniversalType::Time))
+                }
+            }
         }
         MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => {
-            Ok(TypedValue::datetime(extract_datetime(cell)?))
+            match extract_datetime(cell) {
+                Ok(dt) => Ok(TypedValue::datetime(dt)),
+                Err(ConversionError::InvalidDateTime(_)) => {
+                    // MySQL allows zero dates (0000-00-00 00:00:00). Emit as null.
+                    Ok(TypedValue::null(UniversalType::LocalDateTime))
+                }
+                Err(e) => Err(e),
+            }
         }
         MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => {
             Ok(TypedValue::timestamptz(extract_timestamp(cell)?))
