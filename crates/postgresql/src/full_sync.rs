@@ -9,8 +9,8 @@ use rust_decimal::Decimal;
 use std::collections::HashMap;
 use surreal_sink::SurrealSink;
 use sync_core::{
-    classify_table, DatabaseSchema, GeometryType, TableKind, UniversalRow, UniversalType,
-    UniversalValue,
+    classify_table, DatabaseSchema, GeometryType, TableKind, UniversalRelation, UniversalRow,
+    UniversalType, UniversalValue,
 };
 use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, Row};
@@ -27,24 +27,20 @@ pub struct SyncOpts {
     pub dry_run: bool,
 }
 
-/// Migrate a single table from PostgreSQL to SurrealDB.
+/// Convert all rows of a table with FK enrichment (no sink writes).
 ///
 /// When `schema` is provided and the table has foreign keys, FK column values
-/// are automatically converted to SurrealDB record links.  If the table is
-/// classified as a relation (join) table, rows are synced as graph edges
-/// via `RELATE` instead of regular records.
-pub async fn migrate_table<S: SurrealSink>(
+/// become SurrealDB record links. Relation (join) tables become graph edges.
+/// Callers that apply through the transform framework should batch these into
+/// [`sync_transform::write_rows`] / [`sync_transform::write_relations`].
+pub async fn convert_table(
     client: &Client,
-    surreal: &S,
     table_name: &str,
-    sync_opts: &SyncOpts,
     schema: Option<&DatabaseSchema>,
     relation_table_overrides: &[String],
-) -> Result<usize> {
-    // Get primary key column(s)
+) -> Result<(Vec<UniversalRow>, Vec<UniversalRelation>)> {
     let pk_columns = get_primary_key_columns(client, table_name).await?;
 
-    // Determine table kind (entity vs relation)
     let table_kind = schema
         .and_then(|s| s.get_table(table_name))
         .map(|td| classify_table(td, relation_table_overrides));
@@ -53,7 +49,6 @@ pub async fn migrate_table<S: SurrealSink>(
         info!("Table '{table_name}' classified as relation table, will sync as RELATE edges");
     }
 
-    // Query all data from the table
     let query = format!("SELECT * FROM {table_name}");
     log::info!("Full sync querying table {table_name} with: {query}");
     let rows = client.query(&query, &[]).await?;
@@ -65,20 +60,17 @@ pub async fn migrate_table<S: SurrealSink>(
 
     if rows.is_empty() {
         log::info!("Table {table_name} is empty, skipping");
-        return Ok(0);
+        return Ok((Vec::new(), Vec::new()));
     }
 
     let table_def = schema.and_then(|s| s.get_table(table_name));
-
     let mut row_batch = Vec::new();
     let mut rel_batch = Vec::new();
-    let mut total_processed = 0;
 
     for (row_index, row) in rows.iter().enumerate() {
         match &table_kind {
             Some(TableKind::Relation { in_fk, out_fk }) => {
-                // For relation tables, include ALL columns (including PK) so FK
-                // extraction can find them. The relation ID is generated from the row index.
+                // Include ALL columns (including PK) so FK extraction can find them.
                 let all_fields = convert_all_columns_to_universal_values(row)?;
                 let rel_id = UniversalValue::Int64(row_index as i64);
                 let relation = fk_transform::build_relation_from_row(
@@ -95,45 +87,79 @@ pub async fn migrate_table<S: SurrealSink>(
                 row_batch.push(record);
             }
         }
+    }
 
-        let current_batch_len = row_batch.len() + rel_batch.len();
-        if current_batch_len >= sync_opts.batch_size {
+    Ok((row_batch, rel_batch))
+}
+
+/// Migrate a single table from PostgreSQL to SurrealDB.
+///
+/// When `schema` is provided and the table has foreign keys, FK column values
+/// are automatically converted to SurrealDB record links.  If the table is
+/// classified as a relation (join) table, rows are synced as graph edges
+/// via `RELATE` instead of regular records.
+pub async fn migrate_table<S: SurrealSink>(
+    client: &Client,
+    surreal: &S,
+    table_name: &str,
+    sync_opts: &SyncOpts,
+    schema: Option<&DatabaseSchema>,
+    relation_table_overrides: &[String],
+) -> Result<usize> {
+    let (rows, relations) =
+        convert_table(client, table_name, schema, relation_table_overrides).await?;
+    if rows.is_empty() && relations.is_empty() {
+        return Ok(0);
+    }
+
+    let mut total_processed = 0;
+    let mut row_batch = Vec::new();
+    let mut rel_batch = Vec::new();
+
+    for record in rows {
+        row_batch.push(record);
+        if row_batch.len() >= sync_opts.batch_size {
+            let n = row_batch.len();
             if !sync_opts.dry_run {
-                if !row_batch.is_empty() {
-                    surreal.write_universal_rows(&row_batch).await?;
-                }
-                if !rel_batch.is_empty() {
-                    surreal.write_universal_relations(&rel_batch).await?;
-                }
+                surreal.write_universal_rows(&row_batch).await?;
             } else {
-                debug!(
-                    "Dry-run: Would insert {} records/relations into {}",
-                    current_batch_len, table_name
-                );
+                debug!("Dry-run: Would insert {n} records into {table_name}");
             }
-            total_processed += current_batch_len;
+            total_processed += n;
             row_batch.clear();
+        }
+    }
+    for relation in relations {
+        rel_batch.push(relation);
+        if rel_batch.len() >= sync_opts.batch_size {
+            let n = rel_batch.len();
+            if !sync_opts.dry_run {
+                surreal.write_universal_relations(&rel_batch).await?;
+            } else {
+                debug!("Dry-run: Would insert {n} relations into {table_name}");
+            }
+            total_processed += n;
             rel_batch.clear();
         }
     }
 
-    // Process remaining
-    let remaining = row_batch.len() + rel_batch.len();
-    if remaining > 0 {
+    if !row_batch.is_empty() {
+        let n = row_batch.len();
         if !sync_opts.dry_run {
-            if !row_batch.is_empty() {
-                surreal.write_universal_rows(&row_batch).await?;
-            }
-            if !rel_batch.is_empty() {
-                surreal.write_universal_relations(&rel_batch).await?;
-            }
+            surreal.write_universal_rows(&row_batch).await?;
         } else {
-            debug!(
-                "Dry-run: Would insert {} records/relations into {}",
-                remaining, table_name
-            );
+            debug!("Dry-run: Would insert {n} records into {table_name}");
         }
-        total_processed += remaining;
+        total_processed += n;
+    }
+    if !rel_batch.is_empty() {
+        let n = rel_batch.len();
+        if !sync_opts.dry_run {
+            surreal.write_universal_relations(&rel_batch).await?;
+        } else {
+            debug!("Dry-run: Would insert {n} relations into {table_name}");
+        }
+        total_processed += n;
     }
 
     Ok(total_processed)

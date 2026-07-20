@@ -1154,6 +1154,11 @@ struct PostgreSQLPgoutputSyncArgs {
     #[arg(long, default_value_t = 32)]
     wal_event_batch_size: usize,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }

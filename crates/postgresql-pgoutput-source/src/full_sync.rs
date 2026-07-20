@@ -5,10 +5,11 @@ use std::sync::Arc;
 use anyhow::Result;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use surreal_sink::SurrealSink;
-use surreal_sync_postgresql::{get_user_tables, migrate_table, SyncOpts as PgSyncOpts};
+use surreal_sync_postgresql::{convert_table, get_user_tables};
+use sync_transform::{write_relations, write_rows, ApplyOpts, Pipeline};
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::catch_up::{
     emit_catch_up_progress, read_catch_up_progress, CatchUpProgress, CoverageKind,
@@ -27,12 +28,16 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     sync_opts: &SyncOpts,
     sync_manager: Option<&SyncManager<CS>>,
 ) -> Result<()> {
-    run_full_sync_cancellable(
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_full_sync_cancellable_with_transforms(
         surreal,
         from_opts,
         sync_opts,
         sync_manager,
         &tokio_util::sync::CancellationToken::new(),
+        &pipeline,
+        &apply_opts,
     )
     .await
 }
@@ -41,6 +46,8 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 /// stops between tables and returns cleanly **without** emitting a
 /// `FullSyncEnd` checkpoint: the `FullSyncStart` LSN (the streaming lower bound
 /// captured before the dump) remains the safe resume point.
+///
+/// Identity-pipeline overload (no transforms).
 pub async fn run_full_sync_cancellable<S: SurrealSink, CS: CheckpointStore>(
     surreal: &S,
     from_opts: &SourceOpts,
@@ -48,7 +55,43 @@ pub async fn run_full_sync_cancellable<S: SurrealSink, CS: CheckpointStore>(
     sync_manager: Option<&SyncManager<CS>>,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_full_sync_cancellable_with_transforms(
+        surreal,
+        from_opts,
+        sync_opts,
+        sync_manager,
+        cancel,
+        &pipeline,
+        &apply_opts,
+    )
+    .await
+}
+
+/// Full sync with an explicit transform pipeline.
+///
+/// Rows are converted with existing PostgreSQL FK helpers first, then applied
+/// via [`write_rows`] / [`write_relations`] (preserves full-sync FK enrichment;
+/// does not invent incremental FK).
+pub async fn run_full_sync_cancellable_with_transforms<S: SurrealSink, CS: CheckpointStore>(
+    surreal: &S,
+    from_opts: &SourceOpts,
+    sync_opts: &SyncOpts,
+    sync_manager: Option<&SyncManager<CS>>,
+    cancel: &tokio_util::sync::CancellationToken,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<()> {
     info!("Starting PostgreSQL WAL full sync to SurrealDB");
+    if pipeline.is_identity() {
+        debug!("Full sync using identity transform pipeline");
+    } else {
+        info!(
+            stages = pipeline.len(),
+            "Full sync using transform pipeline"
+        );
+    }
 
     let sql = new_sql_client(&from_opts.connection_string).await?;
     let schema = resolve_schema(from_opts).await;
@@ -79,7 +122,6 @@ pub async fn run_full_sync_cancellable<S: SurrealSink, CS: CheckpointStore>(
     };
     info!("Found {} tables to migrate", tables.len());
 
-    let pg_sync_opts = to_pg_sync_opts(sync_opts);
     let mut total_migrated = 0;
     for table_name in &tables {
         if cancel.is_cancelled() {
@@ -92,13 +134,15 @@ pub async fn run_full_sync_cancellable<S: SurrealSink, CS: CheckpointStore>(
         info!("Migrating table: {table_name}");
         let count = {
             let client = sql.lock().await;
-            migrate_table(
+            migrate_table_with_transforms(
                 &client,
                 surreal,
                 table_name,
-                &pg_sync_opts,
+                sync_opts,
                 Some(&db_schema),
-                &[],
+                cancel,
+                pipeline,
+                apply_opts,
             )
             .await?
         };
@@ -134,11 +178,49 @@ pub async fn run_full_sync_cancellable<S: SurrealSink, CS: CheckpointStore>(
     Ok(())
 }
 
-fn to_pg_sync_opts(opts: &SyncOpts) -> PgSyncOpts {
-    PgSyncOpts {
-        batch_size: opts.batch_size,
-        dry_run: opts.dry_run,
+#[allow(clippy::too_many_arguments)]
+async fn migrate_table_with_transforms<S: SurrealSink>(
+    client: &Client,
+    surreal: &S,
+    table_name: &str,
+    sync_opts: &SyncOpts,
+    schema: Option<&sync_core::DatabaseSchema>,
+    cancel: &tokio_util::sync::CancellationToken,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<usize> {
+    let (rows, relations) = convert_table(client, table_name, schema, &[]).await?;
+    if rows.is_empty() && relations.is_empty() {
+        return Ok(0);
     }
+
+    let batch_size = sync_opts.batch_size.max(1);
+    let mut total_processed = 0usize;
+
+    for chunk in rows.chunks(batch_size) {
+        if cancel.is_cancelled() {
+            debug!("Cancellation requested mid-table '{table_name}'; stopping batch writes");
+            return Ok(total_processed);
+        }
+        let n = chunk.len();
+        if !sync_opts.dry_run {
+            write_rows(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
+        }
+        total_processed += n;
+    }
+    for chunk in relations.chunks(batch_size) {
+        if cancel.is_cancelled() {
+            debug!("Cancellation requested mid-table '{table_name}'; stopping batch writes");
+            return Ok(total_processed);
+        }
+        let n = chunk.len();
+        if !sync_opts.dry_run {
+            write_relations(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
+        }
+        total_processed += n;
+    }
+
+    Ok(total_processed)
 }
 
 async fn resolve_user_tables(

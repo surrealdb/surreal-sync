@@ -22,16 +22,21 @@ pub use catch_up::{
 };
 pub use change::cdc_change_to_universal;
 pub use checkpoint::{get_current_checkpoint, PgoutputCheckpoint, PgoutputReconciliationPos};
-pub use full_sync::{capture_head_checkpoint, run_full_sync, run_full_sync_cancellable};
+pub use full_sync::{
+    capture_head_checkpoint, run_full_sync, run_full_sync_cancellable,
+    run_full_sync_cancellable_with_transforms,
+};
 pub use incremental_sync::{
-    run_replication_tail, run_replication_tail_with_checkpoints, ReplicationTailOptions,
+    run_replication_tail, run_replication_tail_with_checkpoints,
+    run_replication_tail_with_transforms, ReplicationTailOptions,
 };
 pub use pgoutput_protocol::Lsn;
 pub use signal::SIGNAL_TABLE;
 pub use watermark_source::{
-    request_snapshot, run_initial_interleaved_snapshot, run_interleaved_snapshot_full_sync,
-    ConnectOptions, InterleavedFullSyncOptions, InterleavedFullSyncOutcome,
-    PgoutputWatermarkSource,
+    request_snapshot, run_initial_interleaved_snapshot,
+    run_initial_interleaved_snapshot_with_transforms, run_interleaved_snapshot_full_sync,
+    run_interleaved_snapshot_full_sync_with_transforms, ConnectOptions, InterleavedFullSyncOptions,
+    InterleavedFullSyncOutcome, PgoutputWatermarkSource,
 };
 
 /// PostgreSQL WAL source connection options.
