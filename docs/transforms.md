@@ -167,7 +167,14 @@ Default `failure_policy = "fail"`: stop the sync process; on restart, resume fro
 
 ### CatchUpProgress and unsunk work (MySQL/MariaDB binlog)
 
-During streaming, surreal-sync may read ahead while transform/apply still has buffered, in-flight, or completed-but-not-yet-sunk batches. Persisted `CatchUpProgress` positions follow the **last successfully sunk** batch in that situation — they do **not** jump to a read-ahead cursor past unsunk work. After transform and apply drain, the usual stream position is safe to persist again. This keeps resume from replaying past docs that never landed in SurrealDB.
+During streaming, surreal-sync may read ahead while transform/apply still has buffered, in-flight, or completed-but-not-yet-sunk batches. Persisted `CatchUpProgress` positions follow the **last successfully sunk** batch in that situation — they do **not** jump to a read-ahead cursor past unsunk work.
+
+Once the apply window is fully drained:
+
+- Sunk watermarks are written promptly (same durability idea as persisting last-sunk on sink success).
+- On `--checkpoint-interval` (default 10s), the store may also advance to the **current** binlog position through filtered/unrelated GTID or table noise — there is nothing unsunk to protect, so catching up past other schemas/tables does not freeze `CatchUpProgress` until process exit.
+
+This keeps resume from replaying past docs that never landed in SurrealDB, without stalling checkpoint heartbeats during filtered-only catch-up.
 
 ## Failure policy
 

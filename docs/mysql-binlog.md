@@ -113,7 +113,7 @@ Pass exactly one of:
 
 Checkpoints are written at snapshot start (`FullSyncStart`), snapshot handoff completion (`FullSyncEnd` — immutable t2 boundary, written once), and during streaming via `CatchUpProgress` (position updated on `--checkpoint-interval`, default 10 seconds; table coverage merged when ad-hoc snapshot batches complete). **Restart the same `sync` command** after any stop — surreal-sync reads the latest position from `CatchUpProgress` when present, otherwise `FullSyncEnd`, otherwise `FullSyncStart`; when both `CatchUpProgress` and `FullSyncEnd` exist, the furthest-ahead position wins.
 
-When using [`--transforms-config`](transforms.md), streaming `CatchUpProgress` does not advance past batches that are still transforming or waiting to be applied — it tracks the **last successfully sunk** position until that work drains.
+When using [`--transforms-config`](transforms.md), streaming `CatchUpProgress` does not advance past batches that are still transforming or waiting to be applied — it tracks the **last successfully sunk** position until that work drains. After drain, sunk watermarks persist promptly; on the checkpoint interval the store may also advance to the current binlog position through filtered/unrelated traffic (same rules as without transforms).
 
 ### Position formats (auto-captured)
 

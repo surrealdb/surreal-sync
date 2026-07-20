@@ -47,6 +47,18 @@ pub const DEFAULT_BINLOG_EVENT_BATCH_SIZE: usize = 32;
 /// Default sleep when a replication tail poll returns no events.
 pub const DEFAULT_REPLICATION_TAIL_IDLE_SLEEP: Duration = Duration::from_millis(100);
 
+/// Max filtered-only `next_events` batches before `poll_work` yields to the
+/// runtime (drain / interval persist / ad-hoc), so catch-up through unrelated
+/// GTID noise cannot block control-plane work forever.
+const MAX_FILTERED_POLL_BATCHES: usize = 16;
+
+/// Wall-clock bound for the filtered-only skip loop inside `poll_work`.
+const MAX_FILTERED_POLL_SPIN: Duration = Duration::from_millis(50);
+
+/// Minimum time between execute-snapshot signal table polls (avoids querying on
+/// every filtered-yield outer cycle).
+const SIGNAL_POLL_MIN_INTERVAL: Duration = Duration::from_millis(200);
+
 #[derive(Clone, Debug)]
 pub struct ReplicationTailOptions {
     /// Optional wall-clock stop for the stream phase.
@@ -135,10 +147,12 @@ where
 ///
 /// Incremental work runs via [`BinlogSourceDriver`] +
 /// [`sync_transform::run_source_runtime_with`]. Sink success still gates
-/// binlog `commit` and CatchUpProgress persistence: store checkpoints advance
-/// only from sink-safe positions (never from read-ahead
-/// [`binlog_protocol::BinlogClient::current_position`] while transform batches
-/// remain buffered or in flight).
+/// binlog `commit`. CatchUpProgress uses
+/// [`CheckpointPolicy::IntervalWhenDrained`]: sunk watermarks persist promptly
+/// once the apply window drains; when fully drained with no unsunk work, the
+/// same interval may advance the store to the **current** binlog position
+/// through filtered/unrelated GTID noise (never while transform/apply still
+/// holds buffered or in-flight batches).
 pub async fn run_replication_tail_with_transforms<S, St>(
     surreal: &S,
     from_opts: SourceOpts,
@@ -222,6 +236,7 @@ where
         last_persisted_checkpoint: None,
         total_changes: 0,
         pending_adhoc_signals: Vec::new(),
+        last_signal_check: None,
         until_reached: false,
         cancel_seen: false,
     };
@@ -254,7 +269,7 @@ where
 
     driver.finalize_store_checkpoint().await?;
     info!(
-        "MySQL binlog incremental sync completed: {} changes applied",
+        "MySQL binlog incremental sync completed: {} changes sunk",
         driver.total_changes
     );
     drop(driver.conn);
@@ -281,8 +296,11 @@ struct BinlogSourceDriver<'a, S, St: CheckpointStore> {
     table_filter: Option<Vec<String>>,
     last_sunk_checkpoint: Option<BinlogCheckpoint>,
     last_persisted_checkpoint: Option<BinlogCheckpoint>,
+    /// Events successfully sunk (not merely buffered).
     total_changes: u64,
     pending_adhoc_signals: Vec<SnapshotSignal>,
+    /// Last successful execute-snapshot signal table poll (`None` = never).
+    last_signal_check: Option<std::time::Instant>,
     until_reached: bool,
     cancel_seen: bool,
 }
@@ -418,10 +436,6 @@ where
                             &self.json_columns,
                         )?;
                         out.push(PositionedEvent::change(universal, position));
-                        self.total_changes = self.total_changes.saturating_add(1);
-                        if self.total_changes.is_multiple_of(100) {
-                            debug!("Processed {} binlog changes", self.total_changes);
-                        }
                     }
                 }
                 _ => {}
@@ -445,10 +459,13 @@ where
         }
 
         // Keep reading while events are available but filtered out (other schemas,
-        // non-row events). Returning empty to the runtime would re-enter
+        // non-row events). Returning empty every batch would re-enter
         // between_events (signal-table query) between every binlog event and
-        // stall catch-up through large unrelated transactions.
+        // stall catch-up through large unrelated transactions. Bound the spin
+        // so the runtime can still drain, interval-persist, and poll ad-hoc.
         let mut out = Vec::new();
+        let spin_started = std::time::Instant::now();
+        let mut filtered_batches = 0usize;
         loop {
             if self.stop_reason().is_some() {
                 return Ok(out);
@@ -480,6 +497,13 @@ where
             if !out.is_empty() {
                 return Ok(out);
             }
+
+            filtered_batches = filtered_batches.saturating_add(1);
+            if filtered_batches >= MAX_FILTERED_POLL_BATCHES
+                || spin_started.elapsed() >= MAX_FILTERED_POLL_SPIN
+            {
+                return Ok(out);
+            }
         }
     }
 
@@ -499,10 +523,15 @@ where
 
     async fn between_events(&mut self) -> Result<Vec<ControlSignal>> {
         let mut signals = Vec::new();
-        if self.pending_adhoc_signals.is_empty() {
+        let signal_poll_due = self
+            .last_signal_check
+            .map(|t| t.elapsed() >= SIGNAL_POLL_MIN_INTERVAL)
+            .unwrap_or(true);
+        if self.pending_adhoc_signals.is_empty() && signal_poll_due {
             let pending =
                 read_pending_execute_snapshot_signals(&self.pool, &self.database).await?;
             self.pending_adhoc_signals = pending;
+            self.last_signal_check = Some(std::time::Instant::now());
         }
         if !self.pending_adhoc_signals.is_empty() {
             let tables = self
@@ -643,6 +672,19 @@ where
             false,
         )
         .await
+    }
+
+    async fn read_progress_for_persist(&mut self) -> Result<Option<Self::Position>> {
+        // Fully drained: current read position is safe to persist (filtered noise).
+        let client = self.client_ref()?;
+        Ok(Some(client.current_position()))
+    }
+
+    fn note_sunk_events(&mut self, count: u64) {
+        self.total_changes = self.total_changes.saturating_add(count);
+        if self.total_changes > 0 && self.total_changes.is_multiple_of(100) {
+            debug!("Sunk {} binlog changes", self.total_changes);
+        }
     }
 }
 

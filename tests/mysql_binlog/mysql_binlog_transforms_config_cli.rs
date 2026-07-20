@@ -163,6 +163,8 @@ stdin.framer = "ndjson"
         &checkpoint_string,
         "--stop-after",
         "15s",
+        "--checkpoint-dir",
+        &checkpoint_dir,
         "--transforms-config",
         &transforms_path,
     ];
@@ -170,6 +172,16 @@ stdin.framer = "ndjson"
     assert_cli_success(
         &stream_output,
         "MySQL binlog stream CLI with --transforms-config mutate",
+    );
+
+    let catch_up = checkpoint::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        SyncPhase::CatchUpProgress,
+    )
+    .await;
+    assert!(
+        catch_up.is_ok(),
+        "stream phase with --checkpoint-dir should persist CatchUpProgress; err={catch_up:?}"
     );
 
     #[derive(Debug, serde::Deserialize)]
