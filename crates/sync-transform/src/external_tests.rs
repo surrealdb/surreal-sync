@@ -215,3 +215,67 @@ async fn scripted_external_happy_path_sinks_and_commits() {
     assert_eq!(sink.applied().len(), 2);
     assert_eq!(feed.commits, vec![10, 20]);
 }
+
+#[tokio::test]
+async fn external_exchanges_relation_changes_over_wire() {
+    use sync_core::{UniversalRelation, UniversalRelationChange, UniversalThingRef};
+
+    let transport = ScriptedExternalTransport::new();
+    let ext = ExternalTransform::with_transport(Arc::new(transport));
+    let rel = UniversalRelation::new(
+        "follows",
+        UniversalValue::Int64(7),
+        UniversalThingRef::new("users", UniversalValue::Int64(1)),
+        UniversalThingRef::new("users", UniversalValue::Int64(2)),
+        HashMap::new(),
+    );
+    let out = ext
+        .exchange_relation_changes(1, vec![UniversalRelationChange::create(rel)])
+        .await
+        .unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].relation.id, UniversalValue::Int64(7));
+}
+
+#[tokio::test]
+async fn external_pipeline_transforms_mixed_relation_and_change() {
+    use crate::{run_source_runtime, PositionedEvent, SourceRuntimeOpts};
+    use sync_core::{UniversalRelation, UniversalRelationChange, UniversalThingRef};
+
+    let transport = ScriptedExternalTransport::new();
+    let mut pipeline = Pipeline::new();
+    pipeline.push_external(ExternalTransform::with_transport(Arc::new(transport)));
+
+    let rel = UniversalRelation::new(
+        "follows",
+        UniversalValue::Int64(5),
+        UniversalThingRef::new("users", UniversalValue::Int64(5)),
+        UniversalThingRef::new("users", UniversalValue::Int64(6)),
+        HashMap::new(),
+    );
+    let mut driver = crate::test_support::ScriptedSourceDriver::new(vec![
+        PositionedEvent::change(change(1), 10u64),
+        PositionedEvent::relation_change(UniversalRelationChange::create(rel), 20u64),
+    ]);
+    let sink = RecordingSink::new();
+    let opts = ApplyOpts::default()
+        .with_batch_size(1)
+        .with_max_in_flight(1)
+        .with_timeout(Duration::from_secs(2));
+
+    run_source_runtime(
+        &mut driver,
+        &sink,
+        &pipeline,
+        &opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        sink.apply_order_tags(),
+        vec!["change:1".to_string(), "relation:5".to_string()]
+    );
+    assert_eq!(driver.commits, vec![10, 20]);
+}

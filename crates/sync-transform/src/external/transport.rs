@@ -1,6 +1,6 @@
 //! Multiplexed external transports: persistent/transient child-stdio.
 
-use crate::external::wire::{RequestHeader, ResponseHeader};
+use crate::external::wire::{RequestHeader, ResponseHeader, WireItemKind};
 use crate::framer::{Framer, NdjsonFramer};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
@@ -39,7 +39,15 @@ pub struct WireResponse {
 #[async_trait]
 pub trait ExternalTransport: Send + Sync {
     /// Write one framed request (header + item lines) for `batch_id`.
-    async fn write_request(&self, batch_id: u64, items: &[Vec<u8>]) -> Result<()>;
+    ///
+    /// `kind` is included in the NDJSON header so workers can distinguish
+    /// row-change vs relation payloads.
+    async fn write_request(
+        &self,
+        batch_id: u64,
+        items: &[Vec<u8>],
+        kind: WireItemKind,
+    ) -> Result<()>;
 
     /// Await the response for a specific request `batch_id`.
     ///
@@ -50,10 +58,16 @@ pub trait ExternalTransport: Send + Sync {
     async fn try_read_response(&self, batch_id: u64) -> Result<Option<WireResponse>>;
 }
 
-pub(crate) fn encode_request(framer: &dyn Framer, batch_id: u64, items: &[Vec<u8>]) -> Vec<u8> {
+pub(crate) fn encode_request(
+    framer: &dyn Framer,
+    batch_id: u64,
+    items: &[Vec<u8>],
+    kind: WireItemKind,
+) -> Vec<u8> {
     let header = RequestHeader {
         batch_id,
         count: items.len(),
+        kind,
     };
     let header_bytes = serde_json::to_vec(&header).expect("RequestHeader serializes");
     let mut out = Vec::with_capacity(
@@ -285,8 +299,13 @@ impl PersistentChildStdio {
 
 #[async_trait]
 impl ExternalTransport for PersistentChildStdio {
-    async fn write_request(&self, batch_id: u64, items: &[Vec<u8>]) -> Result<()> {
-        let bytes = encode_request(&self.framer, batch_id, items);
+    async fn write_request(
+        &self,
+        batch_id: u64,
+        items: &[Vec<u8>],
+        kind: WireItemKind,
+    ) -> Result<()> {
+        let bytes = encode_request(&self.framer, batch_id, items, kind);
         self.write_order.lock().await.push_back(batch_id);
         write_all_locked(&self.stdin, &bytes).await?;
         self.notify.notify_waiters();
@@ -436,9 +455,14 @@ impl TransientChildStdio {
 
 #[async_trait]
 impl ExternalTransport for TransientChildStdio {
-    async fn write_request(&self, batch_id: u64, items: &[Vec<u8>]) -> Result<()> {
+    async fn write_request(
+        &self,
+        batch_id: u64,
+        items: &[Vec<u8>],
+        kind: WireItemKind,
+    ) -> Result<()> {
         let (mut stdin, tc) = self.spawn_one()?;
-        let bytes = encode_request(&self.framer, batch_id, items);
+        let bytes = encode_request(&self.framer, batch_id, items, kind);
         stdin
             .write_all(&bytes)
             .await

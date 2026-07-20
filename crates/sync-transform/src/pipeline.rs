@@ -52,6 +52,14 @@ impl std::fmt::Debug for Stage {
 /// [`push_inplace`](Self::push_inplace) it. Relation edges use the same
 /// pipeline via relation transform methods; full join-table→relation conversion
 /// may still live in a source crate.
+///
+/// # External + relations
+///
+/// External stages exchange **both** row changes and relation changes over
+/// NDJSON ([`ExternalTransform::exchange_relation_changes`] /
+/// [`ExternalTransform::exchange_relations`]). There is no silent relation
+/// pass-through. Mixed change+relation batches may not filter/fan-out (length
+/// of each kind must be preserved); use homogeneous batches for length changes.
 #[derive(Debug, Default, Clone)]
 pub struct Pipeline {
     stages: Vec<Stage>,
@@ -220,7 +228,10 @@ impl Pipeline {
             match stage {
                 Stage::InPlace(t) => t.transform_relation_changes_inplace(changes)?,
                 Stage::External(_) => {
-                    // Relation wire for External is not in v1; pass through.
+                    bail!(
+                        "External transforms require the async BatchTransformer path \
+                         (transform_relation_changes); sync inplace apply is in-place-only"
+                    )
                 }
             }
         }
@@ -235,7 +246,12 @@ impl Pipeline {
         for stage in &self.stages {
             match stage {
                 Stage::InPlace(t) => t.transform_relations_inplace(relations)?,
-                Stage::External(_) => {}
+                Stage::External(_) => {
+                    bail!(
+                        "External transforms require the async BatchTransformer path \
+                         (transform_relations); sync inplace apply is in-place-only"
+                    )
+                }
             }
         }
         Ok(())
@@ -261,25 +277,47 @@ impl Pipeline {
 
     pub(crate) async fn apply_relation_changes_async(
         &self,
-        _batch_id: u64,
+        batch_id: u64,
         mut changes: Vec<UniversalRelationChange>,
     ) -> Result<Vec<UniversalRelationChange>> {
-        // External relation exchange is deferred; InPlace only.
-        self.transform_relation_changes_inplace(&mut changes)?;
+        if self.is_identity() {
+            return Ok(changes);
+        }
+        for stage in &self.stages {
+            match stage {
+                Stage::InPlace(t) => t.transform_relation_changes_inplace(&mut changes)?,
+                Stage::External(ext) => {
+                    changes = ext.exchange_relation_changes(batch_id, changes).await?;
+                }
+            }
+        }
         Ok(changes)
     }
 
     pub(crate) async fn apply_relations_async(
         &self,
-        _batch_id: u64,
+        batch_id: u64,
         mut relations: Vec<UniversalRelation>,
     ) -> Result<Vec<UniversalRelation>> {
-        self.transform_relations_inplace(&mut relations)?;
+        if self.is_identity() {
+            return Ok(relations);
+        }
+        for stage in &self.stages {
+            match stage {
+                Stage::InPlace(t) => t.transform_relations_inplace(&mut relations)?,
+                Stage::External(ext) => {
+                    relations = ext.exchange_relations(batch_id, relations).await?;
+                }
+            }
+        }
         Ok(relations)
     }
 
-    /// Mixed event walk: InPlace applies to each kind; External exchanges **row
-    /// changes only** (relation events pass through External stages unchanged).
+    /// Mixed event walk: InPlace applies to each kind; External exchanges **both**
+    /// row changes and relation changes over NDJSON (no silent pass-through).
+    ///
+    /// Homogeneous batches may filter/fan-out (length may change). Mixed
+    /// change+relation batches must preserve length of each kind.
     pub(crate) async fn apply_events_async(
         &self,
         batch_id: u64,
@@ -299,29 +337,80 @@ impl Pipeline {
                     }
                 }
                 Stage::External(ext) => {
-                    let mut change_idxs = Vec::new();
-                    let mut changes = Vec::new();
-                    for (i, event) in events.iter().enumerate() {
-                        if let ApplyEvent::Change(c) = event {
-                            change_idxs.push(i);
-                            changes.push(c.clone());
+                    let all_changes = events.iter().all(|e| e.is_change());
+                    let all_rels = events.iter().all(|e| e.is_relation_change());
+                    if all_changes {
+                        let changes: Vec<UniversalChange> = events
+                            .into_iter()
+                            .map(|e| match e {
+                                ApplyEvent::Change(c) => c,
+                                ApplyEvent::RelationChange(_) => unreachable!(),
+                            })
+                            .collect();
+                        let transformed = ext.exchange_changes(batch_id, changes).await?;
+                        events = transformed.into_iter().map(ApplyEvent::Change).collect();
+                    } else if all_rels {
+                        let rels: Vec<UniversalRelationChange> = events
+                            .into_iter()
+                            .map(|e| match e {
+                                ApplyEvent::RelationChange(r) => *r,
+                                ApplyEvent::Change(_) => unreachable!(),
+                            })
+                            .collect();
+                        let transformed =
+                            ext.exchange_relation_changes(batch_id, rels).await?;
+                        events = transformed
+                            .into_iter()
+                            .map(ApplyEvent::relation_change)
+                            .collect();
+                    } else {
+                        let mut change_idxs = Vec::new();
+                        let mut changes = Vec::new();
+                        let mut rel_idxs = Vec::new();
+                        let mut rels = Vec::new();
+                        for (i, event) in events.iter().enumerate() {
+                            match event {
+                                ApplyEvent::Change(c) => {
+                                    change_idxs.push(i);
+                                    changes.push(c.clone());
+                                }
+                                ApplyEvent::RelationChange(r) => {
+                                    rel_idxs.push(i);
+                                    rels.push((**r).clone());
+                                }
+                            }
                         }
-                    }
-                    if changes.is_empty() {
-                        continue;
-                    }
-                    let n = changes.len();
-                    let transformed = ext.exchange_changes(batch_id, changes).await?;
-                    if transformed.len() != n {
-                        bail!(
-                            "External stage changed change-count ({n} → {}) while relation \
-                             events were present in the same batch; use homogeneous batches \
-                             for filter/fan-out",
-                            transformed.len()
-                        );
-                    }
-                    for (idx, c) in change_idxs.into_iter().zip(transformed) {
-                        events[idx] = ApplyEvent::Change(c);
+                        if !changes.is_empty() {
+                            let n = changes.len();
+                            let transformed = ext.exchange_changes(batch_id, changes).await?;
+                            if transformed.len() != n {
+                                bail!(
+                                    "External stage changed change-count ({n} → {}) while relation \
+                                     events were present in the same batch; use homogeneous batches \
+                                     for filter/fan-out",
+                                    transformed.len()
+                                );
+                            }
+                            for (idx, c) in change_idxs.into_iter().zip(transformed) {
+                                events[idx] = ApplyEvent::Change(c);
+                            }
+                        }
+                        if !rels.is_empty() {
+                            let n = rels.len();
+                            let transformed =
+                                ext.exchange_relation_changes(batch_id, rels).await?;
+                            if transformed.len() != n {
+                                bail!(
+                                    "External stage changed relation-count ({n} → {}) while row \
+                                     changes were present in the same batch; use homogeneous batches \
+                                     for filter/fan-out",
+                                    transformed.len()
+                                );
+                            }
+                            for (idx, r) in rel_idxs.into_iter().zip(transformed) {
+                                events[idx] = ApplyEvent::relation_change(r);
+                            }
+                        }
                     }
                 }
             }

@@ -725,3 +725,63 @@ async fn apply_relation_changes_helper() {
         UniversalValue::Int64(9)
     );
 }
+
+/// W≥2 discard with a mixed relation+change batch window: A (change) fails after
+/// B (relation) already transformed; B must never sink; context poisons.
+#[tokio::test]
+async fn discard_on_failure_mixed_relation_and_change_w2() {
+    let transformer = ScriptedTransformer::new(Pipeline::new())
+        .on_batch(1, BatchScript::fail_after(Duration::from_millis(80), "A change boom"))
+        .on_batch(2, BatchScript::succeed_after(Duration::from_millis(5)));
+
+    let sink = RecordingSink::new();
+    let opts = opts_window(2);
+    let mut ctx = ApplyContext::new(&sink, Arc::new(transformer.clone()), &opts);
+
+    assert!(ctx
+        .push_change(change(1), 100u64)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(ctx
+        .push_relation_change(UniversalRelationChange::create(relation(2)), 200u64)
+        .await
+        .unwrap()
+        .is_none());
+    // Third item buffered while A+B in flight.
+    assert!(ctx
+        .push_change(change(3), 300u64)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(ctx.buffer_len(), 1);
+
+    let err = ctx.flush().await.unwrap_err();
+    let err_msg = format!("{err:#}");
+    assert!(
+        err_msg.contains("A change boom"),
+        "unexpected error: {err_msg}"
+    );
+
+    let completed = transformer.completed_order();
+    assert_eq!(
+        completed.first(),
+        Some(&2),
+        "relation batch B must complete transform first: {completed:?}"
+    );
+    assert!(
+        completed.contains(&1),
+        "change batch A must have completed (as Err): {completed:?}"
+    );
+
+    assert!(ctx.is_poisoned());
+    assert_eq!(ctx.in_flight_count(), 0);
+    assert_eq!(ctx.completed_waiting_count(), 0);
+    assert_eq!(ctx.buffer_len(), 0);
+    assert!(
+        sink.applied().is_empty() && sink.relations_applied().is_empty(),
+        "neither change nor relation successors may sink after Fail: applied={:?} rels={:?}",
+        sink.applied(),
+        sink.relations_applied()
+    );
+}

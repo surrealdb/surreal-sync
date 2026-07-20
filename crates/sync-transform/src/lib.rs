@@ -49,10 +49,10 @@ mod pipeline;
 pub use apply::{
     apply_changes, apply_changes_with, apply_relation_changes, apply_relation_changes_with,
     run_change_feed, run_change_feed_with, run_source_runtime, run_source_runtime_with,
-    write_relations, write_relations_with, write_rows, write_rows_with, ApplyContext, ApplyEvent,
-    ApplyOpts, BatchTransformer, ChangeFeed, ChangeFeedDriver, ChangeFeedRef, CheckpointPolicy,
-    ControlSignal, FailurePolicy, PositionedChange, PositionedEvent, RuntimeExit, SourceDriver,
-    SourceRuntimeOpts, StopReason,
+    write_relations, write_relations_with, write_rows, write_rows_with, AdhocApply, ApplyContext,
+    ApplyEvent, ApplyOpts, BatchTransformer, ChangeFeed, ChangeFeedDriver, ChangeFeedRef,
+    CheckpointPolicy, ControlSignal, FailurePolicy, PositionedChange, PositionedEvent, RuntimeExit,
+    SourceDriver, SourceRuntimeOpts, StopReason,
 };
 pub use config::{
     ensure_command_resolvable, load_pipeline_and_opts, load_transforms_config, parse_humantime,
@@ -62,7 +62,7 @@ pub use config::{
 pub use cow::CowBatch;
 pub use external::{
     ChildStdioMode, ExternalTransform, ExternalTransport, PersistentChildStdio, RequestHeader,
-    ResponseHeader, TransientChildStdio, WireResponse,
+    ResponseHeader, TransientChildStdio, WireItemKind, WireResponse,
 };
 pub use framer::{Framer, NdjsonFramer};
 pub use inplace::{InPlaceTransform, Passthrough};

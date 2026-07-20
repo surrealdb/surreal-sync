@@ -95,7 +95,7 @@ pub trait BatchTransformer: Send + Sync {
                 }
                 ApplyEvent::RelationChange(r) => {
                     rel_idxs.push(i);
-                    rels.push(r);
+                    rels.push(*r);
                 }
             }
         }
@@ -126,7 +126,7 @@ pub trait BatchTransformer: Send + Sync {
                 );
             }
             for (idx, r) in rel_idxs.into_iter().zip(transformed) {
-                out[idx] = Some(ApplyEvent::RelationChange(r));
+                out[idx] = Some(ApplyEvent::relation_change(r));
             }
         }
 

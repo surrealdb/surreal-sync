@@ -17,7 +17,7 @@ use crate::pipeline::Pipeline;
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::Instant;
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
 use tokio::task::JoinSet;
@@ -272,6 +272,10 @@ pub struct ApplyContext<'a, S, T, P = ()> {
     poisoned: bool,
     /// Events successfully sunk since the last [`Self::take_sunk_change_count`].
     sunk_since_take: u64,
+    /// Deferred sink-safe position for [`CheckpointPolicy::IntervalWhenDrained`].
+    pending_checkpoint: Option<P>,
+    /// Last wall-clock time a deferred checkpoint was persisted.
+    last_checkpoint_persist: Instant,
 }
 
 impl<'a, S, T, P> ApplyContext<'a, S, T, P>
@@ -297,6 +301,8 @@ where
             epoch: 0,
             poisoned: false,
             sunk_since_take: 0,
+            pending_checkpoint: None,
+            last_checkpoint_persist: Instant::now(),
         }
     }
 
@@ -323,6 +329,21 @@ where
     /// Number of transform results waiting for ordered sink apply.
     pub fn completed_waiting_count(&self) -> usize {
         self.completed.len()
+    }
+
+    /// Whether any buffered, in-flight, or completed-waiting work remains.
+    ///
+    /// Used by checkpoint policies that must not persist a read-ahead position
+    /// while transform/apply still has unsunk work.
+    pub fn has_unsunk_work(&self) -> bool {
+        self.buffer_len() > 0
+            || self.in_flight_count() > 0
+            || self.completed_waiting_count() > 0
+    }
+
+    /// Whether the apply window is fully drained (no unsunk work).
+    pub fn is_fully_drained(&self) -> bool {
+        !self.has_unsunk_work()
     }
 
     fn ensure_not_poisoned(&self) -> Result<()> {
@@ -596,7 +617,7 @@ where
     ) -> Result<()> {
         loop {
             let Some(batch) = self.completed.remove(&self.next_to_apply) else {
-                return Ok(());
+                break;
             };
             match batch.result {
                 Ok(events) => match self.apply_sink_events(&events).await {
@@ -605,15 +626,8 @@ where
                             .commit(batch.last_position.clone())
                             .await
                             .context("commit")?;
-                        if matches!(
-                            driver.checkpoint_policy(),
-                            CheckpointPolicy::PersistAfterCommit
-                        ) {
-                            driver
-                                .persist_checkpoint(batch.last_position)
-                                .await
-                                .context("persist_checkpoint")?;
-                        }
+                        self.after_commit_persist(driver, batch.last_position)
+                            .await?;
                         self.next_to_apply += 1;
                     }
                     Err(e) => {
@@ -627,6 +641,60 @@ where
                 }
             }
         }
+        self.try_interval_persist(driver).await
+    }
+
+    async fn after_commit_persist(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+        position: P,
+    ) -> Result<()> {
+        match driver.checkpoint_policy() {
+            CheckpointPolicy::PersistAfterCommit => {
+                driver
+                    .persist_checkpoint(position)
+                    .await
+                    .context("persist_checkpoint")?;
+            }
+            CheckpointPolicy::CommitOnly => {}
+            CheckpointPolicy::IntervalWhenDrained { .. } => {
+                self.pending_checkpoint = Some(position);
+            }
+        }
+        Ok(())
+    }
+
+    async fn try_interval_persist(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+    ) -> Result<()> {
+        let CheckpointPolicy::IntervalWhenDrained { interval } = driver.checkpoint_policy() else {
+            return Ok(());
+        };
+        if self.pending_checkpoint.is_none() {
+            return Ok(());
+        }
+        if !self.is_fully_drained() {
+            return Ok(());
+        }
+        if self.last_checkpoint_persist.elapsed() < interval {
+            return Ok(());
+        }
+        self.flush_pending_checkpoint(driver).await
+    }
+
+    async fn flush_pending_checkpoint(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+    ) -> Result<()> {
+        if let Some(position) = self.pending_checkpoint.take() {
+            driver
+                .persist_checkpoint(position)
+                .await
+                .context("persist_checkpoint")?;
+            self.last_checkpoint_persist = Instant::now();
+        }
+        Ok(())
     }
 
     /// Flush remaining work and commit via driver (used on cancel/deadline stop).
@@ -644,6 +712,8 @@ where
                 && self.in_flight.is_empty()
                 && self.completed.is_empty()
             {
+                // Force-persist any deferred IntervalWhenDrained position.
+                self.flush_pending_checkpoint(driver).await?;
                 return Ok(());
             }
             if self.in_flight_count() > 0 {
@@ -715,15 +785,7 @@ where
                     .commit(last_position.clone())
                     .await
                     .context("commit after skip")?;
-                if matches!(
-                    driver.checkpoint_policy(),
-                    CheckpointPolicy::PersistAfterCommit
-                ) {
-                    driver
-                        .persist_checkpoint(last_position)
-                        .await
-                        .context("persist_checkpoint after skip")?;
-                }
+                self.after_commit_persist(driver, last_position).await?;
                 self.next_to_apply += 1;
                 Ok(())
             }

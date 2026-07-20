@@ -7,13 +7,17 @@
 use crate::apply::event::PositionedEvent;
 use crate::apply::feed::ChangeFeed;
 use crate::apply::opts::ApplyOpts;
-use crate::apply::runtime::ApplyContext;
+use crate::apply::runtime::{
+    apply_changes_with, apply_relation_changes_with, write_relations_with, write_rows_with,
+    ApplyContext,
+};
 use crate::apply::transform::BatchTransformer;
 use crate::pipeline::Pipeline;
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use surreal_sink::SurrealSink;
+use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
 use tracing::debug;
 
 /// Control-plane signal returned from [`SourceDriver::between_events`].
@@ -56,6 +60,17 @@ pub enum CheckpointPolicy {
     PersistAfterCommit,
     /// Do not call `persist_checkpoint` (driver folds durability into `commit`).
     CommitOnly,
+    /// Coalesce sink-safe positions and call `persist_checkpoint` only when the
+    /// apply window is **fully drained** (no buffer / in-flight / completed-waiting)
+    /// **and** at least `interval` has elapsed since the last persist.
+    ///
+    /// `interval = Duration::ZERO` persists whenever the window becomes drained
+    /// (still never advances past unsunk work). On stop flush, any pending
+    /// sink-safe position is force-persisted.
+    IntervalWhenDrained {
+        /// Minimum time between `persist_checkpoint` calls.
+        interval: Duration,
+    },
 }
 
 /// Why the runtime exited.
@@ -63,6 +78,80 @@ pub enum CheckpointPolicy {
 pub enum RuntimeExit {
     /// Clean stop with the given reason.
     Stopped(StopReason),
+}
+
+/// Framework-injected apply helpers for [`SourceDriver::on_adhoc_snapshot`].
+///
+/// Drivers must use these (or the same sink + transformer + [`ApplyOpts`]) so
+/// ad-hoc / snapshot writes honor transform and sink invariants — no private
+/// durability bypass of the pipeline.
+#[async_trait::async_trait]
+pub trait AdhocApply: Send + Sync {
+    /// Transform + `write_universal_rows` via the runtime’s pipeline and opts.
+    async fn write_rows(&self, rows: Vec<UniversalRow>) -> Result<()>;
+
+    /// Transform + `write_universal_relations`.
+    async fn write_relations(&self, relations: Vec<UniversalRelation>) -> Result<()>;
+
+    /// Transform + apply each row change.
+    async fn apply_changes(&self, changes: Vec<UniversalChange>) -> Result<()>;
+
+    /// Transform + apply each relation change.
+    async fn apply_relation_changes(&self, changes: Vec<UniversalRelationChange>) -> Result<()>;
+
+    /// Borrow the apply options used by the incremental loop.
+    fn apply_opts(&self) -> &ApplyOpts;
+}
+
+struct AdhocApplyImpl<'a, S, T> {
+    sink: &'a S,
+    transformer: Arc<T>,
+    apply_opts: &'a ApplyOpts,
+}
+
+#[async_trait::async_trait]
+impl<'a, S, T> AdhocApply for AdhocApplyImpl<'a, S, T>
+where
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
+    async fn write_rows(&self, rows: Vec<UniversalRow>) -> Result<()> {
+        write_rows_with(self.sink, Arc::clone(&self.transformer), rows, self.apply_opts).await
+    }
+
+    async fn write_relations(&self, relations: Vec<UniversalRelation>) -> Result<()> {
+        write_relations_with(
+            self.sink,
+            Arc::clone(&self.transformer),
+            relations,
+            self.apply_opts,
+        )
+        .await
+    }
+
+    async fn apply_changes(&self, changes: Vec<UniversalChange>) -> Result<()> {
+        apply_changes_with(
+            self.sink,
+            Arc::clone(&self.transformer),
+            changes,
+            self.apply_opts,
+        )
+        .await
+    }
+
+    async fn apply_relation_changes(&self, changes: Vec<UniversalRelationChange>) -> Result<()> {
+        apply_relation_changes_with(
+            self.sink,
+            Arc::clone(&self.transformer),
+            changes,
+            self.apply_opts,
+        )
+        .await
+    }
+
+    fn apply_opts(&self) -> &ApplyOpts {
+        self.apply_opts
+    }
 }
 
 /// Source-facing incremental driver: work items + optional control-plane hooks.
@@ -102,8 +191,18 @@ pub trait SourceDriver: Send {
         Ok(())
     }
 
-    /// Handle [`ControlSignal::AdHocSnapshot`]. Default: no-op.
-    async fn on_adhoc_snapshot(&mut self, _tables: &[String]) -> Result<()> {
+    /// Handle [`ControlSignal::AdHocSnapshot`].
+    ///
+    /// `apply` exposes the runtime’s sink + pipeline/transformer + [`ApplyOpts`]
+    /// so drivers can run snapshot writes through the same transform/sink path
+    /// as the incremental loop (no private durability bypass).
+    ///
+    /// Default: no-op.
+    async fn on_adhoc_snapshot(
+        &mut self,
+        _tables: &[String],
+        _apply: &dyn AdhocApply,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -117,8 +216,8 @@ pub trait SourceDriver: Send {
         CheckpointPolicy::PersistAfterCommit
     }
 
-    /// Persist a **sink-safe** checkpoint (called only after successful sink +
-    /// [`commit`](Self::commit) when policy is [`CheckpointPolicy::PersistAfterCommit`]).
+    /// Persist a **sink-safe** checkpoint (called after successful sink +
+    /// [`commit`](Self::commit) according to [`CheckpointPolicy`]).
     /// Default: no-op.
     async fn persist_checkpoint(&mut self, _position: Self::Position) -> Result<()> {
         Ok(())
@@ -241,8 +340,8 @@ impl SourceRuntimeOpts {
 ///
 /// Order per batch: buffer → transform → ordered sink → `commit` → optional
 /// `persist_checkpoint` (sink-safe only). Between cycles: `between_events` →
-/// control hooks. Stops on `is_finished` (after drain), driver `stop_reason`,
-/// or [`SourceRuntimeOpts`] cancel/deadline.
+/// control hooks (ad-hoc receives [`AdhocApply`]). Stops on `is_finished`
+/// (after drain), driver `stop_reason`, or [`SourceRuntimeOpts`] cancel/deadline.
 pub async fn run_source_runtime<D, S>(
     driver: &mut D,
     sink: &S,
@@ -277,14 +376,14 @@ where
     S: SurrealSink,
     T: BatchTransformer + 'static,
 {
-    let mut ctx = ApplyContext::new(sink, transformer, apply_opts);
+    let mut ctx = ApplyContext::new(sink, Arc::clone(&transformer), apply_opts);
     loop {
         if let Some(reason) = effective_stop_reason(driver, runtime_opts) {
             ctx.flush_for_driver(driver).await?;
             return Ok(RuntimeExit::Stopped(reason));
         }
 
-        handle_control_signals(driver).await?;
+        handle_control_signals(driver, sink, &transformer, apply_opts).await?;
 
         // Fill the transform window to capacity before waiting on completions.
         while ctx.in_flight_count() < apply_opts.max_in_flight {
@@ -326,9 +425,11 @@ where
 
         if ctx.in_flight_count() == 0 && ctx.buffer_len() == 0 {
             if driver.is_finished() {
+                ctx.flush_for_driver(driver).await?;
                 return Ok(RuntimeExit::Stopped(StopReason::Finished));
             }
             if let Some(reason) = effective_stop_reason(driver, runtime_opts) {
+                ctx.flush_for_driver(driver).await?;
                 return Ok(RuntimeExit::Stopped(reason));
             }
             tokio::time::sleep(apply_opts.batch_max_wait.min(Duration::from_millis(10))).await;
@@ -360,7 +461,17 @@ fn effective_stop_reason<D: SourceDriver>(
     driver.stop_reason()
 }
 
-async fn handle_control_signals<D: SourceDriver>(driver: &mut D) -> Result<()> {
+async fn handle_control_signals<D, S, T>(
+    driver: &mut D,
+    sink: &S,
+    transformer: &Arc<T>,
+    apply_opts: &ApplyOpts,
+) -> Result<()>
+where
+    D: SourceDriver,
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
     let signals = driver.between_events().await.context("between_events")?;
     for signal in signals {
         match signal {
@@ -373,8 +484,13 @@ async fn handle_control_signals<D: SourceDriver>(driver: &mut D) -> Result<()> {
             }
             ControlSignal::AdHocSnapshot { tables } => {
                 debug!(?tables, "SourceDriver ad-hoc snapshot");
+                let apply = AdhocApplyImpl {
+                    sink,
+                    transformer: Arc::clone(transformer),
+                    apply_opts,
+                };
                 driver
-                    .on_adhoc_snapshot(&tables)
+                    .on_adhoc_snapshot(&tables, &apply)
                     .await
                     .context("on_adhoc_snapshot")?;
             }

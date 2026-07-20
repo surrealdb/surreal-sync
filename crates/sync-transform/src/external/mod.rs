@@ -6,13 +6,13 @@ mod wire;
 pub use transport::{
     ChildStdioMode, ExternalTransport, PersistentChildStdio, TransientChildStdio, WireResponse,
 };
-pub use wire::{RequestHeader, ResponseHeader};
+pub use wire::{RequestHeader, ResponseHeader, WireItemKind};
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use sync_core::{UniversalChange, UniversalRow};
+use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
 use tokio::sync::Mutex;
 
 /// External (child-stdio) transform stage.
@@ -25,6 +25,12 @@ use tokio::sync::Mutex;
 /// batches (`max_in_flight` > 1). Each waiter reads **only** its own request's
 /// response (request-keyed); payloads are never rebound onto another
 /// outstanding id. A mismatched echo fails the exchange (no sink/commit).
+///
+/// # Relations
+///
+/// Relation batches use the same NDJSON framing with
+/// [`WireItemKind::RelationChange`] / [`WireItemKind::Relation`]. There is **no**
+/// silent pass-through of relation events past External stages.
 #[derive(Clone)]
 pub struct ExternalTransform {
     inner: Arc<ExternalInner>,
@@ -92,7 +98,9 @@ impl ExternalTransform {
             .iter()
             .map(|c| serde_json::to_vec(c).context("serialize UniversalChange"))
             .collect::<Result<Vec<_>>>()?;
-        let resp = self.exchange_raw(batch_id, &items).await?;
+        let resp = self
+            .exchange_raw(batch_id, &items, WireItemKind::Change)
+            .await?;
         resp.items
             .into_iter()
             .map(|bytes| {
@@ -111,7 +119,9 @@ impl ExternalTransform {
             .iter()
             .map(|r| serde_json::to_vec(r).context("serialize UniversalRow"))
             .collect::<Result<Vec<_>>>()?;
-        let resp = self.exchange_raw(batch_id, &items).await?;
+        let resp = self
+            .exchange_raw(batch_id, &items, WireItemKind::Row)
+            .await?;
         resp.items
             .into_iter()
             .map(|bytes| {
@@ -120,7 +130,55 @@ impl ExternalTransform {
             .collect()
     }
 
-    async fn exchange_raw(&self, batch_id: u64, items: &[Vec<u8>]) -> Result<WireResponse> {
+    /// Exchange a relation-change batch with the worker (NDJSON wire).
+    pub async fn exchange_relation_changes(
+        &self,
+        batch_id: u64,
+        changes: Vec<UniversalRelationChange>,
+    ) -> Result<Vec<UniversalRelationChange>> {
+        let items: Vec<Vec<u8>> = changes
+            .iter()
+            .map(|c| serde_json::to_vec(c).context("serialize UniversalRelationChange"))
+            .collect::<Result<Vec<_>>>()?;
+        let resp = self
+            .exchange_raw(batch_id, &items, WireItemKind::RelationChange)
+            .await?;
+        resp.items
+            .into_iter()
+            .map(|bytes| {
+                serde_json::from_slice(&bytes)
+                    .context("deserialize UniversalRelationChange from worker")
+            })
+            .collect()
+    }
+
+    /// Exchange a full-sync relation batch with the worker.
+    pub async fn exchange_relations(
+        &self,
+        batch_id: u64,
+        relations: Vec<UniversalRelation>,
+    ) -> Result<Vec<UniversalRelation>> {
+        let items: Vec<Vec<u8>> = relations
+            .iter()
+            .map(|r| serde_json::to_vec(r).context("serialize UniversalRelation"))
+            .collect::<Result<Vec<_>>>()?;
+        let resp = self
+            .exchange_raw(batch_id, &items, WireItemKind::Relation)
+            .await?;
+        resp.items
+            .into_iter()
+            .map(|bytes| {
+                serde_json::from_slice(&bytes).context("deserialize UniversalRelation from worker")
+            })
+            .collect()
+    }
+
+    async fn exchange_raw(
+        &self,
+        batch_id: u64,
+        items: &[Vec<u8>],
+        kind: WireItemKind,
+    ) -> Result<WireResponse> {
         {
             let mut outstanding = self.inner.outstanding.lock().await;
             if !outstanding.insert(batch_id) {
@@ -128,16 +186,21 @@ impl ExternalTransform {
             }
         }
 
-        let result = self.exchange_raw_inner(batch_id, items).await;
+        let result = self.exchange_raw_inner(batch_id, items, kind).await;
 
         self.inner.outstanding.lock().await.remove(&batch_id);
         result
     }
 
-    async fn exchange_raw_inner(&self, batch_id: u64, items: &[Vec<u8>]) -> Result<WireResponse> {
+    async fn exchange_raw_inner(
+        &self,
+        batch_id: u64,
+        items: &[Vec<u8>],
+        kind: WireItemKind,
+    ) -> Result<WireResponse> {
         self.inner
             .transport
-            .write_request(batch_id, items)
+            .write_request(batch_id, items, kind)
             .await
             .with_context(|| format!("write_request batch_id={batch_id}"))?;
 

@@ -1090,7 +1090,7 @@ impl UniversalChange {
 /// This type represents a relationship between two nodes (records) in graph databases
 /// like Neo4j and SurrealDB. It contains the relation type, IDs for both endpoints,
 /// and optional properties on the relation itself.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UniversalRelation {
     /// The relation type (table name in SurrealDB terms)
     pub relation_type: String,
@@ -1107,7 +1107,7 @@ pub struct UniversalRelation {
 /// A reference to a record/node in a specific table.
 ///
 /// This is used to identify the endpoints of a relation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UniversalThingRef {
     /// The table/collection name
     pub table: String,

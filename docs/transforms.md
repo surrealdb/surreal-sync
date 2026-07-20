@@ -188,17 +188,19 @@ surreal-sync **spawns** your `stdin.command` and talks on **that process’s** s
 
 **Request** (surreal-sync → worker):
 
-1. Header line: `{"batch_id":<u64>,"count":<n>}`
-2. Exactly `count` NDJSON item lines — each a serialized change (incremental) or row (snapshot / full sync)
+1. Header line: `{"batch_id":<u64>,"count":<n>}` — optional `"kind"` of `change` (default), `row`, `relation_change`, or `relation`
+2. Exactly `count` NDJSON item lines — each a serialized change (incremental), row (snapshot / full sync), relation change, or relation (matching `kind`)
 
 **Response** (worker → surreal-sync):
 
 1. Header line that **must echo the same `batch_id`**, plus either:
    - `"count": <m>` and then `m` item lines, or
    - `"error": "<message>"` (no items; batch fails)
-2. Item lines are positional; `count` may change for filter / fan-out
+2. Item lines are positional; `count` may change for filter / fan-out **on homogeneous batches only**
 
 Mismatched or missing `batch_id` ⇒ failed exchange (no SurrealDB write, no checkpoint advance). Responses may complete **out of order** relative to sends when `max_in_flight > 1`; surreal-sync correlates by `batch_id` and still applies in source order.
+
+**Mixed change+relation batches:** External stages exchange **both** kinds over NDJSON (no silent relation pass-through). Filter/fan-out that changes item count is **not** supported when a batch interleaves row changes and relation changes — use homogeneous batches (all changes or all relations) for length-changing transforms. The same limit applies to in-process `BatchTransformer::transform_events`.
 
 ### `persistent` vs `transient`
 
@@ -257,7 +259,8 @@ Operations (checkpoints, resume, GTID vs file+offset, ad-hoc `snapshot`) are unc
 ## Limitations
 
 - No custom code in the TOML config — logic lives in your external worker (or, for embedders, library APIs; see rustdoc for `sync-transform`).
-- Filter / reshape / fan-out via the worker’s returned item list (`count` may differ from the request).
+- Filter / reshape / fan-out via the worker’s returned item list (`count` may differ from the request) on **homogeneous** batches only. Mixed change+relation batches must preserve length of each kind.
+- Relation events are first-class on the External NDJSON wire (`kind: relation_change` / `relation`); they are never silently skipped past External stages.
 - v1 source coverage: MySQL/MariaDB binlog only.
 - At-least-once delivery, not exactly-once.
 - v1 transport/framer: child stdio + NDJSON only.
@@ -281,4 +284,4 @@ Operations (checkpoints, resume, GTID vs file+offset, ad-hoc `snapshot`) are unc
 
 ### Advanced: embedding surreal-sync
 
-Library / WASM hosts that need zero-copy in-process transforms should use the `sync-transform` crate rustdoc. The **general** APIs are `ApplyContext` (rows, changes, and relation edges) and `SourceDriver` / `run_source_runtime` (control-plane hooks for schema refresh, ad-hoc snapshot, cancel/deadline, sink-safe checkpoints). `ChangeFeed` / `run_change_feed` are a convenience for simple row CDC. In-process stages use `InPlaceTransform` + `Pipeline::push_inplace` (including schema-aware FK→record-link transforms constructed with a catalog). That path is not configured via TOML.
+Library / WASM hosts that need zero-copy in-process transforms should use the `sync-transform` crate rustdoc. The **general** APIs are `ApplyContext` (rows, changes, and relation edges) and `SourceDriver` / `run_source_runtime` (control-plane hooks for schema refresh, ad-hoc snapshot via injected `AdhocApply` helpers, cancel/deadline, sink-safe checkpoints including `CheckpointPolicy::IntervalWhenDrained`). `ChangeFeed` / `run_change_feed` are a convenience for simple row CDC. In-process stages use `InPlaceTransform` + `Pipeline::push_inplace` (including schema-aware FK→record-link transforms constructed with a catalog). That path is not configured via TOML.

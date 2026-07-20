@@ -22,7 +22,7 @@ pub use runtime::{
     write_rows_with, ApplyContext,
 };
 pub use source_driver::{
-    run_source_runtime, run_source_runtime_with, ChangeFeedDriver, ChangeFeedRef, CheckpointPolicy,
-    ControlSignal, RuntimeExit, SourceDriver, SourceRuntimeOpts, StopReason,
+    run_source_runtime, run_source_runtime_with, AdhocApply, ChangeFeedDriver, ChangeFeedRef,
+    CheckpointPolicy, ControlSignal, RuntimeExit, SourceDriver, SourceRuntimeOpts, StopReason,
 };
 pub use transform::BatchTransformer;

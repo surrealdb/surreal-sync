@@ -6,12 +6,15 @@ use sync_core::{UniversalChange, UniversalRelationChange};
 ///
 /// Sources may interleave row CDC and relation CDC; the apply engine preserves
 /// source order across both kinds through the same max_in_flight window.
+///
+/// [`RelationChange`](Self::RelationChange) is boxed to keep the enum compact
+/// (`UniversalRelationChange` is substantially larger than [`UniversalChange`]).
 #[derive(Debug, Clone)]
 pub enum ApplyEvent {
     /// Row create / update / delete.
     Change(UniversalChange),
     /// Graph-edge create / update / delete ([`UniversalRelationChange`]).
-    RelationChange(UniversalRelationChange),
+    RelationChange(Box<UniversalRelationChange>),
 }
 
 impl ApplyEvent {
@@ -22,7 +25,7 @@ impl ApplyEvent {
 
     /// Wrap a relation change.
     pub fn relation_change(change: UniversalRelationChange) -> Self {
-        Self::RelationChange(change)
+        Self::RelationChange(Box::new(change))
     }
 
     /// Whether this is a row change.
@@ -58,6 +61,6 @@ impl<P> PositionedEvent<P> {
 
     /// Positioned relation change.
     pub fn relation_change(change: UniversalRelationChange, position: P) -> Self {
-        Self::new(ApplyEvent::RelationChange(change), position)
+        Self::new(ApplyEvent::relation_change(change), position)
     }
 }

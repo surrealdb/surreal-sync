@@ -371,7 +371,12 @@ impl Default for ScriptedExternalTransport {
 
 #[async_trait]
 impl ExternalTransport for ScriptedExternalTransport {
-    async fn write_request(&self, batch_id: u64, items: &[Vec<u8>]) -> Result<()> {
+    async fn write_request(
+        &self,
+        batch_id: u64,
+        items: &[Vec<u8>],
+        _kind: crate::WireItemKind,
+    ) -> Result<()> {
         let (script, notify) = {
             let mut st = self.state.lock().expect("scripted external lock");
             st.writes.push(batch_id);
@@ -808,6 +813,12 @@ impl<P> ScriptedSourceDriver<P> {
         self.policy = crate::CheckpointPolicy::CommitOnly;
         self
     }
+
+    /// Use IntervalWhenDrained checkpoint policy.
+    pub fn interval_when_drained(mut self, interval: std::time::Duration) -> Self {
+        self.policy = crate::CheckpointPolicy::IntervalWhenDrained { interval };
+        self
+    }
 }
 
 #[async_trait]
@@ -848,7 +859,13 @@ where
         Ok(())
     }
 
-    async fn on_adhoc_snapshot(&mut self, tables: &[String]) -> Result<()> {
+    async fn on_adhoc_snapshot(
+        &mut self,
+        tables: &[String],
+        apply: &dyn crate::AdhocApply,
+    ) -> Result<()> {
+        // Record that the framework injected apply helpers (sink+pipeline path).
+        let _ = apply.apply_opts();
         self.adhoc_snapshots.push(tables.to_vec());
         Ok(())
     }
