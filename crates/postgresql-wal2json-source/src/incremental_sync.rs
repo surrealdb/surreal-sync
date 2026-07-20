@@ -1,20 +1,53 @@
-//! PostgreSQL logical replication incremental sync implementation
-//!
-//! This module provides incremental synchronization from PostgreSQL to SurrealDB
-//! using WAL-based logical replication with wal2json.
+//! PostgreSQL wal2json incremental sync via SourceDriver.
 
-use crate::checkpoint::PostgreSQLLogicalCheckpoint;
+use std::sync::Arc;
+use std::time::Duration;
+
 use anyhow::Result;
 use checkpoint::{CheckpointID, CheckpointStore, Surreal2Store};
+use chrono::{DateTime, Utc};
 use surreal_sink::SurrealSink;
 use sync_core::{
     classify_table, DatabaseSchema, TableKind, UniversalChange, UniversalChangeOp,
     UniversalRelationChange,
 };
+use sync_transform::{
+    ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver, SourceRuntimeOpts,
+    StopReason,
+};
 use tokio_postgres::NoTls;
 use tracing::{debug, error, info, warn};
 
+use crate::checkpoint::PostgreSQLLogicalCheckpoint;
 use crate::full_sync::SourceOpts;
+use crate::logical_replication::Slot;
+use crate::watermark_source::Lsn;
+
+/// Default sleep when a wal2json peek returns no changes.
+pub const DEFAULT_IDLE_SLEEP: Duration = Duration::from_millis(100);
+
+/// Options for the wal2json replication tail (deadline / until only — no cancel
+/// or CatchUpProgress store; those were not present on this source before).
+#[derive(Clone, Debug)]
+pub struct ReplicationTailOptions {
+    /// Wall-clock stop for the stream phase.
+    pub deadline: DateTime<Utc>,
+    /// Optional exact LSN stop bound.
+    pub until: Option<PostgreSQLLogicalCheckpoint>,
+    /// Sleep when a poll returns no events before retrying.
+    pub idle_sleep: Duration,
+}
+
+impl ReplicationTailOptions {
+    /// Build options from the historical `run_incremental_sync` arguments.
+    pub fn stream(deadline: DateTime<Utc>, until: Option<PostgreSQLLogicalCheckpoint>) -> Self {
+        Self {
+            deadline,
+            until,
+            idle_sleep: DEFAULT_IDLE_SLEEP,
+        }
+    }
+}
 
 /// Read t1 checkpoint from SurrealDB
 ///
@@ -39,63 +72,78 @@ pub async fn read_t1_checkpoint_from_surrealdb(
     Ok(checkpoint)
 }
 
-/// Run incremental sync from PostgreSQL to SurrealDB
-///
-/// This function:
-/// 1. Connects to PostgreSQL
-/// 2. Starts logical replication from the checkpoint position
-/// 3. Streams and applies changes to SurrealDB
-/// 4. Stops when deadline is reached or target checkpoint is hit
-///
-/// # Arguments
-/// * `surreal` - SurrealDB sink for writing data
-/// * `from_opts` - PostgreSQL source options
-/// * `from_checkpoint` - Starting LSN position
-/// * `deadline` - When to stop syncing
-/// * `to_checkpoint` - Optional stopping LSN position
+/// Run incremental sync from PostgreSQL to SurrealDB (identity transforms).
 pub async fn run_incremental_sync<S: SurrealSink>(
     surreal: &S,
     from_opts: SourceOpts,
     from_checkpoint: PostgreSQLLogicalCheckpoint,
-    deadline: chrono::DateTime<chrono::Utc>,
+    deadline: DateTime<Utc>,
     to_checkpoint: Option<PostgreSQLLogicalCheckpoint>,
+) -> Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_incremental_sync_with_transforms(
+        surreal,
+        from_opts,
+        from_checkpoint,
+        ReplicationTailOptions::stream(deadline, to_checkpoint),
+        &pipeline,
+        &apply_opts,
+    )
+    .await
+}
+
+/// Incremental sync through the transform apply framework.
+///
+/// Peek → convert (with FK enrichment / relation routing) →
+/// [`sync_transform::run_source_runtime_with`] → advance slot only after sink
+/// success for the full peeked batch.
+pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
+    surreal: &S,
+    from_opts: SourceOpts,
+    from_checkpoint: PostgreSQLLogicalCheckpoint,
+    options: ReplicationTailOptions,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
 ) -> Result<()> {
     info!(
         "Starting PostgreSQL logical replication incremental sync from LSN: {}",
         from_checkpoint.lsn
     );
 
-    if let Some(ref target) = to_checkpoint {
+    if let Some(ref target) = options.until {
         info!("Target LSN: {}", target.lsn);
     }
-    let duration_until_deadline = deadline.signed_duration_since(chrono::Utc::now());
+    let duration_until_deadline = options.deadline.signed_duration_since(Utc::now());
     info!(
         "Deadline in {} seconds",
         duration_until_deadline.num_seconds()
     );
 
-    // Connect to PostgreSQL
-    let (client, connection) = tokio_postgres::connect(&from_opts.connection_string, NoTls).await?;
+    if pipeline.is_identity() {
+        debug!("Incremental sync using identity transform pipeline");
+    } else {
+        info!(
+            stages = pipeline.len(),
+            max_in_flight = apply_opts.max_in_flight,
+            batch_size = apply_opts.batch_size,
+            "Incremental sync using transform pipeline"
+        );
+    }
 
-    // Spawn connection handler
+    let (client, connection) = tokio_postgres::connect(&from_opts.connection_string, NoTls).await?;
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             error!("PostgreSQL connection error: {e}");
         }
     });
 
-    // Collect schema with FK info for record link and relation conversion
     let db_schema =
         surreal_sync_postgresql::schema::collect_database_schema_with_fks(&client).await?;
-    let relation_table_overrides = &from_opts.relation_tables;
+    let relation_table_overrides = from_opts.relation_tables.clone();
 
-    // Create logical replication client
     let pg_client = crate::Client::new(client, from_opts.tables.clone());
-
-    // Ensure slot exists (it should have been created during full sync)
     pg_client.create_slot(&from_opts.slot_name).await?;
-
-    // Start replication
     let slot = pg_client
         .start_replication(Some(&from_opts.slot_name))
         .await?;
@@ -105,116 +153,246 @@ pub async fn run_incremental_sync<S: SurrealSink>(
         from_opts.slot_name
     );
 
-    // Advance to starting position if needed
     if !from_checkpoint.lsn.is_empty() && from_checkpoint.lsn != "0/0" {
         info!("Advancing slot to starting LSN: {}", from_checkpoint.lsn);
         slot.advance(&from_checkpoint.lsn).await?;
     }
 
-    // Stream changes with deadline
-    let mut total_changes = 0;
+    let mut driver = Wal2JsonSourceDriver {
+        slot,
+        db_schema,
+        relation_table_overrides,
+        options: &options,
+        until_reached: false,
+        awaiting_commit: false,
+        emitted_in_peek: 0,
+        sunk_in_peek: 0,
+        peek_nextlsn: None,
+        total_changes: 0,
+    };
 
-    loop {
-        // Check deadline
-        if chrono::Utc::now() >= deadline {
+    let runtime_opts = SourceRuntimeOpts::new();
+    let transformer = Arc::new(pipeline.clone());
+    let exit = sync_transform::run_source_runtime_with(
+        &mut driver,
+        surreal,
+        transformer,
+        apply_opts,
+        &runtime_opts,
+    )
+    .await?;
+
+    match exit {
+        sync_transform::RuntimeExit::Stopped(StopReason::Deadline) => {
             info!("Deadline reached, stopping incremental sync");
-            break;
         }
-
-        // Peek at available changes
-        match slot.peek().await {
-            Ok((changes, nextlsn)) => {
-                if changes.is_empty() {
-                    // Check if we've reached target checkpoint
-                    if let Some(ref target) = to_checkpoint {
-                        if compare_lsn(&nextlsn, &target.lsn) >= 0 {
-                            info!("Reached target LSN {} (current: {})", target.lsn, nextlsn);
-                            break;
-                        }
-                    }
-
-                    // No changes, wait before retrying
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    continue;
-                }
-
-                // Process all changes in the batch
-                for change in &changes {
-                    let (row, op) = match change {
-                        crate::Action::Insert(row) => {
-                            debug!(
-                                "INSERT: table={}, primary_key={:?}",
-                                row.table, row.primary_key
-                            );
-                            (row, UniversalChangeOp::Create)
-                        }
-                        crate::Action::Update(row) => {
-                            debug!(
-                                "UPDATE: table={}, primary_key={:?}",
-                                row.table, row.primary_key
-                            );
-                            (row, UniversalChangeOp::Update)
-                        }
-                        crate::Action::Delete(row) => {
-                            debug!(
-                                "DELETE: table={}, primary_key={:?}",
-                                row.table, row.primary_key
-                            );
-                            (row, UniversalChangeOp::Delete)
-                        }
-                        crate::Action::Begin { .. } | crate::Action::Commit { .. } => {
-                            continue;
-                        }
-                    };
-
-                    apply_change_with_fk_transform(
-                        surreal,
-                        row,
-                        op,
-                        &db_schema,
-                        relation_table_overrides,
-                    )
-                    .await?;
-                    total_changes += 1;
-                }
-
-                // Advance slot after processing
-                slot.advance(&nextlsn).await?;
-
-                // Check if we've reached target checkpoint
-                if let Some(ref target) = to_checkpoint {
-                    if compare_lsn(&nextlsn, &target.lsn) >= 0 {
-                        info!("Reached target LSN {} (current: {})", target.lsn, nextlsn);
-                        break;
-                    }
-                }
-            }
-            Err(e) => {
-                // Error handling: Retry on transient errors
-                //
-                // pg_logical_slot_peek_changes() only returns committed transactions,
-                // so long-running transactions will NOT cause errors - they simply
-                // remain invisible until they commit.
-                //
-                // Errors here are typically:
-                // - Transient connection issues
-                // - Network timeouts
-                // - WAL parsing errors (bugs in wal2json or our code)
-                // - Data corruption
-                //
-                // We retry after 1 second to handle transient issues. The overall
-                // timeout (from the outer loop) prevents infinite retries.
-                warn!("Error peeking changes: {}", e);
-                tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-            }
+        sync_transform::RuntimeExit::Stopped(StopReason::Until) => {
+            info!("Reached target checkpoint, stopping incremental sync");
+        }
+        sync_transform::RuntimeExit::Stopped(StopReason::Cancelled) => {
+            info!("Cancellation requested, stopping incremental sync");
+        }
+        sync_transform::RuntimeExit::Stopped(StopReason::Finished) => {
+            info!("PostgreSQL wal2json source finished");
         }
     }
 
     info!(
-        "PostgreSQL logical replication incremental sync completed: {} changes applied",
-        total_changes
+        "PostgreSQL logical replication incremental sync completed: {} changes sunk",
+        driver.total_changes
     );
     Ok(())
+}
+
+/// wal2json CDC driver for [`sync_transform::run_source_runtime_with`].
+///
+/// Slot advance is deferred until every event from a peek batch has been sunk
+/// (all events share the batch `nextlsn` as their position).
+struct Wal2JsonSourceDriver<'a> {
+    slot: Slot,
+    db_schema: DatabaseSchema,
+    relation_table_overrides: Vec<String>,
+    options: &'a ReplicationTailOptions,
+    until_reached: bool,
+    /// True while a peeked batch is still being applied (do not peek again).
+    awaiting_commit: bool,
+    emitted_in_peek: u64,
+    sunk_in_peek: u64,
+    peek_nextlsn: Option<Lsn>,
+    total_changes: u64,
+}
+
+impl Wal2JsonSourceDriver<'_> {
+    fn convert_actions(
+        &self,
+        changes: &[crate::Action],
+        nextlsn: Lsn,
+    ) -> Result<Vec<PositionedEvent<Lsn>>> {
+        let mut out = Vec::new();
+        for change in changes {
+            let (row, op) = match change {
+                crate::Action::Insert(row) => {
+                    debug!(
+                        "INSERT: table={}, primary_key={:?}",
+                        row.table, row.primary_key
+                    );
+                    (row, UniversalChangeOp::Create)
+                }
+                crate::Action::Update(row) => {
+                    debug!(
+                        "UPDATE: table={}, primary_key={:?}",
+                        row.table, row.primary_key
+                    );
+                    (row, UniversalChangeOp::Update)
+                }
+                crate::Action::Delete(row) => {
+                    debug!(
+                        "DELETE: table={}, primary_key={:?}",
+                        row.table, row.primary_key
+                    );
+                    (row, UniversalChangeOp::Delete)
+                }
+                crate::Action::Begin { .. } | crate::Action::Commit { .. } => continue,
+            };
+            out.push(action_to_positioned_event(
+                row,
+                op,
+                nextlsn,
+                &self.db_schema,
+                &self.relation_table_overrides,
+            )?);
+        }
+        Ok(out)
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceDriver for Wal2JsonSourceDriver<'_> {
+    type Position = Lsn;
+
+    async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
+        if self.stop_reason().is_some() {
+            return Ok(Vec::new());
+        }
+
+        // Do not peek again until the previous batch is fully sunk + advanced.
+        if self.awaiting_commit {
+            return Ok(Vec::new());
+        }
+
+        match self.slot.peek().await {
+            Ok((changes, nextlsn_str)) => {
+                if changes.is_empty() {
+                    if let Some(ref target) = self.options.until {
+                        if compare_lsn(&nextlsn_str, &target.lsn) >= 0 {
+                            info!(
+                                "Reached target LSN {} (current: {})",
+                                target.lsn, nextlsn_str
+                            );
+                            self.until_reached = true;
+                            return Ok(Vec::new());
+                        }
+                    }
+                    tokio::time::sleep(self.options.idle_sleep).await;
+                    return Ok(Vec::new());
+                }
+
+                let nextlsn = if nextlsn_str.is_empty() {
+                    anyhow::bail!("wal2json peek returned changes without a commit nextlsn");
+                } else {
+                    Lsn::parse(&nextlsn_str)?
+                };
+
+                let events = self.convert_actions(&changes, nextlsn)?;
+                if events.is_empty() {
+                    // Begin/Commit only — still advance past the empty transaction.
+                    self.slot.advance(&nextlsn.to_pg_string()).await?;
+                    if let Some(ref target) = self.options.until {
+                        if compare_lsn(&nextlsn_str, &target.lsn) >= 0 {
+                            info!(
+                                "Reached target LSN {} (current: {})",
+                                target.lsn, nextlsn_str
+                            );
+                            self.until_reached = true;
+                        }
+                    }
+                    return Ok(Vec::new());
+                }
+
+                self.emitted_in_peek = events.len() as u64;
+                self.sunk_in_peek = 0;
+                self.peek_nextlsn = Some(nextlsn);
+                self.awaiting_commit = true;
+                Ok(events)
+            }
+            Err(e) => {
+                warn!("Error peeking changes: {}", e);
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+        if !self.awaiting_commit {
+            return Ok(());
+        }
+        if self.sunk_in_peek < self.emitted_in_peek {
+            return Ok(());
+        }
+        let Some(nextlsn) = self.peek_nextlsn else {
+            return Ok(());
+        };
+        if position != nextlsn {
+            return Ok(());
+        }
+
+        self.slot.advance(&nextlsn.to_pg_string()).await?;
+        self.awaiting_commit = false;
+        self.emitted_in_peek = 0;
+        self.sunk_in_peek = 0;
+        self.peek_nextlsn = None;
+
+        if let Some(ref target) = self.options.until {
+            if compare_lsn(&nextlsn.to_pg_string(), &target.lsn) >= 0 {
+                info!(
+                    "Reached target LSN {} (current: {})",
+                    target.lsn,
+                    nextlsn.to_pg_string()
+                );
+                self.until_reached = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn checkpoint_policy(&self) -> CheckpointPolicy {
+        // Incremental wal2json does not persist CatchUpProgress today; slot
+        // advance in `commit` is the durability mechanism.
+        CheckpointPolicy::CommitOnly
+    }
+
+    fn stop_reason(&self) -> Option<StopReason> {
+        if Utc::now() >= self.options.deadline {
+            return Some(StopReason::Deadline);
+        }
+        if self.until_reached {
+            return Some(StopReason::Until);
+        }
+        if let Some(ref target) = self.options.until {
+            if let Some(nextlsn) = self.peek_nextlsn {
+                if !self.awaiting_commit && compare_lsn(&nextlsn.to_pg_string(), &target.lsn) >= 0 {
+                    return Some(StopReason::Until);
+                }
+            }
+        }
+        None
+    }
+
+    fn note_sunk_events(&mut self, count: u64) {
+        self.sunk_in_peek = self.sunk_in_peek.saturating_add(count);
+        self.total_changes = self.total_changes.saturating_add(count);
+    }
 }
 
 /// Convert a Row to UniversalChange
@@ -227,14 +405,14 @@ fn row_to_universal_change(row: &crate::Row, op: UniversalChangeOp) -> Universal
     UniversalChange::new(op, row.table.clone(), row.primary_key.clone(), data)
 }
 
-/// Apply a change with FK-to-Thing transformation and relation-table routing.
-async fn apply_change_with_fk_transform<S: SurrealSink>(
-    surreal: &S,
+/// FK enrichment and relation routing before the event enters the apply window.
+fn action_to_positioned_event(
     row: &crate::Row,
     op: UniversalChangeOp,
+    position: Lsn,
     db_schema: &DatabaseSchema,
     relation_table_overrides: &[String],
-) -> Result<()> {
+) -> Result<PositionedEvent<Lsn>> {
     let table_def = db_schema.get_table(&row.table);
     let table_kind = table_def.map(|td| classify_table(td, relation_table_overrides));
 
@@ -256,17 +434,16 @@ async fn apply_change_with_fk_transform<S: SurrealSink>(
                 out_fk,
             );
             let rel_change = UniversalRelationChange::new(op, relation);
-            surreal.apply_universal_relation_change(&rel_change).await?;
+            Ok(PositionedEvent::relation_change(rel_change, position))
         }
         _ => {
             let mut change = row_to_universal_change(row, op);
             if let (Some(td), Some(ref mut data)) = (table_def, change.data.as_mut()) {
                 surreal_sync_postgresql::fk_transform::transform_fk_values(data, td);
             }
-            surreal.apply_universal_change(&change).await?;
+            Ok(PositionedEvent::change(change, position))
         }
     }
-    Ok(())
 }
 
 /// Compare two LSN strings

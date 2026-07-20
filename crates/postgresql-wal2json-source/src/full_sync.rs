@@ -7,9 +7,10 @@
 use anyhow::Result;
 use checkpoint::{CheckpointStore, SyncManager, SyncPhase};
 use surreal_sink::SurrealSink;
-use surreal_sync_postgresql::SyncOpts;
+use surreal_sync_postgresql::{convert_table, SyncOpts};
+use sync_transform::{write_relations, write_rows, ApplyOpts, Pipeline};
 use tokio_postgres::NoTls;
-use tracing::info;
+use tracing::{debug, info};
 
 /// Options for the PostgreSQL logical replication source
 #[derive(Clone, Debug)]
@@ -27,60 +28,63 @@ pub struct SourceOpts {
     pub relation_tables: Vec<String>,
 }
 
-/// Run full sync from PostgreSQL to SurrealDB with checkpoint support
-///
-/// This function:
-/// 1. Connects to PostgreSQL
-/// 2. Creates/ensures the replication slot exists
-/// 3. Captures current WAL LSN position (for t1 checkpoint)
-/// 4. Migrates all tables to SurrealDB
-/// 5. Captures final WAL LSN position (for t2 checkpoint)
-///
-/// # Arguments
-/// * `surreal` - SurrealDB sink for writing data
-/// * `from_opts` - PostgreSQL source options
-/// * `sync_opts` - Sync options (batch_size, dry_run)
-/// * `sync_manager` - Optional sync manager for checkpoint emission
+/// Run full sync from PostgreSQL to SurrealDB with checkpoint support (identity transforms).
 pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     surreal: &S,
     from_opts: SourceOpts,
     sync_opts: SyncOpts,
     sync_manager: Option<&SyncManager<CS>>,
 ) -> Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_full_sync_with_transforms(surreal, from_opts, sync_opts, sync_manager, &pipeline, &apply_opts)
+        .await
+}
+
+/// Full sync with an explicit transform pipeline.
+///
+/// Rows are converted with existing PostgreSQL FK helpers first, then applied
+/// via [`write_rows`] / [`write_relations`].
+pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
+    surreal: &S,
+    from_opts: SourceOpts,
+    sync_opts: SyncOpts,
+    sync_manager: Option<&SyncManager<CS>>,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<()> {
     info!("Starting PostgreSQL logical replication full sync to SurrealDB");
+    if pipeline.is_identity() {
+        debug!("Full sync using identity transform pipeline");
+    } else {
+        info!(
+            stages = pipeline.len(),
+            "Full sync using transform pipeline"
+        );
+    }
 
-    // Connect to PostgreSQL
     let (client, connection) = tokio_postgres::connect(&from_opts.connection_string, NoTls).await?;
-
-    // Spawn connection handler
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             eprintln!("PostgreSQL connection error: {e}");
         }
     });
 
-    // Create logical replication client and ensure slot exists
     let pg_client = crate::Client::new(client, from_opts.tables.clone());
     pg_client.create_slot(&from_opts.slot_name).await?;
 
-    // Emit checkpoint t1 (before full sync starts) if configured
     if let Some(manager) = sync_manager {
-        // Get current WAL LSN position - this is where incremental sync will start
         let checkpoint = pg_client.get_current_wal_lsn_checkpoint().await?;
-
         manager
             .emit_checkpoint(&checkpoint, SyncPhase::FullSyncStart)
             .await?;
-
         info!(
             "Emitted full sync start checkpoint (t1): {}",
             checkpoint.lsn
         );
     }
 
-    // Get list of tables to migrate
     let tables = if from_opts.tables.is_empty() {
-        // Get all user tables from the specified schema
         surreal_sync_postgresql::get_user_tables(pg_client.pg_client(), &from_opts.schema).await?
     } else {
         from_opts.tables.clone()
@@ -88,40 +92,47 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 
     info!("Found {} tables to migrate", tables.len());
 
-    // Collect schema with FK info for record link and relation conversion
     let db_schema =
         surreal_sync_postgresql::schema::collect_database_schema_with_fks(pg_client.pg_client())
             .await?;
 
     let mut total_migrated = 0;
+    let batch_size = sync_opts.batch_size.max(1);
 
-    // Migrate each table
     for table_name in &tables {
         info!("Migrating table: {}", table_name);
 
-        let count = surreal_sync_postgresql::migrate_table(
+        let (rows, relations) = convert_table(
             pg_client.pg_client(),
-            surreal,
             table_name,
-            &sync_opts,
             Some(&db_schema),
             &from_opts.relation_tables,
         )
         .await?;
 
+        let mut count = 0usize;
+        for chunk in rows.chunks(batch_size) {
+            if !sync_opts.dry_run {
+                write_rows(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
+            }
+            count += chunk.len();
+        }
+        for chunk in relations.chunks(batch_size) {
+            if !sync_opts.dry_run {
+                write_relations(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
+            }
+            count += chunk.len();
+        }
+
         total_migrated += count;
         info!("Migrated {} records from table {}", count, table_name);
     }
 
-    // Emit checkpoint t2 (after full sync completes) if configured
     if let Some(manager) = sync_manager {
-        // Get final WAL LSN position
         let checkpoint = pg_client.get_current_wal_lsn_checkpoint().await?;
-
         manager
             .emit_checkpoint(&checkpoint, SyncPhase::FullSyncEnd)
             .await?;
-
         info!("Emitted full sync end checkpoint (t2): {}", checkpoint.lsn);
     }
 
