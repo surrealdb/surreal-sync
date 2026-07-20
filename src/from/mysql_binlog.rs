@@ -17,6 +17,7 @@ use surreal_sync_interleaved_snapshot::SnapshotTransforms;
 use sync_transform::{ApplyOpts, Pipeline};
 use tokio_util::sync::CancellationToken;
 
+use super::transforms::load_transforms_from_args;
 use super::{get_sdk_version, parse_duration_to_secs, SdkVersion};
 use crate::{
     BinlogSnapshotModeArg, MariaDbGtidStrictModeArg, MySQLBinlogFlavorArg, MySQLBinlogSnapshotArgs,
@@ -97,42 +98,6 @@ fn binlog_sync_opts(batch_size: usize, dry_run: bool) -> SyncOpts {
     SyncOpts {
         batch_size,
         dry_run,
-    }
-}
-
-/// Load `--transforms-config` into a [`Pipeline`] + [`ApplyOpts`].
-///
-/// Missing flag → identity pipeline with `batch_size = 1` (skips transform
-/// stage dispatch; matches pre-transform apply cadence). Bad TOML or unresolvable
-/// worker argv fails fast before sync starts.
-fn load_binlog_transforms(args: &MySQLBinlogSyncArgs) -> anyhow::Result<(Pipeline, ApplyOpts)> {
-    match &args.transforms_config {
-        None => {
-            tracing::info!(
-                "No --transforms-config; using identity transform pipeline (no stage dispatch)"
-            );
-            Ok((Pipeline::new(), ApplyOpts::identity()))
-        }
-        Some(path) => {
-            let (pipeline, opts) = sync_transform::load_pipeline_and_opts(path)
-                .with_context(|| format!("load --transforms-config {}", path.display()))?;
-            if pipeline.is_identity() {
-                tracing::info!(
-                    path = %path.display(),
-                    "Loaded --transforms-config but pipeline is identity (empty / passthrough-only)"
-                );
-            } else {
-                tracing::info!(
-                    path = %path.display(),
-                    stages = pipeline.len(),
-                    max_in_flight = opts.max_in_flight,
-                    batch_size = opts.batch_size,
-                    failure_policy = ?opts.failure_policy,
-                    "Transform pipeline active from --transforms-config"
-                );
-            }
-            Ok((pipeline, opts))
-        }
     }
 }
 
@@ -303,7 +268,8 @@ where
 /// Run `from mysql-binlog sync`.
 pub async fn run_sync(args: MySQLBinlogSyncArgs) -> anyhow::Result<()> {
     // Fail-fast on bad transforms config / worker spawn before connecting.
-    let (pipeline, apply_opts) = load_binlog_transforms(&args)?;
+    let (pipeline, apply_opts) =
+        load_transforms_from_args(args.transforms_config.as_deref())?;
     let sdk_version = get_sdk_version(
         &args.surreal.surreal_endpoint,
         args.surreal.surreal_sdk_version.as_deref(),
