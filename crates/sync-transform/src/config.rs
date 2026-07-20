@@ -147,6 +147,8 @@ impl Pipeline {
     ///
     /// Empty config → identity ([`is_identity`](Self::is_identity) true).
     /// External stages spawn child workers (persistent) or store argv (transient).
+    /// Both modes resolve `stdin.command[0]` at config time so bad argv fails
+    /// fast (transient would otherwise only fail on the first batch).
     pub fn from_config(cfg: &TransformsConfig) -> Result<Self> {
         let mut pipeline = Pipeline::new();
         for stage in &cfg.stages {
@@ -158,6 +160,8 @@ impl Pipeline {
                     if ext.stdin.framer != FramerKind::Ndjson {
                         bail!("unsupported stdin.framer (v1 supports ndjson only)");
                     }
+                    ensure_command_resolvable(&ext.stdin.command)
+                        .context("stdin.command not resolvable at config load")?;
                     let external = ExternalTransform::child_stdio(
                         ext.stdin.mode,
                         ext.stdin.command.clone(),
@@ -169,6 +173,48 @@ impl Pipeline {
         }
         Ok(pipeline)
     }
+}
+
+/// Fail fast when `stdin.command[0]` is missing from PATH / filesystem.
+///
+/// Persistent workers also fail on spawn; this catches transient mode before
+/// the first batch and gives a clearer error for both modes.
+pub fn ensure_command_resolvable(command: &[String]) -> Result<()> {
+    if command.is_empty() {
+        bail!("stdin.command must not be empty");
+    }
+    let program = &command[0];
+    let path = std::path::Path::new(program);
+    if path.is_file() {
+        return Ok(());
+    }
+    // Absolute / relative path that isn't a file → do not fall through to PATH.
+    if program.contains('/') || program.contains('\\') {
+        bail!(
+            "stdin.command program not found as a file path: {program:?} \
+             (full argv: {command:?})"
+        );
+    }
+    // Bare program name: search PATH.
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(program);
+            if candidate.is_file() {
+                return Ok(());
+            }
+            #[cfg(windows)]
+            {
+                let with_exe = dir.join(format!("{program}.exe"));
+                if with_exe.is_file() {
+                    return Ok(());
+                }
+            }
+        }
+    }
+    bail!(
+        "stdin.command program not found on PATH: {program:?} \
+         (full argv: {command:?})"
+    );
 }
 
 /// Parse a human duration used in transforms TOML (`500ms`, `60s`, `1m`, `1h`).
@@ -731,5 +777,30 @@ stdin.command = ["b"]
         assert_eq!(opts.batch_size, 20);
         assert_eq!(opts.max_in_flight, 1);
         assert_eq!(opts.failure_policy, FailurePolicy::Skip);
+    }
+
+    #[test]
+    fn transient_missing_command_fails_at_config_time() {
+        let cfg = parse_transforms_toml(
+            r#"
+[[transforms]]
+type = "external"
+stdin.mode = "transient"
+stdin.command = ["/nonexistent/surreal-sync-transform-worker-xyz"]
+"#,
+        )
+        .unwrap();
+        let err = Pipeline::from_config(&cfg).expect_err("missing transient argv must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not found") || msg.contains("resolvable"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn ensure_command_resolvable_rejects_empty() {
+        let err = ensure_command_resolvable(&[]).unwrap_err();
+        assert!(err.to_string().contains("empty"));
     }
 }

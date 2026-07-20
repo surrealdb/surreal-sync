@@ -27,12 +27,14 @@ mod inplace;
 mod pipeline;
 
 pub use apply::{
-    run_change_feed, run_change_feed_with, write_rows, write_rows_with, ApplyContext, ApplyOpts,
-    BatchTransformer, ChangeFeed, FailurePolicy, PositionedChange,
+    apply_changes, apply_changes_with, run_change_feed, run_change_feed_with, write_rows,
+    write_rows_with, ApplyContext, ApplyOpts, BatchTransformer, ChangeFeed, FailurePolicy,
+    PositionedChange,
 };
 pub use config::{
-    load_pipeline_and_opts, load_transforms_config, parse_humantime, parse_transforms_toml,
-    ConfiguredStage, ExternalStageConfig, FramerKind, StdinConfig, TransformsConfig, TransportKind,
+    ensure_command_resolvable, load_pipeline_and_opts, load_transforms_config, parse_humantime,
+    parse_transforms_toml, ConfiguredStage, ExternalStageConfig, FramerKind, StdinConfig,
+    TransformsConfig, TransportKind,
 };
 pub use cow::CowBatch;
 pub use external::{

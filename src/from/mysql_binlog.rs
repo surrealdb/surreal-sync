@@ -9,10 +9,11 @@ use anyhow::Context;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager};
 use surreal_sink::SurrealSink;
 use surreal_sync_mysql_binlog_source::{
-    request_snapshot, run_full_sync_cancellable, run_initial_interleaved_snapshot,
-    run_interleaved_snapshot_full_sync, run_replication_tail_with_checkpoints, BinlogCheckpoint,
-    InterleavedFullSyncOptions, ReplicationTailOptions, SourceOpts, SyncOpts,
+    request_snapshot, run_full_sync_cancellable_with_transforms, run_initial_interleaved_snapshot_with_transforms,
+    run_interleaved_snapshot_full_sync_with_transforms, run_replication_tail_with_transforms,
+    BinlogCheckpoint, InterleavedFullSyncOptions, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
+use surreal_sync_interleaved_snapshot::SnapshotTransforms;
 use sync_transform::{ApplyOpts, Pipeline};
 use tokio_util::sync::CancellationToken;
 
@@ -101,27 +102,35 @@ fn binlog_sync_opts(batch_size: usize, dry_run: bool) -> SyncOpts {
 
 /// Load `--transforms-config` into a [`Pipeline`] + [`ApplyOpts`].
 ///
-/// Missing flag → identity pipeline (zero transform overhead). Bad TOML or
-/// spawn failure fails fast before sync starts. Apply-path wiring is Phase 5;
-/// we keep the values alive for the sync duration (persistent workers stay up).
+/// Missing flag → identity pipeline with `batch_size = 1` (zero transform
+/// overhead; preserves per-event apply cadence). Bad TOML or unresolvable
+/// worker argv fails fast before sync starts.
 fn load_binlog_transforms(args: &MySQLBinlogSyncArgs) -> anyhow::Result<(Pipeline, ApplyOpts)> {
     match &args.transforms_config {
         None => {
-            tracing::debug!("No --transforms-config; using identity transform pipeline");
-            Ok((Pipeline::new(), ApplyOpts::default()))
+            tracing::info!(
+                "No --transforms-config; using identity transform pipeline (zero overhead)"
+            );
+            Ok((Pipeline::new(), ApplyOpts::identity()))
         }
         Some(path) => {
             let (pipeline, opts) = sync_transform::load_pipeline_and_opts(path)
                 .with_context(|| format!("load --transforms-config {}", path.display()))?;
-            tracing::info!(
-                path = %path.display(),
-                identity = pipeline.is_identity(),
-                stages = pipeline.len(),
-                max_in_flight = opts.max_in_flight,
-                batch_size = opts.batch_size,
-                failure_policy = ?opts.failure_policy,
-                "Loaded transform pipeline from --transforms-config"
-            );
+            if pipeline.is_identity() {
+                tracing::info!(
+                    path = %path.display(),
+                    "Loaded --transforms-config but pipeline is identity (empty / passthrough-only)"
+                );
+            } else {
+                tracing::info!(
+                    path = %path.display(),
+                    stages = pipeline.len(),
+                    max_in_flight = opts.max_in_flight,
+                    batch_size = opts.batch_size,
+                    failure_policy = ?opts.failure_policy,
+                    "Transform pipeline active from --transforms-config"
+                );
+            }
             Ok((pipeline, opts))
         }
     }
@@ -242,6 +251,7 @@ async fn binlog_snapshot_full<S, St>(
     cancel: CancellationToken,
     sync_opts: &SyncOpts,
     manager: Option<&SyncManager<St>>,
+    transforms: &SnapshotTransforms,
 ) -> anyhow::Result<Option<surreal_sync_mysql_binlog_source::InterleavedFullSyncOutcome>>
 where
     S: SurrealSink,
@@ -249,13 +259,14 @@ where
 {
     match strategy {
         SyncStrategy::InterleavedSnapshot => {
-            let outcome = run_interleaved_snapshot_full_sync(
+            let outcome = run_interleaved_snapshot_full_sync_with_transforms(
                 sink,
                 source_opts,
                 chunk_size,
                 cancel,
                 manager,
                 InterleavedFullSyncOptions::default(),
+                transforms,
             )
             .await?;
             if outcome.cancelled {
@@ -272,7 +283,16 @@ where
             Ok(Some(outcome))
         }
         SyncStrategy::SequentialSnapshot => {
-            run_full_sync_cancellable(sink, source_opts, sync_opts, manager, &cancel).await?;
+            run_full_sync_cancellable_with_transforms(
+                sink,
+                source_opts,
+                sync_opts,
+                manager,
+                &cancel,
+                &transforms.pipeline,
+                &transforms.apply_opts,
+            )
+            .await?;
             tracing::info!("Sequential binlog full sync completed");
             Ok(None)
         }
@@ -395,7 +415,6 @@ async fn binlog_orchestrate<S, St>(
     args: MySQLBinlogSyncArgs,
     cancel: CancellationToken,
     checkpoint_manager: Option<&SyncManager<St>>,
-    // Held for Phase 5 apply-path wiring; persistent external children stay alive.
     pipeline: Pipeline,
     apply_opts: ApplyOpts,
 ) -> anyhow::Result<()>
@@ -403,8 +422,10 @@ where
     S: SurrealSink,
     St: CheckpointStore,
 {
-    let _pipeline = pipeline;
-    let _apply_opts = apply_opts;
+    let transforms = SnapshotTransforms {
+        pipeline,
+        apply_opts,
+    };
 
     let snapshot_mode = args.snapshot_mode;
     let strategy = args.strategy;
@@ -425,6 +446,7 @@ where
                 cancel,
                 &sync_opts,
                 checkpoint_manager,
+                &transforms,
             )
             .await?;
             Ok(())
@@ -433,24 +455,27 @@ where
             let from_checkpoint =
                 checkpoint_from_arg_or_store(&from_explicit, checkpoint_manager, &source_opts)
                     .await?;
-            run_replication_tail_with_checkpoints(
+            run_replication_tail_with_transforms(
                 sink,
                 source_opts,
                 from_checkpoint,
                 stream_options,
                 checkpoint_manager,
+                &transforms.pipeline,
+                &transforms.apply_opts,
             )
             .await
         }
         BinlogSnapshotModeArg::Initial => {
             let interleaved_outcome = match strategy {
                 SyncStrategy::InterleavedSnapshot => {
-                    let initial = run_initial_interleaved_snapshot(
+                    let initial = run_initial_interleaved_snapshot_with_transforms(
                         sink,
                         &source_opts,
                         chunk_size,
                         cancel.clone(),
                         checkpoint_manager,
+                        &transforms,
                     )
                     .await?;
                     initial.sync_outcome
@@ -464,6 +489,7 @@ where
                         cancel.clone(),
                         &sync_opts,
                         checkpoint_manager,
+                        &transforms,
                     )
                     .await?;
                     None
@@ -479,12 +505,14 @@ where
                     );
                     return Ok(());
                 }
-                run_replication_tail_with_checkpoints(
+                run_replication_tail_with_transforms(
                     sink,
                     source_opts,
                     outcome.end,
                     stream_options,
                     checkpoint_manager,
+                    &transforms.pipeline,
+                    &transforms.apply_opts,
                 )
                 .await
             } else if strategy == SyncStrategy::SequentialSnapshot {
@@ -499,12 +527,14 @@ where
                         .await?
                     }
                 };
-                run_replication_tail_with_checkpoints(
+                run_replication_tail_with_transforms(
                     sink,
                     source_opts,
                     from_checkpoint,
                     stream_options,
                     checkpoint_manager,
+                    &transforms.pipeline,
+                    &transforms.apply_opts,
                 )
                 .await
             } else {

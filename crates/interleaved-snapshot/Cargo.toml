@@ -12,6 +12,8 @@ sync-core = { path = "../sync-core" }
 surreal-sink = { path = "../surreal-sink" }
 # Checkpoint storage and resumable snapshot checkpoint type
 checkpoint = { path = "../checkpoint" }
+# Transform → sink apply (identity-fast write_rows / apply_changes)
+sync-transform = { path = "../sync-transform" }
 
 # Error handling
 anyhow = "1.0"

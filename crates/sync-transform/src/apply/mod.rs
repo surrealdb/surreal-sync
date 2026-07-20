@@ -7,5 +7,8 @@ mod transform;
 
 pub use feed::{ChangeFeed, PositionedChange};
 pub use opts::{ApplyOpts, FailurePolicy};
-pub use runtime::{run_change_feed, run_change_feed_with, write_rows, write_rows_with, ApplyContext};
+pub use runtime::{
+    apply_changes, apply_changes_with, run_change_feed, run_change_feed_with, write_rows,
+    write_rows_with, ApplyContext,
+};
 pub use transform::BatchTransformer;

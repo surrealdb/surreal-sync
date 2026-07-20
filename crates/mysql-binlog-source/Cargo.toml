@@ -20,6 +20,7 @@ serde_json = "1.0"
 surreal-sink = { path = "../surreal-sink" }
 surreal-sync-interleaved-snapshot = { path = "../interleaved-snapshot" }
 sync-core = { path = "../sync-core" }
+sync-transform = { path = "../sync-transform" }
 tokio = { version = "1.49", features = ["full"] }
 tokio-util = { version = "0.7" }
 tracing = "0.1"

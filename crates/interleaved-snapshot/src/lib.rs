@@ -33,8 +33,10 @@ mod tests;
 
 pub use checkpointer::{ManagerCheckpointer, NoopCheckpointer, SnapshotCheckpointer};
 pub use runner::{
-    run_adhoc_snapshot_tables, run_interleaved_snapshot, run_interleaved_snapshot_with_resume,
-    InterleavedSnapshotConfig, InterleavedSnapshotResult, DEFAULT_CHUNK_SIZE,
+    run_adhoc_snapshot_tables, run_adhoc_snapshot_tables_with_transforms, run_interleaved_snapshot,
+    run_interleaved_snapshot_with_resume, run_interleaved_snapshot_with_resume_and_transforms,
+    run_interleaved_snapshot_with_transforms, InterleavedSnapshotConfig, InterleavedSnapshotResult,
+    SnapshotTransforms, DEFAULT_CHUNK_SIZE,
 };
 pub use source::WatermarkSource;
 pub use types::{

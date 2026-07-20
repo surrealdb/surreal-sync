@@ -9,6 +9,7 @@ use mysql_async::{prelude::*, Pool, Row};
 use mysql_types::{row_to_typed_values_with_config, RowConversionConfig};
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalRow, UniversalType, UniversalValue};
+use sync_transform::{write_rows, ApplyOpts, Pipeline};
 use tracing::{debug, info};
 
 use crate::catch_up::{
@@ -36,12 +37,16 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     sync_opts: &SyncOpts,
     sync_manager: Option<&SyncManager<CS>>,
 ) -> Result<()> {
-    run_full_sync_cancellable(
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_full_sync_cancellable_with_transforms(
         surreal,
         from_opts,
         sync_opts,
         sync_manager,
         &tokio_util::sync::CancellationToken::new(),
+        &pipeline,
+        &apply_opts,
     )
     .await
 }
@@ -51,6 +56,8 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 /// `FullSyncEnd` checkpoint: the `FullSyncStart` position (the streaming lower
 /// bound captured before the dump) remains the safe resume point, so a
 /// subsequent run re-dumps and streams from there with no missed changes.
+///
+/// Identity-pipeline overload (no transforms).
 pub async fn run_full_sync_cancellable<S: SurrealSink, CS: CheckpointStore>(
     surreal: &S,
     from_opts: &SourceOpts,
@@ -58,7 +65,39 @@ pub async fn run_full_sync_cancellable<S: SurrealSink, CS: CheckpointStore>(
     sync_manager: Option<&SyncManager<CS>>,
     cancel: &tokio_util::sync::CancellationToken,
 ) -> Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_full_sync_cancellable_with_transforms(
+        surreal,
+        from_opts,
+        sync_opts,
+        sync_manager,
+        cancel,
+        &pipeline,
+        &apply_opts,
+    )
+    .await
+}
+
+/// Full sync with an explicit transform pipeline (`write_rows` before sink).
+pub async fn run_full_sync_cancellable_with_transforms<S: SurrealSink, CS: CheckpointStore>(
+    surreal: &S,
+    from_opts: &SourceOpts,
+    sync_opts: &SyncOpts,
+    sync_manager: Option<&SyncManager<CS>>,
+    cancel: &tokio_util::sync::CancellationToken,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<()> {
     info!("Starting MySQL binlog full sync to SurrealDB");
+    if pipeline.is_identity() {
+        debug!("Full sync using identity transform pipeline");
+    } else {
+        info!(
+            stages = pipeline.len(),
+            "Full sync using transform pipeline"
+        );
+    }
 
     let pool = new_mysql_pool(&from_opts.connection_string)?;
     let database = resolve_database(&pool, from_opts).await?;
@@ -106,6 +145,8 @@ pub async fn run_full_sync_cancellable<S: SurrealSink, CS: CheckpointStore>(
             sync_opts,
             schema_info.get(table_name),
             cancel,
+            pipeline,
+            apply_opts,
         )
         .await?;
         total_migrated += count;
@@ -251,6 +292,8 @@ async fn migrate_table<S: SurrealSink>(
     sync_opts: &SyncOpts,
     schema_info: Option<&TableSchemaInfo>,
     cancel: &tokio_util::sync::CancellationToken,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
 ) -> Result<usize> {
     let database: Option<String> = conn.query_first("SELECT DATABASE()").await?;
     let database = database.ok_or_else(|| anyhow::anyhow!("no database selected"))?;
@@ -300,10 +343,12 @@ async fn migrate_table<S: SurrealSink>(
 
         if batch.len() >= sync_opts.batch_size {
             if !sync_opts.dry_run {
-                surreal.write_universal_rows(&batch).await?;
+                let rows = std::mem::take(&mut batch);
+                write_rows(surreal, pipeline, rows, apply_opts).await?;
+            } else {
+                batch.clear();
             }
-            total_processed += batch.len();
-            batch.clear();
+            total_processed += sync_opts.batch_size;
             if cancel.is_cancelled() {
                 debug!("Cancellation requested mid-table '{table_name}'; stopping batch writes");
                 return Ok(total_processed);
@@ -312,10 +357,11 @@ async fn migrate_table<S: SurrealSink>(
     }
 
     if !batch.is_empty() {
+        let n = batch.len();
         if !sync_opts.dry_run {
-            surreal.write_universal_rows(&batch).await?;
+            write_rows(surreal, pipeline, batch, apply_opts).await?;
         }
-        total_processed += batch.len();
+        total_processed += n;
     }
 
     debug!("Processed {total_processed} rows from {table_name}");

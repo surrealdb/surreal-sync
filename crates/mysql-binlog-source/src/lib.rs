@@ -25,14 +25,20 @@ pub use catch_up::{
 pub use change::cdc_change_to_universal;
 pub use checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogReconciliationPos};
 pub use flavor::Flavor;
-pub use full_sync::{capture_head_checkpoint, run_full_sync, run_full_sync_cancellable};
+pub use full_sync::{
+    capture_head_checkpoint, run_full_sync, run_full_sync_cancellable,
+    run_full_sync_cancellable_with_transforms,
+};
 pub use incremental_sync::{
-    run_replication_tail, run_replication_tail_with_checkpoints, ReplicationTailOptions,
+    run_replication_tail, run_replication_tail_with_checkpoints,
+    run_replication_tail_with_transforms, BinlogCommitFeed, ReplicationTailOptions,
 };
 pub use signal::SIGNAL_TABLE;
 pub use watermark_source::{
-    request_snapshot, run_initial_interleaved_snapshot, run_interleaved_snapshot_full_sync,
-    BinlogWatermarkSource, ConnectOptions, InterleavedFullSyncOptions, InterleavedFullSyncOutcome,
+    request_snapshot, run_initial_interleaved_snapshot,
+    run_initial_interleaved_snapshot_with_transforms, run_interleaved_snapshot_full_sync,
+    run_interleaved_snapshot_full_sync_with_transforms, BinlogWatermarkSource, ConnectOptions,
+    InterleavedFullSyncOptions, InterleavedFullSyncOutcome,
 };
 
 /// MySQL binlog source connection options.

@@ -8,9 +8,10 @@ use binlog_protocol::{BinlogClient, CdcChange, EventBody, RowChange, TableMapEve
 use mysql_async::{prelude::*, Pool};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
-    run_adhoc_snapshot_tables, run_interleaved_snapshot_with_resume, InterleavedSnapshotConfig,
+    run_adhoc_snapshot_tables_with_transforms,
+    run_interleaved_snapshot_with_resume_and_transforms, InterleavedSnapshotConfig,
     NoopCheckpointer, PkTuple, ReconciliationEvent, SnapshotCheckpointer, SnapshotSignal,
-    TableSpec, WatermarkKind, WatermarkSource,
+    SnapshotTransforms, TableSpec, WatermarkKind, WatermarkSource,
 };
 use sync_core::{
     DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,
@@ -673,6 +674,7 @@ pub(crate) async fn run_adhoc_snapshots_for_tables<
     table_names: &[String],
     chunk_size: usize,
     checkpoint_manager: Option<&checkpoint::SyncManager<St>>,
+    transforms: &SnapshotTransforms,
 ) -> Result<()> {
     if table_names.is_empty() {
         return Ok(());
@@ -682,11 +684,27 @@ pub(crate) async fn run_adhoc_snapshots_for_tables<
     match checkpoint_manager {
         Some(manager) => {
             let mut checkpointer = ManagerRefCheckpointer { manager };
-            run_adhoc_snapshot_tables(source, surreal, specs, &config, &mut checkpointer).await
+            run_adhoc_snapshot_tables_with_transforms(
+                source,
+                surreal,
+                specs,
+                &config,
+                &mut checkpointer,
+                transforms,
+            )
+            .await
         }
         None => {
             let mut checkpointer = NoopCheckpointer;
-            run_adhoc_snapshot_tables(source, surreal, specs, &config, &mut checkpointer).await
+            run_adhoc_snapshot_tables_with_transforms(
+                source,
+                surreal,
+                specs,
+                &config,
+                &mut checkpointer,
+                transforms,
+            )
+            .await
         }
     }
 }
@@ -816,6 +834,33 @@ where
     S: SurrealSink,
     St: checkpoint::CheckpointStore,
 {
+    let transforms = SnapshotTransforms::identity();
+    run_interleaved_snapshot_full_sync_with_transforms(
+        surreal,
+        from_opts,
+        chunk_size,
+        cancel,
+        manager,
+        options,
+        &transforms,
+    )
+    .await
+}
+
+/// Interleaved snapshot full sync with an explicit transform pipeline.
+pub async fn run_interleaved_snapshot_full_sync_with_transforms<S, St>(
+    surreal: &S,
+    from_opts: &SourceOpts,
+    chunk_size: usize,
+    cancel: tokio_util::sync::CancellationToken,
+    manager: Option<&checkpoint::SyncManager<St>>,
+    options: InterleavedFullSyncOptions,
+    transforms: &SnapshotTransforms,
+) -> Result<InterleavedFullSyncOutcome>
+where
+    S: SurrealSink,
+    St: checkpoint::CheckpointStore,
+{
     use checkpoint::{Checkpoint, SyncPhase};
 
     let connect_opts = ConnectOptions {
@@ -845,21 +890,23 @@ where
     let resume_ref = options.resume_progress.as_ref();
     let snapshot_result = if let Some(manager) = manager {
         let mut checkpointer = ManagerRefCheckpointer { manager };
-        run_interleaved_snapshot_with_resume(
+        run_interleaved_snapshot_with_resume_and_transforms(
             &mut source,
             surreal,
             &config,
             &mut checkpointer,
             resume_ref,
+            transforms,
         )
         .await
     } else {
-        run_interleaved_snapshot_with_resume(
+        run_interleaved_snapshot_with_resume_and_transforms(
             &mut source,
             surreal,
             &config,
             &mut NoopCheckpointer,
             resume_ref,
+            transforms,
         )
         .await
     };
@@ -952,6 +999,31 @@ where
     S: SurrealSink,
     St: checkpoint::CheckpointStore,
 {
+    let transforms = SnapshotTransforms::identity();
+    run_initial_interleaved_snapshot_with_transforms(
+        surreal,
+        from_opts,
+        chunk_size,
+        cancel,
+        manager,
+        &transforms,
+    )
+    .await
+}
+
+/// Initial interleaved snapshot planning with an explicit transform pipeline.
+pub async fn run_initial_interleaved_snapshot_with_transforms<S, St>(
+    surreal: &S,
+    from_opts: &SourceOpts,
+    chunk_size: usize,
+    cancel: tokio_util::sync::CancellationToken,
+    manager: Option<&checkpoint::SyncManager<St>>,
+    transforms: &SnapshotTransforms,
+) -> Result<InitialInterleavedOutcome>
+where
+    S: SurrealSink,
+    St: checkpoint::CheckpointStore,
+{
     use crate::catch_up::{
         emit_catch_up_progress, read_catch_up_progress, tables_pending_snapshot,
     };
@@ -968,7 +1040,7 @@ where
                 info!("Resuming interleaved snapshot from saved per-chunk progress");
                 let start_at =
                     reconciliation_pos_from_snapshot_checkpoint(&progress, from_opts).await?;
-                let outcome = run_interleaved_snapshot_full_sync(
+                let outcome = run_interleaved_snapshot_full_sync_with_transforms(
                     surreal,
                     from_opts,
                     chunk_size,
@@ -981,6 +1053,7 @@ where
                         coverage_kind: CoverageKind::Initial,
                         ..InterleavedFullSyncOptions::default()
                     },
+                    transforms,
                 )
                 .await?;
                 return Ok(InitialInterleavedOutcome {
@@ -1029,7 +1102,7 @@ where
                     catch_up.covered_names(),
                     pending
                 );
-                let outcome = run_interleaved_snapshot_full_sync(
+                let outcome = run_interleaved_snapshot_full_sync_with_transforms(
                     surreal,
                     from_opts,
                     chunk_size,
@@ -1042,6 +1115,7 @@ where
                         coverage_kind: CoverageKind::Initial,
                         ..InterleavedFullSyncOptions::default()
                     },
+                    transforms,
                 )
                 .await?;
                 return Ok(InitialInterleavedOutcome {
@@ -1052,7 +1126,7 @@ where
         }
     }
 
-    let outcome = run_interleaved_snapshot_full_sync(
+    let outcome = run_interleaved_snapshot_full_sync_with_transforms(
         surreal,
         from_opts,
         chunk_size,
@@ -1062,6 +1136,7 @@ where
             coverage_kind: CoverageKind::Initial,
             ..InterleavedFullSyncOptions::default()
         },
+        transforms,
     )
     .await?;
     Ok(InitialInterleavedOutcome {

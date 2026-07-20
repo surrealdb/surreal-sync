@@ -55,6 +55,14 @@ impl Default for ApplyOpts {
 }
 
 impl ApplyOpts {
+    /// Apply options for an identity (no-config) sync path.
+    ///
+    /// `batch_size = 1` preserves today's per-event apply + commit cadence when
+    /// no `--transforms-config` is set.
+    pub fn identity() -> Self {
+        Self::default().with_batch_size(1)
+    }
+
     /// Builder: set in-flight window size (clamped to at least 1).
     pub fn with_max_in_flight(mut self, n: usize) -> Self {
         self.max_in_flight = n.max(1);

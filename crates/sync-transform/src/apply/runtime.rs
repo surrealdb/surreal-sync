@@ -26,6 +26,47 @@ pub async fn write_rows<S: SurrealSink>(
     write_rows_with(sink, Arc::new(pipeline.clone()), rows, opts).await
 }
 
+/// Transform then apply each change via [`SurrealSink::apply_universal_change`].
+///
+/// Used by interleaved snapshot reconciliation (one event at a time) and other
+/// paths that already hold a change batch. Identity pipelines skip transform
+/// dispatch entirely.
+pub async fn apply_changes<S: SurrealSink>(
+    sink: &S,
+    pipeline: &Pipeline,
+    changes: Vec<UniversalChange>,
+    opts: &ApplyOpts,
+) -> Result<()> {
+    apply_changes_with(sink, Arc::new(pipeline.clone()), changes, opts).await
+}
+
+/// Like [`apply_changes`] but accepts any [`BatchTransformer`] behind [`Arc`].
+pub async fn apply_changes_with<S, T>(
+    sink: &S,
+    transformer: Arc<T>,
+    changes: Vec<UniversalChange>,
+    opts: &ApplyOpts,
+) -> Result<()>
+where
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
+    let changes = if transformer.is_identity() {
+        changes
+    } else {
+        tokio::time::timeout(opts.timeout, transformer.transform_changes(0, changes))
+            .await
+            .map_err(|_| anyhow!("transform timeout after {:?}", opts.timeout))?
+            .context("transform changes")?
+    };
+    for change in &changes {
+        sink.apply_universal_change(change)
+            .await
+            .context("sink apply_universal_change")?;
+    }
+    Ok(())
+}
+
 /// Like [`write_rows`] but accepts any [`BatchTransformer`] behind [`Arc`].
 pub async fn write_rows_with<S, T>(
     sink: &S,

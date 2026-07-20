@@ -6,6 +6,7 @@ use anyhow::Result;
 use checkpoint::{InterleavedSnapshotCheckpoint, SnapshotTableProgress};
 use surreal_sink::SurrealSink;
 use sync_core::UniversalRow;
+use sync_transform::{apply_changes, write_rows, ApplyOpts, Pipeline};
 use tracing::info;
 use uuid::Uuid;
 
@@ -28,6 +29,40 @@ impl Default for InterleavedSnapshotConfig {
     fn default() -> Self {
         Self {
             chunk_size: DEFAULT_CHUNK_SIZE,
+        }
+    }
+}
+
+/// Transform pipeline + apply options for interleaved snapshot sink writes.
+///
+/// Default is an identity pipeline with `batch_size = 1` (zero transform
+/// overhead; matches pre-transform behavior).
+#[derive(Debug, Clone)]
+pub struct SnapshotTransforms {
+    pub pipeline: Pipeline,
+    pub apply_opts: ApplyOpts,
+}
+
+impl Default for SnapshotTransforms {
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
+impl SnapshotTransforms {
+    /// Empty pipeline, per-row apply cadence.
+    pub fn identity() -> Self {
+        Self {
+            pipeline: Pipeline::new(),
+            apply_opts: ApplyOpts::identity(),
+        }
+    }
+
+    /// Borrowed view used by the runner.
+    pub fn from_refs(pipeline: &Pipeline, apply_opts: &ApplyOpts) -> Self {
+        Self {
+            pipeline: pipeline.clone(),
+            apply_opts: apply_opts.clone(),
         }
     }
 }
@@ -125,19 +160,8 @@ fn init_snapshot_state(
 /// primary-key-ordered chunks while concurrently consuming and applying the
 /// source's change stream to `sink`.
 ///
-/// For each chunk the loop:
-/// 1. writes a low watermark, reads the chunk into a primary-key-keyed buffer,
-///    and writes a high watermark;
-/// 2. consumes change-stream events, applying every data change to the sink,
-///    and while inside the open window drops any buffered row whose primary
-///    key also appears as an event (the log event wins);
-/// 3. on window close, flushes the surviving buffered rows as upserts;
-/// 4. checkpoints `{reconciliation_pos, per-table last_pk}` and calls
-///    [`WatermarkSource::commit_reconciled`] so the source can free applied
-///    change-log data.
-///
-/// On completion it returns the final stream position and the exact peak
-/// buffered-row count.
+/// Uses an identity transform pipeline. Prefer
+/// [`run_interleaved_snapshot_with_transforms`] when a [`Pipeline`] is configured.
 pub async fn run_interleaved_snapshot<S, K, C>(
     source: &mut S,
     sink: &K,
@@ -149,17 +173,79 @@ where
     K: SurrealSink,
     C: SnapshotCheckpointer,
 {
-    run_interleaved_snapshot_with_resume(source, sink, config, checkpointer, None).await
+    let transforms = SnapshotTransforms::identity();
+    run_interleaved_snapshot_with_resume_and_transforms(
+        source,
+        sink,
+        config,
+        checkpointer,
+        None,
+        &transforms,
+    )
+    .await
 }
 
 /// Like [`run_interleaved_snapshot`], but resumes from a saved per-chunk
-/// checkpoint when `resume` is set.
+/// checkpoint when `resume` is set. Identity transforms.
 pub async fn run_interleaved_snapshot_with_resume<S, K, C>(
     source: &mut S,
     sink: &K,
     config: &InterleavedSnapshotConfig,
     checkpointer: &mut C,
     resume: Option<&InterleavedSnapshotCheckpoint>,
+) -> Result<InterleavedSnapshotResult<S::Position>>
+where
+    S: WatermarkSource,
+    K: SurrealSink,
+    C: SnapshotCheckpointer,
+{
+    let transforms = SnapshotTransforms::identity();
+    run_interleaved_snapshot_with_resume_and_transforms(
+        source,
+        sink,
+        config,
+        checkpointer,
+        resume,
+        &transforms,
+    )
+    .await
+}
+
+/// [`run_interleaved_snapshot`] with an explicit transform pipeline.
+pub async fn run_interleaved_snapshot_with_transforms<S, K, C>(
+    source: &mut S,
+    sink: &K,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+    transforms: &SnapshotTransforms,
+) -> Result<InterleavedSnapshotResult<S::Position>>
+where
+    S: WatermarkSource,
+    K: SurrealSink,
+    C: SnapshotCheckpointer,
+{
+    run_interleaved_snapshot_with_resume_and_transforms(
+        source,
+        sink,
+        config,
+        checkpointer,
+        None,
+        transforms,
+    )
+    .await
+}
+
+/// Resume-capable watermark snapshot with transform → sink apply.
+///
+/// Checkpoint / `commit_reconciled` still run only after successful sink writes
+/// (transform ack is in-memory only).
+pub async fn run_interleaved_snapshot_with_resume_and_transforms<S, K, C>(
+    source: &mut S,
+    sink: &K,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+    resume: Option<&InterleavedSnapshotCheckpoint>,
+    transforms: &SnapshotTransforms,
 ) -> Result<InterleavedSnapshotResult<S::Position>>
 where
     S: WatermarkSource,
@@ -210,6 +296,7 @@ where
             table_index,
             &mut progress,
             &mut peak_buffered_rows,
+            transforms,
         )
         .await?;
     }
@@ -236,6 +323,32 @@ where
     K: SurrealSink,
     C: SnapshotCheckpointer,
 {
+    let transforms = SnapshotTransforms::identity();
+    run_adhoc_snapshot_tables_with_transforms(
+        source,
+        sink,
+        tables,
+        config,
+        checkpointer,
+        &transforms,
+    )
+    .await
+}
+
+/// [`run_adhoc_snapshot_tables`] with an explicit transform pipeline.
+pub async fn run_adhoc_snapshot_tables_with_transforms<S, K, C>(
+    source: &mut S,
+    sink: &K,
+    tables: Vec<TableSpec>,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+    transforms: &SnapshotTransforms,
+) -> Result<()>
+where
+    S: WatermarkSource,
+    K: SurrealSink,
+    C: SnapshotCheckpointer,
+{
     let mut progress: Vec<TableState> = tables
         .iter()
         .map(|t| TableState {
@@ -255,6 +368,7 @@ where
             table_index,
             &mut progress,
             &mut peak_buffered_rows,
+            transforms,
         )
         .await?;
     }
@@ -273,6 +387,7 @@ async fn snapshot_one_table<S, K, C>(
     table_index: usize,
     progress: &mut [TableState],
     peak_buffered_rows: &mut usize,
+    transforms: &SnapshotTransforms,
 ) -> Result<()>
 where
     S: WatermarkSource,
@@ -335,14 +450,21 @@ where
                         continue;
                     }
                     if watermark_id == high_id {
-                        flush_buffer(sink, &mut buffer).await?;
+                        flush_buffer(sink, &mut buffer, transforms).await?;
                         in_window = false;
                         window_closed = true;
                         continue;
                     }
                 }
 
-                sink.apply_universal_change(&event.change).await?;
+                // Transform then sink; never commit_reconciled before this succeeds.
+                apply_changes(
+                    sink,
+                    &transforms.pipeline,
+                    vec![event.change],
+                    &transforms.apply_opts,
+                )
+                .await?;
                 if in_window {
                     buffer.remove(&event.pk.key());
                 }
@@ -376,11 +498,12 @@ where
 async fn flush_buffer<K: SurrealSink>(
     sink: &K,
     buffer: &mut HashMap<String, UniversalRow>,
+    transforms: &SnapshotTransforms,
 ) -> Result<()> {
     if buffer.is_empty() {
         return Ok(());
     }
     let rows: Vec<UniversalRow> = buffer.drain().map(|(_, row)| row).collect();
-    sink.write_universal_rows(&rows).await?;
+    write_rows(sink, &transforms.pipeline, rows, &transforms.apply_opts).await?;
     Ok(())
 }
