@@ -343,21 +343,55 @@ where
 
     /// Flush remaining buffered changes and wait for in-flight work.
     ///
+    /// Fully drains: loops until the buffer, in-flight transforms, and
+    /// completed-waiting queue are all empty. A single start/wait/drain pass is
+    /// not enough when `max_in_flight` holds the window full and later changes
+    /// remain buffered (W=1 + queued buffer).
+    ///
     /// Returns the last position successfully sunk (caller should `commit`).
     ///
     /// Returns `Err` immediately if this context is [`Self::is_poisoned`].
     pub async fn flush(&mut self) -> Result<Option<P>> {
         self.ensure_not_poisoned()?;
-        while self.try_start_partial_batch() {}
         let mut last = None;
-        while self.in_flight_count() > 0 {
-            self.wait_one_completion().await?;
+        loop {
+            // Fill the window from anything still buffered.
+            while self.try_start_partial_batch() {}
+
+            // Sink any results that are ready in source order.
             if let Some(p) = self.drain_ordered_no_commit().await? {
                 last = Some(p);
             }
-        }
-        if let Some(p) = self.drain_ordered_no_commit().await? {
-            last = Some(p);
+
+            if self.buffer.is_empty()
+                && self.in_flight.is_empty()
+                && self.completed.is_empty()
+            {
+                break;
+            }
+
+            if self.in_flight_count() > 0 {
+                self.wait_one_completion().await?;
+                continue;
+            }
+
+            // No in-flight work. Buffer should be startable now that the window
+            // is free; completed should have drained above.
+            if !self.buffer.is_empty() {
+                if !self.try_start_partial_batch() {
+                    bail!(
+                        "flush: {} buffered change(s) but window would not accept a batch",
+                        self.buffer.len()
+                    );
+                }
+                continue;
+            }
+
+            bail!(
+                "flush: {} completed batch(es) waiting but none is next_to_apply={}",
+                self.completed.len(),
+                self.next_to_apply
+            );
         }
         Ok(last)
     }

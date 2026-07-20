@@ -538,6 +538,39 @@ async fn apply_context_flush_partial_buffer_w2() {
     );
 }
 
+/// W=1 + queued buffer: A holds the window, B stays buffered; flush must
+/// start B after A drains (not stop after a single start/wait/drain pass).
+#[tokio::test]
+async fn flush_fully_drains_w1_queued_buffer() {
+    let transformer = ScriptedTransformer::new(Pipeline::new())
+        .on_batch(1, BatchScript::succeed_after(Duration::from_millis(40)))
+        .on_batch(2, BatchScript::succeed_after(Duration::from_millis(5)));
+
+    let sink = RecordingSink::new();
+    let opts = opts_window(1);
+    let mut ctx = ApplyContext::new(&sink, Arc::new(transformer), &opts);
+
+    let _ = ctx.push_change(change(1), 100u64).await.unwrap();
+    let _ = ctx.push_change(change(2), 200u64).await.unwrap();
+    assert!(
+        ctx.buffer_len() > 0,
+        "B must remain buffered while A holds W=1"
+    );
+
+    let wm = ctx.flush().await.unwrap();
+    assert_eq!(wm, Some(200), "flush must drain through queued B");
+    assert_eq!(ctx.buffer_len(), 0);
+    assert_eq!(ctx.in_flight_count(), 0);
+    assert_eq!(ctx.completed_waiting_count(), 0);
+    assert_eq!(
+        sink.applied()
+            .iter()
+            .map(|c| c.id.clone())
+            .collect::<Vec<_>>(),
+        vec![UniversalValue::Int64(1), UniversalValue::Int64(2)]
+    );
+}
+
 #[tokio::test]
 async fn apply_context_fail_poisons_context() {
     let transformer = ScriptedTransformer::new(Pipeline::new())

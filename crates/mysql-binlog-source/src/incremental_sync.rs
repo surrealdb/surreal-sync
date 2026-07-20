@@ -299,6 +299,8 @@ where
             &options,
             checkpoint_manager,
             &transforms,
+            &apply_ctx,
+            &last_sunk_checkpoint,
         )
         .await?;
 
@@ -492,12 +494,27 @@ fn note_sunk_position(
     });
 }
 
+/// Whether [`ApplyContext`] still holds work that has not been sunk.
+///
+/// Includes completed transform results waiting for ordered sink apply — not
+/// only the input buffer and in-flight JoinSet tasks.
+fn apply_has_unsunk_work<S, T, P>(apply_ctx: &ApplyContext<'_, S, T, P>) -> bool
+where
+    S: SurrealSink,
+    T: sync_transform::BatchTransformer + 'static,
+    P: Clone + Send + Sync + 'static,
+{
+    apply_ctx.buffer_len() > 0
+        || apply_ctx.in_flight_count() > 0
+        || apply_ctx.completed_waiting_count() > 0
+}
+
 /// Position safe to write to CatchUpProgress.
 ///
-/// While transform/apply still has buffered or in-flight work, never advance
-/// past `last_sunk` — `current` may already reflect read-ahead events that have
-/// not been sunk yet. When there is no unsunk work, `current` is safe (it may
-/// include filtered-only advances with nothing to apply).
+/// While transform/apply still has buffered, in-flight, or completed-waiting
+/// work, never advance past `last_sunk` — `current` may already reflect
+/// read-ahead events that have not been sunk yet. When there is no unsunk work,
+/// `current` is safe (it may include filtered-only advances with nothing to apply).
 fn store_checkpoint_to_emit(
     last_sunk: Option<&BinlogCheckpoint>,
     current: &BinlogCheckpoint,
@@ -508,6 +525,22 @@ fn store_checkpoint_to_emit(
     } else {
         Some(current.clone())
     }
+}
+
+/// CatchUpProgress position for ad-hoc table coverage merges.
+///
+/// Never persists read-ahead `current` while apply still has unsunk work.
+/// Falls back to the existing progress position (table coverage only) when
+/// there is unsunk work and no `last_sunk` yet.
+fn adhoc_catch_up_checkpoint(
+    last_sunk: Option<&BinlogCheckpoint>,
+    current: &BinlogCheckpoint,
+    has_unsunk_work: bool,
+    existing: Option<&CatchUpProgress>,
+) -> BinlogCheckpoint {
+    store_checkpoint_to_emit(last_sunk, current, has_unsunk_work)
+        .or_else(|| existing.map(|p| p.position.clone()))
+        .unwrap_or_else(|| current.clone())
 }
 
 async fn emit_store_checkpoint<S, T, St, P>(
@@ -524,7 +557,7 @@ where
     St: CheckpointStore,
     P: Clone + Send + Sync + 'static,
 {
-    let has_unsunk = apply_ctx.buffer_len() > 0 || apply_ctx.in_flight_count() > 0;
+    let has_unsunk = apply_has_unsunk_work(apply_ctx);
     let current = crate::checkpoint::get_current_checkpoint(client)?;
     let Some(cp) = store_checkpoint_to_emit(last_sunk.as_ref(), &current, has_unsunk) else {
         return Ok(());
@@ -546,7 +579,7 @@ where
     T: sync_transform::BatchTransformer + 'static,
     St: CheckpointStore,
 {
-    if apply_ctx.buffer_len() == 0 && apply_ctx.in_flight_count() == 0 {
+    if !apply_has_unsunk_work(apply_ctx) {
         if force_persist {
             emit_store_checkpoint(
                 checkpoint_manager,
@@ -585,7 +618,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn handle_snapshot_signals<S, St>(
+async fn handle_snapshot_signals<S, T, St, P>(
     surreal: &S,
     pool: &mysql_async::Pool,
     database: &str,
@@ -595,10 +628,14 @@ async fn handle_snapshot_signals<S, St>(
     options: &ReplicationTailOptions,
     checkpoint_manager: Option<&SyncManager<St>>,
     transforms: &SnapshotTransforms,
+    apply_ctx: &ApplyContext<'_, S, T, P>,
+    last_sunk: &Option<BinlogCheckpoint>,
 ) -> Result<binlog_protocol::BinlogClient>
 where
     S: SurrealSink,
+    T: sync_transform::BatchTransformer + 'static,
     St: CheckpointStore,
+    P: Clone + Send + Sync + 'static,
 {
     let signals = read_pending_execute_snapshot_signals(pool, database).await?;
     if signals.is_empty() {
@@ -639,8 +676,16 @@ where
         acknowledge_execute_snapshot_signal(pool, database, &signal.id).await?;
 
         if let Some(manager) = checkpoint_manager {
-            let checkpoint = wm.current_checkpoint()?;
+            // Same policy as interval CatchUpProgress: never persist read-ahead
+            // current_position while ApplyContext still has unsunk work.
+            let current = wm.current_checkpoint()?;
             let existing = read_catch_up_progress(manager).await?;
+            let checkpoint = adhoc_catch_up_checkpoint(
+                last_sunk.as_ref(),
+                &current,
+                apply_has_unsunk_work(apply_ctx),
+                existing.as_ref(),
+            );
             write_catch_up_for_tables(
                 manager,
                 signal.tables.clone(),
@@ -737,7 +782,7 @@ mod tests {
         let sunk = ckpt(100);
         let current = ckpt(200);
 
-        // Buffered / in-flight: persist last sunk only — never current_position.
+        // Buffered / in-flight / completed-waiting: persist last sunk only.
         let emitted = store_checkpoint_to_emit(Some(&sunk), &current, true).unwrap();
         assert_eq!(emitted.position, sunk.position);
 
@@ -747,6 +792,25 @@ mod tests {
         // Nothing unsunk: current is safe (may include filtered-only advances).
         let emitted = store_checkpoint_to_emit(Some(&sunk), &current, false).unwrap();
         assert_eq!(emitted.position, current.position);
+    }
+
+    #[test]
+    fn adhoc_catch_up_uses_last_sunk_when_unsunk_work_remains() {
+        let sunk = ckpt(100);
+        let current = ckpt(200);
+        let existing = CatchUpProgress::new(ckpt(50));
+
+        // Unsung work + last_sunk → never write read-ahead current.
+        let cp = adhoc_catch_up_checkpoint(Some(&sunk), &current, true, Some(&existing));
+        assert_eq!(cp.position, sunk.position);
+
+        // Unsung work, no last_sunk → keep existing progress position (coverage only).
+        let cp = adhoc_catch_up_checkpoint(None, &current, true, Some(&existing));
+        assert_eq!(cp, existing.position);
+
+        // Fully drained → current is safe (same as interval path).
+        let cp = adhoc_catch_up_checkpoint(Some(&sunk), &current, false, Some(&existing));
+        assert_eq!(cp.position, current.position);
     }
 
     #[test]
