@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 /// Comprehensive E2E test that traces array data through the entire incremental sync flow
 #[tokio::test]
 async fn test_incremental_sync_array_e2e() {
+    let _guard = crate::shared::lock_shared_db().await;
     let container = crate::shared::postgres().await;
 
     let (client, connection) =

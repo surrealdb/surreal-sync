@@ -153,7 +153,9 @@ async fn drain_remaining(source: &mut PostgresTriggerWatermarkSource, sink: &Moc
 #[tokio::test]
 async fn interleaved_snapshot_parity_under_concurrent_writes() {
     let container = crate::shared::postgres().await;
-    let uri = container.connection_string.clone();
+    let uri = crate::shared::create_test_db(container, "ss_parity_db")
+        .await
+        .expect("create_test_db");
     let table = "ss_parity";
 
     let admin = connect(&uri).await;
@@ -243,7 +245,9 @@ async fn interleaved_snapshot_parity_under_concurrent_writes() {
 #[tokio::test]
 async fn interleaved_snapshot_bounded_audit_retention() {
     let container = crate::shared::postgres().await;
-    let uri = container.connection_string.clone();
+    let uri = crate::shared::create_test_db(container, "ss_retain_db")
+        .await
+        .expect("create_test_db");
     let table = "ss_retain";
 
     let admin = connect(&uri).await;
@@ -297,7 +301,9 @@ async fn interleaved_snapshot_bounded_audit_retention() {
 #[tokio::test]
 async fn interleaved_snapshot_peak_buffer_within_chunk_size() {
     let container = crate::shared::postgres().await;
-    let uri = container.connection_string.clone();
+    let uri = crate::shared::create_test_db(container, "ss_peak_db")
+        .await
+        .expect("create_test_db");
     let table = "ss_peak";
 
     let admin = connect(&uri).await;

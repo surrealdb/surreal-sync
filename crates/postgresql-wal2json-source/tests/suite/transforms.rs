@@ -16,6 +16,7 @@ use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline};
 struct CaptureSink {
     changes: Mutex<Vec<UniversalChange>>,
     rows: Mutex<Vec<UniversalRow>>,
+    relation_changes: Mutex<Vec<sync_core::UniversalRelationChange>>,
 }
 
 impl CaptureSink {
@@ -23,6 +24,7 @@ impl CaptureSink {
         Self {
             changes: Mutex::new(Vec::new()),
             rows: Mutex::new(Vec::new()),
+            relation_changes: Mutex::new(Vec::new()),
         }
     }
 }
@@ -48,8 +50,12 @@ impl SurrealSink for CaptureSink {
 
     async fn apply_universal_relation_change(
         &self,
-        _change: &sync_core::UniversalRelationChange,
+        change: &sync_core::UniversalRelationChange,
     ) -> anyhow::Result<()> {
+        self.relation_changes
+            .lock()
+            .expect("lock")
+            .push(change.clone());
         Ok(())
     }
 }
@@ -388,5 +394,89 @@ async fn external_mutate_worker_writes_mutated_fields_to_surrealdb() -> Result<(
             "SurrealDB sink path must receive external mutate; got {row:?}"
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn relation_change_path_records_junction_applies() -> Result<()> {
+    let container = crate::shared::postgres().await;
+    let conn_str = crate::shared::create_test_db(container, &format!(
+        "xf_rel_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            % 1_000_000_000
+    ))
+    .await?;
+
+    let (client, connection) = tokio_postgres::connect(&conn_str, tokio_postgres::NoTls).await?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    client
+        .batch_execute(
+            "
+            CREATE TABLE authors (id INT PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE tags (id INT PRIMARY KEY, label TEXT NOT NULL);
+            CREATE TABLE books (
+                id INT PRIMARY KEY,
+                title TEXT NOT NULL,
+                author_id INT NOT NULL REFERENCES authors(id)
+            );
+            CREATE TABLE book_tags (
+                book_id INT REFERENCES books(id),
+                tag_id INT REFERENCES tags(id),
+                PRIMARY KEY (book_id, tag_id)
+            );
+            ",
+        )
+        .await?;
+
+    let tables = vec![
+        "authors".to_string(),
+        "tags".to_string(),
+        "books".to_string(),
+        "book_tags".to_string(),
+    ];
+    let slot = "xf_rel_slot";
+    let checkpoint = capture_head(&conn_str, slot, tables.clone()).await?;
+
+    client
+        .batch_execute(
+            "
+            INSERT INTO authors (id, name) VALUES (1, 'Ada');
+            INSERT INTO tags (id, label) VALUES (7, 'sci');
+            INSERT INTO books (id, title, author_id) VALUES (10, 'Notes', 1);
+            INSERT INTO book_tags (book_id, tag_id) VALUES (10, 7);
+            ",
+        )
+        .await?;
+
+    let sink = CaptureSink::new();
+    run_incremental_sync_with_transforms(
+        &sink,
+        source_opts(&conn_str, slot, tables),
+        checkpoint,
+        ReplicationTailOptions::stream(
+            chrono::Utc::now() + chrono::Duration::seconds(20),
+            None,
+        ),
+        &Pipeline::new(),
+        &ApplyOpts::identity(),
+    )
+    .await?;
+
+    let relations = sink.relation_changes.lock().expect("lock").clone();
+    assert!(
+        !relations.is_empty(),
+        "expected book_tags RelationChange via wal2json SourceDriver, got changes={:?} relations={:?}",
+        sink.changes.lock().expect("lock"),
+        relations
+    );
+    assert!(
+        relations.iter().any(|r| r.relation.relation_type == "book_tags"),
+        "expected book_tags relation edge, got {relations:?}"
+    );
     Ok(())
 }

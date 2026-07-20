@@ -136,11 +136,13 @@ pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
             &mut conn,
             surreal,
             table_name,
-            sync_opts,
-            &boolean_paths,
             schema_info.get(table_name),
-            pipeline,
-            apply_opts,
+            &MigrateTableOpts {
+                sync_opts,
+                json_path_overrides: &boolean_paths,
+                pipeline,
+                apply_opts,
+            },
         )
         .await?;
 
@@ -300,16 +302,23 @@ async fn get_current_database(conn: &mut mysql_async::Conn) -> Result<String> {
     db.ok_or_else(|| anyhow::anyhow!("No database selected"))
 }
 
+/// Options for [`migrate_table`] (keeps the call site under clippy's arg limit).
+struct MigrateTableOpts<'a> {
+    sync_opts: &'a SyncOpts,
+    /// Reserved for JSON path overrides (currently unused by trigger full sync).
+    #[allow(dead_code)]
+    json_path_overrides: &'a [String],
+    pipeline: &'a Pipeline,
+    apply_opts: &'a ApplyOpts,
+}
+
 /// Migrate a single table from MySQL to SurrealDB
 async fn migrate_table<S: SurrealSink>(
     conn: &mut mysql_async::Conn,
     surreal: &S,
     table_name: &str,
-    sync_opts: &SyncOpts,
-    _json_path_overrides: &[String],
     schema_info: Option<&TableSchemaInfo>,
-    pipeline: &Pipeline,
-    apply_opts: &ApplyOpts,
+    opts: &MigrateTableOpts<'_>,
 ) -> Result<usize> {
     // Get primary key columns for this table
     let database = get_current_database(conn).await?;
@@ -377,11 +386,17 @@ async fn migrate_table<S: SurrealSink>(
         batch.push(universal_row);
 
         // Process batch when it reaches the configured size
-        if batch.len() >= sync_opts.batch_size {
+        if batch.len() >= opts.sync_opts.batch_size {
             let batch_size = batch.len();
 
-            if !sync_opts.dry_run {
-                write_rows(surreal, pipeline, std::mem::take(&mut batch), apply_opts).await?;
+            if !opts.sync_opts.dry_run {
+                write_rows(
+                    surreal,
+                    opts.pipeline,
+                    std::mem::take(&mut batch),
+                    opts.apply_opts,
+                )
+                .await?;
             } else {
                 debug!(
                     "Dry-run: Would insert {} records into {}",
@@ -397,8 +412,8 @@ async fn migrate_table<S: SurrealSink>(
     if !batch.is_empty() {
         let batch_size = batch.len();
 
-        if !sync_opts.dry_run {
-            write_rows(surreal, pipeline, batch, apply_opts).await?;
+        if !opts.sync_opts.dry_run {
+            write_rows(surreal, opts.pipeline, batch, opts.apply_opts).await?;
         } else {
             debug!(
                 "Dry-run: Would insert {} records into {}",

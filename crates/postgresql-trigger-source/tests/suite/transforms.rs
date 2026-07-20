@@ -1,4 +1,7 @@
 //! Transform pipeline e2e for PostgreSQL trigger source.
+//!
+//! Each test uses a unique database so parallel `cargo test` does not collide
+//! on the shared `surreal_sync_changes` audit table.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -10,18 +13,22 @@ use surreal_sync_postgresql_trigger_source::{
     run_incremental_sync_with_transforms, PostgreSQLCheckpoint, PostgresIncrementalSource,
     ReplicationTailOptions, SourceOpts,
 };
-use sync_core::{UniversalChange, UniversalRow, UniversalValue};
+use sync_core::{
+    UniversalChange, UniversalRelationChange, UniversalRow, UniversalValue,
+};
 use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline};
 use tokio::sync::Mutex as TokioMutex;
 
 struct CaptureSink {
     changes: Mutex<Vec<UniversalChange>>,
+    relation_changes: Mutex<Vec<UniversalRelationChange>>,
 }
 
 impl CaptureSink {
     fn new() -> Self {
         Self {
             changes: Mutex::new(Vec::new()),
+            relation_changes: Mutex::new(Vec::new()),
         }
     }
 }
@@ -46,8 +53,12 @@ impl SurrealSink for CaptureSink {
 
     async fn apply_universal_relation_change(
         &self,
-        _change: &sync_core::UniversalRelationChange,
+        change: &sync_core::UniversalRelationChange,
     ) -> anyhow::Result<()> {
+        self.relation_changes
+            .lock()
+            .expect("lock")
+            .push(change.clone());
         Ok(())
     }
 }
@@ -84,15 +95,18 @@ fn ensure_fixture_worker() -> PathBuf {
     path
 }
 
-fn name_field(change: &UniversalChange) -> Option<String> {
-    let data = change.data.as_ref()?;
-    match data.get("name")? {
-        UniversalValue::VarChar { value, .. } | UniversalValue::Text(value) => Some(value.clone()),
+fn name_field(change: &UniversalChange) -> String {
+    let data = change
+        .data
+        .as_ref()
+        .unwrap_or_else(|| panic!("change missing data: {change:?}"));
+    match data.get("name").unwrap_or_else(|| panic!("change missing name: {change:?}")) {
+        UniversalValue::VarChar { value, .. } | UniversalValue::Text(value) => value.clone(),
         other => panic!("unexpected name: {other:?}"),
     }
 }
 
-fn unique_table(prefix: &str) -> String {
+fn unique_suffix(prefix: &str) -> String {
     format!(
         "{prefix}_{}",
         std::time::SystemTime::now()
@@ -129,8 +143,9 @@ async fn prepare_table(conn_str: &str, table: &str) -> Result<()> {
 #[tokio::test]
 async fn identity_pipeline_incremental_sync() -> Result<()> {
     let container = crate::shared::postgres().await;
-    let conn_str = container.connection_string.clone();
-    let table = unique_table("xf_id_people");
+    let db = unique_suffix("xf_id");
+    let conn_str = crate::shared::create_test_db(container, &db).await?;
+    let table = "people".to_string();
     prepare_table(&conn_str, &table).await?;
 
     let (client, connection) = tokio_postgres::connect(&conn_str, tokio_postgres::NoTls).await?;
@@ -171,10 +186,13 @@ async fn identity_pipeline_incremental_sync() -> Result<()> {
         changes.len() >= 2,
         "expected at least two inserts, got {changes:?}"
     );
-    let mut names: Vec<_> = changes.iter().filter_map(name_field).collect();
+    let mut names: Vec<_> = changes.iter().map(name_field).collect();
     names.sort();
     names.dedup();
-    assert!(names.contains(&"alice".to_string()) && names.contains(&"bob".to_string()));
+    assert!(
+        names.contains(&"alice".to_string()) && names.contains(&"bob".to_string()),
+        "expected alice and bob, got {names:?}"
+    );
     Ok(())
 }
 
@@ -182,8 +200,9 @@ async fn identity_pipeline_incremental_sync() -> Result<()> {
 async fn external_mutate_worker_transforms_incremental_changes() -> Result<()> {
     let worker = ensure_fixture_worker();
     let container = crate::shared::postgres().await;
-    let conn_str = container.connection_string.clone();
-    let table = unique_table("xf_ext_people");
+    let db = unique_suffix("xf_ext");
+    let conn_str = crate::shared::create_test_db(container, &db).await?;
+    let table = "people".to_string();
     prepare_table(&conn_str, &table).await?;
 
     let (client, connection) = tokio_postgres::connect(&conn_str, tokio_postgres::NoTls).await?;
@@ -232,9 +251,99 @@ async fn external_mutate_worker_transforms_incremental_changes() -> Result<()> {
         "expected transformed inserts, got {changes:?}"
     );
     for change in &changes {
-        if let Some(name) = name_field(change) {
-            assert_eq!(name, "mutated");
-        }
+        assert_eq!(
+            name_field(change),
+            "mutated",
+            "external mutate worker should rewrite name; got {change:?}"
+        );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn relation_change_path_records_junction_applies() -> Result<()> {
+    let container = crate::shared::postgres().await;
+    let db = unique_suffix("xf_rel");
+    let conn_str = crate::shared::create_test_db(container, &db).await?;
+
+    let (client, connection) = tokio_postgres::connect(&conn_str, tokio_postgres::NoTls).await?;
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    let client = Arc::new(TokioMutex::new(client));
+    {
+        let c = client.lock().await;
+        c.batch_execute(
+            "
+            DROP TABLE IF EXISTS surreal_sync_changes CASCADE;
+            CREATE TABLE authors (id INT PRIMARY KEY, name TEXT NOT NULL);
+            CREATE TABLE tags (id INT PRIMARY KEY, label TEXT NOT NULL);
+            CREATE TABLE books (
+                id INT PRIMARY KEY,
+                title TEXT NOT NULL,
+                author_id INT NOT NULL REFERENCES authors(id)
+            );
+            CREATE TABLE book_tags (
+                book_id INT REFERENCES books(id),
+                tag_id INT REFERENCES tags(id),
+                PRIMARY KEY (book_id, tag_id)
+            );
+            ",
+        )
+        .await?;
+    }
+
+    let tables = vec![
+        "authors".to_string(),
+        "tags".to_string(),
+        "books".to_string(),
+        "book_tags".to_string(),
+    ];
+    let mut source = PostgresIncrementalSource::new(client.clone(), 0);
+    source.setup_tracking(tables.clone()).await?;
+
+    {
+        let c = client.lock().await;
+        c.batch_execute(
+            "
+            INSERT INTO authors (id, name) VALUES (1, 'Ada');
+            INSERT INTO tags (id, label) VALUES (7, 'sci');
+            INSERT INTO books (id, title, author_id) VALUES (10, 'Notes', 1);
+            INSERT INTO book_tags (book_id, tag_id) VALUES (10, 7);
+            ",
+        )
+        .await?;
+    }
+
+    let sink = CaptureSink::new();
+    run_incremental_sync_with_transforms(
+        &sink,
+        SourceOpts {
+            source_uri: conn_str,
+            source_database: Some("public".to_string()),
+            tables,
+            relation_tables: vec![],
+        },
+        PostgreSQLCheckpoint {
+            sequence_id: 0,
+            timestamp: chrono::Utc::now(),
+        },
+        ReplicationTailOptions::stream(chrono::Utc::now() + chrono::Duration::seconds(20), None),
+        &Pipeline::new(),
+        &ApplyOpts::identity(),
+    )
+    .await?;
+
+    let relations = sink.relation_changes.lock().expect("lock").clone();
+    assert!(
+        !relations.is_empty(),
+        "expected book_tags RelationChange applies via SourceDriver, got changes={:?} relations={:?}",
+        sink.changes.lock().expect("lock"),
+        relations
+    );
+    assert!(
+        relations.iter().any(|r| r.relation.relation_type == "book_tags"),
+        "expected book_tags relation edge, got {relations:?}"
+    );
     Ok(())
 }

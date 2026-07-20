@@ -10,6 +10,7 @@ use tokio_postgres::{types::ToSql, NoTls};
 /// Test that Vec<String> correctly inserts as TEXT[] and serializes via to_jsonb()
 #[tokio::test]
 async fn test_array_insertion_and_jsonb_serialization() {
+    let _guard = crate::shared::lock_shared_db().await;
     let container = crate::shared::postgres().await;
 
     let (client, connection) = tokio_postgres::connect(&container.connection_string, NoTls)
@@ -106,6 +107,7 @@ async fn test_array_insertion_and_jsonb_serialization() {
 /// Test that Box<dyn ToSql> with Vec<String> works correctly
 #[tokio::test]
 async fn test_boxed_array_parameter() {
+    let _guard = crate::shared::lock_shared_db().await;
     let container = crate::shared::postgres().await;
 
     let (client, connection) = tokio_postgres::connect(&container.connection_string, NoTls)
@@ -179,6 +181,7 @@ async fn test_boxed_array_parameter() {
 /// Test the full trigger flow: insert array -> trigger captures -> audit table has correct JSON
 #[tokio::test]
 async fn test_array_through_trigger_audit() {
+    let _guard = crate::shared::lock_shared_db().await;
     let container = crate::shared::postgres().await;
 
     let (client, connection) = tokio_postgres::connect(&container.connection_string, NoTls)

@@ -10,6 +10,7 @@ use sync_core::{classify_table, TableKind};
 
 #[tokio::test]
 async fn test_fk_introspection_and_classification() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = crate::shared::lock_shared_db().await;
     let container = crate::shared::postgres().await;
 
     let (client, connection) =
@@ -119,6 +120,7 @@ async fn test_fk_introspection_and_classification() -> Result<(), Box<dyn std::e
 
 #[tokio::test]
 async fn test_override_forces_relation_classification() -> Result<(), Box<dyn std::error::Error>> {
+    let _guard = crate::shared::lock_shared_db().await;
     let container = crate::shared::postgres().await;
 
     let (client, connection) =
