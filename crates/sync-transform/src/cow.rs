@@ -10,6 +10,14 @@ use sync_core::{UniversalChange, UniversalRow};
 /// Prefer owned `Vec` + [`InPlaceTransform::transform_*_inplace`] when sharing is
 /// not required. Use [`CowBatch`] only when the same items may be shared across
 /// holders and mutation must not affect other owners.
+///
+/// # Cost of `apply_inplace`
+///
+/// [`Self::apply_inplace`] always calls [`Arc::make_mut`] before invoking the
+/// transform. When an item's strong count is greater than one, **`make_mut`
+/// clones even if the transform is a no-op** (e.g. [`crate::Passthrough`]).
+/// Unique arcs (refcount 1) are mutated without allocation regardless of whether
+/// the transform writes.
 #[derive(Debug, Clone)]
 pub struct CowBatch<T> {
     /// Shared items; mutated through [`Arc::make_mut`] in [`Self::apply_inplace`].
@@ -48,8 +56,9 @@ impl<T> CowBatch<T> {
 impl CowBatch<UniversalRow> {
     /// Apply an in-place transform with Arc COW semantics.
     ///
-    /// [`Arc::make_mut`] clones an item only when its strong count is greater
-    /// than one (shared). Unique arcs are mutated without allocation.
+    /// Always calls [`Arc::make_mut`] per item. Clones when the arc is shared
+    /// (strong count &gt; 1), including when `t` is a no-op such as
+    /// [`crate::Passthrough`]. Unique arcs are mutated without allocation.
     pub fn apply_inplace(&mut self, t: &impl InPlaceTransform) -> Result<()> {
         for item in &mut self.items {
             t.transform_row(Arc::make_mut(item))?;
@@ -61,8 +70,9 @@ impl CowBatch<UniversalRow> {
 impl CowBatch<UniversalChange> {
     /// Apply an in-place transform with Arc COW semantics.
     ///
-    /// [`Arc::make_mut`] clones an item only when its strong count is greater
-    /// than one (shared). Unique arcs are mutated without allocation.
+    /// Always calls [`Arc::make_mut`] per item. Clones when the arc is shared
+    /// (strong count &gt; 1), including when `t` is a no-op such as
+    /// [`crate::Passthrough`]. Unique arcs are mutated without allocation.
     pub fn apply_inplace(&mut self, t: &impl InPlaceTransform) -> Result<()> {
         for item in &mut self.items {
             t.transform_change(Arc::make_mut(item))?;

@@ -41,6 +41,10 @@ pub trait InPlaceTransform: Send + Sync {
 ///
 /// Operators configuring surreal-sync via TOML should omit transforms entirely
 /// for identity; they do not need an explicit passthrough stage.
+///
+/// Pushing `Passthrough` into a [`crate::Pipeline`] does **not** make
+/// [`crate::Pipeline::is_identity`] true — that requires an empty stage list.
+/// Config loading should collapse passthrough-only TOML to empty.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Passthrough;
 

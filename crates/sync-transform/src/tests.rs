@@ -1,7 +1,7 @@
 //! Unit tests for Phase 1: InPlaceTransform, CowBatch, Pipeline.
 
 use crate::{CowBatch, ExternalTransform, InPlaceTransform, Passthrough, Pipeline};
-use anyhow::Result;
+use anyhow::{bail, Result};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -81,6 +81,19 @@ impl<T: InPlaceTransform> InPlaceTransform for Counting<T> {
     }
 }
 
+/// Always fails; used to assert later stages are not reached.
+struct AlwaysFail;
+
+impl InPlaceTransform for AlwaysFail {
+    fn transform_row(&self, _row: &mut UniversalRow) -> Result<()> {
+        bail!("stage failed (rows)")
+    }
+
+    fn transform_change(&self, _change: &mut UniversalChange) -> Result<()> {
+        bail!("stage failed (changes)")
+    }
+}
+
 #[test]
 fn empty_pipeline_is_identity() {
     let pipeline = Pipeline::new();
@@ -104,16 +117,67 @@ fn empty_pipeline_is_identity() {
     assert_eq!(out[0].operation, UniversalChangeOp::Create);
 }
 
+/// Empty pipeline short-circuits before any stage dispatch.
+///
+/// Phase 1 can only assert emptiness + apply no-op here. Phase 2's apply
+/// framework must gate on [`Pipeline::is_identity`] so the sync hot path never
+/// enters transform dispatch when there are no stages.
 #[test]
-fn empty_pipeline_skips_transform_dispatch() {
-    // Identity path must not require any stage object and must short-circuit
-    // before looping stages (there are none to call).
+fn empty_pipeline_is_identity_short_circuit() {
     let pipeline = Pipeline::new();
-    let mut rows = vec![sample_row("x")];
-    let ptr_before = rows.as_ptr();
-    pipeline.transform_rows_inplace(&mut rows).unwrap();
-    // Vec buffer address unchanged (in-place no-op, no realloc from transforms).
-    assert_eq!(rows.as_ptr(), ptr_before);
+    assert!(pipeline.is_identity());
+    assert!(pipeline.stages().is_empty());
+
+    let rows = vec![sample_row("x")];
+    let out = pipeline.apply_rows(rows).unwrap();
+    assert_eq!(
+        out[0].get_field("name"),
+        Some(&UniversalValue::VarChar {
+            value: "x".to_string(),
+            length: 64,
+        })
+    );
+
+    let changes = vec![sample_change("y")];
+    let out = pipeline.apply_changes(changes).unwrap();
+    assert_eq!(
+        out[0].data.as_ref().unwrap().get("name"),
+        Some(&UniversalValue::VarChar {
+            value: "y".to_string(),
+            length: 64,
+        })
+    );
+
+    // Contrast: a non-empty pipeline with a counting stage *does* dispatch.
+    let counter = Arc::new(Counting {
+        inner: Passthrough,
+        rows: AtomicUsize::new(0),
+        changes: AtomicUsize::new(0),
+    });
+    let mut with_stage = Pipeline::new();
+    with_stage.push_inplace_arc(counter.clone());
+    assert!(!with_stage.is_identity());
+    with_stage
+        .apply_rows(vec![sample_row("z")])
+        .unwrap();
+    assert_eq!(counter.rows.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn lone_passthrough_is_not_identity() {
+    let mut pipeline = Pipeline::new();
+    pipeline.push_inplace(Passthrough);
+    assert!(!pipeline.is_identity());
+    assert_eq!(pipeline.len(), 1);
+    // Still a no-op on data, but stages are dispatched (not the zero-dispatch path).
+    let out = pipeline.apply_rows(vec![sample_row("alice")]).unwrap();
+    assert_eq!(
+        out[0].get_field("name"),
+        Some(&UniversalValue::VarChar {
+            value: "alice".to_string(),
+            length: 64,
+        })
+    );
 }
 
 #[test]
@@ -149,6 +213,43 @@ fn cowbatch_passthrough_unique_arc_no_clone() {
         "unique Arc must not be cloned by make_mut on passthrough"
     );
     assert_eq!(Arc::strong_count(&batch.items[0]), 1);
+}
+
+/// Regression: shared Arc + Passthrough still clones — `make_mut` runs before
+/// the no-op transform body.
+#[test]
+fn cowbatch_shared_passthrough_still_clones() {
+    let row = sample_row("alice");
+    let shared = Arc::new(row);
+    let held = Arc::clone(&shared);
+    assert_eq!(Arc::strong_count(&shared), 2);
+
+    let ptr_before = Arc::as_ptr(&shared);
+    let mut batch = CowBatch::new(vec![shared]);
+    batch.apply_inplace(&Passthrough).unwrap();
+
+    let ptr_after = Arc::as_ptr(&batch.items[0]);
+    assert_ne!(
+        ptr_before, ptr_after,
+        "shared Arc must be cloned by make_mut even for Passthrough"
+    );
+    assert_eq!(Arc::strong_count(&batch.items[0]), 1);
+    assert_eq!(Arc::strong_count(&held), 1);
+    // Original holder unchanged; batch item is a distinct clone of the same data.
+    assert_eq!(
+        held.get_field("name"),
+        Some(&UniversalValue::VarChar {
+            value: "alice".to_string(),
+            length: 64,
+        })
+    );
+    assert_eq!(
+        batch.items[0].get_field("name"),
+        Some(&UniversalValue::VarChar {
+            value: "alice".to_string(),
+            length: 64,
+        })
+    );
 }
 
 #[test]
@@ -243,6 +344,110 @@ fn pipeline_applies_inplace_stages_in_order() {
             value: "step2".to_string(),
             length: 64,
         })
+    );
+}
+
+#[test]
+fn pipeline_applies_changes_stages_in_order() {
+    let step1 = Arc::new(Counting {
+        inner: Rename {
+            to: "step1".to_string(),
+        },
+        rows: AtomicUsize::new(0),
+        changes: AtomicUsize::new(0),
+    });
+    let step2 = Arc::new(Counting {
+        inner: Rename {
+            to: "step2".to_string(),
+        },
+        rows: AtomicUsize::new(0),
+        changes: AtomicUsize::new(0),
+    });
+
+    let mut pipeline = Pipeline::new();
+    pipeline.push_inplace_arc(step1.clone());
+    pipeline.push_inplace_arc(step2.clone());
+
+    let out = pipeline
+        .apply_changes(vec![sample_change("alice")])
+        .unwrap();
+    assert_eq!(step1.changes.load(Ordering::SeqCst), 1);
+    assert_eq!(step2.changes.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        out[0].data.as_ref().unwrap().get("name"),
+        Some(&UniversalValue::VarChar {
+            value: "step2".to_string(),
+            length: 64,
+        })
+    );
+
+    // Same ordering via transform_changes_inplace.
+    let mut changes = vec![sample_change("bob")];
+    pipeline.transform_changes_inplace(&mut changes).unwrap();
+    assert_eq!(step1.changes.load(Ordering::SeqCst), 2);
+    assert_eq!(step2.changes.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        changes[0].data.as_ref().unwrap().get("name"),
+        Some(&UniversalValue::VarChar {
+            value: "step2".to_string(),
+            length: 64,
+        })
+    );
+}
+
+#[test]
+fn failing_stage_stops_later_stages_rows() {
+    let later = Arc::new(Counting {
+        inner: Rename {
+            to: "should-not-run".to_string(),
+        },
+        rows: AtomicUsize::new(0),
+        changes: AtomicUsize::new(0),
+    });
+
+    let mut pipeline = Pipeline::new();
+    pipeline.push_inplace(AlwaysFail);
+    pipeline.push_inplace_arc(later.clone());
+
+    let err = pipeline
+        .apply_rows(vec![sample_row("alice")])
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("stage failed"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        later.rows.load(Ordering::SeqCst),
+        0,
+        "later stage must not run after earlier failure"
+    );
+}
+
+#[test]
+fn failing_stage_stops_later_stages_changes() {
+    let later = Arc::new(Counting {
+        inner: Rename {
+            to: "should-not-run".to_string(),
+        },
+        rows: AtomicUsize::new(0),
+        changes: AtomicUsize::new(0),
+    });
+
+    let mut pipeline = Pipeline::new();
+    pipeline.push_inplace(AlwaysFail);
+    pipeline.push_inplace_arc(later.clone());
+
+    let err = pipeline
+        .apply_changes(vec![sample_change("alice")])
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("stage failed"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        later.changes.load(Ordering::SeqCst),
+        0,
+        "later stage must not run after earlier failure"
     );
 }
 

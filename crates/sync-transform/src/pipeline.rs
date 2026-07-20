@@ -42,6 +42,20 @@ impl std::fmt::Debug for Stage {
 ///
 /// An empty pipeline is **identity**: [`is_identity`](Self::is_identity) is
 /// true and apply helpers return immediately without dispatching any stage.
+///
+/// # Identity vs passthrough
+///
+/// Pushing a lone [`crate::Passthrough`] via [`push_inplace`](Self::push_inplace)
+/// does **not** make [`is_identity`](Self::is_identity) return `true` — the
+/// pipeline still has a stage and will dispatch into it. Config loading (Phase
+/// later) must collapse passthrough-only TOML to an empty pipeline so the CLI
+/// hot path stays zero-dispatch.
+///
+/// # Phase 2 apply framework
+///
+/// The ChangeFeed / `write_rows` apply path must gate on
+/// [`is_identity`](Self::is_identity) (not merely “stages happen to be
+/// no-ops”) for the true zero-dispatch hot path.
 #[derive(Debug, Default)]
 pub struct Pipeline {
     stages: Vec<Stage>,
@@ -54,6 +68,9 @@ impl Pipeline {
     }
 
     /// Whether this pipeline has no stages (identity / zero dispatch overhead).
+    ///
+    /// Only an empty stage list is identity. A pipeline that contains only
+    /// [`crate::Passthrough`] still returns `false` here — see type-level docs.
     pub fn is_identity(&self) -> bool {
         self.stages.is_empty()
     }
@@ -74,6 +91,9 @@ impl Pipeline {
     }
 
     /// Append an in-place transform stage (library / embedder API).
+    ///
+    /// Note: appending [`crate::Passthrough`] alone does not yield an identity
+    /// pipeline ([`is_identity`](Self::is_identity) stays `false`).
     pub fn push_inplace<T>(&mut self, transform: T)
     where
         T: InPlaceTransform + 'static,
@@ -92,9 +112,11 @@ impl Pipeline {
         self.stages.push(Stage::External(external));
     }
 
-    /// Transform owned rows in place (true zero-copy when pipeline is non-empty).
+    /// Transform owned rows in place.
     ///
-    /// Empty pipeline: no-op, no stage dispatch.
+    /// Empty pipeline: no-op with no stage dispatch. Non-empty: each in-place
+    /// stage mutates the slice without reallocating the `Vec` buffer (true
+    /// zero-copy relative to building a new batch).
     pub fn transform_rows_inplace(&self, rows: &mut [UniversalRow]) -> Result<()> {
         if self.is_identity() {
             return Ok(());
@@ -110,9 +132,11 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Transform owned changes in place (true zero-copy when pipeline is non-empty).
+    /// Transform owned changes in place.
     ///
-    /// Empty pipeline: no-op, no stage dispatch.
+    /// Empty pipeline: no-op with no stage dispatch. Non-empty: each in-place
+    /// stage mutates the slice without reallocating the `Vec` buffer (true
+    /// zero-copy relative to building a new batch).
     pub fn transform_changes_inplace(&self, changes: &mut [UniversalChange]) -> Result<()> {
         if self.is_identity() {
             return Ok(());
