@@ -73,6 +73,10 @@ This refers to when the original data in the source database has timestamp-field
 
 This is the approach currently used with our Neo4j source. This is mainly because Neo4j's CDC feature seems to be present only with an Enterprise subscription which we didn't want to rely on for now.
 
+## Transforms
+
+Optional transform stages can enrich or reshape records on the path into SurrealDB (external worker over child stdio in v1). Omit config for identity. See [Transforms](transforms.md). Today this is wired for [MySQL/MariaDB binlog](mysql-binlog.md) `sync`.
+
 ## Source-Specific Details
 
 See the source-specific documentation for implementation details:

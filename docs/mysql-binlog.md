@@ -113,6 +113,8 @@ Pass exactly one of:
 
 Checkpoints are written at snapshot start (`FullSyncStart`), snapshot handoff completion (`FullSyncEnd` — immutable t2 boundary, written once), and during streaming via `CatchUpProgress` (position updated on `--checkpoint-interval`, default 10 seconds; table coverage merged when ad-hoc snapshot batches complete). **Restart the same `sync` command** after any stop — surreal-sync reads the latest position from `CatchUpProgress` when present, otherwise `FullSyncEnd`, otherwise `FullSyncStart`; when both `CatchUpProgress` and `FullSyncEnd` exist, the furthest-ahead position wins.
 
+When using [`--transforms-config`](transforms.md), streaming `CatchUpProgress` does not advance past batches that are still transforming or waiting to be applied — it tracks the **last successfully sunk** position until that work drains.
+
 ### Position formats (auto-captured)
 
 Surreal-sync captures and persists positions automatically; operators rarely type these. Optional `--from` accepts an explicit override (`head`, or a checkpoint string). Internally:
@@ -288,6 +290,7 @@ WantedBy=multi-user.target
 | `--binlog-poll-timeout-ms` | `500` | Blocking read timeout for binlog polls in the replication tail |
 | `--idle-sleep-ms` | `100` | Sleep when a replication tail poll returns no events |
 | `--binlog-event-batch-size` | `32` | Max events per binlog read in the replication tail loop |
+| `--transforms-config` | (none) | TOML transform pipeline (`[[transforms]]`); omit for identity — see [Transforms](transforms.md) |
 | `--tables` | all tables | Comma-separated table filter |
 | `--server-id` | random | Unique replica id |
 | `--flavor` | auto-detect | `mysql` or `mariadb` |
@@ -611,6 +614,7 @@ See [MySQL Data Types](mysql-data-types.md); MariaDB uses the same mappings (inc
 ## References
 
 - Implementation: [crates/mysql-binlog-source/](../crates/mysql-binlog-source/) and [crates/binlog-protocol/](../crates/binlog-protocol/)
+- [Transforms](transforms.md) — optional enrichment / ETL on the path into SurrealDB (`--transforms-config`)
 - [Full Sync Strategies](design/full-sync-strategies.md)
 - [MySQL Replication Documentation](https://dev.mysql.com/doc/refman/8.0/en/replication.html)
 - [MariaDB Binary Log Documentation](https://mariadb.com/kb/en/binary-log/)
