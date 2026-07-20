@@ -1,0 +1,18 @@
+[package]
+name = "sync-transform"
+version = "0.1.0"
+edition = "2021"
+description = "First-class transform pipeline framework for surreal-sync"
+authors = ["surreal-sync contributors"]
+license = "MIT"
+
+[dependencies]
+# Universal source/target types
+sync-core = { path = "../sync-core" }
+
+# Error handling
+anyhow = "1.0"
+
+[dev-dependencies]
+# Used by CowBatch pointer-stability tests
+# (std::sync::Arc is enough; no extra deps required)

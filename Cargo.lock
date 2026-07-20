@@ -8571,6 +8571,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sync-transform"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "sync-core",
+]
+
+[[package]]
 name = "sync_wrapper"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
