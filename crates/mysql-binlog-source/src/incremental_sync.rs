@@ -5,13 +5,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use binlog_protocol::{BinlogPosition, CdcChange, EventBody, TableMapEvent};
+use binlog_protocol::{BinlogPosition, CdcChange, EventBody, RawEvent, TableMapEvent};
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use chrono::{DateTime, Utc};
 use mysql_async::prelude::Queryable;
 use surreal_sink::SurrealSink;
-use surreal_sync_interleaved_snapshot::SnapshotTransforms;
-use sync_transform::{ApplyContext, ApplyOpts, Pipeline};
+use surreal_sync_interleaved_snapshot::{SnapshotSignal, SnapshotTransforms};
+use sync_core::DatabaseSchema;
+use sync_transform::{
+    AdhocApply, ApplyOpts, CheckpointPolicy, ControlSignal, Pipeline, PositionedEvent,
+    SourceDriver, SourceRuntimeOpts, StopReason,
+};
 use tracing::{debug, info};
 
 use crate::catch_up::{
@@ -129,13 +133,12 @@ where
 
 /// Replication tail through the transform apply framework.
 ///
-/// Uses [`ApplyContext`] (not [`sync_transform::run_change_feed`]) so the
-/// existing control loop can keep handling DDL, ad-hoc snapshot signals,
-/// deadlines, and cancellation between polls. Sink success still gates
-/// [`binlog_protocol::BinlogClient::commit`] and CatchUpProgress persistence:
-/// store checkpoints advance only from the last successfully sunk position
-/// (never from read-ahead [`binlog_protocol::BinlogClient::current_position`]
-/// while transform batches remain buffered or in flight).
+/// Incremental work runs via [`BinlogSourceDriver`] +
+/// [`sync_transform::run_source_runtime_with`]. Sink success still gates
+/// binlog `commit` and CatchUpProgress persistence: store checkpoints advance
+/// only from sink-safe positions (never from read-ahead
+/// [`binlog_protocol::BinlogClient::current_position`] while transform batches
+/// remain buffered or in flight).
 pub async fn run_replication_tail_with_transforms<S, St>(
     surreal: &S,
     from_opts: SourceOpts,
@@ -170,12 +173,10 @@ where
     use_database(&mut conn, &database).await?;
     conn.query_drop(create_signal_table_sql()).await?;
 
-    let mut schema = collect_mysql_database_schema(&mut conn).await?;
-    let mut json_columns =
+    let schema = collect_mysql_database_schema(&mut conn).await?;
+    let json_columns =
         surreal_sync_mysql_trigger_source::json_columns::get_json_columns(&mut conn, &database)
             .await?;
-
-    let mut column_names_cache: HashMap<String, Vec<String>> = HashMap::new();
 
     let catch_up = if from_opts.tables.is_empty() {
         None
@@ -185,7 +186,7 @@ where
         None
     };
     let effective_tables = effective_sync_tables(&from_opts.tables, catch_up.as_ref());
-    let mut table_filter = effective_tables.clone();
+    let table_filter = effective_tables.clone();
 
     let mut client =
         connect_binlog_client_with_poll(&from_opts, options.binlog_poll_timeout).await?;
@@ -201,208 +202,188 @@ where
         }
     }
 
-    let mut table_maps: HashMap<u64, TableMapEvent> = HashMap::new();
-    let mut total_changes = 0u64;
-    // Last position successfully sunk + committed (not merely read from binlog).
-    let mut last_sunk_checkpoint: Option<BinlogCheckpoint> = None;
-    let mut last_persisted_checkpoint: Option<BinlogCheckpoint> = None;
-    let mut last_checkpoint_emit = std::time::Instant::now();
-
     let transforms = SnapshotTransforms::from_refs(pipeline, apply_opts);
+    let mut driver = BinlogSourceDriver {
+        surreal,
+        pool: pool.clone(),
+        database,
+        from_opts,
+        options: &options,
+        checkpoint_manager,
+        transforms,
+        conn,
+        client: Some(client),
+        schema,
+        json_columns,
+        column_names_cache: HashMap::new(),
+        table_maps: HashMap::new(),
+        table_filter,
+        last_sunk_checkpoint: None,
+        last_persisted_checkpoint: None,
+        total_changes: 0,
+        pending_adhoc_signals: Vec::new(),
+        until_reached: false,
+        cancel_seen: false,
+    };
+
+    let runtime_opts = SourceRuntimeOpts::new();
     let transformer = Arc::new(pipeline.clone());
-    let mut apply_ctx = ApplyContext::new(surreal, transformer, apply_opts);
+    let exit = sync_transform::run_source_runtime_with(
+        &mut driver,
+        surreal,
+        transformer,
+        apply_opts,
+        &runtime_opts,
+    )
+    .await?;
 
-    loop {
-        if options.cancel.is_cancelled() {
-            flush_apply_ctx(
-                &mut apply_ctx,
-                &mut client,
-                &mut total_changes,
-                &mut last_sunk_checkpoint,
-                checkpoint_manager,
-                &mut last_persisted_checkpoint,
-                true,
-            )
-            .await?;
+    match exit {
+        sync_transform::RuntimeExit::Stopped(StopReason::Cancelled) => {
             info!("Cancellation requested, stopping incremental sync (checkpoint flushed)");
-            break;
         }
-
-        if let Some(deadline) = options.deadline {
-            if Utc::now() >= deadline {
-                flush_apply_ctx(
-                    &mut apply_ctx,
-                    &mut client,
-                    &mut total_changes,
-                    &mut last_sunk_checkpoint,
-                    checkpoint_manager,
-                    &mut last_persisted_checkpoint,
-                    true,
-                )
-                .await?;
-                info!("Deadline reached, stopping incremental sync");
-                break;
-            }
+        sync_transform::RuntimeExit::Stopped(StopReason::Deadline) => {
+            info!("Deadline reached, stopping incremental sync");
         }
-
-        if let Some(target) = options.until.as_ref() {
-            if client.current_position() >= target.position {
-                flush_apply_ctx(
-                    &mut apply_ctx,
-                    &mut client,
-                    &mut total_changes,
-                    &mut last_sunk_checkpoint,
-                    checkpoint_manager,
-                    &mut last_persisted_checkpoint,
-                    true,
-                )
-                .await?;
-                info!("Reached target checkpoint, stopping incremental sync");
-                break;
-            }
+        sync_transform::RuntimeExit::Stopped(StopReason::Until) => {
+            info!("Reached target checkpoint, stopping incremental sync");
         }
+        sync_transform::RuntimeExit::Stopped(StopReason::Finished) => {
+            info!("Binlog source finished");
+        }
+    }
 
-        // Drain buffered transforms before any store checkpoint emit and before
-        // handing the client to ad-hoc snapshots. Persist only after flush so
-        // CatchUpProgress cannot advance past unsunk buffered batches.
-        flush_apply_ctx(
-            &mut apply_ctx,
-            &mut client,
-            &mut total_changes,
-            &mut last_sunk_checkpoint,
-            checkpoint_manager,
-            &mut last_persisted_checkpoint,
-            false,
+    driver.finalize_store_checkpoint().await?;
+    info!(
+        "MySQL binlog incremental sync completed: {} changes applied",
+        driver.total_changes
+    );
+    drop(driver.conn);
+    pool.disconnect().await?;
+    Ok(())
+}
+
+/// Binlog CDC driver for [`sync_transform::run_source_runtime_with`].
+struct BinlogSourceDriver<'a, S, St: CheckpointStore> {
+    surreal: &'a S,
+    pool: mysql_async::Pool,
+    database: String,
+    from_opts: SourceOpts,
+    options: &'a ReplicationTailOptions,
+    checkpoint_manager: Option<&'a SyncManager<St>>,
+    transforms: SnapshotTransforms,
+    conn: mysql_async::Conn,
+    /// Taken temporarily while an ad-hoc watermark snapshot borrows the session.
+    client: Option<binlog_protocol::BinlogClient>,
+    schema: DatabaseSchema,
+    json_columns: HashMap<String, Vec<String>>,
+    column_names_cache: HashMap<String, Vec<String>>,
+    table_maps: HashMap<u64, TableMapEvent>,
+    table_filter: Option<Vec<String>>,
+    last_sunk_checkpoint: Option<BinlogCheckpoint>,
+    last_persisted_checkpoint: Option<BinlogCheckpoint>,
+    total_changes: u64,
+    pending_adhoc_signals: Vec<SnapshotSignal>,
+    until_reached: bool,
+    cancel_seen: bool,
+}
+
+impl<'a, S, St> BinlogSourceDriver<'a, S, St>
+where
+    S: SurrealSink,
+    St: CheckpointStore,
+{
+    fn client_mut(&mut self) -> Result<&mut binlog_protocol::BinlogClient> {
+        self.client
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("binlog client unavailable during ad-hoc snapshot"))
+    }
+
+    fn client_ref(&self) -> Result<&binlog_protocol::BinlogClient> {
+        self.client
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("binlog client unavailable during ad-hoc snapshot"))
+    }
+
+    async fn finalize_store_checkpoint(&mut self) -> Result<()> {
+        let client = self.client_ref()?;
+        let current = crate::checkpoint::get_current_checkpoint(client)?;
+        let Some(cp) =
+            store_checkpoint_to_emit(self.last_sunk_checkpoint.as_ref(), &current, false)
+        else {
+            return Ok(());
+        };
+        persist_checkpoint_at(
+            self.checkpoint_manager,
+            Some(&cp),
+            &mut self.last_persisted_checkpoint,
+            true,
         )
-        .await?;
+        .await
+    }
 
-        if should_emit_checkpoint(checkpoint_manager.is_some(), &options, last_checkpoint_emit) {
-            emit_store_checkpoint(
-                checkpoint_manager,
-                &client,
-                &apply_ctx,
-                &last_sunk_checkpoint,
-                &mut last_persisted_checkpoint,
-                false,
+    async fn refresh_schema_metadata(&mut self) -> Result<()> {
+        self.schema = collect_mysql_database_schema(&mut self.conn).await?;
+        self.json_columns =
+            surreal_sync_mysql_trigger_source::json_columns::get_json_columns(
+                &mut self.conn,
+                &self.database,
             )
             .await?;
-            last_checkpoint_emit = std::time::Instant::now();
-        }
+        self.column_names_cache.clear();
+        self.table_maps.clear();
+        Ok(())
+    }
 
-        client = handle_snapshot_signals(
-            surreal,
-            &pool,
-            &database,
-            &from_opts,
-            client,
-            &mut table_filter,
-            &options,
-            checkpoint_manager,
-            &transforms,
-            &apply_ctx,
-            &last_sunk_checkpoint,
-        )
-        .await?;
-
-        let events = tokio::select! {
-            result = client.next_events(options.event_batch_size) => {
-                result.map_err(|e| anyhow::anyhow!("binlog read failed: {e}"))?
-            }
-            _ = options.cancel.cancelled() => {
-                flush_apply_ctx(
-                    &mut apply_ctx,
-                    &mut client,
-                    &mut total_changes,
-                    &mut last_sunk_checkpoint,
-                    checkpoint_manager,
-                    &mut last_persisted_checkpoint,
-                    true,
-                )
-                .await?;
-                info!("Cancellation received, stopping incremental sync (checkpoint flushed)");
-                break;
-            }
-        };
-
-        if events.is_empty() {
-            // Idle: flush unsunk transform/apply work after batch_max_wait, else sleep.
-            // Gate on the full unsunk set (buffer / in-flight / completed-waiting), not
-            // only buffer_len — same predicate as interval checkpoint emit.
-            if apply_has_unsunk_work(&apply_ctx) {
-                tokio::time::sleep(apply_opts.batch_max_wait).await;
-                flush_apply_ctx(
-                    &mut apply_ctx,
-                    &mut client,
-                    &mut total_changes,
-                    &mut last_sunk_checkpoint,
-                    checkpoint_manager,
-                    &mut last_persisted_checkpoint,
-                    false,
-                )
-                .await?;
-            } else {
-                tokio::time::sleep(options.idle_sleep).await;
-            }
-            continue;
-        }
-
+    /// Convert raw binlog events into positioned changes. Table-affecting DDL
+    /// refreshes schema metadata inline (same as the pre-SourceDriver loop) so
+    /// subsequent row events in the same batch see the new catalog.
+    async fn consume_events(
+        &mut self,
+        events: Vec<RawEvent>,
+    ) -> Result<Vec<PositionedEvent<BinlogPosition>>> {
+        let mut out = Vec::new();
         for event in events {
             match event.body {
                 EventBody::Query(query) => {
-                    if crate::ddl::is_table_affecting_ddl(&query, &database) {
+                    if crate::ddl::is_table_affecting_ddl(&query, &self.database) {
                         info!("Refreshing MySQL schema metadata after DDL: {}", query.sql);
                         apply_renames_to_filter(
-                            &mut table_filter,
+                            &mut self.table_filter,
                             &crate::ddl::parse_table_renames(&query.sql),
                         );
-                        schema = collect_mysql_database_schema(&mut conn).await?;
-                        json_columns =
-                            surreal_sync_mysql_trigger_source::json_columns::get_json_columns(
-                                &mut conn, &database,
-                            )
-                            .await?;
-                        column_names_cache.clear();
-                        table_maps.clear();
+                        self.refresh_schema_metadata().await?;
                     }
                 }
                 EventBody::TableMap(tm) => {
-                    table_maps.insert(tm.table_id, tm);
+                    self.table_maps.insert(tm.table_id, tm);
                 }
                 EventBody::Rows(rows) => {
-                    let table_map = table_maps.get(&rows.table_id).cloned().ok_or_else(|| {
+                    let table_map = self.table_maps.get(&rows.table_id).cloned().ok_or_else(|| {
                         anyhow::anyhow!(
                             "binlog row event for table_id {} has no preceding TableMap; \
                              refusing to silently drop the change",
                             rows.table_id
                         )
                     })?;
-                    if table_map.database != database {
+                    if table_map.database != self.database {
                         continue;
                     }
-                    if let Some(ref tables) = table_filter {
+                    if let Some(ref tables) = self.table_filter {
                         if !tables.contains(&table_map.table) {
                             continue;
                         }
                     }
 
                     for row_change in rows.rows {
-                        let position = client.current_position();
-                        if let Some(target) = options.until.as_ref() {
+                        let position = {
+                            let client = self.client_mut()?;
+                            client.current_position()
+                        };
+                        if let Some(target) = self.options.until.as_ref() {
                             if position >= target.position {
-                                flush_apply_ctx(
-                                    &mut apply_ctx,
-                                    &mut client,
-                                    &mut total_changes,
-                                    &mut last_sunk_checkpoint,
-                                    checkpoint_manager,
-                                    &mut last_persisted_checkpoint,
-                                    true,
-                                )
-                                .await?;
-                                info!("Reached target checkpoint, stopping incremental sync");
-                                drop(conn);
-                                pool.disconnect().await?;
-                                return Ok(());
+                                self.until_reached = true;
+                                // Do not apply the event at/past the until bound.
+                                return Ok(out);
                             }
                         }
 
@@ -415,100 +396,254 @@ where
                             gtid: None,
                         };
 
-                        let column_names = if let Some(names) =
-                            column_names_cache.get(&change.table)
-                        {
-                            names.clone()
-                        } else {
-                            let names =
-                                get_table_column_names_ordinal(&mut conn, &change.table).await?;
-                            column_names_cache.insert(change.table.clone(), names.clone());
-                            names
-                        };
+                        let column_names =
+                            if let Some(names) = self.column_names_cache.get(&change.table) {
+                                names.clone()
+                            } else {
+                                let names = get_table_column_names_ordinal(
+                                    &mut self.conn,
+                                    &change.table,
+                                )
+                                .await?;
+                                self.column_names_cache
+                                    .insert(change.table.clone(), names.clone());
+                                names
+                            };
 
                         let universal = cdc_change_to_universal(
                             &change,
                             &table_map,
                             &column_names,
-                            &schema,
-                            &json_columns,
+                            &self.schema,
+                            &self.json_columns,
                         )?;
-
-                        // Transform → sink; commit binlog position only after sink OK.
-                        if let Some(pos) = apply_ctx.push_change(universal, position).await? {
-                            note_sunk_position(
-                                &mut client,
-                                pos,
-                                &mut last_sunk_checkpoint,
-                            );
-                            total_changes = total_changes
-                                .saturating_add(apply_ctx.take_sunk_change_count());
-                            persist_checkpoint_at(
-                                checkpoint_manager,
-                                last_sunk_checkpoint.as_ref(),
-                                &mut last_persisted_checkpoint,
-                                false,
-                            )
-                            .await?;
-                            last_checkpoint_emit = std::time::Instant::now();
-
-                            if total_changes.is_multiple_of(100) {
-                                debug!("Processed {total_changes} binlog changes");
-                            }
+                        out.push(PositionedEvent::change(universal, position));
+                        self.total_changes = self.total_changes.saturating_add(1);
+                        if self.total_changes.is_multiple_of(100) {
+                            debug!("Processed {} binlog changes", self.total_changes);
                         }
                     }
                 }
                 _ => {}
             }
         }
+        Ok(out)
     }
-
-    flush_apply_ctx(
-        &mut apply_ctx,
-        &mut client,
-        &mut total_changes,
-        &mut last_sunk_checkpoint,
-        checkpoint_manager,
-        &mut last_persisted_checkpoint,
-        true,
-    )
-    .await?;
-    info!("MySQL binlog incremental sync completed: {total_changes} changes applied");
-    drop(conn);
-    pool.disconnect().await?;
-    Ok(())
 }
 
-fn commit_binlog_position(client: &mut binlog_protocol::BinlogClient, position: BinlogPosition) {
-    client.commit(position);
-}
-
-fn note_sunk_position(
-    client: &mut binlog_protocol::BinlogClient,
-    position: BinlogPosition,
-    last_sunk: &mut Option<BinlogCheckpoint>,
-) {
-    commit_binlog_position(client, position.clone());
-    *last_sunk = Some(BinlogCheckpoint {
-        flavor: client.flavor(),
-        position,
-        timestamp: Utc::now(),
-    });
-}
-
-/// Whether [`ApplyContext`] still holds work that has not been sunk.
-///
-/// Includes completed transform results waiting for ordered sink apply — not
-/// only the input buffer and in-flight JoinSet tasks.
-fn apply_has_unsunk_work<S, T, P>(apply_ctx: &ApplyContext<'_, S, T, P>) -> bool
+#[async_trait::async_trait]
+impl<'a, S, St> SourceDriver for BinlogSourceDriver<'a, S, St>
 where
     S: SurrealSink,
-    T: sync_transform::BatchTransformer + 'static,
-    P: Clone + Send + Sync + 'static,
+    St: CheckpointStore,
 {
-    apply_ctx.buffer_len() > 0
-        || apply_ctx.in_flight_count() > 0
-        || apply_ctx.completed_waiting_count() > 0
+    type Position = BinlogPosition;
+
+    async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
+        if self.stop_reason().is_some() {
+            return Ok(Vec::new());
+        }
+
+        // Keep reading while events are available but filtered out (other schemas,
+        // non-row events). Returning empty to the runtime would re-enter
+        // between_events (signal-table query) between every binlog event and
+        // stall catch-up through large unrelated transactions.
+        let mut out = Vec::new();
+        loop {
+            if self.stop_reason().is_some() {
+                return Ok(out);
+            }
+
+            let event_batch_size = self.options.event_batch_size;
+            let cancel = self.options.cancel.clone();
+            let events = {
+                let client = self.client_mut()?;
+                tokio::select! {
+                    result = client.next_events(event_batch_size) => {
+                        result.map_err(|e| anyhow::anyhow!("binlog read failed: {e}"))?
+                    }
+                    _ = cancel.cancelled() => {
+                        self.cancel_seen = true;
+                        return Ok(out);
+                    }
+                }
+            };
+
+            if events.is_empty() {
+                if out.is_empty() {
+                    tokio::time::sleep(self.options.idle_sleep).await;
+                }
+                return Ok(out);
+            }
+
+            out.extend(self.consume_events(events).await?);
+            if !out.is_empty() {
+                return Ok(out);
+            }
+        }
+    }
+
+    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+        let client = self
+            .client
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("binlog client unavailable during ad-hoc snapshot"))?;
+        client.commit(position.clone());
+        self.last_sunk_checkpoint = Some(BinlogCheckpoint {
+            flavor: client.flavor(),
+            position,
+            timestamp: Utc::now(),
+        });
+        Ok(())
+    }
+
+    async fn between_events(&mut self) -> Result<Vec<ControlSignal>> {
+        let mut signals = Vec::new();
+        if self.pending_adhoc_signals.is_empty() {
+            let pending =
+                read_pending_execute_snapshot_signals(&self.pool, &self.database).await?;
+            self.pending_adhoc_signals = pending;
+        }
+        if !self.pending_adhoc_signals.is_empty() {
+            let tables = self
+                .pending_adhoc_signals
+                .iter()
+                .flat_map(|s| s.tables.iter().cloned())
+                .collect();
+            signals.push(ControlSignal::AdHocSnapshot { tables });
+        }
+        Ok(signals)
+    }
+
+    async fn on_schema_refresh(&mut self) -> Result<()> {
+        // DDL is refreshed inline in poll_work; this hook remains for control-plane
+        // callers that emit SchemaRefresh explicitly.
+        self.refresh_schema_metadata().await
+    }
+
+    async fn on_adhoc_snapshot(
+        &mut self,
+        _tables: &[String],
+        _apply: &dyn AdhocApply,
+    ) -> Result<()> {
+        let signals = std::mem::take(&mut self.pending_adhoc_signals);
+        if signals.is_empty() {
+            return Ok(());
+        }
+
+        let client = self
+            .client
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("binlog client missing for ad-hoc snapshot"))?;
+
+        let mut wm = BinlogWatermarkSource::wrap_active_binlog_client(
+            self.pool.clone(),
+            self.database.clone(),
+            &self.from_opts,
+            client,
+            self.options.cancel.clone(),
+        )
+        .await?;
+
+        for signal in signals {
+            info!(
+                "ad-hoc snapshot signal {} requesting tables {:?}",
+                signal.id, signal.tables
+            );
+            if let Some(ref mut tables) = self.table_filter {
+                for name in &signal.tables {
+                    if !tables.contains(name) {
+                        tables.push(name.clone());
+                    }
+                }
+            }
+            run_adhoc_snapshots_for_tables(
+                &mut wm,
+                self.surreal,
+                &signal.tables,
+                self.options.chunk_size,
+                self.checkpoint_manager,
+                &self.transforms,
+            )
+            .await?;
+
+            acknowledge_execute_snapshot_signal(&self.pool, &self.database, &signal.id).await?;
+
+            if let Some(manager) = self.checkpoint_manager {
+                // Runtime flushes before ad-hoc, so the apply window is drained.
+                let current = wm.current_checkpoint()?;
+                let existing = read_catch_up_progress(manager).await?;
+                if let Some(checkpoint) = adhoc_catch_up_checkpoint(
+                    self.last_sunk_checkpoint.as_ref(),
+                    &current,
+                    false,
+                    existing.as_ref(),
+                ) {
+                    write_catch_up_for_tables(
+                        manager,
+                        signal.tables.clone(),
+                        CoverageKind::AdHoc,
+                        &checkpoint,
+                        existing,
+                    )
+                    .await?;
+                }
+            }
+        }
+
+        self.client = Some(wm.into_binlog_client());
+        Ok(())
+    }
+
+    fn stop_reason(&self) -> Option<StopReason> {
+        if self.cancel_seen || self.options.cancel.is_cancelled() {
+            return Some(StopReason::Cancelled);
+        }
+        if let Some(deadline) = self.options.deadline {
+            if Utc::now() >= deadline {
+                return Some(StopReason::Deadline);
+            }
+        }
+        if self.until_reached {
+            return Some(StopReason::Until);
+        }
+        if let (Some(target), Some(client)) = (self.options.until.as_ref(), self.client.as_ref()) {
+            if client.current_position() >= target.position {
+                return Some(StopReason::Until);
+            }
+        }
+        None
+    }
+
+    fn checkpoint_policy(&self) -> CheckpointPolicy {
+        CheckpointPolicy::IntervalWhenDrained {
+            interval: self.options.checkpoint_interval,
+        }
+    }
+
+    async fn persist_checkpoint(&mut self, position: Self::Position) -> Result<()> {
+        // IntervalWhenDrained only calls this when the apply window is empty, so
+        // `current` is safe (may include filtered-only advances past last sunk).
+        let client = self.client_ref()?;
+        let current = crate::checkpoint::get_current_checkpoint(client)?;
+        let sunk = self.last_sunk_checkpoint.clone().or_else(|| {
+            Some(BinlogCheckpoint {
+                flavor: client.flavor(),
+                position,
+                timestamp: Utc::now(),
+            })
+        });
+        let Some(cp) = store_checkpoint_to_emit(sunk.as_ref(), &current, false) else {
+            return Ok(());
+        };
+        persist_checkpoint_at(
+            self.checkpoint_manager,
+            Some(&cp),
+            &mut self.last_persisted_checkpoint,
+            false,
+        )
+        .await
+    }
 }
 
 /// Position safe to write to CatchUpProgress.
@@ -547,164 +682,6 @@ fn adhoc_catch_up_checkpoint(
         .or_else(|| existing.map(|p| p.position.clone()))
 }
 
-async fn emit_store_checkpoint<S, T, St, P>(
-    manager: Option<&SyncManager<St>>,
-    client: &binlog_protocol::BinlogClient,
-    apply_ctx: &ApplyContext<'_, S, T, P>,
-    last_sunk: &Option<BinlogCheckpoint>,
-    last_persisted: &mut Option<BinlogCheckpoint>,
-    force: bool,
-) -> Result<()>
-where
-    S: SurrealSink,
-    T: sync_transform::BatchTransformer + 'static,
-    St: CheckpointStore,
-    P: Clone + Send + Sync + 'static,
-{
-    let has_unsunk = apply_has_unsunk_work(apply_ctx);
-    let current = crate::checkpoint::get_current_checkpoint(client)?;
-    let Some(cp) = store_checkpoint_to_emit(last_sunk.as_ref(), &current, has_unsunk) else {
-        return Ok(());
-    };
-    persist_checkpoint_at(manager, Some(&cp), last_persisted, force).await
-}
-
-async fn flush_apply_ctx<S, T, St>(
-    apply_ctx: &mut ApplyContext<'_, S, T, BinlogPosition>,
-    client: &mut binlog_protocol::BinlogClient,
-    total_changes: &mut u64,
-    last_sunk: &mut Option<BinlogCheckpoint>,
-    checkpoint_manager: Option<&SyncManager<St>>,
-    last_persisted: &mut Option<BinlogCheckpoint>,
-    force_persist: bool,
-) -> Result<()>
-where
-    S: SurrealSink,
-    T: sync_transform::BatchTransformer + 'static,
-    St: CheckpointStore,
-{
-    if !apply_has_unsunk_work(apply_ctx) {
-        if force_persist {
-            emit_store_checkpoint(
-                checkpoint_manager,
-                client,
-                apply_ctx,
-                last_sunk,
-                last_persisted,
-                true,
-            )
-            .await?;
-        }
-        return Ok(());
-    }
-    if let Some(pos) = apply_ctx.flush().await? {
-        note_sunk_position(client, pos, last_sunk);
-        *total_changes = total_changes.saturating_add(apply_ctx.take_sunk_change_count());
-        persist_checkpoint_at(
-            checkpoint_manager,
-            last_sunk.as_ref(),
-            last_persisted,
-            force_persist,
-        )
-        .await?;
-    } else if force_persist {
-        emit_store_checkpoint(
-            checkpoint_manager,
-            client,
-            apply_ctx,
-            last_sunk,
-            last_persisted,
-            true,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn handle_snapshot_signals<S, T, St, P>(
-    surreal: &S,
-    pool: &mysql_async::Pool,
-    database: &str,
-    from_opts: &SourceOpts,
-    client: binlog_protocol::BinlogClient,
-    table_filter: &mut Option<Vec<String>>,
-    options: &ReplicationTailOptions,
-    checkpoint_manager: Option<&SyncManager<St>>,
-    transforms: &SnapshotTransforms,
-    apply_ctx: &ApplyContext<'_, S, T, P>,
-    last_sunk: &Option<BinlogCheckpoint>,
-) -> Result<binlog_protocol::BinlogClient>
-where
-    S: SurrealSink,
-    T: sync_transform::BatchTransformer + 'static,
-    St: CheckpointStore,
-    P: Clone + Send + Sync + 'static,
-{
-    let signals = read_pending_execute_snapshot_signals(pool, database).await?;
-    if signals.is_empty() {
-        return Ok(client);
-    }
-
-    let mut wm = BinlogWatermarkSource::wrap_active_binlog_client(
-        pool.clone(),
-        database.to_string(),
-        from_opts,
-        client,
-        options.cancel.clone(),
-    )
-    .await?;
-
-    for signal in signals {
-        info!(
-            "ad-hoc snapshot signal {} requesting tables {:?}",
-            signal.id, signal.tables
-        );
-        if let Some(ref mut tables) = table_filter {
-            for name in &signal.tables {
-                if !tables.contains(name) {
-                    tables.push(name.clone());
-                }
-            }
-        }
-        run_adhoc_snapshots_for_tables(
-            &mut wm,
-            surreal,
-            &signal.tables,
-            options.chunk_size,
-            checkpoint_manager,
-            transforms,
-        )
-        .await?;
-
-        acknowledge_execute_snapshot_signal(pool, database, &signal.id).await?;
-
-        if let Some(manager) = checkpoint_manager {
-            // Same policy as interval CatchUpProgress: never persist read-ahead
-            // current_position while ApplyContext still has unsunk work.
-            let current = wm.current_checkpoint()?;
-            let existing = read_catch_up_progress(manager).await?;
-            if let Some(checkpoint) = adhoc_catch_up_checkpoint(
-                last_sunk.as_ref(),
-                &current,
-                apply_has_unsunk_work(apply_ctx),
-                existing.as_ref(),
-            ) {
-                write_catch_up_for_tables(
-                    manager,
-                    signal.tables.clone(),
-                    CoverageKind::AdHoc,
-                    &checkpoint,
-                    existing,
-                )
-                .await?;
-            }
-        }
-    }
-
-    Ok(wm.into_binlog_client())
-}
-
 /// Update the synced-table filter so a `RENAME TABLE old TO new` keeps tracking
 /// the renamed table under its new name. If the filter is `None` (all tables)
 /// there is nothing to adjust. When a synced `old` is renamed, `new` is added
@@ -726,16 +703,6 @@ fn apply_renames_to_filter(filter: &mut Option<Vec<String>>, renames: &[crate::d
             );
         }
     }
-}
-
-fn should_emit_checkpoint(
-    enabled: bool,
-    options: &ReplicationTailOptions,
-    last_emit: std::time::Instant,
-) -> bool {
-    enabled
-        && options.checkpoint_interval > Duration::ZERO
-        && last_emit.elapsed() >= options.checkpoint_interval
 }
 
 async fn persist_checkpoint_at<St: CheckpointStore>(

@@ -29,7 +29,7 @@ spawn coverage is in `sync-transform` config tests).
 
 | Source | Framework apply path | `--transforms-config` CLI | Notes |
 |--------|----------------------|---------------------------|--------|
-| mysql-binlog | ApplyContext today; SourceDriver next | Yes (shared loader) | Reference port |
+| mysql-binlog | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Reference port |
 | postgresql-pgoutput | Pending | Pending with port | Target binlog parity |
 | postgresql-wal2json | Pending | Pending with port | Preserve FK pre-push enrichment |
 | postgresql-trigger | Pending | Pending with port | Preserve FK pre-push enrichment |

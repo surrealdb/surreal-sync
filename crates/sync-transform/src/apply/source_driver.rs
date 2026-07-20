@@ -383,7 +383,9 @@ where
             return Ok(RuntimeExit::Stopped(reason));
         }
 
-        handle_control_signals(driver, sink, &transformer, apply_opts).await?;
+        // Flush before schema refresh / ad-hoc so side work never runs while the
+        // apply window still holds unsunk batches (matches binlog durability).
+        handle_control_signals(driver, &mut ctx, sink, &transformer, apply_opts).await?;
 
         // Fill the transform window to capacity before waiting on completions.
         while ctx.in_flight_count() < apply_opts.max_in_flight {
@@ -463,6 +465,7 @@ fn effective_stop_reason<D: SourceDriver>(
 
 async fn handle_control_signals<D, S, T>(
     driver: &mut D,
+    ctx: &mut ApplyContext<'_, S, T, D::Position>,
     sink: &S,
     transformer: &Arc<T>,
     apply_opts: &ApplyOpts,
@@ -473,6 +476,12 @@ where
     T: BatchTransformer + 'static,
 {
     let signals = driver.between_events().await.context("between_events")?;
+    if signals.is_empty() {
+        return Ok(());
+    }
+    // Drain the apply window before control-plane side work so CatchUpProgress /
+    // ad-hoc snapshots never observe read-ahead positions past unsunk batches.
+    ctx.flush_for_driver(driver).await?;
     for signal in signals {
         match signal {
             ControlSignal::SchemaRefresh => {
