@@ -803,4 +803,33 @@ stdin.command = ["/nonexistent/surreal-sync-transform-worker-xyz"]
         let err = ensure_command_resolvable(&[]).unwrap_err();
         assert!(err.to_string().contains("empty"));
     }
+
+    #[test]
+    fn load_transforms_config_missing_file_fails_fast() {
+        let err = load_transforms_config("/nonexistent/surreal-sync-transforms-xyz.toml")
+            .expect_err("missing file must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("read transforms config") || msg.contains("No such file"),
+            "unexpected: {msg}"
+        );
+    }
+
+    #[test]
+    fn load_transforms_config_bad_toml_fails_fast() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!(
+            "surreal-sync-bad-transforms-{}.toml",
+            std::process::id()
+        ));
+        std::fs::write(&path, "[[transforms]]\ntype = \"external\"\nstdin.command = [\n")
+            .expect("write temp");
+        let err = load_transforms_config(&path).expect_err("bad TOML must fail");
+        let _ = std::fs::remove_file(&path);
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("parse transforms config") || msg.contains("TOML"),
+            "unexpected: {msg}"
+        );
+    }
 }

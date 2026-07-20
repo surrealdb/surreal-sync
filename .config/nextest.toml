@@ -49,6 +49,10 @@ archive.include = [
   { path = "ci/surreal-sync", relative-to = "target" },
 ]
 
+# Note: CI builds/archives with `--all-features` so crates like sync-transform
+# include feature-gated integration tests (e.g. external_stdio + test-support).
+# Local gate for that crate: `cargo test -p sync-transform --all-features`.
+
 # Emit a JUnit report so CI can surface per-test results / upload it as an artifact.
 [profile.ci.junit]
 path = "junit.xml"

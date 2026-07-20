@@ -122,6 +122,43 @@ async fn persistent_bad_batch_id_no_sink_no_commit() {
     assert!(feed.commits.is_empty());
 }
 
+/// W≥2 fixture-worker: first response forges `batch_id` to the next write's id.
+/// PersistentChildStdio must fail closed — no sink, no commit for either batch.
+#[tokio::test]
+async fn persistent_w2_colliding_batch_id_mismatch_no_sink_no_commit() {
+    let mut pipeline = Pipeline::new();
+    pipeline.push_external(
+        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("bad-batch-id"))
+            .unwrap(),
+    );
+
+    let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 100), positioned(2, 200)]);
+    let sink = RecordingSink::new();
+    let opts = ApplyOpts::default()
+        .with_batch_size(1)
+        .with_max_in_flight(2)
+        .with_timeout(Duration::from_secs(5));
+
+    let err = run_change_feed(&mut feed, &sink, &pipeline, &opts)
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("batch_id") || msg.contains("mismatch"),
+        "unexpected: {msg}"
+    );
+    assert!(
+        sink.applied().is_empty(),
+        "must not sink on colliding mismatch: {:?}",
+        sink.applied()
+    );
+    assert!(
+        feed.commits.is_empty(),
+        "must not commit on colliding mismatch: {:?}",
+        feed.commits
+    );
+}
+
 #[tokio::test]
 async fn persistent_missing_batch_id_no_sink_no_commit() {
     let mut pipeline = Pipeline::new();

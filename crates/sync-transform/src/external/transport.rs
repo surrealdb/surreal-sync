@@ -207,9 +207,28 @@ fn try_parse_buf(
 
 /// Persistent child: spawn once, keep alive for many exchanges.
 ///
+/// # Pairing / reliability
+///
 /// Responses are paired to requests by **write order** on the shared pipe
 /// (fail closed if the echoed `batch_id` does not match the dequeued write).
-/// That prevents rebinding one request’s payload onto another outstanding id.
+/// That prevents rebinding one request’s waiter onto another outstanding id
+/// when a confused worker reorders or mis-labels responses.
+///
+/// Only one task holds [`Self`]'s read gate while advancing stdout; after a
+/// framed response is stored (or returned), the gate is released so peer
+/// waiters can drive the next read — the gate is **not** held across peer
+/// notify waits.
+///
+/// # Threat model (accepted)
+///
+/// A **malicious** worker that answers in write order while echoing the
+/// correct `batch_id` for each dequeued write, but attaching another batch’s
+/// transformed payload, cannot be detected on a single stdio pipe (transforms
+/// change bytes, so request/response content hashing is not a viable check).
+/// surreal-sync trusts the worker’s integrity for payload↔id binding; the
+/// fail-closed path targets buggy / accidental identity confusion, not a
+/// hostile worker. Prefer honest workers; see integration tests for FIFO
+/// multiplex and colliding mismatch fail-closed.
 pub struct PersistentChildStdio {
     child: Mutex<Child>,
     stdin: Mutex<ChildStdin>,
