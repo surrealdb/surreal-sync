@@ -281,4 +281,4 @@ Operations (checkpoints, resume, GTID vs file+offset, ad-hoc `snapshot`) are unc
 
 ### Advanced: embedding surreal-sync
 
-Library / WASM hosts that need zero-copy in-process transforms should use the `sync-transform` crate rustdoc (`InPlaceTransform`, `Pipeline::push_inplace`, apply helpers). That path is not configured via TOML.
+Library / WASM hosts that need zero-copy in-process transforms should use the `sync-transform` crate rustdoc. The **general** APIs are `ApplyContext` (rows, changes, and relation edges) and `SourceDriver` / `run_source_runtime` (control-plane hooks for schema refresh, ad-hoc snapshot, cancel/deadline, sink-safe checkpoints). `ChangeFeed` / `run_change_feed` are a convenience for simple row CDC. In-process stages use `InPlaceTransform` + `Pipeline::push_inplace` (including schema-aware FK→record-link transforms constructed with a catalog). That path is not configured via TOML.

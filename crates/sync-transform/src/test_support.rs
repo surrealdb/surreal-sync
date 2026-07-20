@@ -4,7 +4,8 @@
 //! need the same harness without duplicating window semantics.
 
 use crate::{
-    BatchTransformer, ChangeFeed, ExternalTransport, Pipeline, PositionedChange, WireResponse,
+    ApplyEvent, BatchTransformer, ChangeFeed, ExternalTransport, Pipeline, PositionedChange,
+    PositionedEvent, SourceDriver, WireResponse,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -187,6 +188,76 @@ impl BatchTransformer for ScriptedTransformer {
             return Err(anyhow!(msg));
         }
         let out = self.inner.apply_rows(rows)?;
+        self.state
+            .lock()
+            .expect("scripted transformer lock")
+            .completed_order
+            .push(batch_id);
+        Ok(out)
+    }
+
+    async fn transform_relation_changes(
+        &self,
+        batch_id: u64,
+        changes: Vec<UniversalRelationChange>,
+    ) -> Result<Vec<UniversalRelationChange>> {
+        // Prefer transform_events for scripted delay/fail; this path is for
+        // homogeneous relation-only helpers.
+        let script = {
+            let mut st = self.state.lock().expect("scripted transformer lock");
+            st.transform_calls += 1;
+            st.started_order.push(batch_id);
+            st.by_batch_id
+                .get(&batch_id)
+                .cloned()
+                .unwrap_or_default()
+        };
+        if !script.delay.is_zero() {
+            tokio::time::sleep(script.delay).await;
+        }
+        if let Some(msg) = script.fail_with {
+            self.state
+                .lock()
+                .expect("scripted transformer lock")
+                .completed_order
+                .push(batch_id);
+            return Err(anyhow!(msg));
+        }
+        let out = self.inner.apply_relation_changes(changes)?;
+        self.state
+            .lock()
+            .expect("scripted transformer lock")
+            .completed_order
+            .push(batch_id);
+        Ok(out)
+    }
+
+    async fn transform_events(
+        &self,
+        batch_id: u64,
+        events: Vec<ApplyEvent>,
+    ) -> Result<Vec<ApplyEvent>> {
+        let script = {
+            let mut st = self.state.lock().expect("scripted transformer lock");
+            st.transform_calls += 1;
+            st.started_order.push(batch_id);
+            st.by_batch_id
+                .get(&batch_id)
+                .cloned()
+                .unwrap_or_default()
+        };
+        if !script.delay.is_zero() {
+            tokio::time::sleep(script.delay).await;
+        }
+        if let Some(msg) = script.fail_with {
+            self.state
+                .lock()
+                .expect("scripted transformer lock")
+                .completed_order
+                .push(batch_id);
+            return Err(anyhow!(msg));
+        }
+        let out = self.inner.apply_events_async(batch_id, events).await?;
         self.state
             .lock()
             .expect("scripted transformer lock")
@@ -496,8 +567,13 @@ pub enum SinkFailWhen {
 #[derive(Default)]
 struct RecordingSinkState {
     applied: Vec<UniversalChange>,
+    relations_applied: Vec<UniversalRelationChange>,
     rows_written: Vec<Vec<UniversalRow>>,
+    relations_written: Vec<Vec<UniversalRelation>>,
+    /// Sink apply order tags: `change:{id}` or `relation:{id}`.
+    event_order: Vec<String>,
     apply_count: usize,
+    relation_apply_count: usize,
     fail_when: Vec<SinkFailWhen>,
     /// If true, fail only once per scripted condition then succeed on retry.
     fail_once: bool,
@@ -562,6 +638,33 @@ impl RecordingSink {
     pub fn apply_attempts(&self) -> usize {
         self.state.lock().expect("recording sink lock").apply_count
     }
+
+    /// Applied relation changes in sink order.
+    pub fn relations_applied(&self) -> Vec<UniversalRelationChange> {
+        self.state
+            .lock()
+            .expect("recording sink lock")
+            .relations_applied
+            .clone()
+    }
+
+    /// Relation batches passed to `write_universal_relations`.
+    pub fn relations_written(&self) -> Vec<Vec<UniversalRelation>> {
+        self.state
+            .lock()
+            .expect("recording sink lock")
+            .relations_written
+            .clone()
+    }
+
+    /// Combined apply order as `"change:{id}"` / `"relation:{id}"` strings.
+    pub fn apply_order_tags(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .expect("recording sink lock")
+            .event_order
+            .clone()
+    }
 }
 
 fn id_matches(change: &UniversalChange, want: &str) -> bool {
@@ -587,7 +690,12 @@ impl SurrealSink for RecordingSink {
         Ok(())
     }
 
-    async fn write_universal_relations(&self, _relations: &[UniversalRelation]) -> Result<()> {
+    async fn write_universal_relations(&self, relations: &[UniversalRelation]) -> Result<()> {
+        self.state
+            .lock()
+            .expect("recording sink lock")
+            .relations_written
+            .push(relations.to_vec());
         Ok(())
     }
 
@@ -610,14 +718,151 @@ impl SurrealSink for RecordingSink {
             }
         }
 
+        st.event_order
+            .push(format!("change:{}", change_id_display(change)));
         st.applied.push(change.clone());
         Ok(())
     }
 
     async fn apply_universal_relation_change(
         &self,
-        _change: &UniversalRelationChange,
+        change: &UniversalRelationChange,
     ) -> Result<()> {
+        let mut st = self.state.lock().expect("recording sink lock");
+        st.relation_apply_count += 1;
+        st.event_order.push(format!(
+            "relation:{}",
+            relation_id_display(&change.relation.id)
+        ));
+        st.relations_applied.push(change.clone());
+        Ok(())
+    }
+}
+
+fn relation_id_display(id: &sync_core::UniversalValue) -> String {
+    match id {
+        sync_core::UniversalValue::Int64(n) => n.to_string(),
+        sync_core::UniversalValue::Int32(n) => n.to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Scripted [`SourceDriver`] for runtime tests (work + control + stop + checkpoint).
+pub struct ScriptedSourceDriver<P> {
+    /// Remaining work items (drained by poll_work).
+    pub remaining: Vec<PositionedEvent<P>>,
+    /// Recorded commit positions.
+    pub commits: Vec<P>,
+    /// Recorded persist_checkpoint positions (sink-safe only).
+    pub persisted: Vec<P>,
+    /// Signals returned once from the next `between_events` call, then cleared.
+    pub pending_signals: Vec<crate::ControlSignal>,
+    /// Count of `on_schema_refresh` invocations.
+    pub schema_refresh_count: u64,
+    /// Tables passed to `on_adhoc_snapshot`.
+    pub adhoc_snapshots: Vec<Vec<String>>,
+    /// Optional stop reason (checked each loop).
+    pub stop: Option<crate::StopReason>,
+    /// Checkpoint policy.
+    pub policy: crate::CheckpointPolicy,
+    /// When true, `is_finished` once remaining is empty.
+    pub finished_when_empty: bool,
+    /// How many times `poll_work` was called.
+    pub poll_count: u64,
+    /// After this many polls, set `stop` to Cancelled (0 = never).
+    pub cancel_after_polls: u64,
+}
+
+impl<P> ScriptedSourceDriver<P> {
+    /// Finite driver that finishes when remaining is empty.
+    pub fn new(items: Vec<PositionedEvent<P>>) -> Self {
+        Self {
+            remaining: items,
+            commits: Vec::new(),
+            persisted: Vec::new(),
+            pending_signals: Vec::new(),
+            schema_refresh_count: 0,
+            adhoc_snapshots: Vec::new(),
+            stop: None,
+            policy: crate::CheckpointPolicy::PersistAfterCommit,
+            finished_when_empty: true,
+            poll_count: 0,
+            cancel_after_polls: 0,
+        }
+    }
+
+    /// Cancel after `n` poll_work calls.
+    pub fn cancel_after_polls(mut self, n: u64) -> Self {
+        self.cancel_after_polls = n;
+        self
+    }
+
+    /// Queue control signals for the next between_events.
+    pub fn with_signals(mut self, signals: Vec<crate::ControlSignal>) -> Self {
+        self.pending_signals = signals;
+        self
+    }
+
+    /// Use CommitOnly policy (no persist_checkpoint).
+    pub fn commit_only(mut self) -> Self {
+        self.policy = crate::CheckpointPolicy::CommitOnly;
+        self
+    }
+}
+
+#[async_trait]
+impl<P> SourceDriver for ScriptedSourceDriver<P>
+where
+    P: Clone + Send + Sync + 'static,
+{
+    type Position = P;
+
+    async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
+        self.poll_count += 1;
+        if self.cancel_after_polls > 0 && self.poll_count >= self.cancel_after_polls {
+            self.stop = Some(crate::StopReason::Cancelled);
+        }
+        if self.remaining.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Yield one item per poll for predictable cancel tests.
+        let item = self.remaining.remove(0);
+        Ok(vec![item])
+    }
+
+    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+        self.commits.push(position);
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished_when_empty && self.remaining.is_empty()
+    }
+
+    async fn between_events(&mut self) -> Result<Vec<crate::ControlSignal>> {
+        Ok(std::mem::take(&mut self.pending_signals))
+    }
+
+    async fn on_schema_refresh(&mut self) -> Result<()> {
+        self.schema_refresh_count += 1;
+        Ok(())
+    }
+
+    async fn on_adhoc_snapshot(&mut self, tables: &[String]) -> Result<()> {
+        self.adhoc_snapshots.push(tables.to_vec());
+        Ok(())
+    }
+
+    fn stop_reason(&self) -> Option<crate::StopReason> {
+        self.stop.clone()
+    }
+
+    fn checkpoint_policy(&self) -> crate::CheckpointPolicy {
+        self.policy
+    }
+
+    async fn persist_checkpoint(&mut self, position: Self::Position) -> Result<()> {
+        self.persisted.push(position);
         Ok(())
     }
 }

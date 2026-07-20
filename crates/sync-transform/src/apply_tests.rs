@@ -4,14 +4,17 @@ use crate::test_support::{
     BatchScript, RecordingSink, ScriptedChangeFeed, ScriptedTransformer, SinkFailWhen,
 };
 use crate::{
-    run_change_feed, run_change_feed_with, write_rows, ApplyContext, ApplyOpts, FailurePolicy,
-    InPlaceTransform, Pipeline, PositionedChange,
+    apply_relation_changes, run_change_feed, run_change_feed_with, write_rows, ApplyContext,
+    ApplyOpts, FailurePolicy, InPlaceTransform, Pipeline, PositionedChange,
 };
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use sync_core::{UniversalChange, UniversalRow, UniversalValue};
+use sync_core::{
+    UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow, UniversalThingRef,
+    UniversalValue,
+};
 use tokio::time::timeout;
 
 fn change(id: i64) -> UniversalChange {
@@ -620,4 +623,105 @@ async fn apply_context_skip_returns_watermark_without_sinking_failed() {
     assert_eq!(ctx.flush().await.unwrap(), None);
     assert_eq!(sink.applied().len(), 1);
     assert_eq!(sink.applied()[0].id, UniversalValue::Int64(2));
+}
+
+// --- Relations (first-class apply) ---
+
+fn relation(id: i64) -> UniversalRelation {
+    UniversalRelation::new(
+        "follows",
+        UniversalValue::Int64(id),
+        UniversalThingRef::new("users", UniversalValue::Int64(id)),
+        UniversalThingRef::new("users", UniversalValue::Int64(id + 1)),
+        HashMap::new(),
+    )
+}
+
+#[tokio::test]
+async fn apply_context_push_flush_relations_ordered_with_changes() {
+    let sink = RecordingSink::new();
+    let opts = opts_window(1);
+    let pipeline = Pipeline::new();
+    let mut ctx = ApplyContext::new(&sink, Arc::new(pipeline), &opts);
+
+    let wm = ctx.push_change(change(1), 10u64).await.unwrap();
+    assert_eq!(wm, Some(10));
+
+    let wm = ctx
+        .push_relation_change(UniversalRelationChange::create(relation(5)), 20u64)
+        .await
+        .unwrap();
+    assert_eq!(wm, Some(20));
+
+    let wm = ctx.push_change(change(2), 30u64).await.unwrap();
+    assert_eq!(wm, Some(30));
+
+    assert_eq!(
+        sink.apply_order_tags(),
+        vec![
+            "change:1".to_string(),
+            "relation:5".to_string(),
+            "change:2".to_string(),
+        ]
+    );
+    assert_eq!(ctx.flush().await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn apply_context_relation_fail_poisons_like_changes() {
+    let transformer = ScriptedTransformer::new(Pipeline::new())
+        .on_batch(1, BatchScript::fail_after(Duration::ZERO, "rel-fail"));
+
+    let sink = RecordingSink::new();
+    let opts = opts_window(1).with_failure_policy(FailurePolicy::Fail);
+    let mut ctx = ApplyContext::new(&sink, Arc::new(transformer), &opts);
+
+    let err = ctx
+        .push_relation_change(UniversalRelationChange::create(relation(1)), 10u64)
+        .await
+        .unwrap_err();
+    assert!(format!("{err:#}").contains("rel-fail"));
+    assert!(ctx.is_poisoned());
+    assert!(sink.relations_applied().is_empty());
+    assert!(sink.applied().is_empty());
+
+    let reuse = ctx
+        .push_relation_change(UniversalRelationChange::create(relation(2)), 20u64)
+        .await
+        .unwrap_err();
+    assert!(format!("{reuse:#}").contains("poisoned"));
+}
+
+#[tokio::test]
+async fn write_relations_via_apply_context() {
+    let sink = RecordingSink::new();
+    let opts = ApplyOpts::default();
+    let pipeline = Pipeline::new();
+    let ctx: ApplyContext<'_, _, _, ()> =
+        ApplyContext::new(&sink, Arc::new(pipeline), &opts);
+    ctx.write_relations(vec![relation(1)])
+        .await
+        .unwrap();
+    assert_eq!(sink.relations_written().len(), 1);
+    assert_eq!(sink.relations_written()[0][0].id, UniversalValue::Int64(1));
+}
+
+#[tokio::test]
+async fn apply_relation_changes_helper() {
+    let sink = RecordingSink::new();
+    let pipeline = Pipeline::new();
+    let opts = ApplyOpts::default();
+    apply_relation_changes(
+        &sink,
+        &pipeline,
+        vec![UniversalRelationChange::create(relation(9))],
+        &opts,
+    )
+    .await
+    .unwrap();
+    assert_eq!(sink.relations_applied().len(), 1);
+    assert_eq!(
+        sink.relations_applied()[0].relation.id,
+        UniversalValue::Int64(9)
+    );
 }

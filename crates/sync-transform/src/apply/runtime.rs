@@ -1,7 +1,17 @@
 //! Unified in-flight window runtime: transform → ordered sink → contiguous commit.
+//!
+//! Handles row changes **and** relation changes through the same window,
+//! ordered sink, sink-safe positions, and flush/discard/poison invariants.
+//!
+//! The general incremental driver API is [`crate::SourceDriver`] /
+//! [`crate::run_source_runtime`]. [`run_change_feed`] remains a convenience for
+//! row-only feeds.
 
-use crate::apply::feed::{ChangeFeed, PositionedChange};
-use crate::apply::opts::{ApplyOpts, FailurePolicy};
+use crate::apply::{
+    ApplyEvent, ChangeFeed, ChangeFeedRef, CheckpointPolicy, FailurePolicy, PositionedChange,
+    PositionedEvent, RuntimeExit, SourceDriver, SourceRuntimeOpts,
+};
+use crate::apply::opts::ApplyOpts;
 use crate::apply::transform::BatchTransformer;
 use crate::pipeline::Pipeline;
 use anyhow::{anyhow, bail, Context, Result};
@@ -9,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalChange, UniversalRow};
+use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
 use tokio::task::JoinSet;
 use tracing::warn;
 
@@ -26,11 +36,17 @@ pub async fn write_rows<S: SurrealSink>(
     write_rows_with(sink, Arc::new(pipeline.clone()), rows, opts).await
 }
 
+/// Transform then `write_universal_relations`.
+pub async fn write_relations<S: SurrealSink>(
+    sink: &S,
+    pipeline: &Pipeline,
+    relations: Vec<UniversalRelation>,
+    opts: &ApplyOpts,
+) -> Result<()> {
+    write_relations_with(sink, Arc::new(pipeline.clone()), relations, opts).await
+}
+
 /// Transform then apply each change via [`SurrealSink::apply_universal_change`].
-///
-/// Used by interleaved snapshot reconciliation (one event at a time) and other
-/// paths that already hold a change batch. Identity pipelines skip transform
-/// dispatch entirely.
 pub async fn apply_changes<S: SurrealSink>(
     sink: &S,
     pipeline: &Pipeline,
@@ -38,6 +54,17 @@ pub async fn apply_changes<S: SurrealSink>(
     opts: &ApplyOpts,
 ) -> Result<()> {
     apply_changes_with(sink, Arc::new(pipeline.clone()), changes, opts).await
+}
+
+/// Transform then apply each relation change via
+/// [`SurrealSink::apply_universal_relation_change`].
+pub async fn apply_relation_changes<S: SurrealSink>(
+    sink: &S,
+    pipeline: &Pipeline,
+    changes: Vec<UniversalRelationChange>,
+    opts: &ApplyOpts,
+) -> Result<()> {
+    apply_relation_changes_with(sink, Arc::new(pipeline.clone()), changes, opts).await
 }
 
 /// Like [`apply_changes`] but accepts any [`BatchTransformer`] behind [`Arc`].
@@ -67,6 +94,36 @@ where
     Ok(())
 }
 
+/// Like [`apply_relation_changes`] but accepts any [`BatchTransformer`] behind [`Arc`].
+pub async fn apply_relation_changes_with<S, T>(
+    sink: &S,
+    transformer: Arc<T>,
+    changes: Vec<UniversalRelationChange>,
+    opts: &ApplyOpts,
+) -> Result<()>
+where
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
+    let changes = if transformer.is_identity() {
+        changes
+    } else {
+        tokio::time::timeout(
+            opts.timeout,
+            transformer.transform_relation_changes(0, changes),
+        )
+        .await
+        .map_err(|_| anyhow!("transform timeout after {:?}", opts.timeout))?
+        .context("transform relation changes")?
+    };
+    for change in &changes {
+        sink.apply_universal_relation_change(change)
+            .await
+            .context("sink apply_universal_relation_change")?;
+    }
+    Ok(())
+}
+
 /// Like [`write_rows`] but accepts any [`BatchTransformer`] behind [`Arc`].
 pub async fn write_rows_with<S, T>(
     sink: &S,
@@ -92,11 +149,36 @@ where
     Ok(())
 }
 
-/// Framework-owned incremental loop: poll → batch → transform window → ordered
-/// sink apply → contiguous `commit`.
+/// Like [`write_relations`] but accepts any [`BatchTransformer`] behind [`Arc`].
+pub async fn write_relations_with<S, T>(
+    sink: &S,
+    transformer: Arc<T>,
+    relations: Vec<UniversalRelation>,
+    opts: &ApplyOpts,
+) -> Result<()>
+where
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
+    let relations = if transformer.is_identity() {
+        relations
+    } else {
+        tokio::time::timeout(opts.timeout, transformer.transform_relations(0, relations))
+            .await
+            .map_err(|_| anyhow!("transform timeout after {:?}", opts.timeout))?
+            .context("transform relations")?
+    };
+    sink.write_universal_relations(&relations)
+        .await
+        .context("sink write_universal_relations")?;
+    Ok(())
+}
+
+/// Convenience loop for row-only [`ChangeFeed`] sources.
 ///
-/// Exits when the feed reports [`ChangeFeed::is_finished`] and all buffered /
-/// in-flight work has been drained.
+/// Equivalent to [`crate::run_source_runtime`] over a [`ChangeFeedDriver`].
+/// Prefer [`crate::SourceDriver`] when you need relation events or control-plane
+/// hooks (schema refresh, ad-hoc snapshot, cancel/deadline, persist_checkpoint).
 pub async fn run_change_feed<F, S>(
     feed: &mut F,
     sink: &S,
@@ -122,66 +204,17 @@ where
     S: SurrealSink,
     T: BatchTransformer + 'static,
 {
-    let mut ctx = ApplyContext::new(sink, transformer, opts);
-    loop {
-        // Fill the transform window to capacity before waiting on completions.
-        // This is what makes W≥2 overlap real (out-of-order transform completion).
-        while ctx.in_flight_count() < opts.max_in_flight {
-            while ctx.buffer_len() < opts.batch_size && !feed.is_finished() {
-                let polled = feed.poll_changes().await.context("poll_changes")?;
-                if polled.is_empty() {
-                    break;
-                }
-                for pc in polled {
-                    ctx.push_buffered(pc);
-                }
-            }
-
-            if ctx.buffer_len() >= opts.batch_size {
-                if !ctx.try_start_full_batch() {
-                    // Async window full (in-flight transforms at capacity).
-                    break;
-                }
-                // Identity completes synchronously into `completed` — drain now so
-                // the fill loop (which keys off in_flight) can keep going.
-                ctx.drain_ordered(feed).await?;
-                continue;
-            }
-
-            if ctx.buffer_len() > 0 && (feed.is_finished() || ctx.should_flush_partial()) {
-                if !ctx.try_start_partial_batch() {
-                    break;
-                }
-                ctx.drain_ordered(feed).await?;
-                continue;
-            }
-
-            // Cannot start another batch right now (need more input or wait).
-            break;
-        }
-
-        // Drain any completed results (including identity leftovers) before
-        // deciding whether to wait on JoinSet.
-        ctx.drain_ordered(feed).await?;
-
-        if ctx.in_flight_count() == 0 && ctx.buffer_len() == 0 {
-            if feed.is_finished() {
-                return Ok(());
-            }
-            // Endless source idle: brief sleep then re-poll.
-            tokio::time::sleep(opts.batch_max_wait.min(Duration::from_millis(10))).await;
-            continue;
-        }
-
-        if ctx.in_flight_count() == 0 {
-            // Buffered but waiting on batch_max_wait (feed not finished).
-            tokio::time::sleep(opts.batch_max_wait).await;
-            continue;
-        }
-
-        // Window full or cannot start more — wait for a transform completion.
-        ctx.wait_one_completion().await?;
-        ctx.drain_ordered(feed).await?;
+    let mut driver = ChangeFeedRef::new(feed);
+    let exit = crate::apply::source_driver::run_source_runtime_with(
+        &mut driver,
+        sink,
+        transformer,
+        opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await?;
+    match exit {
+        RuntimeExit::Stopped(_) => Ok(()),
     }
 }
 
@@ -196,7 +229,7 @@ struct CompletedBatch<P> {
     #[allow(dead_code)]
     batch_id: u64,
     last_position: P,
-    result: Result<Vec<UniversalChange>>,
+    result: Result<Vec<ApplyEvent>>,
 }
 
 struct TransformOutcome<P> {
@@ -204,26 +237,28 @@ struct TransformOutcome<P> {
     seq: u64,
     batch_id: u64,
     last_position: P,
-    result: Result<Vec<UniversalChange>>,
+    result: Result<Vec<ApplyEvent>>,
 }
 
 /// Library / custom-loop driver sharing the same ordered apply path as
-/// [`run_change_feed`].
+/// [`crate::run_source_runtime`].
 ///
-/// `push_change` / `flush` return `Some(position)` when a batch was transformed,
-/// sunk, and is safe to `commit`. They do **not** call [`ChangeFeed::commit`].
+/// Accepts row [`UniversalChange`] and [`UniversalRelationChange`] into one
+/// buffer / window. `push_*` / `flush` return `Some(position)` when a batch was
+/// transformed, sunk, and is safe to `commit`. They do **not** call
+/// [`SourceDriver::commit`] / [`ChangeFeed::commit`].
 ///
 /// # Poisoning after [`FailurePolicy::Fail`]
 ///
 /// After a batch fails under [`FailurePolicy::Fail`], this context is
-/// **poisoned**: successors are discarded, and further [`Self::push_change`] /
-/// [`Self::flush`] return `Err` immediately. Do not reuse the context — create
-/// a new one and replay from the last successful commit watermark.
+/// **poisoned**: successors are discarded, and further push/flush return `Err`
+/// immediately. Do not reuse — create a new context and replay from the last
+/// successful commit watermark.
 pub struct ApplyContext<'a, S, T, P = ()> {
     sink: &'a S,
     transformer: Arc<T>,
     opts: &'a ApplyOpts,
-    buffer: Vec<PositionedChange<P>>,
+    buffer: Vec<PositionedEvent<P>>,
     next_batch_id: u64,
     next_seq: u64,
     next_to_apply: u64,
@@ -235,7 +270,7 @@ pub struct ApplyContext<'a, S, T, P = ()> {
     epoch: u64,
     /// Set after [`FailurePolicy::Fail`]; context must not be reused.
     poisoned: bool,
-    /// Changes successfully sunk since the last [`Self::take_sunk_change_count`].
+    /// Events successfully sunk since the last [`Self::take_sunk_change_count`].
     sunk_since_take: u64,
 }
 
@@ -266,13 +301,11 @@ where
     }
 
     /// Whether this context was poisoned by a [`FailurePolicy::Fail`] error.
-    ///
-    /// A poisoned context must not be reused; create a new one instead.
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
     }
 
-    /// Number of changes waiting to form a batch.
+    /// Number of events waiting to form a batch.
     pub fn buffer_len(&self) -> usize {
         self.buffer.len()
     }
@@ -282,17 +315,12 @@ where
         self.in_flight.len()
     }
 
-    /// Take and reset the count of changes sunk since the previous take.
-    ///
-    /// Call after [`Self::push_change`] / [`Self::flush`] return `Some(position)`
-    /// to account for how many changes were applied (a batch may contain many).
+    /// Take and reset the count of events sunk since the previous take.
     pub fn take_sunk_change_count(&mut self) -> u64 {
         std::mem::take(&mut self.sunk_since_take)
     }
 
     /// Number of transform results waiting for ordered sink apply.
-    ///
-    /// Useful in tests to assert successor discard cleared the window.
     pub fn completed_waiting_count(&self) -> usize {
         self.completed.len()
     }
@@ -307,11 +335,15 @@ where
         Ok(())
     }
 
-    fn push_buffered(&mut self, pc: PositionedChange<P>) {
+    pub(crate) fn push_buffered_event(&mut self, pe: PositionedEvent<P>) {
         if self.buffer.is_empty() {
             self.buffer_started = Some(tokio::time::Instant::now());
         }
-        self.buffer.push(pc);
+        self.buffer.push(pe);
+    }
+
+    pub(crate) fn should_flush_partial_public(&self) -> bool {
+        self.should_flush_partial()
     }
 
     fn should_flush_partial(&self) -> bool {
@@ -321,44 +353,50 @@ where
         }
     }
 
-    /// Push one change; may start transforms and drain ordered sink/commit.
+    /// Push one row change; may start transforms and drain ordered sink.
     ///
-    /// Returns the last position that was successfully sunk during this call
-    /// (caller should `commit` it). Does not call [`ChangeFeed::commit`] itself.
-    ///
-    /// Returns `Err` immediately if this context is [`Self::is_poisoned`].
+    /// Returns the last position successfully sunk (caller should `commit`).
     pub async fn push_change(
         &mut self,
         change: UniversalChange,
         position: P,
     ) -> Result<Option<P>> {
         self.ensure_not_poisoned()?;
-        self.push_buffered(PositionedChange::new(change, position));
+        self.push_buffered_event(PositionedEvent::change(change, position));
         while self.try_start_full_batch() {}
-        // Collect any already-finished transforms without blocking.
-        // Yield once so Duration::ZERO scripted tasks can complete in-process.
         self.poll_join_ready().await?;
         self.drain_ordered_no_commit().await
     }
 
-    /// Flush remaining buffered changes and wait for in-flight work.
-    ///
-    /// Fully drains: loops until the buffer, in-flight transforms, and
-    /// completed-waiting queue are all empty. A single start/wait/drain pass is
-    /// not enough when `max_in_flight` holds the window full and later changes
-    /// remain buffered (W=1 + queued buffer).
-    ///
-    /// Returns the last position successfully sunk (caller should `commit`).
-    ///
-    /// Returns `Err` immediately if this context is [`Self::is_poisoned`].
+    /// Push one relation change into the same window as row changes.
+    pub async fn push_relation_change(
+        &mut self,
+        change: UniversalRelationChange,
+        position: P,
+    ) -> Result<Option<P>> {
+        self.ensure_not_poisoned()?;
+        self.push_buffered_event(PositionedEvent::relation_change(change, position));
+        while self.try_start_full_batch() {}
+        self.poll_join_ready().await?;
+        self.drain_ordered_no_commit().await
+    }
+
+    /// Push a unified positioned event.
+    pub async fn push_event(&mut self, event: ApplyEvent, position: P) -> Result<Option<P>> {
+        self.ensure_not_poisoned()?;
+        self.push_buffered_event(PositionedEvent::new(event, position));
+        while self.try_start_full_batch() {}
+        self.poll_join_ready().await?;
+        self.drain_ordered_no_commit().await
+    }
+
+    /// Flush remaining buffered events and wait for in-flight work.
     pub async fn flush(&mut self) -> Result<Option<P>> {
         self.ensure_not_poisoned()?;
         let mut last = None;
         loop {
-            // Fill the window from anything still buffered.
             while self.try_start_partial_batch() {}
 
-            // Sink any results that are ready in source order.
             if let Some(p) = self.drain_ordered_no_commit().await? {
                 last = Some(p);
             }
@@ -375,12 +413,10 @@ where
                 continue;
             }
 
-            // No in-flight work. Buffer should be startable now that the window
-            // is free; completed should have drained above.
             if !self.buffer.is_empty() {
                 if !self.try_start_partial_batch() {
                     bail!(
-                        "flush: {} buffered change(s) but window would not accept a batch",
+                        "flush: {} buffered event(s) but window would not accept a batch",
                         self.buffer.len()
                     );
                 }
@@ -402,14 +438,26 @@ where
         write_rows_with(self.sink, Arc::clone(&self.transformer), rows, self.opts).await
     }
 
-    fn try_start_full_batch(&mut self) -> bool {
+    /// Transform then sink relations (same as [`write_relations_with`]).
+    pub async fn write_relations(&self, relations: Vec<UniversalRelation>) -> Result<()> {
+        self.ensure_not_poisoned()?;
+        write_relations_with(
+            self.sink,
+            Arc::clone(&self.transformer),
+            relations,
+            self.opts,
+        )
+        .await
+    }
+
+    pub(crate) fn try_start_full_batch(&mut self) -> bool {
         if self.buffer.len() < self.opts.batch_size {
             return false;
         }
         self.start_batch_from_buffer(self.opts.batch_size)
     }
 
-    fn try_start_partial_batch(&mut self) -> bool {
+    pub(crate) fn try_start_partial_batch(&mut self) -> bool {
         if self.buffer.is_empty() {
             return false;
         }
@@ -421,8 +469,6 @@ where
         if n == 0 {
             return false;
         }
-        // Window occupancy: JoinSet path uses `in_flight`; identity completes
-        // synchronously into `completed`, so count those too before drain.
         let occupying = if self.transformer.is_identity() {
             self.completed.len() + self.in_flight.len()
         } else {
@@ -432,7 +478,7 @@ where
             return false;
         }
 
-        let batch: Vec<PositionedChange<P>> = self.buffer.drain(..n).collect();
+        let batch: Vec<PositionedEvent<P>> = self.buffer.drain(..n).collect();
         if self.buffer.is_empty() {
             self.buffer_started = None;
         } else {
@@ -440,21 +486,20 @@ where
         }
 
         let last_position = batch.last().expect("n > 0").position.clone();
-        let changes: Vec<UniversalChange> = batch.into_iter().map(|pc| pc.change).collect();
+        let events: Vec<ApplyEvent> = batch.into_iter().map(|pe| pe.event).collect();
 
         let batch_id = self.next_batch_id;
         self.next_batch_id = self.next_batch_id.saturating_add(1);
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
 
-        // Identity fast path: pure move into completed, no JoinSet/timeout.
         if self.transformer.is_identity() {
             self.completed.insert(
                 seq,
                 CompletedBatch {
                     batch_id,
                     last_position,
-                    result: Ok(changes),
+                    result: Ok(events),
                 },
             );
             return true;
@@ -474,7 +519,7 @@ where
         self.join_set.spawn(async move {
             let result = match tokio::time::timeout(
                 timeout,
-                transformer.transform_changes(batch_id, changes),
+                transformer.transform_events(batch_id, events),
             )
             .await
             {
@@ -516,7 +561,7 @@ where
         Ok(())
     }
 
-    async fn wait_one_completion(&mut self) -> Result<()> {
+    pub(crate) async fn wait_one_completion(&mut self) -> Result<()> {
         let outcome = self
             .join_set
             .join_next()
@@ -528,7 +573,6 @@ where
 
     fn handle_outcome(&mut self, outcome: TransformOutcome<P>) -> Result<()> {
         if outcome.epoch != self.epoch {
-            // Discarded after a prior failure; ignore.
             return Ok(());
         }
         if self.in_flight.remove(&outcome.seq).is_none() {
@@ -545,33 +589,84 @@ where
         Ok(())
     }
 
-    async fn drain_ordered(&mut self, feed: &mut impl ChangeFeed<Position = P>) -> Result<()> {
+    /// Drain ordered sink + driver commit (+ optional persist_checkpoint).
+    pub(crate) async fn drain_ordered_driver(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+    ) -> Result<()> {
         loop {
             let Some(batch) = self.completed.remove(&self.next_to_apply) else {
                 return Ok(());
             };
             match batch.result {
-                Ok(changes) => match self.apply_sink(&changes).await {
+                Ok(events) => match self.apply_sink_events(&events).await {
                     Ok(()) => {
-                        feed.commit(batch.last_position)
+                        driver
+                            .commit(batch.last_position.clone())
                             .await
                             .context("commit")?;
+                        if matches!(
+                            driver.checkpoint_policy(),
+                            CheckpointPolicy::PersistAfterCommit
+                        ) {
+                            driver
+                                .persist_checkpoint(batch.last_position)
+                                .await
+                                .context("persist_checkpoint")?;
+                        }
                         self.next_to_apply += 1;
                     }
                     Err(e) => {
-                        self.fail_or_skip(feed, batch.batch_id, batch.last_position, e)
+                        self.fail_or_skip_driver(driver, batch.batch_id, batch.last_position, e)
                             .await?;
                     }
                 },
                 Err(e) => {
-                    self.fail_or_skip(feed, batch.batch_id, batch.last_position, e)
+                    self.fail_or_skip_driver(driver, batch.batch_id, batch.last_position, e)
                         .await?;
                 }
             }
         }
     }
 
-    /// Drain ordered sink apply without committing (for [`ApplyContext::push_change`]).
+    /// Flush remaining work and commit via driver (used on cancel/deadline stop).
+    pub(crate) async fn flush_for_driver(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+    ) -> Result<()> {
+        if self.poisoned {
+            return Ok(());
+        }
+        loop {
+            while self.try_start_partial_batch() {}
+            self.drain_ordered_driver(driver).await?;
+            if self.buffer.is_empty()
+                && self.in_flight.is_empty()
+                && self.completed.is_empty()
+            {
+                return Ok(());
+            }
+            if self.in_flight_count() > 0 {
+                self.wait_one_completion().await?;
+                continue;
+            }
+            if !self.buffer.is_empty() {
+                if !self.try_start_partial_batch() {
+                    bail!(
+                        "flush_for_driver: {} buffered but window would not accept a batch",
+                        self.buffer.len()
+                    );
+                }
+                continue;
+            }
+            bail!(
+                "flush_for_driver: {} completed waiting but none is next_to_apply={}",
+                self.completed.len(),
+                self.next_to_apply
+            );
+        }
+    }
+
     async fn drain_ordered_no_commit(&mut self) -> Result<Option<P>> {
         let mut last = None;
         loop {
@@ -579,10 +674,10 @@ where
                 break;
             };
             match batch.result {
-                Ok(changes) => match self.apply_sink(&changes).await {
+                Ok(events) => match self.apply_sink_events(&events).await {
                     Ok(()) => {
                         self.sunk_since_take =
-                            self.sunk_since_take.saturating_add(changes.len() as u64);
+                            self.sunk_since_take.saturating_add(events.len() as u64);
                         last = Some(batch.last_position);
                         self.next_to_apply += 1;
                     }
@@ -598,9 +693,9 @@ where
         Ok(last)
     }
 
-    async fn fail_or_skip(
+    async fn fail_or_skip_driver(
         &mut self,
-        feed: &mut impl ChangeFeed<Position = P>,
+        driver: &mut impl SourceDriver<Position = P>,
         batch_id: u64,
         last_position: P,
         e: anyhow::Error,
@@ -616,9 +711,19 @@ where
                     error = %e,
                     "skipping failed batch (failure_policy=skip); committing past it"
                 );
-                feed.commit(last_position)
+                driver
+                    .commit(last_position.clone())
                     .await
                     .context("commit after skip")?;
+                if matches!(
+                    driver.checkpoint_policy(),
+                    CheckpointPolicy::PersistAfterCommit
+                ) {
+                    driver
+                        .persist_checkpoint(last_position)
+                        .await
+                        .context("persist_checkpoint after skip")?;
+                }
                 self.next_to_apply += 1;
                 Ok(())
             }
@@ -652,26 +757,35 @@ where
         self.epoch = self.epoch.saturating_add(1);
         self.in_flight.clear();
         self.completed.clear();
-        // Also drop any not-yet-started buffered changes — docs claim successors
-        // are discarded; leaving the buffer would re-process them after Fail
-        // if the poisoned check were ever bypassed, and contradicts the
-        // "discard in-flight K+1…" reliability story for unstarted work.
         self.buffer.clear();
         self.buffer_started = None;
-        // Abort remaining tasks; late JoinSet results will have a stale epoch
-        // (or we abort them). JoinSet::abort_all is available on recent tokio.
         self.join_set.abort_all();
-        // Poison so reuse cannot hang on a missing next_to_apply seq.
         self.poisoned = true;
     }
 
-    async fn apply_sink(&self, changes: &[UniversalChange]) -> Result<()> {
-        for change in changes {
-            self.sink
-                .apply_universal_change(change)
-                .await
-                .context("sink apply_universal_change")?;
+    async fn apply_sink_events(&self, events: &[ApplyEvent]) -> Result<()> {
+        for event in events {
+            match event {
+                ApplyEvent::Change(change) => {
+                    self.sink
+                        .apply_universal_change(change)
+                        .await
+                        .context("sink apply_universal_change")?;
+                }
+                ApplyEvent::RelationChange(change) => {
+                    self.sink
+                        .apply_universal_relation_change(change)
+                        .await
+                        .context("sink apply_universal_relation_change")?;
+                }
+            }
         }
         Ok(())
     }
+}
+
+// Re-export helper for tests that still construct PositionedChange.
+#[allow(dead_code)]
+fn _positioned_change_to_event<P>(pc: PositionedChange<P>) -> PositionedEvent<P> {
+    pc.into()
 }

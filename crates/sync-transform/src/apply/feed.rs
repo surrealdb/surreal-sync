@@ -1,9 +1,16 @@
-//! Change feed trait: source events + checkpoint commit.
+//! Change feed trait: thin convenience over [`crate::SourceDriver`].
+//!
+//! The general source API is [`crate::SourceDriver`] + [`crate::run_source_runtime`].
+//! [`ChangeFeed`] / [`crate::run_change_feed`] remain for simple row-CDC sources
+//! that do not need control-plane hooks (schema refresh, ad-hoc snapshot, etc.).
 
+use crate::apply::event::{ApplyEvent, PositionedEvent};
 use anyhow::Result;
 use sync_core::UniversalChange;
 
-/// A CDC / incremental event plus the source position to commit after sink success.
+/// A CDC / incremental row event plus the source position to commit after sink success.
+///
+/// Prefer [`PositionedEvent`] when the feed may also emit relation changes.
 #[derive(Debug, Clone)]
 pub struct PositionedChange<P> {
     /// Universal change to transform and apply.
@@ -17,12 +24,27 @@ impl<P> PositionedChange<P> {
     pub fn new(change: UniversalChange, position: P) -> Self {
         Self { change, position }
     }
+
+    /// Convert to the unified [`PositionedEvent`] form.
+    pub fn into_event(self) -> PositionedEvent<P> {
+        PositionedEvent::new(ApplyEvent::Change(self.change), self.position)
+    }
 }
 
-/// Source-facing incremental feed: poll events, commit after durable sink apply.
+impl<P> From<PositionedChange<P>> for PositionedEvent<P> {
+    fn from(pc: PositionedChange<P>) -> Self {
+        pc.into_event()
+    }
+}
+
+/// Source-facing incremental **row** feed: poll events, commit after durable sink apply.
 ///
 /// Sources do **not** batch for transforms — the apply framework owns batching,
 /// the in-flight window, ordered sink apply, and contiguous commit watermark.
+///
+/// For sources that also emit relation edges or need DDL / cancel / checkpoint
+/// hooks, implement [`crate::SourceDriver`] instead (or wrap this feed with
+/// [`crate::ChangeFeedDriver`]).
 #[async_trait::async_trait]
 pub trait ChangeFeed: Send {
     /// Checkpoint / resume position type.
