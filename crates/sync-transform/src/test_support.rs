@@ -1,0 +1,439 @@
+//! Test doubles for the apply framework (feature `test-support` or `cfg(test)`).
+//!
+//! Shared by `sync-transform` reliability tests and (later) source crates that
+//! need the same harness without duplicating window semantics.
+
+use crate::{BatchTransformer, ChangeFeed, Pipeline, PositionedChange};
+use anyhow::{anyhow, Result};
+use async_trait::async_trait;
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use surreal_sink::SurrealSink;
+use sync_core::{
+    UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow,
+};
+
+/// Per-batch script for [`ScriptedTransformer`].
+#[derive(Debug, Clone)]
+pub struct BatchScript {
+    /// Artificial delay before the inner pipeline runs (enables out-of-order completion).
+    pub delay: Duration,
+    /// If set, fail after the delay (transform not acked).
+    pub fail_with: Option<String>,
+}
+
+impl Default for BatchScript {
+    fn default() -> Self {
+        Self {
+            delay: Duration::ZERO,
+            fail_with: None,
+        }
+    }
+}
+
+impl BatchScript {
+    /// Succeed after `delay`.
+    pub fn succeed_after(delay: Duration) -> Self {
+        Self {
+            delay,
+            fail_with: None,
+        }
+    }
+
+    /// Fail after `delay` with the given message.
+    pub fn fail_after(delay: Duration, msg: impl Into<String>) -> Self {
+        Self {
+            delay,
+            fail_with: Some(msg.into()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ScriptedTransformerState {
+    /// Scripts keyed by `batch_id`. Missing ids use [`BatchScript::default`].
+    by_batch_id: HashMap<u64, BatchScript>,
+    /// Order in which transforms finished (for assertions).
+    completed_order: Vec<u64>,
+    /// Order in which transforms started.
+    started_order: Vec<u64>,
+    /// How many times `transform_*` was invoked (identity-dispatch checks).
+    transform_calls: u64,
+}
+
+/// [`BatchTransformer`] that wraps a [`Pipeline`] with per-`batch_id` delay/fail.
+///
+/// Used to simulate out-of-order transform completion without External child-stdio.
+#[derive(Clone)]
+pub struct ScriptedTransformer {
+    inner: Pipeline,
+    state: Arc<Mutex<ScriptedTransformerState>>,
+}
+
+impl ScriptedTransformer {
+    /// Wrap an inner pipeline (often identity / empty).
+    pub fn new(inner: Pipeline) -> Self {
+        Self {
+            inner,
+            state: Arc::new(Mutex::new(ScriptedTransformerState::default())),
+        }
+    }
+
+    /// Configure behavior for a specific `batch_id`.
+    pub fn on_batch(self, batch_id: u64, script: BatchScript) -> Self {
+        self.state
+            .lock()
+            .expect("scripted transformer lock")
+            .by_batch_id
+            .insert(batch_id, script);
+        self
+    }
+
+    /// Batch ids in the order transforms started.
+    pub fn started_order(&self) -> Vec<u64> {
+        self.state
+            .lock()
+            .expect("scripted transformer lock")
+            .started_order
+            .clone()
+    }
+
+    /// Batch ids in the order transforms completed.
+    pub fn completed_order(&self) -> Vec<u64> {
+        self.state
+            .lock()
+            .expect("scripted transformer lock")
+            .completed_order
+            .clone()
+    }
+
+    /// Number of `transform_changes` / `transform_rows` invocations.
+    pub fn transform_calls(&self) -> u64 {
+        self.state
+            .lock()
+            .expect("scripted transformer lock")
+            .transform_calls
+    }
+}
+
+#[async_trait]
+impl BatchTransformer for ScriptedTransformer {
+    fn is_identity(&self) -> bool {
+        // Even when the inner pipeline is empty, scripts may delay/fail — not identity.
+        false
+    }
+
+    async fn transform_changes(
+        &self,
+        batch_id: u64,
+        changes: Vec<UniversalChange>,
+    ) -> Result<Vec<UniversalChange>> {
+        let script = {
+            let mut st = self.state.lock().expect("scripted transformer lock");
+            st.transform_calls += 1;
+            st.started_order.push(batch_id);
+            st.by_batch_id
+                .get(&batch_id)
+                .cloned()
+                .unwrap_or_default()
+        };
+        if !script.delay.is_zero() {
+            tokio::time::sleep(script.delay).await;
+        }
+        if let Some(msg) = script.fail_with {
+            self.state
+                .lock()
+                .expect("scripted transformer lock")
+                .completed_order
+                .push(batch_id);
+            return Err(anyhow!(msg));
+        }
+        let out = self.inner.apply_changes(changes)?;
+        self.state
+            .lock()
+            .expect("scripted transformer lock")
+            .completed_order
+            .push(batch_id);
+        Ok(out)
+    }
+
+    async fn transform_rows(
+        &self,
+        batch_id: u64,
+        rows: Vec<UniversalRow>,
+    ) -> Result<Vec<UniversalRow>> {
+        let script = {
+            let mut st = self.state.lock().expect("scripted transformer lock");
+            st.transform_calls += 1;
+            st.started_order.push(batch_id);
+            st.by_batch_id
+                .get(&batch_id)
+                .cloned()
+                .unwrap_or_default()
+        };
+        if !script.delay.is_zero() {
+            tokio::time::sleep(script.delay).await;
+        }
+        if let Some(msg) = script.fail_with {
+            self.state
+                .lock()
+                .expect("scripted transformer lock")
+                .completed_order
+                .push(batch_id);
+            return Err(anyhow!(msg));
+        }
+        let out = self.inner.apply_rows(rows)?;
+        self.state
+            .lock()
+            .expect("scripted transformer lock")
+            .completed_order
+            .push(batch_id);
+        Ok(out)
+    }
+}
+
+/// In-place transform that succeeds/fails/delays by call index (sync path).
+///
+/// Prefer [`ScriptedTransformer`] for W≥2 out-of-order async scenarios.
+#[derive(Debug, Clone)]
+pub struct ScriptedInPlace {
+    /// If the call index (0-based) is in this set, fail.
+    pub fail_on_calls: Vec<usize>,
+    calls: Arc<Mutex<usize>>,
+}
+
+impl ScriptedInPlace {
+    /// Create a scripted in-place transform.
+    pub fn new(fail_on_calls: Vec<usize>) -> Self {
+        Self {
+            fail_on_calls,
+            calls: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    /// Number of transform invocations so far.
+    pub fn call_count(&self) -> usize {
+        *self.calls.lock().expect("scripted inplace lock")
+    }
+}
+
+impl crate::InPlaceTransform for ScriptedInPlace {
+    fn transform_row(&self, _row: &mut UniversalRow) -> Result<()> {
+        let mut c = self.calls.lock().expect("scripted inplace lock");
+        let idx = *c;
+        *c += 1;
+        if self.fail_on_calls.contains(&idx) {
+            return Err(anyhow!("ScriptedInPlace fail on call {idx}"));
+        }
+        Ok(())
+    }
+
+    fn transform_change(&self, _change: &mut UniversalChange) -> Result<()> {
+        let mut c = self.calls.lock().expect("scripted inplace lock");
+        let idx = *c;
+        *c += 1;
+        if self.fail_on_calls.contains(&idx) {
+            return Err(anyhow!("ScriptedInPlace fail on call {idx}"));
+        }
+        Ok(())
+    }
+}
+
+/// Predetermined change feed with recorded commits.
+#[derive(Debug)]
+pub struct ScriptedChangeFeed<P> {
+    remaining: VecDeque<PositionedChange<P>>,
+    /// Recorded `commit` positions in order.
+    pub commits: Vec<P>,
+    /// When true, [`ChangeFeed::is_finished`] is true once `remaining` is empty.
+    finished_when_empty: bool,
+}
+
+impl<P> ScriptedChangeFeed<P> {
+    /// Create a feed from an ordered list of positioned changes.
+    pub fn new(changes: Vec<PositionedChange<P>>) -> Self {
+        Self {
+            remaining: changes.into(),
+            commits: Vec::new(),
+            finished_when_empty: true,
+        }
+    }
+
+    /// Resume a feed from uncommitted changes (crash/replay helper).
+    pub fn from_remaining(changes: Vec<PositionedChange<P>>) -> Self {
+        Self::new(changes)
+    }
+
+    /// Number of events still to yield.
+    pub fn remaining_len(&self) -> usize {
+        self.remaining.len()
+    }
+
+    /// Last committed position, if any.
+    pub fn last_commit(&self) -> Option<&P> {
+        self.commits.last()
+    }
+}
+
+#[async_trait]
+impl<P> ChangeFeed for ScriptedChangeFeed<P>
+where
+    P: Clone + Send + Sync + 'static,
+{
+    type Position = P;
+
+    async fn poll_changes(&mut self) -> Result<Vec<PositionedChange<P>>> {
+        match self.remaining.pop_front() {
+            Some(pc) => Ok(vec![pc]),
+            None => Ok(vec![]),
+        }
+    }
+
+    async fn commit(&mut self, position: P) -> Result<()> {
+        self.commits.push(position);
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished_when_empty && self.remaining.is_empty()
+    }
+}
+
+/// Sink failure script.
+#[derive(Debug, Clone)]
+pub enum SinkFailWhen {
+    /// Fail on the Nth `apply_universal_change` call (0-based).
+    ApplyIndex(usize),
+    /// Fail when the change id (as display) matches.
+    ChangeId(String),
+}
+
+#[derive(Default)]
+struct RecordingSinkState {
+    applied: Vec<UniversalChange>,
+    rows_written: Vec<Vec<UniversalRow>>,
+    apply_count: usize,
+    fail_when: Vec<SinkFailWhen>,
+    /// If true, fail only once per scripted condition then succeed on retry.
+    fail_once: bool,
+    fired: Vec<bool>,
+}
+
+/// Recording [`SurrealSink`] with optional scripted failures.
+#[derive(Clone, Default)]
+pub struct RecordingSink {
+    state: Arc<Mutex<RecordingSinkState>>,
+}
+
+impl RecordingSink {
+    /// Empty recording sink (always succeeds).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fail on the given conditions (checked in order against each apply).
+    pub fn fail_when(self, conditions: Vec<SinkFailWhen>) -> Self {
+        let n = conditions.len();
+        let mut st = self.state.lock().expect("recording sink lock");
+        st.fail_when = conditions;
+        st.fired = vec![false; n];
+        drop(st);
+        self
+    }
+
+    /// Each fail condition fires at most once (supports retry/replay tests).
+    pub fn fail_once(self) -> Self {
+        self.state.lock().expect("recording sink lock").fail_once = true;
+        self
+    }
+
+    /// Applied changes in sink order.
+    pub fn applied(&self) -> Vec<UniversalChange> {
+        self.state
+            .lock()
+            .expect("recording sink lock")
+            .applied
+            .clone()
+    }
+
+    /// Ids of applied changes (Debug of `UniversalValue`).
+    pub fn applied_ids(&self) -> Vec<String> {
+        self.applied()
+            .iter()
+            .map(|c| format!("{:?}", c.id))
+            .collect()
+    }
+
+    /// Row batches passed to `write_universal_rows`.
+    pub fn rows_written(&self) -> Vec<Vec<UniversalRow>> {
+        self.state
+            .lock()
+            .expect("recording sink lock")
+            .rows_written
+            .clone()
+    }
+
+    /// Number of `apply_universal_change` attempts (including failures).
+    pub fn apply_attempts(&self) -> usize {
+        self.state.lock().expect("recording sink lock").apply_count
+    }
+}
+
+fn id_matches(change: &UniversalChange, want: &str) -> bool {
+    format!("{:?}", change.id) == want || change_id_display(change) == want
+}
+
+fn change_id_display(change: &UniversalChange) -> String {
+    match &change.id {
+        sync_core::UniversalValue::Int64(n) => n.to_string(),
+        sync_core::UniversalValue::Int32(n) => n.to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+#[async_trait]
+impl SurrealSink for RecordingSink {
+    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> Result<()> {
+        self.state
+            .lock()
+            .expect("recording sink lock")
+            .rows_written
+            .push(rows.to_vec());
+        Ok(())
+    }
+
+    async fn write_universal_relations(&self, _relations: &[UniversalRelation]) -> Result<()> {
+        Ok(())
+    }
+
+    async fn apply_universal_change(&self, change: &UniversalChange) -> Result<()> {
+        let mut st = self.state.lock().expect("recording sink lock");
+        let idx = st.apply_count;
+        st.apply_count += 1;
+
+        for (i, cond) in st.fail_when.iter().enumerate() {
+            let matches = match cond {
+                SinkFailWhen::ApplyIndex(n) => idx == *n,
+                SinkFailWhen::ChangeId(id) => id_matches(change, id),
+            };
+            if matches {
+                if st.fail_once && st.fired[i] {
+                    continue;
+                }
+                st.fired[i] = true;
+                return Err(anyhow!("RecordingSink scripted fail on apply index {idx}"));
+            }
+        }
+
+        st.applied.push(change.clone());
+        Ok(())
+    }
+
+    async fn apply_universal_relation_change(
+        &self,
+        _change: &UniversalRelationChange,
+    ) -> Result<()> {
+        Ok(())
+    }
+}

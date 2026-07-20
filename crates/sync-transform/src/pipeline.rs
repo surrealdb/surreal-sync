@@ -9,7 +9,7 @@ use sync_core::{UniversalChange, UniversalRow};
 ///
 /// Not constructible from config yet; present so [`Stage`] and [`Pipeline`] can
 /// grow an `External` variant without reshaping the Phase 1 API.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ExternalTransform {
     _private: (),
 }
@@ -22,6 +22,7 @@ impl ExternalTransform {
 }
 
 /// A single pipeline stage.
+#[derive(Clone)]
 pub enum Stage {
     /// In-process mutate-only transform.
     InPlace(Arc<dyn InPlaceTransform>),
@@ -56,7 +57,7 @@ impl std::fmt::Debug for Stage {
 /// The ChangeFeed / `write_rows` apply path must gate on
 /// [`is_identity`](Self::is_identity) (not merely “stages happen to be
 /// no-ops”) for the true zero-dispatch hot path.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Pipeline {
     stages: Vec<Stage>,
 }

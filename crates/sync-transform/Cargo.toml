@@ -5,9 +5,26 @@ edition = "2021"
 description = "First-class transform pipeline framework for surreal-sync"
 authors = ["surreal-sync contributors"]
 
+[features]
+default = []
+# Shared harness doubles for framework tests and (later) source crates.
+test-support = []
+
 [dependencies]
 # Universal source/target types
 sync-core = { path = "../sync-core" }
+# Sink abstraction for apply / write_rows
+surreal-sink = { path = "../surreal-sink" }
 
 # Error handling
 anyhow = "1.0"
+
+# Async
+async-trait = "0.1"
+tokio = { version = "1.49", features = ["macros", "rt", "sync", "time"] }
+
+# Logging (skip policy, diagnostics)
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1.49", features = ["macros", "rt-multi-thread", "sync", "time"] }

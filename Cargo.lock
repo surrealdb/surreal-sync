@@ -8575,7 +8575,11 @@ name = "sync-transform"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "surreal-sink",
  "sync-core",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

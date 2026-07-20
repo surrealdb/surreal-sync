@@ -7,9 +7,10 @@ use sync_core::{UniversalChange, UniversalRow};
 
 /// Batch of `Arc`-shared items with copy-on-write mutation via [`Arc::make_mut`].
 ///
-/// Prefer owned `Vec` + [`InPlaceTransform::transform_*_inplace`] when sharing is
-/// not required. Use [`CowBatch`] only when the same items may be shared across
-/// holders and mutation must not affect other owners.
+/// Prefer owned `Vec` + [`InPlaceTransform::transform_rows_inplace`] /
+/// [`InPlaceTransform::transform_changes_inplace`] when sharing is not required.
+/// Use [`CowBatch`] only when the same items may be shared across holders and
+/// mutation must not affect other owners.
 ///
 /// # Cost of `apply_inplace`
 ///
