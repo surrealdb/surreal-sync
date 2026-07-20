@@ -10,9 +10,19 @@ use sync_transform::{ApplyOpts, Pipeline};
 
 /// Load `--transforms-config` into a [`Pipeline`] + [`ApplyOpts`].
 ///
-/// Missing path → identity pipeline with `batch_size = 1` (skips transform
-/// stage dispatch; matches pre-transform apply cadence). Bad TOML or
-/// unresolvable worker argv fails fast before sync starts.
+/// **Omit flag vs empty / passthrough file — different buffering cadence:**
+///
+/// | CLI input | Pipeline | [`ApplyOpts`] |
+/// |-----------|----------|---------------|
+/// | Flag omitted (`None`) | Identity (no stage dispatch) | [`ApplyOpts::identity()`] (`batch_size = 1`) |
+/// | Empty / passthrough-only TOML | Identity stages | [`ApplyOpts::default()`] (`batch_size = 1000`) |
+///
+/// Both yield an identity pipeline, but omit uses per-event apply (`batch_size = 1`)
+/// while an empty/passthrough config keeps config defaults (`batch_size = 1000`).
+/// That changes buffering cadence even when no transform stages run.
+///
+/// Bad TOML or unresolvable worker argv fails fast before sync starts (worker
+/// spawn / argv fail-fast is also covered in `sync-transform` config tests).
 pub fn load_transforms_from_args(
     transforms_config: Option<&Path>,
 ) -> anyhow::Result<(Pipeline, ApplyOpts)> {
@@ -55,8 +65,7 @@ mod tests {
     fn missing_path_returns_identity() {
         let (pipeline, opts) = load_transforms_from_args(None).expect("identity load");
         assert!(pipeline.is_identity());
-        assert_eq!(opts.batch_size, ApplyOpts::identity().batch_size);
-        assert_eq!(opts.max_in_flight, ApplyOpts::identity().max_in_flight);
+        assert_eq!(opts, ApplyOpts::identity());
     }
 
     #[test]
@@ -73,14 +82,17 @@ mod tests {
     }
 
     #[test]
-    fn empty_toml_is_identity_pipeline() {
+    fn empty_toml_is_identity_pipeline_with_default_opts() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("empty.toml");
         std::fs::write(&path, "transforms = []\n").expect("write");
-        let (pipeline, _opts) = load_transforms_from_args(Some(&path)).expect("load");
-        // Empty list collapses to identity stages; ApplyOpts still come from the
-        // loaded config defaults (not ApplyOpts::identity()'s batch_size = 1).
+        let (pipeline, opts) = load_transforms_from_args(Some(&path)).expect("load");
+        // Empty list → identity stages, but ApplyOpts come from config defaults
+        // (batch_size 1000), not ApplyOpts::identity() (batch_size 1).
         assert!(pipeline.is_identity());
+        assert_eq!(opts.batch_size, ApplyOpts::default().batch_size);
+        assert_ne!(opts.batch_size, ApplyOpts::identity().batch_size);
+        assert_eq!(opts, ApplyOpts::default());
     }
 
     #[test]
@@ -88,8 +100,33 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("bad.toml");
         let mut f = std::fs::File::create(&path).expect("create");
-        write!(f, "this is not [[transforms]] toml {{{{\n").expect("write");
+        writeln!(f, "this is not [[transforms]] toml {{{{").expect("write");
         let err = load_transforms_from_args(Some(&path)).expect_err("bad TOML must fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("load --transforms-config"),
+            "expected load context in error, got: {msg}"
+        );
+    }
+
+    /// Thin wrapper check: bad persistent worker argv fails through the CLI
+    /// loader with the shared context string. Deeper spawn/resolvable coverage
+    /// lives in `sync-transform` config tests.
+    #[test]
+    fn bad_persistent_worker_fails_fast_with_load_context() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("bad-worker.toml");
+        std::fs::write(
+            &path,
+            r#"
+[[transforms]]
+type = "external"
+stdin.mode = "persistent"
+stdin.command = ["/nonexistent/surreal-sync-transform-worker-cli-xyz"]
+"#,
+        )
+        .expect("write");
+        let err = load_transforms_from_args(Some(&path)).expect_err("bad worker must fail");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("load --transforms-config"),

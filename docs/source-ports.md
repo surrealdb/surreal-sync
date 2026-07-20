@@ -8,11 +8,22 @@ Operator-facing transforms docs stay in [transforms.md](transforms.md).
 
 ## Shared CLI
 
-- [x] `load_transforms_from_args` in `src/from/transforms.rs` (identity when
-      `--transforms-config` is omitted; fail-fast on bad TOML / missing worker)
+- [x] `load_transforms_from_args` in `src/from/transforms.rs`
 - [x] `from mysql-binlog sync` uses the shared loader
 - [ ] Other `from *` sync commands take `--transforms-config` and call the
       shared loader when each source is ported (see below)
+
+**Omit flag vs empty / passthrough file** — both yield an identity pipeline,
+but `ApplyOpts` differ (buffering cadence):
+
+| CLI input | Pipeline | `ApplyOpts` |
+|-----------|----------|-------------|
+| `--transforms-config` omitted | Identity (no stage dispatch) | `ApplyOpts::identity()` (`batch_size = 1`) |
+| Empty / passthrough-only TOML | Identity stages | `ApplyOpts::default()` (`batch_size = 1000`) |
+
+Fail-fast on bad TOML / missing or unresolvable worker before sync starts
+(CLI loader wraps with `load --transforms-config` context; deeper worker
+spawn coverage is in `sync-transform` config tests).
 
 ## Per-source status
 
