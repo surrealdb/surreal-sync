@@ -255,28 +255,64 @@ async fn interval_when_drained_persists_once_after_commits() {
 
 #[tokio::test]
 async fn interval_when_drained_defers_until_window_empty() {
-    // W=2: both items enter the window before either sinks. With a long interval,
-    // commits happen but persist waits for drain + interval (force on finish flush).
+    // W=2 + slow transforms: both batches stay in-flight before either sinks.
+    // Long interval ⇒ no mid-window persist; after both commit the window drains
+    // and IntervalWhenDrained persists the sunk watermark promptly (coalesced
+    // pending was 20). Force-flush on finish is a no-op if already persisted.
+    use crate::test_support::{BatchScript, ScriptedTransformer};
+    use std::sync::Arc;
+
     let mut driver = ScriptedSourceDriver::new(vec![
         PositionedEvent::change(change(1), 10u64),
         PositionedEvent::change(change(2), 20u64),
     ])
     .interval_when_drained(Duration::from_secs(3600));
-    // Yield both items in one poll so they fill W=2 together.
     driver.finished_when_empty = true;
 
     let sink = RecordingSink::new();
-    let pipeline = Pipeline::new();
+    let transformer = Arc::new(
+        ScriptedTransformer::new(Pipeline::new())
+            .on_batch(1, BatchScript::succeed_after(Duration::from_millis(40)))
+            .on_batch(2, BatchScript::succeed_after(Duration::from_millis(40))),
+    );
     let apply_opts = ApplyOpts::default()
         .with_max_in_flight(2)
         .with_batch_size(1)
         .with_batch_max_wait(Duration::from_millis(20))
         .with_timeout(Duration::from_secs(5));
 
-    // Override poll to return both at once for this test via remaining drain:
-    // ScriptedSourceDriver yields one per poll — use two polls with W=2 so both
-    // can be in-flight; persist should still only happen on finish flush (interval
-    // not elapsed), coalescing to the last sink-safe position.
+    crate::run_source_runtime_with(
+        &mut driver,
+        &sink,
+        transformer,
+        &apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(driver.commits, vec![10, 20]);
+    assert_eq!(
+        driver.persisted,
+        vec![20],
+        "IntervalWhenDrained must not persist mid-window; only the last sunk watermark after drain"
+    );
+}
+
+#[tokio::test]
+async fn interval_when_drained_persists_sunk_promptly_when_already_drained() {
+    // Identity / W=1: each commit leaves the window empty → persist promptly
+    // (last-sunk-on-sink cadence), even with a long interval.
+    let mut driver = ScriptedSourceDriver::new(vec![
+        PositionedEvent::change(change(1), 10u64),
+        PositionedEvent::change(change(2), 20u64),
+    ])
+    .interval_when_drained(Duration::from_secs(3600));
+
+    let sink = RecordingSink::new();
+    let pipeline = Pipeline::new();
+    let apply_opts = opts();
+
     run_source_runtime(
         &mut driver,
         &sink,
@@ -288,11 +324,10 @@ async fn interval_when_drained_defers_until_window_empty() {
     .unwrap();
 
     assert_eq!(driver.commits, vec![10, 20]);
-    // Force-persist on Finished flush: only the latest pending position.
     assert_eq!(
         driver.persisted,
-        vec![20],
-        "IntervalWhenDrained must coalesce to last sink-safe position on finish"
+        vec![10, 20],
+        "drained commits must persist sunk watermarks without waiting for interval"
     );
 }
 
@@ -379,4 +414,61 @@ async fn adhoc_snapshot_receives_apply_helpers_and_can_write() {
     assert_eq!(sink.applied().len(), 1);
     assert_eq!(sink.rows_written().len(), 1);
     assert_eq!(sink.rows_written()[0][0].id, UniversalValue::Int64(99));
+}
+
+#[tokio::test]
+async fn interval_when_drained_persists_filtered_read_progress() {
+    // No work items (nothing to commit) but driver reports read progress — e.g.
+    // filtered-only catch-up. IntervalWhenDrained must still persist when drained.
+    let mut driver = ScriptedSourceDriver::new(Vec::<PositionedEvent<u64>>::new())
+        .interval_when_drained(Duration::ZERO)
+        .with_read_progress(99u64)
+        .cancel_after_polls(3);
+    driver.finished_when_empty = false;
+
+    let sink = RecordingSink::new();
+    let pipeline = Pipeline::new();
+    let apply_opts = opts();
+
+    run_source_runtime(
+        &mut driver,
+        &sink,
+        &pipeline,
+        &apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await
+    .unwrap();
+
+    assert!(driver.commits.is_empty(), "filtered-only path must not commit");
+    assert!(
+        driver.persisted.contains(&99),
+        "drained IntervalWhenDrained must persist read_progress; got {:?}",
+        driver.persisted
+    );
+}
+
+#[tokio::test]
+async fn note_sunk_events_counts_after_sink_success() {
+    let mut driver = ScriptedSourceDriver::new(vec![
+        PositionedEvent::change(change(1), 10u64),
+        PositionedEvent::change(change(2), 20u64),
+    ]);
+
+    let sink = RecordingSink::new();
+    let pipeline = Pipeline::new();
+    let apply_opts = opts();
+
+    run_source_runtime(
+        &mut driver,
+        &sink,
+        &pipeline,
+        &apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(driver.sunk_events, 2);
+    assert_eq!(driver.commits, vec![10, 20]);
 }

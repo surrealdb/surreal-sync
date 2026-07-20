@@ -622,6 +622,9 @@ where
             match batch.result {
                 Ok(events) => match self.apply_sink_events(&events).await {
                     Ok(()) => {
+                        let sunk = events.len() as u64;
+                        self.sunk_since_take = self.sunk_since_take.saturating_add(sunk);
+                        driver.note_sunk_events(sunk);
                         driver
                             .commit(batch.last_position.clone())
                             .await
@@ -659,6 +662,12 @@ where
             CheckpointPolicy::CommitOnly => {}
             CheckpointPolicy::IntervalWhenDrained { .. } => {
                 self.pending_checkpoint = Some(position);
+                // Persist sunk watermarks promptly once the window is empty
+                // (matches pre-SourceDriver last-sunk-on-sink cadence). Interval
+                // still gates filtered-only read_progress persists.
+                if self.is_fully_drained() {
+                    self.flush_pending_checkpoint(driver).await?;
+                }
             }
         }
         Ok(())
@@ -671,16 +680,29 @@ where
         let CheckpointPolicy::IntervalWhenDrained { interval } = driver.checkpoint_policy() else {
             return Ok(());
         };
-        if self.pending_checkpoint.is_none() {
-            return Ok(());
-        }
         if !self.is_fully_drained() {
             return Ok(());
         }
         if self.last_checkpoint_persist.elapsed() < interval {
             return Ok(());
         }
-        self.flush_pending_checkpoint(driver).await
+        if self.pending_checkpoint.is_some() {
+            return self.flush_pending_checkpoint(driver).await;
+        }
+        // No commit armed a pending watermark (filtered-only / idle catch-up).
+        // Ask the driver for a drained-safe read position to persist.
+        if let Some(position) = driver
+            .read_progress_for_persist()
+            .await
+            .context("read_progress_for_persist")?
+        {
+            driver
+                .persist_checkpoint(position)
+                .await
+                .context("persist_checkpoint")?;
+            self.last_checkpoint_persist = Instant::now();
+        }
+        Ok(())
     }
 
     async fn flush_pending_checkpoint(

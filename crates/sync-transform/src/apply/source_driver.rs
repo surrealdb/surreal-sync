@@ -50,8 +50,10 @@ pub enum StopReason {
 
 /// When to call [`SourceDriver::persist_checkpoint`].
 ///
-/// Persistence is always **sink-safe only**: the runtime never passes a position
-/// that has not been successfully sunk (and committed via [`SourceDriver::commit`]).
+/// Persistence is always **sink-safe only**: the runtime never asks a driver to
+/// persist a position past unsunk transform/apply work. Drivers that map the
+/// persist argument to a read-ahead cursor must only do so when the apply window
+/// is drained (see [`IntervalWhenDrained`](Self::IntervalWhenDrained)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CheckpointPolicy {
     /// After each successful sink + `commit` watermark advance, also call
@@ -60,15 +62,24 @@ pub enum CheckpointPolicy {
     PersistAfterCommit,
     /// Do not call `persist_checkpoint` (driver folds durability into `commit`).
     CommitOnly,
-    /// Coalesce sink-safe positions and call `persist_checkpoint` only when the
-    /// apply window is **fully drained** (no buffer / in-flight / completed-waiting)
-    /// **and** at least `interval` has elapsed since the last persist.
+    /// Persist sink-safe positions when the apply window is **fully drained**
+    /// (no buffer / in-flight / completed-waiting):
     ///
-    /// `interval = Duration::ZERO` persists whenever the window becomes drained
+    /// - After a `commit`, if the window is already drained, persist that
+    ///   sink-safe watermark promptly (same durability cadence as persisting
+    ///   last-sunk on sink success).
+    /// - Otherwise arm a pending watermark and flush once the window drains
+    ///   and at least `interval` has elapsed since the last persist.
+    /// - When drained with **no** pending commit (filtered-only / idle read
+    ///   progress), call [`SourceDriver::read_progress_for_persist`] on the
+    ///   same interval so drivers can advance a store cursor through noise
+    ///   without reintroducing unsunk read-ahead.
+    ///
+    /// `interval = Duration::ZERO` persists whenever the window is drained
     /// (still never advances past unsunk work). On stop flush, any pending
     /// sink-safe position is force-persisted.
     IntervalWhenDrained {
-        /// Minimum time between `persist_checkpoint` calls.
+        /// Minimum time between deferred / filtered-only `persist_checkpoint` calls.
         interval: Duration,
     },
 }
@@ -222,6 +233,21 @@ pub trait SourceDriver: Send {
     async fn persist_checkpoint(&mut self, _position: Self::Position) -> Result<()> {
         Ok(())
     }
+
+    /// Optional sink-safe position to persist when
+    /// [`CheckpointPolicy::IntervalWhenDrained`] finds the apply window empty
+    /// but nothing was committed since the last persist (e.g. filtered-only
+    /// binlog traffic that advanced the read cursor with no work items).
+    ///
+    /// The runtime only consults this while fully drained, so returning the
+    /// current read position is safe. Default: `None` (no filtered-only persist).
+    async fn read_progress_for_persist(&mut self) -> Result<Option<Self::Position>> {
+        Ok(None)
+    }
+
+    /// Notify the driver that `count` events were successfully sunk (before
+    /// [`commit`](Self::commit)). Default: no-op.
+    fn note_sunk_events(&mut self, _count: u64) {}
 }
 
 /// Adapter: any [`ChangeFeed`] is a [`SourceDriver`] with no-op control hooks.

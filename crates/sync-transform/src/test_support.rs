@@ -817,12 +817,16 @@ pub struct ScriptedSourceDriver<P> {
     pub stop: Option<crate::StopReason>,
     /// Checkpoint policy.
     pub policy: crate::CheckpointPolicy,
+    /// Optional position returned from `read_progress_for_persist`.
+    pub read_progress: Option<P>,
     /// When true, `is_finished` once remaining is empty.
     pub finished_when_empty: bool,
     /// How many times `poll_work` was called.
     pub poll_count: u64,
     /// After this many polls, set `stop` to Cancelled (0 = never).
     pub cancel_after_polls: u64,
+    /// Sum of counts passed to `note_sunk_events`.
+    pub sunk_events: u64,
 }
 
 impl<P> ScriptedSourceDriver<P> {
@@ -837,9 +841,11 @@ impl<P> ScriptedSourceDriver<P> {
             adhoc_snapshots: Vec::new(),
             stop: None,
             policy: crate::CheckpointPolicy::PersistAfterCommit,
+            read_progress: None,
             finished_when_empty: true,
             poll_count: 0,
             cancel_after_polls: 0,
+            sunk_events: 0,
         }
     }
 
@@ -864,6 +870,12 @@ impl<P> ScriptedSourceDriver<P> {
     /// Use IntervalWhenDrained checkpoint policy.
     pub fn interval_when_drained(mut self, interval: std::time::Duration) -> Self {
         self.policy = crate::CheckpointPolicy::IntervalWhenDrained { interval };
+        self
+    }
+
+    /// Provide a filtered/idle read-progress position for IntervalWhenDrained.
+    pub fn with_read_progress(mut self, position: P) -> Self {
+        self.read_progress = Some(position);
         self
     }
 }
@@ -928,5 +940,13 @@ where
     async fn persist_checkpoint(&mut self, position: Self::Position) -> Result<()> {
         self.persisted.push(position);
         Ok(())
+    }
+
+    async fn read_progress_for_persist(&mut self) -> Result<Option<Self::Position>> {
+        Ok(self.read_progress.clone())
+    }
+
+    fn note_sunk_events(&mut self, count: u64) {
+        self.sunk_events = self.sunk_events.saturating_add(count);
     }
 }
