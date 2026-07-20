@@ -325,8 +325,10 @@ where
         };
 
         if events.is_empty() {
-            // Idle: flush a partial transform batch after batch_max_wait, else sleep.
-            if apply_ctx.buffer_len() > 0 {
+            // Idle: flush unsunk transform/apply work after batch_max_wait, else sleep.
+            // Gate on the full unsunk set (buffer / in-flight / completed-waiting), not
+            // only buffer_len — same predicate as interval checkpoint emit.
+            if apply_has_unsunk_work(&apply_ctx) {
                 tokio::time::sleep(apply_opts.batch_max_wait).await;
                 flush_apply_ctx(
                     &mut apply_ctx,
@@ -529,18 +531,20 @@ fn store_checkpoint_to_emit(
 
 /// CatchUpProgress position for ad-hoc table coverage merges.
 ///
-/// Never persists read-ahead `current` while apply still has unsunk work.
-/// Falls back to the existing progress position (table coverage only) when
-/// there is unsunk work and no `last_sunk` yet.
+/// Never persists read-ahead `current` while apply still has unsunk work —
+/// same policy as the interval path (`store_checkpoint_to_emit`):
+/// - unsunk + `last_sunk` → use `last_sunk`
+/// - unsunk + no `last_sunk` + existing → keep existing position (coverage only)
+/// - unsunk + no `last_sunk` + no existing → `None` (skip write; do not invent `current`)
+/// - fully drained → `current` is safe
 fn adhoc_catch_up_checkpoint(
     last_sunk: Option<&BinlogCheckpoint>,
     current: &BinlogCheckpoint,
     has_unsunk_work: bool,
     existing: Option<&CatchUpProgress>,
-) -> BinlogCheckpoint {
+) -> Option<BinlogCheckpoint> {
     store_checkpoint_to_emit(last_sunk, current, has_unsunk_work)
         .or_else(|| existing.map(|p| p.position.clone()))
-        .unwrap_or_else(|| current.clone())
 }
 
 async fn emit_store_checkpoint<S, T, St, P>(
@@ -680,20 +684,21 @@ where
             // current_position while ApplyContext still has unsunk work.
             let current = wm.current_checkpoint()?;
             let existing = read_catch_up_progress(manager).await?;
-            let checkpoint = adhoc_catch_up_checkpoint(
+            if let Some(checkpoint) = adhoc_catch_up_checkpoint(
                 last_sunk.as_ref(),
                 &current,
                 apply_has_unsunk_work(apply_ctx),
                 existing.as_ref(),
-            );
-            write_catch_up_for_tables(
-                manager,
-                signal.tables.clone(),
-                CoverageKind::AdHoc,
-                &checkpoint,
-                existing,
-            )
-            .await?;
+            ) {
+                write_catch_up_for_tables(
+                    manager,
+                    signal.tables.clone(),
+                    CoverageKind::AdHoc,
+                    &checkpoint,
+                    existing,
+                )
+                .await?;
+            }
         }
     }
 
@@ -801,15 +806,22 @@ mod tests {
         let existing = CatchUpProgress::new(ckpt(50));
 
         // Unsung work + last_sunk → never write read-ahead current.
-        let cp = adhoc_catch_up_checkpoint(Some(&sunk), &current, true, Some(&existing));
+        let cp = adhoc_catch_up_checkpoint(Some(&sunk), &current, true, Some(&existing)).unwrap();
         assert_eq!(cp.position, sunk.position);
 
         // Unsung work, no last_sunk → keep existing progress position (coverage only).
-        let cp = adhoc_catch_up_checkpoint(None, &current, true, Some(&existing));
+        let cp = adhoc_catch_up_checkpoint(None, &current, true, Some(&existing)).unwrap();
         assert_eq!(cp, existing.position);
 
+        // Unsung + no last_sunk + no existing → skip (never invent read-ahead current).
+        assert!(adhoc_catch_up_checkpoint(None, &current, true, None).is_none());
+
         // Fully drained → current is safe (same as interval path).
-        let cp = adhoc_catch_up_checkpoint(Some(&sunk), &current, false, Some(&existing));
+        let cp = adhoc_catch_up_checkpoint(Some(&sunk), &current, false, Some(&existing)).unwrap();
+        assert_eq!(cp.position, current.position);
+
+        // Fully drained, no existing → current is still safe.
+        let cp = adhoc_catch_up_checkpoint(None, &current, false, None).unwrap();
         assert_eq!(cp.position, current.position);
     }
 
