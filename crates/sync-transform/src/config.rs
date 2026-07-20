@@ -1,6 +1,6 @@
 //! TOML transform pipeline configuration.
 //!
-//! Empty / missing `[[transforms]]` yields an identity [`Pipeline`] (zero
+//! Empty / missing `[[transforms]]` yields an identity [`Pipeline`] (no stage
 //! dispatch via [`Pipeline::is_identity`]). A lone `type = "passthrough"` stage
 //! is collapsed to the same empty pipeline. Operators configure `external`
 //! stages only — do not list `passthrough` alongside them.

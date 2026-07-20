@@ -488,6 +488,26 @@ async fn apply_context_push_change_flush_watermarks() {
 }
 
 #[tokio::test]
+async fn apply_context_take_sunk_change_count_tracks_batch_size() {
+    let sink = RecordingSink::new();
+    let opts = ApplyOpts::identity().with_batch_size(2);
+    let pipeline = Pipeline::new();
+    let mut ctx = ApplyContext::new(&sink, Arc::new(pipeline), &opts);
+
+    assert_eq!(ctx.push_change(change(1), 10u64).await.unwrap(), None);
+    assert_eq!(ctx.take_sunk_change_count(), 0);
+
+    let wm = ctx.push_change(change(2), 20u64).await.unwrap();
+    assert_eq!(wm, Some(20));
+    assert_eq!(
+        ctx.take_sunk_change_count(),
+        2,
+        "one sunk batch of size 2 must count as 2 changes, not 1"
+    );
+    assert_eq!(ctx.take_sunk_change_count(), 0, "take resets the counter");
+}
+
+#[tokio::test]
 async fn apply_context_flush_partial_buffer_w2() {
     let transformer = ScriptedTransformer::new(Pipeline::new())
         .on_batch(1, BatchScript::succeed_after(Duration::from_millis(40)))

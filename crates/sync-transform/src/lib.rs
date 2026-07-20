@@ -12,8 +12,8 @@
 //! ApplyContext / run_change_feed / write_rows   ← ChangeFeed framework
 //! ```
 //!
-//! An empty [`Pipeline`] is identity: docs pass through with **zero** transform
-//! dispatch overhead. The apply framework gates on
+//! An empty [`Pipeline`] is identity: docs pass through with **no** transform
+//! stage dispatch. The apply framework gates on
 //! [`BatchTransformer::is_identity`] (for [`Pipeline`], equivalent to
 //! [`Pipeline::is_identity`] — only an empty stage list). A lone
 //! [`Passthrough`] stage is *not* identity.

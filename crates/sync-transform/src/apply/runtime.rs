@@ -235,6 +235,8 @@ pub struct ApplyContext<'a, S, T, P = ()> {
     epoch: u64,
     /// Set after [`FailurePolicy::Fail`]; context must not be reused.
     poisoned: bool,
+    /// Changes successfully sunk since the last [`Self::take_sunk_change_count`].
+    sunk_since_take: u64,
 }
 
 impl<'a, S, T, P> ApplyContext<'a, S, T, P>
@@ -259,6 +261,7 @@ where
             buffer_started: None,
             epoch: 0,
             poisoned: false,
+            sunk_since_take: 0,
         }
     }
 
@@ -277,6 +280,14 @@ where
     /// Number of batches currently transforming (JoinSet path only).
     pub fn in_flight_count(&self) -> usize {
         self.in_flight.len()
+    }
+
+    /// Take and reset the count of changes sunk since the previous take.
+    ///
+    /// Call after [`Self::push_change`] / [`Self::flush`] return `Some(position)`
+    /// to account for how many changes were applied (a batch may contain many).
+    pub fn take_sunk_change_count(&mut self) -> u64 {
+        std::mem::take(&mut self.sunk_since_take)
     }
 
     /// Number of transform results waiting for ordered sink apply.
@@ -402,7 +413,7 @@ where
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
 
-        // Zero-overhead identity: pure move into completed, no JoinSet/timeout.
+        // Identity fast path: pure move into completed, no JoinSet/timeout.
         if self.transformer.is_identity() {
             self.completed.insert(
                 seq,
@@ -536,6 +547,8 @@ where
             match batch.result {
                 Ok(changes) => match self.apply_sink(&changes).await {
                     Ok(()) => {
+                        self.sunk_since_take =
+                            self.sunk_since_take.saturating_add(changes.len() as u64);
                         last = Some(batch.last_position);
                         self.next_to_apply += 1;
                     }

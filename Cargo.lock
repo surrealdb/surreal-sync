@@ -7836,6 +7836,8 @@ dependencies = [
  "surreal-sink",
  "surreal-sync-interleaved-snapshot",
  "surreal-sync-mysql-trigger-source",
+ "surreal2-sink",
+ "surrealdb 2.6.5",
  "sync-core",
  "sync-transform",
  "tempfile",

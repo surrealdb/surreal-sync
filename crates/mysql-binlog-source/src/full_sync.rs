@@ -285,6 +285,7 @@ pub async fn get_primary_key_columns(
         .collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn migrate_table<S: SurrealSink>(
     conn: &mut mysql_async::Conn,
     surreal: &S,

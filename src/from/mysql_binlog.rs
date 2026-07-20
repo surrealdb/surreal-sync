@@ -102,14 +102,14 @@ fn binlog_sync_opts(batch_size: usize, dry_run: bool) -> SyncOpts {
 
 /// Load `--transforms-config` into a [`Pipeline`] + [`ApplyOpts`].
 ///
-/// Missing flag → identity pipeline with `batch_size = 1` (zero transform
-/// overhead; preserves per-event apply cadence). Bad TOML or unresolvable
+/// Missing flag → identity pipeline with `batch_size = 1` (skips transform
+/// stage dispatch; matches pre-transform apply cadence). Bad TOML or unresolvable
 /// worker argv fails fast before sync starts.
 fn load_binlog_transforms(args: &MySQLBinlogSyncArgs) -> anyhow::Result<(Pipeline, ApplyOpts)> {
     match &args.transforms_config {
         None => {
             tracing::info!(
-                "No --transforms-config; using identity transform pipeline (zero overhead)"
+                "No --transforms-config; using identity transform pipeline (no stage dispatch)"
             );
             Ok((Pipeline::new(), ApplyOpts::identity()))
         }
@@ -243,6 +243,7 @@ async fn resolve_mysql_database(
     current.ok_or_else(|| anyhow::anyhow!("No MySQL database selected; pass --database"))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn binlog_snapshot_full<S, St>(
     sink: &S,
     source_opts: &SourceOpts,

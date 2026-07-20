@@ -11,7 +11,7 @@ use chrono::{DateTime, Utc};
 use mysql_async::prelude::Queryable;
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::SnapshotTransforms;
-use sync_transform::{ApplyContext, ApplyOpts, ChangeFeed, Pipeline, PositionedChange};
+use sync_transform::{ApplyContext, ApplyOpts, Pipeline};
 use tracing::{debug, info};
 
 use crate::catch_up::{
@@ -132,8 +132,10 @@ where
 /// Uses [`ApplyContext`] (not [`sync_transform::run_change_feed`]) so the
 /// existing control loop can keep handling DDL, ad-hoc snapshot signals,
 /// deadlines, and cancellation between polls. Sink success still gates
-/// [`binlog_protocol::BinlogClient::commit`] / checkpoint persistence via
-/// [`BinlogCommitFeed`].
+/// [`binlog_protocol::BinlogClient::commit`] and CatchUpProgress persistence:
+/// store checkpoints advance only from the last successfully sunk position
+/// (never from read-ahead [`binlog_protocol::BinlogClient::current_position`]
+/// while transform batches remain buffered or in flight).
 pub async fn run_replication_tail_with_transforms<S, St>(
     surreal: &S,
     from_opts: SourceOpts,
@@ -201,6 +203,8 @@ where
 
     let mut table_maps: HashMap<u64, TableMapEvent> = HashMap::new();
     let mut total_changes = 0u64;
+    // Last position successfully sunk + committed (not merely read from binlog).
+    let mut last_sunk_checkpoint: Option<BinlogCheckpoint> = None;
     let mut last_persisted_checkpoint: Option<BinlogCheckpoint> = None;
     let mut last_checkpoint_emit = std::time::Instant::now();
 
@@ -214,6 +218,7 @@ where
                 &mut apply_ctx,
                 &mut client,
                 &mut total_changes,
+                &mut last_sunk_checkpoint,
                 checkpoint_manager,
                 &mut last_persisted_checkpoint,
                 true,
@@ -229,6 +234,7 @@ where
                     &mut apply_ctx,
                     &mut client,
                     &mut total_changes,
+                    &mut last_sunk_checkpoint,
                     checkpoint_manager,
                     &mut last_persisted_checkpoint,
                     true,
@@ -245,6 +251,7 @@ where
                     &mut apply_ctx,
                     &mut client,
                     &mut total_changes,
+                    &mut last_sunk_checkpoint,
                     checkpoint_manager,
                     &mut last_persisted_checkpoint,
                     true,
@@ -255,27 +262,32 @@ where
             }
         }
 
+        // Drain buffered transforms before any store checkpoint emit and before
+        // handing the client to ad-hoc snapshots. Persist only after flush so
+        // CatchUpProgress cannot advance past unsunk buffered batches.
+        flush_apply_ctx(
+            &mut apply_ctx,
+            &mut client,
+            &mut total_changes,
+            &mut last_sunk_checkpoint,
+            checkpoint_manager,
+            &mut last_persisted_checkpoint,
+            false,
+        )
+        .await?;
+
         if should_emit_checkpoint(checkpoint_manager.is_some(), &options, last_checkpoint_emit) {
-            persist_checkpoint(
+            emit_store_checkpoint(
                 checkpoint_manager,
                 &client,
+                &apply_ctx,
+                &last_sunk_checkpoint,
                 &mut last_persisted_checkpoint,
                 false,
             )
             .await?;
             last_checkpoint_emit = std::time::Instant::now();
         }
-
-        // Drain buffered transforms before handing the client to ad-hoc snapshots.
-        flush_apply_ctx(
-            &mut apply_ctx,
-            &mut client,
-            &mut total_changes,
-            checkpoint_manager,
-            &mut last_persisted_checkpoint,
-            false,
-        )
-        .await?;
 
         client = handle_snapshot_signals(
             surreal,
@@ -299,6 +311,7 @@ where
                     &mut apply_ctx,
                     &mut client,
                     &mut total_changes,
+                    &mut last_sunk_checkpoint,
                     checkpoint_manager,
                     &mut last_persisted_checkpoint,
                     true,
@@ -317,6 +330,7 @@ where
                     &mut apply_ctx,
                     &mut client,
                     &mut total_changes,
+                    &mut last_sunk_checkpoint,
                     checkpoint_manager,
                     &mut last_persisted_checkpoint,
                     false,
@@ -375,6 +389,7 @@ where
                                     &mut apply_ctx,
                                     &mut client,
                                     &mut total_changes,
+                                    &mut last_sunk_checkpoint,
                                     checkpoint_manager,
                                     &mut last_persisted_checkpoint,
                                     true,
@@ -417,11 +432,16 @@ where
 
                         // Transform → sink; commit binlog position only after sink OK.
                         if let Some(pos) = apply_ctx.push_change(universal, position).await? {
-                            commit_binlog_position(&mut client, pos);
-                            total_changes += 1;
-                            persist_checkpoint(
+                            note_sunk_position(
+                                &mut client,
+                                pos,
+                                &mut last_sunk_checkpoint,
+                            );
+                            total_changes = total_changes
+                                .saturating_add(apply_ctx.take_sunk_change_count());
+                            persist_checkpoint_at(
                                 checkpoint_manager,
-                                &client,
+                                last_sunk_checkpoint.as_ref(),
                                 &mut last_persisted_checkpoint,
                                 false,
                             )
@@ -443,6 +463,7 @@ where
         &mut apply_ctx,
         &mut client,
         &mut total_changes,
+        &mut last_sunk_checkpoint,
         checkpoint_manager,
         &mut last_persisted_checkpoint,
         true,
@@ -454,38 +475,68 @@ where
     Ok(())
 }
 
-/// Maps framework commit onto [`binlog_protocol::BinlogClient::commit`].
-///
-/// Implements [`ChangeFeed`] so the GTID/file commit contract is explicit;
-/// the replication loop drives [`ApplyContext`] and calls [`ChangeFeed::commit`]
-/// (via [`commit_binlog_position`]) only after sink success.
-pub struct BinlogCommitFeed<'a> {
-    pub client: &'a mut binlog_protocol::BinlogClient,
-}
-
-#[async_trait::async_trait]
-impl ChangeFeed for BinlogCommitFeed<'_> {
-    type Position = BinlogPosition;
-
-    async fn poll_changes(&mut self) -> Result<Vec<PositionedChange<Self::Position>>> {
-        // Outer control loop owns binlog reads (DDL / signals / cancel).
-        Ok(Vec::new())
-    }
-
-    async fn commit(&mut self, position: Self::Position) -> Result<()> {
-        self.client.commit(position);
-        Ok(())
-    }
-}
-
 fn commit_binlog_position(client: &mut binlog_protocol::BinlogClient, position: BinlogPosition) {
     client.commit(position);
+}
+
+fn note_sunk_position(
+    client: &mut binlog_protocol::BinlogClient,
+    position: BinlogPosition,
+    last_sunk: &mut Option<BinlogCheckpoint>,
+) {
+    commit_binlog_position(client, position.clone());
+    *last_sunk = Some(BinlogCheckpoint {
+        flavor: client.flavor(),
+        position,
+        timestamp: Utc::now(),
+    });
+}
+
+/// Position safe to write to CatchUpProgress.
+///
+/// While transform/apply still has buffered or in-flight work, never advance
+/// past `last_sunk` — `current` may already reflect read-ahead events that have
+/// not been sunk yet. When there is no unsunk work, `current` is safe (it may
+/// include filtered-only advances with nothing to apply).
+fn store_checkpoint_to_emit(
+    last_sunk: Option<&BinlogCheckpoint>,
+    current: &BinlogCheckpoint,
+    has_unsunk_work: bool,
+) -> Option<BinlogCheckpoint> {
+    if has_unsunk_work {
+        last_sunk.cloned()
+    } else {
+        Some(current.clone())
+    }
+}
+
+async fn emit_store_checkpoint<S, T, St, P>(
+    manager: Option<&SyncManager<St>>,
+    client: &binlog_protocol::BinlogClient,
+    apply_ctx: &ApplyContext<'_, S, T, P>,
+    last_sunk: &Option<BinlogCheckpoint>,
+    last_persisted: &mut Option<BinlogCheckpoint>,
+    force: bool,
+) -> Result<()>
+where
+    S: SurrealSink,
+    T: sync_transform::BatchTransformer + 'static,
+    St: CheckpointStore,
+    P: Clone + Send + Sync + 'static,
+{
+    let has_unsunk = apply_ctx.buffer_len() > 0 || apply_ctx.in_flight_count() > 0;
+    let current = crate::checkpoint::get_current_checkpoint(client)?;
+    let Some(cp) = store_checkpoint_to_emit(last_sunk.as_ref(), &current, has_unsunk) else {
+        return Ok(());
+    };
+    persist_checkpoint_at(manager, Some(&cp), last_persisted, force).await
 }
 
 async fn flush_apply_ctx<S, T, St>(
     apply_ctx: &mut ApplyContext<'_, S, T, BinlogPosition>,
     client: &mut binlog_protocol::BinlogClient,
     total_changes: &mut u64,
+    last_sunk: &mut Option<BinlogCheckpoint>,
     checkpoint_manager: Option<&SyncManager<St>>,
     last_persisted: &mut Option<BinlogCheckpoint>,
     force_persist: bool,
@@ -497,16 +548,38 @@ where
 {
     if apply_ctx.buffer_len() == 0 && apply_ctx.in_flight_count() == 0 {
         if force_persist {
-            persist_checkpoint(checkpoint_manager, client, last_persisted, true).await?;
+            emit_store_checkpoint(
+                checkpoint_manager,
+                client,
+                apply_ctx,
+                last_sunk,
+                last_persisted,
+                true,
+            )
+            .await?;
         }
         return Ok(());
     }
     if let Some(pos) = apply_ctx.flush().await? {
-        commit_binlog_position(client, pos);
-        *total_changes = total_changes.saturating_add(1);
-        persist_checkpoint(checkpoint_manager, client, last_persisted, force_persist).await?;
+        note_sunk_position(client, pos, last_sunk);
+        *total_changes = total_changes.saturating_add(apply_ctx.take_sunk_change_count());
+        persist_checkpoint_at(
+            checkpoint_manager,
+            last_sunk.as_ref(),
+            last_persisted,
+            force_persist,
+        )
+        .await?;
     } else if force_persist {
-        persist_checkpoint(checkpoint_manager, client, last_persisted, true).await?;
+        emit_store_checkpoint(
+            checkpoint_manager,
+            client,
+            apply_ctx,
+            last_sunk,
+            last_persisted,
+            true,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -615,16 +688,18 @@ fn should_emit_checkpoint(
         && last_emit.elapsed() >= options.checkpoint_interval
 }
 
-async fn persist_checkpoint<St: CheckpointStore>(
+async fn persist_checkpoint_at<St: CheckpointStore>(
     manager: Option<&SyncManager<St>>,
-    client: &binlog_protocol::BinlogClient,
+    checkpoint: Option<&BinlogCheckpoint>,
     last: &mut Option<BinlogCheckpoint>,
     force: bool,
 ) -> Result<()> {
     let Some(manager) = manager else {
         return Ok(());
     };
-    let checkpoint = crate::checkpoint::get_current_checkpoint(client)?;
+    let Some(checkpoint) = checkpoint else {
+        return Ok(());
+    };
     if !force
         && last
             .as_ref()
@@ -638,7 +713,7 @@ async fn persist_checkpoint<St: CheckpointStore>(
     manager
         .emit_checkpoint(&progress, SyncPhase::CatchUpProgress)
         .await?;
-    *last = Some(checkpoint);
+    *last = Some(checkpoint.clone());
     Ok(())
 }
 
@@ -646,6 +721,33 @@ async fn persist_checkpoint<St: CheckpointStore>(
 mod tests {
     use super::*;
     use crate::ddl::TableRename;
+    use crate::flavor::Flavor;
+    use binlog_protocol::BinlogPosition;
+
+    fn ckpt(pos: u64) -> BinlogCheckpoint {
+        BinlogCheckpoint {
+            flavor: Flavor::MySql,
+            position: BinlogPosition::file_pos("mysql-bin.000001", pos),
+            timestamp: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn store_checkpoint_refuses_to_advance_past_unsunk_buffer() {
+        let sunk = ckpt(100);
+        let current = ckpt(200);
+
+        // Buffered / in-flight: persist last sunk only — never current_position.
+        let emitted = store_checkpoint_to_emit(Some(&sunk), &current, true).unwrap();
+        assert_eq!(emitted.position, sunk.position);
+
+        // No prior sink while buffered: skip persist entirely.
+        assert!(store_checkpoint_to_emit(None, &current, true).is_none());
+
+        // Nothing unsunk: current is safe (may include filtered-only advances).
+        let emitted = store_checkpoint_to_emit(Some(&sunk), &current, false).unwrap();
+        assert_eq!(emitted.position, current.position);
+    }
 
     #[test]
     fn rename_updates_synced_table_filter() {
@@ -687,13 +789,5 @@ mod tests {
             }],
         );
         assert!(filter.is_none());
-    }
-
-    #[tokio::test]
-    async fn binlog_commit_feed_forwards_position() {
-        // Unit glue: ChangeFeed::commit maps to BinlogClient::commit without
-        // requiring a live MySQL (we only assert the trait wiring compiles and
-        // the helper is used). Full GTID mapping is covered by e2e.
-        let _ = std::any::type_name::<BinlogCommitFeed<'_>>();
     }
 }

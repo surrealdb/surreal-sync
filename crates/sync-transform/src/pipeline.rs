@@ -55,7 +55,7 @@ impl Pipeline {
         Self { stages: Vec::new() }
     }
 
-    /// Whether this pipeline has no stages (identity / zero dispatch overhead).
+    /// Whether this pipeline has no stages (identity / no stage dispatch).
     ///
     /// Only an empty stage list is identity. A pipeline that contains only
     /// [`crate::Passthrough`] still returns `false` here — see type-level docs.

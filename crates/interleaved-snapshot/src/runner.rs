@@ -35,8 +35,8 @@ impl Default for InterleavedSnapshotConfig {
 
 /// Transform pipeline + apply options for interleaved snapshot sink writes.
 ///
-/// Default is an identity pipeline with `batch_size = 1` (zero transform
-/// overhead; matches pre-transform behavior).
+/// Default is an identity pipeline with `batch_size = 1` (no transform stage
+/// dispatch; matches pre-transform behavior).
 #[derive(Debug, Clone)]
 pub struct SnapshotTransforms {
     pub pipeline: Pipeline,

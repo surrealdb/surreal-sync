@@ -31,7 +31,7 @@ pub use full_sync::{
 };
 pub use incremental_sync::{
     run_replication_tail, run_replication_tail_with_checkpoints,
-    run_replication_tail_with_transforms, BinlogCommitFeed, ReplicationTailOptions,
+    run_replication_tail_with_transforms, ReplicationTailOptions,
 };
 pub use signal::SIGNAL_TABLE;
 pub use watermark_source::{
