@@ -7648,6 +7648,7 @@ dependencies = [
  "surrealdb 2.6.5",
  "surrealdb 3.1.5",
  "sync-core",
+ "sync-transform",
  "tempfile",
  "tokio",
  "tokio-postgres",
@@ -8582,6 +8583,7 @@ dependencies = [
  "surreal-sink",
  "sync-core",
  "tokio",
+ "toml",
  "tracing",
 ]
 

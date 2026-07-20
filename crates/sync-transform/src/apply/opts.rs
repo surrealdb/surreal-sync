@@ -23,7 +23,7 @@ pub enum FailurePolicy {
 /// `max_in_flight` is only the **window size** (default 1). W=1 and W=16 share
 /// the same apply runtime: concurrent transforms, ordered sink + contiguous
 /// commit watermark.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyOpts {
     /// Maximum number of batches transforming concurrently (window size).
     /// Default: 1.

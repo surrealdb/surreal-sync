@@ -198,6 +198,34 @@ async fn write_rows_through_external_mutate() {
     }
 }
 
+#[tokio::test]
+async fn pipeline_from_config_spawns_external() {
+    let bin = env!("CARGO_BIN_EXE_sync-transform-fixture-worker");
+    let toml = format!(
+        r#"
+[[transforms]]
+type = "external"
+batch_size = 1
+stdin.mode = "persistent"
+stdin.command = [{bin:?}, "echo"]
+"#
+    );
+    let cfg = sync_transform::parse_transforms_toml(&toml).unwrap();
+    let opts = ApplyOpts::from_transforms_config(&cfg);
+    assert_eq!(opts.batch_size, 1);
+    let pipeline = Pipeline::from_config(&cfg).unwrap();
+    assert!(!pipeline.is_identity());
+    assert_eq!(pipeline.len(), 1);
+
+    let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 10)]);
+    let sink = RecordingSink::new();
+    run_change_feed(&mut feed, &sink, &pipeline, &opts)
+        .await
+        .unwrap();
+    assert_eq!(sink.applied().len(), 1);
+    assert_eq!(feed.commits, vec![10]);
+}
+
 // Silence unused when test-support feature shapes differ.
 #[allow(dead_code)]
 fn _arc_pipeline(p: Pipeline) -> Arc<Pipeline> {

@@ -13,6 +13,7 @@ use surreal_sync_mysql_binlog_source::{
     run_interleaved_snapshot_full_sync, run_replication_tail_with_checkpoints, BinlogCheckpoint,
     InterleavedFullSyncOptions, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
+use sync_transform::{ApplyOpts, Pipeline};
 use tokio_util::sync::CancellationToken;
 
 use super::{get_sdk_version, parse_duration_to_secs, SdkVersion};
@@ -95,6 +96,34 @@ fn binlog_sync_opts(batch_size: usize, dry_run: bool) -> SyncOpts {
     SyncOpts {
         batch_size,
         dry_run,
+    }
+}
+
+/// Load `--transforms-config` into a [`Pipeline`] + [`ApplyOpts`].
+///
+/// Missing flag → identity pipeline (zero transform overhead). Bad TOML or
+/// spawn failure fails fast before sync starts. Apply-path wiring is Phase 5;
+/// we keep the values alive for the sync duration (persistent workers stay up).
+fn load_binlog_transforms(args: &MySQLBinlogSyncArgs) -> anyhow::Result<(Pipeline, ApplyOpts)> {
+    match &args.transforms_config {
+        None => {
+            tracing::debug!("No --transforms-config; using identity transform pipeline");
+            Ok((Pipeline::new(), ApplyOpts::default()))
+        }
+        Some(path) => {
+            let (pipeline, opts) = sync_transform::load_pipeline_and_opts(path)
+                .with_context(|| format!("load --transforms-config {}", path.display()))?;
+            tracing::info!(
+                path = %path.display(),
+                identity = pipeline.is_identity(),
+                stages = pipeline.len(),
+                max_in_flight = opts.max_in_flight,
+                batch_size = opts.batch_size,
+                failure_policy = ?opts.failure_policy,
+                "Loaded transform pipeline from --transforms-config"
+            );
+            Ok((pipeline, opts))
+        }
     }
 }
 
@@ -252,6 +281,8 @@ where
 
 /// Run `from mysql-binlog sync`.
 pub async fn run_sync(args: MySQLBinlogSyncArgs) -> anyhow::Result<()> {
+    // Fail-fast on bad transforms config / worker spawn before connecting.
+    let (pipeline, apply_opts) = load_binlog_transforms(&args)?;
     let sdk_version = get_sdk_version(
         &args.surreal.surreal_endpoint,
         args.surreal.surreal_sdk_version.as_deref(),
@@ -259,12 +290,17 @@ pub async fn run_sync(args: MySQLBinlogSyncArgs) -> anyhow::Result<()> {
     .await?;
     let cancel = install_shutdown_token();
     match sdk_version {
-        SdkVersion::V2 => run_sync_v2(args, cancel).await,
-        SdkVersion::V3 => run_sync_v3(args, cancel).await,
+        SdkVersion::V2 => run_sync_v2(args, cancel, pipeline, apply_opts).await,
+        SdkVersion::V3 => run_sync_v3(args, cancel, pipeline, apply_opts).await,
     }
 }
 
-async fn run_sync_v2(args: MySQLBinlogSyncArgs, cancel: CancellationToken) -> anyhow::Result<()> {
+async fn run_sync_v2(
+    args: MySQLBinlogSyncArgs,
+    cancel: CancellationToken,
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
+) -> anyhow::Result<()> {
     tracing::info!("Starting MySQL binlog sync to SurrealDB (SDK v2)");
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
@@ -280,7 +316,7 @@ async fn run_sync_v2(args: MySQLBinlogSyncArgs, cancel: CancellationToken) -> an
     match (checkpoint_dir, checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(&dir));
-            binlog_orchestrate(&sink, args, cancel, Some(&manager)).await
+            binlog_orchestrate(&sink, args, cancel, Some(&manager), pipeline, apply_opts).await
         }
         (None, Some(table)) => {
             let checkpoint_surreal = surreal2_sink::surreal_connect(
@@ -291,10 +327,18 @@ async fn run_sync_v2(args: MySQLBinlogSyncArgs, cancel: CancellationToken) -> an
             .await?;
             let manager =
                 SyncManager::new(checkpoint::Surreal2Store::new(checkpoint_surreal, table));
-            binlog_orchestrate(&sink, args, cancel, Some(&manager)).await
+            binlog_orchestrate(&sink, args, cancel, Some(&manager), pipeline, apply_opts).await
         }
         (None, None) => {
-            binlog_orchestrate::<_, checkpoint::NullStore>(&sink, args, cancel, None).await
+            binlog_orchestrate::<_, checkpoint::NullStore>(
+                &sink,
+                args,
+                cancel,
+                None,
+                pipeline,
+                apply_opts,
+            )
+            .await
         }
         (Some(_), Some(_)) => {
             anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
@@ -302,7 +346,12 @@ async fn run_sync_v2(args: MySQLBinlogSyncArgs, cancel: CancellationToken) -> an
     }
 }
 
-async fn run_sync_v3(args: MySQLBinlogSyncArgs, cancel: CancellationToken) -> anyhow::Result<()> {
+async fn run_sync_v3(
+    args: MySQLBinlogSyncArgs,
+    cancel: CancellationToken,
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
+) -> anyhow::Result<()> {
     tracing::info!("Starting MySQL binlog sync to SurrealDB (SDK v3)");
     let surreal_opts = surreal3_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
@@ -318,14 +367,22 @@ async fn run_sync_v3(args: MySQLBinlogSyncArgs, cancel: CancellationToken) -> an
     match (checkpoint_dir, checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(&dir));
-            binlog_orchestrate(&sink, args, cancel, Some(&manager)).await
+            binlog_orchestrate(&sink, args, cancel, Some(&manager), pipeline, apply_opts).await
         }
         (None, Some(table)) => {
             let manager = SyncManager::new(checkpoint_surreal3::Surreal3Store::new(surreal, table));
-            binlog_orchestrate(&sink, args, cancel, Some(&manager)).await
+            binlog_orchestrate(&sink, args, cancel, Some(&manager), pipeline, apply_opts).await
         }
         (None, None) => {
-            binlog_orchestrate::<_, checkpoint::NullStore>(&sink, args, cancel, None).await
+            binlog_orchestrate::<_, checkpoint::NullStore>(
+                &sink,
+                args,
+                cancel,
+                None,
+                pipeline,
+                apply_opts,
+            )
+            .await
         }
         (Some(_), Some(_)) => {
             anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
@@ -338,11 +395,17 @@ async fn binlog_orchestrate<S, St>(
     args: MySQLBinlogSyncArgs,
     cancel: CancellationToken,
     checkpoint_manager: Option<&SyncManager<St>>,
+    // Held for Phase 5 apply-path wiring; persistent external children stay alive.
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
 ) -> anyhow::Result<()>
 where
     S: SurrealSink,
     St: CheckpointStore,
 {
+    let _pipeline = pipeline;
+    let _apply_opts = apply_opts;
+
     let snapshot_mode = args.snapshot_mode;
     let strategy = args.strategy;
     let chunk_size = args.chunk_size;

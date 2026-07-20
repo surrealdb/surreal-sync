@@ -331,19 +331,14 @@ impl ExternalTransport for PersistentChildStdio {
             }
             self.completed.lock().await.insert(req_id, result);
             self.notify.notify_waiters();
-            // Keep the gate and continue draining until our id is ready, or
-            // drop and let others drive — continue loop drops gate at end of
-            // iteration via _gate going out of scope... but we're in loop with
-            // _gate still held. Hold gate and loop without re-registering wait.
+            // Another waiter's response — check whether ours was filled as a
+            // side effect, then drop the read gate so peers can drive stdout.
             {
                 let mut completed = self.completed.lock().await;
                 if let Some(resp) = completed.remove(&batch_id) {
                     return resp.map(Some);
                 }
             }
-            // More frames may be needed; stay in loop with gate held by
-            // not dropping until we `continue` — actually _gate lives for the
-            // whole iteration. Next iteration re-acquires. Drop explicitly:
             drop(_gate);
         }
     }

@@ -33,9 +33,10 @@ impl std::fmt::Debug for Stage {
 ///
 /// Pushing a lone [`crate::Passthrough`] via [`push_inplace`](Self::push_inplace)
 /// does **not** make [`is_identity`](Self::is_identity) return `true` — the
-/// pipeline still has a stage and will dispatch into it. Config loading (Phase
-/// later) must collapse passthrough-only TOML to an empty pipeline so the CLI
-/// hot path stays zero-dispatch.
+/// pipeline still has a stage and will dispatch into it. TOML config loading
+/// ([`crate::Pipeline::from_config`] / [`crate::parse_transforms_toml`])
+/// collapses passthrough-only configs to an empty pipeline so the CLI hot path
+/// stays zero-dispatch.
 ///
 /// # Apply framework hot path
 ///

@@ -102,6 +102,9 @@ loadtest-distributed = { path = "crates/loadtest-distributed" }
 # Sync core (for LoadTestSchema)
 sync-core = { path = "crates/sync-core" }
 
+# Transform pipeline framework
+sync-transform = { path = "crates/sync-transform" }
+
 # Checkpoint management
 checkpoint = { path = "crates/checkpoint" }
 

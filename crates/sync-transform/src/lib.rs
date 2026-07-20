@@ -19,6 +19,7 @@
 //! [`Passthrough`] stage is *not* identity.
 
 mod apply;
+mod config;
 mod cow;
 mod external;
 mod framer;
@@ -28,6 +29,10 @@ mod pipeline;
 pub use apply::{
     run_change_feed, run_change_feed_with, write_rows, write_rows_with, ApplyContext, ApplyOpts,
     BatchTransformer, ChangeFeed, FailurePolicy, PositionedChange,
+};
+pub use config::{
+    load_pipeline_and_opts, load_transforms_config, parse_humantime, parse_transforms_toml,
+    ConfiguredStage, ExternalStageConfig, FramerKind, StdinConfig, TransformsConfig, TransportKind,
 };
 pub use cow::CowBatch;
 pub use external::{
