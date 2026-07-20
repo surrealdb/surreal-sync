@@ -4,7 +4,7 @@ use crate::apply::feed::{ChangeFeed, PositionedChange};
 use crate::apply::opts::{ApplyOpts, FailurePolicy};
 use crate::apply::transform::BatchTransformer;
 use crate::pipeline::Pipeline;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,8 +15,8 @@ use tracing::warn;
 
 /// Transform then `write_universal_rows`. Shared by full sync and snapshot flushes.
 ///
-/// Gates on [`Pipeline::is_identity`] so an empty pipeline is a pure move into
-/// the sink with no transform dispatch.
+/// Gates on [`BatchTransformer::is_identity`] so an empty pipeline is a pure
+/// move into the sink with no transform dispatch or timeout wrapper.
 pub async fn write_rows<S: SurrealSink>(
     sink: &S,
     pipeline: &Pipeline,
@@ -37,10 +37,14 @@ where
     S: SurrealSink,
     T: BatchTransformer + 'static,
 {
-    let rows = tokio::time::timeout(opts.timeout, transformer.transform_rows(0, rows))
-        .await
-        .map_err(|_| anyhow!("transform timeout after {:?}", opts.timeout))?
-        .context("transform rows")?;
+    let rows = if transformer.is_identity() {
+        rows
+    } else {
+        tokio::time::timeout(opts.timeout, transformer.transform_rows(0, rows))
+            .await
+            .map_err(|_| anyhow!("transform timeout after {:?}", opts.timeout))?
+            .context("transform rows")?
+    };
     sink.write_universal_rows(&rows)
         .await
         .context("sink write_universal_rows")?;
@@ -93,20 +97,31 @@ where
             }
 
             if ctx.buffer_len() >= opts.batch_size {
-                let started = ctx.try_start_full_batch();
-                debug_assert!(started);
+                if !ctx.try_start_full_batch() {
+                    // Async window full (in-flight transforms at capacity).
+                    break;
+                }
+                // Identity completes synchronously into `completed` — drain now so
+                // the fill loop (which keys off in_flight) can keep going.
+                ctx.drain_ordered(feed).await?;
                 continue;
             }
 
             if ctx.buffer_len() > 0 && (feed.is_finished() || ctx.should_flush_partial()) {
-                let started = ctx.try_start_partial_batch();
-                debug_assert!(started);
+                if !ctx.try_start_partial_batch() {
+                    break;
+                }
+                ctx.drain_ordered(feed).await?;
                 continue;
             }
 
             // Cannot start another batch right now (need more input or wait).
             break;
         }
+
+        // Drain any completed results (including identity leftovers) before
+        // deciding whether to wait on JoinSet.
+        ctx.drain_ordered(feed).await?;
 
         if ctx.in_flight_count() == 0 && ctx.buffer_len() == 0 {
             if feed.is_finished() {
@@ -155,7 +170,14 @@ struct TransformOutcome<P> {
 /// [`run_change_feed`].
 ///
 /// `push_change` / `flush` return `Some(position)` when a batch was transformed,
-/// sunk, and is safe to `commit`.
+/// sunk, and is safe to `commit`. They do **not** call [`ChangeFeed::commit`].
+///
+/// # Poisoning after [`FailurePolicy::Fail`]
+///
+/// After a batch fails under [`FailurePolicy::Fail`], this context is
+/// **poisoned**: successors are discarded, and further [`Self::push_change`] /
+/// [`Self::flush`] return `Err` immediately. Do not reuse the context — create
+/// a new one and replay from the last successful commit watermark.
 pub struct ApplyContext<'a, S, T, P = ()> {
     sink: &'a S,
     transformer: Arc<T>,
@@ -170,6 +192,8 @@ pub struct ApplyContext<'a, S, T, P = ()> {
     buffer_started: Option<tokio::time::Instant>,
     /// Bumped on fail-discard so stale JoinSet tasks are ignored.
     epoch: u64,
+    /// Set after [`FailurePolicy::Fail`]; context must not be reused.
+    poisoned: bool,
 }
 
 impl<'a, S, T, P> ApplyContext<'a, S, T, P>
@@ -193,7 +217,15 @@ where
             join_set: JoinSet::new(),
             buffer_started: None,
             epoch: 0,
+            poisoned: false,
         }
+    }
+
+    /// Whether this context was poisoned by a [`FailurePolicy::Fail`] error.
+    ///
+    /// A poisoned context must not be reused; create a new one instead.
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
     }
 
     /// Number of changes waiting to form a batch.
@@ -201,9 +233,26 @@ where
         self.buffer.len()
     }
 
-    /// Number of batches currently transforming.
+    /// Number of batches currently transforming (JoinSet path only).
     pub fn in_flight_count(&self) -> usize {
         self.in_flight.len()
+    }
+
+    /// Number of transform results waiting for ordered sink apply.
+    ///
+    /// Useful in tests to assert successor discard cleared the window.
+    pub fn completed_waiting_count(&self) -> usize {
+        self.completed.len()
+    }
+
+    fn ensure_not_poisoned(&self) -> Result<()> {
+        if self.poisoned {
+            bail!(
+                "ApplyContext is poisoned after FailurePolicy::Fail; \
+                 create a new context and replay from the last successful commit"
+            );
+        }
+        Ok(())
     }
 
     fn push_buffered(&mut self, pc: PositionedChange<P>) {
@@ -224,34 +273,46 @@ where
     ///
     /// Returns the last position that was successfully sunk during this call
     /// (caller should `commit` it). Does not call [`ChangeFeed::commit`] itself.
+    ///
+    /// Returns `Err` immediately if this context is [`Self::is_poisoned`].
     pub async fn push_change(
         &mut self,
         change: UniversalChange,
         position: P,
     ) -> Result<Option<P>> {
+        self.ensure_not_poisoned()?;
         self.push_buffered(PositionedChange::new(change, position));
         while self.try_start_full_batch() {}
         // Collect any already-finished transforms without blocking.
-        while let Some(outcome) = self.try_poll_join() {
-            self.handle_outcome(outcome?)?;
-        }
+        // Yield once so Duration::ZERO scripted tasks can complete in-process.
+        self.poll_join_ready().await?;
         self.drain_ordered_no_commit().await
     }
 
     /// Flush remaining buffered changes and wait for in-flight work.
     ///
     /// Returns the last position successfully sunk (caller should `commit`).
+    ///
+    /// Returns `Err` immediately if this context is [`Self::is_poisoned`].
     pub async fn flush(&mut self) -> Result<Option<P>> {
+        self.ensure_not_poisoned()?;
         while self.try_start_partial_batch() {}
+        let mut last = None;
         while self.in_flight_count() > 0 {
             self.wait_one_completion().await?;
-            let _ = self.drain_ordered_no_commit().await?;
+            if let Some(p) = self.drain_ordered_no_commit().await? {
+                last = Some(p);
+            }
         }
-        self.drain_ordered_no_commit().await
+        if let Some(p) = self.drain_ordered_no_commit().await? {
+            last = Some(p);
+        }
+        Ok(last)
     }
 
     /// Transform then sink rows (same as [`write_rows_with`]).
     pub async fn write_rows(&self, rows: Vec<UniversalRow>) -> Result<()> {
+        self.ensure_not_poisoned()?;
         write_rows_with(self.sink, Arc::clone(&self.transformer), rows, self.opts).await
     }
 
@@ -271,9 +332,20 @@ where
     }
 
     fn start_batch_from_buffer(&mut self, n: usize) -> bool {
-        if n == 0 || self.in_flight.len() >= self.opts.max_in_flight {
+        if n == 0 {
             return false;
         }
+        // Window occupancy: JoinSet path uses `in_flight`; identity completes
+        // synchronously into `completed`, so count those too before drain.
+        let occupying = if self.transformer.is_identity() {
+            self.completed.len() + self.in_flight.len()
+        } else {
+            self.in_flight.len()
+        };
+        if occupying >= self.opts.max_in_flight {
+            return false;
+        }
+
         let batch: Vec<PositionedChange<P>> = self.buffer.drain(..n).collect();
         if self.buffer.is_empty() {
             self.buffer_started = None;
@@ -288,6 +360,19 @@ where
         self.next_batch_id = self.next_batch_id.saturating_add(1);
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
+
+        // Zero-overhead identity: pure move into completed, no JoinSet/timeout.
+        if self.transformer.is_identity() {
+            self.completed.insert(
+                seq,
+                CompletedBatch {
+                    batch_id,
+                    last_position,
+                    result: Ok(changes),
+                },
+            );
+            return true;
+        }
 
         self.in_flight.insert(
             seq,
@@ -330,6 +415,19 @@ where
             Ok(outcome) => Ok(outcome),
             Err(e) => Err(anyhow!("transform task join error: {e}")),
         })
+    }
+
+    async fn poll_join_ready(&mut self) -> Result<()> {
+        while let Some(outcome) = self.try_poll_join() {
+            self.handle_outcome(outcome?)?;
+        }
+        if self.in_flight_count() > 0 {
+            tokio::task::yield_now().await;
+            while let Some(outcome) = self.try_poll_join() {
+                self.handle_outcome(outcome?)?;
+            }
+        }
+        Ok(())
     }
 
     async fn wait_one_completion(&mut self) -> Result<()> {
@@ -469,6 +567,8 @@ where
         // Abort remaining tasks; late JoinSet results will have a stale epoch
         // (or we abort them). JoinSet::abort_all is available on recent tokio.
         self.join_set.abort_all();
+        // Poison so reuse cannot hang on a missing next_to_apply seq.
+        self.poisoned = true;
     }
 
     async fn apply_sink(&self, changes: &[UniversalChange]) -> Result<()> {
