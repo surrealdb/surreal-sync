@@ -9,6 +9,7 @@ use tokio_rustls::TlsConnector;
 
 use crate::error::Error;
 use crate::options::{SslMode, SslOptions};
+use rsa::pkcs8::DecodePublicKey;
 
 const UTF8_MB4_GENERAL_CI: u16 = 0x002d;
 const CLIENT_PROTOCOL_41: u32 = 512;
@@ -217,15 +218,54 @@ pub async fn authenticate(
                     }
                     Some(0x04) => {
                         if !channel.tls_active() {
-                            return Err(Error::Auth(
-                                "caching_sha2_password full authentication requires TLS; use --tls-mode preferred or required"
-                                    .into(),
-                            ));
+                            // Non-TLS path: use RSA encryption for caching_sha2_password.
+                            // Request the server's RSA public key.
+                            channel.write_packet(&[0x02]).await?;
+                            // Server returns the RSA public key as a single packet:
+                            //   [0x01, PEM_data..., 0x00]
+                            // where 0x01 is a protocol marker, PEM is the key, and 0x00 is a
+                            // null terminator. Everything after the marker is the PEM text.
+                            let key_pkt = channel.read_packet().await?;
+                            check_error_packet(&key_pkt, "failed to get RSA public key")?;
+                            if key_pkt.first() != Some(&0x01) {
+                                return Err(Error::Auth(format!(
+                                    "unexpected RSA key response prefix: {:02x}",
+                                    key_pkt.first().copied().unwrap_or(0)
+                                )));
+                            }
+                            let pem_bytes = &key_pkt[1..]; // skip 0x01 prefix
+                            let pem_bytes = pem_bytes.strip_suffix(&[0x00]).unwrap_or(pem_bytes);
+                            let pub_key_pem = std::str::from_utf8(pem_bytes)
+                                .map_err(|e| Error::Auth(format!("invalid UTF-8 in RSA public key: {e}")))?;
+                            let pub_key = rsa::RsaPublicKey::from_public_key_pem(pub_key_pem)
+                                .map_err(|e| Error::Auth(format!("failed to parse RSA public key: {e}")))?;
+
+                            // XOR the null-terminated password with SHA256(scramble)
+                            use sha2::{Digest, Sha256};
+                            let scramble_digest = Sha256::digest(&handshake.scramble);
+                            let mut password_bytes = password.as_bytes().to_vec();
+                            password_bytes.push(0); // null-terminated
+
+                            let xor_result: Vec<u8> = password_bytes
+                                .iter()
+                                .enumerate()
+                                .map(|(i, &b)| b ^ scramble_digest[i % 32])
+                                .collect();
+
+                            // RSA-OAEP encrypt with SHA-1 (MySQL's default OAEP hash)
+                            let padding = rsa::Oaep::new::<sha1::Sha1>();
+                            let encrypted = pub_key
+                                .encrypt(&mut rand_core::OsRng, padding, &xor_result)
+                                .map_err(|e| Error::Auth(format!("RSA encryption failed: {e}")))?;
+
+                            channel.write_packet(&encrypted).await?;
+                            packet = channel.read_packet().await?;
+                        } else {
+                            let mut response = password.as_bytes().to_vec();
+                            response.push(0);
+                            channel.write_packet(&response).await?;
+                            packet = channel.read_packet().await?;
                         }
-                        let mut response = password.as_bytes().to_vec();
-                        response.push(0);
-                        channel.write_packet(&response).await?;
-                        packet = channel.read_packet().await?;
                     }
                     other => {
                         return Err(Error::Auth(format!(
@@ -265,14 +305,18 @@ async fn negotiate_tls(
     let Some(options) = ssl.options() else {
         return Ok(());
     };
+
+    // For Preferred mode, skip TLS entirely.
+    // caching_sha2_password full authentication will use RSA encryption
+    // over the non-TLS connection if the server requests it.
+    if matches!(ssl, SslMode::Preferred(_)) {
+        return Ok(());
+    }
+
     if handshake.capabilities & CLIENT_SSL == 0 {
-        return match ssl {
-            SslMode::Preferred(_) => Ok(()),
-            SslMode::Required(_) => Err(Error::Ssl(
-                "server does not advertise CLIENT_SSL capability".into(),
-            )),
-            SslMode::Disabled => Ok(()),
-        };
+        return Err(Error::Ssl(
+            "server does not advertise CLIENT_SSL capability".into(),
+        ));
     }
 
     let request = build_ssl_request(true);
@@ -495,7 +539,9 @@ fn parse_handshake(packet: &[u8]) -> Result<Handshake, Error> {
         std::cmp::max(13, auth_plugin_data_len as i32 - 8) as usize
     } else {
         pos += 10; // reserved
-        auth_plugin_data_len.saturating_sub(8)
+        // auth_plugin_data_len includes the trailing NUL byte, so subtract 1
+        // to get the real data length, then remove the 8-byte part1.
+        (auth_plugin_data_len - 1).saturating_sub(8)
     };
 
     let scramble_part2 = if scramble_part2_len > 0 {
