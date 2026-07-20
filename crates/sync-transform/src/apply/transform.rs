@@ -19,10 +19,14 @@ use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, Uni
 /// # Relations
 ///
 /// Batches may contain [`ApplyEvent::RelationChange`] interleaved with row
-/// changes. Implement [`transform_relation_changes`](Self::transform_relation_changes)
-/// / [`transform_relations`](Self::transform_relations) for relation-aware
-/// stages; the default [`transform_events`](Self::transform_events) splits,
-/// transforms, and recombines by index (length of each kind must be preserved).
+/// changes. **Fail closed:** the default
+/// [`transform_relation_changes`](Self::transform_relation_changes) /
+/// [`transform_relations`](Self::transform_relations) return `Err` so a custom
+/// impl that only overrides [`transform_changes`](Self::transform_changes)
+/// cannot silently pass relation edges through. Override those methods, or use
+/// [`Pipeline`] (which implements them). The default
+/// [`transform_events`](Self::transform_events) splits, transforms, and
+/// recombines by index (length of each kind must be preserved).
 #[async_trait]
 pub trait BatchTransformer: Send + Sync {
     /// Whether transform dispatch can be skipped entirely (empty pipeline).
@@ -47,25 +51,33 @@ pub trait BatchTransformer: Send + Sync {
 
     /// Transform an owned relation-change batch.
     ///
-    /// Default: return unchanged (no stage dispatch). Override for relation-aware
-    /// pipelines / test doubles.
+    /// **Default: fail closed** — returns an error so relation edges are never
+    /// silently skipped when only [`transform_changes`](Self::transform_changes)
+    /// is overridden. Implement this method (or use [`Pipeline`]) for
+    /// relation-aware transformers. Explicit passthrough is `Ok(changes)`.
     async fn transform_relation_changes(
         &self,
         _batch_id: u64,
-        changes: Vec<UniversalRelationChange>,
+        _changes: Vec<UniversalRelationChange>,
     ) -> Result<Vec<UniversalRelationChange>> {
-        Ok(changes)
+        bail!(
+            "BatchTransformer::transform_relation_changes is not implemented; \
+             override it (or return Ok(changes) for explicit passthrough), or use Pipeline"
+        )
     }
 
     /// Transform an owned relation (full-sync) batch.
     ///
-    /// Default: return unchanged.
+    /// **Default: fail closed** — see [`transform_relation_changes`](Self::transform_relation_changes).
     async fn transform_relations(
         &self,
         _batch_id: u64,
-        relations: Vec<UniversalRelation>,
+        _relations: Vec<UniversalRelation>,
     ) -> Result<Vec<UniversalRelation>> {
-        Ok(relations)
+        bail!(
+            "BatchTransformer::transform_relations is not implemented; \
+             override it (or return Ok(relations) for explicit passthrough), or use Pipeline"
+        )
     }
 
     /// Transform a mixed apply-event batch, preserving order.

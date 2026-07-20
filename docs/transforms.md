@@ -202,6 +202,8 @@ Mismatched or missing `batch_id` ⇒ failed exchange (no SurrealDB write, no che
 
 **Mixed change+relation batches:** External stages exchange **both** kinds over NDJSON (no silent relation pass-through). Filter/fan-out that changes item count is **not** supported when a batch interleaves row changes and relation changes — use homogeneous batches (all changes or all relations) for length-changing transforms. The same limit applies to in-process `BatchTransformer::transform_events`.
 
+When one External stage sees a mixed batch, surreal-sync issues **two** sequential wire exchanges with **distinct** `batch_id`s: row changes keep the apply batch id; relation changes use that id with the high bit set (`relation_wire_batch_id`). Workers and scripts must not assume a single `batch_id` covers both kinds in one apply batch.
+
 ### `persistent` vs `transient`
 
 Both modes execute a process. Naming is about **lifetime**: one long-lived worker vs a new process per batch. Prefer `persistent` in production.

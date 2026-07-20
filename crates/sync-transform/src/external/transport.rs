@@ -538,4 +538,40 @@ mod tests {
         assert!(ok_resp.error.is_none());
         assert!(ok_resp.items.is_empty());
     }
+
+    #[test]
+    fn encode_request_omits_default_change_kind() {
+        let framer = NdjsonFramer;
+        let bytes = encode_request(&framer, 7, &[b"{}".to_vec()], WireItemKind::Change);
+        let header_line = bytes.split(|&b| b == b'\n').next().unwrap();
+        let header: RequestHeader = serde_json::from_slice(header_line).unwrap();
+        assert_eq!(header.batch_id, 7);
+        assert_eq!(header.count, 1);
+        assert_eq!(header.kind, WireItemKind::Change);
+        let raw: serde_json::Value = serde_json::from_slice(header_line).unwrap();
+        assert!(
+            raw.get("kind").is_none(),
+            "default Change kind must be omitted for back-compat: {raw}"
+        );
+    }
+
+    #[test]
+    fn encode_request_includes_relation_change_kind() {
+        let framer = NdjsonFramer;
+        let bytes = encode_request(
+            &framer,
+            3,
+            &[b"{}".to_vec()],
+            WireItemKind::RelationChange,
+        );
+        let header_line = bytes.split(|&b| b == b'\n').next().unwrap();
+        let header: RequestHeader = serde_json::from_slice(header_line).unwrap();
+        assert_eq!(header.kind, WireItemKind::RelationChange);
+        let raw: serde_json::Value = serde_json::from_slice(header_line).unwrap();
+        assert_eq!(
+            raw.get("kind").and_then(|v| v.as_str()),
+            Some("relation_change"),
+            "RelationChange must be serialized on the wire: {raw}"
+        );
+    }
 }

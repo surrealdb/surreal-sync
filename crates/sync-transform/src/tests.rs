@@ -468,6 +468,127 @@ fn pipeline_external_sync_inplace_errors() {
 }
 
 #[test]
+fn pipeline_external_sync_relation_inplace_errors() {
+    use sync_core::{UniversalRelation, UniversalRelationChange, UniversalThingRef};
+
+    let transport = crate::test_support::ScriptedExternalTransport::new();
+    let mut pipeline = Pipeline::new();
+    pipeline.push_external(ExternalTransform::with_transport(std::sync::Arc::new(
+        transport,
+    )));
+
+    let rel = UniversalRelation::new(
+        "follows",
+        UniversalValue::Int64(1),
+        UniversalThingRef::new("users", UniversalValue::Int64(1)),
+        UniversalThingRef::new("users", UniversalValue::Int64(2)),
+        HashMap::new(),
+    );
+
+    let err_changes = pipeline
+        .apply_relation_changes(vec![UniversalRelationChange::create(rel.clone())])
+        .unwrap_err();
+    assert!(
+        err_changes.to_string().contains("BatchTransformer")
+            || err_changes.to_string().contains("async")
+            || err_changes.to_string().contains("transform_relation"),
+        "sync apply_relation_changes with External must bail: {err_changes}"
+    );
+
+    let err_rels = pipeline.apply_relations(vec![rel]).unwrap_err();
+    assert!(
+        err_rels.to_string().contains("BatchTransformer")
+            || err_rels.to_string().contains("async")
+            || err_rels.to_string().contains("transform_relation"),
+        "sync apply_relations with External must bail: {err_rels}"
+    );
+}
+
+/// Custom BatchTransformer that only overrides row/change paths must not
+/// silently no-op relation batches (fail closed by default).
+#[tokio::test]
+async fn batch_transformer_default_relation_methods_fail_closed() {
+    use async_trait::async_trait;
+    use crate::BatchTransformer;
+    use sync_core::{UniversalRelation, UniversalRelationChange, UniversalThingRef};
+
+    struct ChangesOnly;
+
+    #[async_trait]
+    impl BatchTransformer for ChangesOnly {
+        fn is_identity(&self) -> bool {
+            false
+        }
+
+        async fn transform_changes(
+            &self,
+            _batch_id: u64,
+            changes: Vec<UniversalChange>,
+        ) -> Result<Vec<UniversalChange>> {
+            Ok(changes)
+        }
+
+        async fn transform_rows(
+            &self,
+            _batch_id: u64,
+            rows: Vec<UniversalRow>,
+        ) -> Result<Vec<UniversalRow>> {
+            Ok(rows)
+        }
+    }
+
+    let t = ChangesOnly;
+    let rel = UniversalRelation::new(
+        "follows",
+        UniversalValue::Int64(1),
+        UniversalThingRef::new("users", UniversalValue::Int64(1)),
+        UniversalThingRef::new("users", UniversalValue::Int64(2)),
+        HashMap::new(),
+    );
+
+    let err = t
+        .transform_relation_changes(1, vec![UniversalRelationChange::create(rel.clone())])
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("transform_relation_changes")
+            && err.to_string().contains("not implemented"),
+        "unexpected: {err}"
+    );
+
+    let err = t.transform_relations(1, vec![rel]).await.unwrap_err();
+    assert!(
+        err.to_string().contains("transform_relations")
+            && err.to_string().contains("not implemented"),
+        "unexpected: {err}"
+    );
+
+    // Mixed events also fail closed via the default transform_events path.
+    let err = t
+        .transform_events(
+            1,
+            vec![
+                crate::ApplyEvent::Change(sample_change("a")),
+                crate::ApplyEvent::relation_change(UniversalRelationChange::create(
+                    UniversalRelation::new(
+                        "follows",
+                        UniversalValue::Int64(2),
+                        UniversalThingRef::new("users", UniversalValue::Int64(3)),
+                        UniversalThingRef::new("users", UniversalValue::Int64(4)),
+                        HashMap::new(),
+                    ),
+                )),
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("transform_relation_changes"),
+        "mixed events must not silently drop relations: {err}"
+    );
+}
+
+#[test]
 fn cowbatch_from_owned_and_row_apply() {
     let mut batch = CowBatch::from_owned(vec![sample_row("alice")]);
     assert_eq!(batch.len(), 1);

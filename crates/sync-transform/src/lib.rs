@@ -61,8 +61,9 @@ pub use config::{
 };
 pub use cow::CowBatch;
 pub use external::{
-    ChildStdioMode, ExternalTransform, ExternalTransport, PersistentChildStdio, RequestHeader,
-    ResponseHeader, TransientChildStdio, WireItemKind, WireResponse,
+    relation_wire_batch_id, ChildStdioMode, ExternalTransform, ExternalTransport,
+    PersistentChildStdio, RequestHeader, ResponseHeader, TransientChildStdio, WireItemKind,
+    WireResponse, RELATION_WIRE_BATCH_ID_BIT,
 };
 pub use framer::{Framer, NdjsonFramer};
 pub use inplace::{InPlaceTransform, Passthrough};

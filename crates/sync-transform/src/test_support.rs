@@ -232,6 +232,40 @@ impl BatchTransformer for ScriptedTransformer {
         Ok(out)
     }
 
+    async fn transform_relations(
+        &self,
+        batch_id: u64,
+        relations: Vec<UniversalRelation>,
+    ) -> Result<Vec<UniversalRelation>> {
+        let script = {
+            let mut st = self.state.lock().expect("scripted transformer lock");
+            st.transform_calls += 1;
+            st.started_order.push(batch_id);
+            st.by_batch_id
+                .get(&batch_id)
+                .cloned()
+                .unwrap_or_default()
+        };
+        if !script.delay.is_zero() {
+            tokio::time::sleep(script.delay).await;
+        }
+        if let Some(msg) = script.fail_with {
+            self.state
+                .lock()
+                .expect("scripted transformer lock")
+                .completed_order
+                .push(batch_id);
+            return Err(anyhow!(msg));
+        }
+        let out = self.inner.apply_relations(relations)?;
+        self.state
+            .lock()
+            .expect("scripted transformer lock")
+            .completed_order
+            .push(batch_id);
+        Ok(out)
+    }
+
     async fn transform_events(
         &self,
         batch_id: u64,
@@ -319,6 +353,8 @@ struct ScriptedExternalState {
     /// Out-of-order completion is fine; waiters never steal another request's slot.
     ready: HashMap<u64, Result<WireResponse>>,
     writes: Vec<u64>,
+    /// Recorded `(batch_id, kind)` for each `write_request` (wire kind proofs).
+    write_kinds: Vec<(u64, crate::WireItemKind)>,
     notify: Arc<Notify>,
 }
 
@@ -338,6 +374,7 @@ impl ScriptedExternalTransport {
                 by_batch_id: HashMap::new(),
                 ready: HashMap::new(),
                 writes: Vec::new(),
+                write_kinds: Vec::new(),
                 notify: Arc::new(Notify::new()),
             })),
         }
@@ -361,6 +398,15 @@ impl ScriptedExternalTransport {
             .writes
             .clone()
     }
+
+    /// Recorded `(batch_id, kind)` for each write (proves RelationChange kind, etc.).
+    pub fn write_kinds(&self) -> Vec<(u64, crate::WireItemKind)> {
+        self.state
+            .lock()
+            .expect("scripted external lock")
+            .write_kinds
+            .clone()
+    }
 }
 
 impl Default for ScriptedExternalTransport {
@@ -375,11 +421,12 @@ impl ExternalTransport for ScriptedExternalTransport {
         &self,
         batch_id: u64,
         items: &[Vec<u8>],
-        _kind: crate::WireItemKind,
+        kind: crate::WireItemKind,
     ) -> Result<()> {
         let (script, notify) = {
             let mut st = self.state.lock().expect("scripted external lock");
             st.writes.push(batch_id);
+            st.write_kinds.push((batch_id, kind));
             let script = st
                 .by_batch_id
                 .get(&batch_id)

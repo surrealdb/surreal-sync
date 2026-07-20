@@ -221,7 +221,7 @@ async fn external_exchanges_relation_changes_over_wire() {
     use sync_core::{UniversalRelation, UniversalRelationChange, UniversalThingRef};
 
     let transport = ScriptedExternalTransport::new();
-    let ext = ExternalTransform::with_transport(Arc::new(transport));
+    let ext = ExternalTransform::with_transport(Arc::new(transport.clone()));
     let rel = UniversalRelation::new(
         "follows",
         UniversalValue::Int64(7),
@@ -235,6 +235,11 @@ async fn external_exchanges_relation_changes_over_wire() {
         .unwrap();
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].relation.id, UniversalValue::Int64(7));
+    assert_eq!(
+        transport.write_kinds(),
+        vec![(1, crate::WireItemKind::RelationChange)],
+        "RelationChange must be recorded on the transport wire kind"
+    );
 }
 
 #[tokio::test]
@@ -278,4 +283,45 @@ async fn external_pipeline_transforms_mixed_relation_and_change() {
         vec!["change:1".to_string(), "relation:5".to_string()]
     );
     assert_eq!(driver.commits, vec![10, 20]);
+}
+
+/// One apply batch with both kinds: External must use distinct wire batch_ids
+/// (plain for changes, high-bit for relations) and RelationChange kind.
+#[tokio::test]
+async fn mixed_external_batch_uses_distinct_wire_batch_ids_and_kinds() {
+    use crate::{relation_wire_batch_id, ApplyEvent, WireItemKind};
+    use sync_core::{UniversalRelation, UniversalRelationChange, UniversalThingRef};
+
+    let transport = ScriptedExternalTransport::new();
+    let mut pipeline = Pipeline::new();
+    pipeline.push_external(ExternalTransform::with_transport(Arc::new(
+        transport.clone(),
+    )));
+
+    let rel = UniversalRelation::new(
+        "follows",
+        UniversalValue::Int64(9),
+        UniversalThingRef::new("users", UniversalValue::Int64(1)),
+        UniversalThingRef::new("users", UniversalValue::Int64(2)),
+        HashMap::new(),
+    );
+    let events = vec![
+        ApplyEvent::Change(change(1)),
+        ApplyEvent::relation_change(UniversalRelationChange::create(rel)),
+    ];
+    let out = pipeline.apply_events_async(42, events).await.unwrap();
+    assert_eq!(out.len(), 2);
+    assert!(out[0].is_change());
+    assert!(out[1].is_relation_change());
+
+    let kinds = transport.write_kinds();
+    assert_eq!(
+        kinds,
+        vec![
+            (42, WireItemKind::Change),
+            (relation_wire_batch_id(42), WireItemKind::RelationChange),
+        ],
+        "mixed External must not reuse batch_id across change vs relation exchanges"
+    );
+    assert_ne!(kinds[0].0, kinds[1].0);
 }

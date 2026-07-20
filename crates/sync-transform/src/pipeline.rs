@@ -60,6 +60,11 @@ impl std::fmt::Debug for Stage {
 /// [`ExternalTransform::exchange_relations`]). There is no silent relation
 /// pass-through. Mixed change+relation batches may not filter/fan-out (length
 /// of each kind must be preserved); use homogeneous batches for length changes.
+///
+/// When a single External stage sees a **mixed** change+relation batch, the two
+/// wire exchanges use distinct `batch_id`s: changes keep the apply `batch_id`,
+/// relations use [`crate::relation_wire_batch_id`] (high bit set) so workers and
+/// outstanding-id tracking never confuse the two sequential exchanges.
 #[derive(Debug, Default, Clone)]
 pub struct Pipeline {
     stages: Vec<Stage>,
@@ -318,6 +323,10 @@ impl Pipeline {
     ///
     /// Homogeneous batches may filter/fan-out (length may change). Mixed
     /// change+relation batches must preserve length of each kind.
+    ///
+    /// Mixed External exchanges use distinct wire `batch_id`s (see
+    /// [`crate::relation_wire_batch_id`]) so change vs relation requests never
+    /// share an id.
     pub(crate) async fn apply_events_async(
         &self,
         batch_id: u64,
@@ -380,6 +389,9 @@ impl Pipeline {
                                 }
                             }
                         }
+                        // Distinct wire ids: reuse of `batch_id` for both kinds
+                        // would collide in outstanding tracking / worker scripts.
+                        let rel_batch_id = crate::relation_wire_batch_id(batch_id);
                         if !changes.is_empty() {
                             let n = changes.len();
                             let transformed = ext.exchange_changes(batch_id, changes).await?;
@@ -398,7 +410,7 @@ impl Pipeline {
                         if !rels.is_empty() {
                             let n = rels.len();
                             let transformed =
-                                ext.exchange_relation_changes(batch_id, rels).await?;
+                                ext.exchange_relation_changes(rel_batch_id, rels).await?;
                             if transformed.len() != n {
                                 bail!(
                                     "External stage changed relation-count ({n} → {}) while row \

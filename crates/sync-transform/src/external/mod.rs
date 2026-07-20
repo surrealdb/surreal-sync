@@ -15,6 +15,22 @@ use std::sync::Arc;
 use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
 use tokio::sync::Mutex;
 
+/// High bit set on the apply `batch_id` when an External stage issues a
+/// **relation** wire exchange that shares an apply batch with row changes.
+///
+/// Mixed change+relation batches perform two sequential NDJSON exchanges.
+/// Reusing the same wire `batch_id` for both is a footgun for outstanding-id
+/// tracking and worker scripts keyed only on `batch_id`. Relation exchanges
+/// in that path use [`relation_wire_batch_id`] instead; homogeneous relation
+/// batches keep the plain apply `batch_id`.
+pub const RELATION_WIRE_BATCH_ID_BIT: u64 = 1u64 << 63;
+
+/// Wire `batch_id` for the relation half of a mixed External exchange.
+#[inline]
+pub fn relation_wire_batch_id(batch_id: u64) -> u64 {
+    batch_id | RELATION_WIRE_BATCH_ID_BIT
+}
+
 /// External (child-stdio) transform stage.
 ///
 /// surreal-sync spawns the configured worker and talks on **the worker's**
