@@ -25,7 +25,7 @@ use crate::catch_up::{
 use crate::change::cdc_change_to_universal;
 use crate::checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogReconciliationPos};
 use crate::client::{
-    connect_binlog_client, new_mysql_pool, resolve_database, start_binlog_at_end,
+    connect_binlog_client, get_pool_conn, new_mysql_pool, resolve_database, start_binlog_at_end,
     start_binlog_from_checkpoint, use_database,
 };
 use crate::full_sync::{get_primary_key_columns, read_table_chunk};
@@ -109,7 +109,7 @@ impl BinlogWatermarkSource {
     ) -> Result<Self> {
         let pool = new_mysql_pool(&from_opts.connection_string)?;
         let database = resolve_database(&pool, from_opts).await?;
-        let mut conn = pool.get_conn().await?;
+        let mut conn = get_pool_conn(&pool, &from_opts.connection_string).await?;
         use_database(&mut conn, &database).await?;
         conn.query_drop(create_signal_table_sql()).await?;
 
@@ -174,7 +174,7 @@ impl BinlogWatermarkSource {
     pub async fn resolve_snapshot_table_names(from_opts: &SourceOpts) -> Result<Vec<String>> {
         let pool = new_mysql_pool(&from_opts.connection_string)?;
         let database = resolve_database(&pool, from_opts).await?;
-        let mut conn = pool.get_conn().await?;
+        let mut conn = get_pool_conn(&pool, &from_opts.connection_string).await?;
         use_database(&mut conn, &database).await?;
         get_snapshot_tables(&mut conn, &database, from_opts).await
     }
