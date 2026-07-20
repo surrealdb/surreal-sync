@@ -244,8 +244,9 @@ impl ExternalBatchScript {
 
 struct ScriptedExternalState {
     by_batch_id: HashMap<u64, ExternalBatchScript>,
-    /// Completed responses ready for try_read (may be out of write order).
-    ready: VecDeque<Result<WireResponse>>,
+    /// Completed responses keyed by **request** batch_id (not echoed id).
+    /// Out-of-order completion is fine; waiters never steal another request's slot.
+    ready: HashMap<u64, Result<WireResponse>>,
     writes: Vec<u64>,
     notify: Arc<Notify>,
 }
@@ -264,7 +265,7 @@ impl ScriptedExternalTransport {
         Self {
             state: Arc::new(Mutex::new(ScriptedExternalState {
                 by_batch_id: HashMap::new(),
-                ready: VecDeque::new(),
+                ready: HashMap::new(),
                 writes: Vec::new(),
                 notify: Arc::new(Notify::new()),
             })),
@@ -348,14 +349,16 @@ impl ExternalTransport for ScriptedExternalTransport {
             };
             {
                 let mut st = state.lock().expect("scripted external lock");
-                st.ready.push_back(resp);
+                // Key by request id so a colliding wrong echo cannot be
+                // delivered to another outstanding waiter.
+                st.ready.insert(batch_id, resp);
             }
             notify.notify_waiters();
         });
         Ok(())
     }
 
-    async fn try_read_response(&self) -> Result<Option<WireResponse>> {
+    async fn try_read_response(&self, batch_id: u64) -> Result<Option<WireResponse>> {
         loop {
             let notify = {
                 let st = self.state.lock().expect("scripted external lock");
@@ -365,7 +368,7 @@ impl ExternalTransport for ScriptedExternalTransport {
             let notified = notify.notified();
             {
                 let mut st = self.state.lock().expect("scripted external lock");
-                if let Some(resp) = st.ready.pop_front() {
+                if let Some(resp) = st.ready.remove(&batch_id) {
                     return resp.map(Some);
                 }
             }

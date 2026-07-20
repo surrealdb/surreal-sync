@@ -94,6 +94,77 @@ async fn mismatched_batch_id_no_sink_no_commit() {
     assert!(feed.commits.is_empty(), "must not commit on bad batch_id");
 }
 
+/// W≥2: a response that wrongly echoes another outstanding batch_id must not
+/// be rebound onto that waiter (no sink/commit for either batch).
+#[tokio::test]
+async fn colliding_mismatched_batch_id_w2_no_sink_no_commit() {
+    let transport = ScriptedExternalTransport::new()
+        // Batch 1 lies and claims batch_id=2 while 2 is also in flight.
+        .on_batch(1, ExternalBatchScript::bad_batch_id_after(Duration::from_millis(5), 2))
+        .on_batch(2, ExternalBatchScript::echo_after(Duration::from_millis(30)));
+
+    let mut pipeline = Pipeline::new();
+    pipeline.push_external(ExternalTransform::with_transport(Arc::new(transport)));
+
+    let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 10), positioned(2, 20)]);
+    let sink = RecordingSink::new();
+    let opts = ApplyOpts::default()
+        .with_batch_size(1)
+        .with_max_in_flight(2)
+        .with_timeout(Duration::from_secs(3));
+
+    let err = timeout(
+        Duration::from_secs(5),
+        run_change_feed(&mut feed, &sink, &pipeline, &opts),
+    )
+    .await
+    .expect("should not hang")
+    .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("batch_id") || msg.contains("mismatch"),
+        "unexpected: {msg}"
+    );
+    assert!(
+        sink.applied().is_empty(),
+        "must not sink either batch on colliding mismatch: {:?}",
+        sink.applied()
+    );
+    assert!(
+        feed.commits.is_empty(),
+        "must not commit either batch on colliding mismatch: {:?}",
+        feed.commits
+    );
+}
+
+#[tokio::test]
+async fn colliding_mismatched_batch_id_exchange_fails_closed() {
+    let transport = ScriptedExternalTransport::new()
+        .on_batch(1, ExternalBatchScript::bad_batch_id_after(Duration::from_millis(5), 2))
+        .on_batch(2, ExternalBatchScript::echo_after(Duration::from_millis(20)));
+    let ext = ExternalTransform::with_transport(Arc::new(transport));
+
+    let a = tokio::spawn({
+        let ext = ext.clone();
+        async move { ext.exchange_changes(1, vec![change(1)]).await }
+    });
+    let b = tokio::spawn({
+        let ext = ext.clone();
+        async move { ext.exchange_changes(2, vec![change(2)]).await }
+    });
+
+    let err_a = a.await.unwrap().unwrap_err();
+    let out_b = b.await.unwrap().unwrap();
+    let msg = format!("{err_a:#}");
+    assert!(
+        msg.contains("batch_id mismatch") || msg.contains("mismatched"),
+        "batch 1 must fail closed: {msg}"
+    );
+    // Batch 2 keeps its own request-keyed response (correct echo), proving we
+    // did not deliver batch 1's payload under id 2.
+    assert_eq!(out_b[0].id, UniversalValue::Int64(2));
+}
+
 #[tokio::test]
 async fn missing_batch_id_no_sink_no_commit() {
     let transport = ScriptedExternalTransport::new().on_batch(

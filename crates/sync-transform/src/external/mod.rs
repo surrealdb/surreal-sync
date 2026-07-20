@@ -9,11 +9,11 @@ pub use transport::{
 pub use wire::{RequestHeader, ResponseHeader};
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use sync_core::{UniversalChange, UniversalRow};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 
 /// External (child-stdio) transform stage.
 ///
@@ -22,9 +22,9 @@ use tokio::sync::{Mutex, Notify};
 ///
 /// Exchanges are multiplexed by `batch_id`: [`ExternalTransport::write_request`]
 /// / [`ExternalTransport::try_read_response`] support overlapping in-flight
-/// batches (`max_in_flight` > 1). Responses may complete out of order; this
-/// type demuxes them so each [`Self::exchange_changes`] / [`Self::exchange_rows`]
-/// call receives its own `batch_id`.
+/// batches (`max_in_flight` > 1). Each waiter reads **only** its own request's
+/// response (request-keyed); payloads are never rebound onto another
+/// outstanding id. A mismatched echo fails the exchange (no sink/commit).
 #[derive(Clone)]
 pub struct ExternalTransform {
     inner: Arc<ExternalInner>,
@@ -32,14 +32,8 @@ pub struct ExternalTransform {
 
 struct ExternalInner {
     transport: Arc<dyn ExternalTransport>,
-    /// Stash for out-of-order responses belonging to other waiters.
-    stash: Mutex<HashMap<u64, WireResponse>>,
     /// batch_ids with a write outstanding / waiter in exchange_raw.
     outstanding: Mutex<HashSet<u64>>,
-    /// Serialize the reader so only one task drives `try_read_response`.
-    read_gate: Mutex<()>,
-    /// Wakes waiters when a stashed response may match.
-    notify: Notify,
 }
 
 impl std::fmt::Debug for ExternalTransform {
@@ -54,10 +48,7 @@ impl ExternalTransform {
         Self {
             inner: Arc::new(ExternalInner {
                 transport,
-                stash: Mutex::new(HashMap::new()),
                 outstanding: Mutex::new(HashSet::new()),
-                read_gate: Mutex::new(()),
-                notify: Notify::new(),
             }),
         }
     }
@@ -140,7 +131,6 @@ impl ExternalTransform {
         let result = self.exchange_raw_inner(batch_id, items).await;
 
         self.inner.outstanding.lock().await.remove(&batch_id);
-        self.inner.notify.notify_waiters();
         result
     }
 
@@ -151,55 +141,24 @@ impl ExternalTransform {
             .await
             .with_context(|| format!("write_request batch_id={batch_id}"))?;
 
-        loop {
-            if let Some(resp) = self.inner.stash.lock().await.remove(&batch_id) {
-                return finish_response(batch_id, resp);
-            }
-
-            let _gate = self.inner.read_gate.lock().await;
-            if let Some(resp) = self.inner.stash.lock().await.remove(&batch_id) {
-                return finish_response(batch_id, resp);
-            }
-
-            match self
-                .inner
-                .transport
-                .try_read_response()
-                .await
-                .context("try_read_response")?
-            {
-                None => {
-                    drop(_gate);
-                    self.inner.notify.notified().await;
-                }
-                Some(resp) => {
-                    if resp.batch_id == batch_id {
-                        self.inner.notify.notify_waiters();
-                        return finish_response(batch_id, resp);
-                    }
-                    let known = self.inner.outstanding.lock().await.contains(&resp.batch_id)
-                        || self.inner.stash.lock().await.contains_key(&resp.batch_id);
-                    if known {
-                        self.inner.stash.lock().await.insert(resp.batch_id, resp);
-                        self.inner.notify.notify_waiters();
-                    } else {
-                        self.inner.notify.notify_waiters();
-                        bail!(
-                            "external transform batch_id mismatch: got response for {}, \
-                             expected {batch_id} (unknown/mismatched batch_id; no sink/commit)",
-                            resp.batch_id
-                        );
-                    }
-                }
-            }
-        }
+        let resp = self
+            .inner
+            .transport
+            .try_read_response(batch_id)
+            .await
+            .context("try_read_response")?
+            .ok_or_else(|| {
+                anyhow!("external transport returned no response for batch_id={batch_id}")
+            })?;
+        finish_response(batch_id, resp)
     }
 }
 
 fn finish_response(expected_batch_id: u64, resp: WireResponse) -> Result<WireResponse> {
     if resp.batch_id != expected_batch_id {
         bail!(
-            "external transform batch_id mismatch: expected {expected_batch_id}, got {}",
+            "external transform batch_id mismatch: expected {expected_batch_id}, got {} \
+             (mismatched batch_id; no sink/commit)",
             resp.batch_id
         );
     }

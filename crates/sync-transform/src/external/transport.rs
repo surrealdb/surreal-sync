@@ -5,11 +5,12 @@ use crate::framer::{Framer, NdjsonFramer};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use bytes::BytesMut;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 /// Whether the worker process lives across batches or is respawned each time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -32,18 +33,21 @@ pub struct WireResponse {
 /// Multiplexed byte-oriented external transport.
 ///
 /// Even when `max_in_flight = 1`, apply uses this API (not a “last request
-/// wins” single-slot exchange). Responses are correlated by `batch_id`.
+/// wins” single-slot exchange). Responses are correlated by the **request**
+/// `batch_id` passed to [`Self::try_read_response`] — never by rebinding a
+/// payload read for one waiter onto another outstanding id.
 #[async_trait]
 pub trait ExternalTransport: Send + Sync {
     /// Write one framed request (header + item lines) for `batch_id`.
     async fn write_request(&self, batch_id: u64, items: &[Vec<u8>]) -> Result<()>;
 
-    /// Await the next complete response from the stream.
+    /// Await the response for a specific request `batch_id`.
     ///
-    /// Returns `Ok(None)` only when there is nothing to read yet (e.g. transient
-    /// mode with no in-flight children). Returns `Ok(Some(_))` for any completed
-    /// response — not necessarily FIFO with writes (multiplexed / out-of-order).
-    async fn try_read_response(&self) -> Result<Option<WireResponse>>;
+    /// Returns `Ok(None)` only when there is nothing to wait on yet (rare;
+    /// most implementations block until this request’s response is ready).
+    /// The returned [`WireResponse::batch_id`] must still echo the request id
+    /// (checked by [`crate::ExternalTransform`]).
+    async fn try_read_response(&self, batch_id: u64) -> Result<Option<WireResponse>>;
 }
 
 pub(crate) fn encode_request(framer: &dyn Framer, batch_id: u64, items: &[Vec<u8>]) -> Vec<u8> {
@@ -74,6 +78,8 @@ struct PendingHeader {
     batch_id: u64,
     count: usize,
     items: Vec<Vec<u8>>,
+    /// When set, items are drained then an error [`WireResponse`] is returned.
+    error: Option<String>,
 }
 
 struct ReadState {
@@ -115,65 +121,105 @@ impl ReadState {
     }
 
     fn try_parse(&mut self, framer: &dyn Framer) -> Result<Option<WireResponse>> {
-        loop {
-            if let Some(mut pending) = self.pending.take() {
-                while pending.items.len() < pending.count {
-                    match framer.next_message(&mut self.buf)? {
-                        Some(item) => pending.items.push(item.to_vec()),
-                        None => {
-                            self.pending = Some(pending);
-                            return Ok(None);
-                        }
+        try_parse_buf(&mut self.buf, &mut self.pending, framer)
+    }
+}
+
+/// Shared NDJSON response parse (used by child-stdio readers and unit tests).
+fn try_parse_buf(
+    buf: &mut BytesMut,
+    pending: &mut Option<PendingHeader>,
+    framer: &dyn Framer,
+) -> Result<Option<WireResponse>> {
+    loop {
+        if let Some(mut p) = pending.take() {
+            while p.items.len() < p.count {
+                match framer.next_message(buf)? {
+                    Some(item) => p.items.push(item.to_vec()),
+                    None => {
+                        *pending = Some(p);
+                        return Ok(None);
                     }
                 }
-                return Ok(Some(WireResponse {
-                    batch_id: pending.batch_id,
-                    error: None,
-                    items: pending.items,
-                }));
             }
-
-            let Some(header_bytes) = framer.next_message(&mut self.buf)? else {
-                return Ok(None);
-            };
-
-            let header: ResponseHeader =
-                serde_json::from_slice(&header_bytes).with_context(|| {
-                    format!(
-                        "invalid external response header JSON: {}",
-                        String::from_utf8_lossy(&header_bytes)
-                    )
-                })?;
-
-            if header.error.is_some() {
+            if let Some(error) = p.error {
+                // Trailing item lines after an error header are drained so
+                // the next header stays framed; payload is discarded.
                 return Ok(Some(WireResponse {
-                    batch_id: header.batch_id,
-                    error: header.error,
+                    batch_id: p.batch_id,
+                    error: Some(error),
                     items: Vec::new(),
                 }));
             }
-
-            let count = header.count.ok_or_else(|| {
-                anyhow!(
-                    "external response for batch_id={} missing both count and error",
-                    header.batch_id
-                )
-            })?;
-
-            self.pending = Some(PendingHeader {
-                batch_id: header.batch_id,
-                count,
-                items: Vec::with_capacity(count),
-            });
+            return Ok(Some(WireResponse {
+                batch_id: p.batch_id,
+                error: None,
+                items: p.items,
+            }));
         }
+
+        let Some(header_bytes) = framer.next_message(buf)? else {
+            return Ok(None);
+        };
+
+        let header: ResponseHeader = serde_json::from_slice(&header_bytes).with_context(|| {
+            format!(
+                "invalid external response header JSON: {}",
+                String::from_utf8_lossy(&header_bytes)
+            )
+        })?;
+
+        if header.error.is_some() {
+            // Prefer draining declared trailing items to avoid desync; if
+            // count is absent, assume a compliant worker sent no items.
+            let drain = header.count.unwrap_or(0);
+            if drain > 0 {
+                *pending = Some(PendingHeader {
+                    batch_id: header.batch_id,
+                    count: drain,
+                    items: Vec::with_capacity(drain),
+                    error: header.error,
+                });
+                continue;
+            }
+            return Ok(Some(WireResponse {
+                batch_id: header.batch_id,
+                error: header.error,
+                items: Vec::new(),
+            }));
+        }
+
+        let count = header.count.ok_or_else(|| {
+            anyhow!(
+                "external response for batch_id={} missing both count and error",
+                header.batch_id
+            )
+        })?;
+
+        *pending = Some(PendingHeader {
+            batch_id: header.batch_id,
+            count,
+            items: Vec::with_capacity(count),
+            error: None,
+        });
     }
 }
 
 /// Persistent child: spawn once, keep alive for many exchanges.
+///
+/// Responses are paired to requests by **write order** on the shared pipe
+/// (fail closed if the echoed `batch_id` does not match the dequeued write).
+/// That prevents rebinding one request’s payload onto another outstanding id.
 pub struct PersistentChildStdio {
     child: Mutex<Child>,
     stdin: Mutex<ChildStdin>,
+    write_order: Mutex<VecDeque<u64>>,
+    completed: Mutex<HashMap<u64, Result<WireResponse>>>,
     read: Mutex<ReadState>,
+    /// Wakes waiters when a request-keyed slot may be ready.
+    notify: Notify,
+    /// Only one task advances the shared stdout stream.
+    read_gate: Mutex<()>,
     framer: NdjsonFramer,
 }
 
@@ -208,7 +254,11 @@ impl PersistentChildStdio {
         Ok(Self {
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
+            write_order: Mutex::new(VecDeque::new()),
+            completed: Mutex::new(HashMap::new()),
             read: Mutex::new(ReadState::new(stdout)),
+            notify: Notify::new(),
+            read_gate: Mutex::new(()),
             framer,
         })
     }
@@ -218,13 +268,84 @@ impl PersistentChildStdio {
 impl ExternalTransport for PersistentChildStdio {
     async fn write_request(&self, batch_id: u64, items: &[Vec<u8>]) -> Result<()> {
         let bytes = encode_request(&self.framer, batch_id, items);
-        write_all_locked(&self.stdin, &bytes).await
+        self.write_order.lock().await.push_back(batch_id);
+        write_all_locked(&self.stdin, &bytes).await?;
+        self.notify.notify_waiters();
+        Ok(())
     }
 
-    async fn try_read_response(&self) -> Result<Option<WireResponse>> {
-        let mut read = self.read.lock().await;
-        let resp = read.read_response(&self.framer).await?;
-        Ok(Some(resp))
+    async fn try_read_response(&self, batch_id: u64) -> Result<Option<WireResponse>> {
+        loop {
+            // Register before checking to avoid lost wakeups.
+            let notified = self.notify.notified();
+            {
+                let mut completed = self.completed.lock().await;
+                if let Some(resp) = completed.remove(&batch_id) {
+                    return resp.map(Some);
+                }
+            }
+
+            let gate = self.read_gate.try_lock();
+            let Ok(_gate) = gate else {
+                notified.await;
+                continue;
+            };
+
+            // Recheck under gate — another reader may have filled our slot.
+            {
+                let mut completed = self.completed.lock().await;
+                if let Some(resp) = completed.remove(&batch_id) {
+                    return resp.map(Some);
+                }
+            }
+
+            let req_id = {
+                let mut q = self.write_order.lock().await;
+                if q.is_empty() {
+                    drop(_gate);
+                    notified.await;
+                    continue;
+                }
+                q.pop_front().expect("non-empty")
+            };
+
+            // Blocking read without holding write_order / completed.
+            let framed = {
+                let mut read = self.read.lock().await;
+                read.read_response(&self.framer).await
+            };
+
+            let result = match framed {
+                Ok(resp) if resp.batch_id == req_id => Ok(resp),
+                Ok(resp) => Err(anyhow!(
+                    "external transform batch_id mismatch: expected request {req_id}, \
+                     got response for {} (fail closed; no cross-batch rebind)",
+                    resp.batch_id
+                )),
+                Err(e) => Err(e),
+            };
+
+            if req_id == batch_id {
+                self.notify.notify_waiters();
+                return result.map(Some);
+            }
+            self.completed.lock().await.insert(req_id, result);
+            self.notify.notify_waiters();
+            // Keep the gate and continue draining until our id is ready, or
+            // drop and let others drive — continue loop drops gate at end of
+            // iteration via _gate going out of scope... but we're in loop with
+            // _gate still held. Hold gate and loop without re-registering wait.
+            {
+                let mut completed = self.completed.lock().await;
+                if let Some(resp) = completed.remove(&batch_id) {
+                    return resp.map(Some);
+                }
+            }
+            // More frames may be needed; stay in loop with gate held by
+            // not dropping until we `continue` — actually _gate lives for the
+            // whole iteration. Next iteration re-acquires. Drop explicitly:
+            drop(_gate);
+        }
     }
 }
 
@@ -244,8 +365,9 @@ impl Drop for PersistentChildStdio {
 pub struct TransientChildStdio {
     command: Vec<String>,
     framer: NdjsonFramer,
-    /// In-flight children keyed by batch_id.
+    /// In-flight children keyed by request batch_id.
     inflight: Mutex<HashMap<u64, TransientChild>>,
+    notify: Arc<Notify>,
 }
 
 struct TransientChild {
@@ -259,6 +381,7 @@ impl TransientChildStdio {
             command,
             framer,
             inflight: Mutex::new(HashMap::new()),
+            notify: Arc::new(Notify::new()),
         }
     }
 
@@ -313,51 +436,68 @@ impl ExternalTransport for TransientChildStdio {
         // Close stdin so workers that read until EOF still complete.
         drop(stdin);
         self.inflight.lock().await.insert(batch_id, tc);
+        self.notify.notify_waiters();
         Ok(())
     }
 
-    async fn try_read_response(&self) -> Result<Option<WireResponse>> {
-        let mut inflight = self.inflight.lock().await;
-        if inflight.is_empty() {
-            return Ok(None);
-        }
-
-        // Prefer any child that already has a complete response buffered;
-        // otherwise block on an arbitrary in-flight child.
-        let keys: Vec<u64> = inflight.keys().copied().collect();
-        for batch_id in keys {
-            let Some(tc) = inflight.get_mut(&batch_id) else {
+    async fn try_read_response(&self, batch_id: u64) -> Result<Option<WireResponse>> {
+        loop {
+            // Register before checking to avoid lost wakeups when write races.
+            let notified = self.notify.notified();
+            let tc = {
+                let mut inflight = self.inflight.lock().await;
+                inflight.remove(&batch_id)
+            };
+            let Some(mut tc) = tc else {
+                notified.await;
                 continue;
             };
-            if let Some(resp) = tc.read.try_parse(&self.framer)? {
-                let mut tc = inflight.remove(&batch_id).expect("just got");
-                let status = tc
-                    .child
-                    .wait()
-                    .await
-                    .context("wait transient worker exit")?;
-                if !status.success() {
-                    bail!("transient worker exited with {status} for batch_id={batch_id}");
-                }
-                return Ok(Some(resp));
-            }
-        }
 
-        // Block on the first in-flight child.
-        let batch_id = *inflight.keys().next().expect("non-empty");
-        let resp = {
-            let tc = inflight.get_mut(&batch_id).expect("just keyed");
-            tc.read.read_response(&self.framer).await?
-        };
-        let mut tc = inflight.remove(&batch_id).expect("just got");
-        let status = tc
-            .child
-            .wait()
-            .await
-            .context("wait transient worker exit")?;
-        if !status.success() {
-            bail!("transient worker exited with {status} for batch_id={batch_id}");
+            // Read/wait without holding the inflight map (other batches can write).
+            let resp = tc.read.read_response(&self.framer).await?;
+            let status = tc
+                .child
+                .wait()
+                .await
+                .context("wait transient worker exit")?;
+            if !status.success() {
+                bail!("transient worker exited with {status} for batch_id={batch_id}");
+            }
+            return Ok(Some(resp));
         }
-        Ok(Some(resp))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::framer::NdjsonFramer;
+
+    #[test]
+    fn error_header_drains_trailing_item_lines() {
+        let framer = NdjsonFramer;
+        let mut out = Vec::new();
+        // error + count=2 with two trailing item lines, then a normal success header.
+        framer.write_message(br#"{"batch_id":1,"error":"boom","count":2}"#, &mut out);
+        framer.write_message(br#"{"junk":1}"#, &mut out);
+        framer.write_message(br#"{"junk":2}"#, &mut out);
+        framer.write_message(br#"{"batch_id":2,"count":0}"#, &mut out);
+        let mut buf = BytesMut::from(out.as_slice());
+        let mut pending = None;
+
+        let err_resp = try_parse_buf(&mut buf, &mut pending, &framer)
+            .unwrap()
+            .expect("error response");
+        assert_eq!(err_resp.batch_id, 1);
+        assert_eq!(err_resp.error.as_deref(), Some("boom"));
+        assert!(err_resp.items.is_empty());
+        assert!(pending.is_none());
+
+        let ok_resp = try_parse_buf(&mut buf, &mut pending, &framer)
+            .unwrap()
+            .expect("follow-up response");
+        assert_eq!(ok_resp.batch_id, 2);
+        assert!(ok_resp.error.is_none());
+        assert!(ok_resp.items.is_empty());
     }
 }
