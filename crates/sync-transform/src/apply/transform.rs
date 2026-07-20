@@ -10,12 +10,16 @@ use sync_core::{UniversalChange, UniversalRow};
 /// The apply runtime correlates in-flight work by `batch_id`. Responses may
 /// complete out of order; sink apply + commit stay strictly ordered.
 ///
-/// [`Pipeline`] implements this with the owned in-place path. Test-support
-/// provides scripted delays / failures so W≥2 reliability scenarios are real
-/// without External child-stdio (Phase 3).
+/// [`Pipeline`] implements this: empty pipelines short-circuit via
+/// [`Self::is_identity`]; non-empty pipelines walk in-place and External stages
+/// asynchronously. Test-support provides scripted delays / failures so W≥2
+/// reliability scenarios are real without a child process.
 #[async_trait]
 pub trait BatchTransformer: Send + Sync {
     /// Whether transform dispatch can be skipped entirely (empty pipeline).
+    ///
+    /// For [`Pipeline`], this is [`Pipeline::is_identity`] — only an empty
+    /// stage list, not a lone passthrough stage.
     fn is_identity(&self) -> bool;
 
     /// Transform an owned change batch. `batch_id` is monotonic per apply run.
@@ -41,24 +45,17 @@ impl BatchTransformer for Pipeline {
 
     async fn transform_changes(
         &self,
-        _batch_id: u64,
+        batch_id: u64,
         changes: Vec<UniversalChange>,
     ) -> Result<Vec<UniversalChange>> {
-        // Identity: pure move, no stage dispatch.
-        if self.is_identity() {
-            return Ok(changes);
-        }
-        self.apply_changes(changes)
+        self.apply_changes_async(batch_id, changes).await
     }
 
     async fn transform_rows(
         &self,
-        _batch_id: u64,
+        batch_id: u64,
         rows: Vec<UniversalRow>,
     ) -> Result<Vec<UniversalRow>> {
-        if self.is_identity() {
-            return Ok(rows);
-        }
-        self.apply_rows(rows)
+        self.apply_rows_async(batch_id, rows).await
     }
 }

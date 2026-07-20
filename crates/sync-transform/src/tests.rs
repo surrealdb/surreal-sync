@@ -452,14 +452,17 @@ fn failing_stage_stops_later_stages_changes() {
 }
 
 #[test]
-fn pipeline_external_stub_errors_on_apply() {
+fn pipeline_external_sync_inplace_errors() {
+    let transport = crate::test_support::ScriptedExternalTransport::new();
     let mut pipeline = Pipeline::new();
-    pipeline.push_external(ExternalTransform::stub());
+    pipeline.push_external(ExternalTransform::with_transport(std::sync::Arc::new(
+        transport,
+    )));
     let err = pipeline
         .apply_rows(vec![sample_row("alice")])
         .unwrap_err();
     assert!(
-        err.to_string().contains("not implemented"),
+        err.to_string().contains("BatchTransformer") || err.to_string().contains("async"),
         "unexpected error: {err}"
     );
 }

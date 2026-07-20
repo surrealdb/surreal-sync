@@ -6,7 +6,7 @@ use sync_core::{UniversalChange, UniversalRow};
 /// Mutate-only, same-length transform over universal docs.
 ///
 /// This is the **only** in-process mutation primitive. Filter / fan-out belong
-/// in [`crate::ExternalTransform`] (later) or outside this trait.
+/// in [`crate::ExternalTransform`] or outside this trait.
 ///
 /// # Slice defaults
 ///

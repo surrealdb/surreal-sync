@@ -1,32 +1,17 @@
-//! Ordered transform pipeline: in-place stages and external boundary stub.
+//! Ordered transform pipeline: in-place stages and external boundary.
 
+use crate::external::ExternalTransform;
 use crate::inplace::InPlaceTransform;
 use anyhow::{bail, Result};
 use std::sync::Arc;
 use sync_core::{UniversalChange, UniversalRow};
-
-/// Stub for Phase 3 external (child-stdio) transforms.
-///
-/// Not constructible from config yet; present so [`Stage`] and [`Pipeline`] can
-/// grow an `External` variant without reshaping the Phase 1 API.
-#[derive(Debug, Clone)]
-pub struct ExternalTransform {
-    _private: (),
-}
-
-impl ExternalTransform {
-    /// Placeholder constructor for future wiring / tests that need the variant.
-    pub fn stub() -> Self {
-        Self { _private: () }
-    }
-}
 
 /// A single pipeline stage.
 #[derive(Clone)]
 pub enum Stage {
     /// In-process mutate-only transform.
     InPlace(Arc<dyn InPlaceTransform>),
-    /// External worker boundary (Phase 3; applying today returns an error).
+    /// External worker boundary (child-stdio NDJSON).
     External(ExternalTransform),
 }
 
@@ -52,11 +37,12 @@ impl std::fmt::Debug for Stage {
 /// later) must collapse passthrough-only TOML to an empty pipeline so the CLI
 /// hot path stays zero-dispatch.
 ///
-/// # Phase 2 apply framework
+/// # Apply framework hot path
 ///
-/// The ChangeFeed / `write_rows` apply path must gate on
-/// [`is_identity`](Self::is_identity) (not merely “stages happen to be
-/// no-ops”) for the true zero-dispatch hot path.
+/// The ChangeFeed / `write_rows` apply path gates on
+/// [`crate::BatchTransformer::is_identity`] (implemented for [`Pipeline`] via
+/// [`is_identity`](Self::is_identity)). Only an empty stage list is identity —
+/// not “stages happen to be no-ops.”
 #[derive(Debug, Default, Clone)]
 pub struct Pipeline {
     stages: Vec<Stage>,
@@ -108,16 +94,15 @@ impl Pipeline {
         self.stages.push(Stage::InPlace(transform));
     }
 
-    /// Append an external stage stub (Phase 3 will flesh this out).
+    /// Append an external (child-stdio) stage.
     pub fn push_external(&mut self, external: ExternalTransform) {
         self.stages.push(Stage::External(external));
     }
 
-    /// Transform owned rows in place.
+    /// Transform owned rows in place (sync path — **in-place stages only**).
     ///
-    /// Empty pipeline: no-op with no stage dispatch. Non-empty: each in-place
-    /// stage mutates the slice without reallocating the `Vec` buffer (true
-    /// zero-copy relative to building a new batch).
+    /// Empty pipeline: no-op with no stage dispatch. External stages are not
+    /// supported here; use [`crate::BatchTransformer::transform_rows`] (async).
     pub fn transform_rows_inplace(&self, rows: &mut [UniversalRow]) -> Result<()> {
         if self.is_identity() {
             return Ok(());
@@ -126,18 +111,20 @@ impl Pipeline {
             match stage {
                 Stage::InPlace(t) => t.transform_rows_inplace(rows)?,
                 Stage::External(_) => {
-                    bail!("External transforms are not implemented yet (Phase 3)")
+                    bail!(
+                        "External transforms require the async BatchTransformer path \
+                         (transform_rows); sync inplace apply is in-place-only"
+                    )
                 }
             }
         }
         Ok(())
     }
 
-    /// Transform owned changes in place.
+    /// Transform owned changes in place (sync path — **in-place stages only**).
     ///
-    /// Empty pipeline: no-op with no stage dispatch. Non-empty: each in-place
-    /// stage mutates the slice without reallocating the `Vec` buffer (true
-    /// zero-copy relative to building a new batch).
+    /// Empty pipeline: no-op with no stage dispatch. External stages are not
+    /// supported here; use [`crate::BatchTransformer::transform_changes`] (async).
     pub fn transform_changes_inplace(&self, changes: &mut [UniversalChange]) -> Result<()> {
         if self.is_identity() {
             return Ok(());
@@ -146,7 +133,10 @@ impl Pipeline {
             match stage {
                 Stage::InPlace(t) => t.transform_changes_inplace(changes)?,
                 Stage::External(_) => {
-                    bail!("External transforms are not implemented yet (Phase 3)")
+                    bail!(
+                        "External transforms require the async BatchTransformer path \
+                         (transform_changes); sync inplace apply is in-place-only"
+                    )
                 }
             }
         }
@@ -155,8 +145,8 @@ impl Pipeline {
 
     /// Consume an owned row batch, transform in place, and return it.
     ///
-    /// Preferred sync-framework path: empty pipeline is a pure move with no
-    /// transform dispatch.
+    /// Preferred sync-framework path for **in-place-only** pipelines: empty
+    /// pipeline is a pure move with no transform dispatch.
     pub fn apply_rows(&self, mut rows: Vec<UniversalRow>) -> Result<Vec<UniversalRow>> {
         self.transform_rows_inplace(&mut rows)?;
         Ok(rows)
@@ -166,5 +156,46 @@ impl Pipeline {
     pub fn apply_changes(&self, mut changes: Vec<UniversalChange>) -> Result<Vec<UniversalChange>> {
         self.transform_changes_inplace(&mut changes)?;
         Ok(changes)
+    }
+
+    /// Async stage walk used by [`crate::BatchTransformer`]: in-place mutates,
+    /// External exchanges over child-stdio (may change batch length).
+    pub(crate) async fn apply_changes_async(
+        &self,
+        batch_id: u64,
+        mut changes: Vec<UniversalChange>,
+    ) -> Result<Vec<UniversalChange>> {
+        if self.is_identity() {
+            return Ok(changes);
+        }
+        for stage in &self.stages {
+            match stage {
+                Stage::InPlace(t) => t.transform_changes_inplace(&mut changes)?,
+                Stage::External(ext) => {
+                    changes = ext.exchange_changes(batch_id, changes).await?;
+                }
+            }
+        }
+        Ok(changes)
+    }
+
+    /// Async stage walk for rows (see [`Self::apply_changes_async`]).
+    pub(crate) async fn apply_rows_async(
+        &self,
+        batch_id: u64,
+        mut rows: Vec<UniversalRow>,
+    ) -> Result<Vec<UniversalRow>> {
+        if self.is_identity() {
+            return Ok(rows);
+        }
+        for stage in &self.stages {
+            match stage {
+                Stage::InPlace(t) => t.transform_rows_inplace(&mut rows)?,
+                Stage::External(ext) => {
+                    rows = ext.exchange_rows(batch_id, rows).await?;
+                }
+            }
+        }
+        Ok(rows)
     }
 }

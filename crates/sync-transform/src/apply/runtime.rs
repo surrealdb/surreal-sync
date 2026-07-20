@@ -564,6 +564,12 @@ where
         self.epoch = self.epoch.saturating_add(1);
         self.in_flight.clear();
         self.completed.clear();
+        // Also drop any not-yet-started buffered changes — docs claim successors
+        // are discarded; leaving the buffer would re-process them after Fail
+        // if the poisoned check were ever bypassed, and contradicts the
+        // "discard in-flight K+1…" reliability story for unstarted work.
+        self.buffer.clear();
+        self.buffer_started = None;
         // Abort remaining tasks; late JoinSet results will have a stale epoch
         // (or we abort them). JoinSet::abort_all is available on recent tokio.
         self.join_set.abort_all();

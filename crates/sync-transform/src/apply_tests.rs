@@ -286,9 +286,17 @@ async fn discard_on_failure_poisons_and_clears_successors() {
         .await
         .unwrap()
         .is_none());
+    // Window full (W=2): third change stays in the unstarted buffer and must
+    // be discarded with in-flight successors on Fail.
+    assert!(ctx
+        .push_change(change(3), 300u64)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(ctx.buffer_len(), 1, "C should be buffered while A,B in flight");
 
     // B completes first and sits in `completed` waiting for ordered A.
-    // flush then hits A's failure → discard_successors clears B + poisons.
+    // flush then hits A's failure → discard_successors clears B + buffer + poisons.
     let err = ctx.flush().await.unwrap_err();
     let err_msg = format!("{err:#}");
     assert!(err_msg.contains("A boom"), "unexpected error: {err_msg}");
@@ -314,6 +322,11 @@ async fn discard_on_failure_poisons_and_clears_successors() {
         ctx.completed_waiting_count(),
         0,
         "completed successors (B) must be discarded, not left waiting"
+    );
+    assert_eq!(
+        ctx.buffer_len(),
+        0,
+        "buffer must be cleared by discard_successors"
     );
     assert!(sink.applied().is_empty(), "B must never be sunk");
 

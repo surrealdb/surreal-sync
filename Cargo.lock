@@ -8576,6 +8576,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
+ "serde",
+ "serde_json",
  "surreal-sink",
  "sync-core",
  "tokio",

@@ -7,18 +7,21 @@
 //!         ↑
 //! CowBatch::apply_inplace   ← adapter (Arc COW sharing via make_mut)
 //!         ↑
-//! Pipeline                  ← InPlace | External (stub)
+//! Pipeline                  ← InPlace | External (child-stdio)
 //!         ↑
 //! ApplyContext / run_change_feed / write_rows   ← ChangeFeed framework
 //! ```
 //!
 //! An empty [`Pipeline`] is identity: docs pass through with **zero** transform
-//! dispatch overhead (`is_identity()` short-circuits before any stage call).
-//! The apply framework gates on [`Pipeline::is_identity`] for that hot path —
-//! a lone [`Passthrough`] stage is *not* identity.
+//! dispatch overhead. The apply framework gates on
+//! [`BatchTransformer::is_identity`] (for [`Pipeline`], equivalent to
+//! [`Pipeline::is_identity`] — only an empty stage list). A lone
+//! [`Passthrough`] stage is *not* identity.
 
 mod apply;
 mod cow;
+mod external;
+mod framer;
 mod inplace;
 mod pipeline;
 
@@ -27,8 +30,13 @@ pub use apply::{
     BatchTransformer, ChangeFeed, FailurePolicy, PositionedChange,
 };
 pub use cow::CowBatch;
+pub use external::{
+    ChildStdioMode, ExternalTransform, ExternalTransport, PersistentChildStdio, RequestHeader,
+    ResponseHeader, TransientChildStdio, WireResponse,
+};
+pub use framer::{Framer, NdjsonFramer};
 pub use inplace::{InPlaceTransform, Passthrough};
-pub use pipeline::{ExternalTransform, Pipeline, Stage};
+pub use pipeline::{Pipeline, Stage};
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
@@ -39,6 +47,9 @@ mod tests;
 #[cfg(test)]
 mod apply_tests;
 
+#[cfg(test)]
+mod external_tests;
+
 // Compile-time Send + Sync assertions for types used across async apply paths.
 const _: () = {
     fn assert_send_sync<T: Send + Sync>() {}
@@ -48,6 +59,8 @@ const _: () = {
         assert_send_sync::<CowBatch<sync_core::UniversalRow>>();
         assert_send_sync::<CowBatch<sync_core::UniversalChange>>();
         assert_send_sync::<ApplyOpts>();
+        assert_send_sync::<ExternalTransform>();
+        assert_send_sync::<NdjsonFramer>();
     }
 
     let _ = check;

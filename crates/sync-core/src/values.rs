@@ -908,7 +908,7 @@ impl TypedValue {
 /// `UniversalRow` represents a single row of data in the intermediate format,
 /// produced by the data generator and consumed by both source populators
 /// and the streaming verifier.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UniversalRow {
     /// Table name
     pub table: String,
@@ -1029,7 +1029,7 @@ pub enum UniversalChangeOp {
 ///
 /// This type represents a change (INSERT/UPDATE/DELETE) from a source database
 /// in a universal format that can be converted to any target database format.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UniversalChange {
     /// The operation type (Create/Update/Delete)
     pub operation: UniversalChangeOp,
@@ -1341,5 +1341,39 @@ mod tests {
         let value = UniversalValue::Int8 { value: 1, width: 1 };
         let typed = value.to_typed_value();
         assert!(matches!(typed.sync_type, UniversalType::Int8 { width: 1 }));
+    }
+
+    #[test]
+    fn universal_row_serde_roundtrip() {
+        let row = UniversalRow::builder("users", 7, UniversalValue::Int64(42))
+            .field("name", UniversalValue::Text("Alice".to_string()))
+            .field("active", UniversalValue::Bool(true))
+            .build();
+        let json = serde_json::to_string(&row).expect("serialize row");
+        let back: UniversalRow = serde_json::from_str(&json).expect("deserialize row");
+        assert_eq!(back, row);
+    }
+
+    #[test]
+    fn universal_change_serde_roundtrip_and_golden() {
+        let mut data = HashMap::new();
+        data.insert("name".to_string(), UniversalValue::Text("Bob".to_string()));
+        let change = UniversalChange::create("users", UniversalValue::Int64(9), data);
+
+        let json = serde_json::to_string(&change).expect("serialize change");
+        let back: UniversalChange = serde_json::from_str(&json).expect("deserialize change");
+        assert_eq!(back, change);
+
+        // Golden: fixed JSON (single field so HashMap order is irrelevant).
+        let golden = r#"{"operation":"Create","table":"users","id":{"type":"Int64","value":9},"data":{"name":{"type":"Text","value":"Bob"}}}"#;
+        let from_golden: UniversalChange =
+            serde_json::from_str(golden).expect("deserialize golden");
+        assert_eq!(from_golden, change);
+
+        let delete = UniversalChange::delete("users", UniversalValue::Int64(9));
+        let delete_json = serde_json::to_string(&delete).unwrap();
+        let delete_back: UniversalChange = serde_json::from_str(&delete_json).unwrap();
+        assert_eq!(delete_back, delete);
+        assert!(delete_back.data.is_none());
     }
 }

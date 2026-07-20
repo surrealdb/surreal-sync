@@ -3,7 +3,9 @@
 //! Shared by `sync-transform` reliability tests and (later) source crates that
 //! need the same harness without duplicating window semantics.
 
-use crate::{BatchTransformer, ChangeFeed, Pipeline, PositionedChange};
+use crate::{
+    BatchTransformer, ChangeFeed, ExternalTransport, Pipeline, PositionedChange, WireResponse,
+};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use std::collections::{HashMap, VecDeque};
@@ -13,6 +15,7 @@ use surreal_sink::SurrealSink;
 use sync_core::{
     UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow,
 };
+use tokio::sync::Notify;
 
 /// Per-batch script for [`ScriptedTransformer`].
 #[derive(Debug, Clone)]
@@ -190,6 +193,184 @@ impl BatchTransformer for ScriptedTransformer {
             .completed_order
             .push(batch_id);
         Ok(out)
+    }
+}
+
+/// Per-batch script for [`ScriptedExternalTransport`].
+#[derive(Debug, Clone)]
+pub struct ExternalBatchScript {
+    /// Delay before the response becomes readable.
+    pub delay: Duration,
+    /// If set, respond with this error header (no items).
+    pub error: Option<String>,
+    /// If set, echo this batch_id instead of the request's (mismatch tests).
+    pub echo_batch_id: Option<u64>,
+    /// If true, omit batch_id from the logical response (surfaced as error).
+    pub missing_batch_id: bool,
+    /// Optional item rewrite: when true, append `"-x"` to UTF-8 payloads.
+    pub mutate_payload: bool,
+}
+
+impl Default for ExternalBatchScript {
+    fn default() -> Self {
+        Self {
+            delay: Duration::ZERO,
+            error: None,
+            echo_batch_id: None,
+            missing_batch_id: false,
+            mutate_payload: false,
+        }
+    }
+}
+
+impl ExternalBatchScript {
+    /// Echo items after `delay`.
+    pub fn echo_after(delay: Duration) -> Self {
+        Self {
+            delay,
+            ..Default::default()
+        }
+    }
+
+    /// Respond with a mismatched batch_id after `delay`.
+    pub fn bad_batch_id_after(delay: Duration, echo: u64) -> Self {
+        Self {
+            delay,
+            echo_batch_id: Some(echo),
+            ..Default::default()
+        }
+    }
+}
+
+struct ScriptedExternalState {
+    by_batch_id: HashMap<u64, ExternalBatchScript>,
+    /// Completed responses ready for try_read (may be out of write order).
+    ready: VecDeque<Result<WireResponse>>,
+    writes: Vec<u64>,
+    notify: Arc<Notify>,
+}
+
+/// In-memory multiplexed [`ExternalTransport`] for framework tests.
+///
+/// Supports out-of-order completion, delays, and scripted batch_id errors.
+#[derive(Clone)]
+pub struct ScriptedExternalTransport {
+    state: Arc<Mutex<ScriptedExternalState>>,
+}
+
+impl ScriptedExternalTransport {
+    /// Create an empty scripted transport (default: echo with no delay).
+    pub fn new() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(ScriptedExternalState {
+                by_batch_id: HashMap::new(),
+                ready: VecDeque::new(),
+                writes: Vec::new(),
+                notify: Arc::new(Notify::new()),
+            })),
+        }
+    }
+
+    /// Configure behavior for a specific `batch_id`.
+    pub fn on_batch(self, batch_id: u64, script: ExternalBatchScript) -> Self {
+        self.state
+            .lock()
+            .expect("scripted external lock")
+            .by_batch_id
+            .insert(batch_id, script);
+        self
+    }
+
+    /// Recorded write order.
+    pub fn write_order(&self) -> Vec<u64> {
+        self.state
+            .lock()
+            .expect("scripted external lock")
+            .writes
+            .clone()
+    }
+}
+
+impl Default for ScriptedExternalTransport {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl ExternalTransport for ScriptedExternalTransport {
+    async fn write_request(&self, batch_id: u64, items: &[Vec<u8>]) -> Result<()> {
+        let (script, notify) = {
+            let mut st = self.state.lock().expect("scripted external lock");
+            st.writes.push(batch_id);
+            let script = st
+                .by_batch_id
+                .get(&batch_id)
+                .cloned()
+                .unwrap_or_default();
+            (script, Arc::clone(&st.notify))
+        };
+
+        let items = items.to_vec();
+        let state = Arc::clone(&self.state);
+        tokio::spawn(async move {
+            if !script.delay.is_zero() {
+                tokio::time::sleep(script.delay).await;
+            }
+            let resp = if script.missing_batch_id {
+                Err(anyhow!(
+                    "invalid external response header JSON: missing field `batch_id`"
+                ))
+            } else if let Some(err) = script.error {
+                Ok(WireResponse {
+                    batch_id: script.echo_batch_id.unwrap_or(batch_id),
+                    error: Some(err),
+                    items: Vec::new(),
+                })
+            } else {
+                let out_id = script.echo_batch_id.unwrap_or(batch_id);
+                let items = if script.mutate_payload {
+                    items
+                        .into_iter()
+                        .map(|mut b| {
+                            b.extend_from_slice(b"-x");
+                            b
+                        })
+                        .collect()
+                } else {
+                    items
+                };
+                Ok(WireResponse {
+                    batch_id: out_id,
+                    error: None,
+                    items,
+                })
+            };
+            {
+                let mut st = state.lock().expect("scripted external lock");
+                st.ready.push_back(resp);
+            }
+            notify.notify_waiters();
+        });
+        Ok(())
+    }
+
+    async fn try_read_response(&self) -> Result<Option<WireResponse>> {
+        loop {
+            let notify = {
+                let st = self.state.lock().expect("scripted external lock");
+                Arc::clone(&st.notify)
+            };
+            // Register waiter before checking ready to avoid lost wakeups.
+            let notified = notify.notified();
+            {
+                let mut st = self.state.lock().expect("scripted external lock");
+                if let Some(resp) = st.ready.pop_front() {
+                    return resp.map(Some);
+                }
+            }
+            notified.await;
+        }
     }
 }
 
