@@ -69,7 +69,15 @@ fn main() {
 }
 
 fn mutate_name(item: &mut Value) {
-    // UniversalChange: data.name; UniversalRow: fields.name
+    // UniversalChange: data.name; UniversalRow / UniversalRelation: fields/data.name
+    // UniversalRelationChange: relation.data.name
+    mutate_name_in_maps(item);
+    if let Some(relation) = item.get_mut("relation") {
+        mutate_name_in_maps(relation);
+    }
+}
+
+fn mutate_name_in_maps(item: &mut Value) {
     // UniversalValue tagged: {"type":"VarChar","value":{"value":"...","length":N}}
     //                    or: {"type":"Text","value":"..."}
     for key in ["data", "fields"] {

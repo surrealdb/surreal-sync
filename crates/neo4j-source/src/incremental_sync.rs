@@ -20,7 +20,7 @@ use crate::{Neo4jConversionContext, SourceOpts, SyncOpts};
 use async_trait::async_trait;
 use chrono::Utc;
 use neo4rs::{Graph, Query};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use surreal_sink::SurrealSink;
 use sync_core::{
@@ -133,8 +133,8 @@ pub struct Neo4jChangeStream {
     id_property: String,
     /// Conversion context with timezone and JSON-to-object configuration
     ctx: Neo4jConversionContext,
-    /// Buffer for batched changes
-    change_buffer: Vec<IncrementalChange>,
+    /// Buffer for batched changes (FIFO: nodes were appended before relations).
+    change_buffer: VecDeque<IncrementalChange>,
     /// Whether we've finished reading all changes
     finished: bool,
     /// Optional composite database constituent for `USE` clause
@@ -156,7 +156,7 @@ impl Neo4jChangeStream {
             change_tracking_property,
             id_property,
             ctx,
-            change_buffer: Vec::new(),
+            change_buffer: VecDeque::new(),
             finished: false,
             composite_constituent,
         }
@@ -317,7 +317,9 @@ impl Neo4jChangeStream {
             self.finished = true;
         } else {
             self.current_checkpoint = max_checkpoint;
-            self.change_buffer = batch_changes;
+            // FIFO dequeue: nodes were pushed before relations so endpoints
+            // emit before edges (matches pre-port apply_incremental_changes).
+            self.change_buffer = VecDeque::from(batch_changes);
         }
 
         Ok(())
@@ -334,8 +336,8 @@ impl ChangeStream for Neo4jChangeStream {
             }
         }
 
-        // Return next change from buffer
-        self.change_buffer.pop().map(Ok)
+        // FIFO: nodes (appended first) before relations within a fetch batch.
+        self.change_buffer.pop_front().map(Ok)
     }
 
     fn checkpoint(&self) -> Option<Neo4jCheckpoint> {
