@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use binlog_protocol::{
     BinlogClient, Flavor, MariaDbDumpFlags, MariaDbGtidList, ReplicaOptions, ResumePosition,
 };
@@ -41,6 +41,26 @@ pub fn new_mysql_pool(connection_string: &str) -> Result<Pool> {
     Ok(Pool::from_url(connection_string)?)
 }
 
+/// Short, actionable message when a MySQL TCP/connect attempt fails.
+fn mysql_connect_context(connection_string: &str) -> String {
+    match parse_mysql_uri(connection_string) {
+        Ok((host, port, ..)) => format!(
+            "failed to connect to MySQL at {host}:{port}; check the server is running and `--connection-string` is correct"
+        ),
+        Err(_) => {
+            "failed to connect to MySQL; check the server is running and `--connection-string` is correct"
+                .to_string()
+        }
+    }
+}
+
+/// Get a pool connection, wrapping TCP/connect failures with a clear next action.
+pub async fn get_pool_conn(pool: &Pool, connection_string: &str) -> Result<mysql_async::Conn> {
+    pool.get_conn()
+        .await
+        .with_context(|| mysql_connect_context(connection_string))
+}
+
 pub async fn connect_binlog_client(from_opts: &SourceOpts) -> Result<BinlogClient> {
     connect_binlog_client_with_poll(from_opts, DEFAULT_BINLOG_POLL_TIMEOUT).await
 }
@@ -68,7 +88,7 @@ pub async fn connect_binlog_client_with_poll(
     };
     BinlogClient::connect(opts)
         .await
-        .map_err(|e| anyhow::anyhow!("binlog connect failed: {e}"))
+        .with_context(|| mysql_connect_context(&connection_string))
 }
 
 pub async fn resolve_database(pool: &Pool, from_opts: &SourceOpts) -> Result<String> {
@@ -79,7 +99,7 @@ pub async fn resolve_database(pool: &Pool, from_opts: &SourceOpts) -> Result<Str
     if let Some(db) = db_from_uri {
         return Ok(db);
     }
-    let mut conn = pool.get_conn().await?;
+    let mut conn = get_pool_conn(pool, &from_opts.connection_string).await?;
     let db: Option<String> = conn.query_first("SELECT DATABASE()").await?;
     db.ok_or_else(|| anyhow::anyhow!("no database selected"))
 }
@@ -206,6 +226,24 @@ mod tests {
         assert!(
             format!("{err}").contains("gtid_binlog_pos"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn mysql_connect_context_includes_host_port() {
+        let msg = mysql_connect_context("mysql://db:db@127.0.0.1:32793/db");
+        assert_eq!(
+            msg,
+            "failed to connect to MySQL at 127.0.0.1:32793; check the server is running and `--connection-string` is correct"
+        );
+    }
+
+    #[test]
+    fn mysql_connect_context_fallback_on_bad_uri() {
+        let msg = mysql_connect_context("not-a-uri");
+        assert_eq!(
+            msg,
+            "failed to connect to MySQL; check the server is running and `--connection-string` is correct"
         );
     }
 }

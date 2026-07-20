@@ -16,7 +16,8 @@ use crate::catch_up::{
 };
 use crate::checkpoint::BinlogCheckpoint;
 use crate::client::{
-    connect_binlog_client, new_mysql_pool, resolve_database, show_master_status, use_database,
+    connect_binlog_client, get_pool_conn, new_mysql_pool, resolve_database, show_master_status,
+    use_database,
 };
 use crate::schema::collect_mysql_database_schema;
 use crate::signal::SIGNAL_TABLE;
@@ -61,7 +62,7 @@ pub async fn run_full_sync_cancellable<S: SurrealSink, CS: CheckpointStore>(
 
     let pool = new_mysql_pool(&from_opts.connection_string)?;
     let database = resolve_database(&pool, from_opts).await?;
-    let mut conn = pool.get_conn().await?;
+    let mut conn = get_pool_conn(&pool, &from_opts.connection_string).await?;
     use_database(&mut conn, &database).await?;
 
     // Detect the server flavor via a short-lived binlog handshake so the captured
