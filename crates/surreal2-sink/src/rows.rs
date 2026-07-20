@@ -23,9 +23,17 @@ pub fn universal_value_to_surreal_id(value: &UniversalValue) -> Result<Id> {
             // Convert ULID to string since SurrealDB doesn't have native ULID ID type
             Ok(Id::String(u.to_string()))
         }
+        UniversalValue::Array { elements, .. } => {
+            // Composite primary keys: format each element to a string joined by '_'.
+            let parts: Result<Vec<String>> = elements
+                .iter()
+                .map(|e| format_composite_key_part(e))
+                .collect();
+            Ok(Id::String(parts?.join("_")))
+        }
         other => bail!(
             "Unsupported UniversalValue type for SurrealDB ID: {other:?}. \
-             Supported types: Text, VarChar, Char, Int32, Int64, Uuid, Ulid"
+             Supported types: Text, VarChar, Char, Int32, Int64, Uuid, Ulid, Array"
         ),
     }
 }
@@ -48,6 +56,29 @@ pub fn universal_row_to_surreal_record(row: &UniversalRow) -> Result<RecordWithS
         .collect();
 
     Ok(RecordWithSurrealValues::new(thing, data))
+}
+
+/// Format a single element of a composite primary key to a string suitable
+/// for use in a SurrealDB record ID (joined with '_').
+fn format_composite_key_part(value: &UniversalValue) -> Result<String> {
+    Ok(match value {
+        UniversalValue::Null => "null".to_string(),
+        UniversalValue::Bool(b) => b.to_string(),
+        UniversalValue::Int8 { value, .. } => value.to_string(),
+        UniversalValue::Int16(v) => v.to_string(),
+        UniversalValue::Int32(v) => v.to_string(),
+        UniversalValue::Int64(v) => v.to_string(),
+        UniversalValue::Float32(v) => v.to_string(),
+        UniversalValue::Float64(v) => v.to_string(),
+        UniversalValue::Text(s) => s.clone(),
+        UniversalValue::VarChar { value, .. } => value.clone(),
+        UniversalValue::Char { value, .. } => value.clone(),
+        UniversalValue::Uuid(u) => u.to_string(),
+        UniversalValue::Ulid(u) => u.to_string(),
+        other => bail!(
+            "Unsupported type in composite key: {other:?}"
+        ),
+    })
 }
 
 /// Write a batch of UniversalRows to SurrealDB.
