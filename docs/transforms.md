@@ -18,7 +18,8 @@ surreal-sync still owns batching, applying docs to SurrealDB, and when the sourc
 | External worker over child-process stdio (NDJSON) | Available |
 | `--transforms-config` on every `from *` sync path listed below | Available |
 | `failure_policy` `fail` (default) or `skip` | Available |
-| Overlapping transform window via `max_in_flight` | Available |
+| Overlapping transform window via `max_in_flight` | Available on CDC/`SourceDriver` paths |
+| Full-sync / `write_rows` windowing when `max_in_flight > 1` | Available (same ApplyContext window) |
 
 ## What is not available yet
 
@@ -40,9 +41,9 @@ Every sync/import path below loads the same TOML via the shared CLI helper and a
 | `from mysql full` / `incremental` / `sync` | Trigger snapshot, stream, and interleaved `sync` (also MariaDB via the same subcommand) |
 | `from mongodb full` / `incremental` | Collection dump + change stream |
 | `from neo4j full` / `incremental` | Nodes and relationships |
-| `from kafka` | SourceDriver window (offset commit after sink) |
-| `from csv` | SourceDriver window |
-| `from jsonl` | SourceDriver window (`conversion_rules` before Pipeline) |
+| `from kafka` | SourceDriver window; offset `commit_batch` of all sunk messages after sink |
+| `from csv` | Long-lived SourceDriver streams file reads into the window |
+| `from jsonl` | Long-lived SourceDriver streams line reads into the window |
 
 ## CLI quick start
 
@@ -146,27 +147,35 @@ Prefer `persistent` for real enrichment (avoids per-batch process startup). `tra
 
 - **`batch_size` / `batch_max_wait`** — how large a batch becomes before transform starts. Larger batches amortize worker overhead; smaller batches reduce latency.
 - **`timeout`** — how long one transform exchange may take. On timeout the batch fails (see failure policy).
-- **`max_in_flight`** — apply window size (default `1`). W=1 and W=16 share the **same** runtime: surreal-sync may transform several batches at once and continue polling while ordered sink writes are in flight; completions match by `batch_id`, then **sink apply and source commit stay strictly ordered**. A failed batch blocks commit of later ones; in-flight successors are discarded (never committed).
+- **`max_in_flight`** — apply window size (default `1`). On **CDC / `SourceDriver` / long-lived file streams**, W=1 and W=16 share the **same** runtime: surreal-sync may transform several batches at once and continue polling while ordered sink writes are in flight; completions match by `batch_id`, then **sink apply and source commit stay strictly ordered**. A failed batch blocks commit of later ones; in-flight successors are discarded (never committed). Full-sync helpers (`write_rows` / `write_relations`) use that same window when `max_in_flight > 1` or the pipeline is non-identity; identity + W=1 stays on a bulk oneshot path.
 
-Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W.
+Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W. **Omit `--transforms-config`** → `ApplyOpts::identity()` (`batch_size = 1`, `max_in_flight = 1`); overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set).
 
 ## Durability and acknowledgements
 
 Durability is the **source checkpoint**, not the transform worker.
 
-For every incremental batch, surreal-sync runs this order:
+For every incremental batch on sources with a real post-sink commit hook, surreal-sync runs this order:
 
 1. Buffer changes + positions in memory (not committed).
 2. Transform — in-process stages finish, or the external worker returns a successful framed response that **echoes the same `batch_id`**.
 3. Sink apply — write transformed docs to SurrealDB; wait for success.
-4. Source commit — advance the source checkpoint past that batch (binlog/GTID, LSN, sequence, resume token, Kafka consumer-group offset, etc., depending on the source).
+4. Source commit — advance the durable source cursor past that batch.
+
+| Source family | What “commit after sink” means |
+|---------------|--------------------------------|
+| MySQL/MariaDB binlog, PostgreSQL pgoutput | Store / binlog client commit + sink-safe CatchUpProgress |
+| PostgreSQL wal2json | Slot `advance` only after emitted events are sunk (peeks may continue under window capacity via non-consuming peek + prefix skip) |
+| Kafka | Consumer-group `commit_batch` of **all** messages in the sunk batch (not only the last position) |
+| CSV / JSONL | No source cursor (file import) |
+| MySQL/PostgreSQL trigger, MongoDB change stream, Neo4j | Framework `commit` is a no-op today: the in-memory read cursor advances when events are **fetched**. There is **no** mid-run durable store watermark advanced only after sink on these ports. Process restart still resumes from the last **persisted** sync checkpoint (phase markers), not from an in-flight transform buffer. |
 
 | Hop | What “ack” means |
 |-----|------------------|
 | surreal-sync → worker | NDJSON request with `batch_id` |
 | worker → surreal-sync | Response with the **same `batch_id`** (transform finished in memory only) |
 | surreal-sync → SurrealDB | Sink write success |
-| surreal-sync → source | Checkpoint / commit — safe to forget those CDC events |
+| surreal-sync → source | Checkpoint / commit where the source implements a post-sink hook (see table above) |
 
 There is **no** post-sink ack back to the worker. Workers are treated as **stateless**. If your worker has side effects (HTTP calls, etc.), it must tolerate **at-least-once** delivery of the same work after retries (often under a **new** `batch_id` while source positions replay).
 
@@ -277,9 +286,12 @@ There is no exactly-once guarantee across transform + SurrealDB + source checkpo
 
 ## Using transforms with any supported source
 
-`--transforms-config` applies to every command in [Commands that support `--transforms-config`](#commands-that-support---transforms-config). The same pipeline runs for snapshot/full-sync row writes and CDC/incremental changes (and for Kafka/csv/jsonl import batches).
+`--transforms-config` applies to every command in [Commands that support `--transforms-config`](#commands-that-support---transforms-config).
 
-Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it) are unchanged aside from the durability rules above — especially that catch-up progress does not advance past unsunk transform/apply work on sources that use sink-safe checkpoints. See the per-source guides linked below and [Source ports](source-ports.md) for implementer details.
+- **CDC / Kafka / CSV / JSONL** — long-lived `SourceDriver` + `run_source_runtime`: reads can overlap transforms and ordered sink writes under `max_in_flight`.
+- **Full sync / snapshot / interleaved flush** — rows go through `write_rows` / `write_relations`. Those helpers honor `max_in_flight` via the ApplyContext window when W>1 or the pipeline is non-identity; they are **not** a continuous source poll loop (the outer snapshot still fetches the next chunk after the previous chunk’s apply finishes).
+
+Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it) follow the durability rules above — especially that catch-up progress does not advance past unsunk transform/apply work on sources that use sink-safe checkpoints. See the per-source guides linked below and [Source ports](source-ports.md) for implementer details.
 
 ## Limitations
 
@@ -288,6 +300,8 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 - Relation events are first-class on the External NDJSON wire (`kind: relation_change` / `relation`); they are never silently skipped past External stages.
 - At-least-once delivery, not exactly-once.
 - v1 transport/framer: child stdio + NDJSON only.
+- Trigger / MongoDB / Neo4j incremental ports do not persist a mid-run cursor only after sink (see [Durability](#durability-and-acknowledgements)).
+- Tables without a primary key on non-interleaved MySQL/PostgreSQL full sync still fall back to a full `SELECT *` load.
 
 ## Troubleshooting
 

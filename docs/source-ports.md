@@ -31,14 +31,14 @@ spawn coverage is in `sync-transform` config tests).
 |--------|----------------------|---------------------------|--------------------------------|--------|
 | mysql-binlog | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Yes | Reference port; sink-safe CatchUpProgress |
 | postgresql-pgoutput | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Yes | Binlog parity; sink-safe CatchUpProgress |
-| postgresql-wal2json | SourceDriver | Yes (shared loader + CLI e2e) | Yes | FK pre-push enrichment preserved |
-| postgresql-trigger | SourceDriver | Yes (shared loader + CLI e2e) | Yes | FK pre-push enrichment preserved |
-| mysql (trigger) | SourceDriver | Yes (shared loader + CLI e2e) | Yes | No DDL / ad-hoc (unchanged gap) |
-| mongodb | SourceDriver + `write_rows` full | Yes (shared loader + CLI e2e) | N/A | Resume token as Position |
-| neo4j | SourceDriver + `write_rows` / `write_relations` | Yes (shared loader + CLI e2e) | N/A | Nodes + edges via mixed events |
-| kafka | SourceDriver + `run_source_runtime` | Yes (shared loader + CLI e2e) | N/A | Offset commit after sink; unique per-message indices |
-| csv | SourceDriver + `run_source_runtime` | Yes (shared loader + CLI e2e) | N/A | Poll chunk = CSV `batch_size` |
-| jsonl | SourceDriver + `run_source_runtime` | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline |
+| postgresql-wal2json | SourceDriver | Yes (shared loader + CLI e2e) | Yes | Non-consuming peek + prefix skip; slot advance after sunk |
+| postgresql-trigger | SourceDriver | Yes (shared loader + CLI e2e) | Yes | FK pre-push enrichment; `commit` no-op (fetch cursor) |
+| mysql (trigger) | SourceDriver | Yes (shared loader + CLI e2e) | Yes | `commit` no-op (fetch cursor); no DDL / ad-hoc |
+| mongodb | SourceDriver + `write_rows` full | Yes (shared loader + CLI e2e) | N/A | Resume token updated on stream read; `commit` no-op |
+| neo4j | SourceDriver + `write_rows` / `write_relations` | Yes (shared loader + CLI e2e) | N/A | Nodes + edges via mixed events; fetch advances timestamp cursor |
+| kafka | SourceDriver + `run_source_runtime` | Yes (shared loader + CLI e2e) | N/A | `commit_batch` all sunk msgs; `note_sunk_events` counts |
+| csv | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | File read polls into window (no per-batch runtime restart) |
+| jsonl | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline; same streaming model |
 
 ## Implementer checklist (all ports)
 
@@ -88,9 +88,10 @@ spawn coverage is in `sync-transform` config tests).
    `run_source_runtime` / `run_source_runtime_with` — no production
    hand-rolled `ApplyContext` loops after port; do not use `ChangeFeed`
    for production ports.
-2. File batch importers (csv, jsonl) and Kafka use `SourceDriver` +
-   `run_source_runtime` so `max_in_flight` windowing applies. Kafka commits
-   consumer-group offsets only after sink success.
+2. File batch importers (csv, jsonl) use a **long-lived** `SourceDriver` that
+   streams reads into `run_source_runtime` so `max_in_flight` windowing applies
+   continuously. Kafka commits consumer-group offsets for **all** sunk messages
+   in a batch only after sink success.
 3. Every WatermarkSource consumer gets transform-aware interleaved /
    ad-hoc entrypoints and threads `Pipeline` / `ApplyOpts` from CLI.
 4. Identity (omit `--transforms-config`) must stay green; add at least one
