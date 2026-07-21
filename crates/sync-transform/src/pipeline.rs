@@ -41,10 +41,13 @@ impl std::fmt::Debug for Stage {
 ///
 /// # Apply framework hot path
 ///
-/// [`crate::ApplyContext`] / [`crate::SourceDriver`] / `write_rows` /
-/// `write_relations` gate on [`crate::BatchTransformer::is_identity`]
-/// (implemented for [`Pipeline`] via [`is_identity`](Self::is_identity)). Only
-/// an empty stage list is identity — not “stages happen to be no-ops.”
+/// [`crate::ApplyContext`] / [`crate::SourceDriver`] gate on
+/// [`crate::BatchTransformer::is_identity`] (implemented for [`Pipeline`] via
+/// [`is_identity`](Self::is_identity)) so the transform [`tokio::task::JoinSet`]
+/// can take an async no-op path (zero stage dispatch). That is **not** a
+/// write-path bypass: identity batches still go through the ordered sink step
+/// (including homogeneous `Update` coalesce to `write_universal_*`). Only an
+/// empty stage list is identity — not “stages happen to be no-ops.”
 ///
 /// # Schema-aware / FK transforms
 ///

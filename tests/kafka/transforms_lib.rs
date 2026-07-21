@@ -30,7 +30,17 @@ impl CaptureSink {
 
 #[async_trait::async_trait]
 impl SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, _rows: &[UniversalRow]) -> anyhow::Result<()> {
+    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
+        // Homogeneous Update upserts coalesce to write_universal_rows; record the
+        // same observations tests assert via apply_universal_change.
+        let mut changes = self.changes.lock().expect("lock");
+        for row in rows {
+            changes.push(UniversalChange::update(
+                row.table.clone(),
+                row.id.clone(),
+                row.fields.clone(),
+            ));
+        }
         Ok(())
     }
 
@@ -180,7 +190,10 @@ async fn kafka_external_mutate_rewrites_name_through_source_driver(
 
     // Distinct record ids within the poll batch (indices are assigned before
     // converting rows to upsert changes for the SourceDriver window).
-    let ids: Vec<_> = changes.iter().map(|c| c.id.clone()).collect();
+    let ids: Vec<_> = changes
+        .iter()
+        .map(|c| format!("{:?}", c.id))
+        .collect();
     let unique: std::collections::HashSet<_> = ids.iter().cloned().collect();
     assert_eq!(
         unique.len(),

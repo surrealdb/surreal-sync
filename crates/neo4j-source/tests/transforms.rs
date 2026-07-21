@@ -53,7 +53,20 @@ fn id_display(id: &UniversalValue) -> String {
 #[async_trait::async_trait]
 impl SurrealSink for CaptureSink {
     async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
+        // Homogeneous Update upserts coalesce here. Mirror into `changes` /
+        // `apply_order` so incremental tests that assert apply observations still
+        // see coalesced writes (full sync keeps asserting on `rows`).
         self.rows.lock().expect("lock").extend(rows.iter().cloned());
+        let mut apply_order = self.apply_order.lock().expect("lock");
+        let mut changes = self.changes.lock().expect("lock");
+        for row in rows {
+            apply_order.push(format!("change:{}", id_display(&row.id)));
+            changes.push(UniversalChange::update(
+                row.table.clone(),
+                row.id.clone(),
+                row.fields.clone(),
+            ));
+        }
         Ok(())
     }
 
@@ -65,6 +78,12 @@ impl SurrealSink for CaptureSink {
             .lock()
             .expect("lock")
             .extend(relations.iter().cloned());
+        let mut apply_order = self.apply_order.lock().expect("lock");
+        let mut relation_changes = self.relation_changes.lock().expect("lock");
+        for relation in relations {
+            apply_order.push(format!("relation:{}", id_display(&relation.id)));
+            relation_changes.push(UniversalRelationChange::update(relation.clone()));
+        }
         Ok(())
     }
 

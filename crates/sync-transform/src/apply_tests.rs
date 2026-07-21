@@ -4,8 +4,8 @@ use crate::test_support::{
     BatchScript, RecordingSink, ScriptedChangeFeed, ScriptedTransformer, SinkFailWhen,
 };
 use crate::{
-    apply_relation_changes, run_change_feed, run_change_feed_with, write_rows, ApplyContext,
-    ApplyOpts, FailurePolicy, InPlaceTransform, Pipeline, PositionedChange,
+    apply_changes, apply_relation_changes, run_change_feed, run_change_feed_with, write_rows,
+    ApplyContext, ApplyOpts, FailurePolicy, InPlaceTransform, Pipeline, PositionedChange,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -199,6 +199,57 @@ async fn write_rows_honors_max_in_flight_window() {
     assert!(
         sink.applied().is_empty(),
         "windowed write_rows upserts coalesce to write_universal_rows"
+    );
+}
+
+#[tokio::test]
+async fn delete_and_mixed_batches_use_per_event_apply() {
+    // Delete (and mixed Update+Delete) must not coalesce to write_universal_rows.
+    let pipeline = Pipeline::new();
+    let opts = ApplyOpts::default().with_batch_size(10).with_max_in_flight(1);
+
+    let sink = RecordingSink::new();
+    apply_changes(
+        &sink,
+        &pipeline,
+        vec![
+            UniversalChange::delete("users", UniversalValue::Int64(1)),
+            UniversalChange::delete("users", UniversalValue::Int64(2)),
+        ],
+        &opts,
+    )
+    .await
+    .unwrap();
+    assert_eq!(sink.applied().len(), 2);
+    assert!(
+        sink.rows_written().is_empty(),
+        "Delete batches stay on apply_universal_change, not write_universal_rows"
+    );
+
+    let sink = RecordingSink::new();
+    let mut update_data = HashMap::new();
+    update_data.insert(
+        "name".to_string(),
+        UniversalValue::VarChar {
+            value: "alice".to_string(),
+            length: 64,
+        },
+    );
+    apply_changes(
+        &sink,
+        &pipeline,
+        vec![
+            UniversalChange::update("users", UniversalValue::Int64(1), update_data),
+            UniversalChange::delete("users", UniversalValue::Int64(2)),
+        ],
+        &opts,
+    )
+    .await
+    .unwrap();
+    assert_eq!(sink.applied().len(), 2);
+    assert!(
+        sink.rows_written().is_empty(),
+        "mixed Update+Delete must not coalesce to write_universal_rows"
     );
 }
 

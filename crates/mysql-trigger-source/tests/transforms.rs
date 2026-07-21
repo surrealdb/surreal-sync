@@ -30,7 +30,16 @@ impl CaptureSink {
 
 #[async_trait::async_trait]
 impl SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, _rows: &[UniversalRow]) -> anyhow::Result<()> {
+    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
+        // Homogeneous Update upserts coalesce here; keep observations in `changes`.
+        let mut changes = self.changes.lock().expect("lock");
+        for row in rows {
+            changes.push(UniversalChange::update(
+                row.table.clone(),
+                row.id.clone(),
+                row.fields.clone(),
+            ));
+        }
         Ok(())
     }
 
