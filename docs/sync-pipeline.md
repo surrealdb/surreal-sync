@@ -1,8 +1,32 @@
 # How sync works
 
-surreal-sync moves data from a source into SurrealDB through one shared apply path: **read → optional transform → ordered sink → watermark**. Transforms are optional; omit them and docs pass through unchanged — no stage dispatch and no worker I/O. Identity still uses the shared apply loop (including the JoinSet that orders sink apply).
+surreal-sync moves data from a source into SurrealDB through one shared apply path: **read → optional transform → ordered sink → watermark**. Transforms are optional; omit them and docs pass through unchanged — no stage dispatch and no worker I/O.
 
 **Who should read this:** anyone shipping production or high-throughput syncs (batching, overlapping apply windows, checkpoint/watermark rules). Operators who only need enrichment/ETL can jump to [Optional transform workers](#optional-transform-workers). Source-specific setup stays in the per-source guides — this page is the end-to-end pipeline, not a duplicate of connector docs.
+
+## Terminology
+
+| Term | Meaning |
+|------|---------|
+| **Sync pipeline** | The end-to-end path from source to SurrealDB: read, optional transform, ordered sink, then watermark. |
+| **Read** | Pulling rows or changes from the source into memory for the next apply window. |
+| **Transform** | Optional enrichment or light ETL on a batch (usually an external worker) before it is written. |
+| **Sink** | Writing the (possibly transformed) batch to SurrealDB. Writes stay in source order. |
+| **Watermark** | Advancing the source checkpoint only after sink success (or `skip` + advance). That is what “durable” means here. |
+| **Apply window** | How many batches may be transforming or waiting for ordered sink at once (`max_in_flight` / `W`). With `W > 1`, reads, transforms, and writes can overlap; sink and watermark stay ordered. |
+| **Stage dispatch** | Running the configured transform stages for a batch. With no transforms config, there are **no stages** and no dispatch. |
+| **Worker I/O** | Talking to an external transform process (stdio / NDJSON). With no transforms config, there is **no worker process** and no worker I/O. |
+
+### When you omit transforms
+
+Omit `--transforms-config` (or pass an empty / no-stage config) and surreal-sync still uses the **same shared apply path**: read → ordered sink → watermark. There is no stage dispatch and no worker I/O — docs go through unchanged.
+
+<details>
+<summary>Implementer notes (empty transform list)</summary>
+
+Library/code paths may call this the empty-pipeline or `ApplyOpts::identity()` setup (`batch_size = 1`, `max_in_flight = 1` when the flag is omitted). That is not a separate product mode — it is the shared apply loop with zero transform stages. Sink ordering uses the same internal apply machinery as when transforms are configured; operators do not need to care about those internals.
+
+</details>
 
 ## The pipeline at a glance
 
@@ -49,9 +73,9 @@ The apply window controls how many batches may be transforming or waiting for or
 - **`batch_size` / `batch_max_wait`** — how large a batch becomes before transform starts (`[pipeline]`). Larger batches amortize worker overhead; smaller batches reduce latency.
 - **`[pipeline].timeout`** — outer bound for the whole stage chain (including retries). Prefer per-stage `timeout` for individual workers.
 - **Per-stage `timeout` / `retry`** — how long one exchange may take on that stage, and how many times to retry with backoff before the batch fails (only when using command workers).
-- **`max_in_flight`** — apply window size (default `1`). With `max_in_flight > 1`, surreal-sync may transform several batches at once and keep reading while earlier batches write to SurrealDB. Writes and watermark advances stay in source order. Full sync uses the same rules — there is no separate “identity shortcut.”
+- **`max_in_flight`** — apply window size (default `1`). With `max_in_flight > 1`, surreal-sync may transform several batches at once and keep reading while earlier batches write to SurrealDB. Writes and watermark advances stay in source order. Full sync uses the same rules — omitting transforms does not bypass the shared apply path.
 
-Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W. **Omit `--transforms-config`** → `ApplyOpts::identity()` (`batch_size = 1`, `max_in_flight = 1`) so CDC stays on per-event cadence with no overlapping window; overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set).
+Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W. **Omit `--transforms-config`** and surreal-sync uses `batch_size = 1`, `max_in_flight = 1` so CDC stays on per-event cadence with no overlapping window; overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set). See [When you omit transforms](#when-you-omit-transforms).
 
 **Best-case overlap** — source reads continuing while transforms run and ordered sink writes stay in flight — needs **`max_in_flight > 1`**. With the default `1`, surreal-sync still orders sink apply and sink-gates cursors, but there is no overlapping transform/sink window to hide latency.
 
@@ -62,7 +86,7 @@ Durability is the **source checkpoint**, not the transform worker.
 For every incremental batch on sources with a real post-sink durability hook, surreal-sync runs this order:
 
 1. Buffer changes + positions in memory (not yet sink-safe).
-2. Transform — in-process stages finish, or the external worker returns a successful framed response that **echoes the same `batch_id`** (identity if no transforms).
+2. Transform — if stages are configured: in-process stages finish, or the external worker returns a successful framed response that **echoes the same `batch_id`**. If transforms are omitted: this step is a no-op (no stage dispatch, no worker I/O).
 3. Sink apply — write docs to SurrealDB; wait for success.
 4. `note_sunk_events` → `advance_watermark` → checkpoint policy → optional `persist_checkpoint`.
 
@@ -122,7 +146,7 @@ Use transforms when you need enrichment or light ETL (e.g. call an OCR/embedding
 
 | Capability | Status |
 |------------|--------|
-| No config → identity (docs pass through unchanged) | Available |
+| No config → docs pass through unchanged (no stages / no worker) | Available |
 | External worker over child-process stdio (NDJSON) | Available (`type = "command"`) |
 | `--transforms-config` on every `from *` sync path listed below | Available |
 | `failure_policy` `fail` (default) or `skip` | Available (`[pipeline]`) |
@@ -139,7 +163,7 @@ Use transforms when you need enrichment or light ETL (e.g. call an OCR/embedding
 
 ### Commands that support `--transforms-config`
 
-Every sync/import path below loads the same TOML via the shared CLI helper and runs through the shared apply path. Omit the flag for identity.
+Every sync/import path below loads the same TOML via the shared CLI helper and runs through the shared apply path. Omit the flag when you do not need transforms.
 
 | Command | Sync paths |
 |---------|------------|
@@ -156,9 +180,9 @@ Every sync/import path below loads the same TOML via the shared CLI helper and r
 
 ### CLI quick start
 
-Transforms are configured with `--transforms-config <PATH>` on any command in the table above. The examples below use MySQL/MariaDB binlog; the same flag and TOML work on the other sources. Omit the flag for identity.
+Transforms are configured with `--transforms-config <PATH>` on any command in the table above. The examples below use MySQL/MariaDB binlog; the same flag and TOML work on the other sources. Omit the flag when you do not need transforms.
 
-#### No transform config (identity)
+#### No transform config
 
 ```bash
 surreal-sync from mysql-binlog sync \
@@ -249,16 +273,16 @@ v1 supports only `stdio.framer = "ndjson"`, but the framer is still **per stage*
 
 ### Configuration reference
 
-#### Omitting transforms / empty list = identity
+#### Omitting transforms / empty list
 
 | Config | Behavior |
 |--------|----------|
-| No `--transforms-config` | Identity; no stage dispatch |
-| Empty / whitespace-only file, or `transforms = []` | Identity |
-| Lone `type = "passthrough"` | Collapses to identity (unnecessary for operators) |
+| No `--transforms-config` | No stages; no worker I/O; docs pass through on the shared apply path |
+| Empty / whitespace-only file, or `transforms = []` | Same as above |
+| Lone `type = "passthrough"` | Collapses to no-op (unnecessary for operators) |
 | One or more `type = "command"` stages | Those stages run in order |
 
-**Omit transforms entirely for “do nothing.”** **Omit `passthrough` when configuring `command`.** `passthrough` exists mainly for tests/library completeness, not as something you must write.
+**Omit transforms entirely for “do nothing.”** **Omit `passthrough` when configuring `command`.** `passthrough` exists mainly for tests/library completeness, not as something you must write. See [When you omit transforms](#when-you-omit-transforms).
 
 `[pipeline]` keys are documented under [Apply window / `[pipeline]` knobs](#apply-window--pipeline-knobs).
 
