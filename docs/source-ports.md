@@ -1,4 +1,4 @@
-# Source ports onto the transform framework
+# Wiring sources into the shared apply path
 
 Implementer checklist for wiring each `from *` sync path through
 `sync-transform` (`SourceDriver` / `run_source_runtime` / `write_rows` /
@@ -27,8 +27,8 @@ spawn coverage is in `sync-transform` config tests).
 
 ## Per-source status
 
-| Source | Framework apply path | `--transforms-config` CLI | Interleaved `_with_transforms` | Notes |
-|--------|----------------------|---------------------------|--------------------------------|--------|
+| Source | Apply path | `--transforms-config` CLI | Interleaved `_with_transforms` | Notes |
+|--------|------------|---------------------------|--------------------------------|--------|
 | mysql-binlog | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Yes | Reference port; sink-safe CatchUpProgress |
 | postgresql-pgoutput | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Yes | Binlog parity; sink-safe CatchUpProgress |
 | postgresql-wal2json | SourceDriver | Yes (shared loader + CLI e2e) | Yes | Non-consuming peek + prefix skip; slot advance after sunk |
@@ -40,63 +40,33 @@ spawn coverage is in `sync-transform` config tests).
 | csv | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | File read polls into window (no per-batch runtime restart); **one runtime per file** (no cross-file R∩T∩W) |
 | jsonl | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline; **one runtime per file** (same as CSV) |
 
-## Implementer checklist (all ports)
-
-### Framework wiring
-
-- [x] Streaming CDC sources implement `SourceDriver` and call
-      `run_source_runtime` / `run_source_runtime_with` (no production hand-rolled
-      `ApplyContext` loops; do not use `ChangeFeed` for production ports)
-- [x] File batch importers (csv, jsonl) use `SourceDriver` + `run_source_runtime`
-      (poll chunks into events; runtime owns `max_in_flight`; one runtime per file)
-- [x] Kafka: `SourceDriver` polls/decodes into `PositionedEvent`s; offset commit
-      only after sink
-- [x] Neo4j: nodes and edges through one `SourceDriver` emitting mixed
-      `PositionedEvent`s
-- [x] wal2json / postgresql-trigger: FK transforms as source-side pre-push
-      enrichment; relation `PositionedEvent`s where those sources already emit relations
-- [x] Thin identity wrappers (`run_*` → `run_*_with_transforms` + identity) kept
-      for existing public names; production CLI always threads Pipeline / ApplyOpts
-
-### Interleaved / ad-hoc
-
-- [x] Every WatermarkSource consumer exposes `_with_transforms` entrypoints
-      (binlog, pgoutput, wal2json, postgresql-trigger, mysql-trigger)
-- [x] CLI threads `SnapshotTransforms` / Pipeline / ApplyOpts for interleaved
-      full and combined `sync` the same way as binlog
-- [x] Ad-hoc snapshot (binlog / pgoutput) uses transform-aware helpers
-- [x] mysql-trigger: no ad-hoc / DDL (remain missing by design)
-
-### Cleanup
-
-- [x] Dead direct-apply hot paths removed from ported sources (legacy wal2json
-      `sync/` placeholder that called `apply_universal_change` bypassing the
-      framework is gone)
-- [x] Thin public identity wrappers retained where callers already use them
-
-### Testing expectations
-
-- [x] Identity (omit `--transforms-config`) stays green for each ported source
-- [x] At least one external-transform e2e for every ported streaming source
-- [x] CLI `--transforms-config` smoke where that source has CLI e2e coverage
-      (binlog, pgoutput, wal2json, mysql trigger, postgresql-trigger, mongodb,
-      neo4j, kafka, csv, jsonl)
-
-## Porting rules (short)
+## Porting checklist
 
 1. Streaming CDC sources implement `SourceDriver` and call
    `run_source_runtime` / `run_source_runtime_with` — no production
-   hand-rolled `ApplyContext` loops after port; do not use `ChangeFeed`
-   for production ports.
+   hand-rolled `ApplyContext` loops; do not use `ChangeFeed` for production
+   ports.
 2. File batch importers (csv, jsonl) use a **long-lived** `SourceDriver` that
    streams reads into `run_source_runtime` so `max_in_flight` windowing applies
    continuously **within each file**. Multi-file imports intentionally restart
    the runtime per file (no cross-file pipelining). Kafka commits consumer-group
    offsets for **all** sunk messages in a batch only after sink success.
-3. Every WatermarkSource consumer gets transform-aware interleaved /
-   ad-hoc entrypoints and threads `Pipeline` / `ApplyOpts` from CLI.
-4. Identity (omit `--transforms-config`) must stay green; add at least one
-   external-transform e2e when porting a streaming source.
+3. Neo4j: nodes and edges through one `SourceDriver` emitting mixed
+   `PositionedEvent`s. wal2json / postgresql-trigger: FK transforms as
+   source-side pre-push enrichment; relation `PositionedEvent`s where those
+   sources already emit relations.
+4. Every WatermarkSource consumer gets transform-aware interleaved /
+   ad-hoc entrypoints and threads `Pipeline` / `ApplyOpts` from CLI
+   (binlog, pgoutput, wal2json, postgresql-trigger, mysql-trigger). Ad-hoc
+   snapshot (binlog / pgoutput) uses transform-aware helpers; mysql-trigger
+   has no ad-hoc / DDL by design.
+5. Thin identity wrappers (`run_*` → `run_*_with_transforms` + identity) may
+   stay for existing public names; production CLI always threads Pipeline /
+   ApplyOpts. Dead direct-apply paths that bypass the shared apply path must
+   stay gone.
+6. Identity (omit `--transforms-config`) must stay green; add at least one
+   external-transform e2e when porting a streaming source. CLI
+   `--transforms-config` smoke where that source has CLI e2e coverage.
 
 ## R∩T∩W gates (intentional)
 
@@ -110,5 +80,6 @@ fully sink-safe — within-unit R∩T∩W still applies:
 | wal2json incremental | Yes, within a peek / emitted prefix | Next peek only after slot `advance` requiring sunk ≥ emitted |
 | CSV / JSONL multi-file | Yes, within a file | Next file starts a fresh `run_source_runtime` |
 
-These gates are not Framework bypasses; they keep watermark / slot / reconcile
-cursors from racing ahead of unsunk apply work across chunk or peek boundaries.
+These gates are intentional — they keep the next chunk/peek/file from starting
+before the current one is fully written, so watermark / slot / reconcile
+cursors cannot race ahead of unsunk apply work.

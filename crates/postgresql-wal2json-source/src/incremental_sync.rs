@@ -93,7 +93,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
     .await
 }
 
-/// Incremental sync through the transform apply framework.
+/// Incremental sync via `SourceDriver` + `run_source_runtime` (shared apply window).
 ///
 /// Peek → convert (with FK enrichment / relation routing) →
 /// [`sync_transform::run_source_runtime_with`] → advance slot only after sink

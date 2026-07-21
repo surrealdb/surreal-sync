@@ -582,7 +582,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
     .await
 }
 
-/// Incremental sync through the transform apply framework.
+/// Incremental sync via `SourceDriver` + `run_source_runtime` (shared apply window).
 ///
 /// Nodes and relationships are emitted as mixed [`PositionedEvent`]s (row
 /// changes and relation changes) with the tracking-property timestamp as

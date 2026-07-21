@@ -137,10 +137,9 @@ where
     .await
 }
 
-/// Replication tail through the transform apply framework.
+/// Replication tail via [`PgoutputSourceDriver`] + [`sync_transform::run_source_runtime_with`] (shared apply window).
 ///
-/// Incremental work runs via [`PgoutputSourceDriver`] +
-/// [`sync_transform::run_source_runtime_with`]. Sink success still gates
+/// Sink success still gates
 /// [`SourceDriver::advance_watermark`](sync_transform::SourceDriver::advance_watermark)
 /// (WAL client `commit`). CatchUpProgress uses
 /// [`CheckpointPolicy::IntervalWhenDrained`]: sunk watermarks persist promptly

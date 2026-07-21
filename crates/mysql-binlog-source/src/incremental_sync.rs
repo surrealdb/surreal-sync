@@ -143,10 +143,9 @@ where
     .await
 }
 
-/// Replication tail through the transform apply framework.
+/// Replication tail via [`BinlogSourceDriver`] + [`sync_transform::run_source_runtime_with`] (shared apply window).
 ///
-/// Incremental work runs via [`BinlogSourceDriver`] +
-/// [`sync_transform::run_source_runtime_with`]. Sink success still gates
+/// Sink success still gates
 /// [`SourceDriver::advance_watermark`](sync_transform::SourceDriver::advance_watermark)
 /// (binlog client `commit`). CatchUpProgress uses
 /// [`CheckpointPolicy::IntervalWhenDrained`]: sunk watermarks persist promptly
