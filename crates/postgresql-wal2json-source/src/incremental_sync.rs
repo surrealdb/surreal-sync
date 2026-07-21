@@ -20,7 +20,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::checkpoint::PostgreSQLLogicalCheckpoint;
 use crate::full_sync::SourceOpts;
-use crate::logical_replication::Slot;
+use crate::logical_replication::{ChangeAtLsn, Slot};
 use crate::watermark_source::Lsn;
 
 /// Default sleep when a wal2json peek returns no changes.
@@ -97,7 +97,9 @@ pub async fn run_incremental_sync<S: SurrealSink>(
 ///
 /// Peek → convert (with FK enrichment / relation routing) →
 /// [`sync_transform::run_source_runtime_with`] → advance slot only after sink
-/// success for the full peeked batch.
+/// success. Peeks may continue under window capacity: `pg_logical_slot_peek_changes`
+/// is non-consuming, so the driver skips an already-emitted prefix
+/// (`returned_since_advance`) and only `advance`s once every emitted event is sunk.
 pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
     surreal: &S,
     from_opts: SourceOpts,
@@ -164,10 +166,10 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
         relation_table_overrides,
         options: &options,
         until_reached: false,
-        awaiting_commit: false,
-        emitted_in_peek: 0,
-        sunk_in_peek: 0,
-        peek_nextlsn: None,
+        returned_since_advance: 0,
+        emitted_since_advance: 0,
+        sunk_since_advance: 0,
+        latest_nextlsn: None,
         total_changes: 0,
     };
 
@@ -206,31 +208,37 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
 
 /// wal2json CDC driver for [`sync_transform::run_source_runtime_with`].
 ///
-/// Slot advance is deferred until every event from a peek batch has been sunk
-/// (all events share the batch `nextlsn` as their position).
+/// Slot `advance` is deferred until every event emitted since the last advance
+/// has been sunk. Peeks are non-consuming: the driver may peek again while prior
+/// work is still in the apply window, skipping the stable already-returned
+/// prefix via [`Self::returned_since_advance`] (same pattern as the interleaved
+/// watermark source).
 struct Wal2JsonSourceDriver<'a> {
     slot: Slot,
     db_schema: DatabaseSchema,
     relation_table_overrides: Vec<String>,
     options: &'a ReplicationTailOptions,
     until_reached: bool,
-    /// True while a peeked batch is still being applied (do not peek again).
-    awaiting_commit: bool,
-    emitted_in_peek: u64,
-    sunk_in_peek: u64,
-    peek_nextlsn: Option<Lsn>,
+    /// Changes already converted/emitted from the current unadvanced peek prefix.
+    returned_since_advance: usize,
+    /// Positioned events emitted since last slot advance (excludes filtered-out).
+    emitted_since_advance: u64,
+    /// Events noted sunk since last slot advance.
+    sunk_since_advance: u64,
+    /// Latest commit `nextlsn` observed on peeks since last advance.
+    latest_nextlsn: Option<Lsn>,
     total_changes: u64,
 }
 
 impl Wal2JsonSourceDriver<'_> {
     fn convert_actions(
         &self,
-        changes: &[crate::Action],
+        changes: &[ChangeAtLsn],
         nextlsn: Lsn,
     ) -> Result<Vec<PositionedEvent<Lsn>>> {
         let mut out = Vec::new();
         for change in changes {
-            let (row, op) = match change {
+            let (row, op) = match &change.action {
                 crate::Action::Insert(row) => {
                     debug!(
                         "INSERT: table={}, primary_key={:?}",
@@ -264,6 +272,49 @@ impl Wal2JsonSourceDriver<'_> {
         }
         Ok(out)
     }
+
+    fn maybe_mark_until(&mut self, nextlsn: &Lsn) {
+        if let Some(ref target) = self.options.until {
+            if compare_lsn(&nextlsn.to_pg_string(), &target.lsn) >= 0 {
+                info!(
+                    "Reached target LSN {} (current: {})",
+                    target.lsn,
+                    nextlsn.to_pg_string()
+                );
+                self.until_reached = true;
+            }
+        }
+    }
+
+    async fn try_advance_if_drained(&mut self) -> Result<()> {
+        if self.sunk_since_advance < self.emitted_since_advance {
+            return Ok(());
+        }
+        let Some(nextlsn) = self.latest_nextlsn else {
+            return Ok(());
+        };
+
+        // Do not advance while the current peek still has unsurfaced changes;
+        // advancing would drop them (watermark_source commit_reconciled rule).
+        let (changes, _) = self.slot.peek_with_positions().await?;
+        if self.returned_since_advance < changes.len() {
+            debug!(
+                "Deferring wal2json slot advance at {}: {}/{} peeked changes surfaced",
+                nextlsn,
+                self.returned_since_advance,
+                changes.len()
+            );
+            return Ok(());
+        }
+
+        self.slot.advance(&nextlsn.to_pg_string()).await?;
+        self.returned_since_advance = 0;
+        self.emitted_since_advance = 0;
+        self.sunk_since_advance = 0;
+        self.latest_nextlsn = None;
+        self.maybe_mark_until(&nextlsn);
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]
@@ -275,16 +326,23 @@ impl SourceDriver for Wal2JsonSourceDriver<'_> {
             return Ok(Vec::new());
         }
 
-        // Do not peek again until the previous batch is fully sunk + advanced.
-        if self.awaiting_commit {
-            return Ok(Vec::new());
-        }
-
-        match self.slot.peek().await {
+        match self.slot.peek_with_positions().await {
             Ok((changes, nextlsn_str)) => {
                 if changes.is_empty() {
+                    // Filtered-empty peek with a commit nextlsn: advance past it
+                    // when nothing is outstanding from a prior emit.
+                    if !nextlsn_str.is_empty()
+                        && self.emitted_since_advance == 0
+                        && self.sunk_since_advance == 0
+                        && self.returned_since_advance == 0
+                    {
+                        let nextlsn = Lsn::parse(&nextlsn_str)?;
+                        self.slot.advance(&nextlsn.to_pg_string()).await?;
+                        self.maybe_mark_until(&nextlsn);
+                        return Ok(Vec::new());
+                    }
                     if let Some(ref target) = self.options.until {
-                        if compare_lsn(&nextlsn_str, &target.lsn) >= 0 {
+                        if !nextlsn_str.is_empty() && compare_lsn(&nextlsn_str, &target.lsn) >= 0 {
                             info!(
                                 "Reached target LSN {} (current: {})",
                                 target.lsn, nextlsn_str
@@ -303,26 +361,32 @@ impl SourceDriver for Wal2JsonSourceDriver<'_> {
                     Lsn::parse(&nextlsn_str)?
                 };
 
-                let events = self.convert_actions(&changes, nextlsn)?;
-                if events.is_empty() {
-                    // Begin/Commit only — still advance past the empty transaction.
-                    self.slot.advance(&nextlsn.to_pg_string()).await?;
-                    if let Some(ref target) = self.options.until {
-                        if compare_lsn(&nextlsn_str, &target.lsn) >= 0 {
-                            info!(
-                                "Reached target LSN {} (current: {})",
-                                target.lsn, nextlsn_str
-                            );
-                            self.until_reached = true;
-                        }
-                    }
+                // Stable prefix skip: peek re-returns unadvanced changes.
+                let skip = self.returned_since_advance.min(changes.len());
+                let new_changes = &changes[skip..];
+                if new_changes.is_empty() {
+                    // Fully surfaced this peek; allow sink-gated advance, then idle.
+                    self.latest_nextlsn = Some(nextlsn);
+                    self.try_advance_if_drained().await?;
+                    tokio::time::sleep(self.options.idle_sleep).await;
                     return Ok(Vec::new());
                 }
 
-                self.emitted_in_peek = events.len() as u64;
-                self.sunk_in_peek = 0;
-                self.peek_nextlsn = Some(nextlsn);
-                self.awaiting_commit = true;
+                let events = self.convert_actions(new_changes, nextlsn)?;
+                self.returned_since_advance = self
+                    .returned_since_advance
+                    .saturating_add(new_changes.len());
+                self.emitted_since_advance = self
+                    .emitted_since_advance
+                    .saturating_add(events.len() as u64);
+                self.latest_nextlsn = Some(nextlsn);
+
+                if events.is_empty() {
+                    // New peek prefix was Begin/Commit-only / fully filtered —
+                    // try advancing if prior emitted work is already sunk.
+                    self.try_advance_if_drained().await?;
+                }
+
                 Ok(events)
             }
             Err(e) => {
@@ -334,36 +398,15 @@ impl SourceDriver for Wal2JsonSourceDriver<'_> {
     }
 
     async fn commit(&mut self, position: Self::Position) -> Result<()> {
-        if !self.awaiting_commit {
-            return Ok(());
-        }
-        if self.sunk_in_peek < self.emitted_in_peek {
-            return Ok(());
-        }
-        let Some(nextlsn) = self.peek_nextlsn else {
+        let Some(nextlsn) = self.latest_nextlsn else {
             return Ok(());
         };
-        if position != nextlsn {
+        // Runtime commits the batch's last_position; only attempt advance when
+        // it matches the current peek watermark (or we have fully sunk).
+        if position != nextlsn && self.sunk_since_advance < self.emitted_since_advance {
             return Ok(());
         }
-
-        self.slot.advance(&nextlsn.to_pg_string()).await?;
-        self.awaiting_commit = false;
-        self.emitted_in_peek = 0;
-        self.sunk_in_peek = 0;
-        self.peek_nextlsn = None;
-
-        if let Some(ref target) = self.options.until {
-            if compare_lsn(&nextlsn.to_pg_string(), &target.lsn) >= 0 {
-                info!(
-                    "Reached target LSN {} (current: {})",
-                    target.lsn,
-                    nextlsn.to_pg_string()
-                );
-                self.until_reached = true;
-            }
-        }
-        Ok(())
+        self.try_advance_if_drained().await
     }
 
     fn checkpoint_policy(&self) -> CheckpointPolicy {
@@ -380,8 +423,11 @@ impl SourceDriver for Wal2JsonSourceDriver<'_> {
             return Some(StopReason::Until);
         }
         if let Some(ref target) = self.options.until {
-            if let Some(nextlsn) = self.peek_nextlsn {
-                if !self.awaiting_commit && compare_lsn(&nextlsn.to_pg_string(), &target.lsn) >= 0 {
+            if let Some(nextlsn) = self.latest_nextlsn {
+                if self.emitted_since_advance == 0
+                    && self.sunk_since_advance == 0
+                    && compare_lsn(&nextlsn.to_pg_string(), &target.lsn) >= 0
+                {
                     return Some(StopReason::Until);
                 }
             }
@@ -390,7 +436,7 @@ impl SourceDriver for Wal2JsonSourceDriver<'_> {
     }
 
     fn note_sunk_events(&mut self, count: u64) {
-        self.sunk_in_peek = self.sunk_in_peek.saturating_add(count);
+        self.sunk_since_advance = self.sunk_since_advance.saturating_add(count);
         self.total_changes = self.total_changes.saturating_add(count);
     }
 }
