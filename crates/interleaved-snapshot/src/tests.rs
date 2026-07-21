@@ -32,19 +32,15 @@ struct MockSink {
 
 #[derive(Default)]
 struct MockSinkState {
-    /// (table, id) of every row written via `write_universal_rows`.
-    upserts: Vec<(String, UniversalValue)>,
-    /// (op, table, id) of every applied change-stream / buffer event.
-    /// Surviving snapshot rows are applied as [`UniversalChangeOp::Update`]
-    /// through the shared `run_source_runtime` window (same path as CDC).
+    /// (op, table, id) of every sunk change-stream / buffer event.
+    /// Surviving snapshot rows are emitted as [`UniversalChangeOp::Update`]
+    /// through the shared `run_source_runtime` window. Homogeneous Update
+    /// batches coalesce to `write_universal_rows`; those are mirrored here as
+    /// Updates so observations match per-event apply.
     changes: Vec<(UniversalChangeOp, String, UniversalValue)>,
 }
 
 impl MockSink {
-    fn upserts(&self) -> Vec<(String, UniversalValue)> {
-        self.state.lock().unwrap().upserts.clone()
-    }
-
     fn changes(&self) -> Vec<(UniversalChangeOp, String, UniversalValue)> {
         self.state.lock().unwrap().changes.clone()
     }
@@ -53,9 +49,14 @@ impl MockSink {
 #[async_trait]
 impl SurrealSink for MockSink {
     async fn write_universal_rows(&self, rows: &[UniversalRow]) -> Result<()> {
+        // Homogeneous Update upserts coalesce here; mirror into `changes`.
         let mut state = self.state.lock().unwrap();
         for row in rows {
-            state.upserts.push((row.table.clone(), row.id.clone()));
+            state.changes.push((
+                UniversalChangeOp::Update,
+                row.table.clone(),
+                row.id.clone(),
+            ));
         }
         Ok(())
     }
@@ -109,6 +110,9 @@ struct MockSource {
     spec: TableSpec,
     total_rows: i64,
     scripted: Vec<Vec<DataEvent>>,
+    /// Events emitted in the same poll batch *after* the high watermark.
+    /// Used to regress post-high CDC ordering against buffer flush.
+    trailing: Vec<Vec<DataEvent>>,
     state: Mutex<MockState>,
 }
 
@@ -118,6 +122,7 @@ impl MockSource {
             spec,
             total_rows,
             scripted,
+            trailing: Vec::new(),
             state: Mutex::new(MockState {
                 window_index: 0,
                 pending_low: None,
@@ -126,6 +131,11 @@ impl MockSource {
                 consumed: Vec::new(),
             }),
         }
+    }
+
+    fn with_trailing(mut self, trailing: Vec<Vec<DataEvent>>) -> Self {
+        self.trailing = trailing;
+        self
     }
 
     /// A bulk table with no concurrent changes (every window is empty).
@@ -211,6 +221,20 @@ impl WatermarkSource for MockSource {
 
         if let Some(high) = state.pending_high.take() {
             out.push(Self::watermark_event(&mut state, high));
+            let trailing = if state.window_index < self.trailing.len() {
+                self.trailing[state.window_index].clone()
+            } else {
+                Vec::new()
+            };
+            for event in trailing {
+                state.position += 1;
+                out.push(ReconciliationEvent {
+                    position: state.position,
+                    table: event.table,
+                    pk: event.pk,
+                    change: event.change,
+                });
+            }
             state.window_index += 1;
         }
 
@@ -293,7 +317,7 @@ async fn window_dedup_lets_log_event_win() {
         .await
         .unwrap();
 
-    // Surviving buffer row 1 is applied as Update through the shared window;
+    // Surviving buffer row 1 is sunk as Update (coalesced write_universal_rows);
     // CDC events for 2/3/4 are applied as-is. Watermark rows are never applied.
     let changes = sink.changes();
     assert_eq!(changes.len(), 4, "unexpected changes: {changes:?}");
@@ -310,10 +334,47 @@ async fn window_dedup_lets_log_event_win() {
     assert!(changes
         .iter()
         .any(|(op, _, id)| *op == UniversalChangeOp::Create && id.as_i64() == Some(4)));
-    assert!(sink.upserts().is_empty());
 
     // The chunk held exactly the three read rows at its peak.
     assert_eq!(result.peak_buffered_rows, 3);
+}
+
+#[tokio::test]
+async fn post_high_delete_wins_over_buffer_flush() {
+    // Delete commits after the high watermark but arrives in the same poll
+    // batch. Survivors must be queued before that Delete so the log wins and
+    // the row is not resurrected by a stale buffer upsert.
+    let spec = TableSpec::new("users", vec!["id".to_string()]);
+    let mut source = MockSource::new(spec, 2, vec![vec![]])
+        .with_trailing(vec![vec![delete_event(2)]]);
+    let sink = MockSink::default();
+    let config = InterleavedSnapshotConfig { chunk_size: 16 };
+    let mut checkpointer = crate::NoopCheckpointer;
+
+    run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer)
+        .await
+        .unwrap();
+
+    let changes = sink.changes();
+    // Order: Update(1), Update(2) from buffer, then Delete(2).
+    assert!(
+        changes
+            .iter()
+            .any(|(op, _, id)| *op == UniversalChangeOp::Update && id.as_i64() == Some(1)),
+        "unexpected changes: {changes:?}"
+    );
+    let delete_pos = changes
+        .iter()
+        .position(|(op, _, id)| *op == UniversalChangeOp::Delete && id.as_i64() == Some(2))
+        .expect("Delete(2) missing");
+    let upsert_2_pos = changes
+        .iter()
+        .position(|(op, _, id)| *op == UniversalChangeOp::Update && id.as_i64() == Some(2))
+        .expect("Update(2) missing");
+    assert!(
+        upsert_2_pos < delete_pos,
+        "buffer Update(2) must precede post-high Delete(2); got {changes:?}"
+    );
 }
 
 #[tokio::test]
@@ -340,7 +401,6 @@ async fn unchanged_keys_are_emitted_from_buffer() {
         .collect();
     ids.sort_unstable();
     assert_eq!(ids, vec![1, 2, 3, 4, 5]);
-    assert!(sink.upserts().is_empty());
 }
 
 // ---------------------------------------------------------------------------
