@@ -204,6 +204,8 @@ Tune `max_in_flight` like batch size for latency hiding under a slow worker. Rel
 
 **Best-case R∩T∩W** (source reads continuing while transforms run and ordered sink writes stay in flight) needs **`max_in_flight > 1`**. With the default `1`, the framework still orders sink apply and sink-gates cursors, but there is no overlapping transform/sink window to hide latency.
 
+Some ports still **gate the next chunk / peek / file** until the current unit is fully sunk (interleaved snapshot next-chunk, wal2json next-peek after slot advance, CSV/JSONL next-file runtime). Within that unit, W>1 still overlaps reads, transforms, and ordered writes — see [Source ports — R∩T∩W gates](source-ports.md#rtw-gates-intentional).
+
 ## Durability and acknowledgements
 
 Durability is the **source checkpoint**, not the transform worker.
@@ -341,9 +343,9 @@ There is no exactly-once guarantee across transform + SurrealDB + source checkpo
 
 `--transforms-config` applies to every command in [Commands that support `--transforms-config`](#commands-that-support---transforms-config).
 
-- **CDC / Kafka / CSV / JSONL** — long-lived `SourceDriver` + `run_source_runtime`: reads can overlap transforms and ordered sink writes under `max_in_flight`.
+- **CDC / Kafka / CSV / JSONL** — long-lived `SourceDriver` + `run_source_runtime`: reads can overlap transforms and ordered sink writes under `max_in_flight` (CSV/JSONL: within each file; multi-file imports restart the runtime per file).
 - **Full sync / keyset table scans** — MySQL and PostgreSQL keyset paths use a long-lived `RowChunkDriver` so the next chunk read can overlap prior-chunk transform/sink when `max_in_flight > 1` (same idea as CSV/JSONL streaming). Relation tables and no-PK tables stream via `RelationChunkDriver` / OFFSET chunks the same way (no monolithic `SELECT *` + serial `write_rows`).
-- **Interleaved snapshot reconciliation** — CDC events and surviving chunk rows share one long-lived `run_source_runtime` window across chunks, so polls continue under spare `max_in_flight` while ordered sink runs; `commit_reconciled` runs only after each chunk is sink-safe.
+- **Interleaved snapshot reconciliation** — CDC events and surviving chunk rows share one long-lived `run_source_runtime` window across chunks, so polls continue under spare `max_in_flight` while ordered sink runs; `commit_reconciled` runs only after each chunk is sink-safe (the next chunk does not start until then).
 - **MongoDB / Neo4j full** — cursor/result streams use `RowChunkDriver` / `RelationChunkDriver` (Neo4j: all nodes before any edges).
 - **Ad-hoc helpers** — remaining `write_rows` / `write_relations` call sites use the same ApplyContext window within each call; they are not a continuous source poll loop.
 
@@ -356,8 +358,9 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 - Relation events are first-class on the External NDJSON wire (`kind: relation_change` / `relation`); they are never silently skipped past External stages.
 - At-least-once delivery, not exactly-once.
 - v1 transport/framer: child stdio + NDJSON only.
-- Trigger / MongoDB / Neo4j incremental ports do not persist a mid-run cursor only after sink (see [Durability](#durability-and-acknowledgements)).
+- Trigger / MongoDB / Neo4j incremental ports keep an **in-memory** sink-safe cursor after SurrealDB apply (`advance_watermark` / `commit_sunk`); they do **not** persist that cursor mid-run to the checkpoint store. Crash resume uses the last **persisted** phase marker / `--from` (at-least-once). See [Durability](#durability-and-acknowledgements).
 - Tables without a primary key on non-interleaved MySQL/PostgreSQL full sync stream via `LIMIT`/`OFFSET` chunks (PostgreSQL orders by `ctid`; ids are synthetic row indexes). That path is unsafe under concurrent source writes — prefer a usable PK with keyset reads or interleaved-snapshot.
+- CSV / JSONL multi-file imports run one long-lived driver **per file**; there is no cross-file apply window.
 
 ## Troubleshooting
 

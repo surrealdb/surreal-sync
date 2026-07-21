@@ -32,13 +32,13 @@ spawn coverage is in `sync-transform` config tests).
 | mysql-binlog | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Yes | Reference port; sink-safe CatchUpProgress |
 | postgresql-pgoutput | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Yes | Binlog parity; sink-safe CatchUpProgress |
 | postgresql-wal2json | SourceDriver | Yes (shared loader + CLI e2e) | Yes | Non-consuming peek + prefix skip; slot advance after sunk |
-| postgresql-trigger | SourceDriver | Yes (shared loader + CLI e2e) | Yes | FK pre-push enrichment; `advance_watermark` no-op (fetch cursor) |
-| mysql (trigger) | SourceDriver | Yes (shared loader + CLI e2e) | Yes | `advance_watermark` no-op (fetch cursor); no DDL / ad-hoc |
-| mongodb | SourceDriver + RowChunkDriver full | Yes (shared loader + CLI e2e) | N/A | Resume token advanced on `advance_watermark` after sink (not on stream read) |
-| neo4j | SourceDriver + RowChunkDriver / RelationChunkDriver full | Yes (shared loader + CLI e2e) | N/A | Nodes fully before edges; fetch advances timestamp (+ tie-break ids) cursor |
+| postgresql-trigger | SourceDriver | Yes (shared loader + CLI e2e) | Yes | FK pre-push enrichment; `advance_watermark` → in-memory `commit_sunk` (sunk vs read cursor); no mid-run durable store |
+| mysql (trigger) | SourceDriver | Yes (shared loader + CLI e2e) | Yes | `advance_watermark` → in-memory `commit_sunk` (sunk vs read); no DDL / ad-hoc; no mid-run durable store |
+| mongodb | SourceDriver + RowChunkDriver full | Yes (shared loader + CLI e2e) | N/A | Resume token advanced on `advance_watermark` after sink (not on stream read); no mid-run durable store |
+| neo4j | SourceDriver + RowChunkDriver / RelationChunkDriver full | Yes (shared loader + CLI e2e) | N/A | Nodes fully before edges; `advance_watermark` → in-memory `commit_sunk` (timestamp + tie-break ids); fetch may be ahead of sunk |
 | kafka | SourceDriver + `run_source_runtime` | Yes (shared loader + CLI e2e) | N/A | `commit_batch` all sunk msgs; `note_sunk_events` counts |
-| csv | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | File read polls into window (no per-batch runtime restart) |
-| jsonl | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline; same streaming model |
+| csv | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | File read polls into window (no per-batch runtime restart); **one runtime per file** (no cross-file R∩T∩W) |
+| jsonl | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline; **one runtime per file** (same as CSV) |
 
 ## Implementer checklist (all ports)
 
@@ -48,7 +48,7 @@ spawn coverage is in `sync-transform` config tests).
       `run_source_runtime` / `run_source_runtime_with` (no production hand-rolled
       `ApplyContext` loops; do not use `ChangeFeed` for production ports)
 - [x] File batch importers (csv, jsonl) use `SourceDriver` + `run_source_runtime`
-      (poll chunks into events; runtime owns `max_in_flight`)
+      (poll chunks into events; runtime owns `max_in_flight`; one runtime per file)
 - [x] Kafka: `SourceDriver` polls/decodes into `PositionedEvent`s; offset commit
       only after sink
 - [x] Neo4j: nodes and edges through one `SourceDriver` emitting mixed
@@ -90,9 +90,25 @@ spawn coverage is in `sync-transform` config tests).
    for production ports.
 2. File batch importers (csv, jsonl) use a **long-lived** `SourceDriver` that
    streams reads into `run_source_runtime` so `max_in_flight` windowing applies
-   continuously. Kafka commits consumer-group offsets for **all** sunk messages
-   in a batch only after sink success.
+   continuously **within each file**. Multi-file imports intentionally restart
+   the runtime per file (no cross-file pipelining). Kafka commits consumer-group
+   offsets for **all** sunk messages in a batch only after sink success.
 3. Every WatermarkSource consumer gets transform-aware interleaved /
    ad-hoc entrypoints and threads `Pipeline` / `ApplyOpts` from CLI.
 4. Identity (omit `--transforms-config`) must stay green; add at least one
    external-transform e2e when porting a streaming source.
+
+## R∩T∩W gates (intentional)
+
+Best-case read∩transform∩write overlap needs `max_in_flight > 1`. Even then,
+some ports **gate the next unit of source work** until the current unit is
+fully sink-safe — within-unit R∩T∩W still applies:
+
+| Port / path | Within-unit overlap @ W>1 | Next-unit gate |
+|-------------|---------------------------|----------------|
+| Interleaved snapshot | Yes, within a chunk (CDC + surviving rows share one window) | Next chunk only after `events_sunk >= events_emitted` (`commit_reconciled`) |
+| wal2json incremental | Yes, within a peek / emitted prefix | Next peek only after slot `advance` requiring sunk ≥ emitted |
+| CSV / JSONL multi-file | Yes, within a file | Next file starts a fresh `run_source_runtime` |
+
+These gates are not Framework bypasses; they keep watermark / slot / reconcile
+cursors from racing ahead of unsunk apply work across chunk or peek boundaries.

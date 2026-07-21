@@ -367,7 +367,8 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
 ///
 /// The driver streams file reads into the apply window (`Config::batch_size`
 /// rows per poll); the runtime owns `max_in_flight` windowing with no
-/// per-chunk runtime restart barrier.
+/// per-chunk runtime restart barrier. **Multi-file imports start a fresh
+/// runtime per file** (intentional — no cross-file pipelining).
 pub async fn sync_with_transforms<S: SurrealSink>(
     surreal: &S,
     config: Config,

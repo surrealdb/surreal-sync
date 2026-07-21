@@ -316,24 +316,25 @@ impl MongodbIncrementalSource {
 type MongoStreamType =
     Arc<Mutex<std::pin::Pin<Box<dyn futures::Stream<Item = Result<UniversalChange>> + Send>>>>;
 
-/// A change stream wrapper for MongoDB incremental sync
+/// A change stream wrapper for MongoDB incremental sync.
+///
+/// Sink-safe resume tokens live on [`MongodbIncrementalSource`]'s
+/// `resume_token` handle (advanced via the SourceDriver after sink). This
+/// wrapper only yields decoded changes; [`ChangeStream::checkpoint`] always
+/// returns `None` so callers cannot confuse an unread initial token for a
+/// sunk watermark.
 pub struct MongoChangeStream {
     // Wrap in Arc<Mutex> to make it Sync
     stream: MongoStreamType,
-    current_checkpoint: Option<MongoDBCheckpoint>,
 }
 
 impl MongoChangeStream {
     pub fn new(
         stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<UniversalChange>> + Send>>,
-        initial_resume_token: Vec<u8>,
+        _initial_resume_token: Vec<u8>,
     ) -> Self {
         Self {
             stream: Arc::new(Mutex::new(stream)),
-            current_checkpoint: Some(MongoDBCheckpoint {
-                resume_token: initial_resume_token,
-                timestamp: Utc::now(),
-            }),
         }
     }
 }
@@ -346,7 +347,9 @@ impl ChangeStream for MongoChangeStream {
     }
 
     fn checkpoint(&self) -> Option<MongoDBCheckpoint> {
-        self.current_checkpoint.clone()
+        // Sink-safe resume is owned by MongodbChangeStreamDriver::resume_token
+        // (advanced on advance_watermark). Do not report a stale fetch-time token.
+        None
     }
 }
 

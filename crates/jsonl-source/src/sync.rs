@@ -289,7 +289,9 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
 ///
 /// The driver streams line reads into the apply window (`Config::batch_size`
 /// rows per poll). [`Config::conversion_rules`] still run while decoding each
-/// line into a [`UniversalRow`], before any Pipeline stages.
+/// line into a [`UniversalRow`], before any Pipeline stages. **Multi-file
+/// imports start a fresh runtime per file** (intentional — no cross-file
+/// pipelining).
 pub async fn sync_with_transforms<S: SurrealSink>(
     surreal: &S,
     config: Config,

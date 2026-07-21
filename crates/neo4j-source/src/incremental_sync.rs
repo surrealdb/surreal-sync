@@ -459,46 +459,40 @@ impl ReplicationTailOptions {
     }
 }
 
-/// Apply incremental changes to SurrealDB (identity path helper for dry-run).
+/// Dry-run helper that counts incremental changes without writing to the sink.
+///
+/// Live sync must use [`run_incremental_sync_with_transforms`] (Framework path).
+/// Calling with `dry_run = false` returns an error — this function never
+/// performs live `write_universal_*` bypasses.
 pub async fn apply_incremental_changes<S: SurrealSink>(
-    surreal: &S,
+    _surreal: &S,
     changes: Vec<IncrementalChange>,
     dry_run: bool,
 ) -> anyhow::Result<usize> {
-    // Separate nodes and relations for batch processing
-    let mut nodes = Vec::new();
-    let mut relations = Vec::new();
+    let mut nodes = 0usize;
+    let mut relations = 0usize;
 
     for change in changes {
         match change {
-            IncrementalChange::Node(row) => nodes.push(row),
-            IncrementalChange::Relation(rel) => relations.push(*rel),
+            IncrementalChange::Node(_) => nodes += 1,
+            IncrementalChange::Relation(_) => relations += 1,
         }
     }
 
-    let total_count = nodes.len() + relations.len();
+    let total_count = nodes + relations;
 
-    if dry_run {
-        tracing::info!(
-            "DRY RUN: Would apply {} nodes and {} relations",
-            nodes.len(),
-            relations.len()
+    if !dry_run {
+        anyhow::bail!(
+            "apply_incremental_changes refuses live writes; use \
+             run_incremental_sync_with_transforms (dry_run callers pass true)"
         );
-        return Ok(total_count);
     }
 
-    // Apply nodes
-    if !nodes.is_empty() {
-        tracing::debug!("Applying {} node changes", nodes.len());
-        surreal.write_universal_rows(&nodes).await?;
-    }
-
-    // Apply relations
-    if !relations.is_empty() {
-        tracing::debug!("Applying {} relation changes", relations.len());
-        surreal.write_universal_relations(&relations).await?;
-    }
-
+    tracing::info!(
+        "DRY RUN: Would apply {} nodes and {} relations",
+        nodes,
+        relations
+    );
     Ok(total_count)
 }
 
