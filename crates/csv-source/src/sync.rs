@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use surreal_sink::SurrealSink;
 use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};
 use sync_core::{Schema, TypedValue, UniversalRow, UniversalType, UniversalValue};
+use sync_transform::{write_rows, ApplyOpts, Pipeline};
 use tracing::{debug, info, warn};
 
 /// Configuration for CSV import
@@ -99,6 +100,31 @@ fn parse_value_with_schema(value: &str, schema_type: Option<&UniversalType>) -> 
     }
 }
 
+/// Flush a decoded CSV batch through [`write_rows`] (or skip when dry-run).
+async fn flush_csv_batch<S: SurrealSink>(
+    surreal: &S,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+    batch: &mut Vec<UniversalRow>,
+    dry_run: bool,
+    metrics_collector: Option<&super::metrics::MetricsCollector>,
+) -> Result<usize> {
+    if batch.is_empty() {
+        return Ok(0);
+    }
+    let len = batch.len();
+    if !dry_run {
+        write_rows(surreal, pipeline, std::mem::take(batch), apply_opts).await?;
+    } else {
+        debug!("Dry run: Would insert batch of {len} records");
+        batch.clear();
+    }
+    if let Some(collector) = metrics_collector {
+        collector.add_rows(len as u64);
+    }
+    Ok(len)
+}
+
 /// Process CSV data from a reader and import into SurrealDB
 ///
 /// This function handles all CSV parsing, data conversion, and SurrealDB insertion
@@ -109,6 +135,8 @@ async fn process_csv_reader<S: SurrealSink>(
     reader: Box<dyn std::io::Read + Send>,
     source_name: &str,
     metrics_collector: Option<&super::metrics::MetricsCollector>,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
 ) -> Result<()> {
     info!("Processing CSV from: {source_name}");
 
@@ -209,41 +237,28 @@ async fn process_csv_reader<S: SurrealSink>(
 
             // Process batch when it reaches the configured size
             if batch.len() >= config.batch_size {
-                if !config.dry_run {
-                    surreal.write_universal_rows(&batch).await?;
-                    total_processed += batch.len();
-                } else {
-                    debug!("Dry run: Would insert batch of {} records", batch.len());
-                    total_processed += batch.len();
-                }
-
-                // Update metrics
-                if let Some(collector) = metrics_collector {
-                    collector.add_rows(batch.len() as u64);
-                }
-
-                batch.clear();
+                total_processed += flush_csv_batch(
+                    surreal,
+                    pipeline,
+                    apply_opts,
+                    &mut batch,
+                    config.dry_run,
+                    metrics_collector,
+                )
+                .await?;
             }
         }
 
         // Process remaining records
-        if !batch.is_empty() {
-            if !config.dry_run {
-                surreal.write_universal_rows(&batch).await?;
-                total_processed += batch.len();
-            } else {
-                debug!(
-                    "Dry run: Would insert final batch of {} records",
-                    batch.len()
-                );
-                total_processed += batch.len();
-            }
-
-            // Update metrics for final batch
-            if let Some(collector) = metrics_collector {
-                collector.add_rows(batch.len() as u64);
-            }
-        }
+        total_processed += flush_csv_batch(
+            surreal,
+            pipeline,
+            apply_opts,
+            &mut batch,
+            config.dry_run,
+            metrics_collector,
+        )
+        .await?;
 
         info!(
             "Processed {record_count} records from {source_name} (total processed: {total_processed})",
@@ -318,41 +333,28 @@ async fn process_csv_reader<S: SurrealSink>(
 
         // Process batch when it reaches the configured size
         if batch.len() >= config.batch_size {
-            if !config.dry_run {
-                surreal.write_universal_rows(&batch).await?;
-                total_processed += batch.len();
-            } else {
-                debug!("Dry run: Would insert batch of {} records", batch.len());
-                total_processed += batch.len();
-            }
-
-            // Update metrics
-            if let Some(collector) = metrics_collector {
-                collector.add_rows(batch.len() as u64);
-            }
-
-            batch.clear();
+            total_processed += flush_csv_batch(
+                surreal,
+                pipeline,
+                apply_opts,
+                &mut batch,
+                config.dry_run,
+                metrics_collector,
+            )
+            .await?;
         }
     }
 
     // Process remaining records
-    if !batch.is_empty() {
-        if !config.dry_run {
-            surreal.write_universal_rows(&batch).await?;
-            total_processed += batch.len();
-        } else {
-            debug!(
-                "Dry run: Would insert final batch of {} records",
-                batch.len()
-            );
-            total_processed += batch.len();
-        }
-
-        // Update metrics for final batch
-        if let Some(collector) = metrics_collector {
-            collector.add_rows(batch.len() as u64);
-        }
-    }
+    total_processed += flush_csv_batch(
+        surreal,
+        pipeline,
+        apply_opts,
+        &mut batch,
+        config.dry_run,
+        metrics_collector,
+    )
+    .await?;
 
     info!(
         "Processed {record_count} records from {source_name} (total processed: {total_processed})",
@@ -361,7 +363,7 @@ async fn process_csv_reader<S: SurrealSink>(
     Ok(())
 }
 
-/// Sync CSV files to SurrealDB
+/// Sync CSV files to SurrealDB with identity transforms.
 ///
 /// This function streams CSV files from various sources and imports them into a SurrealDB table
 /// in configurable batches.
@@ -373,6 +375,18 @@ async fn process_csv_reader<S: SurrealSink>(
 /// # Returns
 /// Returns Ok(()) on successful completion, or an error if the sync fails
 pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    sync_with_transforms(surreal, config, &pipeline, &apply_opts).await
+}
+
+/// Sync CSV files through the transform framework via [`write_rows`].
+pub async fn sync_with_transforms<S: SurrealSink>(
+    surreal: &S,
+    config: Config,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<()> {
     info!("Starting CSV sync to SurrealDB");
     info!("Target table: {}", config.table);
     info!("Sources to process: {:?}", config.sources);
@@ -383,6 +397,14 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
         config.http_uris
     );
     info!("Batch size: {}", config.batch_size);
+    if pipeline.is_identity() {
+        debug!("CSV sync using identity transform pipeline");
+    } else {
+        info!(
+            stages = pipeline.len(),
+            "CSV sync using transform pipeline"
+        );
+    }
 
     if config.dry_run {
         warn!("Running in dry-run mode - no data will be written");
@@ -462,6 +484,8 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
             reader,
             &resolved_source.display_name(),
             metrics_ref,
+            pipeline,
+            apply_opts,
         )
         .await?;
     }

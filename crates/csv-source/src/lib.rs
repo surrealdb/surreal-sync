@@ -6,7 +6,7 @@
 mod metrics;
 mod sync;
 
-pub use sync::{sync, Config};
+pub use sync::{sync, sync_with_transforms, Config};
 
 // Re-export file source types for convenience
 pub use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};

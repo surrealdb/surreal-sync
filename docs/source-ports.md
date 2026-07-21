@@ -10,8 +10,9 @@ Operator-facing transforms docs stay in [transforms.md](transforms.md).
 
 - [x] `load_transforms_from_args` in `src/from/transforms.rs`
 - [x] `from mysql-binlog sync` uses the shared loader
-- [ ] Other `from *` sync commands take `--transforms-config` and call the
-      shared loader when each source is ported (see below)
+- [x] Batch importers (`from kafka`, `from csv`, `from jsonl`) take
+      `--transforms-config` and call the shared loader
+- [ ] Remaining interleaved / docs polish (see plan commit sequence)
 
 **Omit flag vs empty / passthrough file** — both yield an identity pipeline,
 but `ApplyOpts` differ (buffering cadence):
@@ -30,15 +31,15 @@ spawn coverage is in `sync-transform` config tests).
 | Source | Framework apply path | `--transforms-config` CLI | Notes |
 |--------|----------------------|---------------------------|--------|
 | mysql-binlog | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Reference port |
-| postgresql-pgoutput | Pending | Pending with port | Target binlog parity |
-| postgresql-wal2json | Pending | Pending with port | Preserve FK pre-push enrichment |
-| postgresql-trigger | Pending | Pending with port | Preserve FK pre-push enrichment |
-| mysql (trigger) | Pending | Pending with port | |
-| mongodb | Pending | Pending with port | |
-| neo4j | Pending | Pending with port | Nodes + edges via mixed events |
-| kafka | Pending (`write_rows`) | Pending with port | |
-| csv | Pending (`write_rows`) | Pending with port | |
-| jsonl | Pending (`write_rows`) | Pending with port | Keep `conversion_rules` before Pipeline |
+| postgresql-pgoutput | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Binlog parity |
+| postgresql-wal2json | SourceDriver | Yes | FK pre-push enrichment preserved |
+| postgresql-trigger | SourceDriver | Yes | FK pre-push enrichment preserved |
+| mysql (trigger) | SourceDriver | Yes | |
+| mongodb | SourceDriver + `write_rows` full | Yes | |
+| neo4j | SourceDriver + `write_rows` / `write_relations` | Yes | Nodes + edges via mixed events |
+| kafka | `write_rows` (decode batch then apply) | Yes (shared loader + CLI e2e) | Offset commit stays Kafka consumer-group |
+| csv | `write_rows` | Yes (shared loader + CLI e2e) | |
+| jsonl | `write_rows` | Yes (shared loader + CLI e2e) | `conversion_rules` before Pipeline |
 
 ## Porting rules (short)
 

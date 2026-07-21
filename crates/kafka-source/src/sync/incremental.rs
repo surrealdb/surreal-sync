@@ -1,7 +1,11 @@
 //! Kafka incremental sync to SurrealDB.
 //!
 //! Consumes protobuf-encoded messages from Kafka topics and writes
-//! them as records to SurrealDB tables.
+//! them as records to SurrealDB tables through [`write_rows`].
+//!
+//! Offset commit stays with the Kafka consumer group (no Surreal sync
+//! checkpoint store). Decode a Kafka batch, then apply once via the
+//! transform framework before committing offsets.
 //!
 //! This module was moved from src/kafka/incremental.rs in the main crate
 //! to break the circular dependency between kafka and kafka-types.
@@ -16,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use surreal_sink::SurrealSink;
 use sync_core::{TableDefinition, TypedValue, UniversalRow, UniversalValue};
+use sync_transform::{write_rows, ApplyOpts, Pipeline};
 use tokio::time::{sleep, Duration};
 use tracing::{debug, info};
 
@@ -97,7 +102,7 @@ pub struct Config {
     pub ssl_key_password: Option<String>,
 }
 
-/// Run incremental sync from Kafka to SurrealDB.
+/// Run incremental sync from Kafka to SurrealDB (identity transforms).
 ///
 /// The sync will run until the deadline is reached. Once the deadline passes,
 /// the function will gracefully terminate all consumers and exit.
@@ -107,6 +112,32 @@ pub async fn run_incremental_sync<S: SurrealSink + Send + Sync + 'static>(
     deadline: DateTime<Utc>,
     table_schema: Option<TableDefinition>,
 ) -> Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_incremental_sync_with_transforms(
+        surreal,
+        config,
+        deadline,
+        table_schema,
+        &pipeline,
+        &apply_opts,
+    )
+    .await
+}
+
+/// Run incremental sync through the transform framework via [`write_rows`].
+///
+/// Each Kafka batch is decoded to [`UniversalRow`]s, then applied once with
+/// `write_rows`. Kafka consumer-group offset commit happens only after that
+/// apply succeeds (unchanged from before the framework port).
+pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync + 'static>(
+    surreal: Arc<S>,
+    config: Config,
+    deadline: DateTime<Utc>,
+    table_schema: Option<TableDefinition>,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<()> {
     let duration_until_deadline = deadline.signed_duration_since(Utc::now());
     info!(
         "Starting Kafka incremental sync for message {} from topic {} (deadline in {} seconds)",
@@ -114,6 +145,14 @@ pub async fn run_incremental_sync<S: SurrealSink + Send + Sync + 'static>(
         config.topic,
         duration_until_deadline.num_seconds()
     );
+    if pipeline.is_identity() {
+        debug!("Kafka sync using identity transform pipeline");
+    } else {
+        info!(
+            stages = pipeline.len(),
+            "Kafka sync using transform pipeline"
+        );
+    }
 
     // Determine table name: use configured table_name if provided, otherwise use topic name
     let table_name = config
@@ -149,6 +188,8 @@ pub async fn run_incremental_sync<S: SurrealSink + Send + Sync + 'static>(
     let processed_count = Arc::new(AtomicU64::new(0));
 
     let surreal = Arc::clone(&surreal);
+    let pipeline = pipeline.clone();
+    let apply_opts = apply_opts.clone();
 
     // Message processor function
     let use_message_key_as_id = config.use_message_key_as_id;
@@ -157,13 +198,18 @@ pub async fn run_incremental_sync<S: SurrealSink + Send + Sync + 'static>(
         let counter = Arc::clone(&processed_count);
         let table_name = table_name.clone();
         let table_schema = table_schema.clone();
+        let pipeline = pipeline.clone();
+        let apply_opts = apply_opts.clone();
         move |messages: Vec<Message>| {
             let counter = Arc::clone(&counter);
             let surreal = Arc::clone(&surreal);
             let table_name = table_name.clone();
             let table_schema = table_schema.clone();
             let id_field = id_field.clone();
+            let pipeline = pipeline.clone();
+            let apply_opts = apply_opts.clone();
             async move {
+                let mut rows = Vec::with_capacity(messages.len());
                 for message in messages {
                     debug!("Received message: {:?}", message);
 
@@ -186,12 +232,18 @@ pub async fn run_incremental_sync<S: SurrealSink + Send + Sync + 'static>(
                         counter.load(Ordering::SeqCst),
                     )?;
 
-                    surreal.write_universal_rows(&[row]).await?;
+                    rows.push(row);
+                }
 
-                    let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
-                    if count.is_multiple_of(100) {
-                        info!("Processed {count} messages total");
-                    }
+                let batch_len = rows.len() as u64;
+                if !rows.is_empty() {
+                    write_rows(surreal.as_ref(), &pipeline, rows, &apply_opts).await?;
+                }
+
+                let prev = counter.fetch_add(batch_len, Ordering::SeqCst);
+                let count = prev + batch_len;
+                if count / 100 > prev / 100 {
+                    info!("Processed {count} messages total");
                 }
 
                 Ok(())

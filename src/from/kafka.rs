@@ -8,6 +8,7 @@ use anyhow::Context;
 use sync_core::Schema;
 
 use super::{get_sdk_version, parse_duration_to_secs, SdkVersion};
+use super::transforms::load_transforms_from_args;
 use crate::KafkaArgs;
 
 /// Run Kafka streaming sync, dispatching to appropriate SDK version.
@@ -32,6 +33,8 @@ async fn run_v2(args: KafkaArgs) -> anyhow::Result<()> {
     if args.surreal.dry_run {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
+
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     // Parse timeout duration
     let timeout_secs = parse_duration_to_secs(&args.timeout)
@@ -65,8 +68,15 @@ async fn run_v2(args: KafkaArgs) -> anyhow::Result<()> {
         None
     };
 
-    surreal_sync_kafka_source::run_incremental_sync(sink, args.config, deadline, table_schema)
-        .await?;
+    surreal_sync_kafka_source::run_incremental_sync_with_transforms(
+        sink,
+        args.config,
+        deadline,
+        table_schema,
+        &pipeline,
+        &apply_opts,
+    )
+    .await?;
 
     Ok(())
 }
@@ -79,6 +89,8 @@ async fn run_v3(args: KafkaArgs) -> anyhow::Result<()> {
     if args.surreal.dry_run {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
+
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     // Parse timeout duration
     let timeout_secs = parse_duration_to_secs(&args.timeout)
@@ -112,8 +124,15 @@ async fn run_v3(args: KafkaArgs) -> anyhow::Result<()> {
         None
     };
 
-    surreal_sync_kafka_source::run_incremental_sync(sink, args.config, deadline, table_schema)
-        .await?;
+    surreal_sync_kafka_source::run_incremental_sync_with_transforms(
+        sink,
+        args.config,
+        deadline,
+        table_schema,
+        &pipeline,
+        &apply_opts,
+    )
+    .await?;
 
     Ok(())
 }

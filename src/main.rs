@@ -1458,6 +1458,11 @@ struct KafkaArgs {
     #[arg(long, default_value = "1h")]
     timeout: String,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -1517,6 +1522,11 @@ struct CsvArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -1550,6 +1560,11 @@ struct JsonlArgs {
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
+
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
 
     #[command(flatten)]
     surreal: SurrealOpts,

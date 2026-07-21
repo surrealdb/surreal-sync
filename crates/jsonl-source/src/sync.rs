@@ -12,6 +12,7 @@ use surreal_sync_file::{FileSource, DEFAULT_BUFFER_SIZE};
 use sync_core::{
     DatabaseSchema, TableDefinition, TypedValue, UniversalRow, UniversalType, UniversalValue,
 };
+use sync_transform::{write_rows, ApplyOpts, Pipeline};
 
 /// Source database connection options (JSONL-specific)
 #[derive(Clone, Debug)]
@@ -71,12 +72,17 @@ impl Default for Config {
 ///
 /// This function handles all JSONL parsing, data conversion, and SurrealDB insertion
 /// for a single JSONL source (file, S3, or HTTP).
+///
+/// [`ConversionRule`]s are applied while building each [`UniversalRow`], before
+/// the batch is passed through the transform [`Pipeline`].
 async fn process_jsonl_reader<S: SurrealSink>(
     surreal: &S,
     config: &Config,
     reader: Box<dyn std::io::Read + Send>,
     source_name: &str,
     rules: &[ConversionRule],
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
 ) -> Result<()> {
     tracing::info!("Processing JSONL from: {source_name}");
 
@@ -131,6 +137,7 @@ async fn process_jsonl_reader<S: SurrealSink>(
             .map_err(|e| anyhow!("Error parsing JSON at line {line_count}: {e}"))?;
 
         // Convert to universal row with schema-aware conversion
+        // (conversion_rules run here, before Pipeline stages)
         let row = convert_json_to_universal_row(
             &json_value,
             &table_name,
@@ -144,22 +151,31 @@ async fn process_jsonl_reader<S: SurrealSink>(
 
         // Process batch when it reaches the batch size
         if batch.len() >= config.batch_size {
+            let batch_len = batch.len();
             if !config.dry_run {
-                surreal.write_universal_rows(&batch).await?;
+                write_rows(
+                    surreal,
+                    pipeline,
+                    std::mem::take(&mut batch),
+                    apply_opts,
+                )
+                .await?;
+            } else {
+                batch.clear();
             }
-            total_migrated += batch.len();
-            tracing::debug!("Migrated batch of {} documents", batch.len());
-            batch.clear();
+            total_migrated += batch_len;
+            tracing::debug!("Migrated batch of {batch_len} documents");
         }
     }
 
     // Process remaining documents
     if !batch.is_empty() {
+        let final_len = batch.len();
         if !config.dry_run {
-            surreal.write_universal_rows(&batch).await?;
+            write_rows(surreal, pipeline, batch, apply_opts).await?;
         }
-        total_migrated += batch.len();
-        tracing::debug!("Migrated final batch of {} documents", batch.len());
+        total_migrated += final_len;
+        tracing::debug!("Migrated final batch of {final_len} documents");
     }
 
     tracing::info!(
@@ -172,7 +188,7 @@ async fn process_jsonl_reader<S: SurrealSink>(
     Ok(())
 }
 
-/// Sync JSONL files to SurrealDB
+/// Sync JSONL files to SurrealDB with identity transforms.
 ///
 /// This function streams JSONL files from various sources and imports them into SurrealDB tables.
 /// The table name is derived from the filename (without .jsonl extension).
@@ -184,11 +200,34 @@ async fn process_jsonl_reader<S: SurrealSink>(
 /// # Returns
 /// Returns Ok(()) on successful completion, or an error if the sync fails
 pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    sync_with_transforms(surreal, config, &pipeline, &apply_opts).await
+}
+
+/// Sync JSONL files through the transform framework via [`write_rows`].
+///
+/// [`Config::conversion_rules`] still run while decoding each line into a
+/// [`UniversalRow`], before any Pipeline stages.
+pub async fn sync_with_transforms<S: SurrealSink>(
+    surreal: &S,
+    config: Config,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<()> {
     tracing::info!("Starting JSONL migration");
     tracing::info!("Sources to process: {:?}", config.sources);
     tracing::info!("Files to process: {:?}", config.files);
     tracing::info!("S3 URIs to process: {:?}", config.s3_uris);
     tracing::info!("HTTP/HTTPS URIs to process: {:?}", config.http_uris);
+    if pipeline.is_identity() {
+        tracing::debug!("JSONL sync using identity transform pipeline");
+    } else {
+        tracing::info!(
+            stages = pipeline.len(),
+            "JSONL sync using transform pipeline"
+        );
+    }
 
     if config.dry_run {
         tracing::warn!("Running in dry-run mode - no data will be written");
@@ -224,7 +263,16 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
                 .await
                 .with_context(|| format!("Failed to open JSONL source: {source_name}"))?;
 
-            process_jsonl_reader(surreal, &config, reader, &source_name, &rules).await?;
+            process_jsonl_reader(
+                surreal,
+                &config,
+                reader,
+                &source_name,
+                &rules,
+                pipeline,
+                apply_opts,
+            )
+            .await?;
             total_sources += 1;
         }
     }
@@ -240,7 +288,16 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
                 .open(DEFAULT_BUFFER_SIZE)
                 .await
                 .context("Failed to open JSONL file")?;
-            process_jsonl_reader(surreal, &config, reader, &source_name, &rules).await?;
+            process_jsonl_reader(
+                surreal,
+                &config,
+                reader,
+                &source_name,
+                &rules,
+                pipeline,
+                apply_opts,
+            )
+            .await?;
             total_sources += 1;
         }
     }
@@ -256,7 +313,16 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
                 .open(DEFAULT_BUFFER_SIZE)
                 .await
                 .context("Failed to open S3 JSONL file")?;
-            process_jsonl_reader(surreal, &config, reader, &source_name, &rules).await?;
+            process_jsonl_reader(
+                surreal,
+                &config,
+                reader,
+                &source_name,
+                &rules,
+                pipeline,
+                apply_opts,
+            )
+            .await?;
             total_sources += 1;
         }
     }
@@ -272,7 +338,16 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
                 .open(DEFAULT_BUFFER_SIZE)
                 .await
                 .context("Failed to open HTTP/HTTPS JSONL file")?;
-            process_jsonl_reader(surreal, &config, reader, &source_name, &rules).await?;
+            process_jsonl_reader(
+                surreal,
+                &config,
+                reader,
+                &source_name,
+                &rules,
+                pipeline,
+                apply_opts,
+            )
+            .await?;
             total_sources += 1;
         }
     }

@@ -7683,6 +7683,7 @@ dependencies = [
  "surrealdb 2.6.5",
  "surrealdb 3.1.5",
  "sync-core",
+ "sync-transform",
  "tempfile",
  "tokio",
  "tokio-test",
@@ -7731,6 +7732,7 @@ name = "surreal-sync-jsonl-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "json-types",
  "serde",
@@ -7743,6 +7745,8 @@ dependencies = [
  "surrealdb 2.6.5",
  "surrealdb 3.1.5",
  "sync-core",
+ "sync-transform",
+ "tempfile",
  "tokio",
  "tokio-test",
  "tracing",
@@ -7770,6 +7774,7 @@ name = "surreal-sync-kafka-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "bytes",
  "chrono",
@@ -7783,6 +7788,7 @@ dependencies = [
  "serde_json",
  "surreal-sink",
  "sync-core",
+ "sync-transform",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
