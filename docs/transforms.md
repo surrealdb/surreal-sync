@@ -151,6 +151,8 @@ Prefer `persistent` for real enrichment (avoids per-batch process startup). `tra
 
 Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W. **Omit `--transforms-config`** → `ApplyOpts::identity()` (`batch_size = 1`, `max_in_flight = 1`); overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set).
 
+**Best-case R∩T∩W** (source reads continuing while transforms run and ordered sink writes stay in flight) needs **`max_in_flight > 1`**. With the default `1`, the framework still orders sink apply and sink-gates cursors, but there is no overlapping transform/sink window to hide latency.
+
 ## Durability and acknowledgements
 
 Durability is the **source checkpoint**, not the transform worker.
@@ -289,8 +291,9 @@ There is no exactly-once guarantee across transform + SurrealDB + source checkpo
 `--transforms-config` applies to every command in [Commands that support `--transforms-config`](#commands-that-support---transforms-config).
 
 - **CDC / Kafka / CSV / JSONL** — long-lived `SourceDriver` + `run_source_runtime`: reads can overlap transforms and ordered sink writes under `max_in_flight`.
-- **Full sync / keyset table scans** — MySQL and PostgreSQL keyset paths use a long-lived `RowChunkDriver` so the next chunk read can overlap prior-chunk transform/sink when `max_in_flight > 1` (same idea as CSV/JSONL streaming). Relation tables and no-PK fallbacks still use chunked `write_rows` / `write_relations`.
-- **Interleaved snapshot reconciliation** — CDC events between watermarks share one `ApplyContext` window (not per-event apply), so `max_in_flight` absorbs slow transforms; `commit_reconciled` runs only after that window drains.
+- **Full sync / keyset table scans** — MySQL and PostgreSQL keyset paths use a long-lived `RowChunkDriver` so the next chunk read can overlap prior-chunk transform/sink when `max_in_flight > 1` (same idea as CSV/JSONL streaming). Relation tables and no-PK tables stream via `RelationChunkDriver` / OFFSET chunks the same way (no monolithic `SELECT *` + serial `write_rows`).
+- **Interleaved snapshot reconciliation** — CDC events and surviving chunk rows share one long-lived `run_source_runtime` window across chunks, so polls continue under spare `max_in_flight` while ordered sink runs; `commit_reconciled` runs only after each chunk is sink-safe.
+- **MongoDB / Neo4j full** — cursor/result streams use `RowChunkDriver` / `RelationChunkDriver` (Neo4j: all nodes before any edges).
 - **Ad-hoc / oneshot helpers** — remaining `write_rows` / `write_relations` call sites honor `max_in_flight` within each call; they are not a continuous source poll loop.
 
 Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it) follow the durability rules above — especially that catch-up progress does not advance past unsunk transform/apply work on sources that use sink-safe checkpoints. See the per-source guides linked below and [Source ports](source-ports.md) for implementer details.

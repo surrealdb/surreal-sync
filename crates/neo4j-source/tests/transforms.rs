@@ -214,7 +214,7 @@ async fn incremental_applies_nodes_before_relations_in_batch() -> Result<()> {
         &sink,
         opts,
         sync_opts,
-        Neo4jCheckpoint { timestamp: t1 },
+        Neo4jCheckpoint::at(t1),
         ReplicationTailOptions::stream(
             chrono::Utc::now() + chrono::Duration::seconds(30),
             None,
@@ -309,7 +309,7 @@ async fn identity_and_external_mutate_incremental() -> Result<()> {
         batch_size: 100,
         dry_run: false,
     };
-    let checkpoint = Neo4jCheckpoint { timestamp: t1 };
+    let checkpoint = Neo4jCheckpoint::at(t1);
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(30);
 
     // Identity incremental
@@ -365,7 +365,7 @@ async fn identity_and_external_mutate_incremental() -> Result<()> {
         &sink,
         opts,
         sync_opts,
-        Neo4jCheckpoint { timestamp: t2 },
+        Neo4jCheckpoint::at(t2),
         ReplicationTailOptions::stream(
             chrono::Utc::now() + chrono::Duration::seconds(30),
             None,

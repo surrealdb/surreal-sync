@@ -34,8 +34,8 @@ spawn coverage is in `sync-transform` config tests).
 | postgresql-wal2json | SourceDriver | Yes (shared loader + CLI e2e) | Yes | Non-consuming peek + prefix skip; slot advance after sunk |
 | postgresql-trigger | SourceDriver | Yes (shared loader + CLI e2e) | Yes | FK pre-push enrichment; `commit` no-op (fetch cursor) |
 | mysql (trigger) | SourceDriver | Yes (shared loader + CLI e2e) | Yes | `commit` no-op (fetch cursor); no DDL / ad-hoc |
-| mongodb | SourceDriver + `write_rows` full | Yes (shared loader + CLI e2e) | N/A | Resume token updated on stream read; `commit` no-op |
-| neo4j | SourceDriver + `write_rows` / `write_relations` | Yes (shared loader + CLI e2e) | N/A | Nodes + edges via mixed events; fetch advances timestamp cursor |
+| mongodb | SourceDriver + RowChunkDriver full | Yes (shared loader + CLI e2e) | N/A | Resume token advanced on `commit` after sink (not on stream read) |
+| neo4j | SourceDriver + RowChunkDriver / RelationChunkDriver full | Yes (shared loader + CLI e2e) | N/A | Nodes fully before edges; fetch advances timestamp (+ tie-break ids) cursor |
 | kafka | SourceDriver + `run_source_runtime` | Yes (shared loader + CLI e2e) | N/A | `commit_batch` all sunk msgs; `note_sunk_events` counts |
 | csv | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | File read polls into window (no per-batch runtime restart) |
 | jsonl | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline; same streaming model |

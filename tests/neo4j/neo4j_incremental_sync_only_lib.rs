@@ -124,7 +124,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     match &conn {
         SurrealConnection::V2(client) => {
             let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            let neo4j_checkpoint = surreal_sync_neo4j_source::Neo4jCheckpoint { timestamp: t1 };
+            let neo4j_checkpoint = surreal_sync_neo4j_source::Neo4jCheckpoint::at(t1);
             surreal_sync_neo4j_source::run_incremental_sync(
                 &sink,
                 source_opts,
@@ -137,7 +137,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
         }
         SurrealConnection::V3(client) => {
             let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            let neo4j_checkpoint = surreal_sync_neo4j_source::Neo4jCheckpoint { timestamp: t1 };
+            let neo4j_checkpoint = surreal_sync_neo4j_source::Neo4jCheckpoint::at(t1);
             surreal_sync_neo4j_source::run_incremental_sync(
                 &sink,
                 source_opts,

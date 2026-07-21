@@ -41,6 +41,14 @@ pub enum IncrementalChange {
     Relation(Box<UniversalRelation>),
 }
 
+/// Sink-ordered apply position: timestamp plus keyset tie-breaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Neo4jApplyPos {
+    pub timestamp_millis: i64,
+    pub after_node_id: i64,
+    pub after_rel_id: i64,
+}
+
 /// Trait for a stream of changes from Neo4j
 #[async_trait]
 pub trait ChangeStream: Send + Sync {
@@ -50,9 +58,9 @@ pub trait ChangeStream: Send + Sync {
     /// Sink-safe checkpoint (advanced only via [`ChangeStream::commit_sunk`]).
     fn checkpoint(&self) -> Option<Neo4jCheckpoint>;
 
-    /// Record that events through `timestamp_millis` were successfully sunk.
-    fn commit_sunk(&mut self, timestamp_millis: i64) {
-        let _ = timestamp_millis;
+    /// Record that events through this apply position were successfully sunk.
+    fn commit_sunk(&mut self, position: Neo4jApplyPos) {
+        let _ = position;
     }
 }
 
@@ -102,9 +110,21 @@ impl Neo4jIncrementalSource {
 
     /// Get a stream of changes
     pub async fn get_changes(&mut self) -> anyhow::Result<Box<dyn ChangeStream>> {
+        let cp = Neo4jCheckpoint::at(
+            chrono::DateTime::from_timestamp_millis(self.current_timestamp)
+                .unwrap_or_else(Utc::now),
+        );
+        self.get_changes_from(&cp).await
+    }
+
+    /// Get a stream starting from a full checkpoint (timestamp + tie-breaks).
+    pub async fn get_changes_from(
+        &mut self,
+        from_checkpoint: &Neo4jCheckpoint,
+    ) -> anyhow::Result<Box<dyn ChangeStream>> {
         Ok(Box::new(Neo4jChangeStream::new(
             self.graph.clone(),
-            self.current_timestamp,
+            from_checkpoint,
             self.change_tracking_property.clone(),
             self.id_property.clone(),
             self.ctx.clone(),
@@ -117,9 +137,7 @@ impl Neo4jIncrementalSource {
         let checkpoint_datetime =
             chrono::DateTime::from_timestamp_millis(self.current_timestamp)
                 .ok_or_else(|| anyhow::anyhow!("Invalid timestamp: {}", self.current_timestamp))?;
-        Ok(Neo4jCheckpoint {
-            timestamp: checkpoint_datetime,
-        })
+        Ok(Neo4jCheckpoint::at(checkpoint_datetime))
     }
 
     /// Cleanup resources
@@ -140,6 +158,9 @@ pub struct Neo4jChangeStream {
     after_rel_id: i64,
     /// Sink-safe watermark (authoritative for [`ChangeStream::checkpoint`]).
     sunk_checkpoint: i64,
+    /// Tie-break ids at [`Self::sunk_checkpoint`] (crash-resume keyset).
+    sunk_after_node_id: i64,
+    sunk_after_rel_id: i64,
     change_tracking_property: String,
     /// Property name to use as SurrealDB record ID
     id_property: String,
@@ -156,18 +177,21 @@ pub struct Neo4jChangeStream {
 impl Neo4jChangeStream {
     pub fn new(
         graph: Graph,
-        from_checkpoint: i64,
+        from_checkpoint: &Neo4jCheckpoint,
         change_tracking_property: String,
         id_property: String,
         ctx: Neo4jConversionContext,
         composite_constituent: Option<String>,
     ) -> Self {
+        let from_ts = from_checkpoint.timestamp.timestamp_millis();
         Neo4jChangeStream {
             graph,
-            read_checkpoint: from_checkpoint,
-            after_node_id: i64::MIN,
-            after_rel_id: i64::MIN,
-            sunk_checkpoint: from_checkpoint,
+            read_checkpoint: from_ts,
+            after_node_id: from_checkpoint.after_node_id,
+            after_rel_id: from_checkpoint.after_rel_id,
+            sunk_checkpoint: from_ts,
+            sunk_after_node_id: from_checkpoint.after_node_id,
+            sunk_after_rel_id: from_checkpoint.after_rel_id,
             change_tracking_property,
             id_property,
             ctx,
@@ -388,12 +412,19 @@ impl ChangeStream for Neo4jChangeStream {
                 .unwrap_or_else(Utc::now);
         Some(Neo4jCheckpoint {
             timestamp: checkpoint_datetime,
+            after_node_id: self.sunk_after_node_id,
+            after_rel_id: self.sunk_after_rel_id,
         })
     }
 
-    fn commit_sunk(&mut self, timestamp_millis: i64) {
-        if timestamp_millis > self.sunk_checkpoint {
-            self.sunk_checkpoint = timestamp_millis;
+    fn commit_sunk(&mut self, position: Neo4jApplyPos) {
+        if position.timestamp_millis > self.sunk_checkpoint {
+            self.sunk_checkpoint = position.timestamp_millis;
+            self.sunk_after_node_id = position.after_node_id;
+            self.sunk_after_rel_id = position.after_rel_id;
+        } else if position.timestamp_millis == self.sunk_checkpoint {
+            self.sunk_after_node_id = self.sunk_after_node_id.max(position.after_node_id);
+            self.sunk_after_rel_id = self.sunk_after_rel_id.max(position.after_rel_id);
         }
     }
 }
@@ -473,17 +504,55 @@ pub async fn apply_incremental_changes<S: SurrealSink>(
 
 fn incremental_change_to_positioned(
     change: IncrementalChange,
-    position: i64,
-) -> PositionedEvent<i64> {
+    tracking_property: &str,
+    prev: Neo4jApplyPos,
+) -> (PositionedEvent<Neo4jApplyPos>, Neo4jApplyPos) {
     match change {
         IncrementalChange::Node(row) => {
-            // Timestamp-based Neo4j sync is upsert-only (no delete detection).
+            let ts = tracking_millis_from_fields(&row.fields, tracking_property)
+                .unwrap_or(prev.timestamp_millis);
+            let node_id = match row.fields.get("neo4j_id") {
+                Some(UniversalValue::Int64(id)) => *id,
+                _ => row.index as i64,
+            };
+            let position = if ts > prev.timestamp_millis {
+                Neo4jApplyPos {
+                    timestamp_millis: ts,
+                    after_node_id: node_id,
+                    after_rel_id: i64::MIN,
+                }
+            } else {
+                Neo4jApplyPos {
+                    timestamp_millis: ts,
+                    after_node_id: node_id,
+                    after_rel_id: prev.after_rel_id,
+                }
+            };
             let uc = UniversalChange::update(row.table, row.id, row.fields);
-            PositionedEvent::change(uc, position)
+            (PositionedEvent::change(uc, position), position)
         }
         IncrementalChange::Relation(rel) => {
+            let ts = tracking_millis_from_fields(&rel.data, tracking_property)
+                .unwrap_or(prev.timestamp_millis);
+            let rel_id = match &rel.id {
+                UniversalValue::Int64(id) => *id,
+                _ => prev.after_rel_id,
+            };
+            let position = if ts > prev.timestamp_millis {
+                Neo4jApplyPos {
+                    timestamp_millis: ts,
+                    after_node_id: i64::MIN,
+                    after_rel_id: rel_id,
+                }
+            } else {
+                Neo4jApplyPos {
+                    timestamp_millis: ts,
+                    after_node_id: prev.after_node_id,
+                    after_rel_id: rel_id,
+                }
+            };
             let rc = UniversalRelationChange::update(*rel);
-            PositionedEvent::relation_change(rc, position)
+            (PositionedEvent::relation_change(rc, position), position)
         }
     }
 }
@@ -565,7 +634,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
         from_opts.composite_constituent.clone(),
     )?;
 
-    let mut stream = source.get_changes().await?;
+    let mut stream = source.get_changes_from(&from_checkpoint).await?;
 
     // Preserve dry-run: drain and count without applying through the framework.
     if options.dry_run || sync_opts.dry_run {
@@ -583,16 +652,33 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
             }
             let position = match &change {
                 IncrementalChange::Node(row) => {
-                    tracking_millis_from_fields(&row.fields, &tracking).unwrap_or(0)
+                    let ts = tracking_millis_from_fields(&row.fields, &tracking).unwrap_or(0);
+                    let node_id = match row.fields.get("neo4j_id") {
+                        Some(UniversalValue::Int64(id)) => *id,
+                        _ => row.index as i64,
+                    };
+                    Neo4jApplyPos {
+                        timestamp_millis: ts,
+                        after_node_id: node_id,
+                        after_rel_id: i64::MIN,
+                    }
                 }
                 IncrementalChange::Relation(rel) => {
-                    tracking_millis_from_fields(&rel.data, &tracking).unwrap_or(0)
+                    let ts = tracking_millis_from_fields(&rel.data, &tracking).unwrap_or(0);
+                    let rel_id = match &rel.id {
+                        UniversalValue::Int64(id) => *id,
+                        _ => i64::MIN,
+                    };
+                    Neo4jApplyPos {
+                        timestamp_millis: ts,
+                        after_node_id: i64::MIN,
+                        after_rel_id: rel_id,
+                    }
                 }
             };
-            // Dry-run treats the change as done: advance sink-safe cursor for until.
             stream.commit_sunk(position);
             if let Some(ref target) = options.until {
-                if position >= target.timestamp.timestamp_millis() {
+                if position.timestamp_millis >= target.timestamp.timestamp_millis() {
                     use checkpoint::Checkpoint;
                     tracing::info!(
                         "Reached target checkpoint: {}, stopping incremental sync",
@@ -626,7 +712,11 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
         until_reached: false,
         finished: false,
         total_changes: 0,
-        last_position: initial_timestamp,
+        last_position: Neo4jApplyPos {
+            timestamp_millis: from_checkpoint.timestamp.timestamp_millis(),
+            after_node_id: from_checkpoint.after_node_id,
+            after_rel_id: from_checkpoint.after_rel_id,
+        },
     };
 
     let runtime_opts = SourceRuntimeOpts::new();
@@ -673,12 +763,12 @@ struct Neo4jSourceDriver<'a> {
     until_reached: bool,
     finished: bool,
     total_changes: u64,
-    last_position: i64,
+    last_position: Neo4jApplyPos,
 }
 
 #[async_trait::async_trait]
 impl SourceDriver for Neo4jSourceDriver<'_> {
-    type Position = i64;
+    type Position = Neo4jApplyPos;
 
     async fn poll_work(&mut self) -> anyhow::Result<Vec<PositionedEvent<Self::Position>>> {
         if self.stop_reason().is_some() || self.finished {
@@ -692,22 +782,15 @@ impl SourceDriver for Neo4jSourceDriver<'_> {
             }
             Some(Err(e)) => Err(e),
             Some(Ok(change)) => {
-                let position = match &change {
-                    IncrementalChange::Node(row) => tracking_millis_from_fields(
-                        &row.fields,
-                        &self.tracking_property,
-                    )
-                    .unwrap_or(self.last_position),
-                    IncrementalChange::Relation(rel) => tracking_millis_from_fields(
-                        &rel.data,
-                        &self.tracking_property,
-                    )
-                    .unwrap_or(self.last_position),
-                };
-                self.last_position = self.last_position.max(position);
+                let (pe, position) = incremental_change_to_positioned(
+                    change,
+                    &self.tracking_property,
+                    self.last_position,
+                );
+                self.last_position = position;
 
                 if let Some(ref target) = self.options.until {
-                    if self.last_position >= target.timestamp.timestamp_millis() {
+                    if self.last_position.timestamp_millis >= target.timestamp.timestamp_millis() {
                         use checkpoint::Checkpoint;
                         tracing::info!(
                             "Reached target checkpoint: {}, stopping after this event",
@@ -717,10 +800,7 @@ impl SourceDriver for Neo4jSourceDriver<'_> {
                     }
                 }
 
-                Ok(vec![incremental_change_to_positioned(
-                    change,
-                    self.last_position,
-                )])
+                Ok(vec![pe])
             }
         }
     }
