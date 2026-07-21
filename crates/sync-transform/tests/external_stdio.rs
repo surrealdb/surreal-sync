@@ -6,8 +6,8 @@ use std::time::Duration;
 use sync_core::{UniversalChange, UniversalValue};
 use sync_transform::test_support::{RecordingSink, ScriptedChangeFeed};
 use sync_transform::{
-    run_change_feed, write_rows, ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline,
-    PositionedChange,
+    run_change_feed, write_rows, ApplyOpts, ChildStdioMode, ConfiguredStage, ExternalTransform,
+    FramerKind, Pipeline, PositionedChange,
 };
 
 fn fixture_cmd(mode: &str) -> Vec<String> {
@@ -33,7 +33,7 @@ fn positioned(id: i64, pos: u64) -> PositionedChange<u64> {
 
 #[tokio::test]
 async fn persistent_echo_and_mutate() {
-    let ext = ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("echo"))
+    let ext = ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("echo"), FramerKind::Ndjson)
         .expect("spawn echo worker");
     let out = ext
         .exchange_changes(7, vec![change(1, "alice")])
@@ -43,7 +43,7 @@ async fn persistent_echo_and_mutate() {
     assert_eq!(out[0].id, UniversalValue::Int64(1));
 
     let ext_m =
-        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("mutate"))
+        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("mutate"), FramerKind::Ndjson)
             .expect("spawn mutate worker");
     let out = ext_m
         .exchange_changes(8, vec![change(2, "bob")])
@@ -63,7 +63,7 @@ async fn persistent_echo_and_mutate() {
 
 #[tokio::test]
 async fn persistent_multiplex_batch_ids() {
-    let ext = ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("echo"))
+    let ext = ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("echo"), FramerKind::Ndjson)
         .expect("spawn");
     let a = {
         let ext = ext.clone();
@@ -81,7 +81,7 @@ async fn persistent_multiplex_batch_ids() {
 
 #[tokio::test]
 async fn transient_smoke() {
-    let ext = ExternalTransform::child_stdio(ChildStdioMode::Transient, fixture_cmd("echo"))
+    let ext = ExternalTransform::child_stdio(ChildStdioMode::Transient, fixture_cmd("echo"), FramerKind::Ndjson)
         .expect("transient");
     let out = ext
         .exchange_changes(1, vec![change(9, "x")])
@@ -101,7 +101,7 @@ async fn transient_smoke() {
 async fn persistent_bad_batch_id_no_sink_no_commit() {
     let mut pipeline = Pipeline::new();
     pipeline.push_external(
-        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("bad-batch-id"))
+        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("bad-batch-id"), FramerKind::Ndjson)
             .unwrap(),
     );
 
@@ -128,7 +128,7 @@ async fn persistent_bad_batch_id_no_sink_no_commit() {
 async fn persistent_w2_colliding_batch_id_mismatch_no_sink_no_commit() {
     let mut pipeline = Pipeline::new();
     pipeline.push_external(
-        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("bad-batch-id"))
+        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("bad-batch-id"), FramerKind::Ndjson)
             .unwrap(),
     );
 
@@ -166,6 +166,7 @@ async fn persistent_missing_batch_id_no_sink_no_commit() {
         ExternalTransform::child_stdio(
             ChildStdioMode::Persistent,
             fixture_cmd("missing-batch-id"),
+            FramerKind::Ndjson,
         )
         .unwrap(),
     );
@@ -192,7 +193,7 @@ async fn persistent_missing_batch_id_no_sink_no_commit() {
 async fn persistent_via_run_change_feed_echo() {
     let mut pipeline = Pipeline::new();
     pipeline.push_external(
-        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("echo")).unwrap(),
+        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("echo"), FramerKind::Ndjson).unwrap(),
     );
 
     let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 10), positioned(2, 20)]);
@@ -210,7 +211,7 @@ async fn persistent_via_run_change_feed_echo() {
 async fn write_rows_through_external_mutate() {
     let mut pipeline = Pipeline::new();
     pipeline.push_external(
-        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("mutate"))
+        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("mutate"), FramerKind::Ndjson)
             .unwrap(),
     );
     let sink = RecordingSink::new();
@@ -388,6 +389,133 @@ retry.jitter = false
     );
     assert!(sink.applied().is_empty());
     assert!(feed.commits.is_empty());
+}
+
+/// Two daisy-chained stages with different `retry.max_attempts` behave differently:
+/// stage 1 (`error-once`) recovers only when its attempts allow a retry; stage 2
+/// always fails (`bad-batch-id`) so a succeeding stage-1 must still fail the batch.
+#[tokio::test]
+async fn two_stages_different_max_attempts_behave_differently() {
+    let bin = env!("CARGO_BIN_EXE_sync-transform-fixture-worker");
+
+    // Stage 1 max_attempts=1: error-once fails immediately; never reaches stage 2.
+    let fail_fast = format!(
+        r#"
+[pipeline]
+batch_size = 1
+failure_policy = "fail"
+
+[[transforms]]
+type = "command"
+mode = "persistent"
+command = [{bin:?}, "error-once"]
+retry.max_attempts = 1
+retry.jitter = false
+
+[[transforms]]
+type = "command"
+mode = "persistent"
+command = [{bin:?}, "echo"]
+retry.max_attempts = 5
+retry.jitter = false
+"#
+    );
+    let cfg = sync_transform::parse_transforms_toml(&fail_fast).unwrap();
+    let pipeline = Pipeline::from_config(&cfg).unwrap();
+    let opts = ApplyOpts::from_transforms_config(&cfg);
+    let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 10)]);
+    let sink = RecordingSink::new();
+    let err = run_change_feed(&mut feed, &sink, &pipeline, &opts)
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("error") || msg.contains("attempt"),
+        "stage1 with max_attempts=1 should fail: {msg}"
+    );
+    assert!(sink.applied().is_empty());
+    assert!(feed.commits.is_empty());
+
+    // Stage 1 max_attempts=3: error-once recovers; stage 2 bad-batch-id fails
+    // (max_attempts=1) — proves per-stage retry wiring, not a shared policy.
+    let recover_then_fail = format!(
+        r#"
+[pipeline]
+batch_size = 1
+failure_policy = "fail"
+
+[[transforms]]
+type = "command"
+mode = "persistent"
+command = [{bin:?}, "error-once"]
+retry.max_attempts = 3
+retry.initial_backoff = "1ms"
+retry.max_backoff = "5ms"
+retry.jitter = false
+
+[[transforms]]
+type = "command"
+mode = "persistent"
+command = [{bin:?}, "bad-batch-id"]
+retry.max_attempts = 1
+retry.jitter = false
+"#
+    );
+    let cfg = sync_transform::parse_transforms_toml(&recover_then_fail).unwrap();
+    assert_eq!(cfg.stages.len(), 2);
+    let ConfiguredStage::Command(a) = &cfg.stages[0];
+    let ConfiguredStage::Command(b) = &cfg.stages[1];
+    assert_eq!(a.retry.max_attempts, 3);
+    assert_eq!(b.retry.max_attempts, 1);
+
+    let pipeline = Pipeline::from_config(&cfg).unwrap();
+    let opts = ApplyOpts::from_transforms_config(&cfg);
+    let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 20)]);
+    let sink = RecordingSink::new();
+    let err = run_change_feed(&mut feed, &sink, &pipeline, &opts)
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("batch_id") || msg.contains("mismatch") || msg.contains("attempt"),
+        "stage2 should fail after stage1 recovered: {msg}"
+    );
+    assert!(sink.applied().is_empty());
+    assert!(feed.commits.is_empty());
+
+    // Same chain but stage 2 echoes: whole pipeline succeeds only when both
+    // stages' retry policies allow progress.
+    let both_ok = format!(
+        r#"
+[pipeline]
+batch_size = 1
+
+[[transforms]]
+type = "command"
+mode = "persistent"
+command = [{bin:?}, "error-once"]
+retry.max_attempts = 3
+retry.initial_backoff = "1ms"
+retry.max_backoff = "5ms"
+retry.jitter = false
+
+[[transforms]]
+type = "command"
+mode = "persistent"
+command = [{bin:?}, "echo"]
+retry.max_attempts = 1
+"#
+    );
+    let cfg = sync_transform::parse_transforms_toml(&both_ok).unwrap();
+    let pipeline = Pipeline::from_config(&cfg).unwrap();
+    let opts = ApplyOpts::from_transforms_config(&cfg);
+    let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 30)]);
+    let sink = RecordingSink::new();
+    run_change_feed(&mut feed, &sink, &pipeline, &opts)
+        .await
+        .unwrap();
+    assert_eq!(sink.applied().len(), 1);
+    assert_eq!(feed.commits, vec![30]);
 }
 
 // Silence unused when test-support feature shapes differ.

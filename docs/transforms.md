@@ -192,6 +192,7 @@ A command stage spawns a worker and talks on **that process’s** stdin (request
 Prefer `persistent` for real enrichment (avoids per-batch process startup). `transient` is useful for debugging/simple scripts; expect lower throughput. Overlap from `max_in_flight > 1` is much more useful with `persistent`.
 
 Per-stage `retry` re-runs the stdio exchange for that stage only (same `batch_id`) with exponential backoff. After attempts are exhausted, the batch fails and `[pipeline].failure_policy` applies (`fail` or `skip`). Checkpoint still advances only after SurrealDB sink success (or skip-commit).
+
 ## Choosing batch size, timeouts, and `max_in_flight`
 
 - **`batch_size` / `batch_max_wait`** — how large a batch becomes before transform starts (`[pipeline]`). Larger batches amortize worker overhead; smaller batches reduce latency.

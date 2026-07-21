@@ -1,7 +1,7 @@
 //! Multiplexed external transports: persistent/transient child-stdio.
 
 use crate::external::wire::{RequestHeader, ResponseHeader, WireItemKind};
-use crate::framer::{Framer, NdjsonFramer};
+use crate::framer::{Framer, FramerKind, NdjsonFramer};
 use anyhow::{anyhow, bail, Context, Result};
 use async_trait::async_trait;
 use bytes::BytesMut;
@@ -258,10 +258,11 @@ pub struct PersistentChildStdio {
 
 impl PersistentChildStdio {
     /// Spawn `command[0]` with `command[1..]` as args; pipe stdin/stdout.
-    pub fn spawn(command: Vec<String>, framer: NdjsonFramer) -> Result<Self> {
+    pub fn spawn(command: Vec<String>, framer: FramerKind) -> Result<Self> {
         if command.is_empty() {
             bail!("persistent child command must not be empty");
         }
+        let framer = framer.into_framer();
         let program = &command[0];
         let mut cmd = Command::new(program);
         if command.len() > 1 {
@@ -409,10 +410,10 @@ struct TransientChild {
 }
 
 impl TransientChildStdio {
-    pub fn new(command: Vec<String>, framer: NdjsonFramer) -> Self {
+    pub fn new(command: Vec<String>, framer: FramerKind) -> Self {
         Self {
             command,
-            framer,
+            framer: framer.into_framer(),
             inflight: Mutex::new(HashMap::new()),
             notify: Arc::new(Notify::new()),
         }

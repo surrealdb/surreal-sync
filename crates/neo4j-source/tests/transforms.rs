@@ -15,7 +15,7 @@ use surreal_sync_neo4j_source::{
 use sync_core::{
     UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow, UniversalValue,
 };
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
 
 struct CaptureSink {
     changes: Mutex<Vec<UniversalChange>>,
@@ -357,6 +357,7 @@ async fn identity_and_external_mutate_incremental() -> Result<()> {
             worker.to_string_lossy().into_owned(),
             "mutate".to_string(),
         ],
+        FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
     let apply_opts = ApplyOpts::identity().with_batch_size(1);
@@ -437,6 +438,7 @@ async fn external_mutate_full_sync_rows_and_relations() -> Result<()> {
             worker.to_string_lossy().into_owned(),
             "mutate".to_string(),
         ],
+        FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
     let apply_opts = ApplyOpts::identity().with_batch_size(1);

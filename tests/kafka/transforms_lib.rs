@@ -13,7 +13,7 @@ use surreal_sync_kafka_producer::container::KafkaContainer;
 use surreal_sync_kafka_producer::{publish_test_users, KafkaTestProducer};
 use surreal_sync_kafka_source::Config as KafkaConfig;
 use sync_core::{UniversalChange, UniversalRelation, UniversalRow, UniversalValue};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
 use tokio::time::sleep;
 
 struct CaptureSink {
@@ -148,6 +148,7 @@ async fn kafka_external_mutate_rewrites_name_through_source_driver(
         ExternalTransform::child_stdio(
             ChildStdioMode::Persistent,
             vec![worker.to_string_lossy().to_string(), "mutate".to_string()],
+            FramerKind::Ndjson,
         )
         .expect("spawn mutate worker"),
     );

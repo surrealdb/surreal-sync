@@ -16,6 +16,8 @@ use std::time::Duration;
 use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
 use tokio::sync::Mutex;
 
+use crate::framer::FramerKind;
+
 /// Per-stage retry/backoff for a command transform exchange.
 ///
 /// `max_attempts = 1` (default) means no retry. Backoff grows exponentially
@@ -161,24 +163,26 @@ impl ExternalTransform {
     }
 
     /// Spawn a persistent child worker (default mode): one process, many batches.
-    pub fn persistent_child(command: Vec<String>) -> Result<Self> {
-        let transport =
-            PersistentChildStdio::spawn(command, crate::framer::NdjsonFramer)?;
+    pub fn persistent_child(command: Vec<String>, framer: FramerKind) -> Result<Self> {
+        let transport = PersistentChildStdio::spawn(command, framer)?;
         Ok(Self::with_transport(Arc::new(transport)))
     }
 
     /// Transient child worker: spawn → one exchange → exit, per batch.
-    pub fn transient_child(command: Vec<String>) -> Result<Self> {
-        let transport =
-            TransientChildStdio::new(command, crate::framer::NdjsonFramer);
+    pub fn transient_child(command: Vec<String>, framer: FramerKind) -> Result<Self> {
+        let transport = TransientChildStdio::new(command, framer);
         Ok(Self::with_transport(Arc::new(transport)))
     }
 
-    /// Convenience from mode + argv.
-    pub fn child_stdio(mode: ChildStdioMode, command: Vec<String>) -> Result<Self> {
+    /// Convenience from mode + argv + framer.
+    pub fn child_stdio(
+        mode: ChildStdioMode,
+        command: Vec<String>,
+        framer: FramerKind,
+    ) -> Result<Self> {
         match mode {
-            ChildStdioMode::Persistent => Self::persistent_child(command),
-            ChildStdioMode::Transient => Self::transient_child(command),
+            ChildStdioMode::Persistent => Self::persistent_child(command, framer),
+            ChildStdioMode::Transient => Self::transient_child(command, framer),
         }
     }
 
@@ -383,4 +387,74 @@ fn finish_response(expected_batch_id: u64, resp: WireResponse) -> Result<WireRes
         ));
     }
     Ok(resp)
+}
+
+#[cfg(test)]
+mod retry_policy_tests {
+    use super::*;
+
+    #[test]
+    fn backoff_after_no_jitter_doubles_until_cap() {
+        let policy = RetryPolicy {
+            max_attempts: 10,
+            initial_backoff: Duration::from_millis(100),
+            max_backoff: Duration::from_millis(800),
+            jitter: false,
+        };
+        assert_eq!(policy.backoff_after(1), Duration::from_millis(100));
+        assert_eq!(policy.backoff_after(2), Duration::from_millis(200));
+        assert_eq!(policy.backoff_after(3), Duration::from_millis(400));
+        assert_eq!(policy.backoff_after(4), Duration::from_millis(800));
+        assert_eq!(policy.backoff_after(5), Duration::from_millis(800));
+        assert_eq!(policy.backoff_after(20), Duration::from_millis(800));
+    }
+
+    #[test]
+    fn backoff_after_jitter_stays_within_half_to_cap() {
+        let policy = RetryPolicy {
+            max_attempts: 10,
+            initial_backoff: Duration::from_millis(200),
+            max_backoff: Duration::from_secs(1),
+            jitter: true,
+        };
+        for attempt in 1..=8 {
+            let base = {
+                let shift = (attempt - 1).min(16);
+                policy
+                    .initial_backoff
+                    .saturating_mul(1u32 << shift)
+                    .min(policy.max_backoff)
+            };
+            let delay = policy.backoff_after(attempt);
+            // Jitter scales by [0.5, 1.5) then caps at max_backoff.
+            let min_expected = base / 2;
+            assert!(
+                delay >= min_expected,
+                "attempt {attempt}: delay {delay:?} < half of base {base:?}"
+            );
+            assert!(
+                delay <= policy.max_backoff,
+                "attempt {attempt}: delay {delay:?} exceeds max_backoff"
+            );
+        }
+        // Same attempt is deterministic (no RNG).
+        assert_eq!(policy.backoff_after(3), policy.backoff_after(3));
+    }
+
+    #[test]
+    fn backoff_after_jitter_differs_from_plain_base() {
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            initial_backoff: Duration::from_millis(1000),
+            max_backoff: Duration::from_secs(60),
+            jitter: true,
+        };
+        let no_jitter = RetryPolicy {
+            jitter: false,
+            ..policy.clone()
+        };
+        // At least one of the early attempts should differ once jitter mixes.
+        let differs = (1..=4).any(|a| policy.backoff_after(a) != no_jitter.backoff_after(a));
+        assert!(differs, "jitter should change at least one backoff delay");
+    }
 }

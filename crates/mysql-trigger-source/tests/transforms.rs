@@ -12,7 +12,7 @@ use surreal_sync_mysql_trigger_source::{
     ReplicationTailOptions, SourceOpts,
 };
 use sync_core::{UniversalChange, UniversalRow, UniversalValue};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
 
 mod common;
 
@@ -152,6 +152,7 @@ async fn identity_and_external_mutate_incremental() -> Result<()> {
             worker.to_string_lossy().into_owned(),
             "mutate".to_string(),
         ],
+        FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
     let apply_opts = ApplyOpts::identity().with_batch_size(1);

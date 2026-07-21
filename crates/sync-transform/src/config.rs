@@ -15,6 +15,7 @@
 
 use crate::apply::{ApplyOpts, FailurePolicy};
 use crate::external::{ChildStdioMode, ExternalTransform, RetryPolicy};
+use crate::framer::FramerKind;
 use crate::pipeline::Pipeline;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -74,14 +75,6 @@ pub struct CommandStageConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StdioConfig {
     pub framer: FramerKind,
-}
-
-/// Supported wire framers (v1: NDJSON only).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum FramerKind {
-    /// Newline-delimited JSON (`stdio.framer = "ndjson"`).
-    #[default]
-    Ndjson,
 }
 
 impl TransformsConfig {
@@ -167,15 +160,16 @@ impl Pipeline {
         for stage in &cfg.stages {
             match stage {
                 ConfiguredStage::Command(cmd) => {
-                    if cmd.stdio.framer != FramerKind::Ndjson {
-                        bail!("unsupported stdio.framer (v1 supports ndjson only)");
-                    }
                     ensure_command_resolvable(&cmd.command)
                         .context("command not resolvable at config load")?;
-                    let external = ExternalTransform::child_stdio(cmd.mode, cmd.command.clone())
-                        .context("create command transform from config")?
-                        .with_timeout(cmd.timeout)
-                        .with_retry(cmd.retry.clone());
+                    let external = ExternalTransform::child_stdio(
+                        cmd.mode,
+                        cmd.command.clone(),
+                        cmd.stdio.framer,
+                    )
+                    .context("create command transform from config")?
+                    .with_timeout(cmd.timeout)
+                    .with_retry(cmd.retry.clone());
                     pipeline.push_external(external);
                 }
             }
@@ -275,6 +269,7 @@ pub fn parse_humantime(s: &str) -> Result<Duration> {
 // --- serde raw shapes -------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawTransformsFile {
     #[serde(default)]
     pipeline: RawPipeline,
@@ -326,12 +321,14 @@ enum RawFailurePolicy {
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawStdio {
     #[serde(default)]
     framer: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawRetry {
     #[serde(default)]
     max_attempts: Option<u32>,
@@ -762,6 +759,81 @@ command = ["w"]
         let msg = format!("{err:#}");
         assert!(
             msg.contains("external") || msg.contains("unknown") || msg.contains("did not match"),
+            "unexpected err: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_legacy_apply_section() {
+        let err = parse_transforms_toml(
+            r#"
+[apply]
+batch_size = 10
+
+[[transforms]]
+type = "command"
+command = ["w"]
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("apply") || msg.contains("unknown"),
+            "unexpected err: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_top_level_key() {
+        let err = parse_transforms_toml(
+            r#"
+workers = 4
+
+[[transforms]]
+type = "command"
+command = ["w"]
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("workers") || msg.contains("unknown"),
+            "unexpected err: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_stdio_typo_key() {
+        let err = parse_transforms_toml(
+            r#"
+[[transforms]]
+type = "command"
+command = ["w"]
+stdio.frameer = "ndjson"
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("frameer") || msg.contains("unknown"),
+            "unexpected err: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_retry_typo_key() {
+        let err = parse_transforms_toml(
+            r#"
+[[transforms]]
+type = "command"
+command = ["w"]
+retry.max_attemps = 3
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("max_attemps") || msg.contains("unknown"),
             "unexpected err: {msg}"
         );
     }

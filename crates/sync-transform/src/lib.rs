@@ -57,8 +57,8 @@ pub use apply::{
 };
 pub use config::{
     ensure_command_resolvable, load_pipeline_and_opts, load_transforms_config, parse_humantime,
-    parse_transforms_toml, CommandStageConfig, ConfiguredStage, FramerKind, PipelineSection,
-    StdioConfig, TransformsConfig,
+    parse_transforms_toml, CommandStageConfig, ConfiguredStage, PipelineSection, StdioConfig,
+    TransformsConfig,
 };
 pub use cow::CowBatch;
 pub use external::{
@@ -66,7 +66,7 @@ pub use external::{
     PersistentChildStdio, RequestHeader, ResponseHeader, RetryPolicy, TransientChildStdio,
     WireItemKind, WireResponse, RELATION_WIRE_BATCH_ID_BIT,
 };
-pub use framer::{Framer, NdjsonFramer};
+pub use framer::{Framer, FramerKind, NdjsonFramer};
 pub use inplace::{InPlaceTransform, Passthrough};
 pub use pipeline::{Pipeline, Stage};
 

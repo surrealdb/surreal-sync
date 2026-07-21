@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use surreal_sink::SurrealSink;
 use surreal_sync_jsonl_source::{sync, sync_with_transforms, Config};
 use sync_core::{UniversalChange, UniversalRelation, UniversalRow, UniversalValue};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
 use tempfile::NamedTempFile;
 
 struct CaptureSink {
@@ -161,6 +161,7 @@ async fn external_mutate_rewrites_name_through_source_driver() {
         ExternalTransform::child_stdio(
             ChildStdioMode::Persistent,
             vec![worker.to_string_lossy().to_string(), "mutate".to_string()],
+            FramerKind::Ndjson,
         )
         .expect("spawn mutate worker"),
     );
@@ -203,6 +204,7 @@ async fn conversion_rules_run_before_pipeline_stages() {
         ExternalTransform::child_stdio(
             ChildStdioMode::Persistent,
             vec![worker.to_string_lossy().to_string(), "mutate".to_string()],
+            FramerKind::Ndjson,
         )
         .expect("spawn mutate worker"),
     );

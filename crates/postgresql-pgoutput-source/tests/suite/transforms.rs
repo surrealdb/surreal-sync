@@ -11,7 +11,7 @@ use surreal_sync_postgresql_pgoutput_source::{
     ReplicationTailOptions, SyncOpts,
 };
 use sync_core::{UniversalChange, UniversalRow, UniversalValue};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
 
 struct CaptureSink {
     changes: Mutex<Vec<UniversalChange>>,
@@ -207,6 +207,7 @@ async fn external_mutate_worker_transforms_incremental_changes() -> Result<()> {
             worker.to_string_lossy().into_owned(),
             "mutate".to_string(),
         ],
+        FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
     let apply_opts = ApplyOpts::identity().with_batch_size(1);
@@ -277,6 +278,7 @@ async fn external_mutate_worker_transforms_full_sync_rows() -> Result<()> {
             worker.to_string_lossy().into_owned(),
             "mutate".to_string(),
         ],
+        FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
     let apply_opts = ApplyOpts::identity();
@@ -360,6 +362,7 @@ async fn external_mutate_worker_writes_mutated_fields_to_surrealdb() -> Result<(
             worker.to_string_lossy().into_owned(),
             "mutate".to_string(),
         ],
+        FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
     let apply_opts = ApplyOpts::identity().with_batch_size(1);

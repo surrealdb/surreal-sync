@@ -3,6 +3,26 @@
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 
+/// Supported wire framers (v1: NDJSON only).
+///
+/// Selected per command stage via `stdio.framer` in transforms TOML and passed
+/// into child-stdio transport constructors so the config is not dead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FramerKind {
+    /// Newline-delimited JSON (`stdio.framer = "ndjson"`).
+    #[default]
+    Ndjson,
+}
+
+impl FramerKind {
+    /// Resolve to the concrete [`Framer`] implementation for this kind.
+    pub fn into_framer(self) -> NdjsonFramer {
+        match self {
+            FramerKind::Ndjson => NdjsonFramer,
+        }
+    }
+}
+
 /// Frames discrete payloads on a byte stream.
 ///
 /// Implementations write into a reused output buffer and parse the next

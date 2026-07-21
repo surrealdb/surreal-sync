@@ -16,7 +16,7 @@ use surreal_sync_postgresql_trigger_source::{
 use sync_core::{
     UniversalChange, UniversalRelationChange, UniversalRow, UniversalValue,
 };
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
 use tokio::sync::Mutex as TokioMutex;
 
 struct CaptureSink {
@@ -223,6 +223,7 @@ async fn external_mutate_worker_transforms_incremental_changes() -> Result<()> {
             worker.to_string_lossy().into_owned(),
             "mutate".to_string(),
         ],
+        FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
     let apply_opts = ApplyOpts::identity().with_batch_size(1);
