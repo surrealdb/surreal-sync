@@ -218,7 +218,9 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
 
         if pk_columns.is_empty() {
             tracing::warn!(
-                "Relation table '{table_name}' has no primary key; streaming via OFFSET/LIMIT"
+                "Relation table '{table_name}' has no primary key; streaming via OFFSET/LIMIT \
+                 (ORDER BY ctid). Unsafe under concurrent source writes — prefer a PK \
+                 or interleaved-snapshot"
             );
             struct OffsetRel<'a> {
                 client: &'a tokio_postgres::Client,
@@ -341,7 +343,9 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
 
     if pk_columns.is_empty() {
         tracing::warn!(
-            "Table '{table_name}' has no primary key; streaming via OFFSET/LIMIT chunks"
+            "Table '{table_name}' has no primary key; streaming via OFFSET/LIMIT chunks \
+             (ORDER BY ctid). Unsafe under concurrent source writes — prefer a PK \
+             or interleaved-snapshot"
         );
         if sync_opts.dry_run {
             let mut total = 0usize;

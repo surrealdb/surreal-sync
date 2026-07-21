@@ -219,7 +219,9 @@ async fn migrate_table_with_transforms<S: SurrealSink>(
     // No PK: OFFSET/LIMIT chunks through RowChunkDriver (avoid monolithic SELECT *).
     if pk_columns.is_empty() {
         tracing::warn!(
-            "Table '{table_name}' has no primary key; streaming via OFFSET/LIMIT chunks"
+            "Table '{table_name}' has no primary key; streaming via OFFSET/LIMIT chunks \
+             (ORDER BY ctid). Unsafe under concurrent source writes — prefer a PK \
+             or interleaved-snapshot"
         );
         return migrate_offset_rows_streaming(
             client,
@@ -419,7 +421,9 @@ async fn migrate_relation_streaming<S: SurrealSink>(
 
     if pk_columns.is_empty() {
         tracing::warn!(
-            "Relation table '{table_name}' has no primary key; streaming via OFFSET/LIMIT"
+            "Relation table '{table_name}' has no primary key; streaming via OFFSET/LIMIT \
+             (ORDER BY ctid). Unsafe under concurrent source writes — prefer a PK \
+             or interleaved-snapshot"
         );
         struct OffsetRelChunks<'a> {
             client: &'a Client,

@@ -353,6 +353,13 @@ pub async fn read_relation_chunk(
 ///
 /// Prefer keyset pagination when a PK exists; this path avoids loading the
 /// whole table into memory when only OFFSET streaming is available.
+///
+/// Pages are ordered by `ctid` so successive OFFSET scans are deterministic on
+/// a quiescent table. Concurrent inserts/deletes can still shift offsets and
+/// cause skipped or duplicated rows — prefer a primary key with keyset reads
+/// or interleaved-snapshot when the table may be written during full sync.
+/// When the table has no PK, row ids are synthetic `Int64(row_index)` values
+/// (MySQL-style), not source primary keys.
 pub async fn read_offset_table_chunk(
     client: &Client,
     table_name: &str,
@@ -365,7 +372,10 @@ pub async fn read_offset_table_chunk(
     let table_kind = schema
         .and_then(|s| s.get_table(table_name))
         .map(|td| classify_table(td, relation_table_overrides));
-    let query = format!("SELECT * FROM {table_name} OFFSET {offset} LIMIT {limit}");
+    // ORDER BY ctid keeps OFFSET pages stable when the table is not mutating.
+    let query = format!(
+        "SELECT * FROM {table_name} ORDER BY ctid OFFSET {offset} LIMIT {limit}"
+    );
     debug!("Offset-reading table {table_name} with: {query}");
     let rows = client.query(&query, &[]).await?;
     if rows.is_empty() {
@@ -399,6 +409,9 @@ pub async fn read_offset_table_chunk(
 }
 
 /// OFFSET/LIMIT chunk of a known relation table (no PK keyset available).
+///
+/// Ordered by `ctid` for deterministic paging. Unsafe under concurrent writes
+/// to the source table — see [`read_offset_table_chunk`].
 pub async fn read_offset_relation_chunk(
     client: &Client,
     table_name: &str,
@@ -407,7 +420,9 @@ pub async fn read_offset_relation_chunk(
     in_fk: &sync_core::ForeignKeyDefinition,
     out_fk: &sync_core::ForeignKeyDefinition,
 ) -> Result<Vec<UniversalRelation>> {
-    let query = format!("SELECT * FROM {table_name} OFFSET {offset} LIMIT {limit}");
+    let query = format!(
+        "SELECT * FROM {table_name} ORDER BY ctid OFFSET {offset} LIMIT {limit}"
+    );
     debug!("Offset-reading relation table {table_name} with: {query}");
     let rows = client.query(&query, &[]).await?;
     let mut out = Vec::with_capacity(rows.len());
@@ -464,7 +479,10 @@ fn pk_value_to_sql(value: &UniversalValue) -> Result<Box<dyn ToSql + Sync + Send
     }
 }
 
-/// Get primary key columns for a table
+/// Get primary key columns for a table.
+///
+/// Returns an empty vec when the table has no primary key so callers can fall
+/// back to OFFSET streaming (synthetic row ids) instead of failing the probe.
 pub async fn get_primary_key_columns(client: &Client, table_name: &str) -> Result<Vec<String>> {
     let query = format!(
         "
@@ -478,14 +496,7 @@ pub async fn get_primary_key_columns(client: &Client, table_name: &str) -> Resul
     );
 
     let rows = client.query(&query, &[]).await?;
-
-    if rows.is_empty() {
-        Err(anyhow::anyhow!(
-            "Table '{table_name}' has no primary key defined - primary key is required for sync operations",
-        ))
-    } else {
-        Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
-    }
+    Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
 }
 
 fn convert_row_to_universal_row(
@@ -494,22 +505,24 @@ fn convert_row_to_universal_row(
     pk_columns: &[String],
     row_index: u64,
 ) -> anyhow::Result<UniversalRow> {
-    let (id, data) = convert_row_to_keys_and_universal_values(row, pk_columns)?;
+    let (id, data) = convert_row_to_keys_and_universal_values(row, pk_columns, row_index)?;
     Ok(UniversalRow::new(table.to_string(), row_index, id, data))
 }
 
-/// Convert a PostgreSQL row to a map of universal values
+/// Convert a PostgreSQL row to a map of universal values.
+///
+/// When `pk_columns` is empty, the id is a synthetic `Int64(row_index)` (same
+/// convention as MySQL LIMIT/OFFSET full sync).
 fn convert_row_to_keys_and_universal_values(
     row: &Row,
     pk_columns: &[String],
+    row_index: u64,
 ) -> Result<(UniversalValue, HashMap<String, UniversalValue>)> {
     let mut record = HashMap::new();
 
-    // Generate ID from primary key columns
+    // Generate ID from primary key columns, or a stable synthetic index.
     let id = if pk_columns.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Table has no primary key defined - primary key is required for sync"
-        ));
+        UniversalValue::Int64(row_index as i64)
     } else if pk_columns.len() == 1 {
         // Single primary key column - extract its value
         let pk_col = &pk_columns[0];
