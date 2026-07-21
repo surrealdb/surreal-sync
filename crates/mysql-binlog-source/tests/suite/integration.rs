@@ -19,7 +19,12 @@ struct MemSink {
 
 #[async_trait::async_trait]
 impl surreal_sink::SurrealSink for MemSink {
-    async fn write_universal_rows(&self, _rows: &[sync_core::UniversalRow]) -> anyhow::Result<()> {
+    async fn write_universal_rows(&self, rows: &[sync_core::UniversalRow]) -> anyhow::Result<()> {
+        // Homogeneous Update upserts coalesce here; mirror observations.
+        let mut changes = self.changes.lock().expect("lock");
+        for row in rows {
+            changes.push(format!("{:?}:{}", sync_core::UniversalChangeOp::Update, row.table));
+        }
         Ok(())
     }
 
@@ -55,7 +60,16 @@ struct CaptureSink {
 
 #[async_trait::async_trait]
 impl surreal_sink::SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, _rows: &[sync_core::UniversalRow]) -> anyhow::Result<()> {
+    async fn write_universal_rows(&self, rows: &[sync_core::UniversalRow]) -> anyhow::Result<()> {
+        // Homogeneous Update upserts coalesce here; mirror into `changes`.
+        let mut changes = self.changes.lock().expect("lock");
+        for row in rows {
+            changes.push(UniversalChange::update(
+                row.table.clone(),
+                row.id.clone(),
+                row.fields.clone(),
+            ));
+        }
         Ok(())
     }
 
