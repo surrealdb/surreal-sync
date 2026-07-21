@@ -32,9 +32,9 @@ spawn coverage is in `sync-transform` config tests).
 | mysql-binlog | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Yes | Reference port; sink-safe CatchUpProgress |
 | postgresql-pgoutput | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Yes | Binlog parity; sink-safe CatchUpProgress |
 | postgresql-wal2json | SourceDriver | Yes (shared loader + CLI e2e) | Yes | Non-consuming peek + prefix skip; slot advance after sunk |
-| postgresql-trigger | SourceDriver | Yes (shared loader + CLI e2e) | Yes | FK pre-push enrichment; `commit` no-op (fetch cursor) |
-| mysql (trigger) | SourceDriver | Yes (shared loader + CLI e2e) | Yes | `commit` no-op (fetch cursor); no DDL / ad-hoc |
-| mongodb | SourceDriver + RowChunkDriver full | Yes (shared loader + CLI e2e) | N/A | Resume token advanced on `commit` after sink (not on stream read) |
+| postgresql-trigger | SourceDriver | Yes (shared loader + CLI e2e) | Yes | FK pre-push enrichment; `advance_watermark` no-op (fetch cursor) |
+| mysql (trigger) | SourceDriver | Yes (shared loader + CLI e2e) | Yes | `advance_watermark` no-op (fetch cursor); no DDL / ad-hoc |
+| mongodb | SourceDriver + RowChunkDriver full | Yes (shared loader + CLI e2e) | N/A | Resume token advanced on `advance_watermark` after sink (not on stream read) |
 | neo4j | SourceDriver + RowChunkDriver / RelationChunkDriver full | Yes (shared loader + CLI e2e) | N/A | Nodes fully before edges; fetch advances timestamp (+ tie-break ids) cursor |
 | kafka | SourceDriver + `run_source_runtime` | Yes (shared loader + CLI e2e) | N/A | `commit_batch` all sunk msgs; `note_sunk_events` counts |
 | csv | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | File read polls into window (no per-batch runtime restart) |

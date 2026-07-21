@@ -138,7 +138,7 @@ pub async fn run_incremental_sync<S: SurrealSink + Send + Sync + 'static>(
 ///
 /// Each consumer polls/decodes into [`PositionedEvent`]s (bounded by
 /// `kafka_batch_size`). The runtime owns the transform window (`max_in_flight`).
-/// Kafka consumer-group offset commit happens in [`SourceDriver::commit`] after
+/// Kafka consumer-group offset commit happens in [`SourceDriver::advance_watermark`] after
 /// [`SourceDriver::note_sunk_events`] moves the sunk messages into a ready set —
 /// restoring `commit_batch(&messages)` for the whole sunk batch.
 pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync + 'static>(
@@ -294,7 +294,7 @@ struct KafkaSourceDriver {
     kafka_batch_size: usize,
     /// Messages received but not yet noted as sunk (FIFO, poll order).
     pending_acks: VecDeque<Message>,
-    /// Messages noted sunk and ready to offset-commit on the next `commit`.
+    /// Messages noted sunk and ready to offset-commit on the next `advance_watermark`.
     ready_to_commit: Vec<Message>,
     /// Message count watermark (advanced only after sink via `note_sunk_events`).
     processed_count: Arc<AtomicU64>,
@@ -361,7 +361,7 @@ impl SourceDriver for KafkaSourceDriver {
         Ok(events)
     }
 
-    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
+    async fn advance_watermark(&mut self, _position: Self::Position) -> Result<()> {
         if self.ready_to_commit.is_empty() {
             return Ok(());
         }
@@ -378,8 +378,8 @@ impl SourceDriver for KafkaSourceDriver {
     }
 
     fn checkpoint_policy(&self) -> CheckpointPolicy {
-        // Durability is the consumer-group offset commit in `commit`.
-        CheckpointPolicy::CommitOnly
+        // Durability is the consumer-group offset commit in `advance_watermark`.
+        CheckpointPolicy::AdvanceOnly
     }
 
     fn stop_reason(&self) -> Option<StopReason> {
@@ -399,7 +399,7 @@ impl SourceDriver for KafkaSourceDriver {
 
     fn note_sunk_events(&mut self, count: u64) {
         // Move `count` poll-ordered messages from pending → ready_to_commit so
-        // `commit` can offset-commit the whole sunk batch (main semantics).
+        // `advance_watermark` can offset-commit the whole sunk batch (main semantics).
         for _ in 0..count {
             match self.pending_acks.pop_front() {
                 Some(message) => self.ready_to_commit.push(message),

@@ -468,11 +468,11 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
 
 /// MongoDB change-stream CDC driver for [`sync_transform::run_source_runtime_with`].
 ///
-/// Position is the resume token for the emitted event. [`Self::commit`] advances
-/// the sink-safe token handle; fetch-time tokens stay on `seen_token` only.
+/// Position is the resume token for the emitted event. [`Self::advance_watermark`]
+/// advances the sink-safe token handle; fetch-time tokens stay on `seen_token` only.
 struct MongodbChangeStreamDriver<'a> {
     stream: Box<dyn ChangeStream>,
-    /// Sink-safe bookmark (advanced in [`SourceDriver::commit`]).
+    /// Sink-safe bookmark (advanced in [`SourceDriver::advance_watermark`]).
     resume_token: Arc<Mutex<Vec<u8>>>,
     /// Last token observed while polling (source of PositionedEvent positions).
     seen_token: Arc<Mutex<Vec<u8>>>,
@@ -533,7 +533,7 @@ impl SourceDriver for MongodbChangeStreamDriver<'_> {
         }
     }
 
-    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()> {
         *self.resume_token.lock().await = position;
         Ok(())
     }
@@ -543,7 +543,7 @@ impl SourceDriver for MongodbChangeStreamDriver<'_> {
     }
 
     fn checkpoint_policy(&self) -> CheckpointPolicy {
-        CheckpointPolicy::CommitOnly
+        CheckpointPolicy::AdvanceOnly
     }
 
     fn stop_reason(&self) -> Option<StopReason> {

@@ -119,7 +119,7 @@ async fn persistent_bad_batch_id_no_sink_no_commit() {
         "unexpected: {err:#}"
     );
     assert!(sink.applied().is_empty());
-    assert!(feed.commits.is_empty());
+    assert!(feed.advances.is_empty());
 }
 
 /// W≥2 fixture-worker: first response forges `batch_id` to the next write's id.
@@ -153,9 +153,9 @@ async fn persistent_w2_colliding_batch_id_mismatch_no_sink_no_commit() {
         sink.applied()
     );
     assert!(
-        feed.commits.is_empty(),
-        "must not commit on colliding mismatch: {:?}",
-        feed.commits
+        feed.advances.is_empty(),
+        "must not advance_watermark on colliding mismatch: {:?}",
+        feed.advances
     );
 }
 
@@ -186,7 +186,7 @@ async fn persistent_missing_batch_id_no_sink_no_commit() {
         "unexpected: {msg}"
     );
     assert!(sink.applied().is_empty());
-    assert!(feed.commits.is_empty());
+    assert!(feed.advances.is_empty());
 }
 
 #[tokio::test]
@@ -204,7 +204,7 @@ async fn persistent_via_run_change_feed_echo() {
         .await
         .unwrap();
     assert_eq!(sink.applied().len(), 2);
-    assert_eq!(feed.commits, vec![10, 20]);
+    assert_eq!(feed.advances, vec![10, 20]);
 }
 
 #[tokio::test]
@@ -271,7 +271,7 @@ command = [{bin:?}, "echo"]
         .await
         .unwrap();
     assert_eq!(sink.applied().len(), 1);
-    assert_eq!(feed.commits, vec![10]);
+    assert_eq!(feed.advances, vec![10]);
 }
 
 #[tokio::test]
@@ -318,7 +318,7 @@ stdio.framer = "ndjson"
         UniversalValue::VarChar { value, .. } => assert_eq!(value, "mutated"),
         other => panic!("expected mutated name, got {other:?}"),
     }
-    assert_eq!(feed.commits, vec![10]);
+    assert_eq!(feed.advances, vec![10]);
 }
 
 #[tokio::test]
@@ -350,7 +350,7 @@ retry.jitter = false
         .await
         .unwrap();
     assert_eq!(sink.applied().len(), 1);
-    assert_eq!(feed.commits, vec![10]);
+    assert_eq!(feed.advances, vec![10]);
 }
 
 #[tokio::test]
@@ -388,7 +388,7 @@ retry.jitter = false
         "unexpected: {msg}"
     );
     assert!(sink.applied().is_empty());
-    assert!(feed.commits.is_empty());
+    assert!(feed.advances.is_empty());
 }
 
 /// Two daisy-chained stages with different `retry.max_attempts` behave differently:
@@ -434,7 +434,7 @@ retry.jitter = false
         "stage1 with max_attempts=1 should fail: {msg}"
     );
     assert!(sink.applied().is_empty());
-    assert!(feed.commits.is_empty());
+    assert!(feed.advances.is_empty());
 
     // Stage 1 max_attempts=3: error-once recovers; stage 2 bad-batch-id fails
     // (max_attempts=1) — proves per-stage retry wiring, not a shared policy.
@@ -481,7 +481,7 @@ retry.jitter = false
         "stage2 should fail after stage1 recovered: {msg}"
     );
     assert!(sink.applied().is_empty());
-    assert!(feed.commits.is_empty());
+    assert!(feed.advances.is_empty());
 
     // Same chain but stage 2 echoes: whole pipeline succeeds only when both
     // stages' retry policies allow progress.
@@ -515,7 +515,7 @@ retry.max_attempts = 1
         .await
         .unwrap();
     assert_eq!(sink.applied().len(), 1);
-    assert_eq!(feed.commits, vec![30]);
+    assert_eq!(feed.advances, vec![30]);
 }
 
 // Silence unused when test-support feature shapes differ.

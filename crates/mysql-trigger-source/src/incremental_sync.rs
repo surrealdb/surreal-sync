@@ -160,7 +160,7 @@ impl SourceDriver for MysqlTriggerSourceDriver<'_> {
         }
     }
 
-    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()> {
         self.stream.commit_sunk(position);
         Ok(())
     }
@@ -170,7 +170,7 @@ impl SourceDriver for MysqlTriggerSourceDriver<'_> {
     }
 
     fn checkpoint_policy(&self) -> CheckpointPolicy {
-        CheckpointPolicy::CommitOnly
+        CheckpointPolicy::AdvanceOnly
     }
 
     fn stop_reason(&self) -> Option<StopReason> {

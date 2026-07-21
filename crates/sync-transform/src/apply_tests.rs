@@ -99,7 +99,7 @@ async fn identity_pipeline_commits_track_sink() {
         .unwrap();
 
     assert_eq!(sink.applied().len(), 3);
-    assert_eq!(feed.commits, vec![10, 20, 30]);
+    assert_eq!(feed.advances, vec![10, 20, 30]);
     // Sink order matches feed order.
     assert_eq!(
         sink.applied()
@@ -202,7 +202,7 @@ async fn inplace_stages_mutate_before_sink() {
             length: 64,
         })
     );
-    assert_eq!(feed.commits, vec![1]);
+    assert_eq!(feed.advances, vec![1]);
 }
 
 /// Core reliability case: W≥2, former batch A fails AFTER later batch B's
@@ -240,9 +240,9 @@ async fn window_former_fails_after_later_transform_succeeds() {
     );
     assert!(sink.applied().is_empty(), "sink must not apply A or B");
     assert!(
-        feed.commits.is_empty(),
+        feed.advances.is_empty(),
         "commit must not advance past failed A: {:?}",
-        feed.commits
+        feed.advances
     );
 
     // Retry / replay from uncommitted positions — both succeed.
@@ -266,7 +266,7 @@ async fn window_former_fails_after_later_transform_succeeds() {
             .collect::<Vec<_>>(),
         vec![UniversalValue::Int64(1), UniversalValue::Int64(2)]
     );
-    assert_eq!(feed2.commits, vec![100, 200]);
+    assert_eq!(feed2.advances, vec![100, 200]);
 }
 
 /// Same window: A sink fails after both A and B transformed (forced OOO).
@@ -307,9 +307,9 @@ async fn window_sink_fails_after_both_transformed() {
         sink.applied()
     );
     assert!(
-        feed.commits.is_empty(),
-        "must not commit past failed A: {:?}",
-        feed.commits
+        feed.advances.is_empty(),
+        "must not advance_watermark past failed A: {:?}",
+        feed.advances
     );
     // A was attempted (and failed); B must not have been attempted.
     assert_eq!(
@@ -422,7 +422,7 @@ async fn failure_policy_fail_leaves_commits_unchanged() {
         .unwrap_err();
     let err_msg = format!("{err:#}");
     assert!(err_msg.contains("boom"), "unexpected error: {err_msg}");
-    assert!(feed.commits.is_empty());
+    assert!(feed.advances.is_empty());
     assert!(sink.applied().is_empty());
 }
 
@@ -440,15 +440,15 @@ async fn failure_policy_skip_commits_past_failed_batch() {
         .await
         .unwrap();
 
-    // Failed batch not written; still committed past it; successor applied.
+    // Failed batch not written; still advanced past it; successor applied.
     assert_eq!(sink.applied().len(), 1);
     assert_eq!(sink.applied()[0].id, UniversalValue::Int64(2));
-    assert_eq!(feed.commits, vec![10, 20]);
+    assert_eq!(feed.advances, vec![10, 20]);
 }
 
 /// Simulated crash mid-window: recreate from last commit; uncommitted batches replay.
 #[tokio::test]
-async fn crash_replay_from_last_commit() {
+async fn crash_replay_from_last_advance() {
     // First run: A succeeds, B's sink fails once (crash after A committed).
     let transformer = ScriptedTransformer::new(Pipeline::new());
     let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 100), positioned(2, 200)]);
@@ -465,7 +465,7 @@ async fn crash_replay_from_last_commit() {
         err_msg.contains("RecordingSink"),
         "unexpected error: {err_msg}"
     );
-    assert_eq!(feed.commits, vec![100]);
+    assert_eq!(feed.advances, vec![100]);
     assert_eq!(sink.applied().len(), 1);
     assert_eq!(sink.applied()[0].id, UniversalValue::Int64(1));
 
@@ -478,7 +478,7 @@ async fn crash_replay_from_last_commit() {
         .await
         .unwrap();
 
-    assert_eq!(feed2.commits, vec![200]);
+    assert_eq!(feed2.advances, vec![200]);
     assert_eq!(sink2.applied().len(), 1);
     assert_eq!(sink2.applied()[0].id, UniversalValue::Int64(2));
 }
@@ -511,10 +511,10 @@ async fn ordered_sink_despite_out_of_order_transform_completion() {
             .collect::<Vec<_>>(),
         vec![UniversalValue::Int64(1), UniversalValue::Int64(2)]
     );
-    assert_eq!(feed.commits, vec![100, 200]);
+    assert_eq!(feed.advances, vec![100, 200]);
 }
 
-/// ApplyContext::push_change / flush return commit watermarks; Fail poisons;
+/// ApplyContext::push_change / flush return sink-safe watermarks; Fail poisons;
 /// Skip advances watermark without sinking the failed batch; W≥2 stays ordered.
 #[tokio::test]
 async fn apply_context_push_change_flush_watermarks() {
@@ -661,7 +661,7 @@ async fn apply_context_skip_returns_watermark_without_sinking_failed() {
     assert_eq!(
         wm,
         Some(10),
-        "Skip should still return watermark for caller commit"
+        "Skip should still return watermark for caller advance_watermark"
     );
     assert!(
         sink.applied().is_empty(),

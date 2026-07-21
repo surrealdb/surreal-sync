@@ -1,4 +1,4 @@
-//! SourceDriver control plane: poll/commit + schema/ad-hoc/cancel/checkpoint hooks.
+//! SourceDriver control plane: poll / advance_watermark + schema/ad-hoc/cancel/checkpoint hooks.
 //!
 //! [`SourceDriver`] + [`run_source_runtime`] are the **general** incremental API.
 //! [`crate::ChangeFeed`] / [`crate::run_change_feed`] are a convenience for
@@ -58,21 +58,22 @@ pub enum StopReason {
 /// is drained (see [`IntervalWhenDrained`](Self::IntervalWhenDrained)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CheckpointPolicy {
-    /// After each successful sink + `commit` watermark advance, also call
-    /// [`SourceDriver::persist_checkpoint`] with that position.
+    /// After each successful sink + [`advance_watermark`](SourceDriver::advance_watermark),
+    /// also call [`SourceDriver::persist_checkpoint`] with that position.
     #[default]
-    PersistAfterCommit,
-    /// Do not call `persist_checkpoint` (driver folds durability into `commit`).
-    CommitOnly,
+    PersistAfterAdvance,
+    /// Do not call `persist_checkpoint` (driver folds durability into
+    /// [`advance_watermark`](SourceDriver::advance_watermark)).
+    AdvanceOnly,
     /// Persist sink-safe positions when the apply window is **fully drained**
     /// (no buffer / in-flight / completed-waiting):
     ///
-    /// - After a `commit`, if the window is already drained, persist that
-    ///   sink-safe watermark promptly (same durability cadence as persisting
+    /// - After an `advance_watermark`, if the window is already drained, persist
+    ///   that sink-safe watermark promptly (same durability cadence as persisting
     ///   last-sunk on sink success).
     /// - Otherwise arm a pending watermark and flush once the window drains
     ///   and at least `interval` has elapsed since the last persist.
-    /// - When drained with **no** pending commit (filtered-only / idle read
+    /// - When drained with **no** pending advance (filtered-only / idle read
     ///   progress), call [`SourceDriver::read_progress_for_persist`] on the
     ///   same interval so drivers can advance a store cursor through noise
     ///   without reintroducing unsunk read-ahead.
@@ -170,13 +171,14 @@ where
 /// Source-facing incremental driver: work items + optional control-plane hooks.
 ///
 /// Mirrors the spirit of [`interleaved_snapshot::WatermarkSource`]: the framework
-/// owns the loop; the driver supplies poll/commit and optional extension points.
+/// owns the loop; the driver supplies poll / [`advance_watermark`](Self::advance_watermark)
+/// and optional extension points.
 ///
 /// # Defaults
 ///
 /// All hooks default to no-op / empty so a minimal CDC source only implements
-/// [`poll_work`](Self::poll_work), [`commit`](Self::commit), and optionally
-/// [`is_finished`](Self::is_finished).
+/// [`poll_work`](Self::poll_work), [`advance_watermark`](Self::advance_watermark),
+/// and optionally [`is_finished`](Self::is_finished).
 #[async_trait::async_trait]
 pub trait SourceDriver: Send {
     /// Checkpoint / resume position type.
@@ -185,8 +187,10 @@ pub trait SourceDriver: Send {
     /// Next work items (row and/or relation changes). May be empty on idle.
     async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>>;
 
-    /// Advance the source cursor after docs for this position were sunk.
-    async fn commit(&mut self, position: Self::Position) -> Result<()>;
+    /// Mark `position` sink-safe. May be in-memory only, broker offset commit, or
+    /// both — durable store writes belong in [`persist_checkpoint`](Self::persist_checkpoint)
+    /// unless policy is [`CheckpointPolicy::AdvanceOnly`].
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()>;
 
     /// Whether the driver will produce no more work (EOF).
     fn is_finished(&self) -> bool {
@@ -224,21 +228,21 @@ pub trait SourceDriver: Send {
         None
     }
 
-    /// Checkpoint persistence policy. Default: [`CheckpointPolicy::PersistAfterCommit`].
+    /// Checkpoint persistence policy. Default: [`CheckpointPolicy::PersistAfterAdvance`].
     fn checkpoint_policy(&self) -> CheckpointPolicy {
-        CheckpointPolicy::PersistAfterCommit
+        CheckpointPolicy::PersistAfterAdvance
     }
 
     /// Persist a **sink-safe** checkpoint (called after successful sink +
-    /// [`commit`](Self::commit) according to [`CheckpointPolicy`]).
-    /// Default: no-op.
+    /// [`advance_watermark`](Self::advance_watermark) according to
+    /// [`CheckpointPolicy`]). Default: no-op.
     async fn persist_checkpoint(&mut self, _position: Self::Position) -> Result<()> {
         Ok(())
     }
 
     /// Optional sink-safe position to persist when
     /// [`CheckpointPolicy::IntervalWhenDrained`] finds the apply window empty
-    /// but nothing was committed since the last persist (e.g. filtered-only
+    /// but nothing was advanced since the last persist (e.g. filtered-only
     /// binlog traffic that advanced the read cursor with no work items).
     ///
     /// The runtime only consults this while fully drained, so returning the
@@ -248,7 +252,7 @@ pub trait SourceDriver: Send {
     }
 
     /// Notify the driver that `count` **input** (pre-transform) events are
-    /// accounted for before [`commit`](Self::commit).
+    /// accounted for before [`advance_watermark`](Self::advance_watermark).
     ///
     /// `count` is the batch's poll/input size, not the post-transform sink
     /// length — so filter under-count and fan-out over-count cannot stall or
@@ -257,7 +261,7 @@ pub trait SourceDriver: Send {
     ///
     /// Called after a successful sink apply, and also under
     /// [`FailurePolicy::Skip`](crate::FailurePolicy::Skip) for batches that are
-    /// committed past without writing (so drivers that gate slot/cursor advance
+    /// advanced past without writing (so drivers that gate slot/cursor advance
     /// on sunk counts do not stall). Default: no-op.
     fn note_sunk_events(&mut self, _count: u64) {}
 }
@@ -302,8 +306,8 @@ where
         Ok(changes.into_iter().map(PositionedEvent::from).collect())
     }
 
-    async fn commit(&mut self, position: Self::Position) -> Result<()> {
-        self.inner.commit(position).await
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()> {
+        self.inner.advance_watermark(position).await
     }
 
     fn is_finished(&self) -> bool {
@@ -335,8 +339,8 @@ where
         Ok(changes.into_iter().map(PositionedEvent::from).collect())
     }
 
-    async fn commit(&mut self, position: Self::Position) -> Result<()> {
-        self.inner.commit(position).await
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()> {
+        self.inner.advance_watermark(position).await
     }
 
     fn is_finished(&self) -> bool {
@@ -376,10 +380,11 @@ impl SourceRuntimeOpts {
 
 /// Framework-owned incremental loop over a [`SourceDriver`].
 ///
-/// Order per batch: buffer → transform → ordered sink → `commit` → optional
-/// `persist_checkpoint` (sink-safe only). Between cycles: `between_events` →
-/// control hooks (ad-hoc receives [`AdhocApply`]). Stops on `is_finished`
-/// (after drain), driver `stop_reason`, or [`SourceRuntimeOpts`] cancel/deadline.
+/// Order per batch: buffer → transform → ordered sink → `note_sunk_events` →
+/// `advance_watermark` → policy → optional `persist_checkpoint` (sink-safe only).
+/// Between cycles: `between_events` → control hooks (ad-hoc receives
+/// [`AdhocApply`]). Stops on `is_finished` (after drain), driver `stop_reason`,
+/// or [`SourceRuntimeOpts`] cancel/deadline.
 pub async fn run_source_runtime<D, S>(
     driver: &mut D,
     sink: &S,
@@ -408,8 +413,8 @@ where
 /// - **Transforms** overlap up to `max_in_flight` window occupancy (transforming +
 ///   awaiting/in-flight ordered sink).
 /// - **Writes** stay ordered; the fill loop does not await sink before the next
-///   poll/transform start. Source `commit` runs only after that batch’s sink
-///   succeeds.
+///   poll/transform start. Source `advance_watermark` runs only after that
+///   batch’s sink succeeds.
 pub async fn run_source_runtime_with<D, S, T>(
     driver: &mut D,
     sink: &S,

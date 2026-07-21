@@ -805,7 +805,7 @@ impl SourceDriver for Neo4jSourceDriver<'_> {
         }
     }
 
-    async fn commit(&mut self, position: Self::Position) -> anyhow::Result<()> {
+    async fn advance_watermark(&mut self, position: Self::Position) -> anyhow::Result<()> {
         self.stream.commit_sunk(position);
         Ok(())
     }
@@ -815,7 +815,7 @@ impl SourceDriver for Neo4jSourceDriver<'_> {
     }
 
     fn checkpoint_policy(&self) -> CheckpointPolicy {
-        CheckpointPolicy::CommitOnly
+        CheckpointPolicy::AdvanceOnly
     }
 
     fn stop_reason(&self) -> Option<StopReason> {

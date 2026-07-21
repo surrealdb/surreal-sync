@@ -225,7 +225,7 @@ impl SourceDriver for CsvStreamDriver {
         Ok(events)
     }
 
-    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
+    async fn advance_watermark(&mut self, _position: Self::Position) -> Result<()> {
         Ok(())
     }
 
@@ -234,7 +234,7 @@ impl SourceDriver for CsvStreamDriver {
     }
 
     fn checkpoint_policy(&self) -> CheckpointPolicy {
-        CheckpointPolicy::CommitOnly
+        CheckpointPolicy::AdvanceOnly
     }
 
     fn note_sunk_events(&mut self, count: u64) {
@@ -528,6 +528,7 @@ mod tests {
         }
 
         async fn apply_universal_change(&self, _change: &UniversalChange) -> anyhow::Result<()> {
+            self.rows_written.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 

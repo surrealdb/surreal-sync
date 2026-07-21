@@ -326,14 +326,14 @@ pub(crate) struct PreparedSinkBatch<P> {
 /// no-op). Sink apply is ordered and may overlap with polling / transforming
 /// later batches; `push_*` / `flush` still return `Some(position)` only after
 /// that batch’s sink succeeds. They do **not** call
-/// [`SourceDriver::commit`] / [`ChangeFeed::commit`].
+/// [`SourceDriver::advance_watermark`] / [`ChangeFeed::advance_watermark`].
 ///
 /// # Poisoning after [`FailurePolicy::Fail`]
 ///
 /// After a batch fails under [`FailurePolicy::Fail`], this context is
 /// **poisoned**: successors are discarded, and further push/flush return `Err`
 /// immediately. Do not reuse — create a new context and replay from the last
-/// successful commit watermark.
+/// successful sink-safe watermark.
 pub struct ApplyContext<'a, S, T, P = ()> {
     sink: &'a S,
     transformer: Arc<T>,
@@ -449,7 +449,7 @@ where
         if self.poisoned {
             bail!(
                 "ApplyContext is poisoned after FailurePolicy::Fail; \
-                 create a new context and replay from the last successful commit"
+                 create a new context and replay from the last successful advance_watermark"
             );
         }
         Ok(())
@@ -475,7 +475,7 @@ where
 
     /// Push one row change; may start transforms and drain ordered sink.
     ///
-    /// Returns the last position successfully sunk (caller should `commit`).
+    /// Returns the last position successfully sunk (caller should `advance_watermark`).
     pub async fn push_change(
         &mut self,
         change: UniversalChange,
@@ -485,7 +485,7 @@ where
         self.push_buffered_event(PositionedEvent::change(change, position));
         while self.try_start_full_batch() {}
         self.collect_ready_transforms().await?;
-        self.drain_ordered_no_commit().await
+        self.drain_ordered_no_advance().await
     }
 
     /// Push one relation change into the same window as row changes.
@@ -498,7 +498,7 @@ where
         self.push_buffered_event(PositionedEvent::relation_change(change, position));
         while self.try_start_full_batch() {}
         self.collect_ready_transforms().await?;
-        self.drain_ordered_no_commit().await
+        self.drain_ordered_no_advance().await
     }
 
     /// Push a unified positioned event.
@@ -507,7 +507,7 @@ where
         self.push_buffered_event(PositionedEvent::new(event, position));
         while self.try_start_full_batch() {}
         self.collect_ready_transforms().await?;
-        self.drain_ordered_no_commit().await
+        self.drain_ordered_no_advance().await
     }
 
     /// Collect JoinSet results that are already ready (non-blocking after a yield).
@@ -526,7 +526,7 @@ where
         loop {
             while self.try_start_partial_batch() {}
 
-            if let Some(p) = self.drain_ordered_no_commit().await? {
+            if let Some(p) = self.drain_ordered_no_advance().await? {
                 last = Some(p);
             }
 
@@ -732,8 +732,8 @@ where
     /// Reserve the next ordered batch for sink apply (non-blocking).
     ///
     /// Returns `None` when the sink slot is busy or the next seq is not ready.
-    /// Caller must apply (or skip) then call [`Self::finish_sink_driver`] /
-    /// [`Self::finish_sink_no_commit`] (or [`Self::release_sink_slot`] on abandon).
+    /// Caller must apply (or skip) then call [`Self::finish_sink_ok_driver`] /
+    /// [`Self::finish_sink_ok_no_advance`] (or [`Self::release_sink_slot`] on abandon).
     pub(crate) fn prepare_ordered_sink(&mut self) -> Option<PreparedSinkBatch<P>> {
         if self.sink_in_flight {
             return None;
@@ -748,7 +748,7 @@ where
         })
     }
 
-    /// After a successful sink apply: account, commit, persist, advance.
+    /// After a successful sink apply: note_sunk_events → advance_watermark → policy → persist.
     ///
     /// `sunk` is the **pre-transform input** event count (`batch.event_count`),
     /// not the post-transform sink length.
@@ -761,14 +761,14 @@ where
         self.sunk_since_take = self.sunk_since_take.saturating_add(sunk);
         driver.note_sunk_events(sunk);
         driver
-            .commit(last_position.clone())
+            .advance_watermark(last_position.clone())
             .await
-            .context("commit")?;
+            .context("advance_watermark")?;
         // Free the sink slot before persist checks so IntervalWhenDrained sees a
         // drained window when nothing else is outstanding.
         self.next_to_apply += 1;
         self.sink_in_flight = false;
-        self.after_commit_persist(driver, last_position).await?;
+        self.after_advance_persist(driver, last_position).await?;
         Ok(())
     }
 
@@ -786,8 +786,8 @@ where
             .await
     }
 
-    /// After successful sink for push/flush (no driver commit).
-    pub(crate) fn finish_sink_ok_no_commit(&mut self, last_position: P, sunk: u64) -> P {
+    /// After successful sink for push/flush (no driver advance_watermark).
+    pub(crate) fn finish_sink_ok_no_advance(&mut self, last_position: P, sunk: u64) -> P {
         self.sunk_since_take = self.sunk_since_take.saturating_add(sunk);
         self.next_to_apply += 1;
         self.sink_in_flight = false;
@@ -795,7 +795,7 @@ where
     }
 
     /// After sink/transform failure for push/flush.
-    pub(crate) fn finish_sink_err_no_commit(
+    pub(crate) fn finish_sink_err_no_advance(
         &mut self,
         batch_id: u64,
         last_position: P,
@@ -805,7 +805,7 @@ where
         self.fail_or_skip_no_feed(batch_id, last_position, e)
     }
 
-    /// Drain ordered sink + driver commit (+ optional persist_checkpoint).
+    /// Drain ordered sink + driver advance_watermark (+ optional persist_checkpoint).
     ///
     /// Awaits each sink apply to completion (used by flush / control-plane).
     pub(crate) async fn drain_ordered_driver(
@@ -857,19 +857,19 @@ where
         self.try_interval_persist(driver).await
     }
 
-    async fn after_commit_persist(
+    async fn after_advance_persist(
         &mut self,
         driver: &mut impl SourceDriver<Position = P>,
         position: P,
     ) -> Result<()> {
         match driver.checkpoint_policy() {
-            CheckpointPolicy::PersistAfterCommit => {
+            CheckpointPolicy::PersistAfterAdvance => {
                 driver
                     .persist_checkpoint(position)
                     .await
                     .context("persist_checkpoint")?;
             }
-            CheckpointPolicy::CommitOnly => {}
+            CheckpointPolicy::AdvanceOnly => {}
             CheckpointPolicy::IntervalWhenDrained { .. } => {
                 self.pending_checkpoint = Some(position);
                 // Persist sunk watermarks promptly once the window is empty
@@ -899,7 +899,7 @@ where
         if self.pending_checkpoint.is_some() {
             return self.flush_pending_checkpoint(driver).await;
         }
-        // No commit armed a pending watermark (filtered-only / idle catch-up).
+        // No advance armed a pending watermark (filtered-only / idle catch-up).
         // Ask the driver for a drained-safe read position to persist.
         if let Some(position) = driver
             .read_progress_for_persist()
@@ -929,7 +929,7 @@ where
         Ok(())
     }
 
-    /// Flush remaining work and commit via driver (used on cancel/deadline stop).
+    /// Flush remaining work and advance_watermark via driver (used on cancel/deadline stop).
     pub(crate) async fn flush_for_driver(
         &mut self,
         driver: &mut impl SourceDriver<Position = P>,
@@ -970,7 +970,7 @@ where
         }
     }
 
-    async fn drain_ordered_no_commit(&mut self) -> Result<Option<P>> {
+    async fn drain_ordered_no_advance(&mut self) -> Result<Option<P>> {
         let mut last = None;
         loop {
             self.poll_join_ready().await?;
@@ -982,13 +982,13 @@ where
                     Ok(()) => {
                         // Pre-transform input count (same as drain_ordered_driver)
                         // so filter/fan-out cannot under/over-count sunk_since_take.
-                        last = Some(self.finish_sink_ok_no_commit(
+                        last = Some(self.finish_sink_ok_no_advance(
                             batch.last_position,
                             batch.event_count,
                         ));
                     }
                     Err(e) => {
-                        last = self.finish_sink_err_no_commit(
+                        last = self.finish_sink_err_no_advance(
                             batch.batch_id,
                             batch.last_position,
                             e,
@@ -996,7 +996,7 @@ where
                     }
                 },
                 Err(e) => {
-                    last = self.finish_sink_err_no_commit(
+                    last = self.finish_sink_err_no_advance(
                         batch.batch_id,
                         batch.last_position,
                         e,
@@ -1024,16 +1024,16 @@ where
                 warn!(
                     batch_id,
                     error = %e,
-                    "skipping failed batch (failure_policy=skip); committing past it"
+                    "skipping failed batch (failure_policy=skip); advancing watermark past it"
                 );
                 // Account for skipped events so drivers that gate advance on
                 // note_sunk_events (e.g. wal2json slot) do not stall.
                 driver.note_sunk_events(event_count);
                 driver
-                    .commit(last_position.clone())
+                    .advance_watermark(last_position.clone())
                     .await
-                    .context("commit after skip")?;
-                self.after_commit_persist(driver, last_position).await?;
+                    .context("advance_watermark after skip")?;
+                self.after_advance_persist(driver, last_position).await?;
                 self.next_to_apply += 1;
                 Ok(())
             }

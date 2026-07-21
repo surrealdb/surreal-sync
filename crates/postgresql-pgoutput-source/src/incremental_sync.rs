@@ -140,8 +140,9 @@ where
 /// Replication tail through the transform apply framework.
 ///
 /// Incremental work runs via [`PgoutputSourceDriver`] +
-/// [`sync_transform::run_source_runtime_with`]. Sink success still gates WAL
-/// `commit`. CatchUpProgress uses
+/// [`sync_transform::run_source_runtime_with`]. Sink success still gates
+/// [`SourceDriver::advance_watermark`](sync_transform::SourceDriver::advance_watermark)
+/// (WAL client `commit`). CatchUpProgress uses
 /// [`CheckpointPolicy::IntervalWhenDrained`]: sunk watermarks persist promptly
 /// once the apply window drains; when fully drained with no unsunk work, the
 /// same interval may advance the store to the **current** WAL LSN through
@@ -540,7 +541,7 @@ where
         }
     }
 
-    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()> {
         let client = self
             .client
             .as_mut()

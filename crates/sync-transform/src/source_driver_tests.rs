@@ -58,16 +58,16 @@ async fn run_source_runtime_identity_change_feed_like() {
         .unwrap();
     assert_eq!(exit, RuntimeExit::Stopped(StopReason::Finished));
     assert_eq!(sink.applied().len(), 2);
-    assert_eq!(driver.commits, vec![10, 20]);
+    assert_eq!(driver.advances, vec![10, 20]);
     // Default policy persists after each sink-safe commit.
     assert_eq!(driver.persisted, vec![10, 20]);
 }
 
 #[tokio::test]
-async fn persist_checkpoint_only_after_sink_commit_only_skips() {
+async fn persist_checkpoint_only_after_sink_advance_only_skips() {
     let mut driver = ScriptedSourceDriver::new(vec![PositionedEvent::change(change(1), 10u64)])
-        .commit_only();
-    assert_eq!(driver.policy, CheckpointPolicy::CommitOnly);
+        .advance_only();
+    assert_eq!(driver.policy, CheckpointPolicy::AdvanceOnly);
 
     let sink = RecordingSink::new();
     let pipeline = Pipeline::new();
@@ -83,10 +83,10 @@ async fn persist_checkpoint_only_after_sink_commit_only_skips() {
     .await
     .unwrap();
 
-    assert_eq!(driver.commits, vec![10]);
+    assert_eq!(driver.advances, vec![10]);
     assert!(
         driver.persisted.is_empty(),
-        "CommitOnly must not call persist_checkpoint"
+        "AdvanceOnly must not call persist_checkpoint"
     );
     assert_eq!(sink.applied().len(), 1);
 }
@@ -118,10 +118,10 @@ async fn stop_reason_cancel_after_polls() {
 
     assert_eq!(exit, RuntimeExit::Stopped(StopReason::Cancelled));
     // First item sunk+committed; cancel on 2nd poll may leave later unsunk.
-    assert!(!driver.commits.is_empty());
-    assert!(driver.commits[0] == 10);
-    // persist only for sunk commits
-    assert_eq!(driver.persisted, driver.commits);
+    assert!(!driver.advances.is_empty());
+    assert!(driver.advances[0] == 10);
+    // persist only for sunk advances
+    assert_eq!(driver.persisted, driver.advances);
 }
 
 #[tokio::test]
@@ -219,15 +219,15 @@ async fn mixed_relation_and_change_events_ordered() {
             "change:2".to_string(),
         ]
     );
-    assert_eq!(driver.commits, vec![10, 20, 30]);
+    assert_eq!(driver.advances, vec![10, 20, 30]);
     assert_eq!(driver.persisted, vec![10, 20, 30]);
 }
 
 #[tokio::test]
-async fn interval_when_drained_persists_once_after_commits() {
+async fn interval_when_drained_persists_once_after_advances() {
     // batch_size=1 + max_in_flight=1 ⇒ each item drains fully before the next.
     // IntervalWhenDrained with ZERO interval ⇒ persist on every drain (coalesced
-    // to one persist per drained commit watermark).
+    // to one persist per drained advance watermark).
     let mut driver = ScriptedSourceDriver::new(vec![
         PositionedEvent::change(change(1), 10u64),
         PositionedEvent::change(change(2), 20u64),
@@ -248,7 +248,7 @@ async fn interval_when_drained_persists_once_after_commits() {
     .await
     .unwrap();
 
-    assert_eq!(driver.commits, vec![10, 20]);
+    assert_eq!(driver.advances, vec![10, 20]);
     // Each commit left the window drained with interval=0 ⇒ persist each time.
     assert_eq!(driver.persisted, vec![10, 20]);
     assert_eq!(sink.applied().len(), 2);
@@ -292,7 +292,7 @@ async fn interval_when_drained_defers_until_window_empty() {
     .await
     .unwrap();
 
-    assert_eq!(driver.commits, vec![10, 20]);
+    assert_eq!(driver.advances, vec![10, 20]);
     assert_eq!(
         driver.persisted,
         vec![20],
@@ -324,11 +324,11 @@ async fn interval_when_drained_persists_sunk_promptly_when_already_drained() {
     .await
     .unwrap();
 
-    assert_eq!(driver.commits, vec![10, 20]);
+    assert_eq!(driver.advances, vec![10, 20]);
     assert_eq!(
         driver.persisted,
         vec![10, 20],
-        "drained commits must persist sunk watermarks without waiting for interval"
+        "drained advances must persist sunk watermarks without waiting for interval"
     );
 }
 
@@ -338,7 +338,7 @@ async fn adhoc_snapshot_receives_apply_helpers_and_can_write() {
 
     struct AdhocWriter {
         remaining: Vec<PositionedEvent<u64>>,
-        commits: Vec<u64>,
+        advances: Vec<u64>,
         wrote_via_adhoc: bool,
     }
 
@@ -353,8 +353,8 @@ async fn adhoc_snapshot_receives_apply_helpers_and_can_write() {
             Ok(vec![self.remaining.remove(0)])
         }
 
-        async fn commit(&mut self, position: Self::Position) -> anyhow::Result<()> {
-            self.commits.push(position);
+        async fn advance_watermark(&mut self, position: Self::Position) -> anyhow::Result<()> {
+            self.advances.push(position);
             Ok(())
         }
 
@@ -394,7 +394,7 @@ async fn adhoc_snapshot_receives_apply_helpers_and_can_write() {
 
     let mut driver = AdhocWriter {
         remaining: vec![PositionedEvent::change(change(1), 10u64)],
-        commits: Vec::new(),
+        advances: Vec::new(),
         wrote_via_adhoc: false,
     };
     let sink = RecordingSink::new();
@@ -441,7 +441,7 @@ async fn interval_when_drained_persists_filtered_read_progress() {
     .await
     .unwrap();
 
-    assert!(driver.commits.is_empty(), "filtered-only path must not commit");
+    assert!(driver.advances.is_empty(), "filtered-only path must not advance_watermark");
     assert!(
         driver.persisted.contains(&99),
         "drained IntervalWhenDrained must persist read_progress; got {:?}",
@@ -471,7 +471,7 @@ async fn note_sunk_events_counts_after_sink_success() {
     .unwrap();
 
     assert_eq!(driver.sunk_events, 2);
-    assert_eq!(driver.commits, vec![10, 20]);
+    assert_eq!(driver.advances, vec![10, 20]);
 }
 
 /// Regression: failure_policy=Skip must still call `note_sunk_events` so drivers
@@ -490,7 +490,7 @@ async fn failure_policy_skip_still_notes_sunk_events() {
         PositionedEvent::change(change(1), 10u64),
         PositionedEvent::change(change(2), 20u64),
     ])
-    .commit_only();
+    .advance_only();
 
     let sink = RecordingSink::new();
     let apply_opts = opts().with_failure_policy(FailurePolicy::Skip);
@@ -519,7 +519,7 @@ async fn failure_policy_skip_still_notes_sunk_events() {
         driver.sunk_events, 2,
         "Skip must note_sunk_events for the failed batch so advance is not stuck"
     );
-    assert_eq!(driver.commits, vec![10, 20]);
+    assert_eq!(driver.advances, vec![10, 20]);
 }
 
 /// wal2json-style gate: commit only advances once every emitted event is noted.
@@ -534,7 +534,7 @@ async fn failure_policy_skip_unblocks_gated_commit() {
         remaining: Vec<PositionedEvent<u64>>,
         emitted: u64,
         sunk: u64,
-        commits: Vec<u64>,
+        advances: Vec<u64>,
         finished: bool,
     }
 
@@ -554,12 +554,12 @@ async fn failure_policy_skip_unblocks_gated_commit() {
             Ok(events)
         }
 
-        async fn commit(&mut self, position: u64) -> anyhow::Result<()> {
+        async fn advance_watermark(&mut self, position: u64) -> anyhow::Result<()> {
             if self.sunk < self.emitted {
                 // Not ready to advance — same stuck path as pre-fix wal2json.
                 return Ok(());
             }
-            self.commits.push(position);
+            self.advances.push(position);
             self.emitted = 0;
             self.sunk = 0;
             self.finished = true;
@@ -571,7 +571,7 @@ async fn failure_policy_skip_unblocks_gated_commit() {
         }
 
         fn checkpoint_policy(&self) -> CheckpointPolicy {
-            CheckpointPolicy::CommitOnly
+            CheckpointPolicy::AdvanceOnly
         }
 
         fn note_sunk_events(&mut self, count: u64) {
@@ -590,7 +590,7 @@ async fn failure_policy_skip_unblocks_gated_commit() {
         ],
         emitted: 0,
         sunk: 0,
-        commits: Vec::new(),
+        advances: Vec::new(),
         finished: false,
     };
 
@@ -608,7 +608,7 @@ async fn failure_policy_skip_unblocks_gated_commit() {
     .unwrap();
 
     assert_eq!(
-        driver.commits,
+        driver.advances,
         vec![100],
         "gated commit must advance after Skip notes sunk events"
     );
@@ -625,7 +625,7 @@ async fn identity_polls_while_slow_sink_in_flight() {
     struct ObservingDriver {
         remaining: Vec<PositionedEvent<u64>>,
         poll_count: Arc<AtomicU64>,
-        commits: Arc<Mutex<Vec<u64>>>,
+        advances: Arc<Mutex<Vec<u64>>>,
     }
 
     #[async_trait::async_trait]
@@ -640,8 +640,8 @@ async fn identity_polls_while_slow_sink_in_flight() {
             Ok(vec![self.remaining.remove(0)])
         }
 
-        async fn commit(&mut self, position: Self::Position) -> anyhow::Result<()> {
-            self.commits.lock().unwrap().push(position);
+        async fn advance_watermark(&mut self, position: Self::Position) -> anyhow::Result<()> {
+            self.advances.lock().unwrap().push(position);
             Ok(())
         }
 
@@ -654,7 +654,7 @@ async fn identity_polls_while_slow_sink_in_flight() {
     let gate = Arc::new(Notify::new());
     let sink = RecordingSink::new().with_apply_hold(Arc::clone(&started), Arc::clone(&gate));
     let poll_count = Arc::new(AtomicU64::new(0));
-    let commits = Arc::new(Mutex::new(Vec::new()));
+    let advances = Arc::new(Mutex::new(Vec::new()));
 
     let mut driver = ObservingDriver {
         remaining: vec![
@@ -663,7 +663,7 @@ async fn identity_polls_while_slow_sink_in_flight() {
             PositionedEvent::change(change(3), 30u64),
         ],
         poll_count: Arc::clone(&poll_count),
-        commits: Arc::clone(&commits),
+        advances: Arc::clone(&advances),
     };
 
     let pipeline = Pipeline::new();
@@ -702,9 +702,9 @@ async fn identity_polls_while_slow_sink_in_flight() {
         poll_count.load(Ordering::SeqCst)
     );
     assert!(
-        commits.lock().unwrap().is_empty(),
-        "must not commit before sink finishes: {:?}",
-        commits.lock().unwrap()
+        advances.lock().unwrap().is_empty(),
+        "must not advance_watermark before sink finishes: {:?}",
+        advances.lock().unwrap()
     );
 
     // Release gated applies until runtime completes.
@@ -712,7 +712,7 @@ async fn identity_polls_while_slow_sink_in_flight() {
         loop {
             gate.notify_waiters();
             tokio::time::sleep(Duration::from_millis(5)).await;
-            if commits.lock().unwrap().len() >= 3 {
+            if advances.lock().unwrap().len() >= 3 {
                 // Keep releasing briefly for any in-flight apply.
                 gate.notify_waiters();
                 break;
@@ -724,7 +724,7 @@ async fn identity_polls_while_slow_sink_in_flight() {
         _ = release => { gate.notify_waiters(); run.await.unwrap(); }
     }
 
-    assert_eq!(*commits.lock().unwrap(), vec![10, 20, 30]);
+    assert_eq!(*advances.lock().unwrap(), vec![10, 20, 30]);
     assert_eq!(
         sink.applied()
             .iter()
@@ -747,7 +747,7 @@ async fn non_identity_transforms_overlap_sink_ordered_commit_after_sink() {
 
     struct ObservingDriver {
         remaining: Vec<PositionedEvent<u64>>,
-        commits: Arc<Mutex<Vec<u64>>>,
+        advances: Arc<Mutex<Vec<u64>>>,
     }
 
     #[async_trait::async_trait]
@@ -761,8 +761,8 @@ async fn non_identity_transforms_overlap_sink_ordered_commit_after_sink() {
             Ok(vec![self.remaining.remove(0)])
         }
 
-        async fn commit(&mut self, position: Self::Position) -> anyhow::Result<()> {
-            self.commits.lock().unwrap().push(position);
+        async fn advance_watermark(&mut self, position: Self::Position) -> anyhow::Result<()> {
+            self.advances.lock().unwrap().push(position);
             Ok(())
         }
 
@@ -781,13 +781,13 @@ async fn non_identity_transforms_overlap_sink_ordered_commit_after_sink() {
             .on_batch(2, BatchScript::succeed_after(Duration::from_millis(5))),
     );
 
-    let commits = Arc::new(Mutex::new(Vec::new()));
+    let advances = Arc::new(Mutex::new(Vec::new()));
     let mut driver = ObservingDriver {
         remaining: vec![
             PositionedEvent::change(change(1), 100u64),
             PositionedEvent::change(change(2), 200u64),
         ],
-        commits: Arc::clone(&commits),
+        advances: Arc::clone(&advances),
     };
 
     let apply_opts = ApplyOpts::default()
@@ -817,9 +817,9 @@ async fn non_identity_transforms_overlap_sink_ordered_commit_after_sink() {
         transformer.completed_order()
     );
     assert!(
-        commits.lock().unwrap().is_empty(),
+        advances.lock().unwrap().is_empty(),
         "commit must wait for sink: {:?}",
-        commits.lock().unwrap()
+        advances.lock().unwrap()
     );
     assert!(sink.applied().is_empty(), "first apply still gated");
 
@@ -827,7 +827,7 @@ async fn non_identity_transforms_overlap_sink_ordered_commit_after_sink() {
         loop {
             gate.notify_waiters();
             tokio::time::sleep(Duration::from_millis(5)).await;
-            if commits.lock().unwrap().len() >= 2 {
+            if advances.lock().unwrap().len() >= 2 {
                 gate.notify_waiters();
                 break;
             }
@@ -852,7 +852,7 @@ async fn non_identity_transforms_overlap_sink_ordered_commit_after_sink() {
         "sink must stay ordered"
     );
     assert_eq!(
-        *commits.lock().unwrap(),
+        *advances.lock().unwrap(),
         vec![100, 200],
         "commit only after each sink"
     );
@@ -863,7 +863,7 @@ async fn non_identity_transforms_overlap_sink_ordered_commit_after_sink() {
 async fn oversized_poll_work_keeps_excess_in_buffer() {
     struct FatPollDriver {
         once: bool,
-        commits: Vec<u64>,
+        advances: Vec<u64>,
     }
 
     #[async_trait::async_trait]
@@ -883,8 +883,8 @@ async fn oversized_poll_work_keeps_excess_in_buffer() {
             ])
         }
 
-        async fn commit(&mut self, position: Self::Position) -> anyhow::Result<()> {
-            self.commits.push(position);
+        async fn advance_watermark(&mut self, position: Self::Position) -> anyhow::Result<()> {
+            self.advances.push(position);
             Ok(())
         }
 
@@ -895,7 +895,7 @@ async fn oversized_poll_work_keeps_excess_in_buffer() {
 
     let mut driver = FatPollDriver {
         once: false,
-        commits: Vec::new(),
+        advances: Vec::new(),
     };
     let sink = RecordingSink::new();
     let pipeline = Pipeline::new();
@@ -920,7 +920,7 @@ async fn oversized_poll_work_keeps_excess_in_buffer() {
         3,
         "all oversized poll events must be sunk, not dropped"
     );
-    assert_eq!(driver.commits, vec![20, 30]);
+    assert_eq!(driver.advances, vec![20, 30]);
 }
 
 /// max_in_flight≥3 + slow sink: poll_count must keep rising across outer-loop
@@ -934,7 +934,7 @@ async fn polls_keep_rising_while_slow_sink_with_spare_capacity() {
     struct ObservingDriver {
         remaining: Vec<PositionedEvent<u64>>,
         poll_count: Arc<AtomicU64>,
-        commits: Arc<Mutex<Vec<u64>>>,
+        advances: Arc<Mutex<Vec<u64>>>,
     }
 
     #[async_trait::async_trait]
@@ -949,8 +949,8 @@ async fn polls_keep_rising_while_slow_sink_with_spare_capacity() {
             Ok(vec![self.remaining.remove(0)])
         }
 
-        async fn commit(&mut self, position: Self::Position) -> anyhow::Result<()> {
-            self.commits.lock().unwrap().push(position);
+        async fn advance_watermark(&mut self, position: Self::Position) -> anyhow::Result<()> {
+            self.advances.lock().unwrap().push(position);
             Ok(())
         }
 
@@ -963,7 +963,7 @@ async fn polls_keep_rising_while_slow_sink_with_spare_capacity() {
     let gate = Arc::new(Notify::new());
     let sink = RecordingSink::new().with_apply_hold(Arc::clone(&started), Arc::clone(&gate));
     let poll_count = Arc::new(AtomicU64::new(0));
-    let commits = Arc::new(Mutex::new(Vec::new()));
+    let advances = Arc::new(Mutex::new(Vec::new()));
 
     // batch_size=2: after first sink batch launches, one more poll leaves a partial
     // buffer and spare window capacity — further polls must continue while gated.
@@ -977,7 +977,7 @@ async fn polls_keep_rising_while_slow_sink_with_spare_capacity() {
             PositionedEvent::change(change(6), 60u64),
         ],
         poll_count: Arc::clone(&poll_count),
-        commits: Arc::clone(&commits),
+        advances: Arc::clone(&advances),
     };
 
     let pipeline = Pipeline::new();
@@ -1018,16 +1018,16 @@ async fn polls_keep_rising_while_slow_sink_with_spare_capacity() {
         poll_count.load(Ordering::SeqCst)
     );
     assert!(
-        commits.lock().unwrap().is_empty(),
-        "must not commit before sink finishes: {:?}",
-        commits.lock().unwrap()
+        advances.lock().unwrap().is_empty(),
+        "must not advance_watermark before sink finishes: {:?}",
+        advances.lock().unwrap()
     );
 
     let release = async {
         loop {
             gate.notify_waiters();
             tokio::time::sleep(Duration::from_millis(5)).await;
-            if commits.lock().unwrap().len() >= 3 {
+            if advances.lock().unwrap().len() >= 3 {
                 gate.notify_waiters();
                 break;
             }
@@ -1039,7 +1039,7 @@ async fn polls_keep_rising_while_slow_sink_with_spare_capacity() {
     }
 
     assert_eq!(sink.applied().len(), 6);
-    assert_eq!(*commits.lock().unwrap(), vec![20, 40, 60]);
+    assert_eq!(*advances.lock().unwrap(), vec![20, 40, 60]);
 }
 
 /// Slow multi-event sink + concurrent transform completion must not re-apply
@@ -1052,7 +1052,7 @@ async fn multi_event_sink_not_reapplied_when_transform_completes() {
 
     struct ObservingDriver {
         remaining: Vec<PositionedEvent<u64>>,
-        commits: Arc<Mutex<Vec<u64>>>,
+        advances: Arc<Mutex<Vec<u64>>>,
     }
 
     #[async_trait::async_trait]
@@ -1072,8 +1072,8 @@ async fn multi_event_sink_not_reapplied_when_transform_completes() {
             Ok(vec![self.remaining.remove(0)])
         }
 
-        async fn commit(&mut self, position: Self::Position) -> anyhow::Result<()> {
-            self.commits.lock().unwrap().push(position);
+        async fn advance_watermark(&mut self, position: Self::Position) -> anyhow::Result<()> {
+            self.advances.lock().unwrap().push(position);
             Ok(())
         }
 
@@ -1095,14 +1095,14 @@ async fn multi_event_sink_not_reapplied_when_transform_completes() {
             .on_batch(2, BatchScript::succeed_after(Duration::from_millis(40))),
     );
 
-    let commits = Arc::new(Mutex::new(Vec::new()));
+    let advances = Arc::new(Mutex::new(Vec::new()));
     let mut driver = ObservingDriver {
         remaining: vec![
             PositionedEvent::change(change(1), 10u64),
             PositionedEvent::change(change(2), 20u64),
             PositionedEvent::change(change(3), 30u64),
         ],
-        commits: Arc::clone(&commits),
+        advances: Arc::clone(&advances),
     };
 
     let apply_opts = ApplyOpts::default()
@@ -1150,7 +1150,7 @@ async fn multi_event_sink_not_reapplied_when_transform_completes() {
         loop {
             gate.notify_waiters();
             tokio::time::sleep(Duration::from_millis(5)).await;
-            if commits.lock().unwrap().len() >= 2 {
+            if advances.lock().unwrap().len() >= 2 {
                 gate.notify_waiters();
                 break;
             }
@@ -1267,7 +1267,7 @@ async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
             Ok(vec![ev])
         }
 
-        async fn commit(&mut self, _position: Self::Position) -> anyhow::Result<()> {
+        async fn advance_watermark(&mut self, _position: Self::Position) -> anyhow::Result<()> {
             self.committed.append(&mut self.ready_to_commit);
             Ok(())
         }
@@ -1277,7 +1277,7 @@ async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
         }
 
         fn checkpoint_policy(&self) -> CheckpointPolicy {
-            CheckpointPolicy::CommitOnly
+            CheckpointPolicy::AdvanceOnly
         }
 
         fn note_sunk_events(&mut self, count: u64) {
@@ -1314,7 +1314,7 @@ async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
             Ok(batch)
         }
 
-        async fn commit(&mut self, _position: Self::Position) -> anyhow::Result<()> {
+        async fn advance_watermark(&mut self, _position: Self::Position) -> anyhow::Result<()> {
             if self.sunk < self.emitted {
                 return Ok(());
             }
@@ -1329,7 +1329,7 @@ async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
         }
 
         fn checkpoint_policy(&self) -> CheckpointPolicy {
-            CheckpointPolicy::CommitOnly
+            CheckpointPolicy::AdvanceOnly
         }
 
         fn note_sunk_events(&mut self, count: u64) {
@@ -1497,7 +1497,7 @@ async fn fan_out_transform_notes_input_count_not_output_length() {
             Ok(vec![ev])
         }
 
-        async fn commit(&mut self, _position: Self::Position) -> anyhow::Result<()> {
+        async fn advance_watermark(&mut self, _position: Self::Position) -> anyhow::Result<()> {
             self.committed.append(&mut self.ready_to_commit);
             Ok(())
         }
@@ -1507,7 +1507,7 @@ async fn fan_out_transform_notes_input_count_not_output_length() {
         }
 
         fn checkpoint_policy(&self) -> CheckpointPolicy {
-            CheckpointPolicy::CommitOnly
+            CheckpointPolicy::AdvanceOnly
         }
 
         fn stop_reason(&self) -> Option<StopReason> {
@@ -1568,7 +1568,7 @@ async fn fan_out_transform_notes_input_count_not_output_length() {
             Ok(vec![ev])
         }
 
-        async fn commit(&mut self, _position: Self::Position) -> anyhow::Result<()> {
+        async fn advance_watermark(&mut self, _position: Self::Position) -> anyhow::Result<()> {
             if self.sunk < self.emitted {
                 return Ok(());
             }
@@ -1584,7 +1584,7 @@ async fn fan_out_transform_notes_input_count_not_output_length() {
         }
 
         fn checkpoint_policy(&self) -> CheckpointPolicy {
-            CheckpointPolicy::CommitOnly
+            CheckpointPolicy::AdvanceOnly
         }
 
         fn note_sunk_events(&mut self, count: u64) {

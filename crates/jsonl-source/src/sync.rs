@@ -155,7 +155,7 @@ impl SourceDriver for JsonlStreamDriver {
         Ok(events)
     }
 
-    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
+    async fn advance_watermark(&mut self, _position: Self::Position) -> Result<()> {
         Ok(())
     }
 
@@ -164,7 +164,7 @@ impl SourceDriver for JsonlStreamDriver {
     }
 
     fn checkpoint_policy(&self) -> CheckpointPolicy {
-        CheckpointPolicy::CommitOnly
+        CheckpointPolicy::AdvanceOnly
     }
 
     fn note_sunk_events(&mut self, count: u64) {

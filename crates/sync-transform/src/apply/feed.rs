@@ -8,7 +8,7 @@ use crate::apply::event::{ApplyEvent, PositionedEvent};
 use anyhow::Result;
 use sync_core::UniversalChange;
 
-/// A CDC / incremental row event plus the source position to commit after sink success.
+/// A CDC / incremental row event plus the source position to advance after sink success.
 ///
 /// Prefer [`PositionedEvent`] when the feed may also emit relation changes.
 #[derive(Debug, Clone)]
@@ -37,10 +37,10 @@ impl<P> From<PositionedChange<P>> for PositionedEvent<P> {
     }
 }
 
-/// Source-facing incremental **row** feed: poll events, commit after durable sink apply.
+/// Source-facing incremental **row** feed: poll events, advance watermark after durable sink apply.
 ///
 /// Sources do **not** batch for transforms — the apply framework owns batching,
-/// the in-flight window, ordered sink apply, and contiguous commit watermark.
+/// the in-flight window, ordered sink apply, and contiguous sink-safe watermark.
 ///
 /// For sources that also emit relation edges or need DDL / cancel / checkpoint
 /// hooks, implement [`crate::SourceDriver`] instead (or wrap this feed with
@@ -53,8 +53,11 @@ pub trait ChangeFeed: Send {
     /// Next source events (may be empty on idle).
     async fn poll_changes(&mut self) -> Result<Vec<PositionedChange<Self::Position>>>;
 
-    /// Advance the source checkpoint after docs for this position were sunk.
-    async fn commit(&mut self, position: Self::Position) -> Result<()>;
+    /// Mark `position` sink-safe. May be in-memory only, broker offset commit, or
+    /// both — durable store writes belong in
+    /// [`SourceDriver::persist_checkpoint`](crate::SourceDriver::persist_checkpoint)
+    /// unless policy is [`CheckpointPolicy::AdvanceOnly`](crate::CheckpointPolicy::AdvanceOnly).
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()>;
 
     /// Whether the feed will produce no more changes (EOF).
     ///

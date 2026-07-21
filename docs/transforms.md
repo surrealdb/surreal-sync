@@ -191,14 +191,14 @@ A command stage spawns a worker and talks on **that process’s** stdin (request
 
 Prefer `persistent` for real enrichment (avoids per-batch process startup). `transient` is useful for debugging/simple scripts; expect lower throughput. Overlap from `max_in_flight > 1` is much more useful with `persistent`.
 
-Per-stage `retry` re-runs the stdio exchange for that stage only (same `batch_id`) with exponential backoff. After attempts are exhausted, the batch fails and `[pipeline].failure_policy` applies (`fail` or `skip`). Checkpoint still advances only after SurrealDB sink success (or skip-commit).
+Per-stage `retry` re-runs the stdio exchange for that stage only (same `batch_id`) with exponential backoff. After attempts are exhausted, the batch fails and `[pipeline].failure_policy` applies (`fail` or `skip`). Checkpoint still advances only after SurrealDB sink success (or skip + `advance_watermark`).
 
 ## Choosing batch size, timeouts, and `max_in_flight`
 
 - **`batch_size` / `batch_max_wait`** — how large a batch becomes before transform starts (`[pipeline]`). Larger batches amortize worker overhead; smaller batches reduce latency.
 - **`[pipeline].timeout`** — outer bound for the whole stage chain (including retries). Prefer per-stage `timeout` for individual workers.
 - **Per-stage `timeout` / `retry`** — how long one exchange may take on that stage, and how many times to retry with backoff before the batch fails.
-- **`max_in_flight`** — apply window size (default `1`). On **CDC / `SourceDriver` / long-lived file streams**, W=1 and W=16 share the **same** runtime: surreal-sync may transform several batches at once and continue polling while ordered sink writes are in flight; completions match by `batch_id`, then **sink apply and source commit stay strictly ordered**. A failed batch blocks commit of later ones; in-flight successors are discarded (never committed). Full-sync helpers (`write_rows` / `write_relations`) use that same window when `max_in_flight > 1` or the pipeline is non-identity; identity + W=1 stays on a bulk oneshot path.
+- **`max_in_flight`** — apply window size (default `1`). On **CDC / `SourceDriver` / long-lived file streams**, W=1 and W=16 share the **same** runtime: surreal-sync may transform several batches at once and continue polling while ordered sink writes are in flight; completions match by `batch_id`, then **sink apply and `advance_watermark` stay strictly ordered**. A failed batch blocks watermark advance of later ones; in-flight successors are discarded (never advanced). Full-sync helpers (`write_rows` / `write_relations`) use that same window when `max_in_flight > 1` or the pipeline is non-identity; identity + W=1 stays on a bulk oneshot path.
 
 Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W. **Omit `--transforms-config`** → `ApplyOpts::identity()` (`batch_size = 1`, `max_in_flight = 1`); overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set).
 
@@ -208,27 +208,27 @@ Tune `max_in_flight` like batch size for latency hiding under a slow worker. Rel
 
 Durability is the **source checkpoint**, not the transform worker.
 
-For every incremental batch on sources with a real post-sink commit hook, surreal-sync runs this order:
+For every incremental batch on sources with a real post-sink durability hook, surreal-sync runs this order:
 
-1. Buffer changes + positions in memory (not committed).
+1. Buffer changes + positions in memory (not yet sink-safe).
 2. Transform — in-process stages finish, or the external worker returns a successful framed response that **echoes the same `batch_id`**.
 3. Sink apply — write transformed docs to SurrealDB; wait for success.
-4. Source commit — advance the durable source cursor past that batch.
+4. `note_sunk_events` → `advance_watermark` → checkpoint policy → optional `persist_checkpoint`.
 
-| Source family | What “commit after sink” means |
+| Source family | What `advance_watermark` after sink means |
 |---------------|--------------------------------|
 | MySQL/MariaDB binlog, PostgreSQL pgoutput | Store / binlog client commit + sink-safe CatchUpProgress |
 | PostgreSQL wal2json | Slot `advance` only after emitted events are sunk (peeks may continue under window capacity via non-consuming peek + prefix skip) |
 | Kafka | Consumer-group `commit_batch` of **all** messages in the sunk batch (not only the last position) |
 | CSV / JSONL | No source cursor (file import) |
-| MySQL/PostgreSQL trigger, MongoDB change stream, Neo4j | Framework `commit(position)` advances an **in-memory sink-safe cursor** only after SurrealDB apply succeeds. Fetch/read-ahead may be ahead of that cursor; `checkpoint()` / resume-token handles report the sunk watermark, not the read head. There is still **no mid-run durable store write** on these ports — process restart resumes from the last **persisted** sync checkpoint (phase markers / `--from`), so long incremental runs may reprocess after a crash (at-least-once). |
+| MySQL/PostgreSQL trigger, MongoDB change stream, Neo4j | Framework `advance_watermark(position)` marks an **in-memory sink-safe cursor** only after SurrealDB apply succeeds. Fetch/read-ahead may be ahead of that cursor; `checkpoint()` / resume-token handles report the sunk watermark, not the read head. There is still **no mid-run durable store write** on these ports — process restart resumes from the last **persisted** sync checkpoint (phase markers / `--from`), so long incremental runs may reprocess after a crash (at-least-once). |
 
 | Hop | What “ack” means |
 |-----|------------------|
 | surreal-sync → worker | NDJSON request with `batch_id` |
 | worker → surreal-sync | Response with the **same `batch_id`** (transform finished in memory only) |
 | surreal-sync → SurrealDB | Sink write success |
-| surreal-sync → source | Checkpoint / commit where the source implements a post-sink hook (see table above) |
+| surreal-sync → source | `advance_watermark` / `persist_checkpoint` where the source implements post-sink hooks (see table above) |
 
 There is **no** post-sink ack back to the worker. Workers are treated as **stateless**. If your worker has side effects (HTTP calls, etc.), it must tolerate **at-least-once** delivery of the same work after retries (often under a **new** `batch_id` while source positions replay).
 
@@ -238,8 +238,8 @@ There is **no** post-sink ack back to the worker. Workers are treated as **state
 |---------------|----------------------|------------|
 | Before/during transform (timeout, crash, bad NDJSON) | No | Same source positions replayed; worker may see duplicate work |
 | Transform OK, sink fails | No | Replay; SurrealDB upserts make typical creates/updates idempotent |
-| Sink OK, crash before commit | No | Replay; possible duplicate applies |
-| Commit succeeded | Yes | Batch done |
+| Sink OK, crash before `advance_watermark` | No | Replay; possible duplicate applies |
+| `advance_watermark` succeeded (and persist, when policy requires it) | Yes | Batch done |
 
 Default `failure_policy = "fail"`: stop the sync process; on restart, resume from the last successful checkpoint — **no silent drop**.
 
@@ -258,10 +258,10 @@ This keeps resume from replaying past docs that never landed in SurrealDB, witho
 
 | Policy | Behavior |
 |--------|----------|
-| `fail` (default) | Stop sync on transform or sink failure for a batch. Checkpoint stays behind that batch. Restart resumes from the last successful commit. |
-| `skip` | Log the failure, **do not write** that batch to SurrealDB, but **still commit past it**. |
+| `fail` (default) | Stop sync on transform or sink failure for a batch. Checkpoint stays behind that batch. Restart resumes from the last successful watermark advance. |
+| `skip` | Log the failure, **do not write** that batch to SurrealDB, but **still `advance_watermark` past it**. |
 
-**Warning — data loss by configuration:** `failure_policy = "skip"` means a failed transform or sink batch is **never** applied to SurrealDB, yet the source cursor still advances past it. Those source events are gone for this sync unless you re-seed from an earlier checkpoint or re-run a full sync. Prefer the default `fail` unless dropping bad batches is an explicit, accepted trade-off.
+**Warning — data loss by configuration:** `failure_policy = "skip"` means a failed transform or sink batch is **never** applied to SurrealDB, yet `advance_watermark` still runs past it. Those source events are gone for this sync unless you re-seed from an earlier checkpoint or re-run a full sync. Prefer the default `fail` unless dropping bad batches is an explicit, accepted trade-off.
 
 ## Writing an external worker
 
@@ -367,7 +367,7 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 | Timeouts | Raise `timeout`; check worker hangs; reduce `batch_size` or `max_in_flight` while debugging |
 | Bad NDJSON / wrong `batch_id` | Echo the request `batch_id`; flush stdout after each response; no extra stderr framing on stdout |
 | Sync stopped on failure | Default `failure_policy = "fail"` — fix the worker or sink, restart; checkpoint did not advance past the failed batch |
-| Unexpected missing docs | You set `failure_policy = "skip"` — failed batches are committed past without writing |
+| Unexpected missing docs | You set `failure_policy = "skip"` — failed batches are advanced past without writing |
 | Checkpoint seems “stuck” behind read position | Expected while transform/apply still has unsunk work; `CatchUpProgress` tracks last sunk |
 
 ## See also

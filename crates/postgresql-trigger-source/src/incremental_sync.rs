@@ -306,7 +306,7 @@ impl SourceDriver for PostgresTriggerSourceDriver<'_> {
         }
     }
 
-    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()> {
         self.stream.commit_sunk(position);
         Ok(())
     }
@@ -316,7 +316,7 @@ impl SourceDriver for PostgresTriggerSourceDriver<'_> {
     }
 
     fn checkpoint_policy(&self) -> CheckpointPolicy {
-        CheckpointPolicy::CommitOnly
+        CheckpointPolicy::AdvanceOnly
     }
 
     fn stop_reason(&self) -> Option<StopReason> {

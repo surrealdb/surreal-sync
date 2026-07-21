@@ -5,7 +5,7 @@ use std::time::Duration;
 /// What to do when a batch fails transform or sink apply.
 ///
 /// - [`Fail`](Self::Fail) (default): stop; do not commit the failed batch or any
-///   later position. Operator restarts resume from the last successful commit.
+///   later position. Operator restarts resume from the last successful watermark advance.
 /// - [`Skip`](Self::Skip): log, do **not** write the failed batch, but still
 ///   call [`SourceDriver::note_sunk_events`](crate::SourceDriver::note_sunk_events)
 ///   and commit past it. This can lose data by explicit operator choice.

@@ -147,7 +147,8 @@ where
 ///
 /// Incremental work runs via [`BinlogSourceDriver`] +
 /// [`sync_transform::run_source_runtime_with`]. Sink success still gates
-/// binlog `commit`. CatchUpProgress uses
+/// [`SourceDriver::advance_watermark`](sync_transform::SourceDriver::advance_watermark)
+/// (binlog client `commit`). CatchUpProgress uses
 /// [`CheckpointPolicy::IntervalWhenDrained`]: sunk watermarks persist promptly
 /// once the apply window drains; when fully drained with no unsunk work, the
 /// same interval may advance the store to the **current** binlog position
@@ -507,7 +508,7 @@ where
         }
     }
 
-    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()> {
         let client = self
             .client
             .as_mut()

@@ -547,12 +547,12 @@ impl crate::InPlaceTransform for ScriptedInPlace {
     }
 }
 
-/// Predetermined change feed with recorded commits.
+/// Predetermined change feed with recorded advances.
 #[derive(Debug)]
 pub struct ScriptedChangeFeed<P> {
     remaining: VecDeque<PositionedChange<P>>,
-    /// Recorded `commit` positions in order.
-    pub commits: Vec<P>,
+    /// Recorded `advance_watermark` positions in order.
+    pub advances: Vec<P>,
     /// When true, [`ChangeFeed::is_finished`] is true once `remaining` is empty.
     finished_when_empty: bool,
 }
@@ -562,12 +562,12 @@ impl<P> ScriptedChangeFeed<P> {
     pub fn new(changes: Vec<PositionedChange<P>>) -> Self {
         Self {
             remaining: changes.into(),
-            commits: Vec::new(),
+            advances: Vec::new(),
             finished_when_empty: true,
         }
     }
 
-    /// Resume a feed from uncommitted changes (crash/replay helper).
+    /// Resume a feed from not-yet-advanced changes (crash/replay helper).
     pub fn from_remaining(changes: Vec<PositionedChange<P>>) -> Self {
         Self::new(changes)
     }
@@ -577,9 +577,9 @@ impl<P> ScriptedChangeFeed<P> {
         self.remaining.len()
     }
 
-    /// Last committed position, if any.
-    pub fn last_commit(&self) -> Option<&P> {
-        self.commits.last()
+    /// Last advanced watermark position, if any.
+    pub fn last_advance(&self) -> Option<&P> {
+        self.advances.last()
     }
 }
 
@@ -597,8 +597,8 @@ where
         }
     }
 
-    async fn commit(&mut self, position: P) -> Result<()> {
-        self.commits.push(position);
+    async fn advance_watermark(&mut self, position: P) -> Result<()> {
+        self.advances.push(position);
         Ok(())
     }
 
@@ -853,8 +853,8 @@ fn relation_id_display(id: &sync_core::UniversalValue) -> String {
 pub struct ScriptedSourceDriver<P> {
     /// Remaining work items (drained by poll_work).
     pub remaining: Vec<PositionedEvent<P>>,
-    /// Recorded commit positions.
-    pub commits: Vec<P>,
+    /// Recorded advance_watermark positions.
+    pub advances: Vec<P>,
     /// Recorded persist_checkpoint positions (sink-safe only).
     pub persisted: Vec<P>,
     /// Signals returned once from the next `between_events` call, then cleared.
@@ -884,13 +884,13 @@ impl<P> ScriptedSourceDriver<P> {
     pub fn new(items: Vec<PositionedEvent<P>>) -> Self {
         Self {
             remaining: items,
-            commits: Vec::new(),
+            advances: Vec::new(),
             persisted: Vec::new(),
             pending_signals: Vec::new(),
             schema_refresh_count: 0,
             adhoc_snapshots: Vec::new(),
             stop: None,
-            policy: crate::CheckpointPolicy::PersistAfterCommit,
+            policy: crate::CheckpointPolicy::PersistAfterAdvance,
             read_progress: None,
             finished_when_empty: true,
             poll_count: 0,
@@ -911,9 +911,9 @@ impl<P> ScriptedSourceDriver<P> {
         self
     }
 
-    /// Use CommitOnly policy (no persist_checkpoint).
-    pub fn commit_only(mut self) -> Self {
-        self.policy = crate::CheckpointPolicy::CommitOnly;
+    /// Use AdvanceOnly policy (no persist_checkpoint).
+    pub fn advance_only(mut self) -> Self {
+        self.policy = crate::CheckpointPolicy::AdvanceOnly;
         self
     }
 
@@ -950,8 +950,8 @@ where
         Ok(vec![item])
     }
 
-    async fn commit(&mut self, position: Self::Position) -> Result<()> {
-        self.commits.push(position);
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()> {
+        self.advances.push(position);
         Ok(())
     }
 

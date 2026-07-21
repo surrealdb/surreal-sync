@@ -91,7 +91,7 @@ async fn mismatched_batch_id_no_sink_no_commit() {
         "unexpected: {msg}"
     );
     assert!(sink.applied().is_empty(), "must not sink on bad batch_id");
-    assert!(feed.commits.is_empty(), "must not commit on bad batch_id");
+    assert!(feed.advances.is_empty(), "must not advance_watermark on bad batch_id");
 }
 
 /// W≥2: a response that wrongly echoes another outstanding batch_id must not
@@ -131,9 +131,9 @@ async fn colliding_mismatched_batch_id_w2_no_sink_no_commit() {
         sink.applied()
     );
     assert!(
-        feed.commits.is_empty(),
-        "must not commit either batch on colliding mismatch: {:?}",
-        feed.commits
+        feed.advances.is_empty(),
+        "must not advance_watermark either batch on colliding mismatch: {:?}",
+        feed.advances
     );
 }
 
@@ -196,7 +196,7 @@ async fn missing_batch_id_no_sink_no_commit() {
         "unexpected: {msg}"
     );
     assert!(sink.applied().is_empty());
-    assert!(feed.commits.is_empty());
+    assert!(feed.advances.is_empty());
 }
 
 #[tokio::test]
@@ -213,7 +213,7 @@ async fn scripted_external_happy_path_sinks_and_commits() {
         .await
         .unwrap();
     assert_eq!(sink.applied().len(), 2);
-    assert_eq!(feed.commits, vec![10, 20]);
+    assert_eq!(feed.advances, vec![10, 20]);
 }
 
 #[tokio::test]
@@ -282,7 +282,7 @@ async fn external_pipeline_transforms_mixed_relation_and_change() {
         sink.apply_order_tags(),
         vec!["change:1".to_string(), "relation:5".to_string()]
     );
-    assert_eq!(driver.commits, vec![10, 20]);
+    assert_eq!(driver.advances, vec![10, 20]);
 }
 
 /// One apply batch with both kinds: External must use distinct wire batch_ids

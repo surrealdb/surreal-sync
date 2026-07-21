@@ -397,7 +397,7 @@ impl SourceDriver for Wal2JsonSourceDriver<'_> {
         }
     }
 
-    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()> {
         let Some(nextlsn) = self.latest_nextlsn else {
             return Ok(());
         };
@@ -411,8 +411,8 @@ impl SourceDriver for Wal2JsonSourceDriver<'_> {
 
     fn checkpoint_policy(&self) -> CheckpointPolicy {
         // Incremental wal2json does not persist CatchUpProgress today; slot
-        // advance in `commit` is the durability mechanism.
-        CheckpointPolicy::CommitOnly
+        // advance in `advance_watermark` is the durability mechanism.
+        CheckpointPolicy::AdvanceOnly
     }
 
     fn stop_reason(&self) -> Option<StopReason> {

@@ -88,7 +88,7 @@ where
         }
     }
 
-    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
+    async fn advance_watermark(&mut self, _position: Self::Position) -> Result<()> {
         // File / keyset scans have no durable mid-run cursor.
         Ok(())
     }
@@ -98,7 +98,7 @@ where
     }
 
     fn checkpoint_policy(&self) -> CheckpointPolicy {
-        CheckpointPolicy::CommitOnly
+        CheckpointPolicy::AdvanceOnly
     }
 
     fn note_sunk_events(&mut self, count: u64) {
@@ -173,7 +173,7 @@ where
         }
     }
 
-    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
+    async fn advance_watermark(&mut self, _position: Self::Position) -> Result<()> {
         Ok(())
     }
 
@@ -182,7 +182,7 @@ where
     }
 
     fn checkpoint_policy(&self) -> CheckpointPolicy {
-        CheckpointPolicy::CommitOnly
+        CheckpointPolicy::AdvanceOnly
     }
 
     fn note_sunk_events(&mut self, count: u64) {

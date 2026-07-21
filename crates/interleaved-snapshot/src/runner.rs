@@ -689,7 +689,7 @@ where
         }
     }
 
-    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
+    async fn advance_watermark(&mut self, _position: Self::Position) -> Result<()> {
         // Commit is sink-ordered; chunk retention advances in note_sunk_events
         // once emitted count is fully sunk (see try_finish_chunk_after_sink).
         self.try_finish_chunk_after_sink().await
@@ -702,7 +702,7 @@ where
     fn checkpoint_policy(&self) -> CheckpointPolicy {
         // Durability is the interleaved checkpointer + commit_reconciled, not
         // persist_checkpoint on this u64 apply index.
-        CheckpointPolicy::CommitOnly
+        CheckpointPolicy::AdvanceOnly
     }
 
     fn note_sunk_events(&mut self, count: u64) {
