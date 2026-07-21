@@ -37,7 +37,7 @@ spawn coverage is in `sync-transform` config tests).
 | mongodb | SourceDriver + RowChunkDriver full | Yes (shared loader + CLI e2e) | N/A | Resume token advanced on `advance_watermark` after sink (not on stream read); no mid-run durable store |
 | neo4j | SourceDriver + RowChunkDriver / RelationChunkDriver full | Yes (shared loader + CLI e2e) | N/A | Nodes fully before edges; `advance_watermark` → in-memory `commit_sunk` (timestamp + tie-break ids); fetch may be ahead of sunk |
 | kafka | SourceDriver + `run_source_runtime` | Yes (shared loader + CLI e2e) | N/A | `commit_batch` all sunk msgs; `note_sunk_events` counts |
-| csv | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | File read polls into window (no per-batch runtime restart); **one runtime per file** (no cross-file R∩T∩W) |
+| csv | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | File read polls into window (no per-batch runtime restart); **one runtime per file** (no cross-file read/transform/write overlap) |
 | jsonl | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline; **one runtime per file** (same as CSV) |
 
 ## Porting checklist
@@ -68,11 +68,11 @@ spawn coverage is in `sync-transform` config tests).
    external-transform e2e when porting a streaming source. CLI
    `--transforms-config` smoke where that source has CLI e2e coverage.
 
-## R∩T∩W gates (intentional)
+## Overlap gates (intentional)
 
-Best-case read∩transform∩write overlap needs `max_in_flight > 1`. Even then,
+Best-case overlap of reads, transforms, and writes needs `max_in_flight > 1`. Even then,
 some ports **gate the next unit of source work** until the current unit is
-fully sink-safe — within-unit R∩T∩W still applies:
+fully sink-safe — within-unit overlap still applies:
 
 | Port / path | Within-unit overlap @ W>1 | Next-unit gate |
 |-------------|---------------------------|----------------|

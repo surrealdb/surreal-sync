@@ -1,6 +1,6 @@
 # How sync works
 
-surreal-sync moves data from a source into SurrealDB through one shared apply path: **read → optional transform → ordered sink → watermark**. Transforms are optional; omit them and docs pass through unchanged with **zero** transform overhead.
+surreal-sync moves data from a source into SurrealDB through one shared apply path: **read → optional transform → ordered sink → watermark**. Transforms are optional; omit them and docs pass through unchanged — no stage dispatch and no worker I/O. Identity still uses the shared apply loop (including the JoinSet that orders sink apply).
 
 **Who should read this:** anyone shipping production or high-throughput syncs (batching, overlapping apply windows, checkpoint/watermark rules). Operators who only need enrichment/ETL can jump to [Optional transform workers](#optional-transform-workers). Source-specific setup stays in the per-source guides — this page is the end-to-end pipeline, not a duplicate of connector docs.
 
@@ -25,12 +25,12 @@ Each `from *` sync/import path uses the same shared apply path. Operator guides 
 | Topic | Where to go |
 |-------|-------------|
 | Per-source setup (MySQL, PostgreSQL, MongoDB, …) | Guides linked in [See also](#see-also) |
-| Port checklist / R∩T∩W gates | [Source ports](source-ports.md) |
+| Port checklist / overlap gates | [Source ports](source-ports.md) |
 | Full vs incremental model | [Design overview](design.md) |
 
 **Read-ahead vs sunk:** On streaming CDC, see [CatchUpProgress and unsunk work](#catchupprogress-and-unsunk-work-streaming-cdc).
 
-Some ports still **gate the next chunk / peek / file** until the current unit is fully sunk (interleaved snapshot next-chunk, wal2json next-peek after slot advance, CSV/JSONL next-file runtime). Within that unit, `max_in_flight > 1` still overlaps reads, transforms, and ordered writes — see [Source ports — R∩T∩W gates](source-ports.md#rtw-gates-intentional).
+Some ports still **gate the next chunk / peek / file** until the current unit is fully sunk (interleaved snapshot next-chunk, wal2json next-peek after slot advance, CSV/JSONL next-file runtime). Within that unit, `max_in_flight > 1` still lets reads, transforms, and writes overlap — see [Source ports — overlap gates](source-ports.md#overlap-gates-intentional).
 
 ## Apply window / `[pipeline]` knobs
 
@@ -53,7 +53,7 @@ The apply window controls how many batches may be transforming or waiting for or
 
 Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W. **Omit `--transforms-config`** → `ApplyOpts::identity()` (`batch_size = 1`, `max_in_flight = 1`) so CDC stays on per-event cadence with no overlapping window; overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set).
 
-**Best-case R∩T∩W** (source reads continuing while transforms run and ordered sink writes stay in flight) needs **`max_in_flight > 1`**. With the default `1`, surreal-sync still orders sink apply and sink-gates cursors, but there is no overlapping transform/sink window to hide latency.
+**Best-case overlap** — source reads continuing while transforms run and ordered sink writes stay in flight — needs **`max_in_flight > 1`**. With the default `1`, surreal-sync still orders sink apply and sink-gates cursors, but there is no overlapping transform/sink window to hide latency.
 
 ## Sink and durability
 
@@ -128,7 +128,7 @@ Use transforms when you need enrichment or light ETL (e.g. call an OCR/embedding
 | `failure_policy` `fail` (default) or `skip` | Available (`[pipeline]`) |
 | Per-stage `retry` / backoff | Available on each `[[transforms]]` command stage |
 | Overlapping transform window via `max_in_flight` | Available on CDC/`SourceDriver` paths (`[pipeline]`) |
-| Full-sync / `write_rows` windowing | Available (same ApplyContext window; no oneshot bypass) |
+| Full-sync / `write_rows` windowing | Available (same apply window; no oneshot bypass) |
 
 ### What is not available yet
 
@@ -373,7 +373,7 @@ There is no exactly-once guarantee across transform + SurrealDB + source checkpo
 - **Full sync / keyset table scans** — MySQL and PostgreSQL keyset paths use a long-lived `RowChunkDriver` so the next chunk read can overlap prior-chunk transform/sink when `max_in_flight > 1` (same idea as CSV/JSONL streaming). Relation tables and no-PK tables stream via `RelationChunkDriver` / OFFSET chunks the same way (no monolithic `SELECT *` + serial `write_rows`).
 - **Interleaved snapshot reconciliation** — CDC events and surviving chunk rows share one long-lived `run_source_runtime` window across chunks, so polls continue under spare `max_in_flight` while ordered sink runs; `commit_reconciled` runs only after each chunk is sink-safe (the next chunk does not start until then).
 - **MongoDB / Neo4j full** — cursor/result streams use `RowChunkDriver` / `RelationChunkDriver` (Neo4j: all nodes before any edges).
-- **Ad-hoc helpers** — remaining `write_rows` / `write_relations` call sites use the same ApplyContext window within each call; they are not a continuous source poll loop.
+- **Ad-hoc helpers** — remaining `write_rows` / `write_relations` call sites use the same apply window within each call; they are not a continuous source poll loop.
 
 Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it) follow the durability rules above. For catch-up vs unsunk work on streaming CDC, see [CatchUpProgress and unsunk work](#catchupprogress-and-unsunk-work-streaming-cdc). Per-source guides and [Source ports](source-ports.md) cover implementer details.
 

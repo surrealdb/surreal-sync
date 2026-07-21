@@ -31,7 +31,7 @@ pub struct SyncOpts {
 ///
 /// When `schema` is provided and the table has foreign keys, FK column values
 /// become SurrealDB record links. Relation (join) tables become graph edges.
-/// Callers that apply through the transform framework should batch these into
+/// Callers that apply through the shared transform path should batch these into
 /// [`sync_transform::write_rows`] / [`sync_transform::write_relations`].
 pub async fn convert_table(
     client: &Client,
@@ -188,7 +188,7 @@ pub async fn read_table_chunk(
 
     // Build the keyset predicate and bind the cursor values (if any).
     // `Send` is required so callers can drive this read from a `Send` async
-    // context (e.g. the watermark snapshot framework's trait methods).
+    // context (e.g. interleaved-snapshot trait methods).
     let mut boxed_params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
     let where_clause = match after {
         Some(cursor) => {

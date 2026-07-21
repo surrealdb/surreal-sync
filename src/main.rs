@@ -87,8 +87,8 @@ use rustls::crypto::CryptoProvider;
 use std::path::PathBuf;
 use surreal_sync::SurrealOpts;
 
-/// Full-sync strategy for sources that support the interleaved snapshot
-/// framework (PostgreSQL wal2json, PostgreSQL trigger, MySQL).
+/// Full-sync strategy for sources that support interleaved snapshot
+/// (PostgreSQL wal2json, PostgreSQL trigger, MySQL).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, ValueEnum)]
 enum SyncStrategy {
     /// DBLog-style watermark snapshot copied concurrently/interleaved with the
