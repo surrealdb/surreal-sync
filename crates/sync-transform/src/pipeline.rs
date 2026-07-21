@@ -39,8 +39,9 @@ impl std::fmt::Debug for Stage {
 /// collapses passthrough-only configs to an empty pipeline so the CLI hot path
 /// stays zero-dispatch.
 ///
-/// # Apply framework hot path
+/// # Apply hot path
 ///
+/// Shared apply loop: transform → ordered write → watermark.
 /// [`crate::ApplyContext`] / [`crate::SourceDriver`] gate on
 /// [`crate::BatchTransformer::is_identity`] (implemented for [`Pipeline`] via
 /// [`is_identity`](Self::is_identity)) so the transform [`tokio::task::JoinSet`]
@@ -170,7 +171,7 @@ impl Pipeline {
 
     /// Consume an owned row batch, transform in place, and return it.
     ///
-    /// Preferred sync-framework path for **in-place-only** pipelines: empty
+    /// Preferred path for **in-place-only** pipelines: empty
     /// pipeline is a pure move with no transform dispatch.
     pub fn apply_rows(&self, mut rows: Vec<UniversalRow>) -> Result<Vec<UniversalRow>> {
         self.transform_rows_inplace(&mut rows)?;

@@ -7,7 +7,7 @@ authors = ["surreal-sync contributors"]
 
 [features]
 default = []
-# Shared harness doubles for framework tests and (later) source crates.
+# Shared harness doubles for apply-loop tests and (later) source crates.
 test-support = []
 
 [[bin]]

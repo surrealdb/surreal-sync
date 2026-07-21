@@ -39,7 +39,7 @@ impl<P> From<PositionedChange<P>> for PositionedEvent<P> {
 
 /// Source-facing incremental **row** feed: poll events, advance watermark after durable sink apply.
 ///
-/// Sources do **not** batch for transforms — the apply framework owns batching,
+/// Sources do **not** batch for transforms — the shared apply loop owns batching,
 /// the in-flight window, ordered sink apply, and contiguous sink-safe watermark.
 ///
 /// For sources that also emit relation edges or need DDL / cancel / checkpoint

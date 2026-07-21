@@ -22,7 +22,7 @@ use surreal_sink::SurrealSink;
 use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
 use tracing::debug;
 
-/// Control-plane signal returned from [`SourceDriver::between_events`].
+/// Signal from [`SourceDriver::between_events`] for side work between polls.
 ///
 /// Handled by [`run_source_runtime`] via the corresponding `on_*` hooks before
 /// the next poll. Defaults are no-ops so simple CDC drivers stay thin.
@@ -94,7 +94,7 @@ pub enum RuntimeExit {
     Stopped(StopReason),
 }
 
-/// Framework-injected apply helpers for [`SourceDriver::on_adhoc_snapshot`].
+/// Apply helpers passed into [`SourceDriver::on_adhoc_snapshot`].
 ///
 /// Drivers must use these (or the same sink + transformer + [`ApplyOpts`]) so
 /// ad-hoc / snapshot writes honor transform and sink invariants — no private
@@ -168,11 +168,12 @@ where
     }
 }
 
-/// Source-facing incremental driver: work items + optional control-plane hooks.
+/// Source-facing incremental driver: work items + optional schema / ad-hoc /
+/// cancel / checkpoint hooks.
 ///
-/// Mirrors the spirit of [`interleaved_snapshot::WatermarkSource`]: the framework
-/// owns the loop; the driver supplies poll / [`advance_watermark`](Self::advance_watermark)
-/// and optional extension points.
+/// Mirrors the spirit of [`interleaved_snapshot::WatermarkSource`]:
+/// [`run_source_runtime`] owns the loop; the driver supplies poll /
+/// [`advance_watermark`](Self::advance_watermark) and optional extension points.
 ///
 /// # Defaults
 ///
@@ -378,13 +379,13 @@ impl SourceRuntimeOpts {
     }
 }
 
-/// Framework-owned incremental loop over a [`SourceDriver`].
+/// Incremental loop over a [`SourceDriver`].
 ///
-/// Order per batch: buffer → transform → ordered sink → `note_sunk_events` →
-/// `advance_watermark` → policy → optional `persist_checkpoint` (sink-safe only).
-/// Between cycles: `between_events` → control hooks (ad-hoc receives
-/// [`AdhocApply`]). Stops on `is_finished` (after drain), driver `stop_reason`,
-/// or [`SourceRuntimeOpts`] cancel/deadline.
+/// Shared apply order per batch: transform → ordered write → watermark
+/// (`note_sunk_events` → `advance_watermark` → policy → optional
+/// `persist_checkpoint`, sink-safe only). Between cycles: `between_events` →
+/// hooks (ad-hoc receives [`AdhocApply`]). Stops on `is_finished` (after drain),
+/// driver `stop_reason`, or [`SourceRuntimeOpts`] cancel/deadline.
 pub async fn run_source_runtime<D, S>(
     driver: &mut D,
     sink: &S,
@@ -440,8 +441,8 @@ where
             return Ok(RuntimeExit::Stopped(reason));
         }
 
-        // Only drain an in-flight sink before control-plane work when there are
-        // signals. Spare window capacity must keep polling while sink runs.
+        // Only drain an in-flight sink before schema/ad-hoc side work when there
+        // are signals. Spare window capacity must keep polling while sink runs.
         let signals = driver.between_events().await.context("between_events")?;
         if !signals.is_empty() {
             finish_pending_sink(&mut ctx, driver, &mut sinking).await?;
@@ -752,7 +753,7 @@ where
     S: SurrealSink,
     T: BatchTransformer + 'static,
 {
-    // Drain the apply window before control-plane side work so CatchUpProgress /
+    // Drain the apply window before schema/ad-hoc side work so CatchUpProgress /
     // ad-hoc snapshots never observe read-ahead positions past unsunk batches.
     ctx.flush_for_driver(driver).await?;
     for signal in signals {

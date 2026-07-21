@@ -461,7 +461,7 @@ impl ReplicationTailOptions {
 
 /// Dry-run helper that counts incremental changes without writing to the sink.
 ///
-/// Live sync must use [`run_incremental_sync_with_transforms`] (Framework path).
+/// Live sync must use [`run_incremental_sync_with_transforms`].
 /// Calling with `dry_run = false` returns an error — this function never
 /// performs live `write_universal_*` bypasses.
 pub async fn apply_incremental_changes<S: SurrealSink>(
@@ -630,7 +630,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
 
     let mut stream = source.get_changes_from(&from_checkpoint).await?;
 
-    // Preserve dry-run: drain and count without applying through the framework.
+    // Preserve dry-run: drain and count without transform/sink apply.
     if options.dry_run || sync_opts.dry_run {
         let mut total_applied = 0;
         let mut batch = Vec::new();

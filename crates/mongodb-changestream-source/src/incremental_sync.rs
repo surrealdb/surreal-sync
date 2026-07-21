@@ -1,7 +1,7 @@
 //! MongoDB incremental sync via Change Streams and SourceDriver.
 //!
 //! Resume tokens are the source position. Idle-stop (no events for a timeout)
-//! and wall-clock deadline are preserved from the pre-framework path.
+//! and wall-clock deadline match the earlier Change Streams incremental loop.
 
 use crate::checkpoint::MongoDBCheckpoint;
 use crate::{convert_bson_to_universal_value, SourceOpts};
@@ -378,7 +378,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
 ///
 /// Change stream events become [`PositionedEvent`]s with the resume token as
 /// position; apply goes through [`sync_transform::run_source_runtime_with`].
-/// Idle-stop and deadline semantics match the pre-framework path.
+/// Idle-stop and deadline semantics match the earlier Change Streams loop.
 pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
     surreal: &S,
     from_opts: SourceOpts,
@@ -530,7 +530,7 @@ impl SourceDriver for MongodbChangeStreamDriver<'_> {
             }
             Err(e) => {
                 warn!("Error reading change stream: {e}");
-                // Continue on transient stream errors (same as pre-framework path).
+                // Continue on transient stream errors (same as earlier Change Streams loop).
                 Ok(Vec::new())
             }
         }

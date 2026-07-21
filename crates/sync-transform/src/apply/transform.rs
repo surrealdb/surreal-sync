@@ -1,4 +1,4 @@
-//! Batch transform execution seam (Pipeline + test doubles).
+//! Batch transform step (Pipeline + test doubles).
 
 use crate::apply::ApplyEvent;
 use crate::pipeline::Pipeline;

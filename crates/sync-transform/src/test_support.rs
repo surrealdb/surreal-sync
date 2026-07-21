@@ -1,4 +1,4 @@
-//! Test doubles for the apply framework (feature `test-support` or `cfg(test)`).
+//! Test doubles for the shared apply loop (feature `test-support` or `cfg(test)`).
 //!
 //! Shared by `sync-transform` reliability tests and (later) source crates that
 //! need the same harness without duplicating window semantics.
@@ -358,7 +358,7 @@ struct ScriptedExternalState {
     notify: Arc<Notify>,
 }
 
-/// In-memory multiplexed [`ExternalTransport`] for framework tests.
+/// In-memory multiplexed [`ExternalTransport`] for apply-loop tests.
 ///
 /// Supports out-of-order completion, delays, and scripted batch_id errors.
 #[derive(Clone)]
@@ -973,7 +973,7 @@ where
         tables: &[String],
         apply: &dyn crate::AdhocApply,
     ) -> Result<()> {
-        // Record that the framework injected apply helpers (sink+pipeline path).
+        // Record that the runtime passed apply helpers (sink+pipeline path).
         let _ = apply.apply_opts();
         self.adhoc_snapshots.push(tables.to_vec());
         Ok(())

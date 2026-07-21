@@ -76,7 +76,7 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     .await
 }
 
-/// Full sync through the transform framework via [`RowChunkDriver`] /
+/// Full sync via [`RowChunkDriver`] /
 /// [`run_source_runtime`](sync_transform::run_source_runtime).
 ///
 /// # Arguments

@@ -22,7 +22,7 @@ mongodb-types = { path = "../mongodb-types" }
 # Checkpoint management
 checkpoint = { path = "../checkpoint" }
 
-# Transform apply framework
+# Shared apply / transform pipeline
 sync-transform = { path = "../sync-transform" }
 
 # Async runtime

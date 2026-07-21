@@ -246,8 +246,9 @@ fn try_coalesce_relation_upserts(events: &[ApplyEvent]) -> Option<Vec<UniversalR
 /// Convenience loop for row-only [`ChangeFeed`] sources.
 ///
 /// Equivalent to [`crate::run_source_runtime`] over a [`ChangeFeedDriver`].
-/// Prefer [`crate::SourceDriver`] when you need relation events or control-plane
-/// hooks (schema refresh, ad-hoc snapshot, cancel/deadline, persist_checkpoint).
+/// Prefer [`crate::SourceDriver`] when you need relation events or schema /
+/// ad-hoc / cancel / checkpoint hooks (schema refresh, ad-hoc snapshot,
+/// cancel/deadline, persist_checkpoint).
 pub async fn run_change_feed<F, S>(
     feed: &mut F,
     sink: &S,
@@ -796,7 +797,7 @@ where
 
     /// Drain ordered sink + driver advance_watermark (+ optional persist_checkpoint).
     ///
-    /// Awaits each sink apply to completion (used by flush / control-plane).
+    /// Awaits each sink apply to completion (used by flush / schema/ad-hoc hooks).
     pub(crate) async fn drain_ordered_driver(
         &mut self,
         driver: &mut impl SourceDriver<Position = P>,

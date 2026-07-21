@@ -139,8 +139,8 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     .await
 }
 
-/// Full sync through the transform framework via [`RowChunkDriver`] /
-/// [`RelationChunkDriver`] (nodes fully before edges).
+/// Full sync via [`RowChunkDriver`] / [`RelationChunkDriver`]
+/// (nodes fully before edges).
 ///
 /// Neo4j deletes are not detected by timestamp tracking; this path is upsert-only.
 pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
