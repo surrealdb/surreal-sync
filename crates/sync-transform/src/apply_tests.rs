@@ -471,7 +471,7 @@ async fn apply_context_push_change_flush_watermarks() {
     let pipeline = Pipeline::new();
     let mut ctx = ApplyContext::new(&sink, Arc::new(pipeline), &opts);
 
-    // batch_size=1 → each push can sink immediately (identity, sync path).
+    // batch_size=1 → each push can sink immediately (identity JoinSet path).
     let wm = ctx.push_change(change(1), 10u64).await.unwrap();
     assert_eq!(wm, Some(10), "identity push should return sunk watermark");
     assert_eq!(sink.applied().len(), 1);

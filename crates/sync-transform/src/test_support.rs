@@ -630,6 +630,12 @@ struct RecordingSinkState {
     /// If true, fail only once per scripted condition then succeed on retry.
     fail_once: bool,
     fired: Vec<bool>,
+    /// Artificial delay before each successful `apply_universal_change`.
+    apply_delay: Duration,
+    /// Notified when an apply begins (before delay/gate).
+    apply_started: Option<Arc<Notify>>,
+    /// If set, each apply waits for this notify before finishing (slow sink).
+    apply_gate: Option<Arc<Notify>>,
 }
 
 /// Recording [`SurrealSink`] with optional scripted failures.
@@ -657,6 +663,21 @@ impl RecordingSink {
     /// Each fail condition fires at most once (supports retry/replay tests).
     pub fn fail_once(self) -> Self {
         self.state.lock().expect("recording sink lock").fail_once = true;
+        self
+    }
+
+    /// Delay each successful change apply (simulates a slow sink).
+    pub fn with_apply_delay(self, delay: Duration) -> Self {
+        self.state.lock().expect("recording sink lock").apply_delay = delay;
+        self
+    }
+
+    /// Notify when an apply starts; optionally gate completion on `gate.notified()`.
+    pub fn with_apply_hold(self, started: Arc<Notify>, gate: Arc<Notify>) -> Self {
+        let mut st = self.state.lock().expect("recording sink lock");
+        st.apply_started = Some(started);
+        st.apply_gate = Some(gate);
+        drop(st);
         self
     }
 
@@ -752,24 +773,53 @@ impl SurrealSink for RecordingSink {
     }
 
     async fn apply_universal_change(&self, change: &UniversalChange) -> Result<()> {
-        let mut st = self.state.lock().expect("recording sink lock");
-        let idx = st.apply_count;
-        st.apply_count += 1;
+        let (delay, started, gate, should_fail) = {
+            let mut st = self.state.lock().expect("recording sink lock");
+            let idx = st.apply_count;
+            st.apply_count += 1;
 
-        for (i, cond) in st.fail_when.iter().enumerate() {
-            let matches = match cond {
-                SinkFailWhen::ApplyIndex(n) => idx == *n,
-                SinkFailWhen::ChangeId(id) => id_matches(change, id),
-            };
-            if matches {
-                if st.fail_once && st.fired[i] {
-                    continue;
+            let mut should_fail = false;
+            for (i, cond) in st.fail_when.iter().enumerate() {
+                let matches = match cond {
+                    SinkFailWhen::ApplyIndex(n) => idx == *n,
+                    SinkFailWhen::ChangeId(id) => id_matches(change, id),
+                };
+                if matches {
+                    if st.fail_once && st.fired[i] {
+                        continue;
+                    }
+                    st.fired[i] = true;
+                    should_fail = true;
+                    break;
                 }
-                st.fired[i] = true;
-                return Err(anyhow!("RecordingSink scripted fail on apply index {idx}"));
             }
+
+            (
+                st.apply_delay,
+                st.apply_started.clone(),
+                st.apply_gate.clone(),
+                should_fail,
+            )
+        };
+
+        if let Some(started) = started {
+            started.notify_one();
+        }
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        if let Some(gate) = gate {
+            gate.notified().await;
         }
 
+        if should_fail {
+            return Err(anyhow!(
+                "RecordingSink scripted fail on apply index {}",
+                self.state.lock().expect("recording sink lock").apply_count - 1
+            ));
+        }
+
+        let mut st = self.state.lock().expect("recording sink lock");
         st.event_order
             .push(format!("change:{}", change_id_display(change)));
         st.applied.push(change.clone());

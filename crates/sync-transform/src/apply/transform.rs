@@ -11,10 +11,11 @@ use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, Uni
 /// The apply runtime correlates in-flight work by `batch_id`. Responses may
 /// complete out of order; sink apply + commit stay strictly ordered.
 ///
-/// [`Pipeline`] implements this: empty pipelines short-circuit via
-/// [`Self::is_identity`]; non-empty pipelines walk in-place and External stages
-/// asynchronously. Test-support provides scripted delays / failures so W≥2
-/// reliability scenarios are real without a child process.
+/// [`Pipeline`] implements this: empty pipelines take the same JoinSet path
+/// as non-empty ones via [`Self::is_identity`] (async no-op); non-empty
+/// pipelines walk in-place and External stages asynchronously. Test-support
+/// provides scripted delays / failures so W≥2 reliability scenarios are real
+/// without a child process.
 ///
 /// # Relations
 ///

@@ -395,6 +395,14 @@ where
 }
 
 /// Like [`run_source_runtime`] but accepts any [`BatchTransformer`] behind [`Arc`].
+///
+/// Pipeline overlap model (identity and non-identity share this path):
+/// - **Reads** continue while prior batches transform or sink.
+/// - **Transforms** overlap up to `max_in_flight` window occupancy (transforming +
+///   awaiting/in-flight ordered sink).
+/// - **Writes** stay ordered; the fill loop does not await sink before the next
+///   poll/transform start. Source `commit` runs only after that batch’s sink
+///   succeeds.
 pub async fn run_source_runtime_with<D, S, T>(
     driver: &mut D,
     sink: &S,
@@ -408,23 +416,43 @@ where
     T: BatchTransformer + 'static,
 {
     let mut ctx = ApplyContext::new(sink, Arc::clone(&transformer), apply_opts);
+    // In-flight ordered sink work (overlaps with poll/transform).
+    let mut sinking: Option<PendingSink<D::Position>> = None;
+
     loop {
         if let Some(reason) = effective_stop_reason(driver, runtime_opts) {
+            finish_pending_sink(&mut ctx, driver, sink, &mut sinking).await?;
             ctx.flush_for_driver(driver).await?;
             return Ok(RuntimeExit::Stopped(reason));
         }
 
         // Flush before schema refresh / ad-hoc so side work never runs while the
         // apply window still holds unsunk batches (matches binlog durability).
+        if sinking.is_some() {
+            finish_pending_sink(&mut ctx, driver, sink, &mut sinking).await?;
+        }
         handle_control_signals(driver, &mut ctx, sink, &transformer, apply_opts).await?;
 
-        // Fill the transform window to capacity before waiting on completions.
-        while ctx.in_flight_count() < apply_opts.max_in_flight {
+        // Fill transform window; opportunistically start ordered sink without
+        // awaiting it so poll can continue while a slow sink is in flight.
+        loop {
             if let Some(reason) = effective_stop_reason(driver, runtime_opts) {
+                finish_pending_sink(&mut ctx, driver, sink, &mut sinking).await?;
                 ctx.flush_for_driver(driver).await?;
                 return Ok(RuntimeExit::Stopped(reason));
             }
 
+            ctx.poll_join_ready_public().await?;
+            try_launch_sink(&mut ctx, &mut sinking)?;
+
+            if ctx.window_occupancy() >= apply_opts.max_in_flight {
+                break;
+            }
+
+            // Pull work into the buffer. A single poll_work may return more than
+            // batch_size events — that overshoot is intentional: we keep every
+            // event in the buffer (never drop) and form transform batches from
+            // it. Memory may exceed batch_size until the excess is drained.
             while ctx.buffer_len() < apply_opts.batch_size && !driver.is_finished() {
                 let polled = driver.poll_work().await.context("poll_work")?;
                 if polled.is_empty() {
@@ -435,29 +463,33 @@ where
                 }
             }
 
-            if ctx.buffer_len() >= apply_opts.batch_size {
-                if !ctx.try_start_full_batch() {
-                    break;
-                }
-                ctx.drain_ordered_driver(driver).await?;
-                continue;
-            }
+            let started = if ctx.buffer_len() >= apply_opts.batch_size {
+                ctx.try_start_full_batch()
+            } else if ctx.buffer_len() > 0
+                && (driver.is_finished() || ctx.should_flush_partial_public())
+            {
+                ctx.try_start_partial_batch()
+            } else {
+                false
+            };
 
-            if ctx.buffer_len() > 0 && (driver.is_finished() || ctx.should_flush_partial_public()) {
-                if !ctx.try_start_partial_batch() {
-                    break;
-                }
-                ctx.drain_ordered_driver(driver).await?;
-                continue;
+            if !started {
+                break;
             }
-
-            break;
+            // Collect instant (identity) completions and start sink if possible
+            // without awaiting sink completion.
+            ctx.poll_join_ready_public().await?;
+            try_launch_sink(&mut ctx, &mut sinking)?;
         }
 
-        ctx.drain_ordered_driver(driver).await?;
+        // Idle / progress wait: poll transforms and sink concurrently.
+        let has_transform = ctx.in_flight_count() > 0;
+        let has_sink = sinking.is_some();
+        let has_buffer = ctx.buffer_len() > 0;
+        let finished = driver.is_finished();
 
-        if ctx.in_flight_count() == 0 && ctx.buffer_len() == 0 {
-            if driver.is_finished() {
+        if !has_transform && !has_sink && !has_buffer {
+            if finished {
                 ctx.flush_for_driver(driver).await?;
                 return Ok(RuntimeExit::Stopped(StopReason::Finished));
             }
@@ -465,18 +497,219 @@ where
                 ctx.flush_for_driver(driver).await?;
                 return Ok(RuntimeExit::Stopped(reason));
             }
+            ctx.try_interval_persist_public(driver).await?;
             tokio::time::sleep(apply_opts.batch_max_wait.min(Duration::from_millis(10))).await;
             continue;
         }
 
-        if ctx.in_flight_count() == 0 {
-            tokio::time::sleep(apply_opts.batch_max_wait).await;
+        if !has_transform && !has_sink {
+            // Buffered but waiting on batch_max_wait / occupancy.
+            tokio::time::sleep(apply_opts.batch_max_wait.min(Duration::from_millis(10))).await;
             continue;
         }
 
-        ctx.wait_one_completion().await?;
-        ctx.drain_ordered_driver(driver).await?;
+        tokio::select! {
+            biased;
+            outcome = ctx.wait_one_completion_public(), if has_transform => {
+                outcome?;
+                try_launch_sink(&mut ctx, &mut sinking)?;
+            }
+            // Avoid `unwrap` in the future expr — tokio builds every branch even
+            // when `if has_sink` is false; use pending() for the disabled case.
+            result = async {
+                match sinking.as_mut() {
+                    Some(pending) => run_pending_sink(sink, pending).await,
+                    None => std::future::pending::<Result<SinkDrive>>().await,
+                }
+            }, if has_sink => {
+                let mut pending = sinking.take().expect("sink slot");
+                match result {
+                    Ok(SinkDrive::Applied) => {
+                        ctx.finish_sink_ok_driver(
+                            driver,
+                            pending.meta.last_position,
+                            pending.meta.sunk,
+                        )
+                        .await?;
+                    }
+                    Ok(SinkDrive::TransformFailed) => {
+                        let e = pending
+                            .transform_err
+                            .take()
+                            .unwrap_or_else(|| anyhow::anyhow!("transform failed"));
+                        ctx.finish_sink_err_driver(
+                            driver,
+                            pending.meta.batch_id,
+                            pending.meta.last_position,
+                            pending.meta.event_count,
+                            e,
+                        )
+                        .await?;
+                    }
+                    Err(e) => {
+                        ctx.finish_sink_err_driver(
+                            driver,
+                            pending.meta.batch_id,
+                            pending.meta.last_position,
+                            pending.meta.event_count,
+                            e,
+                        )
+                        .await?;
+                    }
+                }
+                ctx.try_interval_persist_public(driver).await?;
+                try_launch_sink(&mut ctx, &mut sinking)?;
+            }
+        }
     }
+}
+
+struct PendingSinkMeta<P> {
+    batch_id: u64,
+    last_position: P,
+    event_count: u64,
+    sunk: u64,
+}
+
+struct PendingSink<P> {
+    meta: PendingSinkMeta<P>,
+    /// `Some` = apply these events; `None` with `transform_err` = fail/skip path.
+    events: Option<Vec<crate::ApplyEvent>>,
+    transform_err: Option<anyhow::Error>,
+}
+
+fn try_launch_sink<S, T, P>(
+    ctx: &mut ApplyContext<'_, S, T, P>,
+    sinking: &mut Option<PendingSink<P>>,
+) -> Result<()>
+where
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+    P: Clone + Send + Sync + 'static,
+{
+    if sinking.is_some() {
+        return Ok(());
+    }
+    let Some(batch) = ctx.prepare_ordered_sink() else {
+        return Ok(());
+    };
+    match batch.result {
+        Ok(events) => {
+            let sunk = events.len() as u64;
+            let event_count = batch.event_count.max(sunk);
+            *sinking = Some(PendingSink {
+                meta: PendingSinkMeta {
+                    batch_id: batch.batch_id,
+                    last_position: batch.last_position,
+                    event_count,
+                    sunk,
+                },
+                events: Some(events),
+                transform_err: None,
+            });
+        }
+        Err(e) => {
+            *sinking = Some(PendingSink {
+                meta: PendingSinkMeta {
+                    batch_id: batch.batch_id,
+                    last_position: batch.last_position,
+                    event_count: batch.event_count,
+                    sunk: 0,
+                },
+                events: None,
+                transform_err: Some(e),
+            });
+        }
+    }
+    Ok(())
+}
+
+enum SinkDrive {
+    Applied,
+    TransformFailed,
+}
+
+async fn run_pending_sink<S: SurrealSink, P>(
+    sink: &S,
+    pending: &mut PendingSink<P>,
+) -> Result<SinkDrive> {
+    if pending.transform_err.is_some() {
+        // Do not take the error here — select may cancel this future if a
+        // transform completes first; the handler takes it when this arm wins.
+        return Ok(SinkDrive::TransformFailed);
+    }
+    if let Some(events) = pending.events.as_ref() {
+        apply_sink_events_ref(sink, events).await?;
+    }
+    Ok(SinkDrive::Applied)
+}
+
+async fn finish_pending_sink<D, S, T>(
+    ctx: &mut ApplyContext<'_, S, T, D::Position>,
+    driver: &mut D,
+    sink: &S,
+    sinking: &mut Option<PendingSink<D::Position>>,
+) -> Result<()>
+where
+    D: SourceDriver,
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
+    let Some(mut pending) = sinking.take() else {
+        return Ok(());
+    };
+    let apply_result = run_pending_sink(sink, &mut pending).await;
+    match apply_result {
+        Ok(SinkDrive::Applied) => {
+            ctx.finish_sink_ok_driver(driver, pending.meta.last_position, pending.meta.sunk)
+                .await
+        }
+        Ok(SinkDrive::TransformFailed) => {
+            let e = pending
+                .transform_err
+                .take()
+                .unwrap_or_else(|| anyhow::anyhow!("transform failed"));
+            ctx.finish_sink_err_driver(
+                driver,
+                pending.meta.batch_id,
+                pending.meta.last_position,
+                pending.meta.event_count,
+                e,
+            )
+            .await
+        }
+        Err(e) => {
+            ctx.finish_sink_err_driver(
+                driver,
+                pending.meta.batch_id,
+                pending.meta.last_position,
+                pending.meta.event_count,
+                e,
+            )
+            .await
+        }
+    }
+}
+
+async fn apply_sink_events_ref<S: SurrealSink>(
+    sink: &S,
+    events: &[crate::ApplyEvent],
+) -> Result<()> {
+    for event in events {
+        match event {
+            crate::ApplyEvent::Change(change) => {
+                sink.apply_universal_change(change)
+                    .await
+                    .context("sink apply_universal_change")?;
+            }
+            crate::ApplyEvent::RelationChange(change) => {
+                sink.apply_universal_relation_change(change)
+                    .await
+                    .context("sink apply_universal_relation_change")?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn effective_stop_reason<D: SourceDriver>(

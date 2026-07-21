@@ -614,3 +614,311 @@ async fn failure_policy_skip_unblocks_gated_commit() {
     );
     assert_eq!(sink.applied().len(), 1);
 }
+
+/// Identity + max_in_flight≥2: poll continues while a slow sink holds the first batch.
+#[tokio::test]
+async fn identity_polls_while_slow_sink_in_flight() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
+
+    struct ObservingDriver {
+        remaining: Vec<PositionedEvent<u64>>,
+        poll_count: Arc<AtomicU64>,
+        commits: Arc<Mutex<Vec<u64>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SourceDriver for ObservingDriver {
+        type Position = u64;
+
+        async fn poll_work(&mut self) -> anyhow::Result<Vec<PositionedEvent<Self::Position>>> {
+            self.poll_count.fetch_add(1, Ordering::SeqCst);
+            if self.remaining.is_empty() {
+                return Ok(Vec::new());
+            }
+            Ok(vec![self.remaining.remove(0)])
+        }
+
+        async fn commit(&mut self, position: Self::Position) -> anyhow::Result<()> {
+            self.commits.lock().unwrap().push(position);
+            Ok(())
+        }
+
+        fn is_finished(&self) -> bool {
+            self.remaining.is_empty()
+        }
+    }
+
+    let started = Arc::new(Notify::new());
+    let gate = Arc::new(Notify::new());
+    let sink = RecordingSink::new().with_apply_hold(Arc::clone(&started), Arc::clone(&gate));
+    let poll_count = Arc::new(AtomicU64::new(0));
+    let commits = Arc::new(Mutex::new(Vec::new()));
+
+    let mut driver = ObservingDriver {
+        remaining: vec![
+            PositionedEvent::change(change(1), 10u64),
+            PositionedEvent::change(change(2), 20u64),
+            PositionedEvent::change(change(3), 30u64),
+        ],
+        poll_count: Arc::clone(&poll_count),
+        commits: Arc::clone(&commits),
+    };
+
+    let pipeline = Pipeline::new();
+    assert!(pipeline.is_identity());
+    let apply_opts = ApplyOpts::default()
+        .with_max_in_flight(2)
+        .with_batch_size(1)
+        .with_batch_max_wait(Duration::from_millis(5))
+        .with_timeout(Duration::from_secs(5));
+    let runtime_opts = SourceRuntimeOpts::default();
+
+    let run = run_source_runtime(
+        &mut driver,
+        &sink,
+        &pipeline,
+        &apply_opts,
+        &runtime_opts,
+    );
+    tokio::pin!(run);
+
+    tokio::select! {
+        _ = started.notified() => {}
+        _ = &mut run => panic!("runtime finished before sink started"),
+    }
+
+    for _ in 0..40 {
+        tokio::task::yield_now().await;
+        if poll_count.load(Ordering::SeqCst) >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    assert!(
+        poll_count.load(Ordering::SeqCst) >= 2,
+        "poll must continue while slow sink is in flight; poll_count={}",
+        poll_count.load(Ordering::SeqCst)
+    );
+    assert!(
+        commits.lock().unwrap().is_empty(),
+        "must not commit before sink finishes: {:?}",
+        commits.lock().unwrap()
+    );
+
+    // Release gated applies until runtime completes.
+    let release = async {
+        loop {
+            gate.notify_waiters();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            if commits.lock().unwrap().len() >= 3 {
+                // Keep releasing briefly for any in-flight apply.
+                gate.notify_waiters();
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        r = &mut run => { r.unwrap(); }
+        _ = release => { gate.notify_waiters(); run.await.unwrap(); }
+    }
+
+    assert_eq!(*commits.lock().unwrap(), vec![10, 20, 30]);
+    assert_eq!(
+        sink.applied()
+            .iter()
+            .map(|c| c.id.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            UniversalValue::Int64(1),
+            UniversalValue::Int64(2),
+            UniversalValue::Int64(3)
+        ]
+    );
+}
+
+/// Non-identity: transforms overlap; sink stays ordered; commit only after sink.
+#[tokio::test]
+async fn non_identity_transforms_overlap_sink_ordered_commit_after_sink() {
+    use crate::test_support::{BatchScript, ScriptedTransformer};
+    use std::sync::{Arc, Mutex};
+    use tokio::sync::Notify;
+
+    struct ObservingDriver {
+        remaining: Vec<PositionedEvent<u64>>,
+        commits: Arc<Mutex<Vec<u64>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SourceDriver for ObservingDriver {
+        type Position = u64;
+
+        async fn poll_work(&mut self) -> anyhow::Result<Vec<PositionedEvent<Self::Position>>> {
+            if self.remaining.is_empty() {
+                return Ok(Vec::new());
+            }
+            Ok(vec![self.remaining.remove(0)])
+        }
+
+        async fn commit(&mut self, position: Self::Position) -> anyhow::Result<()> {
+            self.commits.lock().unwrap().push(position);
+            Ok(())
+        }
+
+        fn is_finished(&self) -> bool {
+            self.remaining.is_empty()
+        }
+    }
+
+    let started = Arc::new(Notify::new());
+    let gate = Arc::new(Notify::new());
+    let sink = RecordingSink::new().with_apply_hold(Arc::clone(&started), Arc::clone(&gate));
+
+    let transformer = Arc::new(
+        ScriptedTransformer::new(Pipeline::new())
+            .on_batch(1, BatchScript::succeed_after(Duration::from_millis(30)))
+            .on_batch(2, BatchScript::succeed_after(Duration::from_millis(5))),
+    );
+
+    let commits = Arc::new(Mutex::new(Vec::new()));
+    let mut driver = ObservingDriver {
+        remaining: vec![
+            PositionedEvent::change(change(1), 100u64),
+            PositionedEvent::change(change(2), 200u64),
+        ],
+        commits: Arc::clone(&commits),
+    };
+
+    let apply_opts = ApplyOpts::default()
+        .with_max_in_flight(2)
+        .with_batch_size(1)
+        .with_batch_max_wait(Duration::from_millis(20))
+        .with_timeout(Duration::from_secs(5));
+    let runtime_opts = SourceRuntimeOpts::default();
+
+    let run = run_source_runtime_with(
+        &mut driver,
+        &sink,
+        Arc::clone(&transformer),
+        &apply_opts,
+        &runtime_opts,
+    );
+    tokio::pin!(run);
+
+    tokio::select! {
+        _ = started.notified() => {}
+        _ = &mut run => panic!("runtime finished before first sink"),
+    }
+
+    assert!(
+        transformer.completed_order().contains(&2),
+        "batch 2 transform should overlap and finish before/while batch 1 sinks: {:?}",
+        transformer.completed_order()
+    );
+    assert!(
+        commits.lock().unwrap().is_empty(),
+        "commit must wait for sink: {:?}",
+        commits.lock().unwrap()
+    );
+    assert!(sink.applied().is_empty(), "first apply still gated");
+
+    let release = async {
+        loop {
+            gate.notify_waiters();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            if commits.lock().unwrap().len() >= 2 {
+                gate.notify_waiters();
+                break;
+            }
+        }
+    };
+    tokio::select! {
+        r = &mut run => { r.unwrap(); }
+        _ = release => { gate.notify_waiters(); run.await.unwrap(); }
+    }
+
+    assert_eq!(
+        transformer.completed_order().first(),
+        Some(&2),
+        "transforms may complete out of order"
+    );
+    assert_eq!(
+        sink.applied()
+            .iter()
+            .map(|c| c.id.clone())
+            .collect::<Vec<_>>(),
+        vec![UniversalValue::Int64(1), UniversalValue::Int64(2)],
+        "sink must stay ordered"
+    );
+    assert_eq!(
+        *commits.lock().unwrap(),
+        vec![100, 200],
+        "commit only after each sink"
+    );
+}
+
+/// Oversized poll_work keeps all events (no silent drop).
+#[tokio::test]
+async fn oversized_poll_work_keeps_excess_in_buffer() {
+    struct FatPollDriver {
+        once: bool,
+        commits: Vec<u64>,
+    }
+
+    #[async_trait::async_trait]
+    impl SourceDriver for FatPollDriver {
+        type Position = u64;
+
+        async fn poll_work(&mut self) -> anyhow::Result<Vec<PositionedEvent<Self::Position>>> {
+            if self.once {
+                return Ok(Vec::new());
+            }
+            self.once = true;
+            // One poll returns more than batch_size (2).
+            Ok(vec![
+                PositionedEvent::change(change(1), 10),
+                PositionedEvent::change(change(2), 20),
+                PositionedEvent::change(change(3), 30),
+            ])
+        }
+
+        async fn commit(&mut self, position: Self::Position) -> anyhow::Result<()> {
+            self.commits.push(position);
+            Ok(())
+        }
+
+        fn is_finished(&self) -> bool {
+            self.once
+        }
+    }
+
+    let mut driver = FatPollDriver {
+        once: false,
+        commits: Vec::new(),
+    };
+    let sink = RecordingSink::new();
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::default()
+        .with_max_in_flight(2)
+        .with_batch_size(2)
+        .with_batch_max_wait(Duration::from_millis(5))
+        .with_timeout(Duration::from_secs(5));
+
+    run_source_runtime(
+        &mut driver,
+        &sink,
+        &pipeline,
+        &apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        sink.applied().len(),
+        3,
+        "all oversized poll events must be sunk, not dropped"
+    );
+    assert_eq!(driver.commits, vec![20, 30]);
+}

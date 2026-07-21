@@ -243,12 +243,23 @@ struct TransformOutcome<P> {
     result: Result<Vec<ApplyEvent>>,
 }
 
+/// Batch ready for ordered sink apply (transform done; sink slot reserved).
+pub(crate) struct PreparedSinkBatch<P> {
+    pub(crate) batch_id: u64,
+    pub(crate) last_position: P,
+    pub(crate) event_count: u64,
+    pub(crate) result: Result<Vec<ApplyEvent>>,
+}
+
 /// Library / custom-loop driver sharing the same ordered apply path as
 /// [`crate::run_source_runtime`].
 ///
 /// Accepts row [`UniversalChange`] and [`UniversalRelationChange`] into one
-/// buffer / window. `push_*` / `flush` return `Some(position)` when a batch was
-/// transformed, sunk, and is safe to `commit`. They do **not** call
+/// buffer / window. Identity and non-identity pipelines share one path: every
+/// batch is spawned onto the transform [`JoinSet`] (identity is an async
+/// no-op). Sink apply is ordered and may overlap with polling / transforming
+/// later batches; `push_*` / `flush` still return `Some(position)` only after
+/// that batch’s sink succeeds. They do **not** call
 /// [`SourceDriver::commit`] / [`ChangeFeed::commit`].
 ///
 /// # Poisoning after [`FailurePolicy::Fail`]
@@ -268,6 +279,8 @@ pub struct ApplyContext<'a, S, T, P = ()> {
     in_flight: HashMap<u64, InFlightMeta<P>>,
     completed: HashMap<u64, CompletedBatch<P>>,
     join_set: JoinSet<TransformOutcome<P>>,
+    /// True while a prepared sink batch is being applied (slot reserved).
+    sink_in_flight: bool,
     buffer_started: Option<tokio::time::Instant>,
     /// Bumped on fail-discard so stale JoinSet tasks are ignored.
     epoch: u64,
@@ -300,6 +313,7 @@ where
             in_flight: HashMap::new(),
             completed: HashMap::new(),
             join_set: JoinSet::new(),
+            sink_in_flight: false,
             buffer_started: None,
             epoch: 0,
             poisoned: false,
@@ -319,9 +333,24 @@ where
         self.buffer.len()
     }
 
-    /// Number of batches currently transforming (JoinSet path only).
+    /// Number of batches currently transforming (JoinSet path).
     pub fn in_flight_count(&self) -> usize {
         self.in_flight.len()
+    }
+
+    /// Whether an ordered sink apply is in progress (slot reserved).
+    pub fn sink_in_flight(&self) -> bool {
+        self.sink_in_flight
+    }
+
+    /// Batches occupying the apply window: transforming + awaiting/in sink.
+    ///
+    /// [`ApplyOpts::max_in_flight`] bounds this total so a slow sink back-pressures
+    /// new transforms while still allowing overlap (reads / transforms / writes).
+    pub fn window_occupancy(&self) -> usize {
+        self.in_flight.len()
+            + self.completed.len()
+            + usize::from(self.sink_in_flight)
     }
 
     /// Take and reset the count of events sunk since the previous take.
@@ -334,7 +363,7 @@ where
         self.completed.len()
     }
 
-    /// Whether any buffered, in-flight, or completed-waiting work remains.
+    /// Whether any buffered, in-flight, completed-waiting, or sinking work remains.
     ///
     /// Used by checkpoint policies that must not persist a read-ahead position
     /// while transform/apply still has unsunk work.
@@ -342,6 +371,7 @@ where
         self.buffer_len() > 0
             || self.in_flight_count() > 0
             || self.completed_waiting_count() > 0
+            || self.sink_in_flight
     }
 
     /// Whether the apply window is fully drained (no unsunk work).
@@ -388,7 +418,7 @@ where
         self.ensure_not_poisoned()?;
         self.push_buffered_event(PositionedEvent::change(change, position));
         while self.try_start_full_batch() {}
-        self.poll_join_ready().await?;
+        self.collect_ready_transforms().await?;
         self.drain_ordered_no_commit().await
     }
 
@@ -401,7 +431,7 @@ where
         self.ensure_not_poisoned()?;
         self.push_buffered_event(PositionedEvent::relation_change(change, position));
         while self.try_start_full_batch() {}
-        self.poll_join_ready().await?;
+        self.collect_ready_transforms().await?;
         self.drain_ordered_no_commit().await
     }
 
@@ -410,8 +440,20 @@ where
         self.ensure_not_poisoned()?;
         self.push_buffered_event(PositionedEvent::new(event, position));
         while self.try_start_full_batch() {}
-        self.poll_join_ready().await?;
+        self.collect_ready_transforms().await?;
         self.drain_ordered_no_commit().await
+    }
+
+    /// Collect JoinSet results that are ready. Identity batches are async no-ops
+    /// and usually complete after a yield; slow transforms stay in-flight.
+    async fn collect_ready_transforms(&mut self) -> Result<()> {
+        if self.transformer.is_identity() {
+            while self.in_flight_count() > 0 {
+                self.wait_one_completion().await?;
+            }
+            return Ok(());
+        }
+        self.poll_join_ready().await
     }
 
     /// Flush remaining buffered events and wait for in-flight work.
@@ -428,6 +470,7 @@ where
             if self.buffer.is_empty()
                 && self.in_flight.is_empty()
                 && self.completed.is_empty()
+                && !self.sink_in_flight
             {
                 break;
             }
@@ -493,12 +536,9 @@ where
         if n == 0 {
             return false;
         }
-        let occupying = if self.transformer.is_identity() {
-            self.completed.len() + self.in_flight.len()
-        } else {
-            self.in_flight.len()
-        };
-        if occupying >= self.opts.max_in_flight {
+        // One window for identity and transforms: occupancy includes transforming,
+        // completed-waiting, and the in-flight ordered sink slot.
+        if self.window_occupancy() >= self.opts.max_in_flight {
             return false;
         }
 
@@ -518,19 +558,6 @@ where
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
 
-        if self.transformer.is_identity() {
-            self.completed.insert(
-                seq,
-                CompletedBatch {
-                    batch_id,
-                    last_position,
-                    event_count,
-                    result: Ok(events),
-                },
-            );
-            return true;
-        }
-
         self.in_flight.insert(
             seq,
             InFlightMeta {
@@ -542,18 +569,25 @@ where
         let transformer = Arc::clone(&self.transformer);
         let timeout = self.opts.timeout;
         let epoch = self.epoch;
+        // Identity uses the same JoinSet path (async no-op) so poll/transform/sink
+        // can overlap; do not sync-insert into `completed` (that serialized the window).
+        let identity = transformer.is_identity();
         self.join_set.spawn(async move {
-            let result = match tokio::time::timeout(
-                timeout,
-                transformer.transform_events(batch_id, events),
-            )
-            .await
-            {
-                Ok(inner) => inner,
-                Err(_) => Err(anyhow!(
-                    "transform timeout after {:?} for batch_id={batch_id}",
-                    timeout
-                )),
+            let result = if identity {
+                Ok(events)
+            } else {
+                match tokio::time::timeout(
+                    timeout,
+                    transformer.transform_events(batch_id, events),
+                )
+                .await
+                {
+                    Ok(inner) => inner,
+                    Err(_) => Err(anyhow!(
+                        "transform timeout after {:?} for batch_id={batch_id}",
+                        timeout
+                    )),
+                }
             };
             TransformOutcome {
                 epoch,
@@ -565,6 +599,21 @@ where
             }
         });
         true
+    }
+
+    pub(crate) async fn poll_join_ready_public(&mut self) -> Result<()> {
+        self.poll_join_ready().await
+    }
+
+    pub(crate) async fn wait_one_completion_public(&mut self) -> Result<()> {
+        self.wait_one_completion().await
+    }
+
+    pub(crate) async fn try_interval_persist_public(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+    ) -> Result<()> {
+        self.try_interval_persist(driver).await
     }
 
     fn try_poll_join(&mut self) -> Option<Result<TransformOutcome<P>>> {
@@ -617,31 +666,104 @@ where
         Ok(())
     }
 
+    /// Reserve the next ordered batch for sink apply (non-blocking).
+    ///
+    /// Returns `None` when the sink slot is busy or the next seq is not ready.
+    /// Caller must apply (or skip) then call [`Self::finish_sink_driver`] /
+    /// [`Self::finish_sink_no_commit`] (or [`Self::release_sink_slot`] on abandon).
+    pub(crate) fn prepare_ordered_sink(&mut self) -> Option<PreparedSinkBatch<P>> {
+        if self.sink_in_flight {
+            return None;
+        }
+        let batch = self.completed.remove(&self.next_to_apply)?;
+        self.sink_in_flight = true;
+        Some(PreparedSinkBatch {
+            batch_id: batch.batch_id,
+            last_position: batch.last_position,
+            event_count: batch.event_count,
+            result: batch.result,
+        })
+    }
+
+    /// After a successful sink apply: account, commit, persist, advance.
+    pub(crate) async fn finish_sink_ok_driver(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+        last_position: P,
+        sunk: u64,
+    ) -> Result<()> {
+        self.sunk_since_take = self.sunk_since_take.saturating_add(sunk);
+        driver.note_sunk_events(sunk);
+        driver
+            .commit(last_position.clone())
+            .await
+            .context("commit")?;
+        // Free the sink slot before persist checks so IntervalWhenDrained sees a
+        // drained window when nothing else is outstanding.
+        self.next_to_apply += 1;
+        self.sink_in_flight = false;
+        self.after_commit_persist(driver, last_position).await?;
+        Ok(())
+    }
+
+    /// After sink/transform failure under driver path.
+    pub(crate) async fn finish_sink_err_driver(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+        batch_id: u64,
+        last_position: P,
+        event_count: u64,
+        e: anyhow::Error,
+    ) -> Result<()> {
+        self.sink_in_flight = false;
+        self.fail_or_skip_driver(driver, batch_id, last_position, event_count, e)
+            .await
+    }
+
+    /// After successful sink for push/flush (no driver commit).
+    pub(crate) fn finish_sink_ok_no_commit(&mut self, last_position: P, sunk: u64) -> P {
+        self.sunk_since_take = self.sunk_since_take.saturating_add(sunk);
+        self.next_to_apply += 1;
+        self.sink_in_flight = false;
+        last_position
+    }
+
+    /// After sink/transform failure for push/flush.
+    pub(crate) fn finish_sink_err_no_commit(
+        &mut self,
+        batch_id: u64,
+        last_position: P,
+        e: anyhow::Error,
+    ) -> Result<Option<P>> {
+        self.sink_in_flight = false;
+        self.fail_or_skip_no_feed(batch_id, last_position, e)
+    }
+
     /// Drain ordered sink + driver commit (+ optional persist_checkpoint).
+    ///
+    /// Awaits each sink apply to completion (used by flush / control-plane).
     pub(crate) async fn drain_ordered_driver(
         &mut self,
         driver: &mut impl SourceDriver<Position = P>,
     ) -> Result<()> {
         loop {
-            let Some(batch) = self.completed.remove(&self.next_to_apply) else {
+            // Collect ready transform results without blocking.
+            self.poll_join_ready().await?;
+            let Some(batch) = self.prepare_ordered_sink() else {
                 break;
             };
             match batch.result {
                 Ok(events) => match self.apply_sink_events(&events).await {
                     Ok(()) => {
-                        let sunk = events.len() as u64;
-                        self.sunk_since_take = self.sunk_since_take.saturating_add(sunk);
-                        driver.note_sunk_events(sunk);
-                        driver
-                            .commit(batch.last_position.clone())
-                            .await
-                            .context("commit")?;
-                        self.after_commit_persist(driver, batch.last_position)
-                            .await?;
-                        self.next_to_apply += 1;
+                        self.finish_sink_ok_driver(
+                            driver,
+                            batch.last_position,
+                            events.len() as u64,
+                        )
+                        .await?;
                     }
                     Err(e) => {
-                        self.fail_or_skip_driver(
+                        self.finish_sink_err_driver(
                             driver,
                             batch.batch_id,
                             batch.last_position,
@@ -652,7 +774,7 @@ where
                     }
                 },
                 Err(e) => {
-                    self.fail_or_skip_driver(
+                    self.finish_sink_err_driver(
                         driver,
                         batch.batch_id,
                         batch.last_position,
@@ -752,6 +874,7 @@ where
             if self.buffer.is_empty()
                 && self.in_flight.is_empty()
                 && self.completed.is_empty()
+                && !self.sink_in_flight
             {
                 // Force-persist any deferred IntervalWhenDrained position.
                 self.flush_pending_checkpoint(driver).await?;
@@ -781,23 +904,32 @@ where
     async fn drain_ordered_no_commit(&mut self) -> Result<Option<P>> {
         let mut last = None;
         loop {
-            let Some(batch) = self.completed.remove(&self.next_to_apply) else {
+            self.poll_join_ready().await?;
+            let Some(batch) = self.prepare_ordered_sink() else {
                 break;
             };
             match batch.result {
                 Ok(events) => match self.apply_sink_events(&events).await {
                     Ok(()) => {
-                        self.sunk_since_take =
-                            self.sunk_since_take.saturating_add(events.len() as u64);
-                        last = Some(batch.last_position);
-                        self.next_to_apply += 1;
+                        last = Some(self.finish_sink_ok_no_commit(
+                            batch.last_position,
+                            events.len() as u64,
+                        ));
                     }
                     Err(e) => {
-                        last = self.fail_or_skip_no_feed(batch.batch_id, batch.last_position, e)?;
+                        last = self.finish_sink_err_no_commit(
+                            batch.batch_id,
+                            batch.last_position,
+                            e,
+                        )?;
                     }
                 },
                 Err(e) => {
-                    last = self.fail_or_skip_no_feed(batch.batch_id, batch.last_position, e)?;
+                    last = self.finish_sink_err_no_commit(
+                        batch.batch_id,
+                        batch.last_position,
+                        e,
+                    )?;
                 }
             }
         }
@@ -866,6 +998,7 @@ where
         self.completed.clear();
         self.buffer.clear();
         self.buffer_started = None;
+        self.sink_in_flight = false;
         self.join_set.abort_all();
         self.poisoned = true;
     }

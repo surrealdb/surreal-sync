@@ -21,12 +21,13 @@ pub enum FailurePolicy {
 /// Options for [`crate::run_change_feed`], [`crate::write_rows`], and
 /// [`crate::ApplyContext`].
 ///
-/// `max_in_flight` is only the **window size** (default 1). W=1 and W=16 share
-/// the same apply runtime: concurrent transforms, ordered sink + contiguous
-/// commit watermark.
+/// `max_in_flight` is the apply **window size** (default 1): concurrent
+/// transforms plus batches awaiting/in ordered sink. W=1 and W=16 share the
+/// same runtime — reads may overlap transforms and ordered writes; source
+/// commit stays after sink success.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyOpts {
-    /// Maximum number of batches transforming concurrently (window size).
+    /// Maximum batches in the apply window (transforming + awaiting/in sink).
     /// Default: 1.
     pub max_in_flight: usize,
     /// Accumulate this many changes before starting a transform batch.
