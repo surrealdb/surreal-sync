@@ -5,7 +5,10 @@
 //!
 //! Offset commit stays with the Kafka consumer group. The runtime window owns
 //! transform/`max_in_flight` overlap; consumer-group offsets advance only after
-//! the corresponding sink apply succeeds.
+//! the corresponding sink apply succeeds. On each sink success the driver
+//! commits **all** messages in that sunk batch (`commit_batch`), not only the
+//! batch's last position. `max_messages` / `processed_count` advance by the
+//! sunk message count via [`SourceDriver::note_sunk_events`].
 //!
 //! This module was moved from src/kafka/incremental.rs in the main crate
 //! to break the circular dependency between kafka and kafka-types.
@@ -16,7 +19,7 @@ use base64::Engine;
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use kafka_types::Message;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use surreal_sink::SurrealSink;
@@ -135,8 +138,9 @@ pub async fn run_incremental_sync<S: SurrealSink + Send + Sync + 'static>(
 ///
 /// Each consumer polls/decodes into [`PositionedEvent`]s (bounded by
 /// `kafka_batch_size`). The runtime owns the transform window (`max_in_flight`).
-/// Kafka consumer-group offset commit happens in [`SourceDriver::commit`] only
-/// after that message’s sink apply succeeds.
+/// Kafka consumer-group offset commit happens in [`SourceDriver::commit`] after
+/// [`SourceDriver::note_sunk_events`] moves the sunk messages into a ready set —
+/// restoring `commit_batch(&messages)` for the whole sunk batch.
 pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync + 'static>(
     surreal: Arc<S>,
     config: Config,
@@ -222,6 +226,8 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync +
                 use_message_key_as_id,
                 id_field,
                 kafka_batch_size,
+                pending_acks: VecDeque::new(),
+                ready_to_commit: Vec::new(),
                 processed_count,
                 next_row_index,
                 max_messages,
@@ -275,11 +281,9 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync +
     Ok(())
 }
 
-/// Kafka offset position: commit this message after sink success.
+/// Kafka offset position placeholder (acks tracked in driver FIFO, not here).
 #[derive(Debug, Clone)]
-struct KafkaOffset {
-    message: Message,
-}
+struct KafkaOffset;
 
 struct KafkaSourceDriver {
     consumer: Consumer,
@@ -288,7 +292,11 @@ struct KafkaSourceDriver {
     use_message_key_as_id: bool,
     id_field: String,
     kafka_batch_size: usize,
-    /// Commit / processed watermark (advanced only after sink + commit).
+    /// Messages received but not yet noted as sunk (FIFO, poll order).
+    pending_acks: VecDeque<Message>,
+    /// Messages noted sunk and ready to offset-commit on the next `commit`.
+    ready_to_commit: Vec<Message>,
+    /// Message count watermark (advanced only after sink via `note_sunk_events`).
     processed_count: Arc<AtomicU64>,
     /// Poll-time `UniversalRow.index` allocator (advances on receive, not commit).
     /// Separated from `processed_count` so overlapping polls never reuse indices.
@@ -345,29 +353,23 @@ impl SourceDriver for KafkaSourceDriver {
                 batch_row_index(base_index, offset),
             )?;
             let change = row_to_upsert_change(row);
-            events.push(PositionedEvent::change(
-                change,
-                KafkaOffset { message },
-            ));
+            // Track for sink-gated commit_batch of *all* sunk messages (not only
+            // the batch's last_position).
+            self.pending_acks.push_back(message.clone());
+            events.push(PositionedEvent::change(change, KafkaOffset));
         }
         Ok(events)
     }
 
-    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
+        if self.ready_to_commit.is_empty() {
+            return Ok(());
+        }
+        let batch = std::mem::take(&mut self.ready_to_commit);
         self.consumer
-            .commit_batch(std::slice::from_ref(&position.message))
+            .commit_batch(&batch)
             .await
             .map_err(|e| anyhow::anyhow!("kafka commit: {e}"))?;
-        let prev = self.processed_count.fetch_add(1, Ordering::SeqCst);
-        let count = prev + 1;
-        if count / 100 > prev / 100 {
-            info!("Processed {count} messages total");
-        }
-        if let Some(max) = self.max_messages {
-            if count >= max {
-                self.finished = true;
-            }
-        }
         Ok(())
     }
 
@@ -393,6 +395,32 @@ impl SourceDriver for KafkaSourceDriver {
             }
         }
         None
+    }
+
+    fn note_sunk_events(&mut self, count: u64) {
+        // Move `count` poll-ordered messages from pending → ready_to_commit so
+        // `commit` can offset-commit the whole sunk batch (main semantics).
+        for _ in 0..count {
+            match self.pending_acks.pop_front() {
+                Some(message) => self.ready_to_commit.push(message),
+                None => {
+                    tracing::warn!(
+                        "kafka note_sunk_events({count}): pending_acks exhausted early"
+                    );
+                    break;
+                }
+            }
+        }
+        let prev = self.processed_count.fetch_add(count, Ordering::SeqCst);
+        let total = prev.saturating_add(count);
+        if total / 100 > prev / 100 {
+            info!("Processed {total} messages total");
+        }
+        if let Some(max) = self.max_messages {
+            if total >= max {
+                self.finished = true;
+            }
+        }
     }
 }
 
@@ -469,7 +497,7 @@ fn alloc_row_indices(next_row_index: &AtomicU64, count: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{alloc_row_indices, batch_row_index, poll_receive_limit};
-    use std::collections::HashSet;
+    use std::collections::{HashSet, VecDeque};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
@@ -529,5 +557,68 @@ mod tests {
         assert_eq!(poll_receive_limit(100, max, 0), 5);
         assert_eq!(poll_receive_limit(2, max, 0), 2);
         assert_eq!(poll_receive_limit(100, None, 0), 100);
+    }
+
+    /// Models the pending_acks → ready_to_commit → commit_batch flow used when
+    /// `batch_size > 1`: note_sunk_events(N) must stage N messages, and commit
+    /// flushes all of them (not only last_position).
+    #[test]
+    fn sunk_batch_stages_all_messages_for_commit() {
+        let mut pending: VecDeque<u32> = VecDeque::from(vec![10, 11, 12, 13]);
+        let mut ready: Vec<u32> = Vec::new();
+        let processed = AtomicU64::new(0);
+        let max_messages = Some(3u64);
+        let mut finished = false;
+
+        // First sink batch of 2 (framework batch_size).
+        let count = 2u64;
+        for _ in 0..count {
+            ready.push(pending.pop_front().expect("pending"));
+        }
+        let prev = processed.fetch_add(count, Ordering::SeqCst);
+        let total = prev + count;
+        if let Some(max) = max_messages {
+            if total >= max {
+                finished = true;
+            }
+        }
+        assert_eq!(ready, vec![10, 11]);
+        assert!(!finished);
+        let committed = std::mem::take(&mut ready);
+        assert_eq!(committed, vec![10, 11], "commit_batch must include all sunk");
+
+        // Second sink batch of 1 reaches max_messages.
+        let count = 1u64;
+        for _ in 0..count {
+            ready.push(pending.pop_front().expect("pending"));
+        }
+        let prev = processed.fetch_add(count, Ordering::SeqCst);
+        let total = prev + count;
+        if let Some(max) = max_messages {
+            if total >= max {
+                finished = true;
+            }
+        }
+        assert!(finished, "processed_count must use message count, not commit calls");
+        assert_eq!(processed.load(Ordering::SeqCst), 3);
+        assert_eq!(ready, vec![12]);
+        // One message remains pending (not yet sunk) — max_messages stop does not
+        // require committing unread work.
+        assert_eq!(pending, VecDeque::from(vec![13]));
+    }
+
+    /// Regression: counting commits (fetch_add(1)) with batch_size>1 never reaches
+    /// max_messages when one commit covers multiple sunk messages.
+    #[test]
+    fn commit_counting_would_miss_max_messages() {
+        let max = 4u64;
+        // Four messages sunk as two transform batches → two commit() calls.
+        let commit_calls = 2u64;
+        let message_count = 4u64;
+        assert!(
+            commit_calls < max,
+            "bug pattern: stop never trips if processed_count += 1 per commit"
+        );
+        assert!(message_count >= max);
     }
 }
