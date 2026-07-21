@@ -227,10 +227,18 @@ async fn write_rows_through_external_mutate() {
     write_rows(&sink, &pipeline, vec![row], &opts)
         .await
         .unwrap();
-    let written = sink.rows_written();
-    assert_eq!(written.len(), 1);
-    match written[0][0].get_field("name") {
-        Some(UniversalValue::VarChar { value, .. }) => assert_eq!(value, "mutated"),
+    // Non-identity write_rows routes through ApplyContext (row→change), so
+    // assert on applied changes rather than write_universal_rows batches.
+    let applied = sink.applied();
+    assert_eq!(applied.len(), 1);
+    let name = applied[0]
+        .data
+        .as_ref()
+        .unwrap()
+        .get("name")
+        .expect("name field");
+    match name {
+        UniversalValue::VarChar { value, .. } => assert_eq!(value, "mutated"),
         other => panic!("unexpected: {other:?}"),
     }
 }
@@ -240,11 +248,13 @@ async fn pipeline_from_config_spawns_external() {
     let bin = env!("CARGO_BIN_EXE_sync-transform-fixture-worker");
     let toml = format!(
         r#"
-[[transforms]]
-type = "external"
+[pipeline]
 batch_size = 1
-stdin.mode = "persistent"
-stdin.command = [{bin:?}, "echo"]
+
+[[transforms]]
+type = "command"
+mode = "persistent"
+command = [{bin:?}, "echo"]
 "#
     );
     let cfg = sync_transform::parse_transforms_toml(&toml).unwrap();
@@ -261,6 +271,123 @@ stdin.command = [{bin:?}, "echo"]
         .unwrap();
     assert_eq!(sink.applied().len(), 1);
     assert_eq!(feed.commits, vec![10]);
+}
+
+#[tokio::test]
+async fn two_command_stages_daisy_chain_distinct_workers() {
+    let bin = env!("CARGO_BIN_EXE_sync-transform-fixture-worker");
+    let toml = format!(
+        r#"
+[pipeline]
+batch_size = 1
+
+[[transforms]]
+type = "command"
+mode = "persistent"
+command = [{bin:?}, "echo"]
+stdio.framer = "ndjson"
+
+[[transforms]]
+type = "command"
+mode = "persistent"
+command = [{bin:?}, "mutate"]
+stdio.framer = "ndjson"
+"#
+    );
+    let cfg = sync_transform::parse_transforms_toml(&toml).unwrap();
+    assert_eq!(cfg.stages.len(), 2);
+    let pipeline = Pipeline::from_config(&cfg).unwrap();
+    assert_eq!(pipeline.len(), 2);
+    let opts = ApplyOpts::from_transforms_config(&cfg);
+
+    let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 10)]);
+    let sink = RecordingSink::new();
+    run_change_feed(&mut feed, &sink, &pipeline, &opts)
+        .await
+        .unwrap();
+    assert_eq!(sink.applied().len(), 1);
+    let applied = sink.applied();
+    let name = applied[0]
+        .data
+        .as_ref()
+        .unwrap()
+        .get("name")
+        .expect("name field");
+    match name {
+        UniversalValue::VarChar { value, .. } => assert_eq!(value, "mutated"),
+        other => panic!("expected mutated name, got {other:?}"),
+    }
+    assert_eq!(feed.commits, vec![10]);
+}
+
+#[tokio::test]
+async fn per_stage_retry_recovers_from_framed_error() {
+    let bin = env!("CARGO_BIN_EXE_sync-transform-fixture-worker");
+    let toml = format!(
+        r#"
+[pipeline]
+batch_size = 1
+
+[[transforms]]
+type = "command"
+mode = "persistent"
+command = [{bin:?}, "error-once"]
+stdio.framer = "ndjson"
+retry.max_attempts = 3
+retry.initial_backoff = "1ms"
+retry.max_backoff = "5ms"
+retry.jitter = false
+"#
+    );
+    let cfg = sync_transform::parse_transforms_toml(&toml).unwrap();
+    let pipeline = Pipeline::from_config(&cfg).unwrap();
+    let opts = ApplyOpts::from_transforms_config(&cfg);
+
+    let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 10)]);
+    let sink = RecordingSink::new();
+    run_change_feed(&mut feed, &sink, &pipeline, &opts)
+        .await
+        .unwrap();
+    assert_eq!(sink.applied().len(), 1);
+    assert_eq!(feed.commits, vec![10]);
+}
+
+#[tokio::test]
+async fn per_stage_retry_exhausted_fails_batch() {
+    let bin = env!("CARGO_BIN_EXE_sync-transform-fixture-worker");
+    // bad-batch-id fails every exchange; retries should exhaust then fail.
+    let toml = format!(
+        r#"
+[pipeline]
+batch_size = 1
+failure_policy = "fail"
+
+[[transforms]]
+type = "command"
+mode = "persistent"
+command = [{bin:?}, "bad-batch-id"]
+retry.max_attempts = 2
+retry.initial_backoff = "1ms"
+retry.max_backoff = "2ms"
+retry.jitter = false
+"#
+    );
+    let cfg = sync_transform::parse_transforms_toml(&toml).unwrap();
+    let pipeline = Pipeline::from_config(&cfg).unwrap();
+    let opts = ApplyOpts::from_transforms_config(&cfg);
+
+    let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 10)]);
+    let sink = RecordingSink::new();
+    let err = run_change_feed(&mut feed, &sink, &pipeline, &opts)
+        .await
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("batch_id") || msg.contains("attempt"),
+        "unexpected: {msg}"
+    );
+    assert!(sink.applied().is_empty());
+    assert!(feed.commits.is_empty());
 }
 
 // Silence unused when test-support feature shapes differ.

@@ -2,11 +2,19 @@
 //!
 //! Empty / missing `[[transforms]]` yields an identity [`Pipeline`] (no stage
 //! dispatch via [`Pipeline::is_identity`]). A lone `type = "passthrough"` stage
-//! is collapsed to the same empty pipeline. Operators configure `external`
+//! is collapsed to the same empty pipeline. Operators configure `command`
 //! stages only — do not list `passthrough` alongside them.
+//!
+//! # Schema overview
+//!
+//! - **`[pipeline]`** — window / apply-runtime options shared by the whole
+//!   sync (`batch_size`, `max_in_flight`, `failure_policy`, …). Named
+//!   `pipeline` (not `apply`) so it is not confused with SurrealDB sink settings.
+//! - **`[[transforms]]`** — ordered daisy-chained stages. Each `type = "command"`
+//!   entry owns its own argv, stdio framer, timeout, and retry/backoff.
 
 use crate::apply::{ApplyOpts, FailurePolicy};
-use crate::external::{ChildStdioMode, ExternalTransform};
+use crate::external::{ChildStdioMode, ExternalTransform, RetryPolicy};
 use crate::pipeline::Pipeline;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
@@ -16,64 +24,73 @@ use std::time::Duration;
 /// Validated transform pipeline configuration (from TOML).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TransformsConfig {
+    /// Shared window / failure options (from `[pipeline]`).
+    pub pipeline: PipelineSection,
     /// Real stages after collapsing passthrough-only entries.
     pub stages: Vec<ConfiguredStage>,
 }
 
-/// One configured pipeline stage (passthrough never appears here).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfiguredStage {
-    /// Child-stdio external worker.
-    External(ExternalStageConfig),
-}
-
-/// External stage settings from TOML.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExternalStageConfig {
+/// Pipeline-wide apply-window options (`[pipeline]` in TOML).
+///
+/// These are **not** SurrealDB sink settings — they control how surreal-sync
+/// batches source events and overlaps transform work before ordered sink apply.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PipelineSection {
     /// Override for [`ApplyOpts::failure_policy`] when set.
     pub failure_policy: Option<FailurePolicy>,
     /// Override for [`ApplyOpts::batch_size`] when set.
     pub batch_size: Option<usize>,
     /// Override for [`ApplyOpts::batch_max_wait`] when set.
     pub batch_max_wait: Option<Duration>,
-    /// Override for [`ApplyOpts::timeout`] when set.
+    /// Outer whole-pipeline transform timeout (covers all stages + retries).
     pub timeout: Option<Duration>,
     /// Override for [`ApplyOpts::max_in_flight`] when set.
     pub max_in_flight: Option<usize>,
-    /// Transport kind (v1: stdin only).
-    pub transport: TransportKind,
-    /// Child-stdio settings.
-    pub stdin: StdinConfig,
 }
 
-/// Supported external transports (v1: child-process stdio only).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TransportKind {
-    /// Child-process stdin/stdout pipes (`transport = "stdin"`).
-    #[default]
-    Stdin,
+/// One configured pipeline stage (passthrough never appears here).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfiguredStage {
+    /// Spawn a child worker and speak framed stdio (`type = "command"`).
+    Command(CommandStageConfig),
+}
+
+/// Command-stage settings from TOML (`type = "command"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandStageConfig {
+    /// Argv to spawn (required).
+    pub command: Vec<String>,
+    /// Child lifecycle: persistent (default) or transient.
+    pub mode: ChildStdioMode,
+    /// Child-stdio framing settings.
+    pub stdio: StdioConfig,
+    /// Per-exchange timeout for this stage (optional).
+    pub timeout: Option<Duration>,
+    /// Per-stage retry/backoff (optional; default is a single attempt).
+    pub retry: RetryPolicy,
+}
+
+/// Child-stdio framing (`stdio.*` under a command stage).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StdioConfig {
+    pub framer: FramerKind,
 }
 
 /// Supported wire framers (v1: NDJSON only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FramerKind {
-    /// Newline-delimited JSON (`stdin.framer = "ndjson"`).
+    /// Newline-delimited JSON (`stdio.framer = "ndjson"`).
     #[default]
     Ndjson,
-}
-
-/// Child-stdio worker settings.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StdinConfig {
-    pub mode: ChildStdioMode,
-    pub command: Vec<String>,
-    pub framer: FramerKind,
 }
 
 impl TransformsConfig {
     /// Empty identity configuration.
     pub fn identity() -> Self {
-        Self { stages: Vec::new() }
+        Self {
+            pipeline: PipelineSection::default(),
+            stages: Vec::new(),
+        }
     }
 
     /// Whether this config yields an empty / identity pipeline.
@@ -115,28 +132,24 @@ pub fn load_pipeline_and_opts(path: impl AsRef<Path>) -> Result<(Pipeline, Apply
 }
 
 impl ApplyOpts {
-    /// Derive apply options from transform config (defaults when identity / unset).
-    ///
-    /// When multiple external stages set the same field, the **last** wins.
+    /// Derive apply options from `[pipeline]` (defaults when unset).
     pub fn from_transforms_config(cfg: &TransformsConfig) -> Self {
         let mut opts = ApplyOpts::default();
-        for stage in &cfg.stages {
-            let ConfiguredStage::External(ext) = stage;
-            if let Some(policy) = ext.failure_policy {
-                opts.failure_policy = policy;
-            }
-            if let Some(n) = ext.batch_size {
-                opts.batch_size = n.max(1);
-            }
-            if let Some(d) = ext.batch_max_wait {
-                opts.batch_max_wait = d;
-            }
-            if let Some(d) = ext.timeout {
-                opts.timeout = d;
-            }
-            if let Some(n) = ext.max_in_flight {
-                opts.max_in_flight = n.max(1);
-            }
+        let p = &cfg.pipeline;
+        if let Some(policy) = p.failure_policy {
+            opts.failure_policy = policy;
+        }
+        if let Some(n) = p.batch_size {
+            opts.batch_size = n.max(1);
+        }
+        if let Some(d) = p.batch_max_wait {
+            opts.batch_max_wait = d;
+        }
+        if let Some(d) = p.timeout {
+            opts.timeout = d;
+        }
+        if let Some(n) = p.max_in_flight {
+            opts.max_in_flight = n.max(1);
         }
         opts
     }
@@ -146,27 +159,23 @@ impl Pipeline {
     /// Build a pipeline from validated config.
     ///
     /// Empty config → identity ([`is_identity`](Self::is_identity) true).
-    /// External stages spawn child workers (persistent) or store argv (transient).
-    /// Both modes resolve `stdin.command[0]` at config time so bad argv fails
+    /// Command stages spawn child workers (persistent) or store argv (transient).
+    /// Both modes resolve `command[0]` at config time so bad argv fails
     /// fast (transient would otherwise only fail on the first batch).
     pub fn from_config(cfg: &TransformsConfig) -> Result<Self> {
         let mut pipeline = Pipeline::new();
         for stage in &cfg.stages {
             match stage {
-                ConfiguredStage::External(ext) => {
-                    if ext.transport != TransportKind::Stdin {
-                        bail!("unsupported transform transport (v1 supports stdin only)");
+                ConfiguredStage::Command(cmd) => {
+                    if cmd.stdio.framer != FramerKind::Ndjson {
+                        bail!("unsupported stdio.framer (v1 supports ndjson only)");
                     }
-                    if ext.stdin.framer != FramerKind::Ndjson {
-                        bail!("unsupported stdin.framer (v1 supports ndjson only)");
-                    }
-                    ensure_command_resolvable(&ext.stdin.command)
-                        .context("stdin.command not resolvable at config load")?;
-                    let external = ExternalTransform::child_stdio(
-                        ext.stdin.mode,
-                        ext.stdin.command.clone(),
-                    )
-                    .context("create external transform from config")?;
+                    ensure_command_resolvable(&cmd.command)
+                        .context("command not resolvable at config load")?;
+                    let external = ExternalTransform::child_stdio(cmd.mode, cmd.command.clone())
+                        .context("create command transform from config")?
+                        .with_timeout(cmd.timeout)
+                        .with_retry(cmd.retry.clone());
                     pipeline.push_external(external);
                 }
             }
@@ -175,13 +184,13 @@ impl Pipeline {
     }
 }
 
-/// Fail fast when `stdin.command[0]` is missing from PATH / filesystem.
+/// Fail fast when `command[0]` is missing from PATH / filesystem.
 ///
 /// Persistent workers also fail on spawn; this catches transient mode before
 /// the first batch and gives a clearer error for both modes.
 pub fn ensure_command_resolvable(command: &[String]) -> Result<()> {
     if command.is_empty() {
-        bail!("stdin.command must not be empty");
+        bail!("command must not be empty");
     }
     let program = &command[0];
     let path = std::path::Path::new(program);
@@ -191,7 +200,7 @@ pub fn ensure_command_resolvable(command: &[String]) -> Result<()> {
     // Absolute / relative path that isn't a file → do not fall through to PATH.
     if program.contains('/') || program.contains('\\') {
         bail!(
-            "stdin.command program not found as a file path: {program:?} \
+            "command program not found as a file path: {program:?} \
              (full argv: {command:?})"
         );
     }
@@ -212,7 +221,7 @@ pub fn ensure_command_resolvable(command: &[String]) -> Result<()> {
         }
     }
     bail!(
-        "stdin.command program not found on PATH: {program:?} \
+        "command program not found on PATH: {program:?} \
          (full argv: {command:?})"
     );
 }
@@ -268,33 +277,45 @@ pub fn parse_humantime(s: &str) -> Result<Duration> {
 #[derive(Debug, Deserialize)]
 struct RawTransformsFile {
     #[serde(default)]
+    pipeline: RawPipeline,
+    #[serde(default)]
     transforms: Vec<RawStage>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPipeline {
+    #[serde(default)]
+    failure_policy: Option<RawFailurePolicy>,
+    #[serde(default)]
+    batch_size: Option<usize>,
+    #[serde(default)]
+    batch_max_wait: Option<String>,
+    #[serde(default)]
+    timeout: Option<String>,
+    #[serde(default)]
+    max_in_flight: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RawStage {
     Passthrough {},
-    External {
-        #[serde(default)]
-        failure_policy: Option<RawFailurePolicy>,
-        #[serde(default)]
-        batch_size: Option<usize>,
-        #[serde(default)]
-        batch_max_wait: Option<String>,
-        #[serde(default)]
-        timeout: Option<String>,
-        #[serde(default)]
-        max_in_flight: Option<usize>,
-        #[serde(default = "default_transport")]
-        transport: String,
-        #[serde(default)]
-        stdin: RawStdin,
-    },
+    Command(RawCommandStage),
 }
 
-fn default_transport() -> String {
-    "stdin".to_string()
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCommandStage {
+    command: Option<Vec<String>>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    timeout: Option<String>,
+    #[serde(default)]
+    stdio: RawStdio,
+    #[serde(default)]
+    retry: RawRetry,
 }
 
 #[derive(Debug, Deserialize)]
@@ -305,19 +326,28 @@ enum RawFailurePolicy {
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct RawStdin {
-    #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    command: Option<Vec<String>>,
+struct RawStdio {
     #[serde(default)]
     framer: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawRetry {
+    #[serde(default)]
+    max_attempts: Option<u32>,
+    #[serde(default)]
+    initial_backoff: Option<String>,
+    #[serde(default)]
+    max_backoff: Option<String>,
+    #[serde(default)]
+    jitter: Option<bool>,
 }
 
 impl TryFrom<RawTransformsFile> for TransformsConfig {
     type Error = anyhow::Error;
 
     fn try_from(raw: RawTransformsFile) -> Result<Self> {
+        let pipeline = validate_pipeline(raw.pipeline)?;
         let mut stages = Vec::new();
         for (i, stage) in raw.transforms.into_iter().enumerate() {
             match stage {
@@ -325,99 +355,33 @@ impl TryFrom<RawTransformsFile> for TransformsConfig {
                     // Optional/unnecessary for operators; skipped so a lone
                     // passthrough collapses to identity.
                 }
-                RawStage::External {
-                    failure_policy,
-                    batch_size,
-                    batch_max_wait,
-                    timeout,
-                    max_in_flight,
-                    transport,
-                    stdin,
-                } => {
-                    let stage = validate_external(
+                RawStage::Command(raw_cmd) => {
+                    let stage = validate_command(
                         i,
-                        RawExternalFields {
-                            failure_policy,
-                            batch_size,
-                            batch_max_wait,
-                            timeout,
-                            max_in_flight,
-                            transport,
-                            stdin,
+                        RawCommandFields {
+                            command: raw_cmd.command,
+                            mode: raw_cmd.mode,
+                            timeout: raw_cmd.timeout,
+                            stdio: raw_cmd.stdio,
+                            retry: raw_cmd.retry,
                         },
                     )?;
-                    stages.push(ConfiguredStage::External(stage));
+                    stages.push(ConfiguredStage::Command(stage));
                 }
             }
         }
-        Ok(TransformsConfig { stages })
+        Ok(TransformsConfig { pipeline, stages })
     }
 }
 
-struct RawExternalFields {
-    failure_policy: Option<RawFailurePolicy>,
-    batch_size: Option<usize>,
-    batch_max_wait: Option<String>,
-    timeout: Option<String>,
-    max_in_flight: Option<usize>,
-    transport: String,
-    stdin: RawStdin,
-}
-
-fn validate_external(index: usize, raw: RawExternalFields) -> Result<ExternalStageConfig> {
-    let ctx = || format!("transforms[{index}] (type = \"external\")");
-
-    let transport = match raw.transport.trim().to_ascii_lowercase().as_str() {
-        "stdin" => TransportKind::Stdin,
-        other => bail!("{}: unsupported transport {other:?} (v1 supports \"stdin\")", ctx()),
-    };
-
-    let command = raw
-        .stdin
-        .command
-        .filter(|c| !c.is_empty())
-        .with_context(|| format!("{}: stdin.command is required and must be non-empty", ctx()))?;
-
-    let mode = match raw
-        .stdin
-        .mode
-        .as_deref()
-        .unwrap_or("persistent")
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "persistent" => ChildStdioMode::Persistent,
-        "transient" => ChildStdioMode::Transient,
-        other => bail!(
-            "{}: unsupported stdin.mode {other:?} (expected \"persistent\" or \"transient\")",
-            ctx()
-        ),
-    };
-
-    let framer = match raw
-        .stdin
-        .framer
-        .as_deref()
-        .unwrap_or("ndjson")
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "ndjson" => FramerKind::Ndjson,
-        other => bail!(
-            "{}: unsupported stdin.framer {other:?} (v1 supports \"ndjson\")",
-            ctx()
-        ),
-    };
-
+fn validate_pipeline(raw: RawPipeline) -> Result<PipelineSection> {
+    let ctx = || "pipeline";
     if let Some(0) = raw.batch_size {
         bail!("{}: batch_size must be >= 1", ctx());
     }
     if let Some(0) = raw.max_in_flight {
         bail!("{}: max_in_flight must be >= 1", ctx());
     }
-
     let batch_max_wait = raw
         .batch_max_wait
         .as_deref()
@@ -430,24 +394,115 @@ fn validate_external(index: usize, raw: RawExternalFields) -> Result<ExternalSta
         .map(parse_humantime)
         .transpose()
         .with_context(|| format!("{}: invalid timeout", ctx()))?;
-
     let failure_policy = raw.failure_policy.map(|p| match p {
         RawFailurePolicy::Fail => FailurePolicy::Fail,
         RawFailurePolicy::Skip => FailurePolicy::Skip,
     });
-
-    Ok(ExternalStageConfig {
+    Ok(PipelineSection {
         failure_policy,
         batch_size: raw.batch_size,
         batch_max_wait,
         timeout,
         max_in_flight: raw.max_in_flight,
-        transport,
-        stdin: StdinConfig {
-            mode,
-            command,
-            framer,
-        },
+    })
+}
+
+struct RawCommandFields {
+    command: Option<Vec<String>>,
+    mode: Option<String>,
+    timeout: Option<String>,
+    stdio: RawStdio,
+    retry: RawRetry,
+}
+
+fn validate_command(index: usize, raw: RawCommandFields) -> Result<CommandStageConfig> {
+    let ctx = || format!("transforms[{index}] (type = \"command\")");
+
+    let command = raw
+        .command
+        .filter(|c| !c.is_empty())
+        .with_context(|| format!("{}: command is required and must be non-empty", ctx()))?;
+
+    let mode = match raw
+        .mode
+        .as_deref()
+        .unwrap_or("persistent")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "persistent" => ChildStdioMode::Persistent,
+        "transient" => ChildStdioMode::Transient,
+        other => bail!(
+            "{}: unsupported mode {other:?} (expected \"persistent\" or \"transient\")",
+            ctx()
+        ),
+    };
+
+    let framer = match raw
+        .stdio
+        .framer
+        .as_deref()
+        .unwrap_or("ndjson")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "ndjson" => FramerKind::Ndjson,
+        other => bail!(
+            "{}: unsupported stdio.framer {other:?} (v1 supports \"ndjson\")",
+            ctx()
+        ),
+    };
+
+    let timeout = raw
+        .timeout
+        .as_deref()
+        .map(parse_humantime)
+        .transpose()
+        .with_context(|| format!("{}: invalid timeout", ctx()))?;
+
+    let retry = validate_retry(&ctx, raw.retry)?;
+
+    Ok(CommandStageConfig {
+        command,
+        mode,
+        stdio: StdioConfig { framer },
+        timeout,
+        retry,
+    })
+}
+
+fn validate_retry(ctx: &impl Fn() -> String, raw: RawRetry) -> Result<RetryPolicy> {
+    let max_attempts = raw.max_attempts.unwrap_or(1);
+    if max_attempts == 0 {
+        bail!("{}: retry.max_attempts must be >= 1", ctx());
+    }
+    let initial_backoff = raw
+        .initial_backoff
+        .as_deref()
+        .map(parse_humantime)
+        .transpose()
+        .with_context(|| format!("{}: invalid retry.initial_backoff", ctx()))?
+        .unwrap_or(Duration::from_millis(200));
+    let max_backoff = raw
+        .max_backoff
+        .as_deref()
+        .map(parse_humantime)
+        .transpose()
+        .with_context(|| format!("{}: invalid retry.max_backoff", ctx()))?
+        .unwrap_or(Duration::from_secs(30));
+    if max_backoff < initial_backoff {
+        bail!(
+            "{}: retry.max_backoff ({max_backoff:?}) must be >= retry.initial_backoff ({initial_backoff:?})",
+            ctx()
+        );
+    }
+    Ok(RetryPolicy {
+        max_attempts,
+        initial_backoff,
+        max_backoff,
+        jitter: raw.jitter.unwrap_or(true),
     })
 }
 
@@ -506,91 +561,156 @@ type = "passthrough"
     }
 
     #[test]
-    fn external_only_parses_defaults() {
+    fn command_only_parses_defaults() {
         let cfg = parse_transforms_toml(
             r#"
 [[transforms]]
-type = "external"
-stdin.command = ["kreuzberg-worker"]
+type = "command"
+command = ["kreuzberg-worker"]
 "#,
         )
         .unwrap();
         assert!(!cfg.is_identity());
         assert_eq!(cfg.stages.len(), 1);
-        let ConfiguredStage::External(ext) = &cfg.stages[0];
-        assert_eq!(ext.stdin.command, vec!["kreuzberg-worker"]);
-        assert_eq!(ext.stdin.mode, ChildStdioMode::Persistent);
-        assert_eq!(ext.stdin.framer, FramerKind::Ndjson);
-        assert_eq!(ext.transport, TransportKind::Stdin);
-        assert!(ext.failure_policy.is_none());
+        let ConfiguredStage::Command(cmd) = &cfg.stages[0];
+        assert_eq!(cmd.command, vec!["kreuzberg-worker"]);
+        assert_eq!(cmd.mode, ChildStdioMode::Persistent);
+        assert_eq!(cmd.stdio.framer, FramerKind::Ndjson);
+        assert!(cmd.timeout.is_none());
+        assert_eq!(cmd.retry.max_attempts, 1);
+        assert!(cfg.pipeline.failure_policy.is_none());
         let opts = ApplyOpts::from_transforms_config(&cfg);
         assert_eq!(opts, ApplyOpts::default());
     }
 
     #[test]
-    fn external_full_example_from_plan() {
+    fn command_full_example_with_pipeline() {
         let cfg = parse_transforms_toml(
             r#"
-[[transforms]]
-type = "external"
+[pipeline]
 failure_policy = "fail"
 batch_size = 1000
 batch_max_wait = "500ms"
-timeout = "60s"
+timeout = "120s"
 max_in_flight = 2
-transport = "stdin"
-stdin.mode = "persistent"
-stdin.command = ["kreuzberg-worker"]
-stdin.framer = "ndjson"
+
+[[transforms]]
+type = "command"
+command = ["kreuzberg-worker"]
+mode = "persistent"
+timeout = "60s"
+stdio.framer = "ndjson"
+retry.max_attempts = 5
+retry.initial_backoff = "200ms"
+retry.max_backoff = "30s"
+retry.jitter = false
 "#,
         )
         .unwrap();
-        let ConfiguredStage::External(ext) = &cfg.stages[0];
-        assert_eq!(ext.failure_policy, Some(FailurePolicy::Fail));
-        assert_eq!(ext.batch_size, Some(1000));
-        assert_eq!(ext.batch_max_wait, Some(Duration::from_millis(500)));
-        assert_eq!(ext.timeout, Some(Duration::from_secs(60)));
-        assert_eq!(ext.max_in_flight, Some(2));
-        assert_eq!(ext.stdin.mode, ChildStdioMode::Persistent);
+        assert_eq!(cfg.pipeline.failure_policy, Some(FailurePolicy::Fail));
+        assert_eq!(cfg.pipeline.batch_size, Some(1000));
+        assert_eq!(
+            cfg.pipeline.batch_max_wait,
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(cfg.pipeline.timeout, Some(Duration::from_secs(120)));
+        assert_eq!(cfg.pipeline.max_in_flight, Some(2));
+
+        let ConfiguredStage::Command(cmd) = &cfg.stages[0];
+        assert_eq!(cmd.mode, ChildStdioMode::Persistent);
+        assert_eq!(cmd.timeout, Some(Duration::from_secs(60)));
+        assert_eq!(cmd.retry.max_attempts, 5);
+        assert_eq!(cmd.retry.initial_backoff, Duration::from_millis(200));
+        assert_eq!(cmd.retry.max_backoff, Duration::from_secs(30));
+        assert!(!cmd.retry.jitter);
 
         let opts = ApplyOpts::from_transforms_config(&cfg);
         assert_eq!(opts.failure_policy, FailurePolicy::Fail);
         assert_eq!(opts.batch_size, 1000);
         assert_eq!(opts.batch_max_wait, Duration::from_millis(500));
-        assert_eq!(opts.timeout, Duration::from_secs(60));
+        assert_eq!(opts.timeout, Duration::from_secs(120));
         assert_eq!(opts.max_in_flight, 2);
     }
 
     #[test]
-    fn external_transient_and_skip() {
+    fn two_command_stages_keep_distinct_argv_and_retry() {
         let cfg = parse_transforms_toml(
             r#"
+[pipeline]
+batch_size = 50
+max_in_flight = 2
+
 [[transforms]]
-type = "external"
-failure_policy = "skip"
-stdin.mode = "transient"
-stdin.command = ["worker", "--flag"]
+type = "command"
+command = ["ocr-worker"]
+mode = "persistent"
+stdio.framer = "ndjson"
+retry.max_attempts = 5
+retry.initial_backoff = "200ms"
+
+[[transforms]]
+type = "command"
+command = ["embed-worker", "--model", "x"]
+mode = "transient"
+stdio.framer = "ndjson"
+timeout = "30s"
+retry.max_attempts = 3
+retry.initial_backoff = "100ms"
+retry.max_backoff = "5s"
+retry.jitter = false
 "#,
         )
         .unwrap();
-        let ConfiguredStage::External(ext) = &cfg.stages[0];
-        assert_eq!(ext.failure_policy, Some(FailurePolicy::Skip));
-        assert_eq!(ext.stdin.mode, ChildStdioMode::Transient);
-        assert_eq!(ext.stdin.command, vec!["worker", "--flag"]);
+        assert_eq!(cfg.stages.len(), 2);
+        let ConfiguredStage::Command(a) = &cfg.stages[0];
+        let ConfiguredStage::Command(b) = &cfg.stages[1];
+        assert_eq!(a.command, vec!["ocr-worker"]);
+        assert_eq!(a.mode, ChildStdioMode::Persistent);
+        assert_eq!(a.retry.max_attempts, 5);
+        assert_eq!(b.command, vec!["embed-worker", "--model", "x"]);
+        assert_eq!(b.mode, ChildStdioMode::Transient);
+        assert_eq!(b.timeout, Some(Duration::from_secs(30)));
+        assert_eq!(b.retry.max_attempts, 3);
+        assert!(!b.retry.jitter);
+
+        let opts = ApplyOpts::from_transforms_config(&cfg);
+        assert_eq!(opts.batch_size, 50);
+        assert_eq!(opts.max_in_flight, 2);
+        // Pipeline opts come only from [pipeline], not last stage.
+        assert_eq!(opts.failure_policy, FailurePolicy::Fail);
+    }
+
+    #[test]
+    fn command_transient_and_pipeline_skip() {
+        let cfg = parse_transforms_toml(
+            r#"
+[pipeline]
+failure_policy = "skip"
+
+[[transforms]]
+type = "command"
+mode = "transient"
+command = ["worker", "--flag"]
+"#,
+        )
+        .unwrap();
+        let ConfiguredStage::Command(cmd) = &cfg.stages[0];
+        assert_eq!(cmd.mode, ChildStdioMode::Transient);
+        assert_eq!(cmd.command, vec!["worker", "--flag"]);
         let opts = ApplyOpts::from_transforms_config(&cfg);
         assert_eq!(opts.failure_policy, FailurePolicy::Skip);
     }
 
     #[test]
-    fn passthrough_then_external_keeps_external_only() {
+    fn passthrough_then_command_keeps_command_only() {
         let cfg = parse_transforms_toml(
             r#"
 [[transforms]]
 type = "passthrough"
 
 [[transforms]]
-type = "external"
-stdin.command = ["w"]
+type = "command"
+command = ["w"]
 "#,
         )
         .unwrap();
@@ -603,12 +723,12 @@ stdin.command = ["w"]
         let err = parse_transforms_toml(
             r#"
 [[transforms]]
-type = "external"
+type = "command"
 "#,
         )
         .unwrap_err();
         assert!(
-            err.to_string().contains("stdin.command"),
+            err.to_string().contains("command"),
             "unexpected err: {err:#}"
         );
     }
@@ -618,14 +738,31 @@ type = "external"
         let err = parse_transforms_toml(
             r#"
 [[transforms]]
-type = "external"
-stdin.command = []
+type = "command"
+command = []
 "#,
         )
         .unwrap_err();
         assert!(
-            err.to_string().contains("stdin.command"),
+            err.to_string().contains("command"),
             "unexpected err: {err:#}"
+        );
+    }
+
+    #[test]
+    fn rejects_old_external_type() {
+        let err = parse_transforms_toml(
+            r#"
+[[transforms]]
+type = "external"
+command = ["w"]
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("external") || msg.contains("unknown") || msg.contains("did not match"),
+            "unexpected err: {msg}"
         );
     }
 
@@ -646,30 +783,13 @@ type = "wasm"
     }
 
     #[test]
-    fn rejects_bad_transport() {
-        let err = parse_transforms_toml(
-            r#"
-[[transforms]]
-type = "external"
-transport = "http"
-stdin.command = ["w"]
-"#,
-        )
-        .unwrap_err();
-        assert!(
-            err.to_string().contains("transport"),
-            "unexpected err: {err:#}"
-        );
-    }
-
-    #[test]
     fn rejects_bad_framer() {
         let err = parse_transforms_toml(
             r#"
 [[transforms]]
-type = "external"
-stdin.command = ["w"]
-stdin.framer = "protobuf"
+type = "command"
+command = ["w"]
+stdio.framer = "protobuf"
 "#,
         )
         .unwrap_err();
@@ -684,9 +804,9 @@ stdin.framer = "protobuf"
         let err = parse_transforms_toml(
             r#"
 [[transforms]]
-type = "external"
-stdin.command = ["w"]
-stdin.mode = "always"
+type = "command"
+command = ["w"]
+mode = "always"
 "#,
         )
         .unwrap_err();
@@ -697,10 +817,12 @@ stdin.mode = "always"
     fn rejects_bad_failure_policy() {
         let err = parse_transforms_toml(
             r#"
-[[transforms]]
-type = "external"
+[pipeline]
 failure_policy = "retry"
-stdin.command = ["w"]
+
+[[transforms]]
+type = "command"
+command = ["w"]
 "#,
         )
         .unwrap_err();
@@ -715,10 +837,12 @@ stdin.command = ["w"]
     fn rejects_zero_batch_size() {
         let err = parse_transforms_toml(
             r#"
-[[transforms]]
-type = "external"
+[pipeline]
 batch_size = 0
-stdin.command = ["w"]
+
+[[transforms]]
+type = "command"
+command = ["w"]
 "#,
         )
         .unwrap_err();
@@ -729,13 +853,32 @@ stdin.command = ["w"]
     }
 
     #[test]
-    fn rejects_invalid_duration() {
+    fn rejects_zero_retry_attempts() {
         let err = parse_transforms_toml(
             r#"
 [[transforms]]
-type = "external"
+type = "command"
+command = ["w"]
+retry.max_attempts = 0
+"#,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("max_attempts"),
+            "unexpected err: {err:#}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_duration() {
+        let err = parse_transforms_toml(
+            r#"
+[pipeline]
 timeout = "nope"
-stdin.command = ["w"]
+
+[[transforms]]
+type = "command"
+command = ["w"]
 "#,
         )
         .unwrap_err();
@@ -756,37 +899,13 @@ stdin.command = ["w"]
     }
 
     #[test]
-    fn later_external_opts_override() {
-        let cfg = parse_transforms_toml(
-            r#"
-[[transforms]]
-type = "external"
-batch_size = 10
-max_in_flight = 1
-stdin.command = ["a"]
-
-[[transforms]]
-type = "external"
-batch_size = 20
-failure_policy = "skip"
-stdin.command = ["b"]
-"#,
-        )
-        .unwrap();
-        let opts = ApplyOpts::from_transforms_config(&cfg);
-        assert_eq!(opts.batch_size, 20);
-        assert_eq!(opts.max_in_flight, 1);
-        assert_eq!(opts.failure_policy, FailurePolicy::Skip);
-    }
-
-    #[test]
     fn transient_missing_command_fails_at_config_time() {
         let cfg = parse_transforms_toml(
             r#"
 [[transforms]]
-type = "external"
-stdin.mode = "transient"
-stdin.command = ["/nonexistent/surreal-sync-transform-worker-xyz"]
+type = "command"
+mode = "transient"
+command = ["/nonexistent/surreal-sync-transform-worker-xyz"]
 "#,
         )
         .unwrap();
@@ -795,6 +914,24 @@ stdin.command = ["/nonexistent/surreal-sync-transform-worker-xyz"]
         assert!(
             msg.contains("not found") || msg.contains("resolvable"),
             "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn rejects_stage_level_pipeline_keys() {
+        let err = parse_transforms_toml(
+            r#"
+[[transforms]]
+type = "command"
+command = ["w"]
+batch_size = 10
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("batch_size") || msg.contains("unknown") || msg.contains("did not match"),
+            "unexpected err: {msg}"
         );
     }
 
@@ -822,7 +959,7 @@ stdin.command = ["/nonexistent/surreal-sync-transform-worker-xyz"]
             "surreal-sync-bad-transforms-{}.toml",
             std::process::id()
         ));
-        std::fs::write(&path, "[[transforms]]\ntype = \"external\"\nstdin.command = [\n")
+        std::fs::write(&path, "[[transforms]]\ntype = \"command\"\ncommand = [\n")
             .expect("write temp");
         let err = load_transforms_config(&path).expect_err("bad TOML must fail");
         let _ = std::fs::remove_file(&path);

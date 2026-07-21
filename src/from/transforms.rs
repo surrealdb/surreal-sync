@@ -120,9 +120,9 @@ mod tests {
             &path,
             r#"
 [[transforms]]
-type = "external"
-stdin.mode = "persistent"
-stdin.command = ["/nonexistent/surreal-sync-transform-worker-cli-xyz"]
+type = "command"
+mode = "persistent"
+command = ["/nonexistent/surreal-sync-transform-worker-cli-xyz"]
 "#,
         )
         .expect("write");

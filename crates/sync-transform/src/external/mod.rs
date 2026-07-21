@@ -12,8 +12,58 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
 use tokio::sync::Mutex;
+
+/// Per-stage retry/backoff for a command transform exchange.
+///
+/// `max_attempts = 1` (default) means no retry. Backoff grows exponentially
+/// from `initial_backoff` up to `max_backoff`. When `jitter` is true, each
+/// sleep is scaled by a deterministic factor in `[0.5, 1.5)` derived from the
+/// attempt number (no extra RNG dependency).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetryPolicy {
+    /// Total attempts including the first try (`>= 1`).
+    pub max_attempts: u32,
+    pub initial_backoff: Duration,
+    pub max_backoff: Duration,
+    pub jitter: bool,
+}
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 1,
+            initial_backoff: Duration::from_millis(200),
+            max_backoff: Duration::from_secs(30),
+            jitter: true,
+        }
+    }
+}
+
+impl RetryPolicy {
+    /// Delay before attempt `attempt` (1-based attempt that just failed).
+    pub fn backoff_after(&self, attempt: u32) -> Duration {
+        let shift = attempt.saturating_sub(1).min(16);
+        let base = self
+            .initial_backoff
+            .saturating_mul(1u32 << shift)
+            .min(self.max_backoff);
+        if !self.jitter {
+            return base;
+        }
+        // Deterministic-ish jitter without pulling in a RNG crate: mix attempt
+        // into a simple LCG over the duration nanos.
+        let nanos = base.as_nanos().max(1);
+        let mixed = nanos
+            .wrapping_mul(1103515245)
+            .wrapping_add(attempt as u128 * 12345);
+        let scale_permille = 500 + (mixed % 1000); // 500..=1499 → 0.5..=1.499
+        let jittered = nanos.saturating_mul(scale_permille) / 1000;
+        Duration::from_nanos(jittered.min(u128::from(u64::MAX)) as u64).min(self.max_backoff)
+    }
+}
 
 /// High bit set on the apply `batch_id` when an External stage issues a
 /// **relation** wire exchange that shares an apply batch with row changes.
@@ -56,6 +106,10 @@ struct ExternalInner {
     transport: Arc<dyn ExternalTransport>,
     /// batch_ids with a write outstanding / waiter in exchange_raw.
     outstanding: Mutex<HashSet<u64>>,
+    /// Optional per-exchange timeout (None = rely on apply-layer timeout only).
+    timeout: Option<Duration>,
+    /// Per-stage retry/backoff (default: single attempt).
+    retry: RetryPolicy,
 }
 
 impl std::fmt::Debug for ExternalTransform {
@@ -71,6 +125,37 @@ impl ExternalTransform {
             inner: Arc::new(ExternalInner {
                 transport,
                 outstanding: Mutex::new(HashSet::new()),
+                timeout: None,
+                retry: RetryPolicy::default(),
+            }),
+        }
+    }
+
+    /// Set per-exchange timeout for this stage (None clears it).
+    ///
+    /// Intended as a builder step at construction time (before the stage is
+    /// shared across in-flight batches).
+    pub fn with_timeout(self, timeout: Option<Duration>) -> Self {
+        Self {
+            inner: Arc::new(ExternalInner {
+                transport: Arc::clone(&self.inner.transport),
+                outstanding: Mutex::new(HashSet::new()),
+                timeout,
+                retry: self.inner.retry.clone(),
+            }),
+        }
+    }
+
+    /// Set per-stage retry/backoff policy.
+    ///
+    /// Intended as a builder step at construction time.
+    pub fn with_retry(self, retry: RetryPolicy) -> Self {
+        Self {
+            inner: Arc::new(ExternalInner {
+                transport: Arc::clone(&self.inner.transport),
+                outstanding: Mutex::new(HashSet::new()),
+                timeout: self.inner.timeout,
+                retry,
             }),
         }
     }
@@ -214,22 +299,73 @@ impl ExternalTransform {
         items: &[Vec<u8>],
         kind: WireItemKind,
     ) -> Result<WireResponse> {
-        self.inner
-            .transport
-            .write_request(batch_id, items, kind)
-            .await
-            .with_context(|| format!("write_request batch_id={batch_id}"))?;
+        let max_attempts = self.inner.retry.max_attempts.max(1);
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let result = self.exchange_once(batch_id, items, kind).await;
+            match result {
+                Ok(resp) => return Ok(resp),
+                Err(err) if attempt < max_attempts => {
+                    let delay = self.inner.retry.backoff_after(attempt);
+                    tracing::warn!(
+                        batch_id,
+                        attempt,
+                        max_attempts,
+                        ?delay,
+                        error = %err,
+                        "command transform exchange failed; retrying after backoff"
+                    );
+                    tokio::time::sleep(delay).await;
+                }
+                Err(err) => {
+                    return Err(err).with_context(|| {
+                        format!(
+                            "command transform failed after {attempt} attempt(s) \
+                             for batch_id={batch_id}"
+                        )
+                    });
+                }
+            }
+        }
+    }
 
-        let resp = self
-            .inner
-            .transport
-            .try_read_response(batch_id)
-            .await
-            .context("try_read_response")?
-            .ok_or_else(|| {
-                anyhow!("external transport returned no response for batch_id={batch_id}")
-            })?;
-        finish_response(batch_id, resp)
+    async fn exchange_once(
+        &self,
+        batch_id: u64,
+        items: &[Vec<u8>],
+        kind: WireItemKind,
+    ) -> Result<WireResponse> {
+        let fut = async {
+            self.inner
+                .transport
+                .write_request(batch_id, items, kind)
+                .await
+                .with_context(|| format!("write_request batch_id={batch_id}"))?;
+
+            let resp = self
+                .inner
+                .transport
+                .try_read_response(batch_id)
+                .await
+                .context("try_read_response")?
+                .ok_or_else(|| {
+                    anyhow!("external transport returned no response for batch_id={batch_id}")
+                })?;
+            finish_response(batch_id, resp)
+        };
+
+        if let Some(timeout) = self.inner.timeout {
+            tokio::time::timeout(timeout, fut)
+                .await
+                .map_err(|_| {
+                    anyhow!(
+                        "command transform timeout after {timeout:?} for batch_id={batch_id}"
+                    )
+                })?
+        } else {
+            fut.await
+        }
     }
 }
 

@@ -55,17 +55,18 @@ async fn test_csv_cli_transforms_config_mutate() -> Result<(), Box<dyn std::erro
 
     let transforms_toml = format!(
         r#"
-[[transforms]]
-type = "external"
+[pipeline]
 failure_policy = "fail"
 batch_size = 1
 batch_max_wait = "500ms"
 timeout = "60s"
 max_in_flight = 1
-transport = "stdin"
-stdin.mode = "persistent"
-stdin.command = ["{}", "mutate"]
-stdin.framer = "ndjson"
+
+[[transforms]]
+type = "command"
+mode = "persistent"
+command = ["{}", "mutate"]
+stdio.framer = "ndjson"
 "#,
         worker.display()
     );

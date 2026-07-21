@@ -15,10 +15,11 @@ surreal-sync still owns batching, applying docs to SurrealDB, and when the sourc
 | Capability | Status |
 |------------|--------|
 | No config → identity (docs pass through unchanged) | Available |
-| External worker over child-process stdio (NDJSON) | Available |
+| External worker over child-process stdio (NDJSON) | Available (`type = "command"`) |
 | `--transforms-config` on every `from *` sync path listed below | Available |
-| `failure_policy` `fail` (default) or `skip` | Available |
-| Overlapping transform window via `max_in_flight` | Available on CDC/`SourceDriver` paths |
+| `failure_policy` `fail` (default) or `skip` | Available (`[pipeline]`) |
+| Per-stage `retry` / backoff | Available on each `[[transforms]]` command stage |
+| Overlapping transform window via `max_in_flight` | Available on CDC/`SourceDriver` paths (`[pipeline]`) |
 | Full-sync / `write_rows` windowing when `max_in_flight > 1` | Available (same ApplyContext window) |
 
 ## What is not available yet
@@ -66,22 +67,27 @@ surreal-sync from mysql-binlog sync \
 
 Without `--transforms-config`, docs go source → SurrealDB unchanged. There is **no** transform stage dispatch (empty pipeline).
 
-### External-only config (no passthrough)
+### Command-worker config (no passthrough)
 
-Create `transforms.toml` with only your worker stage — do **not** add a `passthrough` entry:
+Create `transforms.toml` with only your worker stage(s) — do **not** add a `passthrough` entry:
 
 ```toml
-[[transforms]]
-type = "external"
+[pipeline]
 failure_policy = "fail"
 batch_size = 1000
 batch_max_wait = "500ms"
-timeout = "60s"
+timeout = "120s"
 max_in_flight = 1
-transport = "stdin"
-stdin.mode = "persistent"
-stdin.command = ["./enrich-worker"]
-stdin.framer = "ndjson"
+
+[[transforms]]
+type = "command"
+command = ["./enrich-worker"]
+mode = "persistent"
+timeout = "60s"
+stdio.framer = "ndjson"
+retry.max_attempts = 3
+retry.initial_backoff = "200ms"
+retry.max_backoff = "30s"
 ```
 
 ```bash
@@ -98,7 +104,40 @@ surreal-sync from mysql-binlog sync \
   --transforms-config transforms.toml
 ```
 
-`stdin.command[0]` must exist on `PATH` or as a file path; surreal-sync fails fast at config load if the program is missing.
+`command[0]` must exist on `PATH` or as a file path; surreal-sync fails fast at config load if the program is missing.
+
+### Daisy-chained stages (two commands)
+
+Each `[[transforms]]` entry is its own stage with its own argv, stdio framer, timeout, and retry policy. Stages run in listed order. Do **not** use `[[transforms.stdio]]` — that is not how TOML array-of-tables nesting works for multiple stages.
+
+```toml
+[pipeline]
+batch_size = 100
+max_in_flight = 2
+failure_policy = "fail"
+
+[[transforms]]
+type = "command"
+command = ["./ocr-worker"]
+mode = "persistent"
+timeout = "60s"
+stdio.framer = "ndjson"
+retry.max_attempts = 5
+retry.initial_backoff = "200ms"
+retry.max_backoff = "30s"
+
+[[transforms]]
+type = "command"
+command = ["./embed-worker", "--model", "text-embedding"]
+mode = "persistent"
+timeout = "30s"
+stdio.framer = "ndjson"
+retry.max_attempts = 3
+retry.initial_backoff = "100ms"
+retry.max_backoff = "10s"
+```
+
+v1 supports only `stdio.framer = "ndjson"`, but the framer is still **per stage** so future framers can differ across the chain.
 
 ## Configuration reference
 
@@ -109,44 +148,55 @@ surreal-sync from mysql-binlog sync \
 | No `--transforms-config` | Identity; no stage dispatch |
 | Empty / whitespace-only file, or `transforms = []` | Identity |
 | Lone `type = "passthrough"` | Collapses to identity (unnecessary for operators) |
-| One or more `type = "external"` stages | Those stages run in order |
+| One or more `type = "command"` stages | Those stages run in order |
 
-**Omit transforms entirely for “do nothing.”** **Omit `passthrough` when configuring `external`.** `passthrough` exists mainly for tests/library completeness, not as something you must write.
+**Omit transforms entirely for “do nothing.”** **Omit `passthrough` when configuring `command`.** `passthrough` exists mainly for tests/library completeness, not as something you must write.
 
-### `[[transforms]]` schema (`type = "external"`)
+### `[pipeline]` (window / failure — not sink settings)
+
+These options apply to the whole sync apply window. They are **not** SurrealDB sink settings — the name is `pipeline` so they are not confused with sink/`apply` APIs.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `type` | (required) | `"external"` (or unused `"passthrough"`) |
-| `failure_policy` | `"fail"` | `"fail"` or `"skip"` — see [Failure policy](#failure-policy) |
+| `failure_policy` | `"fail"` | `"fail"` or `"skip"` after a batch permanently fails transform or sink — see [Failure policy](#failure-policy) |
 | `batch_size` | `1000` | Changes/rows accumulated before starting a transform batch (`>= 1`) |
 | `batch_max_wait` | `"500ms"` | Flush a partial batch after this idle wait |
-| `timeout` | `"60s"` | Per-batch transform timeout |
+| `timeout` | `"60s"` | Outer timeout covering the full stage chain (including per-stage retries) |
 | `max_in_flight` | `1` | Transform window size (`>= 1`) — see [Tuning](#choosing-batch-size-timeouts-and-max_in_flight) |
-| `transport` | `"stdin"` | v1: child-process stdio only |
-| `stdin.mode` | `"persistent"` | `"persistent"` or `"transient"` |
-| `stdin.command` | (required) | Argv to spawn, e.g. `["./enrich-worker"]` or `["worker", "--flag"]` |
-| `stdin.framer` | `"ndjson"` | v1: NDJSON only |
+
+### `[[transforms]]` schema (`type = "command"`)
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `type` | (required) | `"command"` (or unused `"passthrough"`) |
+| `command` | (required) | Argv to spawn, e.g. `["./enrich-worker"]` or `["worker", "--flag"]` |
+| `mode` | `"persistent"` | `"persistent"` or `"transient"` |
+| `timeout` | (none) | Per-exchange timeout for **this** stage only |
+| `stdio.framer` | `"ndjson"` | Wire framer for this stage (v1: NDJSON only) |
+| `retry.max_attempts` | `1` | Total tries including the first (`1` = no retry) |
+| `retry.initial_backoff` | `"200ms"` | Backoff after the first failure |
+| `retry.max_backoff` | `"30s"` | Cap for exponential backoff |
+| `retry.jitter` | `true` | Scale each sleep by ~0.5–1.5× |
 
 Duration strings accept `ms`, `s`, `m`, `h` suffixes (case-insensitive), or a plain integer as seconds (`"500ms"`, `"60s"`, `"2m"`, `"1h"`, `"45"`).
 
-When multiple external stages set the same option, the **last** stage wins for apply opts (`batch_size`, `timeout`, etc.). Stages themselves still run in listed order.
+### Child stdio (`type = "command"`)
 
-### Child stdio (`transport = "stdin"`)
+A command stage spawns a worker and talks on **that process’s** stdin (requests) and stdout (responses) — not the surreal-sync CLI’s stdin. stderr is inherited for logs only (not framed control).
 
-`transport = "stdin"` means **the worker child’s** stdin/stdout pipes — not the surreal-sync CLI’s stdin. surreal-sync always `spawn`s `stdin.command`.
-
-| `stdin.mode` | Lifecycle |
-|--------------|-----------|
+| `mode` | Lifecycle |
+|--------|-----------|
 | `persistent` (default) | Spawn once at pipeline start; many batch exchanges on the same pipes |
 | `transient` | Spawn → one batch exchange → wait for exit → repeat per batch |
 
 Prefer `persistent` for real enrichment (avoids per-batch process startup). `transient` is useful for debugging/simple scripts; expect lower throughput. Overlap from `max_in_flight > 1` is much more useful with `persistent`.
 
+Per-stage `retry` re-runs the stdio exchange for that stage only (same `batch_id`) with exponential backoff. After attempts are exhausted, the batch fails and `[pipeline].failure_policy` applies (`fail` or `skip`). Checkpoint still advances only after SurrealDB sink success (or skip-commit).
 ## Choosing batch size, timeouts, and `max_in_flight`
 
-- **`batch_size` / `batch_max_wait`** — how large a batch becomes before transform starts. Larger batches amortize worker overhead; smaller batches reduce latency.
-- **`timeout`** — how long one transform exchange may take. On timeout the batch fails (see failure policy).
+- **`batch_size` / `batch_max_wait`** — how large a batch becomes before transform starts (`[pipeline]`). Larger batches amortize worker overhead; smaller batches reduce latency.
+- **`[pipeline].timeout`** — outer bound for the whole stage chain (including retries). Prefer per-stage `timeout` for individual workers.
+- **Per-stage `timeout` / `retry`** — how long one exchange may take on that stage, and how many times to retry with backoff before the batch fails.
 - **`max_in_flight`** — apply window size (default `1`). On **CDC / `SourceDriver` / long-lived file streams**, W=1 and W=16 share the **same** runtime: surreal-sync may transform several batches at once and continue polling while ordered sink writes are in flight; completions match by `batch_id`, then **sink apply and source commit stay strictly ordered**. A failed batch blocks commit of later ones; in-flight successors are discarded (never committed). Full-sync helpers (`write_rows` / `write_relations`) use that same window when `max_in_flight > 1` or the pipeline is non-identity; identity + W=1 stays on a bulk oneshot path.
 
 Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W. **Omit `--transforms-config`** → `ApplyOpts::identity()` (`batch_size = 1`, `max_in_flight = 1`); overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set).
@@ -216,7 +266,7 @@ This keeps resume from replaying past docs that never landed in SurrealDB, witho
 
 ### Whose pipes?
 
-surreal-sync **spawns** your `stdin.command` and talks on **that process’s** stdin (requests) and stdout (responses). Do not read from the surreal-sync CLI process’s stdin.
+surreal-sync **spawns** your `command` and talks on **that process’s** stdin (requests) and stdout (responses). Do not read from the surreal-sync CLI process’s stdin.
 
 ### NDJSON protocol
 
@@ -273,7 +323,7 @@ if __name__ == "__main__":
     main()
 ```
 
-Make it executable and point `stdin.command` at it. Item JSON is the serde shape of surreal-sync’s universal row/change documents (typed values under `fields` / `data`, etc.). Start by echoing; then mutate fields your enrichment needs.
+Make it executable and point `command` at it. Item JSON is the serde shape of surreal-sync’s universal row/change documents (typed values under `fields` / `data`, etc.). Start by echoing; then mutate fields your enrichment needs.
 
 ### Tips for enrichment tools
 
@@ -312,7 +362,7 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 
 | Symptom | What to check |
 |---------|----------------|
-| Worker not starting / config load fails | `stdin.command[0]` on `PATH` or as an existing file; argv non-empty; TOML parse errors |
+| Worker not starting / config load fails | `command[0]` on `PATH` or as an existing file; argv non-empty; TOML parse errors |
 | Timeouts | Raise `timeout`; check worker hangs; reduce `batch_size` or `max_in_flight` while debugging |
 | Bad NDJSON / wrong `batch_id` | Echo the request `batch_id`; flush stdout after each response; no extra stderr framing on stdout |
 | Sync stopped on failure | Default `failure_policy = "fail"` — fix the worker or sink, restart; checkpoint did not advance past the failed batch |

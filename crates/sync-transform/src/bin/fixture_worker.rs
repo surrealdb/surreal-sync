@@ -9,15 +9,18 @@
 //! - `mutate` — set `data.name` / `fields.name` text to `"mutated"`
 //! - `bad-batch-id` — respond with batch_id+1 (for mismatch tests)
 //! - `missing-batch-id` — respond with a header lacking batch_id
+//! - `error-once` — first response is a framed `error`; later responses echo
 
 use serde_json::{json, Value};
 use std::io::{self, BufRead, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn main() {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "echo".to_string());
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut lines = stdin.lock().lines();
+    let exchanges = AtomicUsize::new(0);
 
     while let Some(Ok(header_line)) = lines.next() {
         if header_line.trim().is_empty() {
@@ -52,17 +55,23 @@ fn main() {
             items.push(item);
         }
 
+        let n = exchanges.fetch_add(1, Ordering::SeqCst);
         let out_header = match mode.as_str() {
             "bad-batch-id" => json!({"batch_id": batch_id.saturating_add(1), "count": items.len()}),
             "missing-batch-id" => json!({"count": items.len()}),
+            "error-once" if n == 0 => {
+                json!({"batch_id": batch_id, "error": "fixture deliberate error"})
+            }
             _ => json!({"batch_id": batch_id, "count": items.len()}),
         };
 
         let header_str = serde_json::to_string(&out_header).expect("header");
         writeln!(stdout, "{header_str}").expect("write header");
-        for item in items {
-            let s = serde_json::to_string(&item).expect("item");
-            writeln!(stdout, "{s}").expect("write item");
+        if out_header.get("error").is_none() {
+            for item in items {
+                let s = serde_json::to_string(&item).expect("item");
+                writeln!(stdout, "{s}").expect("write item");
+            }
         }
         stdout.flush().expect("flush");
     }
