@@ -4,7 +4,7 @@
 
 This guide covers **trigger-based** sync (`surreal-sync from mysql`) when binlog is not an option: no replication privileges, managed MariaDB without binlog access, cannot enable ROW-format binlog, or policy constraints on the source. MariaDB speaks the MySQL wire protocol and supports every SQL construct surreal-sync relies on (triggers, `JSON_OBJECT`/`JSON_EXTRACT`, `information_schema`), so you use the `mysql` sub-command and the `mysql://` connection scheme against your MariaDB server. See the one behavioural nuance in [MariaDB notes](#mariadb-notes) below.
 
-Apply into SurrealDB goes through the [`sync-transform`](sync-pipeline.md) framework (`--transforms-config` optional; omit for identity).
+Optional transforms: pass `--transforms-config` with a TOML file. Omit the flag to leave rows unchanged. Details: [How sync works](sync-pipeline.md).
 
 > **Other strategies:** For the legacy sequential-snapshot workflow (inconsistent monolithic snapshot plus a separate incremental replay from t1), see [MySQL Legacy Full Sync](mysql/legacy.md) — the same guide applies to MariaDB (use your MariaDB `mysql://` connection string).
 

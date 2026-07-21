@@ -2,7 +2,7 @@
 
 The CSV source in surreal-sync imports CSV files in the local filesystem or S3 buckets into a SurrealDB table with automatic type detection and optional [record ID](https://surrealdb.com/docs/surrealql/datamodel/ids) generation.
 
-Apply into SurrealDB goes through the [`sync-transform`](sync-pipeline.md) framework (`--transforms-config` optional; omit for identity).
+Optional transforms: pass `--transforms-config` with a TOML file. Omit the flag to leave rows unchanged. Details: [How sync works](sync-pipeline.md).
 
 ## Usage
 

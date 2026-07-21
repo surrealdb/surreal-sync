@@ -2,7 +2,7 @@
 
 `surreal-sync from mongodb` as a sub-command to `surreal-sync` that exports MongoDB collections to SurrealDB tables.
 
-Apply into SurrealDB goes through the [`sync-transform`](sync-pipeline.md) framework (`--transforms-config` optional; omit for identity).
+Optional transforms: pass `--transforms-config` with a TOML file. Omit the flag to leave rows unchanged. Details: [How sync works](sync-pipeline.md).
 
 It supports inconsistent full syncs and consistent incremental syncs, and together provides ability to reproduce consistent snapshots from the source MongoDB collections onto the target SurrealDB tables.
 

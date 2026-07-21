@@ -2,7 +2,7 @@
 
 The Kafka source in surreal-sync allows you to import Kafka messages into SurrealDB. This is an **incremental-only source** that consumes messages from Kafka topics and syncs them to SurrealDB tables.
 
-Apply into SurrealDB goes through the [`sync-transform`](sync-pipeline.md) framework (`--transforms-config` optional; omit for identity).
+Optional transforms: pass `--transforms-config` with a TOML file. Omit the flag to leave rows unchanged. Details: [How sync works](sync-pipeline.md).
 
 ## How It Works
 
