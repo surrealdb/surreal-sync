@@ -129,6 +129,34 @@ async fn write_rows_identity_no_stage_dispatch() {
 }
 
 #[tokio::test]
+async fn write_rows_honors_max_in_flight_window() {
+    // Non-identity + W>1 must use ApplyContext (apply_universal_change), not the
+    // oneshot write_universal_rows barrier.
+    let mut pipeline = Pipeline::new();
+    pipeline.push_inplace(TagName);
+    let sink = RecordingSink::new();
+    let opts = opts_window(4).with_batch_size(1);
+    write_rows(&sink, &pipeline, vec![row(1), row(2), row(3)], &opts)
+        .await
+        .unwrap();
+    let applied = sink.applied();
+    assert_eq!(applied.len(), 3);
+    for change in &applied {
+        assert_eq!(
+            change.data.as_ref().unwrap().get("name"),
+            Some(&UniversalValue::VarChar {
+                value: "tagged".to_string(),
+                length: 64,
+            })
+        );
+    }
+    assert!(
+        sink.rows_written().is_empty(),
+        "windowed write_rows should apply changes, not bulk write_universal_rows"
+    );
+}
+
+#[tokio::test]
 async fn inplace_stages_mutate_before_sink() {
     let mut pipeline = Pipeline::new();
     pipeline.push_inplace(TagName);

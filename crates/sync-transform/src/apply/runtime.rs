@@ -27,6 +27,11 @@ use tracing::warn;
 ///
 /// Gates on [`BatchTransformer::is_identity`] so an empty pipeline is a pure
 /// move into the sink with no transform dispatch or timeout wrapper.
+///
+/// When `max_in_flight > 1` or the pipeline is non-identity, rows are applied
+/// through the same overlapping transform window as CDC (`ApplyContext`) so a
+/// slow transform cannot serialize an entire chunk. Identity + `max_in_flight
+/// == 1` keeps the bulk `write_universal_rows` oneshot path.
 pub async fn write_rows<S: SurrealSink>(
     sink: &S,
     pipeline: &Pipeline,
@@ -37,6 +42,9 @@ pub async fn write_rows<S: SurrealSink>(
 }
 
 /// Transform then `write_universal_relations`.
+///
+/// See [`write_rows`]: non-identity / `max_in_flight > 1` uses the overlapping
+/// apply window; identity + W=1 stays on the bulk oneshot path.
 pub async fn write_relations<S: SurrealSink>(
     sink: &S,
     pipeline: &Pipeline,
@@ -68,6 +76,9 @@ pub async fn apply_relation_changes<S: SurrealSink>(
 }
 
 /// Like [`apply_changes`] but accepts any [`BatchTransformer`] behind [`Arc`].
+///
+/// Honors `max_in_flight` / `batch_size` via [`ApplyContext`] unless identity and
+/// `max_in_flight == 1` (oneshot).
 pub async fn apply_changes_with<S, T>(
     sink: &S,
     transformer: Arc<T>,
@@ -78,19 +89,22 @@ where
     S: SurrealSink,
     T: BatchTransformer + 'static,
 {
-    let changes = if transformer.is_identity() {
-        changes
-    } else {
-        tokio::time::timeout(opts.timeout, transformer.transform_changes(0, changes))
-            .await
-            .map_err(|_| anyhow!("transform timeout after {:?}", opts.timeout))?
-            .context("transform changes")?
-    };
-    for change in &changes {
-        sink.apply_universal_change(change)
-            .await
-            .context("sink apply_universal_change")?;
+    if changes.is_empty() {
+        return Ok(());
     }
+    if transformer.is_identity() && opts.max_in_flight <= 1 {
+        for change in &changes {
+            sink.apply_universal_change(change)
+                .await
+                .context("sink apply_universal_change")?;
+        }
+        return Ok(());
+    }
+    let mut ctx = ApplyContext::new(sink, transformer, opts);
+    for (i, change) in changes.into_iter().enumerate() {
+        ctx.push_change(change, i as u64).await?;
+    }
+    ctx.flush().await?;
     Ok(())
 }
 
@@ -105,27 +119,54 @@ where
     S: SurrealSink,
     T: BatchTransformer + 'static,
 {
-    let changes = if transformer.is_identity() {
-        changes
-    } else {
-        tokio::time::timeout(
-            opts.timeout,
-            transformer.transform_relation_changes(0, changes),
-        )
-        .await
-        .map_err(|_| anyhow!("transform timeout after {:?}", opts.timeout))?
-        .context("transform relation changes")?
-    };
-    for change in &changes {
-        sink.apply_universal_relation_change(change)
-            .await
-            .context("sink apply_universal_relation_change")?;
+    if changes.is_empty() {
+        return Ok(());
     }
+    if transformer.is_identity() && opts.max_in_flight <= 1 {
+        for change in &changes {
+            sink.apply_universal_relation_change(change)
+                .await
+                .context("sink apply_universal_relation_change")?;
+        }
+        return Ok(());
+    }
+    let mut ctx = ApplyContext::new(sink, transformer, opts);
+    for (i, change) in changes.into_iter().enumerate() {
+        ctx.push_relation_change(change, i as u64).await?;
+    }
+    ctx.flush().await?;
     Ok(())
 }
 
 /// Like [`write_rows`] but accepts any [`BatchTransformer`] behind [`Arc`].
 pub async fn write_rows_with<S, T>(
+    sink: &S,
+    transformer: Arc<T>,
+    rows: Vec<UniversalRow>,
+    opts: &ApplyOpts,
+) -> Result<()>
+where
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
+    if rows.is_empty() {
+        return Ok(());
+    }
+    if transformer.is_identity() && opts.max_in_flight <= 1 {
+        return write_rows_oneshot(sink, transformer, rows, opts).await;
+    }
+    // Overlapping window: convert rows to upserts and push through ApplyContext
+    // so max_in_flight can absorb slow transforms within a chunk.
+    let mut ctx = ApplyContext::new(sink, transformer, opts);
+    for (i, row) in rows.into_iter().enumerate() {
+        let change = UniversalChange::update(row.table, row.id, row.fields);
+        ctx.push_change(change, i as u64).await?;
+    }
+    ctx.flush().await?;
+    Ok(())
+}
+
+async fn write_rows_oneshot<S, T>(
     sink: &S,
     transformer: Arc<T>,
     rows: Vec<UniversalRow>,
@@ -151,6 +192,31 @@ where
 
 /// Like [`write_relations`] but accepts any [`BatchTransformer`] behind [`Arc`].
 pub async fn write_relations_with<S, T>(
+    sink: &S,
+    transformer: Arc<T>,
+    relations: Vec<UniversalRelation>,
+    opts: &ApplyOpts,
+) -> Result<()>
+where
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
+    if relations.is_empty() {
+        return Ok(());
+    }
+    if transformer.is_identity() && opts.max_in_flight <= 1 {
+        return write_relations_oneshot(sink, transformer, relations, opts).await;
+    }
+    let mut ctx = ApplyContext::new(sink, transformer, opts);
+    for (i, relation) in relations.into_iter().enumerate() {
+        let change = UniversalRelationChange::update(relation);
+        ctx.push_relation_change(change, i as u64).await?;
+    }
+    ctx.flush().await?;
+    Ok(())
+}
+
+async fn write_relations_oneshot<S, T>(
     sink: &S,
     transformer: Arc<T>,
     relations: Vec<UniversalRelation>,
