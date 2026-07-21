@@ -148,42 +148,283 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
 ) -> anyhow::Result<usize> {
     use async_trait::async_trait;
     use std::sync::Arc;
-    use surreal_sync_postgresql::{convert_table, get_primary_key_columns, read_table_chunk};
-    use sync_core::{classify_table, TableKind, UniversalRow};
+    use surreal_sync_postgresql::{
+        get_primary_key_columns, read_offset_relation_chunk, read_offset_table_chunk,
+        read_relation_chunk, read_table_chunk,
+    };
+    use sync_core::{classify_table, TableKind, UniversalRelation, UniversalRow, UniversalValue};
     use sync_transform::{
-        run_source_runtime_with, write_relations, write_rows, RowChunkDriver, RowChunkSource,
-        SourceRuntimeOpts,
+        run_source_runtime_with, RelationChunkDriver, RelationChunkSource, RowChunkDriver,
+        RowChunkSource, SourceRuntimeOpts,
     };
 
     let pk_columns = get_primary_key_columns(client, table_name).await?;
     let table_kind = schema
         .and_then(|s| s.get_table(table_name))
         .map(|td| classify_table(td, relation_overrides));
-    let is_relation = matches!(table_kind, Some(TableKind::Relation { .. }));
     let batch_size = sync_opts.batch_size.max(1);
 
-    if is_relation || pk_columns.is_empty() {
-        if pk_columns.is_empty() && !is_relation {
+    if let Some(TableKind::Relation { in_fk, out_fk }) = table_kind.clone() {
+        if sync_opts.dry_run {
+            let mut total = 0usize;
+            if pk_columns.is_empty() {
+                let mut offset = 0usize;
+                loop {
+                    let rels = read_offset_relation_chunk(
+                        client,
+                        table_name,
+                        offset,
+                        batch_size,
+                        &in_fk,
+                        &out_fk,
+                    )
+                    .await?;
+                    if rels.is_empty() {
+                        break;
+                    }
+                    let n = rels.len();
+                    total += n;
+                    offset += n;
+                    if n < batch_size {
+                        break;
+                    }
+                }
+            } else {
+                let mut after: Option<Vec<UniversalValue>> = None;
+                let mut base = 0u64;
+                loop {
+                    let chunk = read_relation_chunk(
+                        client,
+                        table_name,
+                        &pk_columns,
+                        after.as_deref(),
+                        batch_size,
+                        &in_fk,
+                        &out_fk,
+                        base,
+                    )
+                    .await?;
+                    if chunk.relations.is_empty() {
+                        break;
+                    }
+                    let n = chunk.relations.len();
+                    total += n;
+                    base += n as u64;
+                    after = chunk.last_pk;
+                    if n < batch_size {
+                        break;
+                    }
+                }
+            }
+            return Ok(total);
+        }
+
+        if pk_columns.is_empty() {
             tracing::warn!(
-                "Table '{table_name}' has no primary key; falling back to full SELECT * (loads table into memory)"
+                "Relation table '{table_name}' has no primary key; streaming via OFFSET/LIMIT"
             );
-        }
-        let (rows, relations) =
-            convert_table(client, table_name, schema, relation_overrides).await?;
-        let mut total = 0usize;
-        for chunk in rows.chunks(batch_size) {
-            if !sync_opts.dry_run {
-                write_rows(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
+            struct OffsetRel<'a> {
+                client: &'a tokio_postgres::Client,
+                table_name: &'a str,
+                batch_size: usize,
+                offset: usize,
+                in_fk: &'a sync_core::ForeignKeyDefinition,
+                out_fk: &'a sync_core::ForeignKeyDefinition,
+                exhausted: bool,
             }
-            total += chunk.len();
-        }
-        for chunk in relations.chunks(batch_size) {
-            if !sync_opts.dry_run {
-                write_relations(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
+            #[async_trait]
+            impl RelationChunkSource for OffsetRel<'_> {
+                async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRelation>>> {
+                    if self.exhausted {
+                        return Ok(None);
+                    }
+                    let rels = read_offset_relation_chunk(
+                        self.client,
+                        self.table_name,
+                        self.offset,
+                        self.batch_size,
+                        self.in_fk,
+                        self.out_fk,
+                    )
+                    .await?;
+                    if rels.is_empty() {
+                        self.exhausted = true;
+                        return Ok(None);
+                    }
+                    let n = rels.len();
+                    self.offset += n;
+                    if n < self.batch_size {
+                        self.exhausted = true;
+                    }
+                    Ok(Some(rels))
+                }
             }
-            total += chunk.len();
+            let mut driver = RelationChunkDriver::new(OffsetRel {
+                client,
+                table_name,
+                batch_size,
+                offset: 0,
+                in_fk: &in_fk,
+                out_fk: &out_fk,
+                exhausted: false,
+            });
+            run_source_runtime_with(
+                &mut driver,
+                surreal,
+                Arc::new(pipeline.clone()),
+                apply_opts,
+                &SourceRuntimeOpts::new(),
+            )
+            .await?;
+            return Ok(driver.sunk_count() as usize);
         }
-        return Ok(total);
+
+        struct KeysetRel<'a> {
+            client: &'a tokio_postgres::Client,
+            table_name: &'a str,
+            pk_columns: &'a [String],
+            after: Option<Vec<UniversalValue>>,
+            batch_size: usize,
+            in_fk: &'a sync_core::ForeignKeyDefinition,
+            out_fk: &'a sync_core::ForeignKeyDefinition,
+            base: u64,
+            exhausted: bool,
+        }
+        #[async_trait]
+        impl RelationChunkSource for KeysetRel<'_> {
+            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRelation>>> {
+                if self.exhausted {
+                    return Ok(None);
+                }
+                let chunk = read_relation_chunk(
+                    self.client,
+                    self.table_name,
+                    self.pk_columns,
+                    self.after.as_deref(),
+                    self.batch_size,
+                    self.in_fk,
+                    self.out_fk,
+                    self.base,
+                )
+                .await?;
+                if chunk.relations.is_empty() {
+                    self.exhausted = true;
+                    return Ok(None);
+                }
+                let n = chunk.relations.len();
+                self.base += n as u64;
+                self.after = chunk.last_pk;
+                if n < self.batch_size {
+                    self.exhausted = true;
+                }
+                Ok(Some(chunk.relations))
+            }
+        }
+        let mut driver = RelationChunkDriver::new(KeysetRel {
+            client,
+            table_name,
+            pk_columns: &pk_columns,
+            after: None,
+            batch_size,
+            in_fk: &in_fk,
+            out_fk: &out_fk,
+            base: 0,
+            exhausted: false,
+        });
+        run_source_runtime_with(
+            &mut driver,
+            surreal,
+            Arc::new(pipeline.clone()),
+            apply_opts,
+            &SourceRuntimeOpts::new(),
+        )
+        .await?;
+        return Ok(driver.sunk_count() as usize);
+    }
+
+    if pk_columns.is_empty() {
+        tracing::warn!(
+            "Table '{table_name}' has no primary key; streaming via OFFSET/LIMIT chunks"
+        );
+        if sync_opts.dry_run {
+            let mut total = 0usize;
+            let mut offset = 0usize;
+            loop {
+                let (rows, _) = read_offset_table_chunk(
+                    client,
+                    table_name,
+                    offset,
+                    batch_size,
+                    schema,
+                    relation_overrides,
+                )
+                .await?;
+                if rows.is_empty() {
+                    break;
+                }
+                let n = rows.len();
+                total += n;
+                offset += n;
+                if n < batch_size {
+                    break;
+                }
+            }
+            return Ok(total);
+        }
+        struct OffsetRows<'a> {
+            client: &'a tokio_postgres::Client,
+            table_name: &'a str,
+            batch_size: usize,
+            offset: usize,
+            schema: Option<&'a sync_core::DatabaseSchema>,
+            overrides: &'a [String],
+            exhausted: bool,
+        }
+        #[async_trait]
+        impl RowChunkSource for OffsetRows<'_> {
+            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+                if self.exhausted {
+                    return Ok(None);
+                }
+                let (rows, _) = read_offset_table_chunk(
+                    self.client,
+                    self.table_name,
+                    self.offset,
+                    self.batch_size,
+                    self.schema,
+                    self.overrides,
+                )
+                .await?;
+                if rows.is_empty() {
+                    self.exhausted = true;
+                    return Ok(None);
+                }
+                let n = rows.len();
+                self.offset += n;
+                if n < self.batch_size {
+                    self.exhausted = true;
+                }
+                Ok(Some(rows))
+            }
+        }
+        let mut driver = RowChunkDriver::new(OffsetRows {
+            client,
+            table_name,
+            batch_size,
+            offset: 0,
+            schema,
+            overrides: relation_overrides,
+            exhausted: false,
+        });
+        run_source_runtime_with(
+            &mut driver,
+            surreal,
+            Arc::new(pipeline.clone()),
+            apply_opts,
+            &SourceRuntimeOpts::new(),
+        )
+        .await?;
+        return Ok(driver.sunk_count() as usize);
     }
 
     if sync_opts.dry_run {

@@ -14,8 +14,7 @@ use std::sync::Arc;
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalRow, UniversalType, UniversalValue};
 use sync_transform::{
-    run_source_runtime_with, write_rows, ApplyOpts, Pipeline, RowChunkDriver, RowChunkSource,
-    SourceRuntimeOpts,
+    run_source_runtime_with, ApplyOpts, Pipeline, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
 };
 use tracing::{debug, info, warn};
 
@@ -445,86 +444,106 @@ async fn migrate_table<S: SurrealSink>(
     }
 
     warn!(
-        "Table '{table_name}' has no primary key; falling back to full SELECT * (loads table into memory)"
+        "Table '{table_name}' has no primary key; streaming via LIMIT/OFFSET chunks"
     );
 
-    // Query all data from table
-    let rows: Vec<Row> = conn
-        .query(format!("SELECT * FROM {table_name}"))
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to query table {table_name}: {e}"))?;
-
-    let count = rows.len();
-    debug!("Retrieved {} rows from table {}", count, table_name);
-
-    let mut batch = Vec::new();
-    let mut total_processed = 0;
-
-    // Process each row
-    for (row_index, row) in rows.iter().enumerate() {
-        // Convert MySQL row to TypedValues using schema-aware config
-        let typed_values = row_to_typed_values_with_config(row, &config)?;
-
-        // Extract UniversalValues from TypedValues
-        let values: HashMap<String, UniversalValue> = typed_values
-            .into_iter()
-            .map(|(k, tv)| (k, tv.value))
-            .collect();
-
-        // Extract primary key value for the record ID
-        let id = extract_primary_key_value(&values, &pk_columns).unwrap_or_else(|_| {
-            UniversalValue::Int64(row_index as i64)
-        });
-
-        // Build non-PK fields map
-        let fields: HashMap<String, UniversalValue> = values
-            .into_iter()
-            .filter(|(k, _)| !pk_columns.contains(k))
-            .collect();
-
-        // Create UniversalRow
-        let universal_row = UniversalRow::new(table_name.to_string(), row_index as u64, id, fields);
-        batch.push(universal_row);
-
-        // Process batch when it reaches the configured size
-        if batch.len() >= batch_size {
-            let n = batch.len();
-
-            if !opts.sync_opts.dry_run {
-                write_rows(
-                    surreal,
-                    opts.pipeline,
-                    std::mem::take(&mut batch),
-                    opts.apply_opts,
-                )
-                .await?;
-            } else {
-                debug!(
-                    "Dry-run: Would insert {} records into {}",
-                    n, table_name
-                );
-                batch.clear();
+    if opts.sync_opts.dry_run {
+        let mut total_processed = 0usize;
+        let mut offset = 0usize;
+        loop {
+            let rows: Vec<Row> = conn
+                .query(format!(
+                    "SELECT * FROM `{table_name}` LIMIT {batch_size} OFFSET {offset}"
+                ))
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to query table {table_name}: {e}"))?;
+            if rows.is_empty() {
+                break;
             }
+            let n = rows.len();
+            debug!("Dry-run: Would insert {n} records into {table_name}");
             total_processed += n;
+            offset += n;
+            if n < batch_size {
+                break;
+            }
+        }
+        return Ok(total_processed);
+    }
+
+    struct MysqlOffsetChunks<'a> {
+        conn: &'a mut mysql_async::Conn,
+        table_name: &'a str,
+        batch_size: usize,
+        offset: usize,
+        config: &'a RowConversionConfig,
+        exhausted: bool,
+    }
+
+    #[async_trait]
+    impl RowChunkSource for MysqlOffsetChunks<'_> {
+        async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRow>>> {
+            if self.exhausted {
+                return Ok(None);
+            }
+            let rows: Vec<Row> = self
+                .conn
+                .query(format!(
+                    "SELECT * FROM `{}` LIMIT {} OFFSET {}",
+                    self.table_name, self.batch_size, self.offset
+                ))
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!("Failed to query table {}: {e}", self.table_name)
+                })?;
+            if rows.is_empty() {
+                self.exhausted = true;
+                return Ok(None);
+            }
+            let mut batch = Vec::with_capacity(rows.len());
+            for (i, row) in rows.iter().enumerate() {
+                let row_index = (self.offset + i) as u64;
+                let typed_values = row_to_typed_values_with_config(row, self.config)?;
+                let values: HashMap<String, UniversalValue> = typed_values
+                    .into_iter()
+                    .map(|(k, tv)| (k, tv.value))
+                    .collect();
+                batch.push(UniversalRow::new(
+                    self.table_name.to_string(),
+                    row_index,
+                    UniversalValue::Int64(row_index as i64),
+                    values,
+                ));
+            }
+            let n = batch.len();
+            self.offset += n;
+            if n < self.batch_size {
+                self.exhausted = true;
+            }
+            Ok(Some(batch))
         }
     }
 
-    // Process remaining records
-    if !batch.is_empty() {
-        let n = batch.len();
-
-        if !opts.sync_opts.dry_run {
-            write_rows(surreal, opts.pipeline, batch, opts.apply_opts).await?;
-        } else {
-            debug!(
-                "Dry-run: Would insert {} records into {}",
-                n, table_name
-            );
-        }
-        total_processed += n;
-    }
-
-    Ok(total_processed)
+    let chunks = MysqlOffsetChunks {
+        conn,
+        table_name,
+        batch_size,
+        offset: 0,
+        config: &config,
+        exhausted: false,
+    };
+    let mut driver = RowChunkDriver::new(chunks);
+    let transformer = Arc::new(opts.pipeline.clone());
+    let runtime_opts = SourceRuntimeOpts::new();
+    run_source_runtime_with(
+        &mut driver,
+        surreal,
+        transformer,
+        opts.apply_opts,
+        &runtime_opts,
+    )
+    .await?;
+    Ok(driver.sunk_count() as usize)
 }
 
 /// A primary-key-ordered chunk of rows read from a table, together with the

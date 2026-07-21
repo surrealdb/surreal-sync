@@ -5,8 +5,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use surreal_sink::SurrealSink;
-use surreal_sync_postgresql::{convert_table, get_user_tables};
-use sync_transform::{write_relations, write_rows, ApplyOpts, Pipeline};
+use surreal_sync_postgresql::get_user_tables;
+use sync_transform::{ApplyOpts, Pipeline};
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
 use tracing::{debug, info};
@@ -196,43 +196,43 @@ async fn migrate_table_with_transforms<S: SurrealSink>(
     let table_kind = schema
         .and_then(|s| s.get_table(table_name))
         .map(|td| classify_table(td, &[]));
-    let is_relation = matches!(table_kind, Some(TableKind::Relation { .. }));
     let batch_size = sync_opts.batch_size.max(1);
 
-    if is_relation || pk_columns.is_empty() {
-        if pk_columns.is_empty() && !is_relation {
-            tracing::warn!(
-                "Table '{table_name}' has no primary key; falling back to full SELECT * (loads table into memory)"
-            );
-        }
-        let (rows, relations) = convert_table(client, table_name, schema, &[]).await?;
-        if rows.is_empty() && relations.is_empty() {
-            return Ok(0);
-        }
-        let mut total_processed = 0usize;
-        for chunk in rows.chunks(batch_size) {
-            if cancel.is_cancelled() {
-                debug!("Cancellation requested mid-table '{table_name}'; stopping batch writes");
-                return Ok(total_processed);
-            }
-            let n = chunk.len();
-            if !sync_opts.dry_run {
-                write_rows(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
-            }
-            total_processed += n;
-        }
-        for chunk in relations.chunks(batch_size) {
-            if cancel.is_cancelled() {
-                debug!("Cancellation requested mid-table '{table_name}'; stopping batch writes");
-                return Ok(total_processed);
-            }
-            let n = chunk.len();
-            if !sync_opts.dry_run {
-                write_relations(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
-            }
-            total_processed += n;
-        }
-        return Ok(total_processed);
+    // Relation tables: keyset when PK exists, else OFFSET streaming.
+    if let Some(TableKind::Relation { in_fk, out_fk }) = table_kind.clone() {
+        return migrate_relation_streaming(
+            client,
+            surreal,
+            table_name,
+            &pk_columns,
+            batch_size,
+            sync_opts.dry_run,
+            cancel,
+            pipeline,
+            apply_opts,
+            in_fk,
+            out_fk,
+        )
+        .await;
+    }
+
+    // No PK: OFFSET/LIMIT chunks through RowChunkDriver (avoid monolithic SELECT *).
+    if pk_columns.is_empty() {
+        tracing::warn!(
+            "Table '{table_name}' has no primary key; streaming via OFFSET/LIMIT chunks"
+        );
+        return migrate_offset_rows_streaming(
+            client,
+            surreal,
+            table_name,
+            batch_size,
+            schema,
+            sync_opts.dry_run,
+            cancel,
+            pipeline,
+            apply_opts,
+        )
+        .await;
     }
 
     let mut total_processed = 0usize;
@@ -334,6 +334,322 @@ async fn migrate_table_with_transforms<S: SurrealSink>(
     .await?;
     Ok(driver.sunk_count() as usize)
 }
+
+#[allow(clippy::too_many_arguments)]
+async fn migrate_relation_streaming<S: SurrealSink>(
+    client: &Client,
+    surreal: &S,
+    table_name: &str,
+    pk_columns: &[String],
+    batch_size: usize,
+    dry_run: bool,
+    cancel: &tokio_util::sync::CancellationToken,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+    in_fk: sync_core::ForeignKeyDefinition,
+    out_fk: sync_core::ForeignKeyDefinition,
+) -> Result<usize> {
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use surreal_sync_postgresql::{read_offset_relation_chunk, read_relation_chunk};
+    use sync_core::{UniversalRelation, UniversalValue};
+    use sync_transform::{
+        run_source_runtime_with, RelationChunkDriver, RelationChunkSource, SourceRuntimeOpts,
+    };
+
+    if dry_run {
+        let mut total = 0usize;
+        if pk_columns.is_empty() {
+            let mut offset = 0usize;
+            loop {
+                if cancel.is_cancelled() {
+                    return Ok(total);
+                }
+                let rels = read_offset_relation_chunk(
+                    client,
+                    table_name,
+                    offset,
+                    batch_size,
+                    &in_fk,
+                    &out_fk,
+                )
+                .await?;
+                if rels.is_empty() {
+                    break;
+                }
+                let n = rels.len();
+                total += n;
+                offset += n;
+                if n < batch_size {
+                    break;
+                }
+            }
+        } else {
+            let mut after: Option<Vec<UniversalValue>> = None;
+            let mut row_index_base = 0u64;
+            loop {
+                if cancel.is_cancelled() {
+                    return Ok(total);
+                }
+                let chunk = read_relation_chunk(
+                    client,
+                    table_name,
+                    pk_columns,
+                    after.as_deref(),
+                    batch_size,
+                    &in_fk,
+                    &out_fk,
+                    row_index_base,
+                )
+                .await?;
+                if chunk.relations.is_empty() {
+                    break;
+                }
+                let n = chunk.relations.len();
+                total += n;
+                row_index_base += n as u64;
+                after = chunk.last_pk;
+                if n < batch_size {
+                    break;
+                }
+            }
+        }
+        return Ok(total);
+    }
+
+    if pk_columns.is_empty() {
+        tracing::warn!(
+            "Relation table '{table_name}' has no primary key; streaming via OFFSET/LIMIT"
+        );
+        struct OffsetRelChunks<'a> {
+            client: &'a Client,
+            table_name: &'a str,
+            batch_size: usize,
+            offset: usize,
+            in_fk: &'a sync_core::ForeignKeyDefinition,
+            out_fk: &'a sync_core::ForeignKeyDefinition,
+            cancel: &'a tokio_util::sync::CancellationToken,
+            exhausted: bool,
+        }
+        #[async_trait]
+        impl RelationChunkSource for OffsetRelChunks<'_> {
+            async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRelation>>> {
+                if self.exhausted || self.cancel.is_cancelled() {
+                    self.exhausted = true;
+                    return Ok(None);
+                }
+                let rels = read_offset_relation_chunk(
+                    self.client,
+                    self.table_name,
+                    self.offset,
+                    self.batch_size,
+                    self.in_fk,
+                    self.out_fk,
+                )
+                .await?;
+                if rels.is_empty() {
+                    self.exhausted = true;
+                    return Ok(None);
+                }
+                let n = rels.len();
+                self.offset += n;
+                if n < self.batch_size {
+                    self.exhausted = true;
+                }
+                Ok(Some(rels))
+            }
+        }
+        let mut driver = RelationChunkDriver::new(OffsetRelChunks {
+            client,
+            table_name,
+            batch_size,
+            offset: 0,
+            in_fk: &in_fk,
+            out_fk: &out_fk,
+            cancel,
+            exhausted: false,
+        });
+        let transformer = Arc::new(pipeline.clone());
+        run_source_runtime_with(
+            &mut driver,
+            surreal,
+            transformer,
+            apply_opts,
+            &SourceRuntimeOpts::new(),
+        )
+        .await?;
+        return Ok(driver.sunk_count() as usize);
+    }
+
+    struct KeysetRelChunks<'a> {
+        client: &'a Client,
+        table_name: &'a str,
+        pk_columns: &'a [String],
+        after: Option<Vec<UniversalValue>>,
+        batch_size: usize,
+        in_fk: &'a sync_core::ForeignKeyDefinition,
+        out_fk: &'a sync_core::ForeignKeyDefinition,
+        row_index_base: u64,
+        cancel: &'a tokio_util::sync::CancellationToken,
+        exhausted: bool,
+    }
+    #[async_trait]
+    impl RelationChunkSource for KeysetRelChunks<'_> {
+        async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRelation>>> {
+            if self.exhausted || self.cancel.is_cancelled() {
+                self.exhausted = true;
+                return Ok(None);
+            }
+            let chunk = read_relation_chunk(
+                self.client,
+                self.table_name,
+                self.pk_columns,
+                self.after.as_deref(),
+                self.batch_size,
+                self.in_fk,
+                self.out_fk,
+                self.row_index_base,
+            )
+            .await?;
+            if chunk.relations.is_empty() {
+                self.exhausted = true;
+                return Ok(None);
+            }
+            let n = chunk.relations.len();
+            self.row_index_base += n as u64;
+            self.after = chunk.last_pk;
+            if n < self.batch_size {
+                self.exhausted = true;
+            }
+            Ok(Some(chunk.relations))
+        }
+    }
+    let mut driver = RelationChunkDriver::new(KeysetRelChunks {
+        client,
+        table_name,
+        pk_columns,
+        after: None,
+        batch_size,
+        in_fk: &in_fk,
+        out_fk: &out_fk,
+        row_index_base: 0,
+        cancel,
+        exhausted: false,
+    });
+    let transformer = Arc::new(pipeline.clone());
+    run_source_runtime_with(
+        &mut driver,
+        surreal,
+        transformer,
+        apply_opts,
+        &SourceRuntimeOpts::new(),
+    )
+    .await?;
+    Ok(driver.sunk_count() as usize)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn migrate_offset_rows_streaming<S: SurrealSink>(
+    client: &Client,
+    surreal: &S,
+    table_name: &str,
+    batch_size: usize,
+    schema: Option<&sync_core::DatabaseSchema>,
+    dry_run: bool,
+    cancel: &tokio_util::sync::CancellationToken,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<usize> {
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use surreal_sync_postgresql::read_offset_table_chunk;
+    use sync_core::UniversalRow;
+    use sync_transform::{
+        run_source_runtime_with, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
+    };
+
+    if dry_run {
+        let mut total = 0usize;
+        let mut offset = 0usize;
+        loop {
+            if cancel.is_cancelled() {
+                return Ok(total);
+            }
+            let (rows, _) =
+                read_offset_table_chunk(client, table_name, offset, batch_size, schema, &[])
+                    .await?;
+            if rows.is_empty() {
+                break;
+            }
+            let n = rows.len();
+            total += n;
+            offset += n;
+            if n < batch_size {
+                break;
+            }
+        }
+        return Ok(total);
+    }
+
+    struct OffsetRowChunks<'a> {
+        client: &'a Client,
+        table_name: &'a str,
+        batch_size: usize,
+        offset: usize,
+        schema: Option<&'a sync_core::DatabaseSchema>,
+        cancel: &'a tokio_util::sync::CancellationToken,
+        exhausted: bool,
+    }
+    #[async_trait]
+    impl RowChunkSource for OffsetRowChunks<'_> {
+        async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRow>>> {
+            if self.exhausted || self.cancel.is_cancelled() {
+                self.exhausted = true;
+                return Ok(None);
+            }
+            let (rows, _) = read_offset_table_chunk(
+                self.client,
+                self.table_name,
+                self.offset,
+                self.batch_size,
+                self.schema,
+                &[],
+            )
+            .await?;
+            if rows.is_empty() {
+                self.exhausted = true;
+                return Ok(None);
+            }
+            let n = rows.len();
+            self.offset += n;
+            if n < self.batch_size {
+                self.exhausted = true;
+            }
+            Ok(Some(rows))
+        }
+    }
+    let mut driver = RowChunkDriver::new(OffsetRowChunks {
+        client,
+        table_name,
+        batch_size,
+        offset: 0,
+        schema,
+        cancel,
+        exhausted: false,
+    });
+    let transformer = Arc::new(pipeline.clone());
+    run_source_runtime_with(
+        &mut driver,
+        surreal,
+        transformer,
+        apply_opts,
+        &SourceRuntimeOpts::new(),
+    )
+    .await?;
+    Ok(driver.sunk_count() as usize)
+}
+
+// End of streaming helpers for relation / no-PK full sync.
 
 async fn resolve_user_tables(
     client: &Client,

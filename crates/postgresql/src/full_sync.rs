@@ -266,6 +266,161 @@ pub async fn read_table_chunk(
     Ok(TableChunk { rows: out, last_pk })
 }
 
+/// A chunk of relation edges from a join table, with optional keyset cursor.
+#[derive(Debug, Clone)]
+pub struct RelationChunk {
+    /// Converted relations in read order.
+    pub relations: Vec<UniversalRelation>,
+    /// Primary-key cursor of the last row (for keyset continuation).
+    pub last_pk: Option<Vec<UniversalValue>>,
+}
+
+/// Keyset-paginated read of a relation (join) table as SurrealDB edges.
+#[allow(clippy::too_many_arguments)]
+pub async fn read_relation_chunk(
+    client: &Client,
+    table_name: &str,
+    pk_columns: &[String],
+    after: Option<&[UniversalValue]>,
+    limit: usize,
+    in_fk: &sync_core::ForeignKeyDefinition,
+    out_fk: &sync_core::ForeignKeyDefinition,
+    row_index_base: u64,
+) -> Result<RelationChunk> {
+    if pk_columns.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Table '{table_name}' has no primary key columns; keyset chunk reads require a primary key"
+        ));
+    }
+
+    let order_by = pk_columns.join(", ");
+    let mut boxed_params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
+    let where_clause = match after {
+        Some(cursor) => {
+            if cursor.len() != pk_columns.len() {
+                return Err(anyhow::anyhow!(
+                    "Keyset cursor length ({}) does not match primary key column count ({}) for table '{table_name}'",
+                    cursor.len(),
+                    pk_columns.len()
+                ));
+            }
+            let placeholders: Vec<String> =
+                (1..=pk_columns.len()).map(|i| format!("${i}")).collect();
+            for value in cursor {
+                boxed_params.push(pk_value_to_sql(value)?);
+            }
+            if pk_columns.len() == 1 {
+                format!("WHERE {} > {}", pk_columns[0], placeholders[0])
+            } else {
+                format!(
+                    "WHERE ({}) > ({})",
+                    pk_columns.join(", "),
+                    placeholders.join(", ")
+                )
+            }
+        }
+        None => String::new(),
+    };
+
+    let query =
+        format!("SELECT * FROM {table_name} {where_clause} ORDER BY {order_by} LIMIT {limit}");
+    debug!("Chunk-reading relation table {table_name} with: {query}");
+
+    let params: Vec<&(dyn ToSql + Sync)> = boxed_params
+        .iter()
+        .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+        .collect();
+
+    let rows = client.query(&query, &params).await?;
+    let mut out = Vec::with_capacity(rows.len());
+    let mut last_pk: Option<Vec<UniversalValue>> = None;
+    for (i, row) in rows.iter().enumerate() {
+        let all_fields = convert_all_columns_to_universal_values(row)?;
+        let rel_id = UniversalValue::Int64((row_index_base + i as u64) as i64);
+        out.push(fk_transform::build_relation_from_row(
+            table_name, rel_id, all_fields, in_fk, out_fk,
+        ));
+        last_pk = Some(extract_pk_cursor_values(row, pk_columns)?);
+    }
+
+    Ok(RelationChunk {
+        relations: out,
+        last_pk,
+    })
+}
+
+/// OFFSET/LIMIT chunk read for tables without a usable primary key.
+///
+/// Prefer keyset pagination when a PK exists; this path avoids loading the
+/// whole table into memory when only OFFSET streaming is available.
+pub async fn read_offset_table_chunk(
+    client: &Client,
+    table_name: &str,
+    offset: usize,
+    limit: usize,
+    schema: Option<&DatabaseSchema>,
+    relation_table_overrides: &[String],
+) -> Result<(Vec<UniversalRow>, Vec<UniversalRelation>)> {
+    let pk_columns = get_primary_key_columns(client, table_name).await?;
+    let table_kind = schema
+        .and_then(|s| s.get_table(table_name))
+        .map(|td| classify_table(td, relation_table_overrides));
+    let query = format!("SELECT * FROM {table_name} OFFSET {offset} LIMIT {limit}");
+    debug!("Offset-reading table {table_name} with: {query}");
+    let rows = client.query(&query, &[]).await?;
+    if rows.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let table_def = schema.and_then(|s| s.get_table(table_name));
+    let mut row_batch = Vec::new();
+    let mut rel_batch = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let row_index = (offset + i) as u64;
+        match &table_kind {
+            Some(TableKind::Relation { in_fk, out_fk }) => {
+                let all_fields = convert_all_columns_to_universal_values(row)?;
+                let rel_id = UniversalValue::Int64(row_index as i64);
+                rel_batch.push(fk_transform::build_relation_from_row(
+                    table_name, rel_id, all_fields, in_fk, out_fk,
+                ));
+            }
+            _ => {
+                let mut record =
+                    convert_row_to_universal_row(table_name, row, &pk_columns, row_index)?;
+                if let Some(td) = table_def {
+                    fk_transform::transform_fk_values(&mut record.fields, td);
+                }
+                row_batch.push(record);
+            }
+        }
+    }
+    Ok((row_batch, rel_batch))
+}
+
+/// OFFSET/LIMIT chunk of a known relation table (no PK keyset available).
+pub async fn read_offset_relation_chunk(
+    client: &Client,
+    table_name: &str,
+    offset: usize,
+    limit: usize,
+    in_fk: &sync_core::ForeignKeyDefinition,
+    out_fk: &sync_core::ForeignKeyDefinition,
+) -> Result<Vec<UniversalRelation>> {
+    let query = format!("SELECT * FROM {table_name} OFFSET {offset} LIMIT {limit}");
+    debug!("Offset-reading relation table {table_name} with: {query}");
+    let rows = client.query(&query, &[]).await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        let all_fields = convert_all_columns_to_universal_values(row)?;
+        let rel_id = UniversalValue::Int64((offset + i) as i64);
+        out.push(fk_transform::build_relation_from_row(
+            table_name, rel_id, all_fields, in_fk, out_fk,
+        ));
+    }
+    Ok(out)
+}
+
 /// Extract the raw primary-key column values from a row, in primary-key column
 /// order, for use as a keyset-pagination cursor.
 fn extract_pk_cursor_values(row: &Row, pk_columns: &[String]) -> Result<Vec<UniversalValue>> {

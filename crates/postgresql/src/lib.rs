@@ -17,7 +17,9 @@ pub mod testing;
 pub use autoconf::get_user_tables;
 pub use client::new_postgresql_client;
 pub use full_sync::{
-    convert_table, get_primary_key_columns, migrate_table, read_table_chunk, SyncOpts, TableChunk,
+    convert_table, get_primary_key_columns, migrate_table, read_offset_relation_chunk,
+    read_offset_table_chunk, read_relation_chunk, read_table_chunk, RelationChunk, SyncOpts,
+    TableChunk,
 };
 pub use schema::{
     collect_database_schema, collect_database_schema_with_fks, collect_foreign_keys,
