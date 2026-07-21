@@ -444,15 +444,12 @@ where
         self.drain_ordered_no_commit().await
     }
 
-    /// Collect JoinSet results that are ready. Identity batches are async no-ops
-    /// and usually complete after a yield; slow transforms stay in-flight.
+    /// Collect JoinSet results that are already ready (non-blocking after a yield).
+    ///
+    /// Identity and non-identity share the same JoinSet path: ready tasks are
+    /// drained via [`poll_join_ready`]; slow transforms stay in-flight so the
+    /// caller can keep pushing / overlapping work.
     async fn collect_ready_transforms(&mut self) -> Result<()> {
-        if self.transformer.is_identity() {
-            while self.in_flight_count() > 0 {
-                self.wait_one_completion().await?;
-            }
-            return Ok(());
-        }
         self.poll_join_ready().await
     }
 
