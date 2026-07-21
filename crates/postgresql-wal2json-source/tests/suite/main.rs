@@ -5,6 +5,7 @@ mod date;
 mod integration;
 mod interleaved_snapshot;
 mod interval;
+mod no_pk_offset;
 mod time;
 mod timestamp;
 mod timestamptz;
