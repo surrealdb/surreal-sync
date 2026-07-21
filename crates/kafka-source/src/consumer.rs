@@ -359,6 +359,11 @@ impl Consumer {
             .commit(&tpl, rdkafka::consumer::CommitMode::Sync)
             .map_err(|e| Error::Consumer(format!("Failed to commit offset: {e}")))?;
 
+        // Safe under SourceDriver overlap: incremental sync only uses
+        // `receive_batch`, which drains the peek buffer into the returned
+        // messages (it does not leave in-flight work in the buffer). Clearing
+        // here cannot drop a concurrent peek ahead of an overlapping poll.
+        // If a future path peeks without draining under overlap, do not clear.
         self.clear_buffer().await;
 
         Ok(())

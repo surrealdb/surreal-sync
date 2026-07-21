@@ -247,8 +247,13 @@ pub trait SourceDriver: Send {
         Ok(None)
     }
 
-    /// Notify the driver that `count` events are accounted for before
-    /// [`commit`](Self::commit).
+    /// Notify the driver that `count` **input** (pre-transform) events are
+    /// accounted for before [`commit`](Self::commit).
+    ///
+    /// `count` is the batch's poll/input size, not the post-transform sink
+    /// length — so filter under-count and fan-out over-count cannot stall or
+    /// premature-advance Kafka pending-acks, wal2json `emitted`/`sunk` gates,
+    /// or similar watermarks.
     ///
     /// Called after a successful sink apply, and also under
     /// [`FailurePolicy::Skip`](crate::FailurePolicy::Skip) for batches that are
@@ -579,7 +584,9 @@ where
 struct PendingSinkMeta<P> {
     batch_id: u64,
     last_position: P,
+    /// Pre-transform input count (skip / sink-err note_sunk_events).
     event_count: u64,
+    /// Pre-transform input count passed to `finish_sink_ok_driver` on success.
     sunk: u64,
 }
 
@@ -607,8 +614,9 @@ where
     };
     match batch.result {
         Ok(events) => {
-            let sunk = events.len() as u64;
-            let event_count = batch.event_count.max(sunk);
+            // note_sunk_events / finish_sink_ok must use pre-transform input
+            // count so filter/fan-out cannot stall or over-advance drivers.
+            let event_count = batch.event_count;
             let drive = Box::pin(async move {
                 apply_sink_events_ref(sink, &events).await?;
                 Ok(SinkDrive::Applied)
@@ -618,7 +626,7 @@ where
                     batch_id: batch.batch_id,
                     last_position: batch.last_position,
                     event_count,
-                    sunk,
+                    sunk: event_count,
                 },
                 drive,
             });

@@ -1179,3 +1179,487 @@ async fn multi_event_sink_not_reapplied_when_transform_completes() {
         sink.apply_attempts()
     );
 }
+
+/// Filter transform: `note_sunk_events` must use pre-transform input count so
+/// Kafka-style pending-acks and wal2json emitted/sunk gates still advance.
+#[tokio::test]
+async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
+    use crate::BatchTransformer;
+    use anyhow::bail;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use sync_core::UniversalChange;
+
+    /// Drops every other change (keeps odd ids) — length shrinks.
+    struct FilterOddIds;
+
+    #[async_trait]
+    impl BatchTransformer for FilterOddIds {
+        fn is_identity(&self) -> bool {
+            false
+        }
+
+        async fn transform_changes(
+            &self,
+            _batch_id: u64,
+            changes: Vec<UniversalChange>,
+        ) -> anyhow::Result<Vec<UniversalChange>> {
+            Ok(changes
+                .into_iter()
+                .filter(|c| match &c.id {
+                    UniversalValue::Int64(id) => id % 2 == 1,
+                    _ => true,
+                })
+                .collect())
+        }
+
+        async fn transform_rows(
+            &self,
+            _batch_id: u64,
+            rows: Vec<sync_core::UniversalRow>,
+        ) -> anyhow::Result<Vec<sync_core::UniversalRow>> {
+            Ok(rows)
+        }
+
+        async fn transform_events(
+            &self,
+            batch_id: u64,
+            events: Vec<ApplyEvent>,
+        ) -> anyhow::Result<Vec<ApplyEvent>> {
+            // Homogeneous change batches may filter (default transform_events
+            // rejects length changes).
+            if events.iter().all(|e| matches!(e, ApplyEvent::Change(_))) {
+                let changes: Vec<_> = events
+                    .into_iter()
+                    .map(|e| match e {
+                        ApplyEvent::Change(c) => c,
+                        ApplyEvent::RelationChange(_) => unreachable!(),
+                    })
+                    .collect();
+                let out = self.transform_changes(batch_id, changes).await?;
+                return Ok(out.into_iter().map(ApplyEvent::Change).collect());
+            }
+            bail!("FilterOddIds expects homogeneous change batches")
+        }
+    }
+
+    /// Kafka-like: pending → ready on note_sunk; commit drains ready.
+    struct KafkaAckDriver {
+        remaining: Vec<PositionedEvent<u64>>,
+        pending_acks: std::collections::VecDeque<u64>,
+        ready_to_commit: Vec<u64>,
+        committed: Vec<u64>,
+        processed_count: u64,
+        finished: bool,
+    }
+
+    #[async_trait]
+    impl SourceDriver for KafkaAckDriver {
+        type Position = u64;
+
+        async fn poll_work(&mut self) -> anyhow::Result<Vec<PositionedEvent<u64>>> {
+            if self.finished || self.remaining.is_empty() {
+                self.finished = self.remaining.is_empty();
+                return Ok(Vec::new());
+            }
+            let ev = self.remaining.remove(0);
+            self.pending_acks.push_back(ev.position);
+            Ok(vec![ev])
+        }
+
+        async fn commit(&mut self, _position: Self::Position) -> anyhow::Result<()> {
+            self.committed.append(&mut self.ready_to_commit);
+            Ok(())
+        }
+
+        fn is_finished(&self) -> bool {
+            self.finished
+        }
+
+        fn checkpoint_policy(&self) -> CheckpointPolicy {
+            CheckpointPolicy::CommitOnly
+        }
+
+        fn note_sunk_events(&mut self, count: u64) {
+            for _ in 0..count {
+                if let Some(p) = self.pending_acks.pop_front() {
+                    self.ready_to_commit.push(p);
+                }
+            }
+            self.processed_count = self.processed_count.saturating_add(count);
+        }
+    }
+
+    /// wal2json-like: commit advances only when sunk >= emitted.
+    struct Wal2jsonGateDriver {
+        remaining: Vec<PositionedEvent<u64>>,
+        emitted: u64,
+        sunk: u64,
+        advances: u64,
+        finished: bool,
+    }
+
+    #[async_trait]
+    impl SourceDriver for Wal2jsonGateDriver {
+        type Position = u64;
+
+        async fn poll_work(&mut self) -> anyhow::Result<Vec<PositionedEvent<u64>>> {
+            if self.finished || self.remaining.is_empty() {
+                self.finished = self.remaining.is_empty();
+                return Ok(Vec::new());
+            }
+            // Emit a multi-event peek batch (like one WAL segment).
+            let batch: Vec<_> = self.remaining.drain(..).collect();
+            self.emitted = self.emitted.saturating_add(batch.len() as u64);
+            Ok(batch)
+        }
+
+        async fn commit(&mut self, _position: Self::Position) -> anyhow::Result<()> {
+            if self.sunk < self.emitted {
+                return Ok(());
+            }
+            self.advances = self.advances.saturating_add(1);
+            self.emitted = 0;
+            self.sunk = 0;
+            Ok(())
+        }
+
+        fn is_finished(&self) -> bool {
+            self.finished
+        }
+
+        fn checkpoint_policy(&self) -> CheckpointPolicy {
+            CheckpointPolicy::CommitOnly
+        }
+
+        fn note_sunk_events(&mut self, count: u64) {
+            self.sunk = self.sunk.saturating_add(count);
+        }
+    }
+
+    let events = vec![
+        PositionedEvent::change(change(1), 10u64),
+        PositionedEvent::change(change(2), 20u64),
+        PositionedEvent::change(change(3), 30u64),
+    ];
+    let apply_opts = opts().with_batch_size(3);
+    let transformer = Arc::new(FilterOddIds);
+
+    // Kafka: filter 3→2 sunk writes, but all 3 pending acks must commit.
+    let mut kafka = KafkaAckDriver {
+        remaining: events.clone(),
+        pending_acks: std::collections::VecDeque::new(),
+        ready_to_commit: Vec::new(),
+        committed: Vec::new(),
+        processed_count: 0,
+        finished: false,
+    };
+    let sink = RecordingSink::new();
+    run_source_runtime_with(
+        &mut kafka,
+        &sink,
+        Arc::clone(&transformer),
+        &apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sink.applied().len(),
+        2,
+        "filter must sink only odd ids"
+    );
+    assert_eq!(
+        kafka.processed_count, 3,
+        "note_sunk_events must count input messages, not filtered sink length"
+    );
+    assert_eq!(
+        kafka.committed,
+        vec![10, 20, 30],
+        "Kafka pending-ack commit must include filtered-away messages"
+    );
+    assert!(
+        kafka.pending_acks.is_empty(),
+        "no pending acks must remain after filter sink"
+    );
+
+    // wal2json: same filter; slot must still advance (sunk matches emitted).
+    let mut wal = Wal2jsonGateDriver {
+        remaining: events,
+        emitted: 0,
+        sunk: 0,
+        advances: 0,
+        finished: false,
+    };
+    let sink2 = RecordingSink::new();
+    run_source_runtime_with(
+        &mut wal,
+        &sink2,
+        transformer,
+        &apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(sink2.applied().len(), 2);
+    assert_eq!(
+        wal.advances, 1,
+        "wal2json slot must advance when sunk notes input count under filter"
+    );
+    assert_eq!(wal.emitted, 0, "emitted must reset after advance");
+    assert_eq!(wal.sunk, 0, "sunk must reset after advance");
+}
+
+/// Fan-out transform: `note_sunk_events` must not over-count input so
+/// max_messages / processed_count and wal2json gates do not premature-advance.
+#[tokio::test]
+async fn fan_out_transform_notes_input_count_not_output_length() {
+    use crate::BatchTransformer;
+    use anyhow::bail;
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use sync_core::UniversalChange;
+
+    /// Duplicates each change — length grows.
+    struct FanOutTwice;
+
+    #[async_trait]
+    impl BatchTransformer for FanOutTwice {
+        fn is_identity(&self) -> bool {
+            false
+        }
+
+        async fn transform_changes(
+            &self,
+            _batch_id: u64,
+            changes: Vec<UniversalChange>,
+        ) -> anyhow::Result<Vec<UniversalChange>> {
+            let mut out = Vec::with_capacity(changes.len() * 2);
+            for c in changes {
+                out.push(c.clone());
+                out.push(c);
+            }
+            Ok(out)
+        }
+
+        async fn transform_rows(
+            &self,
+            _batch_id: u64,
+            rows: Vec<sync_core::UniversalRow>,
+        ) -> anyhow::Result<Vec<sync_core::UniversalRow>> {
+            Ok(rows)
+        }
+
+        async fn transform_events(
+            &self,
+            batch_id: u64,
+            events: Vec<ApplyEvent>,
+        ) -> anyhow::Result<Vec<ApplyEvent>> {
+            if events.iter().all(|e| matches!(e, ApplyEvent::Change(_))) {
+                let changes: Vec<_> = events
+                    .into_iter()
+                    .map(|e| match e {
+                        ApplyEvent::Change(c) => c,
+                        ApplyEvent::RelationChange(_) => unreachable!(),
+                    })
+                    .collect();
+                let out = self.transform_changes(batch_id, changes).await?;
+                return Ok(out.into_iter().map(ApplyEvent::Change).collect());
+            }
+            bail!("FanOutTwice expects homogeneous change batches")
+        }
+    }
+
+    /// Kafka-like processed_count + max_messages stop.
+    struct MaxMessagesDriver {
+        remaining: Vec<PositionedEvent<u64>>,
+        pending_acks: std::collections::VecDeque<u64>,
+        ready_to_commit: Vec<u64>,
+        committed: Vec<u64>,
+        processed_count: u64,
+        max_messages: u64,
+        finished: bool,
+    }
+
+    #[async_trait]
+    impl SourceDriver for MaxMessagesDriver {
+        type Position = u64;
+
+        async fn poll_work(&mut self) -> anyhow::Result<Vec<PositionedEvent<u64>>> {
+            if self.stop_reason().is_some() || self.finished || self.remaining.is_empty() {
+                if self.remaining.is_empty() {
+                    self.finished = true;
+                }
+                return Ok(Vec::new());
+            }
+            let ev = self.remaining.remove(0);
+            self.pending_acks.push_back(ev.position);
+            Ok(vec![ev])
+        }
+
+        async fn commit(&mut self, _position: Self::Position) -> anyhow::Result<()> {
+            self.committed.append(&mut self.ready_to_commit);
+            Ok(())
+        }
+
+        fn is_finished(&self) -> bool {
+            self.finished
+        }
+
+        fn checkpoint_policy(&self) -> CheckpointPolicy {
+            CheckpointPolicy::CommitOnly
+        }
+
+        fn stop_reason(&self) -> Option<StopReason> {
+            if self.processed_count >= self.max_messages {
+                Some(StopReason::Until)
+            } else {
+                None
+            }
+        }
+
+        fn note_sunk_events(&mut self, count: u64) {
+            for _ in 0..count {
+                if let Some(p) = self.pending_acks.pop_front() {
+                    self.ready_to_commit.push(p);
+                }
+            }
+            self.processed_count = self.processed_count.saturating_add(count);
+            if self.processed_count >= self.max_messages {
+                self.finished = true;
+            }
+        }
+    }
+
+    /// wal2json-like gate that would premature-advance if fan-out over-counted.
+    struct Wal2jsonGateDriver {
+        remaining: Vec<PositionedEvent<u64>>,
+        emitted: u64,
+        sunk: u64,
+        advances: u64,
+        /// Second peek only after first advance (simulates awaiting_commit).
+        can_emit_second: bool,
+        finished: bool,
+    }
+
+    #[async_trait]
+    impl SourceDriver for Wal2jsonGateDriver {
+        type Position = u64;
+
+        async fn poll_work(&mut self) -> anyhow::Result<Vec<PositionedEvent<u64>>> {
+            if self.finished {
+                return Ok(Vec::new());
+            }
+            if self.emitted > self.sunk {
+                // Still awaiting sunk for the current peek — do not emit more.
+                return Ok(Vec::new());
+            }
+            if self.remaining.is_empty() {
+                self.finished = true;
+                return Ok(Vec::new());
+            }
+            if !self.can_emit_second && self.advances == 0 && self.emitted > 0 {
+                return Ok(Vec::new());
+            }
+            // Emit one event per peek.
+            let ev = self.remaining.remove(0);
+            self.emitted = self.emitted.saturating_add(1);
+            self.can_emit_second = false;
+            Ok(vec![ev])
+        }
+
+        async fn commit(&mut self, _position: Self::Position) -> anyhow::Result<()> {
+            if self.sunk < self.emitted {
+                return Ok(());
+            }
+            self.advances = self.advances.saturating_add(1);
+            self.emitted = 0;
+            self.sunk = 0;
+            self.can_emit_second = true;
+            Ok(())
+        }
+
+        fn is_finished(&self) -> bool {
+            self.finished
+        }
+
+        fn checkpoint_policy(&self) -> CheckpointPolicy {
+            CheckpointPolicy::CommitOnly
+        }
+
+        fn note_sunk_events(&mut self, count: u64) {
+            self.sunk = self.sunk.saturating_add(count);
+        }
+    }
+
+    let apply_opts = opts().with_batch_size(1);
+    let transformer = Arc::new(FanOutTwice);
+
+    // max_messages=2: two input messages → four sink writes; stop after 2 inputs.
+    let mut kafka = MaxMessagesDriver {
+        remaining: vec![
+            PositionedEvent::change(change(1), 10u64),
+            PositionedEvent::change(change(2), 20u64),
+            PositionedEvent::change(change(3), 30u64),
+        ],
+        pending_acks: std::collections::VecDeque::new(),
+        ready_to_commit: Vec::new(),
+        committed: Vec::new(),
+        processed_count: 0,
+        max_messages: 2,
+        finished: false,
+    };
+    let sink = RecordingSink::new();
+    run_source_runtime_with(
+        &mut kafka,
+        &sink,
+        Arc::clone(&transformer),
+        &apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        sink.applied().len(),
+        4,
+        "fan-out must write 2 outputs per input for the first 2 inputs"
+    );
+    assert_eq!(
+        kafka.processed_count, 2,
+        "processed_count / max_messages must use input count, not fan-out length"
+    );
+    assert_eq!(kafka.committed, vec![10, 20]);
+    assert!(
+        !kafka.committed.contains(&30),
+        "third input must not be committed after max_messages"
+    );
+
+    // wal2json: one input fans out to 2 sink writes; must not advance early
+    // (sunk would hit emitted with post-transform count of 2 vs emitted 1).
+    let mut wal = Wal2jsonGateDriver {
+        remaining: vec![
+            PositionedEvent::change(change(1), 10u64),
+            PositionedEvent::change(change(2), 20u64),
+        ],
+        emitted: 0,
+        sunk: 0,
+        advances: 0,
+        can_emit_second: true,
+        finished: false,
+    };
+    let sink2 = RecordingSink::new();
+    run_source_runtime_with(
+        &mut wal,
+        &sink2,
+        transformer,
+        &apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(sink2.applied().len(), 4, "two inputs × fan-out 2");
+    assert_eq!(
+        wal.advances, 2,
+        "wal2json must advance once per input peek, not once per fan-out write"
+    );
+}

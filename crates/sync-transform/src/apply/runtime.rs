@@ -295,7 +295,7 @@ struct CompletedBatch<P> {
     #[allow(dead_code)]
     batch_id: u64,
     last_position: P,
-    /// Events in this batch (input count; for `Ok` prefer `events.len()`).
+    /// Pre-transform input event count (for `note_sunk_events` / skip).
     event_count: u64,
     result: Result<Vec<ApplyEvent>>,
 }
@@ -749,6 +749,9 @@ where
     }
 
     /// After a successful sink apply: account, commit, persist, advance.
+    ///
+    /// `sunk` is the **pre-transform input** event count (`batch.event_count`),
+    /// not the post-transform sink length.
     pub(crate) async fn finish_sink_ok_driver(
         &mut self,
         driver: &mut impl SourceDriver<Position = P>,
@@ -818,10 +821,13 @@ where
             match batch.result {
                 Ok(events) => match self.apply_sink_events(&events).await {
                     Ok(()) => {
+                        // Pre-transform input count — not post-transform
+                        // `events.len()` — so Kafka/wal2json watermarks stay
+                        // aligned under filter and fan-out.
                         self.finish_sink_ok_driver(
                             driver,
                             batch.last_position,
-                            events.len() as u64,
+                            batch.event_count,
                         )
                         .await?;
                     }
@@ -830,7 +836,7 @@ where
                             driver,
                             batch.batch_id,
                             batch.last_position,
-                            batch.event_count.max(events.len() as u64),
+                            batch.event_count,
                             e,
                         )
                         .await?;
