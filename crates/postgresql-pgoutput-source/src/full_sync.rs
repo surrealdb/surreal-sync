@@ -237,40 +237,102 @@ async fn migrate_table_with_transforms<S: SurrealSink>(
 
     let mut total_processed = 0usize;
     let mut after: Option<Vec<UniversalValue>> = None;
-    let mut row_index_base = 0u64;
-    loop {
-        if cancel.is_cancelled() {
-            debug!("Cancellation requested mid-table '{table_name}'; stopping chunk reads");
-            return Ok(total_processed);
+    if sync_opts.dry_run {
+        loop {
+            if cancel.is_cancelled() {
+                return Ok(total_processed);
+            }
+            let chunk = read_table_chunk(
+                client,
+                table_name,
+                &pk_columns,
+                after.as_deref(),
+                batch_size,
+                schema,
+            )
+            .await?;
+            if chunk.rows.is_empty() {
+                break;
+            }
+            let n = chunk.rows.len();
+            total_processed += n;
+            after = chunk.last_pk;
+            if n < batch_size {
+                break;
+            }
         }
-        let chunk = read_table_chunk(
-            client,
-            table_name,
-            &pk_columns,
-            after.as_deref(),
-            batch_size,
-            schema,
-        )
-        .await?;
-        if chunk.rows.is_empty() {
-            break;
-        }
-        let n = chunk.rows.len();
-        let mut rows = chunk.rows;
-        for (i, row) in rows.iter_mut().enumerate() {
-            row.index = row_index_base + i as u64;
-        }
-        row_index_base = row_index_base.saturating_add(n as u64);
-        if !sync_opts.dry_run {
-            write_rows(surreal, pipeline, rows, apply_opts).await?;
-        }
-        total_processed += n;
-        after = chunk.last_pk;
-        if n < batch_size {
-            break;
+        return Ok(total_processed);
+    }
+
+    use async_trait::async_trait;
+    use std::sync::Arc;
+    use sync_core::UniversalRow;
+    use sync_transform::{
+        run_source_runtime_with, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
+    };
+
+    struct PgKeysetChunks<'a> {
+        client: &'a Client,
+        table_name: &'a str,
+        pk_columns: &'a [String],
+        after: Option<Vec<UniversalValue>>,
+        batch_size: usize,
+        schema: Option<&'a sync_core::DatabaseSchema>,
+        cancel: &'a tokio_util::sync::CancellationToken,
+        exhausted: bool,
+    }
+
+    #[async_trait]
+    impl RowChunkSource for PgKeysetChunks<'_> {
+        async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRow>>> {
+            if self.exhausted || self.cancel.is_cancelled() {
+                self.exhausted = true;
+                return Ok(None);
+            }
+            let chunk = read_table_chunk(
+                self.client,
+                self.table_name,
+                self.pk_columns,
+                self.after.as_deref(),
+                self.batch_size,
+                self.schema,
+            )
+            .await?;
+            if chunk.rows.is_empty() {
+                self.exhausted = true;
+                return Ok(None);
+            }
+            let n = chunk.rows.len();
+            self.after = chunk.last_pk;
+            if n < self.batch_size {
+                self.exhausted = true;
+            }
+            Ok(Some(chunk.rows))
         }
     }
-    Ok(total_processed)
+
+    let chunks = PgKeysetChunks {
+        client,
+        table_name,
+        pk_columns: &pk_columns,
+        after: None,
+        batch_size,
+        schema,
+        cancel,
+        exhausted: false,
+    };
+    let mut driver = RowChunkDriver::new(chunks);
+    let transformer = Arc::new(pipeline.clone());
+    let runtime_opts = SourceRuntimeOpts::new();
+    run_source_runtime_with(
+        &mut driver,
+        surreal,
+        transformer,
+        apply_opts,
+        &runtime_opts,
+    )
+    .await?;
+    Ok(driver.sunk_count() as usize)
 }
 
 async fn resolve_user_tables(

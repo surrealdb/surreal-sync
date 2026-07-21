@@ -51,8 +51,8 @@ pub use apply::{
     run_change_feed, run_change_feed_with, run_source_runtime, run_source_runtime_with,
     write_relations, write_relations_with, write_rows, write_rows_with, AdhocApply, ApplyContext,
     ApplyEvent, ApplyOpts, BatchTransformer, ChangeFeed, ChangeFeedDriver, ChangeFeedRef,
-    CheckpointPolicy, ControlSignal, FailurePolicy, PositionedChange, PositionedEvent, RuntimeExit,
-    SourceDriver, SourceRuntimeOpts, StopReason,
+    CheckpointPolicy, ControlSignal, FailurePolicy, PositionedChange, PositionedEvent,
+    RowChunkDriver, RowChunkSource, RuntimeExit, SourceDriver, SourceRuntimeOpts, StopReason,
 };
 pub use config::{
     ensure_command_resolvable, load_pipeline_and_opts, load_transforms_config, parse_humantime,

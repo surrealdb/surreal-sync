@@ -9,6 +9,7 @@
 mod event;
 mod feed;
 mod opts;
+mod row_chunk;
 mod runtime;
 mod source_driver;
 mod transform;
@@ -16,6 +17,7 @@ mod transform;
 pub use event::{ApplyEvent, PositionedEvent};
 pub use feed::{ChangeFeed, PositionedChange};
 pub use opts::{ApplyOpts, FailurePolicy};
+pub use row_chunk::{RowChunkDriver, RowChunkSource};
 pub use runtime::{
     apply_changes, apply_changes_with, apply_relation_changes, apply_relation_changes_with,
     run_change_feed, run_change_feed_with, write_relations, write_relations_with, write_rows,

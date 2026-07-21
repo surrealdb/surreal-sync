@@ -1663,3 +1663,48 @@ async fn fan_out_transform_notes_input_count_not_output_length() {
         "wal2json must advance once per input peek, not once per fan-out write"
     );
 }
+
+#[tokio::test]
+async fn row_chunk_driver_streams_chunks_through_runtime() {
+    use crate::{RowChunkDriver, RowChunkSource};
+    use async_trait::async_trait;
+    use sync_core::UniversalRow;
+
+    struct TwoChunks {
+        n: usize,
+    }
+
+    #[async_trait]
+    impl RowChunkSource for TwoChunks {
+        async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+            self.n += 1;
+            if self.n > 2 {
+                return Ok(None);
+            }
+            let id = self.n as i64;
+            let mut fields = HashMap::new();
+            fields.insert("v".to_string(), UniversalValue::Int64(id));
+            Ok(Some(vec![UniversalRow::new(
+                "t",
+                id as u64,
+                UniversalValue::Int64(id),
+                fields,
+            )]))
+        }
+    }
+
+    let mut driver = RowChunkDriver::new(TwoChunks { n: 0 });
+    let sink = RecordingSink::new();
+    let apply_opts = ApplyOpts::identity().with_max_in_flight(2);
+    run_source_runtime(
+        &mut driver,
+        &sink,
+        &Pipeline::new(),
+        &apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(driver.sunk_count(), 2);
+    assert_eq!(sink.applied().len(), 2);
+}

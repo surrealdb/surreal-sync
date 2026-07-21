@@ -5,13 +5,18 @@
 
 use crate::{SourceOpts, SyncOpts};
 use anyhow::Result;
+use async_trait::async_trait;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use mysql_async::{prelude::*, Params, Pool, Row, Value};
 use mysql_types::{row_to_typed_values_with_config, RowConversionConfig};
 use std::collections::HashMap;
+use std::sync::Arc;
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalRow, UniversalType, UniversalValue};
-use sync_transform::{write_rows, ApplyOpts, Pipeline};
+use sync_transform::{
+    run_source_runtime_with, write_rows, ApplyOpts, Pipeline, RowChunkDriver, RowChunkSource,
+    SourceRuntimeOpts,
+};
 use tracing::{debug, info, warn};
 
 /// Sanitize connection string for logging (hide password)
@@ -351,40 +356,92 @@ async fn migrate_table<S: SurrealSink>(
     let batch_size = opts.sync_opts.batch_size.max(1);
 
     if !pk_columns.is_empty() {
-        let mut total_processed = 0usize;
-        let mut after: Option<Vec<UniversalValue>> = None;
-        let mut row_index_base = 0u64;
-        loop {
-            let chunk = read_table_chunk(
-                conn,
-                table_name,
-                &pk_columns,
-                after.as_deref(),
-                batch_size,
-                &config,
-            )
-            .await?;
-            if chunk.rows.is_empty() {
-                break;
-            }
-            let n = chunk.rows.len();
-            let mut rows = chunk.rows;
-            for (i, row) in rows.iter_mut().enumerate() {
-                row.index = row_index_base + i as u64;
-            }
-            row_index_base = row_index_base.saturating_add(n as u64);
-            if !opts.sync_opts.dry_run {
-                write_rows(surreal, opts.pipeline, rows, opts.apply_opts).await?;
-            } else {
+        if opts.sync_opts.dry_run {
+            let mut total_processed = 0usize;
+            let mut after: Option<Vec<UniversalValue>> = None;
+            loop {
+                let chunk = read_table_chunk(
+                    conn,
+                    table_name,
+                    &pk_columns,
+                    after.as_deref(),
+                    batch_size,
+                    &config,
+                )
+                .await?;
+                if chunk.rows.is_empty() {
+                    break;
+                }
+                let n = chunk.rows.len();
                 debug!("Dry-run: Would insert {n} records into {table_name}");
+                total_processed += n;
+                after = chunk.last_pk;
+                if n < batch_size {
+                    break;
+                }
             }
-            total_processed += n;
-            after = chunk.last_pk;
-            if n < batch_size {
-                break;
+            return Ok(total_processed);
+        }
+
+        struct MysqlKeysetChunks<'a> {
+            conn: &'a mut mysql_async::Conn,
+            table_name: &'a str,
+            pk_columns: &'a [String],
+            after: Option<Vec<UniversalValue>>,
+            batch_size: usize,
+            config: &'a RowConversionConfig,
+            exhausted: bool,
+        }
+
+        #[async_trait]
+        impl RowChunkSource for MysqlKeysetChunks<'_> {
+            async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRow>>> {
+                if self.exhausted {
+                    return Ok(None);
+                }
+                let chunk = read_table_chunk(
+                    self.conn,
+                    self.table_name,
+                    self.pk_columns,
+                    self.after.as_deref(),
+                    self.batch_size,
+                    self.config,
+                )
+                .await?;
+                if chunk.rows.is_empty() {
+                    self.exhausted = true;
+                    return Ok(None);
+                }
+                let n = chunk.rows.len();
+                self.after = chunk.last_pk;
+                if n < self.batch_size {
+                    self.exhausted = true;
+                }
+                Ok(Some(chunk.rows))
             }
         }
-        return Ok(total_processed);
+
+        let chunks = MysqlKeysetChunks {
+            conn,
+            table_name,
+            pk_columns: &pk_columns,
+            after: None,
+            batch_size,
+            config: &config,
+            exhausted: false,
+        };
+        let mut driver = RowChunkDriver::new(chunks);
+        let transformer = Arc::new(opts.pipeline.clone());
+        let runtime_opts = SourceRuntimeOpts::new();
+        run_source_runtime_with(
+            &mut driver,
+            surreal,
+            transformer,
+            opts.apply_opts,
+            &runtime_opts,
+        )
+        .await?;
+        return Ok(driver.sunk_count() as usize);
     }
 
     warn!(

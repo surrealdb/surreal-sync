@@ -143,9 +143,14 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
     pipeline: &sync_transform::Pipeline,
     apply_opts: &sync_transform::ApplyOpts,
 ) -> anyhow::Result<usize> {
+    use async_trait::async_trait;
+    use std::sync::Arc;
     use surreal_sync_postgresql::{convert_table, get_primary_key_columns, read_table_chunk};
-    use sync_core::{classify_table, TableKind};
-    use sync_transform::{write_relations, write_rows};
+    use sync_core::{classify_table, TableKind, UniversalRow};
+    use sync_transform::{
+        run_source_runtime_with, write_relations, write_rows, RowChunkDriver, RowChunkSource,
+        SourceRuntimeOpts,
+    };
 
     let pk_columns = get_primary_key_columns(client, table_name).await?;
     let table_kind = schema
@@ -178,37 +183,90 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
         return Ok(total);
     }
 
-    let mut total = 0usize;
-    let mut after: Option<Vec<sync_core::UniversalValue>> = None;
-    let mut row_index_base = 0u64;
-    loop {
-        let chunk = read_table_chunk(
-            client,
-            table_name,
-            &pk_columns,
-            after.as_deref(),
-            batch_size,
-            schema,
-        )
-        .await?;
-        if chunk.rows.is_empty() {
-            break;
+    if sync_opts.dry_run {
+        let mut total = 0usize;
+        let mut after: Option<Vec<sync_core::UniversalValue>> = None;
+        loop {
+            let chunk = read_table_chunk(
+                client,
+                table_name,
+                &pk_columns,
+                after.as_deref(),
+                batch_size,
+                schema,
+            )
+            .await?;
+            if chunk.rows.is_empty() {
+                break;
+            }
+            let n = chunk.rows.len();
+            total += n;
+            after = chunk.last_pk;
+            if n < batch_size {
+                break;
+            }
         }
-        let n = chunk.rows.len();
-        let mut rows = chunk.rows;
-        for (i, row) in rows.iter_mut().enumerate() {
-            row.index = row_index_base + i as u64;
-        }
-        row_index_base = row_index_base.saturating_add(n as u64);
-        if !sync_opts.dry_run {
-            write_rows(surreal, pipeline, rows, apply_opts).await?;
-        }
-        total += n;
-        after = chunk.last_pk;
-        if n < batch_size {
-            break;
+        return Ok(total);
+    }
+
+    struct PgKeysetChunks<'a> {
+        client: &'a tokio_postgres::Client,
+        table_name: &'a str,
+        pk_columns: &'a [String],
+        after: Option<Vec<sync_core::UniversalValue>>,
+        batch_size: usize,
+        schema: Option<&'a sync_core::DatabaseSchema>,
+        exhausted: bool,
+    }
+
+    #[async_trait]
+    impl RowChunkSource for PgKeysetChunks<'_> {
+        async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+            if self.exhausted {
+                return Ok(None);
+            }
+            let chunk = read_table_chunk(
+                self.client,
+                self.table_name,
+                self.pk_columns,
+                self.after.as_deref(),
+                self.batch_size,
+                self.schema,
+            )
+            .await?;
+            if chunk.rows.is_empty() {
+                self.exhausted = true;
+                return Ok(None);
+            }
+            let n = chunk.rows.len();
+            self.after = chunk.last_pk;
+            if n < self.batch_size {
+                self.exhausted = true;
+            }
+            Ok(Some(chunk.rows))
         }
     }
-    Ok(total)
+
+    let chunks = PgKeysetChunks {
+        client,
+        table_name,
+        pk_columns: &pk_columns,
+        after: None,
+        batch_size,
+        schema,
+        exhausted: false,
+    };
+    let mut driver = RowChunkDriver::new(chunks);
+    let transformer = Arc::new(pipeline.clone());
+    let runtime_opts = SourceRuntimeOpts::new();
+    run_source_runtime_with(
+        &mut driver,
+        surreal,
+        transformer,
+        apply_opts,
+        &runtime_opts,
+    )
+    .await?;
+    Ok(driver.sunk_count() as usize)
 }
 
