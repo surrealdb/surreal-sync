@@ -49,7 +49,7 @@ The apply window controls how many batches may be transforming or waiting for or
 - **`batch_size` / `batch_max_wait`** — how large a batch becomes before transform starts (`[pipeline]`). Larger batches amortize worker overhead; smaller batches reduce latency.
 - **`[pipeline].timeout`** — outer bound for the whole stage chain (including retries). Prefer per-stage `timeout` for individual workers.
 - **Per-stage `timeout` / `retry`** — how long one exchange may take on that stage, and how many times to retry with backoff before the batch fails (only when using command workers).
-- **`max_in_flight`** — apply window size (default `1`). On **CDC / `SourceDriver` / long-lived file streams**, W=1 and W=16 share the **same** runtime: surreal-sync may transform several batches at once and continue polling while ordered sink writes are in flight; completions match by `batch_id`, then **sink apply and `advance_watermark` stay strictly ordered**. A failed batch blocks watermark advance of later ones; in-flight successors are discarded (never advanced). Full-sync helpers (`write_rows` / `write_relations`) always use that same window — there is no identity oneshot bypass. Homogeneous upsert batches may still coalesce to a bulk `write_universal_rows` / `write_universal_relations` call **inside** the ordered sink step.
+- **`max_in_flight`** — apply window size (default `1`). With `max_in_flight > 1`, surreal-sync may transform several batches at once and keep reading while earlier batches write to SurrealDB. Writes and watermark advances stay in source order. Full sync uses the same rules — there is no separate “identity shortcut.”
 
 Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W. **Omit `--transforms-config`** → `ApplyOpts::identity()` (`batch_size = 1`, `max_in_flight = 1`) so CDC stays on per-event cadence with no overlapping window; overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set).
 
@@ -375,7 +375,7 @@ There is no exactly-once guarantee across transform + SurrealDB + source checkpo
 - **MongoDB / Neo4j full** — cursor/result streams use `RowChunkDriver` / `RelationChunkDriver` (Neo4j: all nodes before any edges).
 - **Ad-hoc helpers** — remaining `write_rows` / `write_relations` call sites use the same ApplyContext window within each call; they are not a continuous source poll loop.
 
-Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it) follow the durability rules above — especially that catch-up progress does not advance past unsunk transform/apply work on sources that use sink-safe checkpoints. See the per-source guides linked below and [Source ports](source-ports.md) for implementer details.
+Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it) follow the durability rules above. For catch-up vs unsunk work on streaming CDC, see [CatchUpProgress and unsunk work](#catchupprogress-and-unsunk-work-streaming-cdc). Per-source guides and [Source ports](source-ports.md) cover implementer details.
 
 ### Limitations
 
@@ -410,4 +410,4 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 
 ### Advanced: embedding surreal-sync
 
-Library / WASM hosts that need zero-copy in-process transforms should use the `sync-transform` crate rustdoc. The **general** APIs are `ApplyContext` (rows, changes, and relation edges) and `SourceDriver` / `run_source_runtime` (control-plane hooks for schema refresh, ad-hoc snapshot via injected `AdhocApply` helpers, cancel/deadline, sink-safe checkpoints including `CheckpointPolicy::IntervalWhenDrained`). `ChangeFeed` / `run_change_feed` are a convenience for simple row CDC. In-process stages use `InPlaceTransform` + `Pipeline::push_inplace` (including schema-aware FK→record-link transforms constructed with a catalog). That path is not configured via TOML.
+For in-process transforms and custom drivers, see `sync-transform` rustdoc (`ApplyContext`, `SourceDriver`). TOML only covers external command workers.
