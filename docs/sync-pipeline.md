@@ -20,7 +20,7 @@ surreal-sync owns batching, applying docs to SurrealDB, and when the source chec
 
 ## Source
 
-Each `from *` sync/import path feeds the same apply framework. Operator guides cover connection strings, snapshots, and resume; implementers wire ports through `SourceDriver` / `run_source_runtime` (or chunk helpers).
+Each `from *` sync/import path uses the same shared apply path. Operator guides cover connection strings, snapshots, and resume; implementers wire ports through `SourceDriver` / `run_source_runtime` (or chunk helpers).
 
 | Topic | Where to go |
 |-------|-------------|
@@ -53,7 +53,7 @@ The apply window controls how many batches may be transforming or waiting for or
 
 Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W. **Omit `--transforms-config`** → `ApplyOpts::identity()` (`batch_size = 1`, `max_in_flight = 1`) so CDC stays on per-event cadence with no overlapping window; overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set).
 
-**Best-case R∩T∩W** (source reads continuing while transforms run and ordered sink writes stay in flight) needs **`max_in_flight > 1`**. With the default `1`, the framework still orders sink apply and sink-gates cursors, but there is no overlapping transform/sink window to hide latency.
+**Best-case R∩T∩W** (source reads continuing while transforms run and ordered sink writes stay in flight) needs **`max_in_flight > 1`**. With the default `1`, surreal-sync still orders sink apply and sink-gates cursors, but there is no overlapping transform/sink window to hide latency.
 
 ## Sink and durability
 
@@ -72,7 +72,7 @@ For every incremental batch on sources with a real post-sink durability hook, su
 | PostgreSQL wal2json | Slot `advance` only after emitted events are sunk (peeks may continue under window capacity via non-consuming peek + prefix skip) |
 | Kafka | Consumer-group `commit_batch` of **all** messages in the sunk batch (not only the last position) |
 | CSV / JSONL | No source cursor (file import) |
-| MySQL/PostgreSQL trigger, MongoDB change stream, Neo4j | Framework `advance_watermark(position)` marks an **in-memory sink-safe cursor** only after SurrealDB apply succeeds. Fetch/read-ahead may be ahead of that cursor; `checkpoint()` / resume-token handles report the sunk watermark, not the read head. There is still **no mid-run durable store write** on these ports — process restart resumes from the last **persisted** sync checkpoint (phase markers / `--from`), so long incremental runs may reprocess after a crash (at-least-once). |
+| MySQL/PostgreSQL trigger, MongoDB change stream, Neo4j | After SurrealDB write succeeds, `advance_watermark(position)` marks an **in-memory sink-safe cursor**. Fetch/read-ahead may be ahead of that cursor; `checkpoint()` / resume-token handles report the sunk watermark, not the read head. There is still **no mid-run durable store write** on these ports — process restart resumes from the last **persisted** sync checkpoint (phase markers / `--from`), so long incremental runs may reprocess after a crash (at-least-once). |
 
 | Hop | What “ack” means |
 |-----|------------------|
@@ -139,7 +139,7 @@ Use transforms when you need enrichment or light ETL (e.g. call an OCR/embedding
 
 ### Commands that support `--transforms-config`
 
-Every sync/import path below loads the same TOML via the shared CLI helper and applies through the `sync-transform` framework. Omit the flag for identity.
+Every sync/import path below loads the same TOML via the shared CLI helper and runs through the shared apply path. Omit the flag for identity.
 
 | Command | Sync paths |
 |---------|------------|
