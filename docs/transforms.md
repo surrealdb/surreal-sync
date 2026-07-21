@@ -168,7 +168,7 @@ For every incremental batch on sources with a real post-sink commit hook, surrea
 | PostgreSQL wal2json | Slot `advance` only after emitted events are sunk (peeks may continue under window capacity via non-consuming peek + prefix skip) |
 | Kafka | Consumer-group `commit_batch` of **all** messages in the sunk batch (not only the last position) |
 | CSV / JSONL | No source cursor (file import) |
-| MySQL/PostgreSQL trigger, MongoDB change stream, Neo4j | Framework `commit` is a no-op today: the in-memory read cursor advances when events are **fetched**. There is **no** mid-run durable store watermark advanced only after sink on these ports. Process restart still resumes from the last **persisted** sync checkpoint (phase markers), not from an in-flight transform buffer. |
+| MySQL/PostgreSQL trigger, MongoDB change stream, Neo4j | Framework `commit(position)` advances an **in-memory sink-safe cursor** only after SurrealDB apply succeeds. Fetch/read-ahead may be ahead of that cursor; `checkpoint()` / resume-token handles report the sunk watermark, not the read head. There is still **no mid-run durable store write** on these ports — process restart resumes from the last **persisted** sync checkpoint (phase markers / `--from`), so long incremental runs may reprocess after a crash (at-least-once). |
 
 | Hop | What “ack” means |
 |-----|------------------|
@@ -208,7 +208,7 @@ This keeps resume from replaying past docs that never landed in SurrealDB, witho
 | `fail` (default) | Stop sync on transform or sink failure for a batch. Checkpoint stays behind that batch. Restart resumes from the last successful commit. |
 | `skip` | Log the failure, **do not write** that batch to SurrealDB, but **still commit past it**. |
 
-**Warning:** `skip` can **lose data** by explicit operator choice. Use only when dropping a bad batch is acceptable.
+**Warning — data loss by configuration:** `failure_policy = "skip"` means a failed transform or sink batch is **never** applied to SurrealDB, yet the source cursor still advances past it. Those source events are gone for this sync unless you re-seed from an earlier checkpoint or re-run a full sync. Prefer the default `fail` unless dropping bad batches is an explicit, accepted trade-off.
 
 ## Writing an external worker
 
@@ -289,7 +289,9 @@ There is no exactly-once guarantee across transform + SurrealDB + source checkpo
 `--transforms-config` applies to every command in [Commands that support `--transforms-config`](#commands-that-support---transforms-config).
 
 - **CDC / Kafka / CSV / JSONL** — long-lived `SourceDriver` + `run_source_runtime`: reads can overlap transforms and ordered sink writes under `max_in_flight`.
-- **Full sync / snapshot / interleaved flush** — rows go through `write_rows` / `write_relations`. Those helpers honor `max_in_flight` via the ApplyContext window when W>1 or the pipeline is non-identity; they are **not** a continuous source poll loop (the outer snapshot still fetches the next chunk after the previous chunk’s apply finishes).
+- **Full sync / keyset table scans** — MySQL and PostgreSQL keyset paths use a long-lived `RowChunkDriver` so the next chunk read can overlap prior-chunk transform/sink when `max_in_flight > 1` (same idea as CSV/JSONL streaming). Relation tables and no-PK fallbacks still use chunked `write_rows` / `write_relations`.
+- **Interleaved snapshot reconciliation** — CDC events between watermarks share one `ApplyContext` window (not per-event apply), so `max_in_flight` absorbs slow transforms; `commit_reconciled` runs only after that window drains.
+- **Ad-hoc / oneshot helpers** — remaining `write_rows` / `write_relations` call sites honor `max_in_flight` within each call; they are not a continuous source poll loop.
 
 Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it) follow the durability rules above — especially that catch-up progress does not advance past unsunk transform/apply work on sources that use sink-safe checkpoints. See the per-source guides linked below and [Source ports](source-ports.md) for implementer details.
 
