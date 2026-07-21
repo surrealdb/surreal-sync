@@ -193,6 +193,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync +
     );
 
     let processed_count = Arc::new(AtomicU64::new(0));
+    let next_row_index = Arc::new(AtomicU64::new(0));
     let num_consumers = config.num_consumers;
     let max_messages = config.max_messages;
     info!("Spawning {num_consumers} consumers in the same consumer group...");
@@ -207,6 +208,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync +
         let pipeline = pipeline.clone();
         let apply_opts = apply_opts.clone();
         let processed_count = Arc::clone(&processed_count);
+        let next_row_index = Arc::clone(&next_row_index);
         let table_name = table_name.clone();
         let table_schema = table_schema.clone();
         let use_message_key_as_id = config.use_message_key_as_id;
@@ -221,6 +223,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync +
                 id_field,
                 kafka_batch_size,
                 processed_count,
+                next_row_index,
                 max_messages,
                 deadline,
                 finished: false,
@@ -285,7 +288,11 @@ struct KafkaSourceDriver {
     use_message_key_as_id: bool,
     id_field: String,
     kafka_batch_size: usize,
+    /// Commit / processed watermark (advanced only after sink + commit).
     processed_count: Arc<AtomicU64>,
+    /// Poll-time `UniversalRow.index` allocator (advances on receive, not commit).
+    /// Separated from `processed_count` so overlapping polls never reuse indices.
+    next_row_index: Arc<AtomicU64>,
     max_messages: Option<u64>,
     deadline: DateTime<Utc>,
     finished: bool,
@@ -300,17 +307,29 @@ impl SourceDriver for KafkaSourceDriver {
             return Ok(Vec::new());
         }
 
+        // Bound receive by remaining max_messages headroom so overlapping polls
+        // (W≥2) cannot enqueue past the configured limit.
+        let limit = poll_receive_limit(
+            self.kafka_batch_size,
+            self.max_messages,
+            self.next_row_index.load(Ordering::SeqCst),
+        );
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
         let messages = self
             .consumer
-            .receive_batch(self.kafka_batch_size)
+            .receive_batch(limit)
             .await
             .map_err(|e| anyhow::anyhow!("kafka receive_batch: {e}"))?;
         if messages.is_empty() {
             return Ok(Vec::new());
         }
 
-        // Reserve unique per-message indices for this poll batch.
-        let base_index = self.processed_count.load(Ordering::SeqCst);
+        // Reserve unique per-message indices for this poll batch (poll-time
+        // allocator — not the post-sink processed_count).
+        let base_index = alloc_row_indices(&self.next_row_index, messages.len());
         let mut events = Vec::with_capacity(messages.len());
         for (offset, message) in messages.into_iter().enumerate() {
             debug!("Received message: {:?}", message);
@@ -420,17 +439,38 @@ fn typed_values_to_universal_row(
 
 /// Per-message `UniversalRow.index` within one Kafka decode batch.
 ///
-/// `base` is the shared processed-count at the start of the batch; `offset`
-/// is the message's position in that batch. Using only `base` for every row
-/// collides indices (regression covered below).
+/// `base` is the poll-time index allocator value at the start of the batch;
+/// `offset` is the message's position in that batch.
 fn batch_row_index(base: u64, offset: usize) -> u64 {
     base + offset as u64
 }
 
+/// How many messages this poll may receive given `max_messages` headroom.
+fn poll_receive_limit(
+    kafka_batch_size: usize,
+    max_messages: Option<u64>,
+    next_row_index: u64,
+) -> usize {
+    let Some(max) = max_messages else {
+        return kafka_batch_size;
+    };
+    if next_row_index >= max {
+        return 0;
+    }
+    let headroom = (max - next_row_index) as usize;
+    kafka_batch_size.min(headroom)
+}
+
+/// Atomically reserve `count` unique row indices; returns the base index.
+fn alloc_row_indices(next_row_index: &AtomicU64, count: usize) -> u64 {
+    next_row_index.fetch_add(count as u64, Ordering::SeqCst)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::batch_row_index;
+    use super::{alloc_row_indices, batch_row_index, poll_receive_limit};
     use std::collections::HashSet;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     #[test]
     fn batch_row_indices_are_unique_within_batch() {
@@ -453,5 +493,41 @@ mod tests {
             indices.len(),
             "rows in a batch must not share one index; got {indices:?}"
         );
+    }
+
+    #[test]
+    fn overlapping_polls_allocate_unique_indices() {
+        // Simulate W≥2: two polls before any commit advances processed_count.
+        let next = AtomicU64::new(0);
+        let processed = AtomicU64::new(0);
+
+        let base1 = alloc_row_indices(&next, 3);
+        let idx1: Vec<u64> = (0..3).map(|o| batch_row_index(base1, o)).collect();
+
+        // Bug pattern: reusing processed_count as base while commits lag.
+        let stale_base = processed.load(Ordering::SeqCst);
+        let collided: Vec<u64> = (0..2).map(|o| batch_row_index(stale_base, o)).collect();
+        assert_eq!(collided, vec![0, 1], "stale processed_count would collide");
+
+        let base2 = alloc_row_indices(&next, 2);
+        let idx2: Vec<u64> = (0..2).map(|o| batch_row_index(base2, o)).collect();
+
+        assert_eq!(idx1, vec![0, 1, 2]);
+        assert_eq!(idx2, vec![3, 4]);
+        let mut all = idx1;
+        all.extend(idx2);
+        let unique: HashSet<_> = all.iter().copied().collect();
+        assert_eq!(unique.len(), all.len(), "overlapping polls must not collide");
+    }
+
+    #[test]
+    fn max_messages_headroom_bounds_receive_under_overlap() {
+        let max = Some(5u64);
+        // After polling 4 (not yet committed), next poll may take only 1.
+        assert_eq!(poll_receive_limit(100, max, 4), 1);
+        assert_eq!(poll_receive_limit(100, max, 5), 0);
+        assert_eq!(poll_receive_limit(100, max, 0), 5);
+        assert_eq!(poll_receive_limit(2, max, 0), 2);
+        assert_eq!(poll_receive_limit(100, None, 0), 100);
     }
 }
