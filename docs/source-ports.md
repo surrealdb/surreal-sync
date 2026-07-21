@@ -31,11 +31,11 @@ spawn coverage is in `sync-transform` config tests).
 |--------|----------------------|---------------------------|--------------------------------|--------|
 | mysql-binlog | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Yes | Reference port; sink-safe CatchUpProgress |
 | postgresql-pgoutput | SourceDriver + `run_source_runtime_with` | Yes (shared loader + CLI e2e) | Yes | Binlog parity; sink-safe CatchUpProgress |
-| postgresql-wal2json | SourceDriver | Yes | Yes | FK pre-push enrichment preserved |
-| postgresql-trigger | SourceDriver | Yes | Yes | FK pre-push enrichment preserved |
-| mysql (trigger) | SourceDriver | Yes | Yes | No DDL / ad-hoc (unchanged gap) |
-| mongodb | SourceDriver + `write_rows` full | Yes | N/A | Resume token as Position |
-| neo4j | SourceDriver + `write_rows` / `write_relations` | Yes | N/A | Nodes + edges via mixed events |
+| postgresql-wal2json | SourceDriver | Yes (shared loader + CLI e2e) | Yes | FK pre-push enrichment preserved |
+| postgresql-trigger | SourceDriver | Yes (shared loader + CLI e2e) | Yes | FK pre-push enrichment preserved |
+| mysql (trigger) | SourceDriver | Yes (shared loader + CLI e2e) | Yes | No DDL / ad-hoc (unchanged gap) |
+| mongodb | SourceDriver + `write_rows` full | Yes (shared loader + CLI e2e) | N/A | Resume token as Position |
+| neo4j | SourceDriver + `write_rows` / `write_relations` | Yes (shared loader + CLI e2e) | N/A | Nodes + edges via mixed events |
 | kafka | `write_rows` (decode batch then apply) | Yes (shared loader + CLI e2e) | N/A | Offset commit stays Kafka consumer-group |
 | csv | `write_rows` | Yes (shared loader + CLI e2e) | N/A | |
 | jsonl | `write_rows` | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline |
@@ -77,7 +77,8 @@ spawn coverage is in `sync-transform` config tests).
 - [x] Identity (omit `--transforms-config`) stays green for each ported source
 - [x] At least one external-transform e2e for every ported streaming source
 - [x] CLI `--transforms-config` smoke where that source has CLI e2e coverage
-      (required for binlog + pgoutput; present for kafka/csv/jsonl when transforms CLI was added)
+      (binlog, pgoutput, wal2json, mysql trigger, postgresql-trigger, mongodb,
+      neo4j, kafka, csv, jsonl)
 
 ## Porting rules (short)
 

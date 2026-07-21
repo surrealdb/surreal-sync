@@ -2,3 +2,4 @@ mod mysql_full_sync_only_cli;
 mod mysql_full_sync_only_lib;
 mod mysql_incremental_sync_only_cli;
 mod mysql_incremental_sync_only_lib;
+mod mysql_transforms_config_cli;
