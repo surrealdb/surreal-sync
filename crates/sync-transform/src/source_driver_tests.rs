@@ -1706,5 +1706,6 @@ async fn row_chunk_driver_streams_chunks_through_runtime() {
     .await
     .unwrap();
     assert_eq!(driver.sunk_count(), 2);
-    assert_eq!(sink.applied().len(), 2);
+    assert_eq!(sink.rows_written().len(), 2);
+    assert!(sink.applied().is_empty());
 }

@@ -19,19 +19,18 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
+use sync_core::{
+    UniversalChange, UniversalChangeOp, UniversalRelation, UniversalRelationChange, UniversalRow,
+};
 use tokio::task::JoinSet;
 use tracing::warn;
 
-/// Transform then `write_universal_rows`. Shared by full sync and snapshot flushes.
+/// Transform then sink rows via the same overlapping [`ApplyContext`] window as
+/// CDC. Shared by full sync and snapshot flushes.
 ///
-/// Gates on [`BatchTransformer::is_identity`] so an empty pipeline is a pure
-/// move into the sink with no transform dispatch or timeout wrapper.
-///
-/// When `max_in_flight > 1` or the pipeline is non-identity, rows are applied
-/// through the same overlapping transform window as CDC (`ApplyContext`) so a
-/// slow transform cannot serialize an entire chunk. Identity + `max_in_flight
-/// == 1` keeps the bulk `write_universal_rows` oneshot path.
+/// Rows become upsert [`UniversalChange`]s and honor `max_in_flight` /
+/// `batch_size`. Homogeneous upsert batches coalesce to
+/// [`SurrealSink::write_universal_rows`] inside the ordered sink step.
 pub async fn write_rows<S: SurrealSink>(
     sink: &S,
     pipeline: &Pipeline,
@@ -41,10 +40,8 @@ pub async fn write_rows<S: SurrealSink>(
     write_rows_with(sink, Arc::new(pipeline.clone()), rows, opts).await
 }
 
-/// Transform then `write_universal_relations`.
-///
-/// See [`write_rows`]: non-identity / `max_in_flight > 1` uses the overlapping
-/// apply window; identity + W=1 stays on the bulk oneshot path.
+/// Transform then sink relations via the same overlapping [`ApplyContext`]
+/// window as CDC (see [`write_rows`]).
 pub async fn write_relations<S: SurrealSink>(
     sink: &S,
     pipeline: &Pipeline,
@@ -77,8 +74,7 @@ pub async fn apply_relation_changes<S: SurrealSink>(
 
 /// Like [`apply_changes`] but accepts any [`BatchTransformer`] behind [`Arc`].
 ///
-/// Honors `max_in_flight` / `batch_size` via [`ApplyContext`] unless identity and
-/// `max_in_flight == 1` (oneshot).
+/// Always honors `max_in_flight` / `batch_size` via [`ApplyContext`].
 pub async fn apply_changes_with<S, T>(
     sink: &S,
     transformer: Arc<T>,
@@ -90,14 +86,6 @@ where
     T: BatchTransformer + 'static,
 {
     if changes.is_empty() {
-        return Ok(());
-    }
-    if transformer.is_identity() && opts.max_in_flight <= 1 {
-        for change in &changes {
-            sink.apply_universal_change(change)
-                .await
-                .context("sink apply_universal_change")?;
-        }
         return Ok(());
     }
     let mut ctx = ApplyContext::new(sink, transformer, opts);
@@ -122,14 +110,6 @@ where
     if changes.is_empty() {
         return Ok(());
     }
-    if transformer.is_identity() && opts.max_in_flight <= 1 {
-        for change in &changes {
-            sink.apply_universal_relation_change(change)
-                .await
-                .context("sink apply_universal_relation_change")?;
-        }
-        return Ok(());
-    }
     let mut ctx = ApplyContext::new(sink, transformer, opts);
     for (i, change) in changes.into_iter().enumerate() {
         ctx.push_relation_change(change, i as u64).await?;
@@ -152,9 +132,6 @@ where
     if rows.is_empty() {
         return Ok(());
     }
-    if transformer.is_identity() && opts.max_in_flight <= 1 {
-        return write_rows_oneshot(sink, transformer, rows, opts).await;
-    }
     // Overlapping window: convert rows to upserts and push through ApplyContext
     // so max_in_flight can absorb slow transforms within a chunk.
     let mut ctx = ApplyContext::new(sink, transformer, opts);
@@ -163,30 +140,6 @@ where
         ctx.push_change(change, i as u64).await?;
     }
     ctx.flush().await?;
-    Ok(())
-}
-
-async fn write_rows_oneshot<S, T>(
-    sink: &S,
-    transformer: Arc<T>,
-    rows: Vec<UniversalRow>,
-    opts: &ApplyOpts,
-) -> Result<()>
-where
-    S: SurrealSink,
-    T: BatchTransformer + 'static,
-{
-    let rows = if transformer.is_identity() {
-        rows
-    } else {
-        tokio::time::timeout(opts.timeout, transformer.transform_rows(0, rows))
-            .await
-            .map_err(|_| anyhow!("transform timeout after {:?}", opts.timeout))?
-            .context("transform rows")?
-    };
-    sink.write_universal_rows(&rows)
-        .await
-        .context("sink write_universal_rows")?;
     Ok(())
 }
 
@@ -204,9 +157,6 @@ where
     if relations.is_empty() {
         return Ok(());
     }
-    if transformer.is_identity() && opts.max_in_flight <= 1 {
-        return write_relations_oneshot(sink, transformer, relations, opts).await;
-    }
     let mut ctx = ApplyContext::new(sink, transformer, opts);
     for (i, relation) in relations.into_iter().enumerate() {
         let change = UniversalRelationChange::update(relation);
@@ -216,28 +166,81 @@ where
     Ok(())
 }
 
-async fn write_relations_oneshot<S, T>(
+/// Ordered sink apply for a transformed batch.
+///
+/// Homogeneous upsert (`Update`) batches coalesce to
+/// [`SurrealSink::write_universal_rows`] /
+/// [`SurrealSink::write_universal_relations`] so large `write_rows` /
+/// `write_relations` vecs keep a bulk trait call **inside** the window. CDC
+/// `Create` / `Delete` (and mixed batches) stay on per-event apply.
+pub(crate) async fn apply_transformed_sink_events<S: SurrealSink>(
     sink: &S,
-    transformer: Arc<T>,
-    relations: Vec<UniversalRelation>,
-    opts: &ApplyOpts,
-) -> Result<()>
-where
-    S: SurrealSink,
-    T: BatchTransformer + 'static,
-{
-    let relations = if transformer.is_identity() {
-        relations
-    } else {
-        tokio::time::timeout(opts.timeout, transformer.transform_relations(0, relations))
+    events: &[ApplyEvent],
+) -> Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    if let Some(rows) = try_coalesce_row_upserts(events) {
+        return sink
+            .write_universal_rows(&rows)
             .await
-            .map_err(|_| anyhow!("transform timeout after {:?}", opts.timeout))?
-            .context("transform relations")?
-    };
-    sink.write_universal_relations(&relations)
-        .await
-        .context("sink write_universal_relations")?;
+            .context("sink write_universal_rows");
+    }
+    if let Some(relations) = try_coalesce_relation_upserts(events) {
+        return sink
+            .write_universal_relations(&relations)
+            .await
+            .context("sink write_universal_relations");
+    }
+    for event in events {
+        match event {
+            ApplyEvent::Change(change) => {
+                sink.apply_universal_change(change)
+                    .await
+                    .context("sink apply_universal_change")?;
+            }
+            ApplyEvent::RelationChange(change) => {
+                sink.apply_universal_relation_change(change)
+                    .await
+                    .context("sink apply_universal_relation_change")?;
+            }
+        }
+    }
     Ok(())
+}
+
+fn try_coalesce_row_upserts(events: &[ApplyEvent]) -> Option<Vec<UniversalRow>> {
+    let mut rows = Vec::with_capacity(events.len());
+    for event in events {
+        match event {
+            ApplyEvent::Change(change) if change.operation == UniversalChangeOp::Update => {
+                let data = change.data.as_ref()?.clone();
+                rows.push(UniversalRow::new(
+                    change.table.clone(),
+                    0,
+                    change.id.clone(),
+                    data,
+                ));
+            }
+            _ => return None,
+        }
+    }
+    Some(rows)
+}
+
+fn try_coalesce_relation_upserts(events: &[ApplyEvent]) -> Option<Vec<UniversalRelation>> {
+    let mut relations = Vec::with_capacity(events.len());
+    for event in events {
+        match event {
+            ApplyEvent::RelationChange(change)
+                if change.operation == UniversalChangeOp::Update =>
+            {
+                relations.push(change.relation.clone());
+            }
+            _ => return None,
+        }
+    }
+    Some(relations)
 }
 
 /// Convenience loop for row-only [`ChangeFeed`] sources.
@@ -1075,23 +1078,7 @@ where
     }
 
     async fn apply_sink_events(&self, events: &[ApplyEvent]) -> Result<()> {
-        for event in events {
-            match event {
-                ApplyEvent::Change(change) => {
-                    self.sink
-                        .apply_universal_change(change)
-                        .await
-                        .context("sink apply_universal_change")?;
-                }
-                ApplyEvent::RelationChange(change) => {
-                    self.sink
-                        .apply_universal_relation_change(change)
-                        .await
-                        .context("sink apply_universal_relation_change")?;
-                }
-            }
-        }
-        Ok(())
+        apply_transformed_sink_events(self.sink, events).await
     }
 }
 

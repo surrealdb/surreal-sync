@@ -115,8 +115,10 @@ async fn identity_pipeline_advances_track_sink() {
 }
 
 #[tokio::test]
-async fn write_rows_identity_no_stage_dispatch() {
+async fn write_rows_identity_uses_apply_context() {
     // Omit `--transforms-config` → ApplyOpts::identity() (W=1, batch_size=1).
+    // Every path goes through ApplyContext; identity upserts coalesce to
+    // write_universal_rows inside the ordered sink step (not a oneshot bypass).
     let pipeline = Pipeline::new();
     assert!(pipeline.is_identity());
     let sink = RecordingSink::new();
@@ -126,18 +128,22 @@ async fn write_rows_identity_no_stage_dispatch() {
     write_rows(&sink, &pipeline, vec![row(1), row(2)], &opts)
         .await
         .unwrap();
+    // batch_size=1 → one coalesced write per row.
     let written = sink.rows_written();
-    assert_eq!(written.len(), 1);
-    assert_eq!(written[0].len(), 2);
+    assert_eq!(written.len(), 2);
+    assert_eq!(written[0].len(), 1);
+    assert_eq!(written[1].len(), 1);
+    assert_eq!(written[0][0].id, UniversalValue::Int64(1));
+    assert_eq!(written[1][0].id, UniversalValue::Int64(2));
     assert!(
         sink.applied().is_empty(),
-        "identity + W=1 must use bulk write_universal_rows oneshot, not per-change apply"
+        "identity upserts coalesce to write_universal_rows inside the window"
     );
 }
 
 #[tokio::test]
 async fn write_rows_identity_windowed_when_max_in_flight_gt_1() {
-    // Identity alone is not enough for oneshot — W>1 forces ApplyContext.
+    // W>1 still uses ApplyContext; upserts coalesce inside the sink step.
     let pipeline = Pipeline::new();
     assert!(pipeline.is_identity());
     let sink = RecordingSink::new();
@@ -145,17 +151,32 @@ async fn write_rows_identity_windowed_when_max_in_flight_gt_1() {
     write_rows(&sink, &pipeline, vec![row(1), row(2)], &opts)
         .await
         .unwrap();
-    assert_eq!(sink.applied().len(), 2);
+    assert_eq!(sink.rows_written().len(), 2);
     assert!(
-        sink.rows_written().is_empty(),
-        "identity + W>1 must not take the bulk oneshot path"
+        sink.applied().is_empty(),
+        "identity upserts coalesce to write_universal_rows, not per-change apply"
     );
 }
 
 #[tokio::test]
+async fn write_rows_coalesces_homogeneous_upsert_batch() {
+    // Larger batch_size keeps a single bulk write_universal_rows inside the window.
+    let pipeline = Pipeline::new();
+    let sink = RecordingSink::new();
+    let opts = ApplyOpts::default().with_batch_size(10).with_max_in_flight(1);
+    write_rows(&sink, &pipeline, vec![row(1), row(2), row(3)], &opts)
+        .await
+        .unwrap();
+    let written = sink.rows_written();
+    assert_eq!(written.len(), 1);
+    assert_eq!(written[0].len(), 3);
+    assert!(sink.applied().is_empty());
+}
+
+#[tokio::test]
 async fn write_rows_honors_max_in_flight_window() {
-    // Non-identity + W>1 must use ApplyContext (apply_universal_change), not the
-    // oneshot write_universal_rows barrier.
+    // Non-identity + W>1 must use ApplyContext; upserts coalesce to
+    // write_universal_rows inside the ordered sink (still windowed).
     let mut pipeline = Pipeline::new();
     pipeline.push_inplace(TagName);
     let sink = RecordingSink::new();
@@ -163,11 +184,12 @@ async fn write_rows_honors_max_in_flight_window() {
     write_rows(&sink, &pipeline, vec![row(1), row(2), row(3)], &opts)
         .await
         .unwrap();
-    let applied = sink.applied();
-    assert_eq!(applied.len(), 3);
-    for change in &applied {
+    let written = sink.rows_written();
+    assert_eq!(written.len(), 3);
+    for batch in &written {
+        assert_eq!(batch.len(), 1);
         assert_eq!(
-            change.data.as_ref().unwrap().get("name"),
+            batch[0].fields.get("name"),
             Some(&UniversalValue::VarChar {
                 value: "tagged".to_string(),
                 length: 64,
@@ -175,8 +197,8 @@ async fn write_rows_honors_max_in_flight_window() {
         );
     }
     assert!(
-        sink.rows_written().is_empty(),
-        "windowed write_rows should apply changes, not bulk write_universal_rows"
+        sink.applied().is_empty(),
+        "windowed write_rows upserts coalesce to write_universal_rows"
     );
 }
 

@@ -8,8 +8,8 @@ use crate::apply::event::PositionedEvent;
 use crate::apply::feed::ChangeFeed;
 use crate::apply::opts::ApplyOpts;
 use crate::apply::runtime::{
-    apply_changes_with, apply_relation_changes_with, write_relations_with, write_rows_with,
-    ApplyContext,
+    apply_changes_with, apply_relation_changes_with, apply_transformed_sink_events,
+    write_relations_with, write_rows_with, ApplyContext,
 };
 use crate::apply::transform::BatchTransformer;
 use crate::pipeline::Pipeline;
@@ -623,7 +623,7 @@ where
             // count so filter/fan-out cannot stall or over-advance drivers.
             let event_count = batch.event_count;
             let drive = Box::pin(async move {
-                apply_sink_events_ref(sink, &events).await?;
+                apply_transformed_sink_events(sink, &events).await?;
                 Ok(SinkDrive::Applied)
             });
             *sinking = Some(PendingSink {
@@ -722,27 +722,6 @@ where
     }
     let result = poll_pending_sink(sinking).await;
     complete_pending_sink(ctx, driver, sinking, result).await
-}
-
-async fn apply_sink_events_ref<S: SurrealSink>(
-    sink: &S,
-    events: &[crate::ApplyEvent],
-) -> Result<()> {
-    for event in events {
-        match event {
-            crate::ApplyEvent::Change(change) => {
-                sink.apply_universal_change(change)
-                    .await
-                    .context("sink apply_universal_change")?;
-            }
-            crate::ApplyEvent::RelationChange(change) => {
-                sink.apply_universal_relation_change(change)
-                    .await
-                    .context("sink apply_universal_relation_change")?;
-            }
-        }
-    }
-    Ok(())
 }
 
 fn effective_stop_reason<D: SourceDriver>(

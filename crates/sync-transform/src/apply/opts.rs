@@ -61,8 +61,9 @@ impl ApplyOpts {
     /// Apply options for an identity (no-config) sync path.
     ///
     /// Pins `max_in_flight = 1` and `batch_size = 1` so omit-`--transforms-config`
-    /// keeps per-event CDC cadence and [`crate::write_rows`] / [`crate::write_relations`]
-    /// take the bulk oneshot path (`identity && W ≤ 1`).
+    /// keeps per-event CDC cadence (no multi-change buffering, no overlapping
+    /// transform window). Full-sync / ad-hoc helpers still go through the same
+    /// [`crate::ApplyContext`] path; there is no separate oneshot bypass.
     pub fn identity() -> Self {
         Self::default().with_batch_size(1).with_max_in_flight(1)
     }

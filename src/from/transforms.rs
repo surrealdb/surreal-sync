@@ -14,12 +14,14 @@ use sync_transform::{ApplyOpts, Pipeline};
 ///
 /// | CLI input | Pipeline | [`ApplyOpts`] |
 /// |-----------|----------|---------------|
-/// | Flag omitted (`None`) | Identity (no stage dispatch) | [`ApplyOpts::identity()`] (`batch_size = 1`) |
+/// | Flag omitted (`None`) | Identity (no stage dispatch) | [`ApplyOpts::identity()`] (`batch_size = 1`, `max_in_flight = 1`) |
 /// | Empty / passthrough-only TOML | Identity stages | [`ApplyOpts::default()`] (`batch_size = 1000`) |
 ///
-/// Both yield an identity pipeline, but omit uses per-event apply (`batch_size = 1`)
-/// while an empty/passthrough config keeps config defaults (`batch_size = 1000`).
-/// That changes buffering cadence even when no transform stages run.
+/// Both yield an identity pipeline, but omit uses per-event CDC cadence
+/// (`batch_size = 1`, `max_in_flight = 1`) while an empty/passthrough config
+/// keeps config defaults (`batch_size = 1000`). That changes buffering cadence
+/// even when no transform stages run. There is no separate oneshot write path
+/// for identity — omit pins W=1 for CDC cadence only.
 ///
 /// Bad TOML or unresolvable worker argv fails fast before sync starts (worker
 /// spawn / argv fail-fast is also covered in `sync-transform` config tests).
@@ -66,7 +68,7 @@ mod tests {
         let (pipeline, opts) = load_transforms_from_args(None).expect("identity load");
         assert!(pipeline.is_identity());
         assert_eq!(opts, ApplyOpts::identity());
-        assert_eq!(opts.max_in_flight, 1, "omit path must pin W=1 for write_rows oneshot");
+        assert_eq!(opts.max_in_flight, 1, "omit path must pin W=1 for CDC cadence");
         assert_eq!(opts.batch_size, 1);
     }
 

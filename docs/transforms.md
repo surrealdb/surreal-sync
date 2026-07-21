@@ -20,7 +20,7 @@ surreal-sync still owns batching, applying docs to SurrealDB, and when the sourc
 | `failure_policy` `fail` (default) or `skip` | Available (`[pipeline]`) |
 | Per-stage `retry` / backoff | Available on each `[[transforms]]` command stage |
 | Overlapping transform window via `max_in_flight` | Available on CDC/`SourceDriver` paths (`[pipeline]`) |
-| Full-sync / `write_rows` windowing when `max_in_flight > 1` | Available (same ApplyContext window) |
+| Full-sync / `write_rows` windowing | Available (same ApplyContext window; no oneshot bypass) |
 
 ## What is not available yet
 
@@ -198,9 +198,9 @@ Per-stage `retry` re-runs the stdio exchange for that stage only (same `batch_id
 - **`batch_size` / `batch_max_wait`** — how large a batch becomes before transform starts (`[pipeline]`). Larger batches amortize worker overhead; smaller batches reduce latency.
 - **`[pipeline].timeout`** — outer bound for the whole stage chain (including retries). Prefer per-stage `timeout` for individual workers.
 - **Per-stage `timeout` / `retry`** — how long one exchange may take on that stage, and how many times to retry with backoff before the batch fails.
-- **`max_in_flight`** — apply window size (default `1`). On **CDC / `SourceDriver` / long-lived file streams**, W=1 and W=16 share the **same** runtime: surreal-sync may transform several batches at once and continue polling while ordered sink writes are in flight; completions match by `batch_id`, then **sink apply and `advance_watermark` stay strictly ordered**. A failed batch blocks watermark advance of later ones; in-flight successors are discarded (never advanced). Full-sync helpers (`write_rows` / `write_relations`) use that same window when `max_in_flight > 1` or the pipeline is non-identity; identity + W=1 stays on a bulk oneshot path.
+- **`max_in_flight`** — apply window size (default `1`). On **CDC / `SourceDriver` / long-lived file streams**, W=1 and W=16 share the **same** runtime: surreal-sync may transform several batches at once and continue polling while ordered sink writes are in flight; completions match by `batch_id`, then **sink apply and `advance_watermark` stay strictly ordered**. A failed batch blocks watermark advance of later ones; in-flight successors are discarded (never advanced). Full-sync helpers (`write_rows` / `write_relations`) always use that same window — there is no identity oneshot bypass. Homogeneous upsert batches may still coalesce to a bulk `write_universal_rows` / `write_universal_relations` call **inside** the ordered sink step.
 
-Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W. **Omit `--transforms-config`** → `ApplyOpts::identity()` (`batch_size = 1`, `max_in_flight = 1`); overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set).
+Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W. **Omit `--transforms-config`** → `ApplyOpts::identity()` (`batch_size = 1`, `max_in_flight = 1`) so CDC stays on per-event cadence with no overlapping window; overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set).
 
 **Best-case R∩T∩W** (source reads continuing while transforms run and ordered sink writes stay in flight) needs **`max_in_flight > 1`**. With the default `1`, the framework still orders sink apply and sink-gates cursors, but there is no overlapping transform/sink window to hide latency.
 
@@ -345,7 +345,7 @@ There is no exactly-once guarantee across transform + SurrealDB + source checkpo
 - **Full sync / keyset table scans** — MySQL and PostgreSQL keyset paths use a long-lived `RowChunkDriver` so the next chunk read can overlap prior-chunk transform/sink when `max_in_flight > 1` (same idea as CSV/JSONL streaming). Relation tables and no-PK tables stream via `RelationChunkDriver` / OFFSET chunks the same way (no monolithic `SELECT *` + serial `write_rows`).
 - **Interleaved snapshot reconciliation** — CDC events and surviving chunk rows share one long-lived `run_source_runtime` window across chunks, so polls continue under spare `max_in_flight` while ordered sink runs; `commit_reconciled` runs only after each chunk is sink-safe.
 - **MongoDB / Neo4j full** — cursor/result streams use `RowChunkDriver` / `RelationChunkDriver` (Neo4j: all nodes before any edges).
-- **Ad-hoc / oneshot helpers** — remaining `write_rows` / `write_relations` call sites honor `max_in_flight` within each call; they are not a continuous source poll loop.
+- **Ad-hoc helpers** — remaining `write_rows` / `write_relations` call sites use the same ApplyContext window within each call; they are not a continuous source poll loop.
 
 Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it) follow the durability rules above — especially that catch-up progress does not advance past unsunk transform/apply work on sources that use sink-safe checkpoints. See the per-source guides linked below and [Source ports](source-ports.md) for implementer details.
 

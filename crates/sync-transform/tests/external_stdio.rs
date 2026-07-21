@@ -228,14 +228,12 @@ async fn write_rows_through_external_mutate() {
     write_rows(&sink, &pipeline, vec![row], &opts)
         .await
         .unwrap();
-    // Non-identity write_rows routes through ApplyContext (row→change), so
-    // assert on applied changes rather than write_universal_rows batches.
-    let applied = sink.applied();
-    assert_eq!(applied.len(), 1);
-    let name = applied[0]
-        .data
-        .as_ref()
-        .unwrap()
+    // write_rows → Update upserts coalesce to write_universal_rows inside the window.
+    let written = sink.rows_written();
+    assert_eq!(written.len(), 1);
+    assert_eq!(written[0].len(), 1);
+    let name = written[0][0]
+        .fields
         .get("name")
         .expect("name field");
     match name {

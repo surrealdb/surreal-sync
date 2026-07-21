@@ -1,6 +1,6 @@
 //! Finite row/relation chunk streams for full-sync / keyset table scans.
 //!
-//! Unlike oneshot [`crate::write_rows`] / [`crate::write_relations`] per chunk,
+//! Unlike per-call [`crate::write_rows`] / [`crate::write_relations`],
 //! a [`RowChunkDriver`] / [`RelationChunkDriver`] fed to
 //! [`crate::run_source_runtime`] keeps one apply window alive across chunks so
 //! the next read can overlap prior-chunk transform/sink when
