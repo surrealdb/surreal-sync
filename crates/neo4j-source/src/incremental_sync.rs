@@ -47,8 +47,13 @@ pub trait ChangeStream: Send + Sync {
     /// Get the next change event from the stream
     async fn next(&mut self) -> Option<anyhow::Result<IncrementalChange>>;
 
-    /// Get the current checkpoint of the stream
+    /// Sink-safe checkpoint (advanced only via [`ChangeStream::commit_sunk`]).
     fn checkpoint(&self) -> Option<Neo4jCheckpoint>;
+
+    /// Record that events through `timestamp_millis` were successfully sunk.
+    fn commit_sunk(&mut self, timestamp_millis: i64) {
+        let _ = timestamp_millis;
+    }
 }
 
 /// Neo4j implementation of incremental sync source
@@ -127,7 +132,14 @@ impl Neo4jIncrementalSource {
 /// Implementation of change stream for Neo4j
 pub struct Neo4jChangeStream {
     graph: Graph,
-    current_checkpoint: i64,
+    /// Read-head timestamp used for the next keyset query (may be ahead of sunk).
+    read_checkpoint: i64,
+    /// Tie-break: last neo4j node id seen at [`Self::read_checkpoint`].
+    after_node_id: i64,
+    /// Tie-break: last neo4j relationship id seen at [`Self::read_checkpoint`].
+    after_rel_id: i64,
+    /// Sink-safe watermark (authoritative for [`ChangeStream::checkpoint`]).
+    sunk_checkpoint: i64,
     change_tracking_property: String,
     /// Property name to use as SurrealDB record ID
     id_property: String,
@@ -152,7 +164,10 @@ impl Neo4jChangeStream {
     ) -> Self {
         Neo4jChangeStream {
             graph,
-            current_checkpoint: from_checkpoint,
+            read_checkpoint: from_checkpoint,
+            after_node_id: i64::MIN,
+            after_rel_id: i64::MIN,
+            sunk_checkpoint: from_checkpoint,
             change_tracking_property,
             id_property,
             ctx,
@@ -168,9 +183,9 @@ impl Neo4jChangeStream {
             return Ok(());
         }
 
-        // Query for nodes that have been modified since the checkpoint
-        // Convert checkpoint timestamp to datetime for comparison with Neo4j datetime properties
-        let checkpoint_datetime = chrono::DateTime::from_timestamp_millis(self.current_checkpoint)
+        // Keyset on (timestamp, element id) so same-timestamp siblings are not
+        // skipped when LIMIT splits a dense timestamp bucket.
+        let checkpoint_datetime = chrono::DateTime::from_timestamp_millis(self.read_checkpoint)
             .unwrap_or_else(chrono::Utc::now);
 
         let checkpoint_str = checkpoint_datetime.to_rfc3339();
@@ -178,19 +193,23 @@ impl Neo4jChangeStream {
         let node_query = Query::new(with_use_clause(
             &format!(
                 "MATCH (n)
-             WHERE n.{} > datetime($checkpoint)
+             WHERE n.{tracking} > datetime($checkpoint)
+                OR (n.{tracking} = datetime($checkpoint) AND id(n) > $after_id)
              RETURN n, id(n) as node_id, labels(n) as labels
-             ORDER BY n.{}
+             ORDER BY n.{tracking}, id(n)
              LIMIT 100",
-                self.change_tracking_property, self.change_tracking_property
+                tracking = self.change_tracking_property,
             ),
             &self.composite_constituent,
         ))
-        .param("checkpoint", checkpoint_str.clone());
+        .param("checkpoint", checkpoint_str.clone())
+        .param("after_id", self.after_node_id);
 
         let mut result = self.graph.execute(node_query).await?;
         let mut batch_changes = Vec::new();
-        let mut max_checkpoint = self.current_checkpoint;
+        let mut max_checkpoint = self.read_checkpoint;
+        let mut last_node_id_at_max = i64::MIN;
+        let mut last_rel_id_at_max = i64::MIN;
         let mut record_id: UniversalValue;
 
         while let Some(row) = result.next().await? {
@@ -213,7 +232,13 @@ impl Neo4jChangeStream {
                 })?
                 .timestamp_millis();
 
-            max_checkpoint = max_checkpoint.max(node_checkpoint);
+            if node_checkpoint > max_checkpoint {
+                max_checkpoint = node_checkpoint;
+                last_node_id_at_max = node_id;
+                last_rel_id_at_max = i64::MIN;
+            } else if node_checkpoint == max_checkpoint {
+                last_node_id_at_max = last_node_id_at_max.max(node_id);
+            }
 
             // Convert node to universal data
             let mut fields: HashMap<String, UniversalValue> = HashMap::new();
@@ -280,24 +305,26 @@ impl Neo4jChangeStream {
             )));
         }
 
-        // Also query for relationship changes
+        // Also query for relationship changes (same keyset shape).
         let rel_query = Query::new(with_use_clause(
             &format!(
                 "MATCH (a)-[r]->(b)
              WHERE r.{tracking} > datetime($checkpoint)
+                OR (r.{tracking} = datetime($checkpoint) AND id(r) > $after_id)
              RETURN r, id(r) as rel_id, type(r) as rel_type,
                     id(a) as start_id, id(b) as end_id,
                     labels(a) as start_labels, labels(b) as end_labels,
                     a.{id_prop} as start_prop_id, b.{id_prop} as end_prop_id,
                     'update' as operation
-             ORDER BY r.{tracking}
+             ORDER BY r.{tracking}, id(r)
              LIMIT 100",
                 tracking = self.change_tracking_property,
                 id_prop = self.id_property,
             ),
             &self.composite_constituent,
         ))
-        .param("checkpoint", checkpoint_str);
+        .param("checkpoint", checkpoint_str)
+        .param("after_id", self.after_rel_id);
 
         let mut rel_result = self.graph.execute(rel_query).await?;
 
@@ -306,7 +333,14 @@ impl Neo4jChangeStream {
             let r =
                 crate::row_to_relation(&row, None, Some(self.change_tracking_property.clone()))?;
 
-            max_checkpoint = max_checkpoint.max(r.updated_at);
+            let rel_id: i64 = row.get("rel_id")?;
+            if r.updated_at > max_checkpoint {
+                max_checkpoint = r.updated_at;
+                last_rel_id_at_max = rel_id;
+                last_node_id_at_max = i64::MIN;
+            } else if r.updated_at == max_checkpoint {
+                last_rel_id_at_max = last_rel_id_at_max.max(rel_id);
+            }
 
             batch_changes.push(IncrementalChange::Relation(Box::new(
                 r.to_universal_relation(&self.ctx)?,
@@ -316,7 +350,15 @@ impl Neo4jChangeStream {
         if batch_changes.is_empty() {
             self.finished = true;
         } else {
-            self.current_checkpoint = max_checkpoint;
+            // Advance read-head only; sunk watermark waits for commit_sunk.
+            if max_checkpoint > self.read_checkpoint {
+                self.read_checkpoint = max_checkpoint;
+                self.after_node_id = last_node_id_at_max;
+                self.after_rel_id = last_rel_id_at_max;
+            } else if max_checkpoint == self.read_checkpoint {
+                self.after_node_id = self.after_node_id.max(last_node_id_at_max);
+                self.after_rel_id = self.after_rel_id.max(last_rel_id_at_max);
+            }
             // FIFO dequeue: nodes were pushed before relations so endpoints
             // emit before edges (matches pre-port apply_incremental_changes).
             self.change_buffer = VecDeque::from(batch_changes);
@@ -342,11 +384,17 @@ impl ChangeStream for Neo4jChangeStream {
 
     fn checkpoint(&self) -> Option<Neo4jCheckpoint> {
         let checkpoint_datetime =
-            chrono::DateTime::from_timestamp_millis(self.current_checkpoint)
+            chrono::DateTime::from_timestamp_millis(self.sunk_checkpoint)
                 .unwrap_or_else(Utc::now);
         Some(Neo4jCheckpoint {
             timestamp: checkpoint_datetime,
         })
+    }
+
+    fn commit_sunk(&mut self, timestamp_millis: i64) {
+        if timestamp_millis > self.sunk_checkpoint {
+            self.sunk_checkpoint = timestamp_millis;
+        }
     }
 }
 
@@ -523,6 +571,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
     if options.dry_run || sync_opts.dry_run {
         let mut total_applied = 0;
         let mut batch = Vec::new();
+        let tracking = from_opts.change_tracking_property.clone();
         while let Some(change_result) = stream.next().await {
             let change = change_result?;
             if chrono::Utc::now() >= options.deadline {
@@ -532,15 +581,24 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
                 );
                 break;
             }
+            let position = match &change {
+                IncrementalChange::Node(row) => {
+                    tracking_millis_from_fields(&row.fields, &tracking).unwrap_or(0)
+                }
+                IncrementalChange::Relation(rel) => {
+                    tracking_millis_from_fields(&rel.data, &tracking).unwrap_or(0)
+                }
+            };
+            // Dry-run treats the change as done: advance sink-safe cursor for until.
+            stream.commit_sunk(position);
             if let Some(ref target) = options.until {
-                if let Some(current) = stream.checkpoint() {
-                    if current.timestamp >= target.timestamp {
-                        tracing::info!(
-                            "Reached target checkpoint: {}, stopping incremental sync",
-                            target.to_cli_string()
-                        );
-                        break;
-                    }
+                if position >= target.timestamp.timestamp_millis() {
+                    use checkpoint::Checkpoint;
+                    tracing::info!(
+                        "Reached target checkpoint: {}, stopping incremental sync",
+                        target.to_cli_string()
+                    );
+                    break;
                 }
             }
             batch.push(change);
@@ -667,7 +725,8 @@ impl SourceDriver for Neo4jSourceDriver<'_> {
         }
     }
 
-    async fn commit(&mut self, _position: Self::Position) -> anyhow::Result<()> {
+    async fn commit(&mut self, position: Self::Position) -> anyhow::Result<()> {
+        self.stream.commit_sunk(position);
         Ok(())
     }
 

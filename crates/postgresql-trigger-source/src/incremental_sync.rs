@@ -67,9 +67,13 @@ pub trait ChangeStream: Send + Sync {
     /// Returns None when no more changes are available.
     async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>>;
 
-    /// Get the current checkpoint of the stream
-    /// This can be used to resume from this position later
+    /// Sink-safe checkpoint: advances only via [`ChangeStream::commit_sunk`].
     fn checkpoint(&self) -> Option<PostgreSQLCheckpoint>;
+
+    /// Record that events through `sequence_id` were successfully sunk.
+    fn commit_sunk(&mut self, sequence_id: i64) {
+        let _ = sequence_id;
+    }
 }
 
 /// Options for the PostgreSQL trigger replication tail.
@@ -302,8 +306,8 @@ impl SourceDriver for PostgresTriggerSourceDriver<'_> {
         }
     }
 
-    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
-        // Cursor advancement is tracked inside the change stream via last_sequence.
+    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+        self.stream.commit_sunk(position);
         Ok(())
     }
 
@@ -700,7 +704,10 @@ impl IncrementalSource for PostgresIncrementalSource {
 pub struct PostgresChangeStream {
     client: Arc<Mutex<Client>>,
     tracking_table: String,
-    last_sequence: i64,
+    /// Highest sequence_id fetched (audit pagination read-head).
+    read_sequence: i64,
+    /// Highest sequence_id successfully sunk (authoritative resume watermark).
+    sunk_sequence: i64,
     /// Buffered changes, each paired with its source `sequence_id`.
     buffer: Vec<(i64, UniversalChange)>,
     empty_poll_count: usize,
@@ -720,7 +727,8 @@ impl PostgresChangeStream {
         Ok(Self {
             client,
             tracking_table,
-            last_sequence: start_sequence,
+            read_sequence: start_sequence,
+            sunk_sequence: start_sequence,
             buffer: Vec::new(),
             empty_poll_count: 0,
             database_schema,
@@ -730,8 +738,8 @@ impl PostgresChangeStream {
 
     async fn fetch_changes(&mut self) -> Result<Vec<(i64, UniversalChange)>> {
         log::debug!(
-            "PostgresChangeStream::fetch_changes() called, last_sequence: {}",
-            self.last_sequence
+            "PostgresChangeStream::fetch_changes() called, read_sequence: {}",
+            self.read_sequence
         );
         let client = self.client.lock().await;
 
@@ -757,7 +765,7 @@ impl PostgresChangeStream {
             self.tracking_table
         );
 
-        let rows = client.query(&query, &[&self.last_sequence]).await?;
+        let rows = client.query(&query, &[&self.read_sequence]).await?;
         log::debug!(
             "PostgresChangeStream::fetch_changes() got {} rows from audit table",
             rows.len()
@@ -960,7 +968,8 @@ impl PostgresChangeStream {
                 UniversalChange::new(op, table_name, record_id, data),
             ));
 
-            self.last_sequence = sequence_id;
+            // Advance read-head only; sunk watermark waits for commit_sunk.
+            self.read_sequence = sequence_id;
         }
 
         Ok(changes)
@@ -979,9 +988,9 @@ impl ChangeStream for PostgresChangeStream {
 
     async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>> {
         log::debug!(
-            "🔄 PostgresChangeStream::next_with_sequence_id() called, empty_poll_count: {}, last_sequence: {}",
+            "🔄 PostgresChangeStream::next_with_sequence_id() called, empty_poll_count: {}, read_sequence: {}",
             self.empty_poll_count,
-            self.last_sequence
+            self.read_sequence
         );
         loop {
             // Return buffered changes first
@@ -1017,9 +1026,15 @@ impl ChangeStream for PostgresChangeStream {
 
     fn checkpoint(&self) -> Option<PostgreSQLCheckpoint> {
         Some(PostgreSQLCheckpoint {
-            sequence_id: self.last_sequence,
+            sequence_id: self.sunk_sequence,
             timestamp: Utc::now(),
         })
+    }
+
+    fn commit_sunk(&mut self, sequence_id: i64) {
+        if sequence_id > self.sunk_sequence {
+            self.sunk_sequence = sequence_id;
+        }
     }
 }
 

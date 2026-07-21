@@ -84,7 +84,10 @@ fn bson_doc_to_universal_values(doc: Document) -> Result<HashMap<String, Univers
 pub struct MongodbIncrementalSource {
     client: Client,
     database: String,
+    /// Sink-safe resume token (advanced only after successful sink / commit).
     resume_token: Arc<Mutex<Vec<u8>>>,
+    /// Last token observed while fetching (may be ahead of [`Self::resume_token`]).
+    seen_token: Arc<Mutex<Vec<u8>>>,
 }
 
 impl MongodbIncrementalSource {
@@ -108,7 +111,8 @@ impl MongodbIncrementalSource {
         Ok(MongodbIncrementalSource {
             client,
             database: database.to_string(),
-            resume_token: Arc::new(Mutex::new(initial_resume_token)),
+            resume_token: Arc::new(Mutex::new(initial_resume_token.clone())),
+            seen_token: Arc::new(Mutex::new(initial_resume_token)),
         })
     }
 
@@ -158,7 +162,7 @@ impl MongodbIncrementalSource {
         Ok(Box::new(MongoChangeStream::new(stream, initial_token)))
     }
 
-    /// Get the current checkpoint
+    /// Get the current sink-safe checkpoint (token advanced only after sink).
     pub async fn get_checkpoint(&self) -> Result<MongoDBCheckpoint> {
         Ok(MongoDBCheckpoint {
             resume_token: self.resume_token.lock().await.clone(),
@@ -166,9 +170,14 @@ impl MongodbIncrementalSource {
         })
     }
 
-    /// Shared resume-token handle updated as change events arrive.
+    /// Shared resume-token handle for sink-safe progress (updated on commit).
     pub fn resume_token_handle(&self) -> Arc<Mutex<Vec<u8>>> {
         Arc::clone(&self.resume_token)
+    }
+
+    /// Last token observed while polling (may be ahead of the sink-safe handle).
+    pub fn seen_token_handle(&self) -> Arc<Mutex<Vec<u8>>> {
+        Arc::clone(&self.seen_token)
     }
 
     /// Cleanup resources
@@ -217,17 +226,17 @@ impl MongodbIncrementalSource {
         // Create the change stream
         let change_stream = database.watch().with_options(options).await?;
         let database_name = self.database.clone();
-        let resume_token = self.resume_token.clone();
+        let seen_token = self.seen_token.clone();
 
         // Convert MongoDB change stream to our ChangeEvent stream
         let stream = change_stream
             .map(move |result| {
                 let database_name = database_name.clone();
-                let resume_token = resume_token.clone();
+                let seen_token = seen_token.clone();
                 async move {
                     match result {
                         Ok(event) => {
-                            Self::convert_change_event(event, &database_name, resume_token).await
+                            Self::convert_change_event(event, &database_name, seen_token).await
                         }
                         Err(e) => Err(anyhow!("MongoDB change stream error: {e}")),
                     }
@@ -247,12 +256,11 @@ impl MongodbIncrementalSource {
     async fn convert_change_event(
         event: ChangeStreamEvent<Document>,
         _database_name: &str,
-        resume_token: Arc<Mutex<Vec<u8>>>,
+        seen_token: Arc<Mutex<Vec<u8>>>,
     ) -> Result<UniversalChange> {
-        // Extract and store the resume token from the event's _id field
-        // The _id field contains the resume token for this specific event
+        // Track the fetch-time resume token separately from the sink-safe bookmark.
         if let Ok(token_bytes) = bson::to_vec(&event.id) {
-            *resume_token.lock().await = token_bytes;
+            *seen_token.lock().await = token_bytes;
         }
 
         // Determine operation type
@@ -409,11 +417,13 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
 
     let stream = source.get_changes().await?;
     let resume_token = source.resume_token_handle();
+    let seen_token = source.seen_token_handle();
     info!("Starting to consume MongoDB change stream...");
 
     let mut driver = MongodbChangeStreamDriver {
         stream,
         resume_token,
+        seen_token,
         options: &options,
         until_reached: false,
         finished: false,
@@ -458,11 +468,14 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
 
 /// MongoDB change-stream CDC driver for [`sync_transform::run_source_runtime_with`].
 ///
-/// Position is the resume token for the emitted event. No checkpoint store is
-/// written during incremental sync (same as before the framework port).
+/// Position is the resume token for the emitted event. [`Self::commit`] advances
+/// the sink-safe token handle; fetch-time tokens stay on `seen_token` only.
 struct MongodbChangeStreamDriver<'a> {
     stream: Box<dyn ChangeStream>,
+    /// Sink-safe bookmark (advanced in [`SourceDriver::commit`]).
     resume_token: Arc<Mutex<Vec<u8>>>,
+    /// Last token observed while polling (source of PositionedEvent positions).
+    seen_token: Arc<Mutex<Vec<u8>>>,
     options: &'a ReplicationTailOptions,
     until_reached: bool,
     finished: bool,
@@ -497,7 +510,7 @@ impl SourceDriver for MongodbChangeStreamDriver<'_> {
         match result {
             Ok(change) => {
                 debug!("Received change: {change:?}");
-                let token = self.resume_token.lock().await.clone();
+                let token = self.seen_token.lock().await.clone();
 
                 if let Some(ref target) = self.options.until {
                     if token >= target.resume_token {
@@ -520,7 +533,8 @@ impl SourceDriver for MongodbChangeStreamDriver<'_> {
         }
     }
 
-    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
+    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+        *self.resume_token.lock().await = position;
         Ok(())
     }
 

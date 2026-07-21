@@ -160,7 +160,8 @@ impl SourceDriver for MysqlTriggerSourceDriver<'_> {
         }
     }
 
-    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
+    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+        self.stream.commit_sunk(position);
         Ok(())
     }
 
