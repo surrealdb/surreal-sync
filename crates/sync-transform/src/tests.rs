@@ -120,7 +120,7 @@ fn empty_pipeline_is_identity() {
 /// Empty pipeline short-circuits before any stage dispatch.
 ///
 /// Phase 1 can only assert emptiness + apply no-op here. Phase 2's apply
-/// loop must gate on [`Pipeline::is_identity`] so the sync hot path never
+/// loop must gate on [`Pipeline::is_identity`] so the sync identity path never
 /// enters transform dispatch when there are no stages.
 #[test]
 fn empty_pipeline_is_identity_short_circuit() {

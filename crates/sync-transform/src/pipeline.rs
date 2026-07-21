@@ -36,10 +36,10 @@ impl std::fmt::Debug for Stage {
 /// does **not** make [`is_identity`](Self::is_identity) return `true` — the
 /// pipeline still has a stage and will dispatch into it. TOML config loading
 /// ([`crate::Pipeline::from_config`] / [`crate::parse_transforms_toml`])
-/// collapses passthrough-only configs to an empty pipeline so the CLI hot path
-/// stays zero-dispatch.
+/// collapses passthrough-only configs to an empty pipeline so the CLI identity
+/// path stays zero-dispatch.
 ///
-/// # Apply hot path
+/// # Apply path
 ///
 /// Shared apply loop: transform → ordered write → watermark.
 /// [`crate::ApplyContext`] / [`crate::SourceDriver`] gate on
