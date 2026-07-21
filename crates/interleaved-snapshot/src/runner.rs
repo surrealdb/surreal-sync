@@ -446,10 +446,10 @@ where
 enum SnapshotPhase {
     /// Open watermarks and read the next keyset chunk.
     NeedChunk,
-    /// Consume reconciliation events until the high watermark.
+    /// Consume reconciliation events until the high watermark; survivors are
+    /// flushed into the apply queue as soon as high is observed (before any
+    /// later events in the same poll batch).
     Reconciling,
-    /// Emit surviving buffered snapshot rows into the apply window.
-    EmittingBuffer,
     /// Wait until sunk count catches emitted count, then checkpoint.
     AwaitingChunkSink,
 }
@@ -630,7 +630,7 @@ where
                 }
                 SnapshotPhase::Reconciling => {
                     let events = self.source.next_reconciliation_events().await?;
-                    let mut window_closed = false;
+                    let mut saw_high = false;
                     for event in events {
                         if let Some(watermark_id) = event.pk.single_uuid() {
                             if watermark_id == self.low_id {
@@ -639,7 +639,12 @@ where
                             }
                             if watermark_id == self.high_id {
                                 self.in_window = false;
-                                window_closed = true;
+                                // Flush survivors *before* any post-high events
+                                // that share this poll batch. Otherwise a Delete
+                                // that commits after high would be queued first
+                                // and then overwritten by a stale buffer upsert.
+                                self.queue_buffer_rows();
+                                saw_high = true;
                                 continue;
                             }
                         }
@@ -650,28 +655,22 @@ where
                         self.push_change(event.change);
                     }
 
-                    if window_closed {
-                        self.phase = SnapshotPhase::EmittingBuffer;
-                        // Emit surviving rows in this same poll when possible.
-                        continue;
+                    if saw_high {
+                        if self.events_emitted == 0 {
+                            // Empty window (no CDC, no survivors): checkpoint now.
+                            self.try_finish_chunk_after_sink().await?;
+                            continue;
+                        }
+                        let mut out = Vec::with_capacity(self.pending.len().min(64));
+                        while out.len() < 64 {
+                            match self.pending.pop_front() {
+                                Some(pe) => out.push(pe),
+                                None => break,
+                            }
+                        }
+                        return Ok(out);
                     }
 
-                    let mut out = Vec::with_capacity(self.pending.len().min(64));
-                    while out.len() < 64 {
-                        match self.pending.pop_front() {
-                            Some(pe) => out.push(pe),
-                            None => break,
-                        }
-                    }
-                    return Ok(out);
-                }
-                SnapshotPhase::EmittingBuffer => {
-                    self.queue_buffer_rows();
-                    if self.events_emitted == 0 {
-                        // No recon or buffer events: checkpoint without waiting on sink.
-                        self.try_finish_chunk_after_sink().await?;
-                        continue;
-                    }
                     let mut out = Vec::with_capacity(self.pending.len().min(64));
                     while out.len() < 64 {
                         match self.pending.pop_front() {
