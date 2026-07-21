@@ -55,8 +55,8 @@ pub struct Config {
     #[clap(long, default_value_t = 1)]
     pub num_consumers: usize,
     /// Number of messages to read from Kafka per batch before processing.
-    /// Messages are read in batches, processed (written to SurrealDB one by one),
-    /// then offsets are committed to Kafka. Larger batches improve throughput
+    /// Each batch is decoded then applied via write_rows; offsets are committed
+    /// only after that apply succeeds. Larger batches improve throughput
     /// but increase memory usage and potential duplicate processing on failure.
     #[clap(long, default_value_t = 100)]
     pub kafka_batch_size: usize,
@@ -209,8 +209,11 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync +
             let pipeline = pipeline.clone();
             let apply_opts = apply_opts.clone();
             async move {
+                // Reserve unique per-message indices for this batch (pre-port
+                // behavior: each UniversalRow.index is distinct within a batch).
+                let base_index = counter.load(Ordering::SeqCst);
                 let mut rows = Vec::with_capacity(messages.len());
-                for message in messages {
+                for (offset, message) in messages.into_iter().enumerate() {
                     debug!("Received message: {:?}", message);
 
                     // Put the message as a record into SurrealDB.
@@ -229,7 +232,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync +
                         use_message_key_as_id,
                         message_key.as_deref(),
                         &id_field,
-                        counter.load(Ordering::SeqCst),
+                        batch_row_index(base_index, offset),
                     )?;
 
                     rows.push(row);
@@ -343,4 +346,43 @@ fn typed_values_to_universal_row(
         id_value,
         fields,
     ))
+}
+
+/// Per-message `UniversalRow.index` within one Kafka decode batch.
+///
+/// `base` is the shared processed-count at the start of the batch; `offset`
+/// is the message's position in that batch. Using only `base` for every row
+/// collides indices (regression covered below).
+fn batch_row_index(base: u64, offset: usize) -> u64 {
+    base + offset as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::batch_row_index;
+    use std::collections::HashSet;
+
+    #[test]
+    fn batch_row_indices_are_unique_within_batch() {
+        let base = 10u64;
+        let batch_len = 5usize;
+        // Bug pattern: every row gets `base` → HashSet len == 1.
+        let collided: Vec<u64> = (0..batch_len).map(|_| base).collect();
+        assert_eq!(
+            collided.iter().copied().collect::<HashSet<_>>().len(),
+            1,
+            "sanity: shared base alone is a single index"
+        );
+
+        let indices: Vec<u64> = (0..batch_len)
+            .map(|offset| batch_row_index(base, offset))
+            .collect();
+        assert_eq!(indices, vec![10, 11, 12, 13, 14]);
+        let unique: HashSet<_> = indices.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            indices.len(),
+            "rows in a batch must not share one index; got {indices:?}"
+        );
+    }
 }

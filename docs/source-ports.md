@@ -10,9 +10,8 @@ Operator-facing transforms docs stay in [transforms.md](transforms.md).
 
 - [x] `load_transforms_from_args` in `src/from/transforms.rs`
 - [x] `from mysql-binlog sync` uses the shared loader
-- [x] Batch importers (`from kafka`, `from csv`, `from jsonl`) take
-      `--transforms-config` and call the shared loader
-- [ ] Remaining interleaved / docs polish (see plan commit sequence)
+- [x] `from kafka`, `from csv`, and `from jsonl` take `--transforms-config`
+      and call the shared loader
 
 **Omit flag vs empty / passthrough file** — both yield an identity pipeline,
 but `ApplyOpts` differ (buffering cadence):
@@ -37,7 +36,7 @@ spawn coverage is in `sync-transform` config tests).
 | mysql (trigger) | SourceDriver | Yes | |
 | mongodb | SourceDriver + `write_rows` full | Yes | |
 | neo4j | SourceDriver + `write_rows` / `write_relations` | Yes | Nodes + edges via mixed events |
-| kafka | `write_rows` (decode batch then apply) | Yes (shared loader + CLI e2e) | Offset commit stays Kafka consumer-group |
+| kafka | `write_rows` (decode batch then apply) | Yes (shared loader + CLI e2e) | Continuous stream consumer; offset commit stays Kafka consumer-group |
 | csv | `write_rows` | Yes (shared loader + CLI e2e) | |
 | jsonl | `write_rows` | Yes (shared loader + CLI e2e) | `conversion_rules` before Pipeline |
 
@@ -47,7 +46,9 @@ spawn coverage is in `sync-transform` config tests).
    `run_source_runtime` / `run_source_runtime_with` — no production
    hand-rolled `ApplyContext` loops after port; do not use `ChangeFeed`
    for production ports.
-2. Batch importers (csv, jsonl, kafka) use `write_rows` only.
+2. File batch importers (csv, jsonl) use `write_rows` only. Kafka is a
+   continuous stream consumer: decode each fetch batch, then apply once
+   via `write_rows` (not a file batch importer).
 3. Every WatermarkSource consumer gets transform-aware interleaved /
    ad-hoc entrypoints and threads `Pipeline` / `ApplyOpts` from CLI.
 4. Identity (omit `--transforms-config`) must stay green; add at least one

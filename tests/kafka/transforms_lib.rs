@@ -170,5 +170,15 @@ async fn kafka_external_mutate_rewrites_name_through_write_rows(
         assert_eq!(row_name(row).as_deref(), Some("mutated"));
     }
 
+    // kafka_batch_size is large enough that both messages share one decode
+    // batch; indices must stay unique within that batch (not all the same).
+    let indices: Vec<u64> = rows.iter().map(|r| r.index).collect();
+    let unique: std::collections::HashSet<_> = indices.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        indices.len(),
+        "UniversalRow.index must be unique per message within a Kafka batch; got {indices:?}"
+    );
+
     Ok(())
 }
