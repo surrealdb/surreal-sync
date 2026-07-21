@@ -130,7 +130,13 @@ where
     T: BatchTransformer + 'static,
 {
     async fn write_rows(&self, rows: Vec<UniversalRow>) -> Result<()> {
-        write_rows_with(self.sink, Arc::clone(&self.transformer), rows, self.apply_opts).await
+        write_rows_with(
+            self.sink,
+            Arc::clone(&self.transformer),
+            rows,
+            self.apply_opts,
+        )
+        .await
     }
 
     async fn write_relations(&self, relations: Vec<UniversalRelation>) -> Result<()> {
@@ -446,15 +452,8 @@ where
         let signals = driver.between_events().await.context("between_events")?;
         if !signals.is_empty() {
             finish_pending_sink(&mut ctx, driver, &mut sinking).await?;
-            handle_control_signals(
-                driver,
-                &mut ctx,
-                sink,
-                &transformer,
-                apply_opts,
-                signals,
-            )
-            .await?;
+            handle_control_signals(driver, &mut ctx, sink, &transformer, apply_opts, signals)
+                .await?;
         }
 
         // Fill transform window; opportunistically start ordered sink without
@@ -534,10 +533,7 @@ where
 
         // Spare window capacity while sink is in flight: return to fill/poll
         // instead of parking solely on the sink future (reads must keep rising).
-        if has_sink
-            && ctx.window_occupancy() < apply_opts.max_in_flight
-            && !finished
-        {
+        if has_sink && ctx.window_occupancy() < apply_opts.max_in_flight && !finished {
             let idle = apply_opts.batch_max_wait.min(Duration::from_millis(10));
             if has_transform {
                 // Concurrently progress transforms and sink, then refill.
@@ -659,9 +655,7 @@ enum SinkDrive {
 }
 
 /// Await the in-flight drive future without taking ownership (select-safe).
-async fn poll_pending_sink<'s, P>(
-    sinking: &mut Option<PendingSink<'s, P>>,
-) -> Result<SinkDrive> {
+async fn poll_pending_sink<'s, P>(sinking: &mut Option<PendingSink<'s, P>>) -> Result<SinkDrive> {
     match sinking.as_mut() {
         Some(pending) => pending.drive.as_mut().await,
         None => std::future::pending().await,

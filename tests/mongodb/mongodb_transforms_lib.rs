@@ -12,7 +12,7 @@ use surreal_sync_mongodb_changestream_source::{
     ReplicationTailOptions, SourceOpts, SyncOpts,
 };
 use sync_core::{UniversalChange, UniversalRow, UniversalValue};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 
 struct CaptureSink {
     changes: Mutex<Vec<UniversalChange>>,
@@ -149,11 +149,9 @@ async fn identity_and_external_mutate_incremental() -> Result<(), Box<dyn std::e
     )
     .await?;
 
-    let checkpoint_file = checkpoint::get_checkpoint_for_phase(
-        &checkpoint_dir,
-        checkpoint::SyncPhase::FullSyncStart,
-    )
-    .await?;
+    let checkpoint_file =
+        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
+            .await?;
     let from_checkpoint: MongoDBCheckpoint = checkpoint_file.parse()?;
 
     people
@@ -168,10 +166,7 @@ async fn identity_and_external_mutate_incremental() -> Result<(), Box<dyn std::e
         &sink,
         source_opts.clone(),
         from_checkpoint.clone(),
-        ReplicationTailOptions::stream(
-            chrono::Utc::now() + chrono::Duration::seconds(20),
-            None,
-        ),
+        ReplicationTailOptions::stream(chrono::Utc::now() + chrono::Duration::seconds(20), None),
         &pipeline,
         &apply_opts,
     )
@@ -202,10 +197,7 @@ async fn identity_and_external_mutate_incremental() -> Result<(), Box<dyn std::e
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
@@ -215,10 +207,7 @@ async fn identity_and_external_mutate_incremental() -> Result<(), Box<dyn std::e
         &sink,
         source_opts,
         from_checkpoint,
-        ReplicationTailOptions::stream(
-            chrono::Utc::now() + chrono::Duration::seconds(20),
-            None,
-        ),
+        ReplicationTailOptions::stream(chrono::Utc::now() + chrono::Duration::seconds(20), None),
         &pipeline,
         &apply_opts,
     )
@@ -257,10 +246,7 @@ async fn external_mutate_full_sync_rows() -> Result<(), Box<dyn std::error::Erro
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);

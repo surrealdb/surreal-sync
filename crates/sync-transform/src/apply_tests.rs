@@ -147,7 +147,9 @@ async fn write_rows_identity_windowed_when_max_in_flight_gt_1() {
     let pipeline = Pipeline::new();
     assert!(pipeline.is_identity());
     let sink = RecordingSink::new();
-    let opts = ApplyOpts::identity().with_max_in_flight(2).with_batch_size(1);
+    let opts = ApplyOpts::identity()
+        .with_max_in_flight(2)
+        .with_batch_size(1);
     write_rows(&sink, &pipeline, vec![row(1), row(2)], &opts)
         .await
         .unwrap();
@@ -163,7 +165,9 @@ async fn write_rows_coalesces_homogeneous_upsert_batch() {
     // Larger batch_size keeps a single bulk write_universal_rows inside the window.
     let pipeline = Pipeline::new();
     let sink = RecordingSink::new();
-    let opts = ApplyOpts::default().with_batch_size(10).with_max_in_flight(1);
+    let opts = ApplyOpts::default()
+        .with_batch_size(10)
+        .with_max_in_flight(1);
     write_rows(&sink, &pipeline, vec![row(1), row(2), row(3)], &opts)
         .await
         .unwrap();
@@ -206,7 +210,9 @@ async fn write_rows_honors_max_in_flight_window() {
 async fn delete_and_mixed_batches_use_per_event_apply() {
     // Delete (and mixed Update+Delete) must not coalesce to write_universal_rows.
     let pipeline = Pipeline::new();
-    let opts = ApplyOpts::default().with_batch_size(10).with_max_in_flight(1);
+    let opts = ApplyOpts::default()
+        .with_batch_size(10)
+        .with_max_in_flight(1);
 
     let sink = RecordingSink::new();
     apply_changes(
@@ -284,7 +290,10 @@ async fn inplace_stages_mutate_before_sink() {
 #[tokio::test]
 async fn window_former_fails_after_later_transform_succeeds() {
     let transformer = ScriptedTransformer::new(Pipeline::new())
-        .on_batch(1, BatchScript::fail_after(Duration::from_millis(80), "A transform failed"))
+        .on_batch(
+            1,
+            BatchScript::fail_after(Duration::from_millis(80), "A transform failed"),
+        )
         .on_batch(2, BatchScript::succeed_after(Duration::from_millis(5)));
 
     let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 100), positioned(2, 200)]);
@@ -322,10 +331,8 @@ async fn window_former_fails_after_later_transform_succeeds() {
     let transformer2 = ScriptedTransformer::new(Pipeline::new())
         .on_batch(1, BatchScript::succeed_after(Duration::from_millis(5)))
         .on_batch(2, BatchScript::succeed_after(Duration::from_millis(5)));
-    let mut feed2 = ScriptedChangeFeed::from_remaining(vec![
-        positioned(1, 100),
-        positioned(2, 200),
-    ]);
+    let mut feed2 =
+        ScriptedChangeFeed::from_remaining(vec![positioned(1, 100), positioned(2, 200)]);
     let sink2 = RecordingSink::new();
     run_change_feed_with(&mut feed2, &sink2, Arc::new(transformer2), &opts)
         .await
@@ -397,31 +404,26 @@ async fn window_sink_fails_after_both_transformed() {
 #[tokio::test]
 async fn discard_on_failure_poisons_and_clears_successors() {
     let transformer = ScriptedTransformer::new(Pipeline::new())
-        .on_batch(1, BatchScript::fail_after(Duration::from_millis(80), "A boom"))
+        .on_batch(
+            1,
+            BatchScript::fail_after(Duration::from_millis(80), "A boom"),
+        )
         .on_batch(2, BatchScript::succeed_after(Duration::from_millis(5)));
 
     let sink = RecordingSink::new();
     let opts = opts_window(2);
     let mut ctx = ApplyContext::new(&sink, Arc::new(transformer.clone()), &opts);
 
-    assert!(ctx
-        .push_change(change(1), 100u64)
-        .await
-        .unwrap()
-        .is_none());
-    assert!(ctx
-        .push_change(change(2), 200u64)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(ctx.push_change(change(1), 100u64).await.unwrap().is_none());
+    assert!(ctx.push_change(change(2), 200u64).await.unwrap().is_none());
     // Window full (W=2): third change stays in the unstarted buffer and must
     // be discarded with in-flight successors on Fail.
-    assert!(ctx
-        .push_change(change(3), 300u64)
-        .await
-        .unwrap()
-        .is_none());
-    assert_eq!(ctx.buffer_len(), 1, "C should be buffered while A,B in flight");
+    assert!(ctx.push_change(change(3), 300u64).await.unwrap().is_none());
+    assert_eq!(
+        ctx.buffer_len(),
+        1,
+        "C should be buffered while A,B in flight"
+    );
 
     // B completes first and sits in `completed` waiting for ordered A.
     // flush then hits A's failure → discard_successors clears B + buffer + poisons.
@@ -708,10 +710,7 @@ async fn apply_context_fail_poisons_context() {
     let opts = opts_window(1).with_failure_policy(FailurePolicy::Fail);
     let mut ctx = ApplyContext::new(&sink, Arc::new(transformer), &opts);
 
-    let err = ctx
-        .push_change(change(1), 10u64)
-        .await
-        .unwrap_err();
+    let err = ctx.push_change(change(1), 10u64).await.unwrap_err();
     assert!(format!("{err:#}").contains("ctx-fail"));
     assert!(ctx.is_poisoned());
     assert!(sink.applied().is_empty());
@@ -822,11 +821,8 @@ async fn write_relations_via_apply_context() {
     let sink = RecordingSink::new();
     let opts = ApplyOpts::default();
     let pipeline = Pipeline::new();
-    let ctx: ApplyContext<'_, _, _, ()> =
-        ApplyContext::new(&sink, Arc::new(pipeline), &opts);
-    ctx.write_relations(vec![relation(1)])
-        .await
-        .unwrap();
+    let ctx: ApplyContext<'_, _, _, ()> = ApplyContext::new(&sink, Arc::new(pipeline), &opts);
+    ctx.write_relations(vec![relation(1)]).await.unwrap();
     assert_eq!(sink.relations_written().len(), 1);
     assert_eq!(sink.relations_written()[0][0].id, UniversalValue::Int64(1));
 }
@@ -856,29 +852,24 @@ async fn apply_relation_changes_helper() {
 #[tokio::test]
 async fn discard_on_failure_mixed_relation_and_change_w2() {
     let transformer = ScriptedTransformer::new(Pipeline::new())
-        .on_batch(1, BatchScript::fail_after(Duration::from_millis(80), "A change boom"))
+        .on_batch(
+            1,
+            BatchScript::fail_after(Duration::from_millis(80), "A change boom"),
+        )
         .on_batch(2, BatchScript::succeed_after(Duration::from_millis(5)));
 
     let sink = RecordingSink::new();
     let opts = opts_window(2);
     let mut ctx = ApplyContext::new(&sink, Arc::new(transformer.clone()), &opts);
 
-    assert!(ctx
-        .push_change(change(1), 100u64)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(ctx.push_change(change(1), 100u64).await.unwrap().is_none());
     assert!(ctx
         .push_relation_change(UniversalRelationChange::create(relation(2)), 200u64)
         .await
         .unwrap()
         .is_none());
     // Third item buffered while A+B in flight.
-    assert!(ctx
-        .push_change(change(3), 300u64)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(ctx.push_change(change(3), 300u64).await.unwrap().is_none());
     assert_eq!(ctx.buffer_len(), 1);
 
     let err = ctx.flush().await.unwrap_err();

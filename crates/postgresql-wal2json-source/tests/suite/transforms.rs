@@ -11,7 +11,7 @@ use surreal_sync_postgresql_wal2json_source::{
     PostgreSQLLogicalCheckpoint, ReplicationTailOptions, SourceOpts,
 };
 use sync_core::{UniversalChange, UniversalRow, UniversalValue};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 
 struct CaptureSink {
     changes: Mutex<Vec<UniversalChange>>,
@@ -141,7 +141,11 @@ fn source_opts(conn_str: &str, slot: &str, tables: Vec<String>) -> SourceOpts {
     }
 }
 
-async fn capture_head(conn_str: &str, slot: &str, tables: Vec<String>) -> Result<PostgreSQLLogicalCheckpoint> {
+async fn capture_head(
+    conn_str: &str,
+    slot: &str,
+    tables: Vec<String>,
+) -> Result<PostgreSQLLogicalCheckpoint> {
     let (pg_client, connection) = tokio_postgres::connect(conn_str, tokio_postgres::NoTls).await?;
     tokio::spawn(async move {
         let _ = connection.await;
@@ -164,12 +168,8 @@ async fn identity_pipeline_matches_direct_incremental_sync() -> Result<()> {
         .batch_execute("CREATE TABLE people (id INT PRIMARY KEY, name VARCHAR(64))")
         .await?;
 
-    let checkpoint = capture_head(
-        &conn_str,
-        "xf_identity_slot",
-        vec!["people".to_string()],
-    )
-    .await?;
+    let checkpoint =
+        capture_head(&conn_str, "xf_identity_slot", vec!["people".to_string()]).await?;
 
     client
         .execute(
@@ -185,10 +185,7 @@ async fn identity_pipeline_matches_direct_incremental_sync() -> Result<()> {
         &sink,
         source_opts(&conn_str, "xf_identity_slot", vec!["people".to_string()]),
         checkpoint,
-        ReplicationTailOptions::stream(
-            chrono::Utc::now() + chrono::Duration::seconds(20),
-            None,
-        ),
+        ReplicationTailOptions::stream(chrono::Utc::now() + chrono::Duration::seconds(20), None),
         &pipeline,
         &apply_opts,
     )
@@ -216,12 +213,8 @@ async fn external_mutate_worker_transforms_incremental_changes() -> Result<()> {
         .batch_execute("CREATE TABLE people (id INT PRIMARY KEY, name VARCHAR(64))")
         .await?;
 
-    let checkpoint = capture_head(
-        &conn_str,
-        "xf_external_slot",
-        vec!["people".to_string()],
-    )
-    .await?;
+    let checkpoint =
+        capture_head(&conn_str, "xf_external_slot", vec!["people".to_string()]).await?;
 
     client
         .execute(
@@ -233,10 +226,7 @@ async fn external_mutate_worker_transforms_incremental_changes() -> Result<()> {
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
@@ -247,10 +237,7 @@ async fn external_mutate_worker_transforms_incremental_changes() -> Result<()> {
         &sink,
         source_opts(&conn_str, "xf_external_slot", vec!["people".to_string()]),
         checkpoint,
-        ReplicationTailOptions::stream(
-            chrono::Utc::now() + chrono::Duration::seconds(20),
-            None,
-        ),
+        ReplicationTailOptions::stream(chrono::Utc::now() + chrono::Duration::seconds(20), None),
         &pipeline,
         &apply_opts,
     )
@@ -295,10 +282,7 @@ async fn external_mutate_worker_transforms_full_sync_rows() -> Result<()> {
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
@@ -332,8 +316,10 @@ async fn external_mutate_worker_transforms_full_sync_rows() -> Result<()> {
     Ok(())
 }
 
-async fn mem_surreal_sink(
-) -> Result<(surreal2_sink::Surreal2Sink, surrealdb::Surreal<surrealdb::engine::any::Any>)> {
+async fn mem_surreal_sink() -> Result<(
+    surreal2_sink::Surreal2Sink,
+    surrealdb::Surreal<surrealdb::engine::any::Any>,
+)> {
     let db = surrealdb::engine::any::connect("memory").await?;
     db.use_ns("test").use_db("test").await?;
     Ok((surreal2_sink::Surreal2Sink::new(db.clone()), db))
@@ -353,12 +339,7 @@ async fn external_mutate_worker_writes_mutated_fields_to_surrealdb() -> Result<(
         .batch_execute("CREATE TABLE people (id INT PRIMARY KEY, name VARCHAR(64))")
         .await?;
 
-    let checkpoint = capture_head(
-        &conn_str,
-        "xf_surreal_slot",
-        vec!["people".to_string()],
-    )
-    .await?;
+    let checkpoint = capture_head(&conn_str, "xf_surreal_slot", vec!["people".to_string()]).await?;
 
     client
         .execute(
@@ -370,10 +351,7 @@ async fn external_mutate_worker_writes_mutated_fields_to_surrealdb() -> Result<(
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
@@ -384,10 +362,7 @@ async fn external_mutate_worker_writes_mutated_fields_to_surrealdb() -> Result<(
         &sink,
         source_opts(&conn_str, "xf_surreal_slot", vec!["people".to_string()]),
         checkpoint,
-        ReplicationTailOptions::stream(
-            chrono::Utc::now() + chrono::Duration::seconds(20),
-            None,
-        ),
+        ReplicationTailOptions::stream(chrono::Utc::now() + chrono::Duration::seconds(20), None),
         &pipeline,
         &apply_opts,
     )
@@ -417,14 +392,17 @@ async fn external_mutate_worker_writes_mutated_fields_to_surrealdb() -> Result<(
 #[tokio::test]
 async fn relation_change_path_records_junction_applies() -> Result<()> {
     let container = crate::shared::postgres().await;
-    let conn_str = crate::shared::create_test_db(container, &format!(
-        "xf_rel_{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            % 1_000_000_000
-    ))
+    let conn_str = crate::shared::create_test_db(
+        container,
+        &format!(
+            "xf_rel_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+                % 1_000_000_000
+        ),
+    )
     .await?;
 
     let (client, connection) = tokio_postgres::connect(&conn_str, tokio_postgres::NoTls).await?;
@@ -475,10 +453,7 @@ async fn relation_change_path_records_junction_applies() -> Result<()> {
         &sink,
         source_opts(&conn_str, slot, tables),
         checkpoint,
-        ReplicationTailOptions::stream(
-            chrono::Utc::now() + chrono::Duration::seconds(20),
-            None,
-        ),
+        ReplicationTailOptions::stream(chrono::Utc::now() + chrono::Duration::seconds(20), None),
         &Pipeline::new(),
         &ApplyOpts::identity(),
     )
@@ -492,7 +467,9 @@ async fn relation_change_path_records_junction_applies() -> Result<()> {
         relations
     );
     assert!(
-        relations.iter().any(|r| r.relation.relation_type == "book_tags"),
+        relations
+            .iter()
+            .any(|r| r.relation.relation_type == "book_tags"),
         "expected book_tags relation edge, got {relations:?}"
     );
     Ok(())

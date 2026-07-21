@@ -411,22 +411,14 @@ async fn migrate_table<S: SurrealSink>(
         let mut driver = RowChunkDriver::new(chunks);
         let transformer = Arc::new(pipeline.clone());
         let runtime_opts = SourceRuntimeOpts::new();
-        run_source_runtime_with(
-            &mut driver,
-            surreal,
-            transformer,
-            apply_opts,
-            &runtime_opts,
-        )
-        .await?;
+        run_source_runtime_with(&mut driver, surreal, transformer, apply_opts, &runtime_opts)
+            .await?;
         let total_processed = driver.sunk_count() as usize;
         debug!("Processed {total_processed} rows from {table_name} (keyset stream)");
         return Ok(total_processed);
     }
 
-    tracing::warn!(
-        "Table '{table_name}' has no primary key; streaming via LIMIT/OFFSET chunks"
-    );
+    tracing::warn!("Table '{table_name}' has no primary key; streaming via LIMIT/OFFSET chunks");
 
     if sync_opts.dry_run {
         let mut total_processed = 0usize;
@@ -478,9 +470,7 @@ async fn migrate_table<S: SurrealSink>(
                     self.table_name, self.batch_size, self.offset
                 ))
                 .await
-                .map_err(|e| {
-                    anyhow::anyhow!("failed to query table {}: {e}", self.table_name)
-                })?;
+                .map_err(|e| anyhow::anyhow!("failed to query table {}: {e}", self.table_name))?;
             if rows.is_empty() {
                 self.exhausted = true;
                 return Ok(None);
@@ -523,14 +513,7 @@ async fn migrate_table<S: SurrealSink>(
     let mut driver = RowChunkDriver::new(chunks);
     let transformer = Arc::new(pipeline.clone());
     let runtime_opts = SourceRuntimeOpts::new();
-    run_source_runtime_with(
-        &mut driver,
-        surreal,
-        transformer,
-        apply_opts,
-        &runtime_opts,
-    )
-    .await?;
+    run_source_runtime_with(&mut driver, surreal, transformer, apply_opts, &runtime_opts).await?;
     let total_processed = driver.sunk_count() as usize;
     debug!("Processed {total_processed} rows from {table_name} (offset stream)");
     Ok(total_processed)

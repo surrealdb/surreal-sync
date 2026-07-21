@@ -8,10 +8,10 @@ use pg_walstream::ColumnValue;
 use pgoutput_protocol::{CdcChange, PgWalClient, RelationMeta, RowChange, StreamEvent};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
-    run_adhoc_snapshot_tables_with_transforms,
-    run_interleaved_snapshot_with_resume_and_transforms, InterleavedSnapshotConfig,
-    NoopCheckpointer, PkTuple, ReconciliationEvent, SnapshotCheckpointer, SnapshotSignal,
-    SnapshotTransforms, TableSpec, WatermarkKind, WatermarkSource,
+    run_adhoc_snapshot_tables_with_transforms, run_interleaved_snapshot_with_resume_and_transforms,
+    InterleavedSnapshotConfig, NoopCheckpointer, PkTuple, ReconciliationEvent,
+    SnapshotCheckpointer, SnapshotSignal, SnapshotTransforms, TableSpec, WatermarkKind,
+    WatermarkSource,
 };
 use surreal_sync_postgresql::get_primary_key_columns;
 use sync_core::{

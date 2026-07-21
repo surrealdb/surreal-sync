@@ -298,14 +298,10 @@ async fn run_full_v2(args: ResolvedWal2jsonFullArgs) -> anyhow::Result<()> {
             .await?;
         }
         (None, None) => {
-            surreal_sync_postgresql_wal2json_source::run_full_sync_with_transforms::<_, checkpoint::NullStore>(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-                &pipeline,
-                &apply_opts,
-            )
+            surreal_sync_postgresql_wal2json_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
         }
         (Some(_), Some(_)) => {
@@ -380,14 +376,10 @@ async fn run_full_v3(args: ResolvedWal2jsonFullArgs) -> anyhow::Result<()> {
             .await?;
         }
         (None, None) => {
-            surreal_sync_postgresql_wal2json_source::run_full_sync_with_transforms::<_, checkpoint::NullStore>(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-                &pipeline,
-                &apply_opts,
-            )
+            surreal_sync_postgresql_wal2json_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
         }
         (Some(_), Some(_)) => {
@@ -664,13 +656,23 @@ async fn run_full_interleaved_snapshot_v2(args: ResolvedWal2jsonFullArgs) -> any
         &args.schema,
     );
 
-        let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
-    let transforms = SnapshotTransforms { pipeline, apply_opts };
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    let transforms = SnapshotTransforms {
+        pipeline,
+        apply_opts,
+    };
 
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
-            wal2json_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager), &transforms).await
+            wal2json_snapshot_full(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                Some(&manager),
+                &transforms,
+            )
+            .await
         }
         (None, Some(table)) => {
             let checkpoint_surreal = surreal2_sink::surreal_connect(
@@ -683,7 +685,14 @@ async fn run_full_interleaved_snapshot_v2(args: ResolvedWal2jsonFullArgs) -> any
                 checkpoint_surreal,
                 table.clone(),
             ));
-            wal2json_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager), &transforms).await
+            wal2json_snapshot_full(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                Some(&manager),
+                &transforms,
+            )
+            .await
         }
         (None, None) => {
             wal2json_snapshot_full::<_, checkpoint::NullStore>(
@@ -723,20 +732,37 @@ async fn run_full_interleaved_snapshot_v3(args: ResolvedWal2jsonFullArgs) -> any
         &args.schema,
     );
 
-        let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
-    let transforms = SnapshotTransforms { pipeline, apply_opts };
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    let transforms = SnapshotTransforms {
+        pipeline,
+        apply_opts,
+    };
 
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
-            wal2json_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager), &transforms).await
+            wal2json_snapshot_full(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                Some(&manager),
+                &transforms,
+            )
+            .await
         }
         (None, Some(table)) => {
             let manager = SyncManager::new(checkpoint_surreal3::Surreal3Store::new(
                 surreal,
                 table.clone(),
             ));
-            wal2json_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager), &transforms).await
+            wal2json_snapshot_full(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                Some(&manager),
+                &transforms,
+            )
+            .await
         }
         (None, None) => {
             wal2json_snapshot_full::<_, checkpoint::NullStore>(

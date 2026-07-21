@@ -111,8 +111,7 @@ impl Pipeline {
     where
         T: InPlaceTransform + 'static,
     {
-        self.stages
-            .push(Stage::InPlace(Arc::new(transform)));
+        self.stages.push(Stage::InPlace(Arc::new(transform)));
     }
 
     /// Append a pre-boxed in-place stage.
@@ -370,8 +369,7 @@ impl Pipeline {
                                 ApplyEvent::Change(_) => unreachable!(),
                             })
                             .collect();
-                        let transformed =
-                            ext.exchange_relation_changes(batch_id, rels).await?;
+                        let transformed = ext.exchange_relation_changes(batch_id, rels).await?;
                         events = transformed
                             .into_iter()
                             .map(ApplyEvent::relation_change)

@@ -352,9 +352,7 @@ pub async fn read_offset_table_chunk(
         .and_then(|s| s.get_table(table_name))
         .map(|td| classify_table(td, relation_table_overrides));
     // ORDER BY ctid keeps OFFSET pages stable when the table is not mutating.
-    let query = format!(
-        "SELECT * FROM {table_name} ORDER BY ctid OFFSET {offset} LIMIT {limit}"
-    );
+    let query = format!("SELECT * FROM {table_name} ORDER BY ctid OFFSET {offset} LIMIT {limit}");
     debug!("Offset-reading table {table_name} with: {query}");
     let rows = client.query(&query, &[]).await?;
     if rows.is_empty() {
@@ -399,9 +397,7 @@ pub async fn read_offset_relation_chunk(
     in_fk: &sync_core::ForeignKeyDefinition,
     out_fk: &sync_core::ForeignKeyDefinition,
 ) -> Result<Vec<UniversalRelation>> {
-    let query = format!(
-        "SELECT * FROM {table_name} ORDER BY ctid OFFSET {offset} LIMIT {limit}"
-    );
+    let query = format!("SELECT * FROM {table_name} ORDER BY ctid OFFSET {offset} LIMIT {limit}");
     debug!("Offset-reading relation table {table_name} with: {query}");
     let rows = client.query(&query, &[]).await?;
     let mut out = Vec::with_capacity(rows.len());

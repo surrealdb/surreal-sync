@@ -9,7 +9,9 @@ use anyhow::Context;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use surreal_sink::SurrealSink;
 use surreal_sync::orchestrate_snapshot_then_incremental;
-use surreal_sync_interleaved_snapshot::{InterleavedSnapshotConfig, NoopCheckpointer, SnapshotTransforms};
+use surreal_sync_interleaved_snapshot::{
+    InterleavedSnapshotConfig, NoopCheckpointer, SnapshotTransforms,
+};
 use surreal_sync_mysql_trigger_source::{MySQLCheckpoint, ReplicationTailOptions};
 use sync_transform::{ApplyOpts, Pipeline};
 
@@ -109,7 +111,10 @@ async fn run_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
         }
         (None, None) => {
             // No checkpoint storage
-            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms::<_, checkpoint::NullStore>(
+            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -201,7 +206,10 @@ async fn run_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
         }
         (None, None) => {
             // No checkpoint storage
-            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms::<_, checkpoint::NullStore>(
+            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(
                 &sink,
                 &source_opts,
                 &sync_opts,

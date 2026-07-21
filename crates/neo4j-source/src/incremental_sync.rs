@@ -408,8 +408,7 @@ impl ChangeStream for Neo4jChangeStream {
 
     fn checkpoint(&self) -> Option<Neo4jCheckpoint> {
         let checkpoint_datetime =
-            chrono::DateTime::from_timestamp_millis(self.sunk_checkpoint)
-                .unwrap_or_else(Utc::now);
+            chrono::DateTime::from_timestamp_millis(self.sunk_checkpoint).unwrap_or_else(Utc::now);
         Some(Neo4jCheckpoint {
             timestamp: checkpoint_datetime,
             after_node_id: self.sunk_after_node_id,

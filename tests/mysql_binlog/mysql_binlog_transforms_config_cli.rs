@@ -43,8 +43,8 @@ fn ensure_fixture_worker() -> PathBuf {
 }
 
 #[tokio::test]
-async fn test_mysql_binlog_stream_cli_transforms_config_mutate() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn test_mysql_binlog_stream_cli_transforms_config_mutate(
+) -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter("surreal_sync=info")
         .try_init()
@@ -175,11 +175,8 @@ stdio.framer = "ndjson"
         "MySQL binlog stream CLI with --transforms-config mutate",
     );
 
-    let catch_up = checkpoint::get_checkpoint_for_phase(
-        &checkpoint_dir,
-        SyncPhase::CatchUpProgress,
-    )
-    .await;
+    let catch_up =
+        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, SyncPhase::CatchUpProgress).await;
     assert!(
         catch_up.is_ok(),
         "stream phase with --checkpoint-dir should persist CatchUpProgress; err={catch_up:?}"

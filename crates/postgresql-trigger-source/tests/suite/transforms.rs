@@ -13,10 +13,8 @@ use surreal_sync_postgresql_trigger_source::{
     run_incremental_sync_with_transforms, PostgreSQLCheckpoint, PostgresIncrementalSource,
     ReplicationTailOptions, SourceOpts,
 };
-use sync_core::{
-    UniversalChange, UniversalRelationChange, UniversalRow, UniversalValue,
-};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
+use sync_core::{UniversalChange, UniversalRelationChange, UniversalRow, UniversalValue};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 use tokio::sync::Mutex as TokioMutex;
 
 struct CaptureSink {
@@ -113,7 +111,10 @@ fn name_field(change: &UniversalChange) -> String {
         .data
         .as_ref()
         .unwrap_or_else(|| panic!("change missing data: {change:?}"));
-    match data.get("name").unwrap_or_else(|| panic!("change missing name: {change:?}")) {
+    match data
+        .get("name")
+        .unwrap_or_else(|| panic!("change missing name: {change:?}"))
+    {
         UniversalValue::VarChar { value, .. } | UniversalValue::Text(value) => value.clone(),
         other => panic!("unexpected name: {other:?}"),
     }
@@ -232,10 +233,7 @@ async fn external_mutate_worker_transforms_incremental_changes() -> Result<()> {
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
@@ -356,7 +354,9 @@ async fn relation_change_path_records_junction_applies() -> Result<()> {
         relations
     );
     assert!(
-        relations.iter().any(|r| r.relation.relation_type == "book_tags"),
+        relations
+            .iter()
+            .any(|r| r.relation.relation_type == "book_tags"),
         "expected book_tags relation edge, got {relations:?}"
     );
     Ok(())

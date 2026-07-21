@@ -12,7 +12,7 @@ use surreal_sync_mysql_binlog_source::{
     BinlogCheckpoint, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
 use sync_core::{UniversalChange, UniversalRow, UniversalValue};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 
 struct CaptureSink {
     changes: Mutex<Vec<UniversalChange>>,
@@ -154,8 +154,7 @@ async fn identity_pipeline_matches_direct_incremental_sync() -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?
     };
-    crate::shared::start_binlog_at_master_end(&mut client, &conn_str)
-        .await?;
+    crate::shared::start_binlog_at_master_end(&mut client, &conn_str).await?;
 
     let checkpoint = BinlogCheckpoint {
         flavor: container.flavor(),
@@ -243,8 +242,7 @@ async fn external_mutate_worker_transforms_incremental_changes() -> Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?
     };
-    crate::shared::start_binlog_at_master_end(&mut client, &conn_str)
-        .await?;
+    crate::shared::start_binlog_at_master_end(&mut client, &conn_str).await?;
 
     let checkpoint = BinlogCheckpoint {
         flavor: container.flavor(),
@@ -262,10 +260,7 @@ async fn external_mutate_worker_transforms_incremental_changes() -> Result<()> {
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
@@ -298,7 +293,11 @@ async fn external_mutate_worker_transforms_incremental_changes() -> Result<()> {
     .await?;
 
     let changes = sink.changes.lock().expect("lock").clone();
-    assert_eq!(changes.len(), 2, "expected two transformed inserts, got {changes:?}");
+    assert_eq!(
+        changes.len(),
+        2,
+        "expected two transformed inserts, got {changes:?}"
+    );
     for change in &changes {
         assert_eq!(
             name_field(change).as_deref(),
@@ -334,10 +333,7 @@ async fn external_mutate_worker_transforms_full_sync_rows() -> Result<()> {
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
@@ -385,8 +381,10 @@ async fn external_mutate_worker_transforms_full_sync_rows() -> Result<()> {
     Ok(())
 }
 
-async fn mem_surreal_sink(
-) -> Result<(surreal2_sink::Surreal2Sink, surrealdb::Surreal<surrealdb::engine::any::Any>)> {
+async fn mem_surreal_sink() -> Result<(
+    surreal2_sink::Surreal2Sink,
+    surrealdb::Surreal<surrealdb::engine::any::Any>,
+)> {
     let db = surrealdb::engine::any::connect("memory").await?;
     db.use_ns("test").use_db("test").await?;
     Ok((surreal2_sink::Surreal2Sink::new(db.clone()), db))
@@ -426,8 +424,7 @@ async fn external_mutate_worker_writes_mutated_fields_to_surrealdb() -> Result<(
         .await
         .map_err(|e| anyhow::anyhow!("{e}"))?
     };
-    crate::shared::start_binlog_at_master_end(&mut client, &conn_str)
-        .await?;
+    crate::shared::start_binlog_at_master_end(&mut client, &conn_str).await?;
 
     let checkpoint = BinlogCheckpoint {
         flavor: container.flavor(),
@@ -445,10 +442,7 @@ async fn external_mutate_worker_writes_mutated_fields_to_surrealdb() -> Result<(
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
@@ -486,7 +480,11 @@ async fn external_mutate_worker_writes_mutated_fields_to_surrealdb() -> Result<(
     }
     let mut resp = db.query("SELECT name FROM people").await?;
     let rows: Vec<PeopleRow> = resp.take(0)?;
-    assert_eq!(rows.len(), 2, "expected two people in SurrealDB, got {rows:?}");
+    assert_eq!(
+        rows.len(),
+        2,
+        "expected two people in SurrealDB, got {rows:?}"
+    );
     for row in &rows {
         assert_eq!(
             row.name.as_deref(),

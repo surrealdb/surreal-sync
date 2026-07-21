@@ -13,7 +13,7 @@ use surreal_sync_kafka_producer::container::KafkaContainer;
 use surreal_sync_kafka_producer::{publish_test_users, KafkaTestProducer};
 use surreal_sync_kafka_source::Config as KafkaConfig;
 use sync_core::{UniversalChange, UniversalRelation, UniversalRow, UniversalValue};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 use tokio::time::sleep;
 
 struct CaptureSink {
@@ -190,10 +190,7 @@ async fn kafka_external_mutate_rewrites_name_through_source_driver(
 
     // Distinct record ids within the poll batch (indices are assigned before
     // converting rows to upsert changes for the SourceDriver window).
-    let ids: Vec<_> = changes
-        .iter()
-        .map(|c| format!("{:?}", c.id))
-        .collect();
+    let ids: Vec<_> = changes.iter().map(|c| format!("{:?}", c.id)).collect();
     let unique: std::collections::HashSet<_> = ids.iter().cloned().collect();
     assert_eq!(
         unique.len(),

@@ -15,7 +15,7 @@ use surreal_sync_neo4j_source::{
 use sync_core::{
     UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow, UniversalValue,
 };
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 
 struct CaptureSink {
     changes: Mutex<Vec<UniversalChange>>,
@@ -269,9 +269,7 @@ async fn incremental_applies_nodes_before_relations_in_batch() -> Result<()> {
         "relation applied with no prior node applies: {order:?}"
     );
     assert!(
-        node_applies_before
-            .iter()
-            .all(|t| t.starts_with("change:")),
+        node_applies_before.iter().all(|t| t.starts_with("change:")),
         "nodes must be applied before relations within a fetch batch, got {order:?}"
     );
 
@@ -348,10 +346,7 @@ async fn identity_and_external_mutate_incremental() -> Result<()> {
 
     let changes = sink.changes.lock().expect("lock").clone();
     let rel_changes = sink.relation_changes.lock().expect("lock").clone();
-    assert!(
-        changes.len() >= 2,
-        "expected node changes, got {changes:?}"
-    );
+    assert!(changes.len() >= 2, "expected node changes, got {changes:?}");
     assert!(
         !rel_changes.is_empty(),
         "expected relation changes, got {rel_changes:?}"
@@ -372,10 +367,7 @@ async fn identity_and_external_mutate_incremental() -> Result<()> {
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
@@ -453,10 +445,7 @@ async fn external_mutate_full_sync_rows_and_relations() -> Result<()> {
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);

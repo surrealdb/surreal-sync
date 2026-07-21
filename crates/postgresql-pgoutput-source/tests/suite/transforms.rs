@@ -11,7 +11,7 @@ use surreal_sync_postgresql_pgoutput_source::{
     ReplicationTailOptions, SyncOpts,
 };
 use sync_core::{UniversalChange, UniversalRow, UniversalValue};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 
 struct CaptureSink {
     changes: Mutex<Vec<UniversalChange>>,
@@ -213,10 +213,7 @@ async fn external_mutate_worker_transforms_incremental_changes() -> Result<()> {
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
@@ -284,10 +281,7 @@ async fn external_mutate_worker_transforms_full_sync_rows() -> Result<()> {
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);
@@ -329,8 +323,10 @@ async fn external_mutate_worker_transforms_full_sync_rows() -> Result<()> {
     Ok(())
 }
 
-async fn mem_surreal_sink(
-) -> Result<(surreal2_sink::Surreal2Sink, surrealdb::Surreal<surrealdb::engine::any::Any>)> {
+async fn mem_surreal_sink() -> Result<(
+    surreal2_sink::Surreal2Sink,
+    surrealdb::Surreal<surrealdb::engine::any::Any>,
+)> {
     let db = surrealdb::engine::any::connect("memory").await?;
     db.use_ns("test").use_db("test").await?;
     Ok((surreal2_sink::Surreal2Sink::new(db.clone()), db))
@@ -368,10 +364,7 @@ async fn external_mutate_worker_writes_mutated_fields_to_surrealdb() -> Result<(
     let mut pipeline = Pipeline::new();
     let ext = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
-        vec![
-            worker.to_string_lossy().into_owned(),
-            "mutate".to_string(),
-        ],
+        vec![worker.to_string_lossy().into_owned(), "mutate".to_string()],
         FramerKind::Ndjson,
     )?;
     pipeline.push_external(ext);

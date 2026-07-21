@@ -16,7 +16,9 @@ use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use std::path::PathBuf;
 use surreal_sink::SurrealSink;
 use surreal_sync::{orchestrate_snapshot_then_incremental, SurrealOpts};
-use surreal_sync_interleaved_snapshot::{InterleavedSnapshotConfig, NoopCheckpointer, SnapshotTransforms};
+use surreal_sync_interleaved_snapshot::{
+    InterleavedSnapshotConfig, NoopCheckpointer, SnapshotTransforms,
+};
 use surreal_sync_postgresql_trigger_source::{PostgreSQLCheckpoint, ReplicationTailOptions};
 use sync_transform::{ApplyOpts, Pipeline};
 
@@ -266,14 +268,10 @@ async fn run_full_v2(args: ResolvedTriggerFullArgs) -> anyhow::Result<()> {
             .await?;
         }
         (None, None) => {
-            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<_, checkpoint::NullStore>(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-                &pipeline,
-                &apply_opts,
-            )
+            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
         }
         (Some(_), Some(_)) => {
@@ -353,14 +351,10 @@ async fn run_full_v3(args: ResolvedTriggerFullArgs) -> anyhow::Result<()> {
             .await?;
         }
         (None, None) => {
-            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<_, checkpoint::NullStore>(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-                &pipeline,
-                &apply_opts,
-            )
+            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
         }
         (Some(_), Some(_)) => {
@@ -405,14 +399,15 @@ where
 {
     let config = InterleavedSnapshotConfig { chunk_size };
     let mut checkpointer = NoopCheckpointer;
-    let final_seq = surreal_sync_postgresql_trigger_source::run_interleaved_snapshot_full_sync_with_transforms(
-        sink,
-        &source_opts,
-        &config,
-        &mut checkpointer,
-        transforms,
-    )
-    .await?;
+    let final_seq =
+        surreal_sync_postgresql_trigger_source::run_interleaved_snapshot_full_sync_with_transforms(
+            sink,
+            &source_opts,
+            &config,
+            &mut checkpointer,
+            transforms,
+        )
+        .await?;
 
     if let Some(manager) = manager {
         let checkpoint = PostgreSQLCheckpoint {
@@ -447,13 +442,23 @@ async fn run_full_interleaved_snapshot_v2(args: ResolvedTriggerFullArgs) -> anyh
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
     let source_opts = trigger_source_opts(&args.connection_string, args.tables.clone());
 
-        let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
-    let transforms = SnapshotTransforms { pipeline, apply_opts };
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    let transforms = SnapshotTransforms {
+        pipeline,
+        apply_opts,
+    };
 
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
-            pg_trigger_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager), &transforms).await
+            pg_trigger_snapshot_full(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                Some(&manager),
+                &transforms,
+            )
+            .await
         }
         (None, Some(table)) => {
             let checkpoint_surreal = surreal2_sink::surreal_connect(
@@ -466,7 +471,14 @@ async fn run_full_interleaved_snapshot_v2(args: ResolvedTriggerFullArgs) -> anyh
                 checkpoint_surreal,
                 table.clone(),
             ));
-            pg_trigger_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager), &transforms).await
+            pg_trigger_snapshot_full(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                Some(&manager),
+                &transforms,
+            )
+            .await
         }
         (None, None) => {
             pg_trigger_snapshot_full::<_, checkpoint::NullStore>(
@@ -501,20 +513,37 @@ async fn run_full_interleaved_snapshot_v3(args: ResolvedTriggerFullArgs) -> anyh
     let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
     let source_opts = trigger_source_opts(&args.connection_string, args.tables.clone());
 
-        let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
-    let transforms = SnapshotTransforms { pipeline, apply_opts };
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    let transforms = SnapshotTransforms {
+        pipeline,
+        apply_opts,
+    };
 
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
-            pg_trigger_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager), &transforms).await
+            pg_trigger_snapshot_full(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                Some(&manager),
+                &transforms,
+            )
+            .await
         }
         (None, Some(table)) => {
             let manager = SyncManager::new(checkpoint_surreal3::Surreal3Store::new(
                 surreal,
                 table.clone(),
             ));
-            pg_trigger_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager), &transforms).await
+            pg_trigger_snapshot_full(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                Some(&manager),
+                &transforms,
+            )
+            .await
         }
         (None, None) => {
             pg_trigger_snapshot_full::<_, checkpoint::NullStore>(

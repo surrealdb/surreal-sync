@@ -33,8 +33,12 @@ fn positioned(id: i64, pos: u64) -> PositionedChange<u64> {
 
 #[tokio::test]
 async fn persistent_echo_and_mutate() {
-    let ext = ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("echo"), FramerKind::Ndjson)
-        .expect("spawn echo worker");
+    let ext = ExternalTransform::child_stdio(
+        ChildStdioMode::Persistent,
+        fixture_cmd("echo"),
+        FramerKind::Ndjson,
+    )
+    .expect("spawn echo worker");
     let out = ext
         .exchange_changes(7, vec![change(1, "alice")])
         .await
@@ -42,9 +46,12 @@ async fn persistent_echo_and_mutate() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].id, UniversalValue::Int64(1));
 
-    let ext_m =
-        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("mutate"), FramerKind::Ndjson)
-            .expect("spawn mutate worker");
+    let ext_m = ExternalTransform::child_stdio(
+        ChildStdioMode::Persistent,
+        fixture_cmd("mutate"),
+        FramerKind::Ndjson,
+    )
+    .expect("spawn mutate worker");
     let out = ext_m
         .exchange_changes(8, vec![change(2, "bob")])
         .await
@@ -63,8 +70,12 @@ async fn persistent_echo_and_mutate() {
 
 #[tokio::test]
 async fn persistent_multiplex_batch_ids() {
-    let ext = ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("echo"), FramerKind::Ndjson)
-        .expect("spawn");
+    let ext = ExternalTransform::child_stdio(
+        ChildStdioMode::Persistent,
+        fixture_cmd("echo"),
+        FramerKind::Ndjson,
+    )
+    .expect("spawn");
     let a = {
         let ext = ext.clone();
         tokio::spawn(async move { ext.exchange_changes(1, vec![change(1, "a")]).await })
@@ -81,12 +92,13 @@ async fn persistent_multiplex_batch_ids() {
 
 #[tokio::test]
 async fn transient_smoke() {
-    let ext = ExternalTransform::child_stdio(ChildStdioMode::Transient, fixture_cmd("echo"), FramerKind::Ndjson)
-        .expect("transient");
-    let out = ext
-        .exchange_changes(1, vec![change(9, "x")])
-        .await
-        .unwrap();
+    let ext = ExternalTransform::child_stdio(
+        ChildStdioMode::Transient,
+        fixture_cmd("echo"),
+        FramerKind::Ndjson,
+    )
+    .expect("transient");
+    let out = ext.exchange_changes(1, vec![change(9, "x")]).await.unwrap();
     assert_eq!(out[0].id, UniversalValue::Int64(9));
 
     // Second batch respawns.
@@ -101,8 +113,12 @@ async fn transient_smoke() {
 async fn persistent_bad_batch_id_no_sink_no_advance() {
     let mut pipeline = Pipeline::new();
     pipeline.push_external(
-        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("bad-batch-id"), FramerKind::Ndjson)
-            .unwrap(),
+        ExternalTransform::child_stdio(
+            ChildStdioMode::Persistent,
+            fixture_cmd("bad-batch-id"),
+            FramerKind::Ndjson,
+        )
+        .unwrap(),
     );
 
     let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 100)]);
@@ -128,8 +144,12 @@ async fn persistent_bad_batch_id_no_sink_no_advance() {
 async fn persistent_w2_colliding_batch_id_mismatch_no_sink_no_advance() {
     let mut pipeline = Pipeline::new();
     pipeline.push_external(
-        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("bad-batch-id"), FramerKind::Ndjson)
-            .unwrap(),
+        ExternalTransform::child_stdio(
+            ChildStdioMode::Persistent,
+            fixture_cmd("bad-batch-id"),
+            FramerKind::Ndjson,
+        )
+        .unwrap(),
     );
 
     let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 100), positioned(2, 200)]);
@@ -193,7 +213,12 @@ async fn persistent_missing_batch_id_no_sink_no_advance() {
 async fn persistent_via_run_change_feed_echo() {
     let mut pipeline = Pipeline::new();
     pipeline.push_external(
-        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("echo"), FramerKind::Ndjson).unwrap(),
+        ExternalTransform::child_stdio(
+            ChildStdioMode::Persistent,
+            fixture_cmd("echo"),
+            FramerKind::Ndjson,
+        )
+        .unwrap(),
     );
 
     let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 10), positioned(2, 20)]);
@@ -211,8 +236,12 @@ async fn persistent_via_run_change_feed_echo() {
 async fn write_rows_through_external_mutate() {
     let mut pipeline = Pipeline::new();
     pipeline.push_external(
-        ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("mutate"), FramerKind::Ndjson)
-            .unwrap(),
+        ExternalTransform::child_stdio(
+            ChildStdioMode::Persistent,
+            fixture_cmd("mutate"),
+            FramerKind::Ndjson,
+        )
+        .unwrap(),
     );
     let sink = RecordingSink::new();
     let opts = ApplyOpts::default();
@@ -232,10 +261,7 @@ async fn write_rows_through_external_mutate() {
     let written = sink.rows_written();
     assert_eq!(written.len(), 1);
     assert_eq!(written[0].len(), 1);
-    let name = written[0][0]
-        .fields
-        .get("name")
-        .expect("name field");
+    let name = written[0][0].fields.get("name").expect("name field");
     match name {
         UniversalValue::VarChar { value, .. } => assert_eq!(value, "mutated"),
         other => panic!("unexpected: {other:?}"),

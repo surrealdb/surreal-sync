@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use surreal_sink::SurrealSink;
 use surreal_sync_csv_source::{sync, sync_with_transforms, Config};
 use sync_core::{UniversalChange, UniversalRelation, UniversalRow, UniversalValue};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline, FramerKind};
+use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 use tempfile::NamedTempFile;
 
 struct CaptureSink {
@@ -158,7 +158,9 @@ async fn external_mutate_rewrites_name_through_source_driver() {
         )
         .expect("spawn mutate worker"),
     );
-    let apply_opts = ApplyOpts::identity().with_batch_size(10).with_max_in_flight(2);
+    let apply_opts = ApplyOpts::identity()
+        .with_batch_size(10)
+        .with_max_in_flight(2);
 
     let sink = CaptureSink::new();
     sync_with_transforms(&sink, config, &pipeline, &apply_opts)

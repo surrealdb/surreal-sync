@@ -156,10 +156,7 @@ mod pk_key_tests {
         let row = UniversalRow::new("users", 0, UniversalValue::Int32(7), fields);
         let pk = PkTuple::from_row(&row, &["id".to_string()]).unwrap();
         assert_eq!(pk.0, vec![UniversalValue::Int64(7)]);
-        assert_eq!(
-            pk.key(),
-            PkTuple::new(vec![UniversalValue::Int64(7)]).key()
-        );
+        assert_eq!(pk.key(), PkTuple::new(vec![UniversalValue::Int64(7)]).key());
     }
 }
 

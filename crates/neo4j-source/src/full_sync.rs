@@ -200,20 +200,15 @@ pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
     let mut total_migrated = 0;
 
     // Migrate nodes first and track min/max timestamps
-    let (nodes_migrated, nodes_min_ts, nodes_max_ts) =
-        migrate_neo4j_nodes(&graph, surreal, &sync_opts, &ctx, &from_opts, pipeline, apply_opts)
-            .await?;
+    let (nodes_migrated, nodes_min_ts, nodes_max_ts) = migrate_neo4j_nodes(
+        &graph, surreal, &sync_opts, &ctx, &from_opts, pipeline, apply_opts,
+    )
+    .await?;
     total_migrated += nodes_migrated;
 
     // Then migrate relationships and track min/max timestamps
     let (rels_migrated, rels_min_ts, rels_max_ts) = migrate_neo4j_relationships(
-        &graph,
-        surreal,
-        &sync_opts,
-        &ctx,
-        &from_opts,
-        pipeline,
-        apply_opts,
+        &graph, surreal, &sync_opts, &ctx, &from_opts, pipeline, apply_opts,
     )
     .await?;
     total_migrated += rels_migrated;
@@ -395,9 +390,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
                 processed += 1;
             }
             total_migrated += processed;
-            tracing::info!(
-                "Dry-run scanned label '{label}': {processed} nodes",
-            );
+            tracing::info!("Dry-run scanned label '{label}': {processed} nodes",);
             continue;
         }
 
@@ -473,20 +466,12 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
         let mut driver = RowChunkDriver::new(chunks);
         let transformer = Arc::new(pipeline.clone());
         let runtime_opts = SourceRuntimeOpts::new();
-        run_source_runtime_with(
-            &mut driver,
-            surreal,
-            transformer,
-            apply_opts,
-            &runtime_opts,
-        )
-        .await?;
+        run_source_runtime_with(&mut driver, surreal, transformer, apply_opts, &runtime_opts)
+            .await?;
         let processed = driver.sunk_count() as usize;
         total_migrated += processed;
 
-        tracing::info!(
-            "Completed migration of label '{label}': {processed} nodes",
-        );
+        tracing::info!("Completed migration of label '{label}': {processed} nodes",);
     }
 
     tracing::info!(
@@ -648,14 +633,8 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
         let mut driver = RelationChunkDriver::new(chunks);
         let transformer = Arc::new(pipeline.clone());
         let runtime_opts = SourceRuntimeOpts::new();
-        run_source_runtime_with(
-            &mut driver,
-            surreal,
-            transformer,
-            apply_opts,
-            &runtime_opts,
-        )
-        .await?;
+        run_source_runtime_with(&mut driver, surreal, transformer, apply_opts, &runtime_opts)
+            .await?;
         let processed = driver.sunk_count() as usize;
         total_migrated += processed;
 

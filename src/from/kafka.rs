@@ -7,8 +7,8 @@
 use anyhow::Context;
 use sync_core::Schema;
 
-use super::{get_sdk_version, parse_duration_to_secs, SdkVersion};
 use super::transforms::load_transforms_from_args;
+use super::{get_sdk_version, parse_duration_to_secs, SdkVersion};
 use crate::KafkaArgs;
 
 /// Run Kafka streaming sync, dispatching to appropriate SDK version.

@@ -8,9 +8,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use sync_core::{
-    UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow,
-};
+use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
 
 use super::event::PositionedEvent;
 use super::source_driver::{CheckpointPolicy, SourceDriver};

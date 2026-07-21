@@ -136,9 +136,8 @@ impl SourceDriver for JsonlStreamDriver {
                 continue;
             }
 
-            let json_value: Value = serde_json::from_str(&line).map_err(|e| {
-                anyhow!("Error parsing JSON at line {}: {e}", self.line_count)
-            })?;
+            let json_value: Value = serde_json::from_str(&line)
+                .map_err(|e| anyhow!("Error parsing JSON at line {}: {e}", self.line_count))?;
 
             let row = convert_json_to_universal_row(
                 &json_value,

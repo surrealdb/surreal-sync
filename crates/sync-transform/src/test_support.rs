@@ -13,9 +13,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use surreal_sink::SurrealSink;
-use sync_core::{
-    UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow,
-};
+use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
 use tokio::sync::Notify;
 
 /// Per-batch script for [`ScriptedTransformer`].
@@ -137,10 +135,7 @@ impl BatchTransformer for ScriptedTransformer {
             let mut st = self.state.lock().expect("scripted transformer lock");
             st.transform_calls += 1;
             st.started_order.push(batch_id);
-            st.by_batch_id
-                .get(&batch_id)
-                .cloned()
-                .unwrap_or_default()
+            st.by_batch_id.get(&batch_id).cloned().unwrap_or_default()
         };
         if !script.delay.is_zero() {
             tokio::time::sleep(script.delay).await;
@@ -171,10 +166,7 @@ impl BatchTransformer for ScriptedTransformer {
             let mut st = self.state.lock().expect("scripted transformer lock");
             st.transform_calls += 1;
             st.started_order.push(batch_id);
-            st.by_batch_id
-                .get(&batch_id)
-                .cloned()
-                .unwrap_or_default()
+            st.by_batch_id.get(&batch_id).cloned().unwrap_or_default()
         };
         if !script.delay.is_zero() {
             tokio::time::sleep(script.delay).await;
@@ -207,10 +199,7 @@ impl BatchTransformer for ScriptedTransformer {
             let mut st = self.state.lock().expect("scripted transformer lock");
             st.transform_calls += 1;
             st.started_order.push(batch_id);
-            st.by_batch_id
-                .get(&batch_id)
-                .cloned()
-                .unwrap_or_default()
+            st.by_batch_id.get(&batch_id).cloned().unwrap_or_default()
         };
         if !script.delay.is_zero() {
             tokio::time::sleep(script.delay).await;
@@ -241,10 +230,7 @@ impl BatchTransformer for ScriptedTransformer {
             let mut st = self.state.lock().expect("scripted transformer lock");
             st.transform_calls += 1;
             st.started_order.push(batch_id);
-            st.by_batch_id
-                .get(&batch_id)
-                .cloned()
-                .unwrap_or_default()
+            st.by_batch_id.get(&batch_id).cloned().unwrap_or_default()
         };
         if !script.delay.is_zero() {
             tokio::time::sleep(script.delay).await;
@@ -275,10 +261,7 @@ impl BatchTransformer for ScriptedTransformer {
             let mut st = self.state.lock().expect("scripted transformer lock");
             st.transform_calls += 1;
             st.started_order.push(batch_id);
-            st.by_batch_id
-                .get(&batch_id)
-                .cloned()
-                .unwrap_or_default()
+            st.by_batch_id.get(&batch_id).cloned().unwrap_or_default()
         };
         if !script.delay.is_zero() {
             tokio::time::sleep(script.delay).await;
@@ -427,11 +410,7 @@ impl ExternalTransport for ScriptedExternalTransport {
             let mut st = self.state.lock().expect("scripted external lock");
             st.writes.push(batch_id);
             st.write_kinds.push((batch_id, kind));
-            let script = st
-                .by_batch_id
-                .get(&batch_id)
-                .cloned()
-                .unwrap_or_default();
+            let script = st.by_batch_id.get(&batch_id).cloned().unwrap_or_default();
             (script, Arc::clone(&st.notify))
         };
 

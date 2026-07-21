@@ -52,11 +52,9 @@ impl SurrealSink for MockSink {
         // Homogeneous Update upserts coalesce here; mirror into `changes`.
         let mut state = self.state.lock().unwrap();
         for row in rows {
-            state.changes.push((
-                UniversalChangeOp::Update,
-                row.table.clone(),
-                row.id.clone(),
-            ));
+            state
+                .changes
+                .push((UniversalChangeOp::Update, row.table.clone(), row.id.clone()));
         }
         Ok(())
     }
@@ -345,8 +343,8 @@ async fn post_high_delete_wins_over_buffer_flush() {
     // batch. Survivors must be queued before that Delete so the log wins and
     // the row is not resurrected by a stale buffer upsert.
     let spec = TableSpec::new("users", vec!["id".to_string()]);
-    let mut source = MockSource::new(spec, 2, vec![vec![]])
-        .with_trailing(vec![vec![delete_event(2)]]);
+    let mut source =
+        MockSource::new(spec, 2, vec![vec![]]).with_trailing(vec![vec![delete_event(2)]]);
     let sink = MockSink::default();
     let config = InterleavedSnapshotConfig { chunk_size: 16 };
     let mut checkpointer = crate::NoopCheckpointer;

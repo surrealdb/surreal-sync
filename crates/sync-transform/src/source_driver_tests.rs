@@ -65,8 +65,8 @@ async fn run_source_runtime_identity_change_feed_like() {
 
 #[tokio::test]
 async fn persist_checkpoint_only_after_sink_advance_only_skips() {
-    let mut driver = ScriptedSourceDriver::new(vec![PositionedEvent::change(change(1), 10u64)])
-        .advance_only();
+    let mut driver =
+        ScriptedSourceDriver::new(vec![PositionedEvent::change(change(1), 10u64)]).advance_only();
     assert_eq!(driver.policy, CheckpointPolicy::AdvanceOnly);
 
     let sink = RecordingSink::new();
@@ -441,7 +441,10 @@ async fn interval_when_drained_persists_filtered_read_progress() {
     .await
     .unwrap();
 
-    assert!(driver.advances.is_empty(), "filtered-only path must not advance_watermark");
+    assert!(
+        driver.advances.is_empty(),
+        "filtered-only path must not advance_watermark"
+    );
     assert!(
         driver.persisted.contains(&99),
         "drained IntervalWhenDrained must persist read_progress; got {:?}",
@@ -510,11 +513,7 @@ async fn failure_policy_skip_still_notes_sunk_events() {
         "failed batch must not be sunk; successor may be: {:?}",
         sink.applied()
     );
-    assert_eq!(
-        sink.applied().len(),
-        1,
-        "successor batch should still sink"
-    );
+    assert_eq!(sink.applied().len(), 1, "successor batch should still sink");
     assert_eq!(
         driver.sunk_events, 2,
         "Skip must note_sunk_events for the failed batch so advance is not stuck"
@@ -675,13 +674,7 @@ async fn identity_polls_while_slow_sink_in_flight() {
         .with_timeout(Duration::from_secs(5));
     let runtime_opts = SourceRuntimeOpts::default();
 
-    let run = run_source_runtime(
-        &mut driver,
-        &sink,
-        &pipeline,
-        &apply_opts,
-        &runtime_opts,
-    );
+    let run = run_source_runtime(&mut driver, &sink, &pipeline, &apply_opts, &runtime_opts);
     tokio::pin!(run);
 
     tokio::select! {
@@ -989,13 +982,7 @@ async fn polls_keep_rising_while_slow_sink_with_spare_capacity() {
         .with_timeout(Duration::from_secs(5));
     let runtime_opts = SourceRuntimeOpts::default();
 
-    let run = run_source_runtime(
-        &mut driver,
-        &sink,
-        &pipeline,
-        &apply_opts,
-        &runtime_opts,
-    );
+    let run = run_source_runtime(&mut driver, &sink, &pipeline, &apply_opts, &runtime_opts);
     tokio::pin!(run);
 
     tokio::select! {
@@ -1364,11 +1351,7 @@ async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
     )
     .await
     .unwrap();
-    assert_eq!(
-        sink.applied().len(),
-        2,
-        "filter must sink only odd ids"
-    );
+    assert_eq!(sink.applied().len(), 2, "filter must sink only odd ids");
     assert_eq!(
         kafka.processed_count, 3,
         "note_sunk_events must count input messages, not filtered sink length"

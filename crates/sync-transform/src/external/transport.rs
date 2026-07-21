@@ -559,12 +559,7 @@ mod tests {
     #[test]
     fn encode_request_includes_relation_change_kind() {
         let framer = NdjsonFramer;
-        let bytes = encode_request(
-            &framer,
-            3,
-            &[b"{}".to_vec()],
-            WireItemKind::RelationChange,
-        );
+        let bytes = encode_request(&framer, 3, &[b"{}".to_vec()], WireItemKind::RelationChange);
         let header_line = bytes.split(|&b| b == b'\n').next().unwrap();
         let header: RequestHeader = serde_json::from_slice(header_line).unwrap();
         assert_eq!(header.kind, WireItemKind::RelationChange);

@@ -61,18 +61,14 @@ impl SurrealSink for CaptureSink {
 
 fn name_of_row(row: &UniversalRow) -> String {
     match row.fields.get("name") {
-        Some(UniversalValue::VarChar { value, .. } | UniversalValue::Text(value)) => {
-            value.clone()
-        }
+        Some(UniversalValue::VarChar { value, .. } | UniversalValue::Text(value)) => value.clone(),
         other => panic!("unexpected name: {other:?}"),
     }
 }
 
 fn name_of_change(change: &UniversalChange) -> String {
     match change.data.as_ref().and_then(|d| d.get("name")) {
-        Some(UniversalValue::VarChar { value, .. } | UniversalValue::Text(value)) => {
-            value.clone()
-        }
+        Some(UniversalValue::VarChar { value, .. } | UniversalValue::Text(value)) => value.clone(),
         other => panic!("unexpected name: {other:?}"),
     }
 }
@@ -111,11 +107,7 @@ async fn read_offset_table_chunk_assigns_synthetic_ids_with_ctid_order() -> Resu
     assert_eq!(chunk1.len(), 2);
     assert_eq!(chunk2.len(), 1);
 
-    let all: Vec<_> = chunk0
-        .into_iter()
-        .chain(chunk1)
-        .chain(chunk2)
-        .collect();
+    let all: Vec<_> = chunk0.into_iter().chain(chunk1).chain(chunk2).collect();
     let names: HashSet<_> = all.iter().map(name_of_row).collect();
     assert_eq!(
         names,

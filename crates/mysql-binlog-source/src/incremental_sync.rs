@@ -341,12 +341,11 @@ where
 
     async fn refresh_schema_metadata(&mut self) -> Result<()> {
         self.schema = collect_mysql_database_schema(&mut self.conn).await?;
-        self.json_columns =
-            surreal_sync_mysql_trigger_source::json_columns::get_json_columns(
-                &mut self.conn,
-                &self.database,
-            )
-            .await?;
+        self.json_columns = surreal_sync_mysql_trigger_source::json_columns::get_json_columns(
+            &mut self.conn,
+            &self.database,
+        )
+        .await?;
         self.column_names_cache.clear();
         self.table_maps.clear();
         Ok(())
@@ -376,13 +375,17 @@ where
                     self.table_maps.insert(tm.table_id, tm);
                 }
                 EventBody::Rows(rows) => {
-                    let table_map = self.table_maps.get(&rows.table_id).cloned().ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "binlog row event for table_id {} has no preceding TableMap; \
+                    let table_map =
+                        self.table_maps
+                            .get(&rows.table_id)
+                            .cloned()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "binlog row event for table_id {} has no preceding TableMap; \
                              refusing to silently drop the change",
-                            rows.table_id
-                        )
-                    })?;
+                                    rows.table_id
+                                )
+                            })?;
                     if table_map.database != self.database {
                         continue;
                     }
@@ -418,11 +421,9 @@ where
                             if let Some(names) = self.column_names_cache.get(&change.table) {
                                 names.clone()
                             } else {
-                                let names = get_table_column_names_ordinal(
-                                    &mut self.conn,
-                                    &change.table,
-                                )
-                                .await?;
+                                let names =
+                                    get_table_column_names_ordinal(&mut self.conn, &change.table)
+                                        .await?;
                                 self.column_names_cache
                                     .insert(change.table.clone(), names.clone());
                                 names
@@ -528,8 +529,7 @@ where
             .map(|t| t.elapsed() >= SIGNAL_POLL_MIN_INTERVAL)
             .unwrap_or(true);
         if self.pending_adhoc_signals.is_empty() && signal_poll_due {
-            let pending =
-                read_pending_execute_snapshot_signals(&self.pool, &self.database).await?;
+            let pending = read_pending_execute_snapshot_signals(&self.pool, &self.database).await?;
             self.pending_adhoc_signals = pending;
             self.last_signal_check = Some(std::time::Instant::now());
         }

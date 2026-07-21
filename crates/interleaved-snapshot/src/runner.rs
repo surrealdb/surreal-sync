@@ -493,8 +493,7 @@ where
         let pos = self.next_pos;
         self.next_pos = self.next_pos.saturating_add(1);
         self.events_emitted = self.events_emitted.saturating_add(1);
-        self.pending
-            .push_back(PositionedEvent::change(change, pos));
+        self.pending.push_back(PositionedEvent::change(change, pos));
     }
 
     async fn open_chunk(&mut self) -> Result<()> {

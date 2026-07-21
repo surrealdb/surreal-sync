@@ -3,9 +3,7 @@
 use crate::test_support::{
     ExternalBatchScript, RecordingSink, ScriptedChangeFeed, ScriptedExternalTransport,
 };
-use crate::{
-    run_change_feed, ApplyOpts, ExternalTransform, Pipeline, PositionedChange,
-};
+use crate::{run_change_feed, ApplyOpts, ExternalTransform, Pipeline, PositionedChange};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +29,10 @@ fn positioned(id: i64, pos: u64) -> PositionedChange<u64> {
 #[tokio::test]
 async fn scripted_external_echo_and_out_of_order() {
     let transport = ScriptedExternalTransport::new()
-        .on_batch(1, ExternalBatchScript::echo_after(Duration::from_millis(40)))
+        .on_batch(
+            1,
+            ExternalBatchScript::echo_after(Duration::from_millis(40)),
+        )
         .on_batch(2, ExternalBatchScript::echo_after(Duration::from_millis(5)));
 
     let ext = ExternalTransform::with_transport(Arc::new(transport.clone()));
@@ -54,13 +55,12 @@ async fn scripted_external_echo_and_out_of_order() {
 
 #[tokio::test]
 async fn scripted_external_bad_batch_id_fails_exchange() {
-    let transport = ScriptedExternalTransport::new()
-        .on_batch(1, ExternalBatchScript::bad_batch_id_after(Duration::ZERO, 99));
+    let transport = ScriptedExternalTransport::new().on_batch(
+        1,
+        ExternalBatchScript::bad_batch_id_after(Duration::ZERO, 99),
+    );
     let ext = ExternalTransform::with_transport(Arc::new(transport));
-    let err = ext
-        .exchange_changes(1, vec![change(1)])
-        .await
-        .unwrap_err();
+    let err = ext.exchange_changes(1, vec![change(1)]).await.unwrap_err();
     let msg = format!("{err:#}");
     assert!(
         msg.contains("batch_id mismatch") || msg.contains("mismatched"),
@@ -70,8 +70,10 @@ async fn scripted_external_bad_batch_id_fails_exchange() {
 
 #[tokio::test]
 async fn mismatched_batch_id_no_sink_no_advance() {
-    let transport = ScriptedExternalTransport::new()
-        .on_batch(1, ExternalBatchScript::bad_batch_id_after(Duration::ZERO, 42));
+    let transport = ScriptedExternalTransport::new().on_batch(
+        1,
+        ExternalBatchScript::bad_batch_id_after(Duration::ZERO, 42),
+    );
     let mut pipeline = Pipeline::new();
     pipeline.push_external(ExternalTransform::with_transport(Arc::new(transport)));
 
@@ -91,7 +93,10 @@ async fn mismatched_batch_id_no_sink_no_advance() {
         "unexpected: {msg}"
     );
     assert!(sink.applied().is_empty(), "must not sink on bad batch_id");
-    assert!(feed.advances.is_empty(), "must not advance_watermark on bad batch_id");
+    assert!(
+        feed.advances.is_empty(),
+        "must not advance_watermark on bad batch_id"
+    );
 }
 
 /// W≥2: a response that wrongly echoes another outstanding batch_id must not
@@ -100,8 +105,14 @@ async fn mismatched_batch_id_no_sink_no_advance() {
 async fn colliding_mismatched_batch_id_w2_no_sink_no_advance() {
     let transport = ScriptedExternalTransport::new()
         // Batch 1 lies and claims batch_id=2 while 2 is also in flight.
-        .on_batch(1, ExternalBatchScript::bad_batch_id_after(Duration::from_millis(5), 2))
-        .on_batch(2, ExternalBatchScript::echo_after(Duration::from_millis(30)));
+        .on_batch(
+            1,
+            ExternalBatchScript::bad_batch_id_after(Duration::from_millis(5), 2),
+        )
+        .on_batch(
+            2,
+            ExternalBatchScript::echo_after(Duration::from_millis(30)),
+        );
 
     let mut pipeline = Pipeline::new();
     pipeline.push_external(ExternalTransform::with_transport(Arc::new(transport)));
@@ -140,8 +151,14 @@ async fn colliding_mismatched_batch_id_w2_no_sink_no_advance() {
 #[tokio::test]
 async fn colliding_mismatched_batch_id_exchange_fails_closed() {
     let transport = ScriptedExternalTransport::new()
-        .on_batch(1, ExternalBatchScript::bad_batch_id_after(Duration::from_millis(5), 2))
-        .on_batch(2, ExternalBatchScript::echo_after(Duration::from_millis(20)));
+        .on_batch(
+            1,
+            ExternalBatchScript::bad_batch_id_after(Duration::from_millis(5), 2),
+        )
+        .on_batch(
+            2,
+            ExternalBatchScript::echo_after(Duration::from_millis(20)),
+        );
     let ext = ExternalTransform::with_transport(Arc::new(transport));
 
     let a = tokio::spawn({

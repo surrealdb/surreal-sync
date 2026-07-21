@@ -8,12 +8,13 @@
 use anyhow::Context;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager};
 use surreal_sink::SurrealSink;
+use surreal_sync_interleaved_snapshot::SnapshotTransforms;
 use surreal_sync_mysql_binlog_source::{
-    request_snapshot, run_full_sync_cancellable_with_transforms, run_initial_interleaved_snapshot_with_transforms,
+    request_snapshot, run_full_sync_cancellable_with_transforms,
+    run_initial_interleaved_snapshot_with_transforms,
     run_interleaved_snapshot_full_sync_with_transforms, run_replication_tail_with_transforms,
     BinlogCheckpoint, InterleavedFullSyncOptions, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
-use surreal_sync_interleaved_snapshot::SnapshotTransforms;
 use sync_transform::{ApplyOpts, Pipeline};
 use tokio_util::sync::CancellationToken;
 
@@ -268,8 +269,7 @@ where
 /// Run `from mysql-binlog sync`.
 pub async fn run_sync(args: MySQLBinlogSyncArgs) -> anyhow::Result<()> {
     // Fail-fast on bad transforms config / worker spawn before connecting.
-    let (pipeline, apply_opts) =
-        load_transforms_from_args(args.transforms_config.as_deref())?;
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     let sdk_version = get_sdk_version(
         &args.surreal.surreal_endpoint,
         args.surreal.surreal_sdk_version.as_deref(),
@@ -318,12 +318,7 @@ async fn run_sync_v2(
         }
         (None, None) => {
             binlog_orchestrate::<_, checkpoint::NullStore>(
-                &sink,
-                args,
-                cancel,
-                None,
-                pipeline,
-                apply_opts,
+                &sink, args, cancel, None, pipeline, apply_opts,
             )
             .await
         }
@@ -362,12 +357,7 @@ async fn run_sync_v3(
         }
         (None, None) => {
             binlog_orchestrate::<_, checkpoint::NullStore>(
-                &sink,
-                args,
-                cancel,
-                None,
-                pipeline,
-                apply_opts,
+                &sink, args, cancel, None, pipeline, apply_opts,
             )
             .await
         }

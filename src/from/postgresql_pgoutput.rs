@@ -275,12 +275,7 @@ async fn run_sync_v2(
         }
         (None, None) => {
             wal_orchestrate::<_, checkpoint::NullStore>(
-                &sink,
-                args,
-                cancel,
-                None,
-                pipeline,
-                apply_opts,
+                &sink, args, cancel, None, pipeline, apply_opts,
             )
             .await
         }
@@ -319,12 +314,7 @@ async fn run_sync_v3(
         }
         (None, None) => {
             wal_orchestrate::<_, checkpoint::NullStore>(
-                &sink,
-                args,
-                cancel,
-                None,
-                pipeline,
-                apply_opts,
+                &sink, args, cancel, None, pipeline, apply_opts,
             )
             .await
         }

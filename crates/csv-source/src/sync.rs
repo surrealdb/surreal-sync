@@ -279,7 +279,8 @@ async fn process_csv_reader<S: SurrealSink>(
         let mut first = csv::StringRecord::new();
         match csv_reader.read_record(&mut first) {
             Ok(true) => {
-                let headers: Vec<String> = (0..first.len()).map(|i| format!("column_{i}")).collect();
+                let headers: Vec<String> =
+                    (0..first.len()).map(|i| format!("column_{i}")).collect();
                 (headers, Some(first))
             }
             Ok(false) => {

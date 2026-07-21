@@ -37,8 +37,15 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 ) -> Result<()> {
     let pipeline = Pipeline::new();
     let apply_opts = ApplyOpts::identity();
-    run_full_sync_with_transforms(surreal, from_opts, sync_opts, sync_manager, &pipeline, &apply_opts)
-        .await
+    run_full_sync_with_transforms(
+        surreal,
+        from_opts,
+        sync_opts,
+        sync_manager,
+        &pipeline,
+        &apply_opts,
+    )
+    .await
 }
 
 /// Full sync with an explicit transform pipeline.
@@ -168,12 +175,7 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
                 let mut offset = 0usize;
                 loop {
                     let rels = read_offset_relation_chunk(
-                        client,
-                        table_name,
-                        offset,
-                        batch_size,
-                        &in_fk,
-                        &out_fk,
+                        client, table_name, offset, batch_size, &in_fk, &out_fk,
                     )
                     .await?;
                     if rels.is_empty() {
@@ -504,14 +506,6 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
     let mut driver = RowChunkDriver::new(chunks);
     let transformer = Arc::new(pipeline.clone());
     let runtime_opts = SourceRuntimeOpts::new();
-    run_source_runtime_with(
-        &mut driver,
-        surreal,
-        transformer,
-        apply_opts,
-        &runtime_opts,
-    )
-    .await?;
+    run_source_runtime_with(&mut driver, surreal, transformer, apply_opts, &runtime_opts).await?;
     Ok(driver.sunk_count() as usize)
 }
-

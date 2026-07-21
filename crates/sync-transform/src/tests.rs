@@ -157,9 +157,7 @@ fn empty_pipeline_is_identity_short_circuit() {
     let mut with_stage = Pipeline::new();
     with_stage.push_inplace_arc(counter.clone());
     assert!(!with_stage.is_identity());
-    with_stage
-        .apply_rows(vec![sample_row("z")])
-        .unwrap();
+    with_stage.apply_rows(vec![sample_row("z")]).unwrap();
     assert_eq!(counter.rows.load(Ordering::SeqCst), 1);
 }
 
@@ -409,9 +407,7 @@ fn failing_stage_stops_later_stages_rows() {
     pipeline.push_inplace(AlwaysFail);
     pipeline.push_inplace_arc(later.clone());
 
-    let err = pipeline
-        .apply_rows(vec![sample_row("alice")])
-        .unwrap_err();
+    let err = pipeline.apply_rows(vec![sample_row("alice")]).unwrap_err();
     assert!(
         err.to_string().contains("stage failed"),
         "unexpected error: {err}"
@@ -458,9 +454,7 @@ fn pipeline_external_sync_inplace_errors() {
     pipeline.push_external(ExternalTransform::with_transport(std::sync::Arc::new(
         transport,
     )));
-    let err = pipeline
-        .apply_rows(vec![sample_row("alice")])
-        .unwrap_err();
+    let err = pipeline.apply_rows(vec![sample_row("alice")]).unwrap_err();
     assert!(
         err.to_string().contains("BatchTransformer") || err.to_string().contains("async"),
         "unexpected error: {err}"
@@ -508,8 +502,8 @@ fn pipeline_external_sync_relation_inplace_errors() {
 /// silently no-op relation batches (fail closed by default).
 #[tokio::test]
 async fn batch_transformer_default_relation_methods_fail_closed() {
-    use async_trait::async_trait;
     use crate::BatchTransformer;
+    use async_trait::async_trait;
     use sync_core::{UniversalRelation, UniversalRelationChange, UniversalThingRef};
 
     struct ChangesOnly;

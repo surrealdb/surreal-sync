@@ -360,13 +360,9 @@ impl ExternalTransform {
         };
 
         if let Some(timeout) = self.inner.timeout {
-            tokio::time::timeout(timeout, fut)
-                .await
-                .map_err(|_| {
-                    anyhow!(
-                        "command transform timeout after {timeout:?} for batch_id={batch_id}"
-                    )
-                })?
+            tokio::time::timeout(timeout, fut).await.map_err(|_| {
+                anyhow!("command transform timeout after {timeout:?} for batch_id={batch_id}")
+            })?
         } else {
             fut.await
         }

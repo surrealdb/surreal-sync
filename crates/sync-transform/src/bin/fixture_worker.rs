@@ -16,7 +16,9 @@ use std::io::{self, BufRead, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn main() {
-    let mode = std::env::args().nth(1).unwrap_or_else(|| "echo".to_string());
+    let mode = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "echo".to_string());
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut lines = stdin.lock().lines();
@@ -33,10 +35,7 @@ fn main() {
                 std::process::exit(2);
             }
         };
-        let batch_id = header
-            .get("batch_id")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+        let batch_id = header.get("batch_id").and_then(|v| v.as_u64()).unwrap_or(0);
         let count = header.get("count").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
 
         let mut items = Vec::with_capacity(count);

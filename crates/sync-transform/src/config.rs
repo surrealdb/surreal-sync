@@ -962,7 +962,10 @@ command = ["w"]
 
     #[test]
     fn parse_humantime_variants() {
-        assert_eq!(parse_humantime("500ms").unwrap(), Duration::from_millis(500));
+        assert_eq!(
+            parse_humantime("500ms").unwrap(),
+            Duration::from_millis(500)
+        );
         assert_eq!(parse_humantime("60s").unwrap(), Duration::from_secs(60));
         assert_eq!(parse_humantime("2m").unwrap(), Duration::from_secs(120));
         assert_eq!(parse_humantime("1h").unwrap(), Duration::from_secs(3600));

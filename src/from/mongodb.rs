@@ -100,14 +100,7 @@ async fn run_full_v2(args: MongoDBFullArgs) -> anyhow::Result<()> {
             surreal_sync_mongodb_changestream_source::run_full_sync_with_transforms::<
                 _,
                 checkpoint::NullStore,
-            >(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-                &pipeline,
-                &apply_opts,
-            )
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
         }
         (Some(_), Some(_)) => {
@@ -190,14 +183,7 @@ async fn run_full_v3(args: MongoDBFullArgs) -> anyhow::Result<()> {
             surreal_sync_mongodb_changestream_source::run_full_sync_with_transforms::<
                 _,
                 checkpoint::NullStore,
-            >(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-                &pipeline,
-                &apply_opts,
-            )
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
         }
         (Some(_), Some(_)) => {

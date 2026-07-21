@@ -7,12 +7,12 @@
 //! [`crate::run_source_runtime`]. [`run_change_feed`] remains a convenience for
 //! row-only feeds.
 
+use crate::apply::opts::ApplyOpts;
+use crate::apply::transform::BatchTransformer;
 use crate::apply::{
     ApplyEvent, ChangeFeed, ChangeFeedRef, CheckpointPolicy, FailurePolicy, PositionedEvent,
     RuntimeExit, SourceDriver, SourceRuntimeOpts,
 };
-use crate::apply::opts::ApplyOpts;
-use crate::apply::transform::BatchTransformer;
 use crate::pipeline::Pipeline;
 use anyhow::{anyhow, bail, Context, Result};
 use std::collections::{HashMap, HashSet};
@@ -232,9 +232,7 @@ fn try_coalesce_relation_upserts(events: &[ApplyEvent]) -> Option<Vec<UniversalR
     let mut relations = Vec::with_capacity(events.len());
     for event in events {
         match event {
-            ApplyEvent::RelationChange(change)
-                if change.operation == UniversalChangeOp::Update =>
-            {
+            ApplyEvent::RelationChange(change) if change.operation == UniversalChangeOp::Update => {
                 relations.push(change.relation.clone());
             }
             _ => return None,
@@ -410,9 +408,7 @@ where
     /// [`ApplyOpts::max_in_flight`] bounds this total so a slow sink back-pressures
     /// new transforms while still allowing overlap (reads / transforms / writes).
     pub fn window_occupancy(&self) -> usize {
-        self.in_flight.len()
-            + self.completed.len()
-            + usize::from(self.sink_in_flight)
+        self.in_flight.len() + self.completed.len() + usize::from(self.sink_in_flight)
     }
 
     /// Take and reset the count of events sunk since the previous take.
@@ -472,11 +468,7 @@ where
     /// Push one row change; may start transforms and drain ordered sink.
     ///
     /// Returns the last position successfully sunk (caller should `advance_watermark`).
-    pub async fn push_change(
-        &mut self,
-        change: UniversalChange,
-        position: P,
-    ) -> Result<Option<P>> {
+    pub async fn push_change(&mut self, change: UniversalChange, position: P) -> Result<Option<P>> {
         self.ensure_not_poisoned()?;
         self.push_buffered_event(PositionedEvent::change(change, position));
         while self.try_start_full_batch() {}
@@ -629,11 +621,8 @@ where
             let result = if identity {
                 Ok(events)
             } else {
-                match tokio::time::timeout(
-                    timeout,
-                    transformer.transform_events(batch_id, events),
-                )
-                .await
+                match tokio::time::timeout(timeout, transformer.transform_events(batch_id, events))
+                    .await
                 {
                     Ok(inner) => inner,
                     Err(_) => Err(anyhow!(
@@ -814,12 +803,8 @@ where
                         // Pre-transform input count — not post-transform
                         // `events.len()` — so Kafka/wal2json watermarks stay
                         // aligned under filter and fan-out.
-                        self.finish_sink_ok_driver(
-                            driver,
-                            batch.last_position,
-                            batch.event_count,
-                        )
-                        .await?;
+                        self.finish_sink_ok_driver(driver, batch.last_position, batch.event_count)
+                            .await?;
                     }
                     Err(e) => {
                         self.finish_sink_err_driver(
@@ -972,10 +957,9 @@ where
                     Ok(()) => {
                         // Pre-transform input count (same as drain_ordered_driver)
                         // so filter/fan-out cannot under/over-count sunk_since_take.
-                        last = Some(self.finish_sink_ok_no_advance(
-                            batch.last_position,
-                            batch.event_count,
-                        ));
+                        last = Some(
+                            self.finish_sink_ok_no_advance(batch.last_position, batch.event_count),
+                        );
                     }
                     Err(e) => {
                         last = self.finish_sink_err_no_advance(
@@ -986,11 +970,8 @@ where
                     }
                 },
                 Err(e) => {
-                    last = self.finish_sink_err_no_advance(
-                        batch.batch_id,
-                        batch.last_position,
-                        e,
-                    )?;
+                    last =
+                        self.finish_sink_err_no_advance(batch.batch_id, batch.last_position, e)?;
                 }
             }
         }

@@ -326,14 +326,7 @@ async fn migrate_table_with_transforms<S: SurrealSink>(
     let mut driver = RowChunkDriver::new(chunks);
     let transformer = Arc::new(pipeline.clone());
     let runtime_opts = SourceRuntimeOpts::new();
-    run_source_runtime_with(
-        &mut driver,
-        surreal,
-        transformer,
-        apply_opts,
-        &runtime_opts,
-    )
-    .await?;
+    run_source_runtime_with(&mut driver, surreal, transformer, apply_opts, &runtime_opts).await?;
     Ok(driver.sunk_count() as usize)
 }
 
@@ -368,12 +361,7 @@ async fn migrate_relation_streaming<S: SurrealSink>(
                     return Ok(total);
                 }
                 let rels = read_offset_relation_chunk(
-                    client,
-                    table_name,
-                    offset,
-                    batch_size,
-                    &in_fk,
-                    &out_fk,
+                    client, table_name, offset, batch_size, &in_fk, &out_fk,
                 )
                 .await?;
                 if rels.is_empty() {

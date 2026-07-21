@@ -227,9 +227,7 @@ stdio.framer = "ndjson"
         );
     }
 
-    let _ = pg_client
-        .batch_execute("DROP TABLE IF EXISTS people")
-        .await;
+    let _ = pg_client.batch_execute("DROP TABLE IF EXISTS people").await;
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
     Ok(())
 }

@@ -575,12 +575,12 @@ struct PostgreSQLTriggerFullArgs {
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
 
-        /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
     /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
     #[arg(long, value_name = "PATH")]
     transforms_config: Option<PathBuf>,
 
-#[command(flatten)]
+    #[command(flatten)]
     surreal: SurrealOpts,
 }
 
@@ -628,12 +628,12 @@ struct PostgreSQLTriggerIncrementalArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
-        /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
     /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
     #[arg(long, value_name = "PATH")]
     transforms_config: Option<PathBuf>,
 
-#[command(flatten)]
+    #[command(flatten)]
     surreal: SurrealOpts,
 }
 
@@ -668,12 +668,12 @@ struct PostgreSQLTriggerSyncArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
-        /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
     /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
     #[arg(long, value_name = "PATH")]
     transforms_config: Option<PathBuf>,
 
-#[command(flatten)]
+    #[command(flatten)]
     surreal: SurrealOpts,
 }
 
@@ -753,12 +753,12 @@ struct MySQLFullArgs {
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
 
-        /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
     /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
     #[arg(long, value_name = "PATH")]
     transforms_config: Option<PathBuf>,
 
-#[command(flatten)]
+    #[command(flatten)]
     surreal: SurrealOpts,
 }
 
@@ -809,12 +809,12 @@ struct MySQLIncrementalArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
-        /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
     /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
     #[arg(long, value_name = "PATH")]
     transforms_config: Option<PathBuf>,
 
-#[command(flatten)]
+    #[command(flatten)]
     surreal: SurrealOpts,
 }
 
@@ -857,12 +857,12 @@ struct MySQLSyncArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
-        /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
     /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
     #[arg(long, value_name = "PATH")]
     transforms_config: Option<PathBuf>,
 
-#[command(flatten)]
+    #[command(flatten)]
     surreal: SurrealOpts,
 }
 

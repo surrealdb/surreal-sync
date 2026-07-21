@@ -23,7 +23,11 @@ impl surreal_sink::SurrealSink for MemSink {
         // Homogeneous Update upserts coalesce here; mirror observations.
         let mut changes = self.changes.lock().expect("lock");
         for row in rows {
-            changes.push(format!("{:?}:{}", sync_core::UniversalChangeOp::Update, row.table));
+            changes.push(format!(
+                "{:?}:{}",
+                sync_core::UniversalChangeOp::Update,
+                row.table
+            ));
         }
         Ok(())
     }
@@ -372,11 +376,8 @@ async fn filtered_only_catch_up_advances_catch_up_progress_when_drained() -> Res
     drop(client);
 
     for i in 1..=40 {
-        conn.exec_drop(
-            "INSERT INTO noise (id, n) VALUES (?, ?)",
-            (i, i * 10),
-        )
-        .await?;
+        conn.exec_drop("INSERT INTO noise (id, n) VALUES (?, ?)", (i, i * 10))
+            .await?;
     }
 
     let sink = MemSink {

@@ -290,14 +290,8 @@ pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
         let mut driver = RowChunkDriver::new(chunks);
         let transformer = Arc::new(pipeline.clone());
         let runtime_opts = SourceRuntimeOpts::new();
-        run_source_runtime_with(
-            &mut driver,
-            surreal,
-            transformer,
-            apply_opts,
-            &runtime_opts,
-        )
-        .await?;
+        run_source_runtime_with(&mut driver, surreal, transformer, apply_opts, &runtime_opts)
+            .await?;
         let processed = driver.sunk_count() as usize;
         total_migrated += processed;
 

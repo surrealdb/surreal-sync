@@ -104,14 +104,7 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
             surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
                 _,
                 checkpoint::NullStore,
-            >(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-                &pipeline,
-                &apply_opts,
-            )
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
 
             verify_fk_sync_v2(client).await?;
@@ -121,14 +114,7 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
             surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
                 _,
                 checkpoint::NullStore,
-            >(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-                &pipeline,
-                &apply_opts,
-            )
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
 
             verify_fk_sync_v3(client).await?;
@@ -304,14 +290,7 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
             surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
                 _,
                 checkpoint::NullStore,
-            >(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-                &pipeline,
-                &apply_opts,
-            )
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
 
             // mentorship should now be graph edges
@@ -342,16 +321,8 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
             surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
                 _,
                 checkpoint::NullStore,
-            >(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-                &pipeline,
-                &apply_opts,
-            )
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
-
 
             use surrealdb3::types::Value;
 

@@ -404,9 +404,7 @@ impl SourceDriver for KafkaSourceDriver {
             match self.pending_acks.pop_front() {
                 Some(message) => self.ready_to_commit.push(message),
                 None => {
-                    tracing::warn!(
-                        "kafka note_sunk_events({count}): pending_acks exhausted early"
-                    );
+                    tracing::warn!("kafka note_sunk_events({count}): pending_acks exhausted early");
                     break;
                 }
             }
@@ -545,7 +543,11 @@ mod tests {
         let mut all = idx1;
         all.extend(idx2);
         let unique: HashSet<_> = all.iter().copied().collect();
-        assert_eq!(unique.len(), all.len(), "overlapping polls must not collide");
+        assert_eq!(
+            unique.len(),
+            all.len(),
+            "overlapping polls must not collide"
+        );
     }
 
     #[test]
@@ -585,7 +587,11 @@ mod tests {
         assert_eq!(ready, vec![10, 11]);
         assert!(!finished);
         let committed = std::mem::take(&mut ready);
-        assert_eq!(committed, vec![10, 11], "commit_batch must include all sunk");
+        assert_eq!(
+            committed,
+            vec![10, 11],
+            "commit_batch must include all sunk"
+        );
 
         // Second sink batch of 1 reaches max_messages.
         let count = 1u64;
@@ -599,7 +605,10 @@ mod tests {
                 finished = true;
             }
         }
-        assert!(finished, "processed_count must use message count, not commit calls");
+        assert!(
+            finished,
+            "processed_count must use message count, not commit calls"
+        );
         assert_eq!(processed.load(Ordering::SeqCst), 3);
         assert_eq!(ready, vec![12]);
         // One message remains pending (not yet sunk) — max_messages stop does not

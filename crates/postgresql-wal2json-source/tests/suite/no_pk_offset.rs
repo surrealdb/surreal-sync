@@ -59,18 +59,14 @@ impl SurrealSink for CaptureSink {
 
 fn name_of_row(row: &UniversalRow) -> String {
     match row.fields.get("name") {
-        Some(UniversalValue::VarChar { value, .. } | UniversalValue::Text(value)) => {
-            value.clone()
-        }
+        Some(UniversalValue::VarChar { value, .. } | UniversalValue::Text(value)) => value.clone(),
         other => panic!("unexpected name: {other:?}"),
     }
 }
 
 fn name_of_change(change: &UniversalChange) -> String {
     match change.data.as_ref().and_then(|d| d.get("name")) {
-        Some(UniversalValue::VarChar { value, .. } | UniversalValue::Text(value)) => {
-            value.clone()
-        }
+        Some(UniversalValue::VarChar { value, .. } | UniversalValue::Text(value)) => value.clone(),
         other => panic!("unexpected name: {other:?}"),
     }
 }

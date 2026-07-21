@@ -443,9 +443,7 @@ async fn migrate_table<S: SurrealSink>(
         return Ok(driver.sunk_count() as usize);
     }
 
-    warn!(
-        "Table '{table_name}' has no primary key; streaming via LIMIT/OFFSET chunks"
-    );
+    warn!("Table '{table_name}' has no primary key; streaming via LIMIT/OFFSET chunks");
 
     if opts.sync_opts.dry_run {
         let mut total_processed = 0usize;
@@ -493,9 +491,7 @@ async fn migrate_table<S: SurrealSink>(
                     self.table_name, self.batch_size, self.offset
                 ))
                 .await
-                .map_err(|e| {
-                    anyhow::anyhow!("Failed to query table {}: {e}", self.table_name)
-                })?;
+                .map_err(|e| anyhow::anyhow!("Failed to query table {}: {e}", self.table_name))?;
             if rows.is_empty() {
                 self.exhausted = true;
                 return Ok(None);

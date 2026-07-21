@@ -8,10 +8,10 @@ use binlog_protocol::{BinlogClient, CdcChange, EventBody, RowChange, TableMapEve
 use mysql_async::{prelude::*, Pool};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
-    run_adhoc_snapshot_tables_with_transforms,
-    run_interleaved_snapshot_with_resume_and_transforms, InterleavedSnapshotConfig,
-    NoopCheckpointer, PkTuple, ReconciliationEvent, SnapshotCheckpointer, SnapshotSignal,
-    SnapshotTransforms, TableSpec, WatermarkKind, WatermarkSource,
+    run_adhoc_snapshot_tables_with_transforms, run_interleaved_snapshot_with_resume_and_transforms,
+    InterleavedSnapshotConfig, NoopCheckpointer, PkTuple, ReconciliationEvent,
+    SnapshotCheckpointer, SnapshotSignal, SnapshotTransforms, TableSpec, WatermarkKind,
+    WatermarkSource,
 };
 use sync_core::{
     DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,

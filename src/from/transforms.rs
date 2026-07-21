@@ -68,7 +68,10 @@ mod tests {
         let (pipeline, opts) = load_transforms_from_args(None).expect("identity load");
         assert!(pipeline.is_identity());
         assert_eq!(opts, ApplyOpts::identity());
-        assert_eq!(opts.max_in_flight, 1, "omit path must pin W=1 for CDC cadence");
+        assert_eq!(
+            opts.max_in_flight, 1,
+            "omit path must pin W=1 for CDC cadence"
+        );
         assert_eq!(opts.batch_size, 1);
     }
 
