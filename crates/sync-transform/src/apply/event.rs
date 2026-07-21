@@ -39,7 +39,7 @@ impl ApplyEvent {
     }
 }
 
-/// A source event plus the position to commit after sink success.
+/// A source event plus the position to advance after sink success.
 #[derive(Debug, Clone)]
 pub struct PositionedEvent<P> {
     /// Event to transform and apply.

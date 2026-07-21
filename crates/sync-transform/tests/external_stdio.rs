@@ -98,7 +98,7 @@ async fn transient_smoke() {
 }
 
 #[tokio::test]
-async fn persistent_bad_batch_id_no_sink_no_commit() {
+async fn persistent_bad_batch_id_no_sink_no_advance() {
     let mut pipeline = Pipeline::new();
     pipeline.push_external(
         ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("bad-batch-id"), FramerKind::Ndjson)
@@ -123,9 +123,9 @@ async fn persistent_bad_batch_id_no_sink_no_commit() {
 }
 
 /// W≥2 fixture-worker: first response forges `batch_id` to the next write's id.
-/// PersistentChildStdio must fail closed — no sink, no commit for either batch.
+/// PersistentChildStdio must fail closed — no sink, no watermark advance for either batch.
 #[tokio::test]
-async fn persistent_w2_colliding_batch_id_mismatch_no_sink_no_commit() {
+async fn persistent_w2_colliding_batch_id_mismatch_no_sink_no_advance() {
     let mut pipeline = Pipeline::new();
     pipeline.push_external(
         ExternalTransform::child_stdio(ChildStdioMode::Persistent, fixture_cmd("bad-batch-id"), FramerKind::Ndjson)
@@ -160,7 +160,7 @@ async fn persistent_w2_colliding_batch_id_mismatch_no_sink_no_commit() {
 }
 
 #[tokio::test]
-async fn persistent_missing_batch_id_no_sink_no_commit() {
+async fn persistent_missing_batch_id_no_sink_no_advance() {
     let mut pipeline = Pipeline::new();
     pipeline.push_external(
         ExternalTransform::child_stdio(

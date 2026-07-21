@@ -1,4 +1,4 @@
-//! Change-feed apply framework: windowed transform, ordered sink, contiguous commit.
+//! Change-feed apply framework: windowed transform, ordered sink, contiguous watermark advance.
 //!
 //! # API hierarchy
 //!

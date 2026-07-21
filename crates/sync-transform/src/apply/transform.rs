@@ -9,7 +9,7 @@ use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, Uni
 /// Executes a transform for one numbered batch.
 ///
 /// The apply runtime correlates in-flight work by `batch_id`. Responses may
-/// complete out of order; sink apply + commit stay strictly ordered.
+/// complete out of order; sink apply + watermark advance stay strictly ordered.
 ///
 /// [`Pipeline`] implements this: empty pipelines take the same JoinSet path
 /// as non-empty ones via [`Self::is_identity`] (async no-op); non-empty

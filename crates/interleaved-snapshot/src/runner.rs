@@ -682,7 +682,7 @@ where
                     return Ok(out);
                 }
                 SnapshotPhase::AwaitingChunkSink => {
-                    // Sink-gated: do not open the next chunk until commit catches up.
+                    // Sink-gated: do not open the next chunk until watermark advance catches up.
                     return Ok(Vec::new());
                 }
             }
@@ -690,8 +690,9 @@ where
     }
 
     async fn advance_watermark(&mut self, _position: Self::Position) -> Result<()> {
-        // Commit is sink-ordered; chunk retention advances in note_sunk_events
-        // once emitted count is fully sunk (see try_finish_chunk_after_sink).
+        // Watermark advance is sink-ordered; chunk retention advances in
+        // note_sunk_events once emitted count is fully sunk (see
+        // try_finish_chunk_after_sink).
         self.try_finish_chunk_after_sink().await
     }
 

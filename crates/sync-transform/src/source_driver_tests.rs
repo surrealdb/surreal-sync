@@ -59,7 +59,7 @@ async fn run_source_runtime_identity_change_feed_like() {
     assert_eq!(exit, RuntimeExit::Stopped(StopReason::Finished));
     assert_eq!(sink.applied().len(), 2);
     assert_eq!(driver.advances, vec![10, 20]);
-    // Default policy persists after each sink-safe commit.
+    // Default policy persists after each sink-safe watermark advance.
     assert_eq!(driver.persisted, vec![10, 20]);
 }
 
@@ -117,7 +117,7 @@ async fn stop_reason_cancel_after_polls() {
     .unwrap();
 
     assert_eq!(exit, RuntimeExit::Stopped(StopReason::Cancelled));
-    // First item sunk+committed; cancel on 2nd poll may leave later unsunk.
+    // First item sunk + watermark advanced; cancel on 2nd poll may leave later unsunk.
     assert!(!driver.advances.is_empty());
     assert!(driver.advances[0] == 10);
     // persist only for sunk advances
@@ -249,7 +249,7 @@ async fn interval_when_drained_persists_once_after_advances() {
     .unwrap();
 
     assert_eq!(driver.advances, vec![10, 20]);
-    // Each commit left the window drained with interval=0 ⇒ persist each time.
+    // Each advance left the window drained with interval=0 ⇒ persist each time.
     assert_eq!(driver.persisted, vec![10, 20]);
     assert_eq!(sink.applied().len(), 2);
 }
@@ -257,7 +257,7 @@ async fn interval_when_drained_persists_once_after_advances() {
 #[tokio::test]
 async fn interval_when_drained_defers_until_window_empty() {
     // W=2 + slow transforms: both batches stay in-flight before either sinks.
-    // Long interval ⇒ no mid-window persist; after both commit the window drains
+    // Long interval ⇒ no mid-window persist; after both advance the window drains
     // and IntervalWhenDrained persists the sunk watermark promptly (coalesced
     // pending was 20). Force-flush on finish is a no-op if already persisted.
     use crate::test_support::{BatchScript, ScriptedTransformer};
@@ -302,7 +302,7 @@ async fn interval_when_drained_defers_until_window_empty() {
 
 #[tokio::test]
 async fn interval_when_drained_persists_sunk_promptly_when_already_drained() {
-    // Identity / W=1: each commit leaves the window empty → persist promptly
+    // Identity / W=1: each advance leaves the window empty → persist promptly
     // (last-sunk-on-sink cadence), even with a long interval.
     let mut driver = ScriptedSourceDriver::new(vec![
         PositionedEvent::change(change(1), 10u64),
@@ -419,7 +419,7 @@ async fn adhoc_snapshot_receives_apply_helpers_and_can_write() {
 
 #[tokio::test]
 async fn interval_when_drained_persists_filtered_read_progress() {
-    // No work items (nothing to commit) but driver reports read progress — e.g.
+    // No work items (nothing to advance_watermark) but driver reports read progress — e.g.
     // filtered-only catch-up. IntervalWhenDrained must still persist when drained.
     let mut driver = ScriptedSourceDriver::new(Vec::<PositionedEvent<u64>>::new())
         .interval_when_drained(Duration::ZERO)
@@ -522,9 +522,9 @@ async fn failure_policy_skip_still_notes_sunk_events() {
     assert_eq!(driver.advances, vec![10, 20]);
 }
 
-/// wal2json-style gate: commit only advances once every emitted event is noted.
+/// wal2json-style gate: watermark advances only once every emitted event is noted.
 #[tokio::test]
-async fn failure_policy_skip_unblocks_gated_commit() {
+async fn failure_policy_skip_unblocks_gated_advance() {
     use crate::test_support::{BatchScript, ScriptedTransformer};
     use crate::FailurePolicy;
     use async_trait::async_trait;
@@ -610,7 +610,7 @@ async fn failure_policy_skip_unblocks_gated_commit() {
     assert_eq!(
         driver.advances,
         vec![100],
-        "gated commit must advance after Skip notes sunk events"
+        "gated advance_watermark must run after Skip notes sunk events"
     );
     assert_eq!(sink.applied().len(), 1);
 }
@@ -738,9 +738,9 @@ async fn identity_polls_while_slow_sink_in_flight() {
     );
 }
 
-/// Non-identity: transforms overlap; sink stays ordered; commit only after sink.
+/// Non-identity: transforms overlap; sink stays ordered; watermark advances only after sink.
 #[tokio::test]
-async fn non_identity_transforms_overlap_sink_ordered_commit_after_sink() {
+async fn non_identity_transforms_overlap_sink_ordered_advance_after_sink() {
     use crate::test_support::{BatchScript, ScriptedTransformer};
     use std::sync::{Arc, Mutex};
     use tokio::sync::Notify;
@@ -818,7 +818,7 @@ async fn non_identity_transforms_overlap_sink_ordered_commit_after_sink() {
     );
     assert!(
         advances.lock().unwrap().is_empty(),
-        "commit must wait for sink: {:?}",
+        "advance_watermark must wait for sink: {:?}",
         advances.lock().unwrap()
     );
     assert!(sink.applied().is_empty(), "first apply still gated");
@@ -854,7 +854,7 @@ async fn non_identity_transforms_overlap_sink_ordered_commit_after_sink() {
     assert_eq!(
         *advances.lock().unwrap(),
         vec![100, 200],
-        "commit only after each sink"
+        "advance_watermark only after each sink"
     );
 }
 
@@ -1243,7 +1243,7 @@ async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
         }
     }
 
-    /// Kafka-like: pending → ready on note_sunk; commit drains ready.
+    /// Kafka-like: pending → ready on note_sunk; advance_watermark drains ready (commit_batch).
     struct KafkaAckDriver {
         remaining: Vec<PositionedEvent<u64>>,
         pending_acks: std::collections::VecDeque<u64>,
@@ -1290,7 +1290,7 @@ async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
         }
     }
 
-    /// wal2json-like: commit advances only when sunk >= emitted.
+    /// wal2json-like: advance_watermark only when sunk >= emitted.
     struct Wal2jsonGateDriver {
         remaining: Vec<PositionedEvent<u64>>,
         emitted: u64,
@@ -1345,7 +1345,7 @@ async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
     let apply_opts = opts().with_batch_size(3);
     let transformer = Arc::new(FilterOddIds);
 
-    // Kafka: filter 3→2 sunk writes, but all 3 pending acks must commit.
+    // Kafka: filter 3→2 sunk writes, but all 3 pending acks must advance (commit_batch).
     let mut kafka = KafkaAckDriver {
         remaining: events.clone(),
         pending_acks: std::collections::VecDeque::new(),
@@ -1376,7 +1376,7 @@ async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
     assert_eq!(
         kafka.committed,
         vec![10, 20, 30],
-        "Kafka pending-ack commit must include filtered-away messages"
+        "Kafka pending-ack advance_watermark must include filtered-away messages"
     );
     assert!(
         kafka.pending_acks.is_empty(),
@@ -1537,7 +1537,7 @@ async fn fan_out_transform_notes_input_count_not_output_length() {
         emitted: u64,
         sunk: u64,
         advances: u64,
-        /// Second peek only after first advance (simulates awaiting_commit).
+        /// Second peek only after first advance (simulates awaiting watermark advance).
         can_emit_second: bool,
         finished: bool,
     }
@@ -1631,7 +1631,7 @@ async fn fan_out_transform_notes_input_count_not_output_length() {
     assert_eq!(kafka.committed, vec![10, 20]);
     assert!(
         !kafka.committed.contains(&30),
-        "third input must not be committed after max_messages"
+        "third input must not be advanced after max_messages"
     );
 
     // wal2json: one input fans out to 2 sink writes; must not advance early

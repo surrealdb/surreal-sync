@@ -69,7 +69,7 @@ async fn scripted_external_bad_batch_id_fails_exchange() {
 }
 
 #[tokio::test]
-async fn mismatched_batch_id_no_sink_no_commit() {
+async fn mismatched_batch_id_no_sink_no_advance() {
     let transport = ScriptedExternalTransport::new()
         .on_batch(1, ExternalBatchScript::bad_batch_id_after(Duration::ZERO, 42));
     let mut pipeline = Pipeline::new();
@@ -95,9 +95,9 @@ async fn mismatched_batch_id_no_sink_no_commit() {
 }
 
 /// W≥2: a response that wrongly echoes another outstanding batch_id must not
-/// be rebound onto that waiter (no sink/commit for either batch).
+/// be rebound onto that waiter (no sink / watermark advance for either batch).
 #[tokio::test]
-async fn colliding_mismatched_batch_id_w2_no_sink_no_commit() {
+async fn colliding_mismatched_batch_id_w2_no_sink_no_advance() {
     let transport = ScriptedExternalTransport::new()
         // Batch 1 lies and claims batch_id=2 while 2 is also in flight.
         .on_batch(1, ExternalBatchScript::bad_batch_id_after(Duration::from_millis(5), 2))
@@ -166,7 +166,7 @@ async fn colliding_mismatched_batch_id_exchange_fails_closed() {
 }
 
 #[tokio::test]
-async fn missing_batch_id_no_sink_no_commit() {
+async fn missing_batch_id_no_sink_no_advance() {
     let transport = ScriptedExternalTransport::new().on_batch(
         1,
         ExternalBatchScript {
@@ -200,7 +200,7 @@ async fn missing_batch_id_no_sink_no_commit() {
 }
 
 #[tokio::test]
-async fn scripted_external_happy_path_sinks_and_commits() {
+async fn scripted_external_happy_path_sinks_and_advances() {
     let transport = ScriptedExternalTransport::new();
     let mut pipeline = Pipeline::new();
     pipeline.push_external(ExternalTransform::with_transport(Arc::new(transport)));

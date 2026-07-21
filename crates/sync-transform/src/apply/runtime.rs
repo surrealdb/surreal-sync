@@ -1,4 +1,4 @@
-//! Unified in-flight window runtime: transform → ordered sink → contiguous commit.
+//! Unified in-flight window runtime: transform → ordered sink → contiguous watermark advance.
 //!
 //! Handles row changes **and** relation changes through the same window,
 //! ordered sink, sink-safe positions, and flush/discard/poison invariants.

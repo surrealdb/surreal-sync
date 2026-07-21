@@ -92,7 +92,7 @@ pub fn relation_wire_batch_id(batch_id: u64) -> u64 {
 /// / [`ExternalTransport::try_read_response`] support overlapping in-flight
 /// batches (`max_in_flight` > 1). Each waiter reads **only** its own request's
 /// response (request-keyed); payloads are never rebound onto another
-/// outstanding id. A mismatched echo fails the exchange (no sink/commit).
+/// outstanding id. A mismatched echo fails the exchange (no sink / watermark advance).
 ///
 /// # Relations
 ///
@@ -377,7 +377,7 @@ fn finish_response(expected_batch_id: u64, resp: WireResponse) -> Result<WireRes
     if resp.batch_id != expected_batch_id {
         bail!(
             "external transform batch_id mismatch: expected {expected_batch_id}, got {} \
-             (mismatched batch_id; no sink/commit)",
+             (mismatched batch_id; no sink / watermark advance)",
             resp.batch_id
         );
     }

@@ -1,4 +1,4 @@
-//! Phase 2 reliability tests: windowed apply, ordered sink/commit, fail/skip.
+//! Phase 2 reliability tests: windowed apply, ordered sink / watermark advance, fail/skip.
 
 use crate::test_support::{
     BatchScript, RecordingSink, ScriptedChangeFeed, ScriptedTransformer, SinkFailWhen,
@@ -82,7 +82,7 @@ fn opts_window(w: usize) -> ApplyOpts {
 }
 
 #[tokio::test]
-async fn identity_pipeline_commits_track_sink() {
+async fn identity_pipeline_advances_track_sink() {
     let pipeline = Pipeline::new();
     assert!(pipeline.is_identity());
 
@@ -207,7 +207,7 @@ async fn inplace_stages_mutate_before_sink() {
 
 /// Core reliability case: W≥2, former batch A fails AFTER later batch B's
 /// transform succeeds (out-of-order completion). Sink must never apply B before
-/// A; commit never past A; B discarded; retry works.
+/// A; watermark never advances past A; B discarded; retry works.
 #[tokio::test]
 async fn window_former_fails_after_later_transform_succeeds() {
     let transformer = ScriptedTransformer::new(Pipeline::new())
@@ -241,11 +241,11 @@ async fn window_former_fails_after_later_transform_succeeds() {
     assert!(sink.applied().is_empty(), "sink must not apply A or B");
     assert!(
         feed.advances.is_empty(),
-        "commit must not advance past failed A: {:?}",
+        "must not advance_watermark past failed A: {:?}",
         feed.advances
     );
 
-    // Retry / replay from uncommitted positions — both succeed.
+    // Retry / replay from unadvanced positions — both succeed.
     let transformer2 = ScriptedTransformer::new(Pipeline::new())
         .on_batch(1, BatchScript::succeed_after(Duration::from_millis(5)))
         .on_batch(2, BatchScript::succeed_after(Duration::from_millis(5)));
@@ -270,7 +270,7 @@ async fn window_former_fails_after_later_transform_succeeds() {
 }
 
 /// Same window: A sink fails after both A and B transformed (forced OOO).
-/// Neither commit past A; B was waiting then discarded — never applied.
+/// Neither advance past A; B was waiting then discarded — never applied.
 #[tokio::test]
 async fn window_sink_fails_after_both_transformed() {
     // Force OOO: B finishes transform first; A finishes later then sink-fails.
@@ -409,7 +409,7 @@ async fn discard_on_failure_poisons_and_clears_successors() {
 }
 
 #[tokio::test]
-async fn failure_policy_fail_leaves_commits_unchanged() {
+async fn failure_policy_fail_leaves_advances_unchanged() {
     let transformer = ScriptedTransformer::new(Pipeline::new())
         .on_batch(1, BatchScript::fail_after(Duration::ZERO, "boom"));
 
@@ -427,7 +427,7 @@ async fn failure_policy_fail_leaves_commits_unchanged() {
 }
 
 #[tokio::test]
-async fn failure_policy_skip_commits_past_failed_batch() {
+async fn failure_policy_skip_advances_past_failed_batch() {
     let transformer = ScriptedTransformer::new(Pipeline::new())
         .on_batch(1, BatchScript::fail_after(Duration::ZERO, "skip-me"))
         .on_batch(2, BatchScript::succeed_after(Duration::ZERO));
@@ -446,10 +446,10 @@ async fn failure_policy_skip_commits_past_failed_batch() {
     assert_eq!(feed.advances, vec![10, 20]);
 }
 
-/// Simulated crash mid-window: recreate from last commit; uncommitted batches replay.
+/// Simulated crash mid-window: recreate from last watermark advance; unadvanced batches replay.
 #[tokio::test]
 async fn crash_replay_from_last_advance() {
-    // First run: A succeeds, B's sink fails once (crash after A committed).
+    // First run: A succeeds, B's sink fails once (crash after A advanced).
     let transformer = ScriptedTransformer::new(Pipeline::new());
     let mut feed = ScriptedChangeFeed::new(vec![positioned(1, 100), positioned(2, 200)]);
     let sink = RecordingSink::new()
@@ -469,7 +469,7 @@ async fn crash_replay_from_last_advance() {
     assert_eq!(sink.applied().len(), 1);
     assert_eq!(sink.applied()[0].id, UniversalValue::Int64(1));
 
-    // Replay from last commit: only uncommitted B remains.
+    // Replay from last watermark advance: only unadvanced B remains.
     let mut feed2 = ScriptedChangeFeed::from_remaining(vec![positioned(2, 200)]);
     // Fresh sink that succeeds (simulating restart); prior A already durable.
     let sink2 = RecordingSink::new();

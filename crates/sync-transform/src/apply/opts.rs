@@ -4,17 +4,18 @@ use std::time::Duration;
 
 /// What to do when a batch fails transform or sink apply.
 ///
-/// - [`Fail`](Self::Fail) (default): stop; do not commit the failed batch or any
-///   later position. Operator restarts resume from the last successful watermark advance.
+/// - [`Fail`](Self::Fail) (default): stop; do not `advance_watermark` the failed
+///   batch or any later position. Operator restarts resume from the last
+///   successful watermark advance.
 /// - [`Skip`](Self::Skip): log, do **not** write the failed batch, but still
 ///   call [`SourceDriver::note_sunk_events`](crate::SourceDriver::note_sunk_events)
-///   and commit past it. This can lose data by explicit operator choice.
+///   and advance past it. This can lose data by explicit operator choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FailurePolicy {
     /// Stop on failure; leave checkpoint unchanged for the failed batch.
     #[default]
     Fail,
-    /// Drop the failed batch (no sink write) and commit past it.
+    /// Drop the failed batch (no sink write) and advance the watermark past it.
     Skip,
 }
 
@@ -24,7 +25,7 @@ pub enum FailurePolicy {
 /// `max_in_flight` is the apply **window size** (default 1): concurrent
 /// transforms plus batches awaiting/in ordered sink. W=1 and W=16 share the
 /// same runtime — reads may overlap transforms and ordered writes; source
-/// commit stays after sink success.
+/// watermark advance stays after sink success.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApplyOpts {
     /// Maximum batches in the apply window (transforming + awaiting/in sink).

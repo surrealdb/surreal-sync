@@ -84,7 +84,7 @@ fn bson_doc_to_universal_values(doc: Document) -> Result<HashMap<String, Univers
 pub struct MongodbIncrementalSource {
     client: Client,
     database: String,
-    /// Sink-safe resume token (advanced only after successful sink / commit).
+    /// Sink-safe resume token (advanced only after successful sink / watermark advance).
     resume_token: Arc<Mutex<Vec<u8>>>,
     /// Last token observed while fetching (may be ahead of [`Self::resume_token`]).
     seen_token: Arc<Mutex<Vec<u8>>>,
@@ -170,7 +170,7 @@ impl MongodbIncrementalSource {
         })
     }
 
-    /// Shared resume-token handle for sink-safe progress (updated on commit).
+    /// Shared resume-token handle for sink-safe progress (updated on watermark advance).
     pub fn resume_token_handle(&self) -> Arc<Mutex<Vec<u8>>> {
         Arc::clone(&self.resume_token)
     }

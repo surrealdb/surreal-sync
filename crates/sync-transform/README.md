@@ -1,6 +1,6 @@
 # sync-transform
 
-First-class transform pipeline for surreal-sync (in-place stages, external child-stdio workers, ordered apply/commit).
+First-class transform pipeline for surreal-sync (in-place stages, external child-stdio workers, ordered apply / watermark advance).
 
 ## Test gate
 
