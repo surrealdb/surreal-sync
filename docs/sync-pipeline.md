@@ -1,6 +1,6 @@
 # How sync works
 
-surreal-sync moves data from a source into SurrealDB through one shared apply path: **read → optional transform → ordered sink → watermark**. Transforms are optional; omit them and docs pass through unchanged — no stage dispatch and no worker I/O.
+surreal-sync moves data from a source into SurrealDB through one shared apply path: **read → optional transform → ordered sink → watermark**. Transforms are optional; omit them and docs pass through unchanged.
 
 **Who should read this:** anyone shipping production or high-throughput syncs (batching, overlapping apply windows, checkpoint/watermark rules). Operators who only need enrichment/ETL can jump to [Optional transform workers](#optional-transform-workers). Source-specific setup stays in the per-source guides — this page is the end-to-end pipeline, not a duplicate of connector docs.
 
@@ -13,7 +13,7 @@ surreal-sync moves data from a source into SurrealDB through one shared apply pa
 | **Transform** | Optional enrichment or light ETL on a batch (usually an external worker) before it is written. |
 | **Sink** | Writing the (possibly transformed) batch to SurrealDB. Writes stay in source order. |
 | **Watermark** | Advancing the source checkpoint only after sink success (or `skip` + advance). That is what “durable” means here. |
-| **Apply window** | How many batches may be transforming or waiting for ordered sink at once (`max_in_flight` / `W`). With `W > 1`, reads, transforms, and writes can overlap; sink and watermark stay ordered. |
+| **Apply window** | How many batches may be transforming or waiting for ordered sink at once (`max_in_flight`). With `max_in_flight > 1`, reads, transforms, and writes can overlap; sink and watermark stay ordered. |
 | **Stage dispatch** | Running the configured transform stages for a batch. With no transforms config, there are **no stages** and no dispatch. |
 | **Worker I/O** | Talking to an external transform process (stdio / NDJSON). With no transforms config, there is **no worker process** and no worker I/O. |
 
@@ -24,7 +24,7 @@ Omit `--transforms-config` (or pass an empty / no-stage config) and surreal-sync
 <details>
 <summary>Implementer notes (empty transform list)</summary>
 
-Library/code paths may call this the empty-pipeline or `ApplyOpts::identity()` setup (`batch_size = 1`, `max_in_flight = 1` when the flag is omitted). That is not a separate product mode — it is the shared apply loop with zero transform stages. Sink ordering uses the same internal apply machinery as when transforms are configured; operators do not need to care about those internals.
+Library/code paths may call this the empty-pipeline or `ApplyOpts::identity()` setup (`batch_size = 1`, `max_in_flight = 1` when the flag is omitted). That is not a separate product mode — it is the shared apply loop with zero transform stages. Empty or omitted transforms still use the same JoinSet-backed apply loop for ordered sink (`ApplyOpts::identity()`). Operators do not need to care about those internals.
 
 </details>
 
@@ -34,11 +34,11 @@ Library/code paths may call this the empty-pipeline or `ApplyOpts::identity()` s
 Source (CDC / snapshot / file / Kafka)
   →  read / buffer into apply window
   →  optional transform stages (T)
-  →  ordered SurrealDB sink (W)
+  →  ordered SurrealDB sink
   →  advance_watermark / checkpoint
 ```
 
-In short: **R** (source reads) can run ahead while **T** (transforms) and **W** (sink writes) are in flight under `max_in_flight`. Sink apply and watermark advance stay **strictly ordered**. A successful transform worker response is **not** durability — the checkpoint advances only after SurrealDB apply succeeds (or `skip` + `advance_watermark`; see [Failure policy](#failure-policy)).
+In short: **R** (source reads) can run ahead while **T** (transforms) and the sink are in flight under `max_in_flight`. Sink apply and watermark advance stay **strictly ordered**. A successful transform worker response is **not** durability — the checkpoint advances only after SurrealDB apply succeeds (or `skip` + `advance_watermark`; see [Failure policy](#failure-policy)).
 
 surreal-sync owns batching, applying docs to SurrealDB, and when the source checkpoint may advance. Your transform worker (if any) only sees batches of documents (or changes) and returns transformed batches.
 
@@ -75,7 +75,7 @@ The apply window controls how many batches may be transforming or waiting for or
 - **Per-stage `timeout` / `retry`** — how long one exchange may take on that stage, and how many times to retry with backoff before the batch fails (only when using command workers).
 - **`max_in_flight`** — apply window size (default `1`). With `max_in_flight > 1`, surreal-sync may transform several batches at once and keep reading while earlier batches write to SurrealDB. Writes and watermark advances stay in source order. Full sync uses the same rules — omitting transforms does not bypass the shared apply path.
 
-Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W. **Omit `--transforms-config`** and surreal-sync uses `batch_size = 1`, `max_in_flight = 1` so CDC stays on per-event cadence with no overlapping window; overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set). See [When you omit transforms](#when-you-omit-transforms).
+Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with `max_in_flight`. **Omit `--transforms-config`** and surreal-sync uses `batch_size = 1`, `max_in_flight = 1` so CDC stays on per-event cadence with no overlapping window; overlap requires an explicit TOML (or empty/passthrough file defaults, which use `batch_size = 1000` but still `max_in_flight = 1` unless set). See [When you omit transforms](#when-you-omit-transforms).
 
 **Best-case overlap** — source reads continuing while transforms run and ordered sink writes stay in flight — needs **`max_in_flight > 1`**. With the default `1`, surreal-sync still orders sink apply and sink-gates cursors, but there is no overlapping transform/sink window to hide latency.
 
@@ -197,7 +197,7 @@ surreal-sync from mysql-binlog sync \
   --checkpoint-dir ".surreal-sync-checkpoints"
 ```
 
-Without `--transforms-config`, docs go source → SurrealDB unchanged. There is **no** transform stage dispatch (empty pipeline).
+Without `--transforms-config`, docs go source → SurrealDB unchanged. There is **no** transform stage dispatch — see [When you omit transforms](#when-you-omit-transforms).
 
 #### Command-worker config (no passthrough)
 
