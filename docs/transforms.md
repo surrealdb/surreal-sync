@@ -306,7 +306,7 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 - At-least-once delivery, not exactly-once.
 - v1 transport/framer: child stdio + NDJSON only.
 - Trigger / MongoDB / Neo4j incremental ports do not persist a mid-run cursor only after sink (see [Durability](#durability-and-acknowledgements)).
-- Tables without a primary key on non-interleaved MySQL/PostgreSQL full sync still fall back to a full `SELECT *` load.
+- Tables without a primary key on non-interleaved MySQL/PostgreSQL full sync stream via `LIMIT`/`OFFSET` chunks (PostgreSQL orders by `ctid`; ids are synthetic row indexes). That path is unsafe under concurrent source writes — prefer a usable PK with keyset reads or interleaved-snapshot.
 
 ## Troubleshooting
 

@@ -324,7 +324,7 @@ async fn migrate_table<S: SurrealSink>(
     let batch_size = sync_opts.batch_size.max(1);
 
     // Prefer keyset pagination when a primary key exists (avoids loading the
-    // whole table into memory). Tables without a PK fall back to SELECT *.
+    // whole table into memory). Tables without a PK stream via LIMIT/OFFSET chunks.
     // A long-lived RowChunkDriver lets the next keyset read overlap prior-chunk
     // transform/sink when max_in_flight > 1 (CSV-like streaming pattern).
     if !pk_columns.is_empty() {
