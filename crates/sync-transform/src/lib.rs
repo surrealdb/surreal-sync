@@ -1,14 +1,13 @@
-//! Transform pipeline framework for surreal-sync.
+//! Shared apply loop for surreal-sync: transform → ordered SurrealDB write → advance watermark.
 //!
 //! # API hierarchy (source authors / embedders)
 //!
-//! 1. **[`ApplyContext`]** — push/flush row **and** relation events; shared
+//! 1. **[`SourceDriver`] / [`run_source_runtime`]** — production incremental loop
+//!    (schema refresh, ad-hoc snapshot, cancel/deadline, sink-safe `persist_checkpoint`)
+//! 2. **[`ApplyContext`]** — push/flush row **and** relation events; shared
 //!    max_in_flight window, ordered sink, sink-safe positions, poison/discard
-//! 2. **[`SourceDriver`] / [`run_source_runtime`]** — general incremental loop
-//!    with control-plane hooks (schema refresh, ad-hoc snapshot, cancel/deadline,
-//!    sink-safe `persist_checkpoint`)
-//! 3. **[`ChangeFeed`] / [`run_change_feed`]** — convenience for simple row CDC
-//!    (no-op defaults for the rest)
+//! 3. **[`ChangeFeed`] / [`run_change_feed`]** — thin adapter for tests and simple
+//!    row-only feeds (no-op defaults for the rest)
 //!
 //! Layering:
 //!
@@ -21,13 +20,13 @@
 //!         ↑
 //! ApplyContext / write_rows / write_relations
 //!         ↑
-//! SourceDriver / run_source_runtime   ← general
+//! SourceDriver / run_source_runtime   ← production
 //!         ↑
-//! ChangeFeed / run_change_feed        ← convenience
+//! ChangeFeed / run_change_feed        ← thin adapter (tests / simple feeds)
 //! ```
 //!
 //! An empty [`Pipeline`] is identity: docs pass through with **no** transform
-//! stage dispatch. The apply framework gates on
+//! stage dispatch. The apply path gates on
 //! [`BatchTransformer::is_identity`] (for [`Pipeline`], equivalent to
 //! [`Pipeline::is_identity`] — only an empty stage list). A lone
 //! [`Passthrough`] stage is *not* identity.

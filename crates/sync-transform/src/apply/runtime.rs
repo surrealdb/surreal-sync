@@ -8,14 +8,14 @@
 //! row-only feeds.
 
 use crate::apply::{
-    ApplyEvent, ChangeFeed, ChangeFeedRef, CheckpointPolicy, FailurePolicy, PositionedChange,
-    PositionedEvent, RuntimeExit, SourceDriver, SourceRuntimeOpts,
+    ApplyEvent, ChangeFeed, ChangeFeedRef, CheckpointPolicy, FailurePolicy, PositionedEvent,
+    RuntimeExit, SourceDriver, SourceRuntimeOpts,
 };
 use crate::apply::opts::ApplyOpts;
 use crate::apply::transform::BatchTransformer;
 use crate::pipeline::Pipeline;
 use anyhow::{anyhow, bail, Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use surreal_sink::SurrealSink;
@@ -287,15 +287,7 @@ where
     }
 }
 
-struct InFlightMeta<P> {
-    #[allow(dead_code)]
-    batch_id: u64,
-    #[allow(dead_code)]
-    last_position: P,
-}
-
 struct CompletedBatch<P> {
-    #[allow(dead_code)]
     batch_id: u64,
     last_position: P,
     /// Pre-transform input event count (for `note_sunk_events` / skip).
@@ -345,7 +337,7 @@ pub struct ApplyContext<'a, S, T, P = ()> {
     next_batch_id: u64,
     next_seq: u64,
     next_to_apply: u64,
-    in_flight: HashMap<u64, InFlightMeta<P>>,
+    in_flight: HashSet<u64>,
     completed: HashMap<u64, CompletedBatch<P>>,
     join_set: JoinSet<TransformOutcome<P>>,
     /// True while a prepared sink batch is being applied (slot reserved).
@@ -379,7 +371,7 @@ where
             next_batch_id: 1,
             next_seq: 0,
             next_to_apply: 0,
-            in_flight: HashMap::new(),
+            in_flight: HashSet::new(),
             completed: HashMap::new(),
             join_set: JoinSet::new(),
             sink_in_flight: false,
@@ -624,13 +616,7 @@ where
         let seq = self.next_seq;
         self.next_seq = self.next_seq.saturating_add(1);
 
-        self.in_flight.insert(
-            seq,
-            InFlightMeta {
-                batch_id,
-                last_position: last_position.clone(),
-            },
-        );
+        self.in_flight.insert(seq);
 
         let transformer = Arc::clone(&self.transformer);
         let timeout = self.opts.timeout;
@@ -717,7 +703,7 @@ where
         if outcome.epoch != self.epoch {
             return Ok(());
         }
-        if self.in_flight.remove(&outcome.seq).is_none() {
+        if !self.in_flight.remove(&outcome.seq) {
             return Ok(());
         }
         self.completed.insert(
@@ -1080,10 +1066,4 @@ where
     async fn apply_sink_events(&self, events: &[ApplyEvent]) -> Result<()> {
         apply_transformed_sink_events(self.sink, events).await
     }
-}
-
-// Re-export helper for tests that still construct PositionedChange.
-#[allow(dead_code)]
-fn _positioned_change_to_event<P>(pc: PositionedChange<P>) -> PositionedEvent<P> {
-    pc.into()
 }

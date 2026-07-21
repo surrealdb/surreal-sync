@@ -2,7 +2,7 @@
 name = "sync-transform"
 version = "0.1.0"
 edition = "2021"
-description = "First-class transform pipeline framework for surreal-sync"
+description = "Transform stages and ordered apply/watermark for surreal-sync"
 authors = ["surreal-sync contributors"]
 
 [features]

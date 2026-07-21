@@ -1,10 +1,10 @@
-//! Change-feed apply framework: windowed transform, ordered sink, contiguous watermark advance.
+//! Shared apply loop: windowed transform, ordered sink, contiguous watermark advance.
 //!
 //! # API hierarchy
 //!
-//! 1. **[`ApplyContext`]** — library / custom loops; rows + changes + **relations**
-//! 2. **[`SourceDriver`] / [`run_source_runtime`]** — general incremental control plane
-//! 3. **[`ChangeFeed`] / [`run_change_feed`]** — convenience for simple row CDC
+//! 1. **[`SourceDriver`] / [`run_source_runtime`]** — production incremental loop
+//! 2. **[`ApplyContext`]** — library / custom loops; rows + changes + **relations**
+//! 3. **[`ChangeFeed`] / [`run_change_feed`]** — thin adapter for tests / simple row feeds
 
 mod event;
 mod feed;

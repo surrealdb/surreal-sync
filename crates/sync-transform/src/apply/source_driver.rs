@@ -1,8 +1,8 @@
-//! SourceDriver control plane: poll / advance_watermark + schema/ad-hoc/cancel/checkpoint hooks.
+//! SourceDriver: poll / advance_watermark + schema/ad-hoc/cancel/checkpoint hooks.
 //!
-//! [`SourceDriver`] + [`run_source_runtime`] are the **general** incremental API.
-//! [`crate::ChangeFeed`] / [`crate::run_change_feed`] are a convenience for
-//! simple row-CDC sources (defaults cover the rest as no-ops).
+//! [`SourceDriver`] + [`run_source_runtime`] are the production incremental API.
+//! [`crate::ChangeFeed`] / [`crate::run_change_feed`] are a thin adapter for
+//! tests and simple row-CDC sources (defaults cover the rest as no-ops).
 
 use crate::apply::event::PositionedEvent;
 use crate::apply::feed::ChangeFeed;

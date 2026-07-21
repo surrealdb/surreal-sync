@@ -1,8 +1,8 @@
-//! Change feed trait: thin convenience over [`crate::SourceDriver`].
+//! Change feed trait: thin adapter over [`crate::SourceDriver`] for tests and simple row feeds.
 //!
-//! The general source API is [`crate::SourceDriver`] + [`crate::run_source_runtime`].
-//! [`ChangeFeed`] / [`crate::run_change_feed`] remain for simple row-CDC sources
-//! that do not need control-plane hooks (schema refresh, ad-hoc snapshot, etc.).
+//! Prefer [`crate::SourceDriver`] + [`crate::run_source_runtime`] for production ports.
+//! [`ChangeFeed`] / [`crate::run_change_feed`] remain for tests and simple row-CDC sources
+//! that do not need schema refresh, ad-hoc snapshot, or other control hooks.
 
 use crate::apply::event::{ApplyEvent, PositionedEvent};
 use anyhow::Result;
