@@ -92,8 +92,8 @@ pub async fn convert_table(
     Ok((row_batch, rel_batch))
 }
 
-/// Migrate a single table from PostgreSQL to SurrealDB through the transform
-/// Framework (`write_rows` / `write_relations`).
+/// Migrate a single table from PostgreSQL to SurrealDB through the shared apply
+/// path (`write_rows` / `write_relations`).
 ///
 /// When `schema` is provided and the table has foreign keys, FK column values
 /// are automatically converted to SurrealDB record links.  If the table is
@@ -104,7 +104,7 @@ pub async fn convert_table(
 /// `RowChunkDriver`) for production syncs — this helper still loads the whole
 /// table via [`convert_table`] before applying.
 #[deprecated(
-    note = "prefer run_full_sync_with_transforms / convert_table + write_rows; this loads the whole table then applies through the Framework"
+    note = "prefer run_full_sync_with_transforms / convert_table + write_rows; this loads the whole table then applies through write_rows / the shared apply path"
 )]
 pub async fn migrate_table<S: SurrealSink>(
     client: &Client,
@@ -166,7 +166,7 @@ pub struct TableChunk {
 ///
 /// When `schema` is provided and the table has foreign keys, foreign-key column
 /// values are converted to SurrealDB record links, matching [`convert_table`] /
-/// the Framework full-sync path.
+/// the shared apply full-sync path.
 ///
 /// This is an additive, chunked alternative to loading a whole table; it does not
 /// write to a sink and does not handle relation (join) tables.

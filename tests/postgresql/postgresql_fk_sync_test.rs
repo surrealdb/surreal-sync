@@ -84,7 +84,7 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
-    // --- Framework full sync (RowChunkDriver + write path) ---
+    // --- Full sync via RowChunkDriver + write_rows / shared apply path ---
     let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
         source_uri: test_conn_str.clone(),
         source_database: Some(format!("test_{test_id}")),
