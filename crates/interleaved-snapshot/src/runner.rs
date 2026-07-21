@@ -1,12 +1,13 @@
 //! The generic DBLog-style watermark snapshot loop.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use anyhow::Result;
 use checkpoint::{InterleavedSnapshotCheckpoint, SnapshotTableProgress};
 use surreal_sink::SurrealSink;
 use sync_core::UniversalRow;
-use sync_transform::{apply_changes, write_rows, ApplyOpts, Pipeline};
+use sync_transform::{write_rows, ApplyContext, ApplyOpts, Pipeline};
 use tracing::info;
 use uuid::Uuid;
 
@@ -439,6 +440,17 @@ where
         // Consume the stream until the high watermark passes by. Every
         // data change is applied to the sink; while in-window, any buffered
         // row touched by an event is dropped so the log event wins.
+        //
+        // One long-lived ApplyContext spans the whole reconciliation window so
+        // `max_in_flight > 1` can overlap transforms across events (and the
+        // final buffer flush). Checkpoint / commit_reconciled run only after
+        // this context fully drains.
+        let transformer = Arc::new(transforms.pipeline.clone());
+        let mut ctx = ApplyContext::<_, _, ()>::new(
+            sink,
+            Arc::clone(&transformer),
+            &transforms.apply_opts,
+        );
         let mut in_window = false;
         let mut window_closed = false;
         while !window_closed {
@@ -450,26 +462,23 @@ where
                         continue;
                     }
                     if watermark_id == high_id {
-                        flush_buffer(sink, &mut buffer, transforms).await?;
                         in_window = false;
                         window_closed = true;
                         continue;
                     }
                 }
 
-                // Transform then sink; never commit_reconciled before this succeeds.
-                apply_changes(
-                    sink,
-                    &transforms.pipeline,
-                    vec![event.change],
-                    &transforms.apply_opts,
-                )
-                .await?;
+                // Never commit_reconciled before sink succeeds (flush below).
+                ctx.push_change(event.change, ()).await?;
                 if in_window {
                     buffer.remove(&event.pk.key());
                 }
             }
         }
+        // Drain reconciliation applies first (ordered sink), then flush surviving
+        // snapshot rows via write_rows (same upsert path as before).
+        ctx.flush().await?;
+        flush_buffer(sink, &mut buffer, transforms).await?;
 
         after = last_pk.clone();
         progress[table_index].last_pk = last_pk;

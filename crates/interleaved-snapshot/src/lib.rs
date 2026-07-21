@@ -22,6 +22,10 @@
 //! - **Bounded retention**: [`WatermarkSource::commit_reconciled`] is called as
 //!   the stream is applied, so the source can free change-log data continuously
 //!   instead of pinning it for the whole snapshot.
+//! - **Overlapping transforms**: reconciliation events (and the surviving chunk
+//!   flush) share one long-lived [`sync_transform::ApplyContext`] so
+//!   `max_in_flight > 1` can hide slow transforms; progress is saved only after
+//!   that window drains.
 
 mod checkpointer;
 mod runner;
