@@ -189,37 +189,87 @@ async fn migrate_table_with_transforms<S: SurrealSink>(
     pipeline: &Pipeline,
     apply_opts: &ApplyOpts,
 ) -> Result<usize> {
-    let (rows, relations) = convert_table(client, table_name, schema, &[]).await?;
-    if rows.is_empty() && relations.is_empty() {
-        return Ok(0);
-    }
+    use surreal_sync_postgresql::{get_primary_key_columns, read_table_chunk};
+    use sync_core::{classify_table, TableKind, UniversalValue};
 
+    let pk_columns = get_primary_key_columns(client, table_name).await?;
+    let table_kind = schema
+        .and_then(|s| s.get_table(table_name))
+        .map(|td| classify_table(td, &[]));
+    let is_relation = matches!(table_kind, Some(TableKind::Relation { .. }));
     let batch_size = sync_opts.batch_size.max(1);
+
+    if is_relation || pk_columns.is_empty() {
+        if pk_columns.is_empty() && !is_relation {
+            tracing::warn!(
+                "Table '{table_name}' has no primary key; falling back to full SELECT * (loads table into memory)"
+            );
+        }
+        let (rows, relations) = convert_table(client, table_name, schema, &[]).await?;
+        if rows.is_empty() && relations.is_empty() {
+            return Ok(0);
+        }
+        let mut total_processed = 0usize;
+        for chunk in rows.chunks(batch_size) {
+            if cancel.is_cancelled() {
+                debug!("Cancellation requested mid-table '{table_name}'; stopping batch writes");
+                return Ok(total_processed);
+            }
+            let n = chunk.len();
+            if !sync_opts.dry_run {
+                write_rows(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
+            }
+            total_processed += n;
+        }
+        for chunk in relations.chunks(batch_size) {
+            if cancel.is_cancelled() {
+                debug!("Cancellation requested mid-table '{table_name}'; stopping batch writes");
+                return Ok(total_processed);
+            }
+            let n = chunk.len();
+            if !sync_opts.dry_run {
+                write_relations(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
+            }
+            total_processed += n;
+        }
+        return Ok(total_processed);
+    }
+
     let mut total_processed = 0usize;
-
-    for chunk in rows.chunks(batch_size) {
+    let mut after: Option<Vec<UniversalValue>> = None;
+    let mut row_index_base = 0u64;
+    loop {
         if cancel.is_cancelled() {
-            debug!("Cancellation requested mid-table '{table_name}'; stopping batch writes");
+            debug!("Cancellation requested mid-table '{table_name}'; stopping chunk reads");
             return Ok(total_processed);
         }
-        let n = chunk.len();
+        let chunk = read_table_chunk(
+            client,
+            table_name,
+            &pk_columns,
+            after.as_deref(),
+            batch_size,
+            schema,
+        )
+        .await?;
+        if chunk.rows.is_empty() {
+            break;
+        }
+        let n = chunk.rows.len();
+        let mut rows = chunk.rows;
+        for (i, row) in rows.iter_mut().enumerate() {
+            row.index = row_index_base + i as u64;
+        }
+        row_index_base = row_index_base.saturating_add(n as u64);
         if !sync_opts.dry_run {
-            write_rows(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
+            write_rows(surreal, pipeline, rows, apply_opts).await?;
         }
         total_processed += n;
-    }
-    for chunk in relations.chunks(batch_size) {
-        if cancel.is_cancelled() {
-            debug!("Cancellation requested mid-table '{table_name}'; stopping batch writes");
-            return Ok(total_processed);
+        after = chunk.last_pk;
+        if n < batch_size {
+            break;
         }
-        let n = chunk.len();
-        if !sync_opts.dry_run {
-            write_relations(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
-        }
-        total_processed += n;
     }
-
     Ok(total_processed)
 }
 

@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalRow, UniversalType, UniversalValue};
 use sync_transform::{write_rows, ApplyOpts, Pipeline};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// Sanitize connection string for logging (hide password)
 fn sanitize_connection_string(uri: &str) -> String {
@@ -341,6 +341,56 @@ async fn migrate_table<S: SurrealSink>(
         debug!("Table {} has SET columns: {:?}", table_name, set_columns);
     }
 
+    let config = RowConversionConfig {
+        boolean_columns: boolean_columns.clone(),
+        set_columns: set_columns.clone(),
+        json_columns: json_columns.clone(),
+        json_config: None,
+    };
+
+    let batch_size = opts.sync_opts.batch_size.max(1);
+
+    if !pk_columns.is_empty() {
+        let mut total_processed = 0usize;
+        let mut after: Option<Vec<UniversalValue>> = None;
+        let mut row_index_base = 0u64;
+        loop {
+            let chunk = read_table_chunk(
+                conn,
+                table_name,
+                &pk_columns,
+                after.as_deref(),
+                batch_size,
+                &config,
+            )
+            .await?;
+            if chunk.rows.is_empty() {
+                break;
+            }
+            let n = chunk.rows.len();
+            let mut rows = chunk.rows;
+            for (i, row) in rows.iter_mut().enumerate() {
+                row.index = row_index_base + i as u64;
+            }
+            row_index_base = row_index_base.saturating_add(n as u64);
+            if !opts.sync_opts.dry_run {
+                write_rows(surreal, opts.pipeline, rows, opts.apply_opts).await?;
+            } else {
+                debug!("Dry-run: Would insert {n} records into {table_name}");
+            }
+            total_processed += n;
+            after = chunk.last_pk;
+            if n < batch_size {
+                break;
+            }
+        }
+        return Ok(total_processed);
+    }
+
+    warn!(
+        "Table '{table_name}' has no primary key; falling back to full SELECT * (loads table into memory)"
+    );
+
     // Query all data from table
     let rows: Vec<Row> = conn
         .query(format!("SELECT * FROM {table_name}"))
@@ -352,14 +402,6 @@ async fn migrate_table<S: SurrealSink>(
 
     let mut batch = Vec::new();
     let mut total_processed = 0;
-
-    // Build row conversion config with boolean, SET, and JSON columns
-    let config = RowConversionConfig {
-        boolean_columns: boolean_columns.clone(),
-        set_columns: set_columns.clone(),
-        json_columns: json_columns.clone(),
-        json_config: None,
-    };
 
     // Process each row
     for (row_index, row) in rows.iter().enumerate() {
@@ -373,7 +415,9 @@ async fn migrate_table<S: SurrealSink>(
             .collect();
 
         // Extract primary key value for the record ID
-        let id = extract_primary_key_value(&values, &pk_columns)?;
+        let id = extract_primary_key_value(&values, &pk_columns).unwrap_or_else(|_| {
+            UniversalValue::Int64(row_index as i64)
+        });
 
         // Build non-PK fields map
         let fields: HashMap<String, UniversalValue> = values
@@ -386,8 +430,8 @@ async fn migrate_table<S: SurrealSink>(
         batch.push(universal_row);
 
         // Process batch when it reaches the configured size
-        if batch.len() >= opts.sync_opts.batch_size {
-            let batch_size = batch.len();
+        if batch.len() >= batch_size {
+            let n = batch.len();
 
             if !opts.sync_opts.dry_run {
                 write_rows(
@@ -400,27 +444,27 @@ async fn migrate_table<S: SurrealSink>(
             } else {
                 debug!(
                     "Dry-run: Would insert {} records into {}",
-                    batch_size, table_name
+                    n, table_name
                 );
                 batch.clear();
             }
-            total_processed += batch_size;
+            total_processed += n;
         }
     }
 
     // Process remaining records
     if !batch.is_empty() {
-        let batch_size = batch.len();
+        let n = batch.len();
 
         if !opts.sync_opts.dry_run {
             write_rows(surreal, opts.pipeline, batch, opts.apply_opts).await?;
         } else {
             debug!(
                 "Dry-run: Would insert {} records into {}",
-                batch_size, table_name
+                n, table_name
             );
         }
-        total_processed += batch_size;
+        total_processed += n;
     }
 
     Ok(total_processed)

@@ -310,17 +310,64 @@ async fn migrate_table<S: SurrealSink>(
         .map(|s| s.json_columns.clone())
         .unwrap_or_default();
 
-    let rows: Vec<Row> = conn
-        .query(format!("SELECT * FROM `{table_name}`"))
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to query table {table_name}: {e}"))?;
-
     let config = RowConversionConfig {
         boolean_columns,
         set_columns,
         json_columns,
         json_config: None,
     };
+
+    let batch_size = sync_opts.batch_size.max(1);
+
+    // Prefer keyset pagination when a primary key exists (avoids loading the
+    // whole table into memory). Tables without a PK fall back to SELECT *.
+    if !pk_columns.is_empty() {
+        let mut total_processed = 0usize;
+        let mut after: Option<Vec<UniversalValue>> = None;
+        let mut row_index_base = 0u64;
+        loop {
+            if cancel.is_cancelled() {
+                debug!("Cancellation requested mid-table '{table_name}'; stopping chunk reads");
+                return Ok(total_processed);
+            }
+            let chunk = surreal_sync_mysql_trigger_source::read_table_chunk(
+                conn,
+                table_name,
+                &pk_columns,
+                after.as_deref(),
+                batch_size,
+                &config,
+            )
+            .await?;
+            if chunk.rows.is_empty() {
+                break;
+            }
+            let n = chunk.rows.len();
+            let mut rows = chunk.rows;
+            for (i, row) in rows.iter_mut().enumerate() {
+                row.index = row_index_base + i as u64;
+            }
+            row_index_base = row_index_base.saturating_add(n as u64);
+            if !sync_opts.dry_run {
+                write_rows(surreal, pipeline, rows, apply_opts).await?;
+            }
+            total_processed += n;
+            after = chunk.last_pk;
+            if n < batch_size {
+                break;
+            }
+        }
+        debug!("Processed {total_processed} rows from {table_name} (keyset)");
+        return Ok(total_processed);
+    }
+
+    tracing::warn!(
+        "Table '{table_name}' has no primary key; falling back to full SELECT * (loads table into memory)"
+    );
+    let rows: Vec<Row> = conn
+        .query(format!("SELECT * FROM `{table_name}`"))
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to query table {table_name}: {e}"))?;
 
     let mut batch = Vec::new();
     let mut total_processed = 0;
@@ -330,7 +377,9 @@ async fn migrate_table<S: SurrealSink>(
             .into_iter()
             .map(|(k, tv)| (k, tv.value))
             .collect();
-        let id = extract_primary_key_value(&values, &pk_columns)?;
+        let id = extract_primary_key_value(&values, &pk_columns).unwrap_or_else(|_| {
+            UniversalValue::Int64(row_index as i64)
+        });
         let fields: HashMap<String, UniversalValue> = values
             .into_iter()
             .filter(|(k, _)| !pk_columns.contains(k))
@@ -342,14 +391,14 @@ async fn migrate_table<S: SurrealSink>(
             fields,
         ));
 
-        if batch.len() >= sync_opts.batch_size {
+        if batch.len() >= batch_size {
             if !sync_opts.dry_run {
                 let rows = std::mem::take(&mut batch);
                 write_rows(surreal, pipeline, rows, apply_opts).await?;
             } else {
                 batch.clear();
             }
-            total_processed += sync_opts.batch_size;
+            total_processed += batch_size;
             if cancel.is_cancelled() {
                 debug!("Cancellation requested mid-table '{table_name}'; stopping batch writes");
                 return Ok(total_processed);

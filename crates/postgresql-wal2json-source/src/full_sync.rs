@@ -7,8 +7,8 @@
 use anyhow::Result;
 use checkpoint::{CheckpointStore, SyncManager, SyncPhase};
 use surreal_sink::SurrealSink;
-use surreal_sync_postgresql::{convert_table, SyncOpts};
-use sync_transform::{write_relations, write_rows, ApplyOpts, Pipeline};
+use surreal_sync_postgresql::SyncOpts;
+use sync_transform::{ApplyOpts, Pipeline};
 use tokio_postgres::NoTls;
 use tracing::{debug, info};
 
@@ -97,32 +97,21 @@ pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
             .await?;
 
     let mut total_migrated = 0;
-    let batch_size = sync_opts.batch_size.max(1);
 
     for table_name in &tables {
         info!("Migrating table: {}", table_name);
 
-        let (rows, relations) = convert_table(
+        let count = migrate_one_table_keyset(
             pg_client.pg_client(),
+            surreal,
             table_name,
+            &sync_opts,
             Some(&db_schema),
             &from_opts.relation_tables,
+            pipeline,
+            apply_opts,
         )
         .await?;
-
-        let mut count = 0usize;
-        for chunk in rows.chunks(batch_size) {
-            if !sync_opts.dry_run {
-                write_rows(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
-            }
-            count += chunk.len();
-        }
-        for chunk in relations.chunks(batch_size) {
-            if !sync_opts.dry_run {
-                write_relations(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
-            }
-            count += chunk.len();
-        }
 
         total_migrated += count;
         info!("Migrated {} records from table {}", count, table_name);
@@ -142,3 +131,84 @@ pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
     );
     Ok(())
 }
+
+#[allow(clippy::too_many_arguments)]
+async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
+    client: &tokio_postgres::Client,
+    surreal: &S,
+    table_name: &str,
+    sync_opts: &surreal_sync_postgresql::SyncOpts,
+    schema: Option<&sync_core::DatabaseSchema>,
+    relation_overrides: &[String],
+    pipeline: &sync_transform::Pipeline,
+    apply_opts: &sync_transform::ApplyOpts,
+) -> anyhow::Result<usize> {
+    use surreal_sync_postgresql::{convert_table, get_primary_key_columns, read_table_chunk};
+    use sync_core::{classify_table, TableKind};
+    use sync_transform::{write_relations, write_rows};
+
+    let pk_columns = get_primary_key_columns(client, table_name).await?;
+    let table_kind = schema
+        .and_then(|s| s.get_table(table_name))
+        .map(|td| classify_table(td, relation_overrides));
+    let is_relation = matches!(table_kind, Some(TableKind::Relation { .. }));
+    let batch_size = sync_opts.batch_size.max(1);
+
+    if is_relation || pk_columns.is_empty() {
+        if pk_columns.is_empty() && !is_relation {
+            tracing::warn!(
+                "Table '{table_name}' has no primary key; falling back to full SELECT * (loads table into memory)"
+            );
+        }
+        let (rows, relations) =
+            convert_table(client, table_name, schema, relation_overrides).await?;
+        let mut total = 0usize;
+        for chunk in rows.chunks(batch_size) {
+            if !sync_opts.dry_run {
+                write_rows(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
+            }
+            total += chunk.len();
+        }
+        for chunk in relations.chunks(batch_size) {
+            if !sync_opts.dry_run {
+                write_relations(surreal, pipeline, chunk.to_vec(), apply_opts).await?;
+            }
+            total += chunk.len();
+        }
+        return Ok(total);
+    }
+
+    let mut total = 0usize;
+    let mut after: Option<Vec<sync_core::UniversalValue>> = None;
+    let mut row_index_base = 0u64;
+    loop {
+        let chunk = read_table_chunk(
+            client,
+            table_name,
+            &pk_columns,
+            after.as_deref(),
+            batch_size,
+            schema,
+        )
+        .await?;
+        if chunk.rows.is_empty() {
+            break;
+        }
+        let n = chunk.rows.len();
+        let mut rows = chunk.rows;
+        for (i, row) in rows.iter_mut().enumerate() {
+            row.index = row_index_base + i as u64;
+        }
+        row_index_base = row_index_base.saturating_add(n as u64);
+        if !sync_opts.dry_run {
+            write_rows(surreal, pipeline, rows, apply_opts).await?;
+        }
+        total += n;
+        after = chunk.last_pk;
+        if n < batch_size {
+            break;
+        }
+    }
+    Ok(total)
+}
+
