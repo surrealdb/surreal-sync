@@ -28,7 +28,7 @@ Each `from *` sync/import path uses the same shared apply path. Operator guides 
 | Port checklist / R∩T∩W gates | [Source ports](source-ports.md) |
 | Full vs incremental model | [Design overview](design.md) |
 
-**Read-ahead vs sunk:** On streaming CDC, surreal-sync may read ahead while transform/apply still has buffered or in-flight work. Persisted catch-up / last-sunk positions track the **last successfully sunk** batch — they do **not** jump to a read-ahead cursor past unsunk work. See [CatchUpProgress and unsunk work](#catchupprogress-and-unsunk-work-streaming-cdc).
+**Read-ahead vs sunk:** On streaming CDC, see [CatchUpProgress and unsunk work](#catchupprogress-and-unsunk-work-streaming-cdc).
 
 Some ports still **gate the next chunk / peek / file** until the current unit is fully sunk (interleaved snapshot next-chunk, wal2json next-peek after slot advance, CSV/JSONL next-file runtime). Within that unit, `max_in_flight > 1` still overlaps reads, transforms, and ordered writes — see [Source ports — R∩T∩W gates](source-ports.md#rtw-gates-intentional).
 
