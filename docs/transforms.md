@@ -16,21 +16,37 @@ surreal-sync still owns batching, applying docs to SurrealDB, and when the sourc
 |------------|--------|
 | No config → identity (docs pass through unchanged) | Available |
 | External worker over child-process stdio (NDJSON) | Available |
-| MySQL / MariaDB binlog `sync` (snapshot + stream) | Available |
+| `--transforms-config` on every `from *` sync path listed below | Available |
 | `failure_policy` `fail` (default) or `skip` | Available |
 | Overlapping transform window via `max_in_flight` | Available |
 
 ## What is not available yet
 
-- Other sources (PostgreSQL, MongoDB, trigger MySQL, …) — not wired to this path yet
 - HTTP / Unix-socket / TCP workers
 - Built-in field-mapping DSL, WASM plugins, or declarative rules in TOML
 - Exactly-once end-to-end (delivery is at-least-once; see [Durability](#durability-and-acknowledgements))
 - Dead-letter queues or worker-side durable queues
 
+## Commands that support `--transforms-config`
+
+Every sync/import path below loads the same TOML via the shared CLI helper and applies through the `sync-transform` framework. Omit the flag for identity.
+
+| Command | Sync paths |
+|---------|------------|
+| `from mysql-binlog sync` | Snapshot + stream (and ad-hoc `snapshot` while streaming) |
+| `from postgresql-pgoutput sync` | Snapshot + stream (and ad-hoc `snapshot` while streaming) |
+| `from postgresql full` / `incremental` / `sync` | wal2json snapshot, stream, and interleaved `sync` |
+| `from postgresql-trigger full` / `incremental` / `sync` | Trigger snapshot, stream, and interleaved `sync` |
+| `from mysql full` / `incremental` / `sync` | Trigger snapshot, stream, and interleaved `sync` (also MariaDB via the same subcommand) |
+| `from mongodb full` / `incremental` | Collection dump + change stream |
+| `from neo4j full` / `incremental` | Nodes and relationships |
+| `from kafka` | Decode batch then apply |
+| `from csv` | File / S3 import |
+| `from jsonl` | File import (`conversion_rules` run before Pipeline stages) |
+
 ## CLI quick start
 
-Transforms are configured with `--transforms-config <PATH>` on `surreal-sync from mysql-binlog sync`. Omit the flag for identity.
+Transforms are configured with `--transforms-config <PATH>` on any command in the table above. The examples below use MySQL/MariaDB binlog; the same flag and TOML work on the other sources. Omit the flag for identity.
 
 ### No transform config (identity)
 
@@ -143,7 +159,7 @@ For every incremental batch, surreal-sync runs this order:
 1. Buffer changes + positions in memory (not committed).
 2. Transform — in-process stages finish, or the external worker returns a successful framed response that **echoes the same `batch_id`**.
 3. Sink apply — write transformed docs to SurrealDB; wait for success.
-4. Source commit — advance the binlog / GTID checkpoint past that batch.
+4. Source commit — advance the source checkpoint past that batch (binlog/GTID, LSN, sequence, resume token, Kafka consumer-group offset, etc., depending on the source).
 
 | Hop | What “ack” means |
 |-----|------------------|
@@ -165,14 +181,14 @@ There is **no** post-sink ack back to the worker. Workers are treated as **state
 
 Default `failure_policy = "fail"`: stop the sync process; on restart, resume from the last successful checkpoint — **no silent drop**.
 
-### CatchUpProgress and unsunk work (MySQL/MariaDB binlog)
+### CatchUpProgress and unsunk work (streaming CDC)
 
-During streaming, surreal-sync may read ahead while transform/apply still has buffered, in-flight, or completed-but-not-yet-sunk batches. Persisted `CatchUpProgress` positions follow the **last successfully sunk** batch in that situation — they do **not** jump to a read-ahead cursor past unsunk work.
+During streaming on sources that persist a catch-up / last-sunk checkpoint (notably MySQL/MariaDB binlog and PostgreSQL pgoutput), surreal-sync may read ahead while transform/apply still has buffered, in-flight, or completed-but-not-yet-sunk batches. Persisted catch-up positions follow the **last successfully sunk** batch in that situation — they do **not** jump to a read-ahead cursor past unsunk work.
 
 Once the apply window is fully drained:
 
 - Sunk watermarks are written promptly (same durability idea as persisting last-sunk on sink success).
-- On `--checkpoint-interval` (default 10s), the store may also advance to the **current** binlog position through filtered/unrelated GTID or table noise — there is nothing unsunk to protect, so catching up past other schemas/tables does not freeze `CatchUpProgress` until process exit.
+- On `--checkpoint-interval` (default 10s where supported), the store may also advance to the **current** source position through filtered/unrelated traffic — there is nothing unsunk to protect, so catching up past other schemas/tables does not freeze progress until process exit.
 
 This keeps resume from replaying past docs that never landed in SurrealDB, without stalling checkpoint heartbeats during filtered-only catch-up.
 
@@ -259,18 +275,17 @@ Make it executable and point `stdin.command` at it. Item JSON is the serde shape
 
 There is no exactly-once guarantee across transform + SurrealDB + source checkpoint. Design SurrealDB writes to be idempotent (upsert by primary key). Design workers so re-running a batch is safe.
 
-## Using transforms with MySQL/MariaDB binlog
+## Using transforms with any supported source
 
-`--transforms-config` applies to `surreal-sync from mysql-binlog sync` for both the snapshot phase and the live stream. The same pipeline runs for snapshot row writes and CDC changes.
+`--transforms-config` applies to every command in [Commands that support `--transforms-config`](#commands-that-support---transforms-config). The same pipeline runs for snapshot/full-sync row writes and CDC/incremental changes (and for Kafka/csv/jsonl import batches).
 
-Operations (checkpoints, resume, GTID vs file+offset, ad-hoc `snapshot`) are unchanged aside from the durability rules above — especially that `CatchUpProgress` does not advance past unsunk transform/apply work. See [MySQL/MariaDB Binlog Source](mysql-binlog.md).
+Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it) are unchanged aside from the durability rules above — especially that catch-up progress does not advance past unsunk transform/apply work on sources that use sink-safe checkpoints. See the per-source guides linked below and [Source ports](source-ports.md) for implementer details.
 
 ## Limitations
 
 - No custom code in the TOML config — logic lives in your external worker (or, for embedders, library APIs; see rustdoc for `sync-transform`).
 - Filter / reshape / fan-out via the worker’s returned item list (`count` may differ from the request) on **homogeneous** batches only. Mixed change+relation batches must preserve length of each kind.
 - Relation events are first-class on the External NDJSON wire (`kind: relation_change` / `relation`); they are never silently skipped past External stages.
-- v1 source coverage: MySQL/MariaDB binlog only.
 - At-least-once delivery, not exactly-once.
 - v1 transport/framer: child stdio + NDJSON only.
 
@@ -288,6 +303,9 @@ Operations (checkpoints, resume, GTID vs file+offset, ad-hoc `snapshot`) are unc
 ## See also
 
 - [MySQL/MariaDB Binlog Source](mysql-binlog.md) — snapshot, stream, checkpoints, resume
+- [PostgreSQL pgoutput](postgresql-pgoutput-source.md), [wal2json](postgresql-wal2json-source.md), [trigger](postgresql.md)
+- [MySQL trigger](mysql.md) / [MariaDB trigger](mariadb.md), [MongoDB](mongodb.md), [Neo4j](neo4j.md), [Kafka](kafka.md), [CSV](csv.md), [JSONL](jsonl.md)
+- [Source ports](source-ports.md) — implementer checklist for wiring sources through `sync-transform`
 - [Design overview](design.md) — full vs incremental sync model
 - [GitHub issue #118](https://github.com/surrealdb/surreal-sync/issues/118) — transform pipeline tracking
 

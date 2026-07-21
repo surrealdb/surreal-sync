@@ -2,6 +2,8 @@
 
 `surreal-sync from mysql-binlog` replicates MySQL and MariaDB tables into SurrealDB using the binary log (binlog) as a change-data-capture (CDC) stream. It registers as a replica, reads row-format binlog events, and applies them to SurrealDB — no triggers or audit tables on the source. The same subcommand works against both engines; surreal-sync auto-detects the flavor from `SELECT @@version` (override with `--flavor mysql` or `--flavor mariadb`).
 
+Apply into SurrealDB goes through the [`sync-transform`](transforms.md) framework (`--transforms-config` optional; omit for identity).
+
 The end-to-end model mirrors a mature CDC pipeline (Debezium-style **snapshot → stream → resume**), grounded in this project's commands and traits:
 
 1. **Snapshot** the selected tables into SurrealDB.

@@ -8008,7 +8008,6 @@ dependencies = [
  "async-trait",
  "checkpoint",
  "chrono",
- "clap",
  "hex",
  "libc",
  "rust_decimal",

@@ -27,7 +27,6 @@ surreal2-sink = { path = "../surreal2-sink" }
 sync-core = { path = "../sync-core" }
 sync-transform = { path = "../sync-transform" }
 surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
-clap = { version = "4.5", features = ["derive", "env"] }
 rust_decimal = { version = "^1.23", features = ["db-tokio-postgres"] }
 libc = "0.2.183"
 

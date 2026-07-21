@@ -355,6 +355,7 @@ async fn mysql_snapshot_full<S, St>(
     database: Option<String>,
     chunk_size: usize,
     manager: Option<&SyncManager<St>>,
+    transforms: &SnapshotTransforms,
 ) -> anyhow::Result<()>
 where
     S: SurrealSink,
@@ -364,14 +365,16 @@ where
     let database = resolve_mysql_database(&pool, &database).await?;
     let config = InterleavedSnapshotConfig { chunk_size };
     let mut checkpointer = NoopCheckpointer;
-    let final_seq = surreal_sync_mysql_trigger_source::run_interleaved_snapshot_full_sync(
-        pool,
-        database,
-        sink,
-        &config,
-        &mut checkpointer,
-    )
-    .await?;
+    let final_seq =
+        surreal_sync_mysql_trigger_source::run_interleaved_snapshot_full_sync_with_transforms(
+            pool,
+            database,
+            sink,
+            &config,
+            &mut checkpointer,
+            transforms,
+        )
+        .await?;
 
     if let Some(manager) = manager {
         let checkpoint = MySQLCheckpoint {
@@ -403,6 +406,12 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    let transforms = SnapshotTransforms {
+        pipeline,
+        apply_opts,
+    };
+
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
@@ -412,6 +421,7 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.database,
                 args.chunk_size,
                 Some(&manager),
+                &transforms,
             )
             .await
         }
@@ -432,6 +442,7 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.database,
                 args.chunk_size,
                 Some(&manager),
+                &transforms,
             )
             .await
         }
@@ -442,6 +453,7 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.database,
                 args.chunk_size,
                 None,
+                &transforms,
             )
             .await
         }
@@ -465,6 +477,12 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
             .await?;
     let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
 
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    let transforms = SnapshotTransforms {
+        pipeline,
+        apply_opts,
+    };
+
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
@@ -474,6 +492,7 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.database,
                 args.chunk_size,
                 Some(&manager),
+                &transforms,
             )
             .await
         }
@@ -488,6 +507,7 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.database,
                 args.chunk_size,
                 Some(&manager),
+                &transforms,
             )
             .await
         }
@@ -498,6 +518,7 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.database,
                 args.chunk_size,
                 None,
+                &transforms,
             )
             .await
         }

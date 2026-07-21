@@ -48,7 +48,6 @@ mod config;
 mod full_sync;
 mod incremental_sync;
 mod logical_replication;
-pub mod sync;
 pub mod toml_config;
 mod wal2json;
 mod watermark_source;
@@ -65,7 +64,6 @@ pub use incremental_sync::{
     run_incremental_sync, run_incremental_sync_with_transforms, ReplicationTailOptions,
 };
 pub use logical_replication::{ChangeAtLsn, Client, Slot};
-pub use sync::{State, StateID, Store};
 pub use watermark_source::{
     request_snapshot, run_interleaved_snapshot_full_sync,
     run_interleaved_snapshot_full_sync_with_transforms, Lsn, Wal2JsonWatermarkSource, SIGNAL_TABLE,

@@ -2,6 +2,8 @@
 
 `surreal-sync from postgresql-pgoutput` replicates PostgreSQL tables into SurrealDB using native logical replication (`pgoutput`). It creates a replication slot and publication, reads row-level WAL changes, and applies them to SurrealDB — no triggers or wal2json plugin on the source.
 
+Apply into SurrealDB goes through the [`sync-transform`](transforms.md) framework (`--transforms-config` optional; omit for identity).
+
 The end-to-end model mirrors the MySQL binlog and wal2json sources:
 
 1. **Snapshot** the selected tables into SurrealDB.
