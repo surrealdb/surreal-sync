@@ -71,29 +71,7 @@ impl Default for Config {
     }
 }
 
-/// Apply a decoded JSONL batch through [`SourceDriver`] + [`run_source_runtime`].
-async fn flush_jsonl_batch<S: SurrealSink>(
-    surreal: &S,
-    pipeline: &Pipeline,
-    apply_opts: &ApplyOpts,
-    batch: &mut Vec<UniversalRow>,
-    dry_run: bool,
-    poll_chunk: usize,
-) -> Result<usize> {
-    if batch.is_empty() {
-        return Ok(0);
-    }
-    let len = batch.len();
-    let rows = std::mem::take(batch);
-    if dry_run {
-        let sink = DryRunSink;
-        apply_rows_through_runtime(&sink, pipeline, apply_opts, rows, poll_chunk).await?;
-    } else {
-        apply_rows_through_runtime(surreal, pipeline, apply_opts, rows, poll_chunk).await?;
-    }
-    Ok(len)
-}
-
+/// No-op sink for JSONL `--dry-run` (still exercises the apply window).
 struct DryRunSink;
 
 #[async_trait::async_trait]
@@ -121,36 +99,56 @@ impl SurrealSink for DryRunSink {
     }
 }
 
-struct RowChunkDriver {
-    remaining: Vec<UniversalRow>,
+/// Long-lived JSONL line reader that polls decode chunks into the apply window.
+///
+/// File reads continue under spare `max_in_flight` capacity — there is no
+/// outer accumulate→`run_source_runtime` barrier per `batch_size`.
+struct JsonlStreamDriver {
+    lines: std::io::Lines<BufReader<Box<dyn std::io::Read + Send>>>,
+    table_name: String,
+    id_field: String,
+    rules: Vec<ConversionRule>,
+    table_schema: Option<TableDefinition>,
     poll_chunk: usize,
-    next_pos: u64,
-}
-
-impl RowChunkDriver {
-    fn new(rows: Vec<UniversalRow>, poll_chunk: usize) -> Self {
-        Self {
-            remaining: rows,
-            poll_chunk: poll_chunk.max(1),
-            next_pos: 0,
-        }
-    }
+    line_count: u64,
+    sunk_count: u64,
+    finished: bool,
 }
 
 #[async_trait::async_trait]
-impl SourceDriver for RowChunkDriver {
+impl SourceDriver for JsonlStreamDriver {
     type Position = u64;
 
     async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
-        if self.remaining.is_empty() {
+        if self.finished {
             return Ok(Vec::new());
         }
-        let n = self.poll_chunk.min(self.remaining.len());
-        let chunk: Vec<UniversalRow> = self.remaining.drain(..n).collect();
-        let mut events = Vec::with_capacity(chunk.len());
-        for row in chunk {
-            let pos = self.next_pos;
-            self.next_pos = self.next_pos.saturating_add(1);
+
+        let mut events = Vec::with_capacity(self.poll_chunk);
+        while events.len() < self.poll_chunk {
+            let Some(line_result) = self.lines.next() else {
+                self.finished = true;
+                break;
+            };
+            let line = line_result?;
+            self.line_count = self.line_count.saturating_add(1);
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let json_value: Value = serde_json::from_str(&line).map_err(|e| {
+                anyhow!("Error parsing JSON at line {}: {e}", self.line_count)
+            })?;
+
+            let row = convert_json_to_universal_row(
+                &json_value,
+                &self.table_name,
+                &self.id_field,
+                &self.rules,
+                self.table_schema.as_ref(),
+                self.line_count,
+            )?;
+            let pos = self.line_count;
             let change = sync_core::UniversalChange::update(row.table, row.id, row.fields);
             events.push(PositionedEvent::change(change, pos));
         }
@@ -162,31 +160,16 @@ impl SourceDriver for RowChunkDriver {
     }
 
     fn is_finished(&self) -> bool {
-        self.remaining.is_empty()
+        self.finished
     }
 
     fn checkpoint_policy(&self) -> CheckpointPolicy {
         CheckpointPolicy::CommitOnly
     }
-}
 
-async fn apply_rows_through_runtime<S: SurrealSink>(
-    sink: &S,
-    pipeline: &Pipeline,
-    apply_opts: &ApplyOpts,
-    rows: Vec<UniversalRow>,
-    poll_chunk: usize,
-) -> Result<()> {
-    let mut driver = RowChunkDriver::new(rows, poll_chunk);
-    run_source_runtime(
-        &mut driver,
-        sink,
-        pipeline,
-        apply_opts,
-        &SourceRuntimeOpts::default(),
-    )
-    .await?;
-    Ok(())
+    fn note_sunk_events(&mut self, count: u64) {
+        self.sunk_count = self.sunk_count.saturating_add(count);
+    }
 }
 
 /// Process JSONL data from a reader and import into SurrealDB
@@ -206,10 +189,6 @@ async fn process_jsonl_reader<S: SurrealSink>(
     apply_opts: &ApplyOpts,
 ) -> Result<()> {
     tracing::info!("Processing JSONL from: {source_name}");
-
-    let buf_reader = BufReader::new(reader);
-    let mut batch: Vec<UniversalRow> = Vec::new();
-    let mut total_migrated = 0;
 
     // Determine table name from source name (filename without extension)
     let table_name = if source_name.starts_with("http://") || source_name.starts_with("https://") {
@@ -243,67 +222,45 @@ async fn process_jsonl_reader<S: SurrealSink>(
     let table_schema = config
         .schema
         .as_ref()
-        .and_then(|s| s.get_table(&table_name));
+        .and_then(|s| s.get_table(&table_name))
+        .cloned();
 
-    for (line_count, line) in buf_reader.lines().enumerate() {
-        let line = line?;
-        let line_count = line_count + 1; // Convert to 1-based line numbering for error messages
+    let mut driver = JsonlStreamDriver {
+        lines: BufReader::new(reader).lines(),
+        table_name: table_name.clone(),
+        id_field: config.id_field.clone(),
+        rules: rules.to_vec(),
+        table_schema,
+        poll_chunk: config.batch_size.max(1),
+        line_count: 0,
+        sunk_count: 0,
+        finished: false,
+    };
 
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        // Parse JSON line
-        let json_value: Value = serde_json::from_str(&line)
-            .map_err(|e| anyhow!("Error parsing JSON at line {line_count}: {e}"))?;
-
-        // Convert to universal row with schema-aware conversion
-        // (conversion_rules run here, before Pipeline stages)
-        let row = convert_json_to_universal_row(
-            &json_value,
-            &table_name,
-            &config.id_field,
-            rules,
-            table_schema,
-            line_count as u64,
-        )?;
-
-        batch.push(row);
-
-        // Process batch when it reaches the batch size
-        if batch.len() >= config.batch_size {
-            let batch_len = flush_jsonl_batch(
-                surreal,
-                pipeline,
-                apply_opts,
-                &mut batch,
-                config.dry_run,
-                config.batch_size,
-            )
-            .await?;
-            total_migrated += batch_len;
-            tracing::debug!("Migrated batch of {batch_len} documents");
-        }
-    }
-
-    // Process remaining documents
-    if !batch.is_empty() {
-        let final_len = flush_jsonl_batch(
+    if config.dry_run {
+        let sink = DryRunSink;
+        run_source_runtime(
+            &mut driver,
+            &sink,
+            pipeline,
+            apply_opts,
+            &SourceRuntimeOpts::default(),
+        )
+        .await?;
+    } else {
+        run_source_runtime(
+            &mut driver,
             surreal,
             pipeline,
             apply_opts,
-            &mut batch,
-            config.dry_run,
-            config.batch_size,
+            &SourceRuntimeOpts::default(),
         )
         .await?;
-        total_migrated += final_len;
-        tracing::debug!("Migrated final batch of {final_len} documents");
     }
 
     tracing::info!(
         "Completed migration of {} documents from {} to table {}",
-        total_migrated,
+        driver.sunk_count,
         source_name,
         table_name
     );
@@ -328,10 +285,11 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
     sync_with_transforms(surreal, config, &pipeline, &apply_opts).await
 }
 
-/// Sync JSONL files through [`SourceDriver`] + [`run_source_runtime`].
+/// Sync JSONL files through a long-lived [`SourceDriver`] + [`run_source_runtime`].
 ///
-/// [`Config::conversion_rules`] still run while decoding each line into a
-/// [`UniversalRow`], before any Pipeline stages.
+/// The driver streams line reads into the apply window (`Config::batch_size`
+/// rows per poll). [`Config::conversion_rules`] still run while decoding each
+/// line into a [`UniversalRow`], before any Pipeline stages.
 pub async fn sync_with_transforms<S: SurrealSink>(
     surreal: &S,
     config: Config,
