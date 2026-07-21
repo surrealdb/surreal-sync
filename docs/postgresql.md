@@ -2,7 +2,7 @@
 
 `surreal-sync from postgresql-trigger` is a sub-command to `surreal-sync` that exports PostgreSQL tables to SurrealDB tables.
 
-Apply into SurrealDB goes through the [`sync-transform`](transforms.md) framework (`--transforms-config` optional; omit for identity).
+Apply into SurrealDB goes through the [`sync-transform`](sync-pipeline.md) framework (`--transforms-config` optional; omit for identity).
 
 The default **interleaved-snapshot** workflow copies tables in resumable, primary-key-ordered chunks while continuously consuming the trigger-based change stream. Watermark reconciliation aligns each chunk with live changes (the log event wins), so the target converges to a **consistent image at the end position** and can keep tracking live — it is not an inconsistent monolithic dump. Use the combined `sync` command for a single-process snapshot plus incremental handoff.
 

@@ -4,7 +4,7 @@ Implementer checklist for wiring each `from *` sync path through
 `sync-transform` (`SourceDriver` / `run_source_runtime` / `write_rows` /
 `write_relations`) and the shared CLI helper in [`src/from/transforms.rs`](../src/from/transforms.rs).
 
-Operator-facing transforms docs stay in [transforms.md](transforms.md).
+Operator-facing sync pipeline docs (including optional transforms) stay in [sync-pipeline.md](sync-pipeline.md).
 
 ## Shared CLI
 

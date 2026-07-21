@@ -4,7 +4,7 @@
 
 This guide covers **trigger-based** sync (`surreal-sync from mysql`) when binlog is not an option: no replication privileges, managed MySQL without binlog access, cannot enable ROW-format binlog, or policy constraints on the source. MariaDB uses the same sub-command; see [Surreal-Sync for MariaDB](mariadb.md).
 
-Apply into SurrealDB goes through the [`sync-transform`](transforms.md) framework (`--transforms-config` optional; omit for identity).
+Apply into SurrealDB goes through the [`sync-transform`](sync-pipeline.md) framework (`--transforms-config` optional; omit for identity).
 
 > **Other strategies:** For the legacy sequential-snapshot workflow (inconsistent monolithic snapshot plus a separate incremental replay from t1), see [MySQL Legacy Full Sync](mysql/legacy.md).
 
