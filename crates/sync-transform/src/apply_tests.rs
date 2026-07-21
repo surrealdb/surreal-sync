@@ -116,16 +116,40 @@ async fn identity_pipeline_commits_track_sink() {
 
 #[tokio::test]
 async fn write_rows_identity_no_stage_dispatch() {
+    // Omit `--transforms-config` → ApplyOpts::identity() (W=1, batch_size=1).
     let pipeline = Pipeline::new();
     assert!(pipeline.is_identity());
     let sink = RecordingSink::new();
-    let opts = ApplyOpts::default();
+    let opts = ApplyOpts::identity();
+    assert_eq!(opts.max_in_flight, 1);
+    assert_eq!(opts.batch_size, 1);
     write_rows(&sink, &pipeline, vec![row(1), row(2)], &opts)
         .await
         .unwrap();
     let written = sink.rows_written();
     assert_eq!(written.len(), 1);
     assert_eq!(written[0].len(), 2);
+    assert!(
+        sink.applied().is_empty(),
+        "identity + W=1 must use bulk write_universal_rows oneshot, not per-change apply"
+    );
+}
+
+#[tokio::test]
+async fn write_rows_identity_windowed_when_max_in_flight_gt_1() {
+    // Identity alone is not enough for oneshot — W>1 forces ApplyContext.
+    let pipeline = Pipeline::new();
+    assert!(pipeline.is_identity());
+    let sink = RecordingSink::new();
+    let opts = ApplyOpts::identity().with_max_in_flight(2).with_batch_size(1);
+    write_rows(&sink, &pipeline, vec![row(1), row(2)], &opts)
+        .await
+        .unwrap();
+    assert_eq!(sink.applied().len(), 2);
+    assert!(
+        sink.rows_written().is_empty(),
+        "identity + W>1 must not take the bulk oneshot path"
+    );
 }
 
 #[tokio::test]

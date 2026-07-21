@@ -59,10 +59,11 @@ impl Default for ApplyOpts {
 impl ApplyOpts {
     /// Apply options for an identity (no-config) sync path.
     ///
-    /// `batch_size = 1` preserves today's per-event apply + commit cadence when
-    /// no `--transforms-config` is set.
+    /// Pins `max_in_flight = 1` and `batch_size = 1` so omit-`--transforms-config`
+    /// keeps per-event CDC cadence and [`crate::write_rows`] / [`crate::write_relations`]
+    /// take the bulk oneshot path (`identity && W ≤ 1`).
     pub fn identity() -> Self {
-        Self::default().with_batch_size(1)
+        Self::default().with_batch_size(1).with_max_in_flight(1)
     }
 
     /// Builder: set in-flight window size (clamped to at least 1).
