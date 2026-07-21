@@ -3509,7 +3509,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -7372,6 +7372,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
 
 [[package]]
+name = "snowflake-jwt"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f1c0c8818bb7400e821b166075ec771c8e8a012af41a8982b34eefaad4739fd"
+dependencies = [
+ "base64 0.22.1",
+ "jsonwebtoken 9.3.1",
+ "rsa",
+ "serde",
+ "sha2 0.10.9",
+ "thiserror 1.0.69",
+ "time",
+]
+
+[[package]]
+name = "snowflake-types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sync-core",
+]
+
+[[package]]
 name = "socket2"
 version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7626,6 +7652,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "snowflake-types",
  "surreal-sink",
  "surreal-sync-csv-source",
  "surreal-sync-interleaved-snapshot",
@@ -7640,6 +7667,7 @@ dependencies = [
  "surreal-sync-postgresql-pgoutput-source",
  "surreal-sync-postgresql-trigger-source",
  "surreal-sync-postgresql-wal2json-source",
+ "surreal-sync-snowflake-source",
  "surreal-version",
  "surreal2-sink",
  "surreal2-types",
@@ -8028,6 +8056,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "surreal-sync-snowflake-source"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest 0.12.20",
+ "serde",
+ "serde_json",
+ "snowflake-jwt",
+ "snowflake-types",
+ "surreal-sink",
+ "sync-core",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
