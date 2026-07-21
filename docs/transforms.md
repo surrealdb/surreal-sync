@@ -10,7 +10,7 @@ Source (CDC / snapshot)  →  optional transform stages  →  SurrealDB
 
 surreal-sync still owns batching, applying docs to SurrealDB, and when the source checkpoint may advance. Your transform worker only sees batches of documents (or changes) and returns transformed batches. A successful worker response is **not** durability — the checkpoint advances only after SurrealDB apply succeeds.
 
-## What you can do today (v1)
+## What you can do today
 
 | Capability | Status |
 |------------|--------|
