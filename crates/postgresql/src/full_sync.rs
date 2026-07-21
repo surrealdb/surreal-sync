@@ -92,12 +92,20 @@ pub async fn convert_table(
     Ok((row_batch, rel_batch))
 }
 
-/// Migrate a single table from PostgreSQL to SurrealDB.
+/// Migrate a single table from PostgreSQL to SurrealDB through the transform
+/// Framework (`write_rows` / `write_relations`).
 ///
 /// When `schema` is provided and the table has foreign keys, FK column values
 /// are automatically converted to SurrealDB record links.  If the table is
 /// classified as a relation (join) table, rows are synced as graph edges
 /// via `RELATE` instead of regular records.
+///
+/// Prefer a source `run_full_sync_with_transforms` entrypoint (keyset /
+/// `RowChunkDriver`) for production syncs — this helper still loads the whole
+/// table via [`convert_table`] before applying.
+#[deprecated(
+    note = "prefer run_full_sync_with_transforms / convert_table + write_rows; this loads the whole table then applies through the Framework"
+)]
 pub async fn migrate_table<S: SurrealSink>(
     client: &Client,
     surreal: &S,
@@ -112,54 +120,24 @@ pub async fn migrate_table<S: SurrealSink>(
         return Ok(0);
     }
 
-    let mut total_processed = 0;
-    let mut row_batch = Vec::new();
-    let mut rel_batch = Vec::new();
-
-    for record in rows {
-        row_batch.push(record);
-        if row_batch.len() >= sync_opts.batch_size {
-            let n = row_batch.len();
-            if !sync_opts.dry_run {
-                surreal.write_universal_rows(&row_batch).await?;
-            } else {
-                debug!("Dry-run: Would insert {n} records into {table_name}");
-            }
-            total_processed += n;
-            row_batch.clear();
-        }
-    }
-    for relation in relations {
-        rel_batch.push(relation);
-        if rel_batch.len() >= sync_opts.batch_size {
-            let n = rel_batch.len();
-            if !sync_opts.dry_run {
-                surreal.write_universal_relations(&rel_batch).await?;
-            } else {
-                debug!("Dry-run: Would insert {n} relations into {table_name}");
-            }
-            total_processed += n;
-            rel_batch.clear();
-        }
+    let total_processed = rows.len() + relations.len();
+    if sync_opts.dry_run {
+        debug!(
+            "Dry-run: Would insert {} records / {} relations into {table_name}",
+            rows.len(),
+            relations.len()
+        );
+        return Ok(total_processed);
     }
 
-    if !row_batch.is_empty() {
-        let n = row_batch.len();
-        if !sync_opts.dry_run {
-            surreal.write_universal_rows(&row_batch).await?;
-        } else {
-            debug!("Dry-run: Would insert {n} records into {table_name}");
-        }
-        total_processed += n;
+    let pipeline = sync_transform::Pipeline::new();
+    let apply_opts =
+        sync_transform::ApplyOpts::identity().with_batch_size(sync_opts.batch_size.max(1));
+    if !rows.is_empty() {
+        sync_transform::write_rows(surreal, &pipeline, rows, &apply_opts).await?;
     }
-    if !rel_batch.is_empty() {
-        let n = rel_batch.len();
-        if !sync_opts.dry_run {
-            surreal.write_universal_relations(&rel_batch).await?;
-        } else {
-            debug!("Dry-run: Would insert {n} relations into {table_name}");
-        }
-        total_processed += n;
+    if !relations.is_empty() {
+        sync_transform::write_relations(surreal, &pipeline, relations, &apply_opts).await?;
     }
 
     Ok(total_processed)
@@ -187,9 +165,10 @@ pub struct TableChunk {
 /// rows are returned.
 ///
 /// When `schema` is provided and the table has foreign keys, foreign-key column
-/// values are converted to SurrealDB record links, matching `migrate_table`.
+/// values are converted to SurrealDB record links, matching [`convert_table`] /
+/// the Framework full-sync path.
 ///
-/// This is an additive, chunked alternative to `migrate_table`; it does not
+/// This is an additive, chunked alternative to loading a whole table; it does not
 /// write to a sink and does not handle relation (join) tables.
 pub async fn read_table_chunk(
     client: &Client,

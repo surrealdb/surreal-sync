@@ -84,44 +84,52 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
-    // --- Run full sync using migrate_table directly ---
+    // --- Framework full sync (RowChunkDriver + write path) ---
+    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
+        source_uri: test_conn_str.clone(),
+        source_database: Some(format!("test_{test_id}")),
+        tables: vec![],
+        relation_tables: vec![],
+    };
     let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: 1000,
         dry_run: false,
     };
-
-    let tables = vec!["authors", "tags", "books", "book_tags"];
+    let pipeline = sync_transform::Pipeline::new();
+    let apply_opts = sync_transform::ApplyOpts::identity();
 
     match &conn {
         SurrealConnection::V2(client) => {
             let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            for table_name in &tables {
-                surreal_sync_postgresql::migrate_table(
-                    &pg_client,
-                    &sink,
-                    table_name,
-                    &sync_opts,
-                    Some(&db_schema),
-                    &[],
-                )
-                .await?;
-            }
+            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+                &pipeline,
+                &apply_opts,
+            )
+            .await?;
 
             verify_fk_sync_v2(client).await?;
         }
         SurrealConnection::V3(client) => {
             let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            for table_name in &tables {
-                surreal_sync_postgresql::migrate_table(
-                    &pg_client,
-                    &sink,
-                    table_name,
-                    &sync_opts,
-                    Some(&db_schema),
-                    &[],
-                )
-                .await?;
-            }
+            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+                &pipeline,
+                &apply_opts,
+            )
+            .await?;
 
             verify_fk_sync_v3(client).await?;
         }
@@ -274,33 +282,37 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
         )
         .await?;
 
-    let db_schema =
-        surreal_sync_postgresql::schema::collect_database_schema_with_fks(&pg_client).await?;
-
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
+    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
+        source_uri: test_conn_str.clone(),
+        source_database: Some(format!("test_{test_id}")),
+        tables: vec![],
+        relation_tables: vec!["mentorship".to_string()],
+    };
     let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: 1000,
         dry_run: false,
     };
-
-    let relation_overrides = vec!["mentorship".to_string()];
+    let pipeline = sync_transform::Pipeline::new();
+    let apply_opts = sync_transform::ApplyOpts::identity();
 
     match &conn {
         SurrealConnection::V2(client) => {
             let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            for table_name in &["people", "mentorship"] {
-                surreal_sync_postgresql::migrate_table(
-                    &pg_client,
-                    &sink,
-                    table_name,
-                    &sync_opts,
-                    Some(&db_schema),
-                    &relation_overrides,
-                )
-                .await?;
-            }
+            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+                &pipeline,
+                &apply_opts,
+            )
+            .await?;
 
             // mentorship should now be graph edges
             let mut resp = client
@@ -327,17 +339,19 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
         }
         SurrealConnection::V3(client) => {
             let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            for table_name in &["people", "mentorship"] {
-                surreal_sync_postgresql::migrate_table(
-                    &pg_client,
-                    &sink,
-                    table_name,
-                    &sync_opts,
-                    Some(&db_schema),
-                    &relation_overrides,
-                )
-                .await?;
-            }
+            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(
+                &sink,
+                source_opts,
+                sync_opts,
+                None,
+                &pipeline,
+                &apply_opts,
+            )
+            .await?;
+
 
             use surrealdb3::types::Value;
 

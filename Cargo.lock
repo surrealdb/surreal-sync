@@ -7929,6 +7929,7 @@ dependencies = [
  "serde_json",
  "surreal-sink",
  "sync-core",
+ "sync-transform",
  "tokio",
  "tokio-postgres",
  "tracing",

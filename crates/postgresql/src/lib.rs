@@ -16,6 +16,7 @@ pub mod testing;
 
 pub use autoconf::get_user_tables;
 pub use client::new_postgresql_client;
+#[allow(deprecated)]
 pub use full_sync::{
     convert_table, get_primary_key_columns, migrate_table, read_offset_relation_chunk,
     read_offset_table_chunk, read_relation_chunk, read_table_chunk, RelationChunk, SyncOpts,
