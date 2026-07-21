@@ -1,13 +1,16 @@
-//! Finite row-chunk streams for full-sync / keyset table scans.
+//! Finite row/relation chunk streams for full-sync / keyset table scans.
 //!
-//! Unlike oneshot [`crate::write_rows`] per chunk, a [`RowChunkDriver`] fed to
+//! Unlike oneshot [`crate::write_rows`] / [`crate::write_relations`] per chunk,
+//! a [`RowChunkDriver`] / [`RelationChunkDriver`] fed to
 //! [`crate::run_source_runtime`] keeps one apply window alive across chunks so
-//! the next keyset read can overlap prior-chunk transform/sink when
+//! the next read can overlap prior-chunk transform/sink when
 //! `max_in_flight > 1`.
 
 use anyhow::Result;
 use async_trait::async_trait;
-use sync_core::{UniversalChange, UniversalRow};
+use sync_core::{
+    UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow,
+};
 
 use super::event::PositionedEvent;
 use super::source_driver::{CheckpointPolicy, SourceDriver};
@@ -87,6 +90,90 @@ where
 
     async fn commit(&mut self, _position: Self::Position) -> Result<()> {
         // File / keyset scans have no durable mid-run cursor.
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn checkpoint_policy(&self) -> CheckpointPolicy {
+        CheckpointPolicy::CommitOnly
+    }
+
+    fn note_sunk_events(&mut self, count: u64) {
+        self.sunk_count = self.sunk_count.saturating_add(count);
+    }
+}
+
+/// Produces successive relation chunks until the scan is exhausted.
+#[async_trait]
+pub trait RelationChunkSource: Send {
+    async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRelation>>>;
+}
+
+/// Long-lived [`SourceDriver`] over a [`RelationChunkSource`].
+///
+/// Same windowing model as [`RowChunkDriver`], emitting relation upserts.
+pub struct RelationChunkDriver<C> {
+    source: C,
+    next_index: u64,
+    sunk_count: u64,
+    finished: bool,
+}
+
+impl<C> RelationChunkDriver<C> {
+    /// Wrap a relation chunk source.
+    pub fn new(source: C) -> Self {
+        Self {
+            source,
+            next_index: 0,
+            sunk_count: 0,
+            finished: false,
+        }
+    }
+
+    /// Relations successfully sunk (pre-transform input count).
+    pub fn sunk_count(&self) -> u64 {
+        self.sunk_count
+    }
+}
+
+#[async_trait]
+impl<C> SourceDriver for RelationChunkDriver<C>
+where
+    C: RelationChunkSource,
+{
+    type Position = u64;
+
+    async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
+        if self.finished {
+            return Ok(Vec::new());
+        }
+
+        match self.source.next_chunk().await? {
+            None => {
+                self.finished = true;
+                Ok(Vec::new())
+            }
+            Some(rels) if rels.is_empty() => {
+                self.finished = true;
+                Ok(Vec::new())
+            }
+            Some(mut rels) => {
+                let mut events = Vec::with_capacity(rels.len());
+                for relation in rels.drain(..) {
+                    let pos = self.next_index;
+                    self.next_index = self.next_index.saturating_add(1);
+                    let change = UniversalRelationChange::update(relation);
+                    events.push(PositionedEvent::relation_change(change, pos));
+                }
+                Ok(events)
+            }
+        }
+    }
+
+    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
         Ok(())
     }
 

@@ -52,7 +52,8 @@ pub use apply::{
     write_relations, write_relations_with, write_rows, write_rows_with, AdhocApply, ApplyContext,
     ApplyEvent, ApplyOpts, BatchTransformer, ChangeFeed, ChangeFeedDriver, ChangeFeedRef,
     CheckpointPolicy, ControlSignal, FailurePolicy, PositionedChange, PositionedEvent,
-    RowChunkDriver, RowChunkSource, RuntimeExit, SourceDriver, SourceRuntimeOpts, StopReason,
+    RelationChunkDriver, RelationChunkSource, RowChunkDriver, RowChunkSource, RuntimeExit,
+    SourceDriver, SourceRuntimeOpts, StopReason,
 };
 pub use config::{
     ensure_command_resolvable, load_pipeline_and_opts, load_transforms_config, parse_humantime,
