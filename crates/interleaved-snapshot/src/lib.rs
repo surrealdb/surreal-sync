@@ -22,10 +22,12 @@
 //! - **Bounded retention**: [`WatermarkSource::commit_reconciled`] is called as
 //!   the stream is applied, so the source can free change-log data continuously
 //!   instead of pinning it for the whole snapshot.
-//! - **Overlapping transforms**: reconciliation events (and the surviving chunk
-//!   flush) share one long-lived [`sync_transform::ApplyContext`] so
-//!   `max_in_flight > 1` can hide slow transforms; progress is saved only after
-//!   that window drains.
+//! - **Overlapping transforms and R∩W**: reconciliation events and surviving
+//!   chunk rows share one long-lived [`sync_transform::run_source_runtime`]
+//!   apply window across chunks, so `max_in_flight > 1` can hide slow
+//!   transforms and keep polling while ordered sink applies run. Progress /
+//!   [`WatermarkSource::commit_reconciled`] are saved only after each chunk's
+//!   events are sink-safe.
 
 mod checkpointer;
 mod runner;

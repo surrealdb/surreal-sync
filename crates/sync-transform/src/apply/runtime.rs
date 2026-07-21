@@ -980,9 +980,11 @@ where
             match batch.result {
                 Ok(events) => match self.apply_sink_events(&events).await {
                     Ok(()) => {
+                        // Pre-transform input count (same as drain_ordered_driver)
+                        // so filter/fan-out cannot under/over-count sunk_since_take.
                         last = Some(self.finish_sink_ok_no_commit(
                             batch.last_position,
-                            events.len() as u64,
+                            batch.event_count,
                         ));
                     }
                     Err(e) => {

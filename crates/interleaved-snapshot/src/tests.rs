@@ -32,10 +32,11 @@ struct MockSink {
 
 #[derive(Default)]
 struct MockSinkState {
-    /// (table, id) of every row flushed via `write_universal_rows` (snapshot
-    /// reads that survived dedup).
+    /// (table, id) of every row written via `write_universal_rows`.
     upserts: Vec<(String, UniversalValue)>,
-    /// (op, table, id) of every applied change-stream event.
+    /// (op, table, id) of every applied change-stream / buffer event.
+    /// Surviving snapshot rows are applied as [`UniversalChangeOp::Update`]
+    /// through the shared `run_source_runtime` window (same path as CDC).
     changes: Vec<(UniversalChangeOp, String, UniversalValue)>,
 }
 
@@ -292,16 +293,14 @@ async fn window_dedup_lets_log_event_win() {
         .await
         .unwrap();
 
-    // Only the unchanged row 1 is flushed from the snapshot buffer.
-    let upserts = sink.upserts();
-    assert_eq!(upserts.len(), 1, "expected only row 1 flushed: {upserts:?}");
-    assert_eq!(upserts[0].0, "users");
-    assert_eq!(upserts[0].1.as_i64(), Some(1));
-
-    // All three data changes are applied; watermark rows are never applied.
+    // Surviving buffer row 1 is applied as Update through the shared window;
+    // CDC events for 2/3/4 are applied as-is. Watermark rows are never applied.
     let changes = sink.changes();
-    assert_eq!(changes.len(), 3, "unexpected changes: {changes:?}");
+    assert_eq!(changes.len(), 4, "unexpected changes: {changes:?}");
     assert!(changes.iter().all(|(_, table, _)| table == "users"));
+    assert!(changes
+        .iter()
+        .any(|(op, _, id)| *op == UniversalChangeOp::Update && id.as_i64() == Some(1)));
     assert!(changes
         .iter()
         .any(|(op, _, id)| *op == UniversalChangeOp::Update && id.as_i64() == Some(2)));
@@ -311,6 +310,7 @@ async fn window_dedup_lets_log_event_win() {
     assert!(changes
         .iter()
         .any(|(op, _, id)| *op == UniversalChangeOp::Create && id.as_i64() == Some(4)));
+    assert!(sink.upserts().is_empty());
 
     // The chunk held exactly the three read rows at its peak.
     assert_eq!(result.peak_buffered_rows, 3);
@@ -330,13 +330,17 @@ async fn unchanged_keys_are_emitted_from_buffer() {
         .unwrap();
 
     let mut ids: Vec<i64> = sink
-        .upserts()
+        .changes()
         .into_iter()
-        .filter_map(|(_, id)| id.as_i64())
+        .filter_map(|(op, _, id)| {
+            (op == UniversalChangeOp::Update)
+                .then(|| id.as_i64())
+                .flatten()
+        })
         .collect();
     ids.sort_unstable();
     assert_eq!(ids, vec![1, 2, 3, 4, 5]);
-    assert!(sink.changes().is_empty());
+    assert!(sink.upserts().is_empty());
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +357,12 @@ async fn peak_for_table_size(total_rows: i64) -> (usize, usize) {
     let result = run_interleaved_snapshot(&mut source, &sink, &config, &mut checkpointer)
         .await
         .unwrap();
-    (result.peak_buffered_rows, sink.upserts().len())
+    let written = sink
+        .changes()
+        .iter()
+        .filter(|(op, _, _)| *op == UniversalChangeOp::Update)
+        .count();
+    (result.peak_buffered_rows, written)
 }
 
 #[tokio::test]
