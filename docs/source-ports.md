@@ -36,9 +36,9 @@ spawn coverage is in `sync-transform` config tests).
 | mysql (trigger) | SourceDriver | Yes (shared loader + CLI e2e) | Yes | No DDL / ad-hoc (unchanged gap) |
 | mongodb | SourceDriver + `write_rows` full | Yes (shared loader + CLI e2e) | N/A | Resume token as Position |
 | neo4j | SourceDriver + `write_rows` / `write_relations` | Yes (shared loader + CLI e2e) | N/A | Nodes + edges via mixed events |
-| kafka | `write_rows` (decode batch then apply) | Yes (shared loader + CLI e2e) | N/A | Offset commit stays Kafka consumer-group |
-| csv | `write_rows` | Yes (shared loader + CLI e2e) | N/A | |
-| jsonl | `write_rows` | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline |
+| kafka | SourceDriver + `run_source_runtime` | Yes (shared loader + CLI e2e) | N/A | Offset commit after sink; unique per-message indices |
+| csv | SourceDriver + `run_source_runtime` | Yes (shared loader + CLI e2e) | N/A | Poll chunk = CSV `batch_size` |
+| jsonl | SourceDriver + `run_source_runtime` | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline |
 
 ## Implementer checklist (all ports)
 
@@ -47,8 +47,10 @@ spawn coverage is in `sync-transform` config tests).
 - [x] Streaming CDC sources implement `SourceDriver` and call
       `run_source_runtime` / `run_source_runtime_with` (no production hand-rolled
       `ApplyContext` loops; do not use `ChangeFeed` for production ports)
-- [x] File batch importers (csv, jsonl) use `write_rows` only
-- [x] Kafka: decode each fetch batch, then apply once via `write_rows`
+- [x] File batch importers (csv, jsonl) use `SourceDriver` + `run_source_runtime`
+      (poll chunks into events; runtime owns `max_in_flight`)
+- [x] Kafka: `SourceDriver` polls/decodes into `PositionedEvent`s; offset commit
+      only after sink
 - [x] Neo4j: nodes and edges through one `SourceDriver` emitting mixed
       `PositionedEvent`s
 - [x] wal2json / postgresql-trigger: FK transforms as source-side pre-push
@@ -86,9 +88,9 @@ spawn coverage is in `sync-transform` config tests).
    `run_source_runtime` / `run_source_runtime_with` — no production
    hand-rolled `ApplyContext` loops after port; do not use `ChangeFeed`
    for production ports.
-2. File batch importers (csv, jsonl) use `write_rows` only. Kafka is a
-   continuous stream consumer: decode each fetch batch, then apply once
-   via `write_rows` (not a file batch importer).
+2. File batch importers (csv, jsonl) and Kafka use `SourceDriver` +
+   `run_source_runtime` so `max_in_flight` windowing applies. Kafka commits
+   consumer-group offsets only after sink success.
 3. Every WatermarkSource consumer gets transform-aware interleaved /
    ad-hoc entrypoints and threads `Pipeline` / `ApplyOpts` from CLI.
 4. Identity (omit `--transforms-config`) must stay green; add at least one

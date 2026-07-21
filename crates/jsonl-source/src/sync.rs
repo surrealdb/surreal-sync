@@ -12,7 +12,10 @@ use surreal_sync_file::{FileSource, DEFAULT_BUFFER_SIZE};
 use sync_core::{
     DatabaseSchema, TableDefinition, TypedValue, UniversalRow, UniversalType, UniversalValue,
 };
-use sync_transform::{write_rows, ApplyOpts, Pipeline};
+use sync_transform::{
+    run_source_runtime, ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver,
+    SourceRuntimeOpts,
+};
 
 /// Source database connection options (JSONL-specific)
 #[derive(Clone, Debug)]
@@ -66,6 +69,124 @@ impl Default for Config {
             schema: None,
         }
     }
+}
+
+/// Apply a decoded JSONL batch through [`SourceDriver`] + [`run_source_runtime`].
+async fn flush_jsonl_batch<S: SurrealSink>(
+    surreal: &S,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+    batch: &mut Vec<UniversalRow>,
+    dry_run: bool,
+    poll_chunk: usize,
+) -> Result<usize> {
+    if batch.is_empty() {
+        return Ok(0);
+    }
+    let len = batch.len();
+    let rows = std::mem::take(batch);
+    if dry_run {
+        let sink = DryRunSink;
+        apply_rows_through_runtime(&sink, pipeline, apply_opts, rows, poll_chunk).await?;
+    } else {
+        apply_rows_through_runtime(surreal, pipeline, apply_opts, rows, poll_chunk).await?;
+    }
+    Ok(len)
+}
+
+struct DryRunSink;
+
+#[async_trait::async_trait]
+impl SurrealSink for DryRunSink {
+    async fn write_universal_rows(&self, _rows: &[UniversalRow]) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_universal_relations(
+        &self,
+        _relations: &[sync_core::UniversalRelation],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn apply_universal_change(&self, _change: &sync_core::UniversalChange) -> Result<()> {
+        Ok(())
+    }
+
+    async fn apply_universal_relation_change(
+        &self,
+        _change: &sync_core::UniversalRelationChange,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+struct RowChunkDriver {
+    remaining: Vec<UniversalRow>,
+    poll_chunk: usize,
+    next_pos: u64,
+}
+
+impl RowChunkDriver {
+    fn new(rows: Vec<UniversalRow>, poll_chunk: usize) -> Self {
+        Self {
+            remaining: rows,
+            poll_chunk: poll_chunk.max(1),
+            next_pos: 0,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceDriver for RowChunkDriver {
+    type Position = u64;
+
+    async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
+        if self.remaining.is_empty() {
+            return Ok(Vec::new());
+        }
+        let n = self.poll_chunk.min(self.remaining.len());
+        let chunk: Vec<UniversalRow> = self.remaining.drain(..n).collect();
+        let mut events = Vec::with_capacity(chunk.len());
+        for row in chunk {
+            let pos = self.next_pos;
+            self.next_pos = self.next_pos.saturating_add(1);
+            let change = sync_core::UniversalChange::update(row.table, row.id, row.fields);
+            events.push(PositionedEvent::change(change, pos));
+        }
+        Ok(events)
+    }
+
+    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.remaining.is_empty()
+    }
+
+    fn checkpoint_policy(&self) -> CheckpointPolicy {
+        CheckpointPolicy::CommitOnly
+    }
+}
+
+async fn apply_rows_through_runtime<S: SurrealSink>(
+    sink: &S,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+    rows: Vec<UniversalRow>,
+    poll_chunk: usize,
+) -> Result<()> {
+    let mut driver = RowChunkDriver::new(rows, poll_chunk);
+    run_source_runtime(
+        &mut driver,
+        sink,
+        pipeline,
+        apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Process JSONL data from a reader and import into SurrealDB
@@ -151,18 +272,15 @@ async fn process_jsonl_reader<S: SurrealSink>(
 
         // Process batch when it reaches the batch size
         if batch.len() >= config.batch_size {
-            let batch_len = batch.len();
-            if !config.dry_run {
-                write_rows(
-                    surreal,
-                    pipeline,
-                    std::mem::take(&mut batch),
-                    apply_opts,
-                )
-                .await?;
-            } else {
-                batch.clear();
-            }
+            let batch_len = flush_jsonl_batch(
+                surreal,
+                pipeline,
+                apply_opts,
+                &mut batch,
+                config.dry_run,
+                config.batch_size,
+            )
+            .await?;
             total_migrated += batch_len;
             tracing::debug!("Migrated batch of {batch_len} documents");
         }
@@ -170,10 +288,15 @@ async fn process_jsonl_reader<S: SurrealSink>(
 
     // Process remaining documents
     if !batch.is_empty() {
-        let final_len = batch.len();
-        if !config.dry_run {
-            write_rows(surreal, pipeline, batch, apply_opts).await?;
-        }
+        let final_len = flush_jsonl_batch(
+            surreal,
+            pipeline,
+            apply_opts,
+            &mut batch,
+            config.dry_run,
+            config.batch_size,
+        )
+        .await?;
         total_migrated += final_len;
         tracing::debug!("Migrated final batch of {final_len} documents");
     }
@@ -205,7 +328,7 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
     sync_with_transforms(surreal, config, &pipeline, &apply_opts).await
 }
 
-/// Sync JSONL files through the transform framework via [`write_rows`].
+/// Sync JSONL files through [`SourceDriver`] + [`run_source_runtime`].
 ///
 /// [`Config::conversion_rules`] still run while decoding each line into a
 /// [`UniversalRow`], before any Pipeline stages.
@@ -225,6 +348,7 @@ pub async fn sync_with_transforms<S: SurrealSink>(
     } else {
         tracing::info!(
             stages = pipeline.len(),
+            max_in_flight = apply_opts.max_in_flight,
             "JSONL sync using transform pipeline"
         );
     }

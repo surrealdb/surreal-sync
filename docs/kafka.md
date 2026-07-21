@@ -69,7 +69,7 @@ surreal-sync from kafka \
 | `--buffer-size <SIZE>` | 1000 | Maximum decoded protobuf messages held in internal peek buffer |
 | `--session-timeout-ms <MS>` | "30000" | Kafka session timeout in milliseconds |
 | `--num-consumers <COUNT>` | 1 | Number of consumers in the consumer group to spawn |
-| `--kafka-batch-size <COUNT>` | 100 | Number of decoded protobuf messages to fetch and process per batch |
+| `--kafka-batch-size <COUNT>` | 100 | Messages to fetch per Kafka poll into the apply window (`max_in_flight` / transform `batch_size` still apply). Offsets commit only after sink. |
 
 ### SASL Authentication
 

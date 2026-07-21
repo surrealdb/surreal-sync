@@ -9,7 +9,10 @@ use std::path::PathBuf;
 use surreal_sink::SurrealSink;
 use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};
 use sync_core::{Schema, TypedValue, UniversalRow, UniversalType, UniversalValue};
-use sync_transform::{write_rows, ApplyOpts, Pipeline};
+use sync_transform::{
+    run_source_runtime, ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver,
+    SourceRuntimeOpts,
+};
 use tracing::{debug, info, warn};
 
 /// Configuration for CSV import
@@ -100,7 +103,7 @@ fn parse_value_with_schema(value: &str, schema_type: Option<&UniversalType>) -> 
     }
 }
 
-/// Flush a decoded CSV batch through [`write_rows`] (or skip when dry-run).
+/// Apply decoded CSV rows through [`SourceDriver`] + [`run_source_runtime`].
 async fn flush_csv_batch<S: SurrealSink>(
     surreal: &S,
     pipeline: &Pipeline,
@@ -108,21 +111,122 @@ async fn flush_csv_batch<S: SurrealSink>(
     batch: &mut Vec<UniversalRow>,
     dry_run: bool,
     metrics_collector: Option<&super::metrics::MetricsCollector>,
+    poll_chunk: usize,
 ) -> Result<usize> {
     if batch.is_empty() {
         return Ok(0);
     }
     let len = batch.len();
-    if !dry_run {
-        write_rows(surreal, pipeline, std::mem::take(batch), apply_opts).await?;
-    } else {
+    let rows = std::mem::take(batch);
+    if dry_run {
         debug!("Dry run: Would insert batch of {len} records");
-        batch.clear();
+        let sink = DryRunSink;
+        apply_rows_through_runtime(&sink, pipeline, apply_opts, rows, poll_chunk).await?;
+    } else {
+        apply_rows_through_runtime(surreal, pipeline, apply_opts, rows, poll_chunk).await?;
     }
     if let Some(collector) = metrics_collector {
         collector.add_rows(len as u64);
     }
     Ok(len)
+}
+
+/// No-op sink for CSV `--dry-run` (still exercises the apply window).
+struct DryRunSink;
+
+#[async_trait::async_trait]
+impl SurrealSink for DryRunSink {
+    async fn write_universal_rows(&self, _rows: &[UniversalRow]) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_universal_relations(
+        &self,
+        _relations: &[sync_core::UniversalRelation],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn apply_universal_change(&self, _change: &sync_core::UniversalChange) -> Result<()> {
+        Ok(())
+    }
+
+    async fn apply_universal_relation_change(
+        &self,
+        _change: &sync_core::UniversalRelationChange,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// SourceDriver that emits upsert changes from a finite row buffer in chunks.
+struct RowChunkDriver {
+    remaining: Vec<UniversalRow>,
+    /// Rows per poll_work (CSV `batch_size`); runtime windows by ApplyOpts.
+    poll_chunk: usize,
+    next_pos: u64,
+}
+
+impl RowChunkDriver {
+    fn new(rows: Vec<UniversalRow>, poll_chunk: usize) -> Self {
+        Self {
+            remaining: rows,
+            poll_chunk: poll_chunk.max(1),
+            next_pos: 0,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceDriver for RowChunkDriver {
+    type Position = u64;
+
+    async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
+        if self.remaining.is_empty() {
+            return Ok(Vec::new());
+        }
+        let n = self.poll_chunk.min(self.remaining.len());
+        let chunk: Vec<UniversalRow> = self.remaining.drain(..n).collect();
+        let mut events = Vec::with_capacity(chunk.len());
+        for row in chunk {
+            let pos = self.next_pos;
+            self.next_pos = self.next_pos.saturating_add(1);
+            let change = sync_core::UniversalChange::update(row.table, row.id, row.fields);
+            events.push(PositionedEvent::change(change, pos));
+        }
+        Ok(events)
+    }
+
+    async fn commit(&mut self, _position: Self::Position) -> Result<()> {
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.remaining.is_empty()
+    }
+
+    fn checkpoint_policy(&self) -> CheckpointPolicy {
+        CheckpointPolicy::CommitOnly
+    }
+}
+
+async fn apply_rows_through_runtime<S: SurrealSink>(
+    sink: &S,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+    rows: Vec<UniversalRow>,
+    poll_chunk: usize,
+) -> Result<()> {
+    let mut driver = RowChunkDriver::new(rows, poll_chunk);
+    run_source_runtime(
+        &mut driver,
+        sink,
+        pipeline,
+        apply_opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Process CSV data from a reader and import into SurrealDB
@@ -244,6 +348,7 @@ async fn process_csv_reader<S: SurrealSink>(
                     &mut batch,
                     config.dry_run,
                     metrics_collector,
+                    config.batch_size,
                 )
                 .await?;
             }
@@ -257,6 +362,7 @@ async fn process_csv_reader<S: SurrealSink>(
             &mut batch,
             config.dry_run,
             metrics_collector,
+            config.batch_size,
         )
         .await?;
 
@@ -340,6 +446,7 @@ async fn process_csv_reader<S: SurrealSink>(
                 &mut batch,
                 config.dry_run,
                 metrics_collector,
+                config.batch_size,
             )
             .await?;
         }
@@ -353,6 +460,7 @@ async fn process_csv_reader<S: SurrealSink>(
         &mut batch,
         config.dry_run,
         metrics_collector,
+        config.batch_size,
     )
     .await?;
 
@@ -380,7 +488,10 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
     sync_with_transforms(surreal, config, &pipeline, &apply_opts).await
 }
 
-/// Sync CSV files through the transform framework via [`write_rows`].
+/// Sync CSV files through [`SourceDriver`] + [`run_source_runtime`].
+///
+/// Each CSV poll chunk (`Config::batch_size`) is decoded to upsert changes; the
+/// transform runtime owns `max_in_flight` windowing.
 pub async fn sync_with_transforms<S: SurrealSink>(
     surreal: &S,
     config: Config,
@@ -402,6 +513,7 @@ pub async fn sync_with_transforms<S: SurrealSink>(
     } else {
         info!(
             stages = pipeline.len(),
+            max_in_flight = apply_opts.max_in_flight,
             "CSV sync using transform pipeline"
         );
     }

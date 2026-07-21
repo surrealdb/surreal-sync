@@ -40,9 +40,9 @@ Every sync/import path below loads the same TOML via the shared CLI helper and a
 | `from mysql full` / `incremental` / `sync` | Trigger snapshot, stream, and interleaved `sync` (also MariaDB via the same subcommand) |
 | `from mongodb full` / `incremental` | Collection dump + change stream |
 | `from neo4j full` / `incremental` | Nodes and relationships |
-| `from kafka` | Decode batch then apply |
-| `from csv` | File / S3 import |
-| `from jsonl` | File import (`conversion_rules` run before Pipeline stages) |
+| `from kafka` | SourceDriver window (offset commit after sink) |
+| `from csv` | SourceDriver window |
+| `from jsonl` | SourceDriver window (`conversion_rules` before Pipeline) |
 
 ## CLI quick start
 
@@ -146,7 +146,7 @@ Prefer `persistent` for real enrichment (avoids per-batch process startup). `tra
 
 - **`batch_size` / `batch_max_wait`** — how large a batch becomes before transform starts. Larger batches amortize worker overhead; smaller batches reduce latency.
 - **`timeout`** — how long one transform exchange may take. On timeout the batch fails (see failure policy).
-- **`max_in_flight`** — window size for concurrent transforms (default `1`). W=1 and W=16 share the **same** apply runtime: surreal-sync may transform several batches at once, match completions by `batch_id`, then **sink apply and source commit stay strictly ordered**. A failed batch blocks commit of later ones; in-flight successors are discarded (never committed).
+- **`max_in_flight`** — apply window size (default `1`). W=1 and W=16 share the **same** runtime: surreal-sync may transform several batches at once and continue polling while ordered sink writes are in flight; completions match by `batch_id`, then **sink apply and source commit stay strictly ordered**. A failed batch blocks commit of later ones; in-flight successors are discarded (never committed).
 
 Tune `max_in_flight` like batch size for latency hiding under a slow worker. Reliability rules do not change with W.
 

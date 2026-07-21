@@ -27,6 +27,15 @@ impl CaptureSink {
     }
 }
 
+fn change_to_row(change: &UniversalChange, index: u64) -> UniversalRow {
+    UniversalRow::new(
+        change.table.clone(),
+        index,
+        change.id.clone(),
+        change.data.clone().unwrap_or_default(),
+    )
+}
+
 #[async_trait::async_trait]
 impl SurrealSink for CaptureSink {
     async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
@@ -42,7 +51,11 @@ impl SurrealSink for CaptureSink {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, _change: &UniversalChange) -> anyhow::Result<()> {
+    async fn apply_universal_change(&self, change: &UniversalChange) -> anyhow::Result<()> {
+        let mut rows = self.rows.lock().expect("lock");
+        let index = rows.len() as u64;
+        rows.push(change_to_row(change, index));
+        self.rows_written.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -119,7 +132,7 @@ async fn identity_sync_writes_rows() {
 }
 
 #[tokio::test]
-async fn external_mutate_rewrites_name_through_write_rows() {
+async fn external_mutate_rewrites_name_through_source_driver() {
     let worker = ensure_fixture_worker();
     let mut temp_file = NamedTempFile::new().unwrap();
     writeln!(temp_file, "id,name,age").unwrap();
@@ -144,7 +157,7 @@ async fn external_mutate_rewrites_name_through_write_rows() {
         )
         .expect("spawn mutate worker"),
     );
-    let apply_opts = ApplyOpts::identity().with_batch_size(10);
+    let apply_opts = ApplyOpts::identity().with_batch_size(10).with_max_in_flight(2);
 
     let sink = CaptureSink::new();
     sync_with_transforms(&sink, config, &pipeline, &apply_opts)

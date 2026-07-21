@@ -51,7 +51,7 @@ surreal-sync csv \
 | `--has-headers` | Whether CSV has headers | `true` |
 | `--delimiter` | CSV delimiter character | `,` |
 | `--id-field` | Field to use as record ID | auto-generated |
-| `--batch-size` | Records per batch | `1000` |
+| `--batch-size` | Records per poll into the apply window | `1000` |
 | `--dry-run` | Test without writing | `false` |
 
 ## Data Type Handling

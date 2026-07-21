@@ -1,5 +1,5 @@
 //! Transform pipeline e2e for Kafka source (identity path stays in
-//! `incremental_sync_lib`; this file covers external mutate via write_rows).
+//! `incremental_sync_lib`; this file covers external mutate via SourceDriver).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -17,21 +17,20 @@ use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, Pipeline};
 use tokio::time::sleep;
 
 struct CaptureSink {
-    rows: Mutex<Vec<UniversalRow>>,
+    changes: Mutex<Vec<UniversalChange>>,
 }
 
 impl CaptureSink {
     fn new() -> Self {
         Self {
-            rows: Mutex::new(Vec::new()),
+            changes: Mutex::new(Vec::new()),
         }
     }
 }
 
 #[async_trait::async_trait]
 impl SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
-        self.rows.lock().expect("lock").extend(rows.iter().cloned());
+    async fn write_universal_rows(&self, _rows: &[UniversalRow]) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -42,7 +41,8 @@ impl SurrealSink for CaptureSink {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, _change: &UniversalChange) -> anyhow::Result<()> {
+    async fn apply_universal_change(&self, change: &UniversalChange) -> anyhow::Result<()> {
+        self.changes.lock().expect("lock").push(change.clone());
         Ok(())
     }
 
@@ -79,8 +79,9 @@ fn ensure_fixture_worker() -> PathBuf {
     path
 }
 
-fn row_name(row: &UniversalRow) -> Option<String> {
-    match row.fields.get("name")? {
+fn change_name(change: &UniversalChange) -> Option<String> {
+    let data = change.data.as_ref()?;
+    match data.get("name")? {
         UniversalValue::Text(value) => Some(value.clone()),
         UniversalValue::VarChar { value, .. } => Some(value.clone()),
         other => panic!("unexpected name: {other:?}"),
@@ -88,7 +89,7 @@ fn row_name(row: &UniversalRow) -> Option<String> {
 }
 
 #[tokio::test]
-async fn kafka_external_mutate_rewrites_name_through_write_rows(
+async fn kafka_external_mutate_rewrites_name_through_source_driver(
 ) -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter("surreal_sync_kafka_source=info")
@@ -150,7 +151,9 @@ async fn kafka_external_mutate_rewrites_name_through_write_rows(
         )
         .expect("spawn mutate worker"),
     );
-    let apply_opts = ApplyOpts::identity().with_batch_size(100);
+    let apply_opts = ApplyOpts::identity()
+        .with_batch_size(100)
+        .with_max_in_flight(2);
 
     let sink = Arc::new(CaptureSink::new());
     let deadline = Utc::now() + chrono::Duration::seconds(20);
@@ -164,20 +167,24 @@ async fn kafka_external_mutate_rewrites_name_through_write_rows(
     )
     .await?;
 
-    let rows = sink.rows.lock().expect("lock").clone();
-    assert_eq!(rows.len(), 2, "expected two mutated rows, got {rows:?}");
-    for row in &rows {
-        assert_eq!(row_name(row).as_deref(), Some("mutated"));
+    let changes = sink.changes.lock().expect("lock").clone();
+    assert_eq!(
+        changes.len(),
+        2,
+        "expected two mutated changes, got {changes:?}"
+    );
+    for change in &changes {
+        assert_eq!(change_name(change).as_deref(), Some("mutated"));
     }
 
-    // kafka_batch_size is large enough that both messages share one decode
-    // batch; indices must stay unique within that batch (not all the same).
-    let indices: Vec<u64> = rows.iter().map(|r| r.index).collect();
-    let unique: std::collections::HashSet<_> = indices.iter().copied().collect();
+    // Distinct record ids within the poll batch (indices are assigned before
+    // converting rows to upsert changes for the SourceDriver window).
+    let ids: Vec<_> = changes.iter().map(|c| c.id.clone()).collect();
+    let unique: std::collections::HashSet<_> = ids.iter().cloned().collect();
     assert_eq!(
         unique.len(),
-        indices.len(),
-        "UniversalRow.index must be unique per message within a Kafka batch; got {indices:?}"
+        ids.len(),
+        "message ids must stay unique within a Kafka poll batch; got {ids:?}"
     );
 
     Ok(())

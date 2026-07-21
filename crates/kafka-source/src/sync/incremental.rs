@@ -1,16 +1,17 @@
 //! Kafka incremental sync to SurrealDB.
 //!
-//! Consumes protobuf-encoded messages from Kafka topics and writes
-//! them as records to SurrealDB tables through [`write_rows`].
+//! Consumes protobuf-encoded messages from Kafka topics and writes them as
+//! records to SurrealDB through [`SourceDriver`] + [`run_source_runtime`].
 //!
-//! Offset commit stays with the Kafka consumer group (no Surreal sync
-//! checkpoint store). Decode a Kafka batch, then apply once via the
-//! transform framework before committing offsets.
+//! Offset commit stays with the Kafka consumer group. The runtime window owns
+//! transform/`max_in_flight` overlap; consumer-group offsets advance only after
+//! the corresponding sink apply succeeds.
 //!
 //! This module was moved from src/kafka/incremental.rs in the main crate
 //! to break the circular dependency between kafka and kafka-types.
 
 use anyhow::Result;
+use async_trait::async_trait;
 use base64::Engine;
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -19,12 +20,15 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use surreal_sink::SurrealSink;
-use sync_core::{TableDefinition, TypedValue, UniversalRow, UniversalValue};
-use sync_transform::{write_rows, ApplyOpts, Pipeline};
-use tokio::time::{sleep, Duration};
+use sync_core::{TableDefinition, TypedValue, UniversalChange, UniversalRow, UniversalValue};
+use sync_transform::{
+    run_source_runtime, ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver,
+    SourceRuntimeOpts, StopReason,
+};
+use tokio::task::JoinHandle;
 use tracing::{debug, info};
 
-use crate::consumer::{ConsumerConfig, SaslMechanism, SecurityProtocol};
+use crate::consumer::{Consumer, ConsumerConfig, SaslMechanism, SecurityProtocol};
 use crate::Client;
 
 /// Configuration for Kafka source.
@@ -54,10 +58,12 @@ pub struct Config {
     /// Number of consumers in the consumer group to spawn
     #[clap(long, default_value_t = 1)]
     pub num_consumers: usize,
-    /// Number of messages to read from Kafka per batch before processing.
-    /// Each batch is decoded then applied via write_rows; offsets are committed
-    /// only after that apply succeeds. Larger batches improve throughput
-    /// but increase memory usage and potential duplicate processing on failure.
+    /// Messages to fetch per Kafka poll into the apply window.
+    ///
+    /// The transform runtime then batches/windows by `--transforms-config`
+    /// `batch_size` / `max_in_flight`. Consumer-group offsets commit only after
+    /// each message’s sink apply succeeds. Larger polls improve throughput but
+    /// increase memory and potential duplicate processing on failure.
     #[clap(long, default_value_t = 100)]
     pub kafka_batch_size: usize,
     /// Optional table name to use in SurrealDB (defaults to topic name)
@@ -125,11 +131,12 @@ pub async fn run_incremental_sync<S: SurrealSink + Send + Sync + 'static>(
     .await
 }
 
-/// Run incremental sync through the transform framework via [`write_rows`].
+/// Run incremental sync through [`SourceDriver`] + [`run_source_runtime`].
 ///
-/// Each Kafka batch is decoded to [`UniversalRow`]s, then applied once with
-/// `write_rows`. Kafka consumer-group offset commit happens only after that
-/// apply succeeds (unchanged from before the framework port).
+/// Each consumer polls/decodes into [`PositionedEvent`]s (bounded by
+/// `kafka_batch_size`). The runtime owns the transform window (`max_in_flight`).
+/// Kafka consumer-group offset commit happens in [`SourceDriver::commit`] only
+/// after that message’s sink apply succeeds.
 pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync + 'static>(
     surreal: Arc<S>,
     config: Config,
@@ -150,11 +157,12 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync +
     } else {
         info!(
             stages = pipeline.len(),
+            max_in_flight = apply_opts.max_in_flight,
+            batch_size = apply_opts.batch_size,
             "Kafka sync using transform pipeline"
         );
     }
 
-    // Determine table name: use configured table_name if provided, otherwise use topic name
     let table_name = config
         .table_name
         .clone()
@@ -184,119 +192,73 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync +
         client.schema()
     );
 
-    // Shared counter for processed messages
     let processed_count = Arc::new(AtomicU64::new(0));
-
-    let surreal = Arc::clone(&surreal);
-    let pipeline = pipeline.clone();
-    let apply_opts = apply_opts.clone();
-
-    // Message processor function
-    let use_message_key_as_id = config.use_message_key_as_id;
-    let id_field = config.id_field.clone();
-    let processor = {
-        let counter = Arc::clone(&processed_count);
-        let table_name = table_name.clone();
-        let table_schema = table_schema.clone();
-        let pipeline = pipeline.clone();
-        let apply_opts = apply_opts.clone();
-        move |messages: Vec<Message>| {
-            let counter = Arc::clone(&counter);
-            let surreal = Arc::clone(&surreal);
-            let table_name = table_name.clone();
-            let table_schema = table_schema.clone();
-            let id_field = id_field.clone();
-            let pipeline = pipeline.clone();
-            let apply_opts = apply_opts.clone();
-            async move {
-                // Reserve unique per-message indices for this batch (pre-port
-                // behavior: each UniversalRow.index is distinct within a batch).
-                let base_index = counter.load(Ordering::SeqCst);
-                let mut rows = Vec::with_capacity(messages.len());
-                for (offset, message) in messages.into_iter().enumerate() {
-                    debug!("Received message: {:?}", message);
-
-                    // Put the message as a record into SurrealDB.
-                    // The table name is either configured explicitly or defaults to topic name.
-                    // The message fields become the record fields.
-                    let message_key = message.key.clone();
-
-                    // Use kafka-types for the TypedValue conversion path
-                    let typed_values =
-                        kafka_types::message_to_typed_values(message, table_schema.as_ref())?;
-
-                    // Create UniversalRow using appropriate ID strategy
-                    let row = typed_values_to_universal_row(
-                        typed_values,
-                        &table_name,
-                        use_message_key_as_id,
-                        message_key.as_deref(),
-                        &id_field,
-                        batch_row_index(base_index, offset),
-                    )?;
-
-                    rows.push(row);
-                }
-
-                let batch_len = rows.len() as u64;
-                if !rows.is_empty() {
-                    write_rows(surreal.as_ref(), &pipeline, rows, &apply_opts).await?;
-                }
-
-                let prev = counter.fetch_add(batch_len, Ordering::SeqCst);
-                let count = prev + batch_len;
-                if count / 100 > prev / 100 {
-                    info!("Processed {count} messages total");
-                }
-
-                Ok(())
-            }
-        }
-    };
-
     let num_consumers = config.num_consumers;
     let max_messages = config.max_messages;
     info!("Spawning {num_consumers} consumers in the same consumer group...");
     if let Some(max) = max_messages {
         info!("Will exit early after processing {max} messages");
     }
-    let handles = client.spawn_batch_consumer_group(
-        config.num_consumers,
-        config.kafka_batch_size,
-        processor,
-    )?;
 
-    // Polling loop: check for completion conditions (max_messages or deadline)
-    loop {
-        sleep(Duration::from_millis(100)).await;
+    let mut handles: Vec<JoinHandle<Result<()>>> = Vec::new();
+    for i in 0..num_consumers {
+        let consumer = client.create_consumer()?;
+        let surreal = Arc::clone(&surreal);
+        let pipeline = pipeline.clone();
+        let apply_opts = apply_opts.clone();
+        let processed_count = Arc::clone(&processed_count);
+        let table_name = table_name.clone();
+        let table_schema = table_schema.clone();
+        let use_message_key_as_id = config.use_message_key_as_id;
+        let id_field = config.id_field.clone();
+        let kafka_batch_size = config.kafka_batch_size;
+        let handle = tokio::spawn(async move {
+            let mut driver = KafkaSourceDriver {
+                consumer,
+                table_name,
+                table_schema,
+                use_message_key_as_id,
+                id_field,
+                kafka_batch_size,
+                processed_count,
+                max_messages,
+                deadline,
+                finished: false,
+            };
+            let runtime_opts = SourceRuntimeOpts::new();
+            let exit = run_source_runtime(
+                &mut driver,
+                surreal.as_ref(),
+                &pipeline,
+                &apply_opts,
+                &runtime_opts,
+            )
+            .await?;
+            debug!(consumer = i, ?exit, "Kafka consumer runtime exited");
+            Ok(())
+        });
+        handles.push(handle);
+    }
 
-        let current_count = processed_count.load(Ordering::SeqCst);
-
-        // Exit if max_messages reached
-        if let Some(max) = max_messages {
-            if current_count >= max {
-                info!(
-                    "Reached max_messages limit ({max}), completing sync after processing {current_count} messages"
-                );
-                break;
+    // Wait for all consumers (deadline / max_messages stop inside each driver).
+    let mut first_err: Option<anyhow::Error> = None;
+    for (i, handle) in handles.into_iter().enumerate() {
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::error!("Kafka consumer {i} failed: {e}");
+                if first_err.is_none() {
+                    first_err = Some(e);
+                }
+            }
+            Err(e) => {
+                tracing::error!("Kafka consumer {i} join error: {e}");
+                if first_err.is_none() {
+                    first_err = Some(e.into());
+                }
             }
         }
-
-        // Exit if deadline reached
-        if Utc::now() >= deadline {
-            info!("Deadline reached, aborting consumer tasks");
-            break;
-        }
     }
-
-    // Abort all consumer tasks
-    for (i, handle) in handles.into_iter().enumerate() {
-        handle.abort();
-        debug!("Aborted consumer task {i}");
-    }
-
-    // Brief delay to allow cleanup
-    sleep(Duration::from_millis(100)).await;
 
     let final_count = processed_count.load(Ordering::SeqCst);
     info!(
@@ -304,7 +266,119 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync +
         final_count, table_name
     );
 
+    if let Some(e) = first_err {
+        return Err(e);
+    }
     Ok(())
+}
+
+/// Kafka offset position: commit this message after sink success.
+#[derive(Debug, Clone)]
+struct KafkaOffset {
+    message: Message,
+}
+
+struct KafkaSourceDriver {
+    consumer: Consumer,
+    table_name: String,
+    table_schema: Option<TableDefinition>,
+    use_message_key_as_id: bool,
+    id_field: String,
+    kafka_batch_size: usize,
+    processed_count: Arc<AtomicU64>,
+    max_messages: Option<u64>,
+    deadline: DateTime<Utc>,
+    finished: bool,
+}
+
+#[async_trait]
+impl SourceDriver for KafkaSourceDriver {
+    type Position = KafkaOffset;
+
+    async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
+        if self.stop_reason().is_some() || self.finished {
+            return Ok(Vec::new());
+        }
+
+        let messages = self
+            .consumer
+            .receive_batch(self.kafka_batch_size)
+            .await
+            .map_err(|e| anyhow::anyhow!("kafka receive_batch: {e}"))?;
+        if messages.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Reserve unique per-message indices for this poll batch.
+        let base_index = self.processed_count.load(Ordering::SeqCst);
+        let mut events = Vec::with_capacity(messages.len());
+        for (offset, message) in messages.into_iter().enumerate() {
+            debug!("Received message: {:?}", message);
+            let message_key = message.key.clone();
+            let typed_values =
+                kafka_types::message_to_typed_values(message.clone(), self.table_schema.as_ref())?;
+            let row = typed_values_to_universal_row(
+                typed_values,
+                &self.table_name,
+                self.use_message_key_as_id,
+                message_key.as_deref(),
+                &self.id_field,
+                batch_row_index(base_index, offset),
+            )?;
+            let change = row_to_upsert_change(row);
+            events.push(PositionedEvent::change(
+                change,
+                KafkaOffset { message },
+            ));
+        }
+        Ok(events)
+    }
+
+    async fn commit(&mut self, position: Self::Position) -> Result<()> {
+        self.consumer
+            .commit_batch(std::slice::from_ref(&position.message))
+            .await
+            .map_err(|e| anyhow::anyhow!("kafka commit: {e}"))?;
+        let prev = self.processed_count.fetch_add(1, Ordering::SeqCst);
+        let count = prev + 1;
+        if count / 100 > prev / 100 {
+            info!("Processed {count} messages total");
+        }
+        if let Some(max) = self.max_messages {
+            if count >= max {
+                self.finished = true;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn checkpoint_policy(&self) -> CheckpointPolicy {
+        // Durability is the consumer-group offset commit in `commit`.
+        CheckpointPolicy::CommitOnly
+    }
+
+    fn stop_reason(&self) -> Option<StopReason> {
+        if Utc::now() >= self.deadline {
+            return Some(StopReason::Deadline);
+        }
+        if self.finished {
+            return Some(StopReason::Until);
+        }
+        if let Some(max) = self.max_messages {
+            if self.processed_count.load(Ordering::SeqCst) >= max {
+                return Some(StopReason::Until);
+            }
+        }
+        None
+    }
+}
+
+fn row_to_upsert_change(row: UniversalRow) -> UniversalChange {
+    UniversalChange::update(row.table, row.id, row.fields)
 }
 
 /// Convert typed values to UniversalRow.
@@ -318,23 +392,19 @@ fn typed_values_to_universal_row(
     id_field: &str,
     record_index: u64,
 ) -> Result<UniversalRow> {
-    // Determine the ID value
     let id_value = if use_message_key_as_id {
-        // Use message key as ID (base64 encoded to handle arbitrary bytes)
         let key_bytes = message_key.ok_or_else(|| {
             anyhow::anyhow!("use_message_key_as_id is enabled but message has no key")
         })?;
         let base64_str = base64::engine::general_purpose::STANDARD.encode(key_bytes);
         UniversalValue::Text(base64_str)
     } else {
-        // Extract ID from specified field (default: "id")
         let id_typed_value = typed_values
             .remove(id_field)
             .ok_or_else(|| anyhow::anyhow!("Message has no '{id_field}' field"))?;
         id_typed_value.value
     };
 
-    // Convert remaining typed values to UniversalValue map
     let fields: HashMap<String, UniversalValue> = typed_values
         .into_iter()
         .map(|(k, tv)| (k, tv.value))
@@ -366,7 +436,6 @@ mod tests {
     fn batch_row_indices_are_unique_within_batch() {
         let base = 10u64;
         let batch_len = 5usize;
-        // Bug pattern: every row gets `base` → HashSet len == 1.
         let collided: Vec<u64> = (0..batch_len).map(|_| base).collect();
         assert_eq!(
             collided.iter().copied().collect::<HashSet<_>>().len(),
