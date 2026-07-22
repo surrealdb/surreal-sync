@@ -39,6 +39,7 @@ spawn coverage is in `sync-transform` config tests).
 | kafka | SourceDriver + `run_source_runtime` | Yes (shared loader + CLI e2e) | N/A | `commit_batch` all sunk msgs; `note_sunk_events` counts |
 | csv | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | File read polls into window (no per-batch runtime restart); **one runtime per file** (no cross-file read/transform/write overlap) |
 | jsonl | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline; **one runtime per file** (same as CSV) |
+| snowflake | RowChunkDriver full (per table) | Yes (shared loader) | N/A | Ingestion-only SQL REST snapshot; streams one result partition at a time into `batch_size` apply chunks; no durable source cursor / checkpoint resume |
 
 ## Porting checklist
 

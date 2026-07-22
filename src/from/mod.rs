@@ -16,6 +16,7 @@
 //! - `kafka`: Kafka streaming sync
 //! - `csv`: CSV file import
 //! - `jsonl`: JSONL file import
+//! - `snowflake`: Snowflake full snapshot ingestion (SQL REST API)
 //! - `transforms`: Shared `--transforms-config` loader for all `from *` sync handlers
 
 pub mod common;

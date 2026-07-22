@@ -96,6 +96,7 @@ For every incremental batch on sources with a real post-sink durability hook, su
 | PostgreSQL wal2json | Slot `advance` only after emitted events are sunk (peeks may continue under window capacity via non-consuming peek + prefix skip) |
 | Kafka | Consumer-group `commit_batch` of **all** messages in the sunk batch (not only the last position) |
 | CSV / JSONL | No source cursor (file import) |
+| Snowflake | No source cursor (one-shot ingestion; streams result partitions) |
 | MySQL/PostgreSQL trigger, MongoDB change stream, Neo4j | After SurrealDB write succeeds, `advance_watermark(position)` marks an **in-memory sink-safe cursor**. Fetch/read-ahead may be ahead of that cursor; `checkpoint()` / resume-token handles report the sunk watermark, not the read head. There is still **no mid-run durable store write** on these ports — process restart resumes from the last **persisted** sync checkpoint (phase markers / `--from`), so long incremental runs may reprocess after a crash (at-least-once). |
 
 | Hop | What “ack” means |
@@ -177,6 +178,7 @@ Every sync/import path below loads the same TOML via the shared CLI helper and r
 | `from kafka` | SourceDriver window; offset `commit_batch` of all sunk messages after sink |
 | `from csv` | Long-lived SourceDriver streams file reads into the window |
 | `from jsonl` | Long-lived SourceDriver streams line reads into the window |
+| `from snowflake` | Full snapshot via `RowChunkDriver` (ingestion-only; no source cursor) |
 
 ### CLI quick start
 
