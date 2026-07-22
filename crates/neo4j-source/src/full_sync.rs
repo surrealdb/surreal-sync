@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalRelation, UniversalRow, UniversalThingRef, UniversalValue};
+use sync_transform::{ApplyOpts, Pipeline};
 
 use crate::neo4j_checkpoint::Neo4jCheckpoint;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
@@ -125,11 +126,44 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     sync_opts: SyncOpts,
     sync_manager: Option<&SyncManager<CS>>,
 ) -> anyhow::Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_full_sync_with_transforms(
+        surreal,
+        from_opts,
+        sync_opts,
+        sync_manager,
+        &pipeline,
+        &apply_opts,
+    )
+    .await
+}
+
+/// Full sync via [`RowChunkDriver`] / [`RelationChunkDriver`]
+/// (nodes fully before edges).
+///
+/// Neo4j deletes are not detected by timestamp tracking; this path is upsert-only.
+pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
+    surreal: &S,
+    from_opts: SourceOpts,
+    sync_opts: SyncOpts,
+    sync_manager: Option<&SyncManager<CS>>,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> anyhow::Result<()> {
     tracing::info!("Starting Neo4j migration");
     tracing::debug!(
         "migrate_from_neo4j function called with URI: {}",
         from_opts.source_uri
     );
+    if pipeline.is_identity() {
+        tracing::debug!("Full sync using identity transform pipeline");
+    } else {
+        tracing::info!(
+            stages = pipeline.len(),
+            "Full sync using transform pipeline"
+        );
+    }
 
     // Connect to Neo4j
     tracing::debug!("Connecting to Neo4j at: {}", from_opts.source_uri);
@@ -166,13 +200,17 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     let mut total_migrated = 0;
 
     // Migrate nodes first and track min/max timestamps
-    let (nodes_migrated, nodes_min_ts, nodes_max_ts) =
-        migrate_neo4j_nodes(&graph, surreal, &sync_opts, &ctx, &from_opts).await?;
+    let (nodes_migrated, nodes_min_ts, nodes_max_ts) = migrate_neo4j_nodes(
+        &graph, surreal, &sync_opts, &ctx, &from_opts, pipeline, apply_opts,
+    )
+    .await?;
     total_migrated += nodes_migrated;
 
     // Then migrate relationships and track min/max timestamps
-    let (rels_migrated, rels_min_ts, rels_max_ts) =
-        migrate_neo4j_relationships(&graph, surreal, &sync_opts, &ctx, &from_opts).await?;
+    let (rels_migrated, rels_min_ts, rels_max_ts) = migrate_neo4j_relationships(
+        &graph, surreal, &sync_opts, &ctx, &from_opts, pipeline, apply_opts,
+    )
+    .await?;
     total_migrated += rels_migrated;
 
     // Compute overall min/max timestamps from both nodes and relationships
@@ -245,9 +283,7 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
         //
         // **Note**: Subsequent incremental sync runs read checkpoints from previous
         // incremental sync runs (via --incremental-from CLI param or checkpoint store).
-        let checkpoint_t1 = Neo4jCheckpoint {
-            timestamp: min_timestamp,
-        };
+        let checkpoint_t1 = Neo4jCheckpoint::at(min_timestamp);
 
         manager
             .emit_checkpoint(&checkpoint_t1, SyncPhase::FullSyncStart)
@@ -258,9 +294,7 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
             checkpoint_t1.to_cli_string()
         );
 
-        let checkpoint_t2 = Neo4jCheckpoint {
-            timestamp: max_timestamp,
-        };
+        let checkpoint_t2 = Neo4jCheckpoint::at(max_timestamp);
 
         manager
             .emit_checkpoint(&checkpoint_t2, SyncPhase::FullSyncEnd)
@@ -287,6 +321,8 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
     sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
     from_opts: &SourceOpts,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
 ) -> anyhow::Result<(
     usize,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -337,68 +373,105 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
             &from_opts.composite_constituent,
         ))
         .param("label", label.clone());
-        let mut node_result = graph.execute(node_query).await?;
+        let node_result = graph.execute(node_query).await?;
 
-        let mut batch: Vec<UniversalRow> = Vec::new();
-        let mut processed = 0;
-
-        while let Some(row) = node_result.next().await? {
-            let universal_row =
-                convert_neo4j_row_to_universal_row(&row, &label, ctx, &from_opts.id_property)?;
-
-            // Extract tracking property timestamp if present
-            if let Some(UniversalValue::LocalDateTime(ts)) =
-                universal_row.get_field(&from_opts.change_tracking_property)
-            {
-                min_timestamp = Some(min_timestamp.map_or(*ts, |min| min.min(*ts)));
-                max_timestamp = Some(max_timestamp.map_or(*ts, |max| max.max(*ts)));
-            }
-
-            if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                tracing::debug!("Converted Neo4j node to UniversalRow {universal_row:?}",);
-            }
-
-            batch.push(universal_row);
-
-            if batch.len() >= sync_opts.batch_size {
-                tracing::debug!(
-                    "Batch size reached ({}), processing batch for label: {}",
-                    batch.len(),
-                    label
-                );
-                if !sync_opts.dry_run {
-                    surreal.write_universal_rows(&batch).await?;
-                } else {
-                    tracing::debug!("Dry-run mode: skipping actual migration of batch");
+        if sync_opts.dry_run {
+            let mut node_result = node_result;
+            let mut processed = 0usize;
+            while let Some(row) = node_result.next().await? {
+                let universal_row =
+                    convert_neo4j_row_to_universal_row(&row, &label, ctx, &from_opts.id_property)?;
+                if let Some(UniversalValue::LocalDateTime(ts)) =
+                    universal_row.get_field(&from_opts.change_tracking_property)
+                {
+                    min_timestamp = Some(min_timestamp.map_or(*ts, |min| min.min(*ts)));
+                    max_timestamp = Some(max_timestamp.map_or(*ts, |max| max.max(*ts)));
                 }
-                processed += batch.len();
-                total_migrated += batch.len();
-                tracing::info!("Processed {} nodes with label '{}'", processed, label);
-                batch.clear();
+                processed += 1;
+            }
+            total_migrated += processed;
+            tracing::info!("Dry-run scanned label '{label}': {processed} nodes",);
+            continue;
+        }
+
+        use async_trait::async_trait;
+        use std::sync::Arc;
+        use sync_transform::{
+            run_source_runtime_with, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
+        };
+
+        struct Neo4jNodeChunks<'a> {
+            result: neo4rs::DetachedRowStream,
+            label: String,
+            ctx: &'a Neo4jConversionContext,
+            id_property: &'a str,
+            tracking_property: &'a str,
+            batch_size: usize,
+            min_timestamp: &'a mut Option<chrono::DateTime<chrono::Utc>>,
+            max_timestamp: &'a mut Option<chrono::DateTime<chrono::Utc>>,
+            exhausted: bool,
+        }
+
+        #[async_trait]
+        impl RowChunkSource for Neo4jNodeChunks<'_> {
+            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+                if self.exhausted {
+                    return Ok(None);
+                }
+                let mut batch = Vec::with_capacity(self.batch_size);
+                while batch.len() < self.batch_size {
+                    match self.result.next().await? {
+                        None => {
+                            self.exhausted = true;
+                            break;
+                        }
+                        Some(row) => {
+                            let universal_row = convert_neo4j_row_to_universal_row(
+                                &row,
+                                &self.label,
+                                self.ctx,
+                                self.id_property,
+                            )?;
+                            if let Some(UniversalValue::LocalDateTime(ts)) =
+                                universal_row.get_field(self.tracking_property)
+                            {
+                                *self.min_timestamp =
+                                    Some(self.min_timestamp.map_or(*ts, |min| min.min(*ts)));
+                                *self.max_timestamp =
+                                    Some(self.max_timestamp.map_or(*ts, |max| max.max(*ts)));
+                            }
+                            batch.push(universal_row);
+                        }
+                    }
+                }
+                if batch.is_empty() {
+                    self.exhausted = true;
+                    return Ok(None);
+                }
+                Ok(Some(batch))
             }
         }
 
-        // Process remaining nodes in the last batch
-        if !batch.is_empty() {
-            tracing::debug!(
-                "Processing final batch of {} nodes for label: {}",
-                batch.len(),
-                label
-            );
-            if !sync_opts.dry_run {
-                surreal.write_universal_rows(&batch).await?;
-            } else {
-                tracing::debug!("Dry-run mode: skipping actual migration of final batch");
-            }
-            processed += batch.len();
-            total_migrated += batch.len();
-        }
+        let chunks = Neo4jNodeChunks {
+            result: node_result,
+            label: label.clone(),
+            ctx,
+            id_property: &from_opts.id_property,
+            tracking_property: &from_opts.change_tracking_property,
+            batch_size: sync_opts.batch_size.max(1),
+            min_timestamp: &mut min_timestamp,
+            max_timestamp: &mut max_timestamp,
+            exhausted: false,
+        };
+        let mut driver = RowChunkDriver::new(chunks);
+        let transformer = Arc::new(pipeline.clone());
+        let runtime_opts = SourceRuntimeOpts::new();
+        run_source_runtime_with(&mut driver, surreal, transformer, apply_opts, &runtime_opts)
+            .await?;
+        let processed = driver.sunk_count() as usize;
+        total_migrated += processed;
 
-        tracing::info!(
-            "Completed migration of label '{}': {} nodes",
-            label,
-            processed
-        );
+        tracing::info!("Completed migration of label '{label}': {processed} nodes",);
     }
 
     tracing::info!(
@@ -425,6 +498,8 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     sync_opts: &SyncOpts,
     ctx: &Neo4jConversionContext,
     from_opts: &SourceOpts,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
 ) -> anyhow::Result<(
     usize,
     Option<chrono::DateTime<chrono::Utc>>,
@@ -468,76 +543,103 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
             &from_opts.composite_constituent,
         ))
         .param("rel_type", rel_type.clone());
-        let mut rel_result = graph.execute(rel_query).await?;
+        let rel_result = graph.execute(rel_query).await?;
 
-        let mut batch: Vec<UniversalRelation> = Vec::new();
-        let mut processed = 0;
-
-        while let Some(row) = rel_result.next().await? {
-            let r = row_to_relation(&row, Some(rel_type.clone()), None)?;
-
-            let universal_relation = r.to_universal_relation(ctx)?;
-
-            // Extract tracking property timestamp if present
-            if let Some(UniversalValue::LocalDateTime(ts)) = universal_relation
-                .data
-                .get(&from_opts.change_tracking_property)
-            {
-                min_timestamp = Some(min_timestamp.map_or(*ts, |min| min.min(*ts)));
-                max_timestamp = Some(max_timestamp.map_or(*ts, |max| max.max(*ts)));
-            }
-
-            if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                tracing::debug!(
-                    "Converted Neo4j relationship to UniversalRelation (rel_id: {})",
-                    r.id,
-                );
-            }
-
-            batch.push(universal_relation);
-
-            if batch.len() >= sync_opts.batch_size {
-                tracing::debug!(
-                    "Batch size reached ({}), processing batch for type: {}",
-                    batch.len(),
-                    rel_type
-                );
-                if !sync_opts.dry_run {
-                    surreal.write_universal_relations(&batch).await?;
-                } else {
-                    tracing::debug!("Dry-run mode: skipping actual migration of batch");
+        if sync_opts.dry_run {
+            let mut rel_result = rel_result;
+            let mut processed = 0usize;
+            while let Some(row) = rel_result.next().await? {
+                let r = row_to_relation(&row, Some(rel_type.clone()), None)?;
+                let universal_relation = r.to_universal_relation(ctx)?;
+                if let Some(UniversalValue::LocalDateTime(ts)) = universal_relation
+                    .data
+                    .get(&from_opts.change_tracking_property)
+                {
+                    min_timestamp = Some(min_timestamp.map_or(*ts, |min| min.min(*ts)));
+                    max_timestamp = Some(max_timestamp.map_or(*ts, |max| max.max(*ts)));
                 }
-                processed += batch.len();
-                total_migrated += batch.len();
-                tracing::info!(
-                    "Processed {} relationships of type '{}'",
-                    processed,
-                    rel_type
-                );
-                batch.clear();
+                processed += 1;
+            }
+            total_migrated += processed;
+            tracing::info!(
+                "Dry-run scanned relationship type '{rel_type}': {processed} relationships",
+            );
+            continue;
+        }
+
+        use async_trait::async_trait;
+        use std::sync::Arc;
+        use sync_transform::{
+            run_source_runtime_with, RelationChunkDriver, RelationChunkSource, SourceRuntimeOpts,
+        };
+
+        struct Neo4jRelChunks<'a> {
+            result: neo4rs::DetachedRowStream,
+            rel_type: String,
+            ctx: &'a Neo4jConversionContext,
+            tracking_property: &'a str,
+            batch_size: usize,
+            min_timestamp: &'a mut Option<chrono::DateTime<chrono::Utc>>,
+            max_timestamp: &'a mut Option<chrono::DateTime<chrono::Utc>>,
+            exhausted: bool,
+        }
+
+        #[async_trait]
+        impl RelationChunkSource for Neo4jRelChunks<'_> {
+            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRelation>>> {
+                if self.exhausted {
+                    return Ok(None);
+                }
+                let mut batch = Vec::with_capacity(self.batch_size);
+                while batch.len() < self.batch_size {
+                    match self.result.next().await? {
+                        None => {
+                            self.exhausted = true;
+                            break;
+                        }
+                        Some(row) => {
+                            let r = row_to_relation(&row, Some(self.rel_type.clone()), None)?;
+                            let universal_relation = r.to_universal_relation(self.ctx)?;
+                            if let Some(UniversalValue::LocalDateTime(ts)) =
+                                universal_relation.data.get(self.tracking_property)
+                            {
+                                *self.min_timestamp =
+                                    Some(self.min_timestamp.map_or(*ts, |min| min.min(*ts)));
+                                *self.max_timestamp =
+                                    Some(self.max_timestamp.map_or(*ts, |max| max.max(*ts)));
+                            }
+                            batch.push(universal_relation);
+                        }
+                    }
+                }
+                if batch.is_empty() {
+                    self.exhausted = true;
+                    return Ok(None);
+                }
+                Ok(Some(batch))
             }
         }
 
-        // Process remaining relationships in the last batch
-        if !batch.is_empty() {
-            tracing::debug!(
-                "Processing final batch of {} relationships for type: {}",
-                batch.len(),
-                rel_type
-            );
-            if !sync_opts.dry_run {
-                surreal.write_universal_relations(&batch).await?;
-            } else {
-                tracing::debug!("Dry-run mode: skipping actual migration of final batch");
-            }
-            processed += batch.len();
-            total_migrated += batch.len();
-        }
+        let chunks = Neo4jRelChunks {
+            result: rel_result,
+            rel_type: rel_type.clone(),
+            ctx,
+            tracking_property: &from_opts.change_tracking_property,
+            batch_size: sync_opts.batch_size.max(1),
+            min_timestamp: &mut min_timestamp,
+            max_timestamp: &mut max_timestamp,
+            exhausted: false,
+        };
+        let mut driver = RelationChunkDriver::new(chunks);
+        let transformer = Arc::new(pipeline.clone());
+        let runtime_opts = SourceRuntimeOpts::new();
+        run_source_runtime_with(&mut driver, surreal, transformer, apply_opts, &runtime_opts)
+            .await?;
+        let processed = driver.sunk_count() as usize;
+        total_migrated += processed;
 
         tracing::info!(
-            "Completed migration of relationship type '{}': {} relationships",
-            rel_type,
-            processed
+            "Completed migration of relationship type '{rel_type}': {processed} relationships",
         );
     }
 

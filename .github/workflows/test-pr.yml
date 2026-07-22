@@ -65,10 +65,10 @@ jobs:
         tool: nextest
 
     - name: Build CLI + all test binaries
-      run: cargo build --workspace --profile ci --bins --tests
+      run: cargo build --workspace --all-features --profile ci --bins --tests
 
     - name: Archive test binaries
-      run: cargo nextest archive --workspace --cargo-profile ci --profile ci --archive-file nextest.tar.zst
+      run: cargo nextest archive --workspace --all-features --cargo-profile ci --profile ci --archive-file nextest.tar.zst
 
     - name: Upload nextest archive
       uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

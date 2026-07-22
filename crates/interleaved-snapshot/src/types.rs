@@ -61,8 +61,13 @@ impl PkTuple {
     /// A stable string key for this primary key, suitable for use as a hash
     /// map key (works for composite keys and value kinds that are not
     /// themselves `Hash`/`Eq`).
+    ///
+    /// Values are canonicalized before serialization so snapshot reads and CDC
+    /// events that differ only by integer width (`Int32` vs `Int64`) or string
+    /// kind (`VarChar` vs `Text`) still collide for window dedup.
     pub fn key(&self) -> String {
-        serde_json::to_string(&self.0).unwrap_or_default()
+        let canonical: Vec<UniversalValue> = self.0.iter().map(canonicalize_pk_value).collect();
+        serde_json::to_string(&canonical).unwrap_or_default()
     }
 
     /// If this is a single-column UUID key, return the UUID.
@@ -81,14 +86,15 @@ impl PkTuple {
     ///
     /// Each column is looked up in the row's fields. As a convenience for
     /// single-column primary keys, a missing field falls back to the row's
-    /// dedicated `id` value.
+    /// dedicated `id` value. Extracted values are canonicalized so they match
+    /// [`Self::key`] used for window dedup.
     pub fn from_row(row: &UniversalRow, pk_columns: &[String]) -> Result<Self> {
         let mut values = Vec::with_capacity(pk_columns.len());
         for col in pk_columns {
             if let Some(v) = row.fields.get(col) {
-                values.push(v.clone());
+                values.push(canonicalize_pk_value(v));
             } else if pk_columns.len() == 1 {
-                values.push(row.id.clone());
+                values.push(canonicalize_pk_value(&row.id));
             } else {
                 anyhow::bail!(
                     "primary key column '{col}' not found in row for table '{}'",
@@ -97,6 +103,60 @@ impl PkTuple {
             }
         }
         Ok(Self(values))
+    }
+}
+
+/// Reduce a primary-key scalar to the canonical kinds used for buffer dedup
+/// (`Int64` / `Uuid` / `Text`), matching how most CDC backends normalize
+/// stream keys relative to snapshot reads.
+fn canonicalize_pk_value(value: &UniversalValue) -> UniversalValue {
+    match value {
+        UniversalValue::Int8 { value, .. } => UniversalValue::Int64(*value as i64),
+        UniversalValue::Int16(v) => UniversalValue::Int64(*v as i64),
+        UniversalValue::Int32(v) => UniversalValue::Int64(*v as i64),
+        UniversalValue::Int64(v) => UniversalValue::Int64(*v),
+        UniversalValue::Uuid(u) => UniversalValue::Uuid(*u),
+        UniversalValue::Char { value, .. } => UniversalValue::Text(value.clone()),
+        UniversalValue::VarChar { value, .. } => UniversalValue::Text(value.clone()),
+        UniversalValue::Text(s) => UniversalValue::Text(s.clone()),
+        other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod pk_key_tests {
+    use super::*;
+
+    #[test]
+    fn key_equates_int_widths() {
+        let i32 = PkTuple::new(vec![UniversalValue::Int32(42)]);
+        let i64 = PkTuple::new(vec![UniversalValue::Int64(42)]);
+        assert_eq!(i32.key(), i64.key());
+    }
+
+    #[test]
+    fn key_equates_string_kinds() {
+        let text = PkTuple::new(vec![UniversalValue::Text("acct-001".into())]);
+        let varchar = PkTuple::new(vec![UniversalValue::VarChar {
+            value: "acct-001".into(),
+            length: 32,
+        }]);
+        let char_v = PkTuple::new(vec![UniversalValue::Char {
+            value: "acct-001".into(),
+            length: 32,
+        }]);
+        assert_eq!(text.key(), varchar.key());
+        assert_eq!(text.key(), char_v.key());
+    }
+
+    #[test]
+    fn from_row_canonicalizes_field_pk() {
+        let mut fields = std::collections::HashMap::new();
+        fields.insert("id".to_string(), UniversalValue::Int32(7));
+        let row = UniversalRow::new("users", 0, UniversalValue::Int32(7), fields);
+        let pk = PkTuple::from_row(&row, &["id".to_string()]).unwrap();
+        assert_eq!(pk.0, vec![UniversalValue::Int64(7)]);
+        assert_eq!(pk.key(), PkTuple::new(vec![UniversalValue::Int64(7)]).key());
     }
 }
 

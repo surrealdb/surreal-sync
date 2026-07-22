@@ -2,6 +2,8 @@
 
 The CSV source in surreal-sync imports CSV files in the local filesystem or S3 buckets into a SurrealDB table with automatic type detection and optional [record ID](https://surrealdb.com/docs/surrealql/datamodel/ids) generation.
 
+Optional transforms: pass `--transforms-config` with a TOML file. Omit the flag to leave rows unchanged. Details: [How sync works](sync-pipeline.md).
+
 ## Usage
 
 ### Import from local filesystem
@@ -49,7 +51,7 @@ surreal-sync csv \
 | `--has-headers` | Whether CSV has headers | `true` |
 | `--delimiter` | CSV delimiter character | `,` |
 | `--id-field` | Field to use as record ID | auto-generated |
-| `--batch-size` | Records per batch | `1000` |
+| `--batch-size` | Records per poll into the long-lived apply window (file reads continue under spare `max_in_flight`) | `1000` |
 | `--dry-run` | Test without writing | `false` |
 
 ## Data Type Handling

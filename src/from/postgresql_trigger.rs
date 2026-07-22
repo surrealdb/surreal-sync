@@ -16,9 +16,13 @@ use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use std::path::PathBuf;
 use surreal_sink::SurrealSink;
 use surreal_sync::{orchestrate_snapshot_then_incremental, SurrealOpts};
-use surreal_sync_interleaved_snapshot::{InterleavedSnapshotConfig, NoopCheckpointer};
-use surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint;
+use surreal_sync_interleaved_snapshot::{
+    InterleavedSnapshotConfig, NoopCheckpointer, SnapshotTransforms,
+};
+use surreal_sync_postgresql_trigger_source::{PostgreSQLCheckpoint, ReplicationTailOptions};
+use sync_transform::{ApplyOpts, Pipeline};
 
+use super::transforms::load_transforms_from_args;
 use super::{extract_postgresql_database, get_sdk_version, load_schema_if_provided, SdkVersion};
 use crate::config::load_config;
 use crate::{
@@ -41,6 +45,7 @@ struct ResolvedTriggerFullArgs {
     schema_file: Option<PathBuf>,
     strategy: SyncStrategy,
     chunk_size: usize,
+    transforms_config: Option<PathBuf>,
     surreal: SurrealOpts,
 }
 
@@ -54,6 +59,7 @@ struct ResolvedTriggerIncrementalArgs {
     incremental_to: Option<String>,
     timeout: String,
     schema_file: Option<PathBuf>,
+    transforms_config: Option<PathBuf>,
     surreal: SurrealOpts,
 }
 
@@ -78,6 +84,7 @@ fn resolve_full_args(args: PostgreSQLTriggerFullArgs) -> anyhow::Result<Resolved
             schema_file: args.schema_file.or(pg.schema_file),
             strategy: args.strategy,
             chunk_size: args.chunk_size,
+            transforms_config: args.transforms_config,
             surreal: SurrealOpts {
                 surreal_endpoint: sink.endpoint,
                 surreal_username: sink.username,
@@ -104,6 +111,7 @@ fn resolve_full_args(args: PostgreSQLTriggerFullArgs) -> anyhow::Result<Resolved
             schema_file: args.schema_file,
             strategy: args.strategy,
             chunk_size: args.chunk_size,
+            transforms_config: args.transforms_config,
             surreal: args.surreal,
         })
     }
@@ -136,6 +144,7 @@ fn resolve_incremental_args(
                 pg.timeout.to_string()
             },
             schema_file: args.schema_file.or(pg.schema_file),
+            transforms_config: args.transforms_config,
             surreal: SurrealOpts {
                 surreal_endpoint: sink.endpoint,
                 surreal_username: sink.username,
@@ -162,6 +171,7 @@ fn resolve_incremental_args(
             incremental_to: args.incremental_to,
             timeout: args.timeout,
             schema_file: args.schema_file,
+            transforms_config: args.transforms_config,
             surreal: args.surreal,
         })
     }
@@ -222,16 +232,19 @@ async fn run_full_v2(args: ResolvedTriggerFullArgs) -> anyhow::Result<()> {
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
     };
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             let store = checkpoint::FilesystemStore::new(dir);
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_postgresql_trigger_source::run_full_sync(
+            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
                 sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
@@ -244,21 +257,21 @@ async fn run_full_v2(args: ResolvedTriggerFullArgs) -> anyhow::Result<()> {
             .await?;
             let store = checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone());
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_postgresql_trigger_source::run_full_sync(
+            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
                 sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (None, None) => {
-            surreal_sync_postgresql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-            )
+            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
         }
         (Some(_), Some(_)) => {
@@ -302,16 +315,19 @@ async fn run_full_v3(args: ResolvedTriggerFullArgs) -> anyhow::Result<()> {
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
     };
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             let store = checkpoint::FilesystemStore::new(dir);
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_postgresql_trigger_source::run_full_sync(
+            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
                 sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
@@ -324,21 +340,21 @@ async fn run_full_v3(args: ResolvedTriggerFullArgs) -> anyhow::Result<()> {
             .await?;
             let store = checkpoint_surreal3::Surreal3Store::new(checkpoint_surreal, table.clone());
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_postgresql_trigger_source::run_full_sync(
+            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
                 sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (None, None) => {
-            surreal_sync_postgresql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-            )
+            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
         }
         (Some(_), Some(_)) => {
@@ -375,6 +391,7 @@ async fn pg_trigger_snapshot_full<S, St>(
     source_opts: surreal_sync_postgresql_trigger_source::SourceOpts,
     chunk_size: usize,
     manager: Option<&SyncManager<St>>,
+    transforms: &SnapshotTransforms,
 ) -> anyhow::Result<()>
 where
     S: SurrealSink,
@@ -382,13 +399,15 @@ where
 {
     let config = InterleavedSnapshotConfig { chunk_size };
     let mut checkpointer = NoopCheckpointer;
-    let final_seq = surreal_sync_postgresql_trigger_source::run_interleaved_snapshot_full_sync(
-        sink,
-        &source_opts,
-        &config,
-        &mut checkpointer,
-    )
-    .await?;
+    let final_seq =
+        surreal_sync_postgresql_trigger_source::run_interleaved_snapshot_full_sync_with_transforms(
+            sink,
+            &source_opts,
+            &config,
+            &mut checkpointer,
+            transforms,
+        )
+        .await?;
 
     if let Some(manager) = manager {
         let checkpoint = PostgreSQLCheckpoint {
@@ -423,10 +442,23 @@ async fn run_full_interleaved_snapshot_v2(args: ResolvedTriggerFullArgs) -> anyh
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
     let source_opts = trigger_source_opts(&args.connection_string, args.tables.clone());
 
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    let transforms = SnapshotTransforms {
+        pipeline,
+        apply_opts,
+    };
+
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
-            pg_trigger_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
+            pg_trigger_snapshot_full(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                Some(&manager),
+                &transforms,
+            )
+            .await
         }
         (None, Some(table)) => {
             let checkpoint_surreal = surreal2_sink::surreal_connect(
@@ -439,7 +471,14 @@ async fn run_full_interleaved_snapshot_v2(args: ResolvedTriggerFullArgs) -> anyh
                 checkpoint_surreal,
                 table.clone(),
             ));
-            pg_trigger_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
+            pg_trigger_snapshot_full(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                Some(&manager),
+                &transforms,
+            )
+            .await
         }
         (None, None) => {
             pg_trigger_snapshot_full::<_, checkpoint::NullStore>(
@@ -447,6 +486,7 @@ async fn run_full_interleaved_snapshot_v2(args: ResolvedTriggerFullArgs) -> anyh
                 source_opts,
                 args.chunk_size,
                 None,
+                &transforms,
             )
             .await
         }
@@ -473,17 +513,37 @@ async fn run_full_interleaved_snapshot_v3(args: ResolvedTriggerFullArgs) -> anyh
     let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
     let source_opts = trigger_source_opts(&args.connection_string, args.tables.clone());
 
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    let transforms = SnapshotTransforms {
+        pipeline,
+        apply_opts,
+    };
+
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
-            pg_trigger_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
+            pg_trigger_snapshot_full(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                Some(&manager),
+                &transforms,
+            )
+            .await
         }
         (None, Some(table)) => {
             let manager = SyncManager::new(checkpoint_surreal3::Surreal3Store::new(
                 surreal,
                 table.clone(),
             ));
-            pg_trigger_snapshot_full(&sink, source_opts, args.chunk_size, Some(&manager)).await
+            pg_trigger_snapshot_full(
+                &sink,
+                source_opts,
+                args.chunk_size,
+                Some(&manager),
+                &transforms,
+            )
+            .await
         }
         (None, None) => {
             pg_trigger_snapshot_full::<_, checkpoint::NullStore>(
@@ -491,6 +551,7 @@ async fn run_full_interleaved_snapshot_v3(args: ResolvedTriggerFullArgs) -> anyh
                 source_opts,
                 args.chunk_size,
                 None,
+                &transforms,
             )
             .await
         }
@@ -502,18 +563,23 @@ async fn run_full_interleaved_snapshot_v3(args: ResolvedTriggerFullArgs) -> anyh
 
 /// Run the combined `from postgresql-trigger sync` orchestrator.
 pub async fn run_sync(args: PostgreSQLTriggerSyncArgs) -> anyhow::Result<()> {
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     let sdk_version = get_sdk_version(
         &args.surreal.surreal_endpoint,
         args.surreal.surreal_sdk_version.as_deref(),
     )
     .await?;
     match sdk_version {
-        SdkVersion::V2 => run_sync_v2(args).await,
-        SdkVersion::V3 => run_sync_v3(args).await,
+        SdkVersion::V2 => run_sync_v2(args, pipeline, apply_opts).await,
+        SdkVersion::V3 => run_sync_v3(args, pipeline, apply_opts).await,
     }
 }
 
-async fn run_sync_v2(args: PostgreSQLTriggerSyncArgs) -> anyhow::Result<()> {
+async fn run_sync_v2(
+    args: PostgreSQLTriggerSyncArgs,
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
+) -> anyhow::Result<()> {
     tracing::info!(
         "Starting interleaved snapshot sync from PostgreSQL (trigger) to SurrealDB (SDK v2)"
     );
@@ -527,10 +593,14 @@ async fn run_sync_v2(args: PostgreSQLTriggerSyncArgs) -> anyhow::Result<()> {
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
-    pg_trigger_orchestrate(&sink, args).await
+    pg_trigger_orchestrate(&sink, args, pipeline, apply_opts).await
 }
 
-async fn run_sync_v3(args: PostgreSQLTriggerSyncArgs) -> anyhow::Result<()> {
+async fn run_sync_v3(
+    args: PostgreSQLTriggerSyncArgs,
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
+) -> anyhow::Result<()> {
     tracing::info!(
         "Starting interleaved snapshot sync from PostgreSQL (trigger) to SurrealDB (SDK v3)"
     );
@@ -544,12 +614,14 @@ async fn run_sync_v3(args: PostgreSQLTriggerSyncArgs) -> anyhow::Result<()> {
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
     let sink = surreal3_sink::Surreal3Sink::new(surreal);
-    pg_trigger_orchestrate(&sink, args).await
+    pg_trigger_orchestrate(&sink, args, pipeline, apply_opts).await
 }
 
 async fn pg_trigger_orchestrate<S: SurrealSink>(
     sink: &S,
     args: PostgreSQLTriggerSyncArgs,
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
 ) -> anyhow::Result<()> {
     let config = InterleavedSnapshotConfig {
         chunk_size: args.chunk_size,
@@ -562,15 +634,20 @@ async fn pg_trigger_orchestrate<S: SurrealSink>(
 
     let source_opts = trigger_source_opts(&args.connection_string, args.tables.clone());
     let snapshot_opts = source_opts.clone();
+    let transforms = SnapshotTransforms {
+        pipeline: pipeline.clone(),
+        apply_opts: apply_opts.clone(),
+    };
 
     orchestrate_snapshot_then_incremental(
         async move {
             let mut checkpointer = NoopCheckpointer;
-            surreal_sync_postgresql_trigger_source::run_interleaved_snapshot_full_sync(
+            surreal_sync_postgresql_trigger_source::run_interleaved_snapshot_full_sync_with_transforms(
                 sink,
                 &snapshot_opts,
                 &config,
                 &mut checkpointer,
+                &transforms,
             )
             .await
         },
@@ -579,12 +656,13 @@ async fn pg_trigger_orchestrate<S: SurrealSink>(
             timestamp: chrono::Utc::now(),
         },
         |from_checkpoint| {
-            surreal_sync_postgresql_trigger_source::run_incremental_sync(
+            surreal_sync_postgresql_trigger_source::run_incremental_sync_with_transforms(
                 sink,
                 source_opts,
                 from_checkpoint,
-                deadline,
-                None,
+                ReplicationTailOptions::stream(deadline, None),
+                &pipeline,
+                &apply_opts,
             )
         },
     )
@@ -692,12 +770,14 @@ async fn run_incremental_v2(args: ResolvedTriggerIncrementalArgs) -> anyhow::Res
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
-    surreal_sync_postgresql_trigger_source::run_incremental_sync(
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    surreal_sync_postgresql_trigger_source::run_incremental_sync_with_transforms(
         &sink,
         source_opts,
         from_checkpoint,
-        deadline,
-        pg_to,
+        ReplicationTailOptions::stream(deadline, pg_to),
+        &pipeline,
+        &apply_opts,
     )
     .await?;
 
@@ -779,12 +859,14 @@ async fn run_incremental_v3(args: ResolvedTriggerIncrementalArgs) -> anyhow::Res
             .await?;
     let sink = surreal3_sink::Surreal3Sink::new(surreal);
 
-    surreal_sync_postgresql_trigger_source::run_incremental_sync(
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    surreal_sync_postgresql_trigger_source::run_incremental_sync_with_transforms(
         &sink,
         source_opts,
         from_checkpoint,
-        deadline,
-        pg_to,
+        ReplicationTailOptions::stream(deadline, pg_to),
+        &pipeline,
+        &apply_opts,
     )
     .await?;
 

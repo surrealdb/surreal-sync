@@ -4,12 +4,13 @@
 //! delete operation on a SurrealDB relation (graph edge).
 
 use crate::values::{UniversalChangeOp, UniversalRelation};
+use serde::{Deserialize, Serialize};
 
 /// A change event for a graph relation (edge).
 ///
 /// Used when a PostgreSQL join/relation table row is inserted, updated, or
 /// deleted and needs to be synced as a SurrealDB `RELATE` or `DELETE` operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UniversalRelationChange {
     /// The operation type (Create/Update/Delete)
     pub operation: UniversalChangeOp,

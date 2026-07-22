@@ -1,7 +1,7 @@
-//! MongoDB incremental sync implementation using Change Streams
+//! MongoDB incremental sync via Change Streams and SourceDriver.
 //!
-//! This module provides incremental synchronization capabilities for MongoDB using
-//! Change Streams, which provide real-time change notifications.
+//! Resume tokens are the source position. Idle-stop (no events for a timeout)
+//! and wall-clock deadline match the earlier Change Streams incremental loop.
 
 use crate::checkpoint::MongoDBCheckpoint;
 use crate::{convert_bson_to_universal_value, SourceOpts};
@@ -10,7 +10,6 @@ use async_trait::async_trait;
 use bson::Document;
 use chrono::{DateTime, Utc};
 use futures::stream::StreamExt;
-use log::{debug, info, warn};
 use mongodb::{
     change_stream::event::{ChangeStreamEvent, ResumeToken},
     options::{ChangeStreamOptions, FullDocumentType},
@@ -18,9 +17,41 @@ use mongodb::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalChange, UniversalChangeOp, UniversalValue};
+use sync_transform::{
+    ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver, SourceRuntimeOpts,
+    StopReason,
+};
 use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
+
+/// Default idle wait before stopping when the change stream has no events.
+pub const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Options for the MongoDB change-stream replication tail.
+#[derive(Clone, Debug)]
+pub struct ReplicationTailOptions {
+    /// Wall-clock stop for the stream phase.
+    pub deadline: DateTime<Utc>,
+    /// Optional resume-token stop bound (inclusive: the event that reaches
+    /// the target is still applied, then the runtime stops).
+    pub until: Option<MongoDBCheckpoint>,
+    /// How long to wait for the next change before treating the stream as idle.
+    pub idle_timeout: Duration,
+}
+
+impl ReplicationTailOptions {
+    /// Build options from the historical `run_incremental_sync` arguments.
+    pub fn stream(deadline: DateTime<Utc>, until: Option<MongoDBCheckpoint>) -> Self {
+        Self {
+            deadline,
+            until,
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+        }
+    }
+}
 
 /// Trait for a stream of changes from MongoDB
 #[async_trait]
@@ -53,7 +84,10 @@ fn bson_doc_to_universal_values(doc: Document) -> Result<HashMap<String, Univers
 pub struct MongodbIncrementalSource {
     client: Client,
     database: String,
+    /// Sink-safe resume token (advanced only after successful sink / watermark advance).
     resume_token: Arc<Mutex<Vec<u8>>>,
+    /// Last token observed while fetching (may be ahead of [`Self::resume_token`]).
+    seen_token: Arc<Mutex<Vec<u8>>>,
 }
 
 impl MongodbIncrementalSource {
@@ -77,7 +111,8 @@ impl MongodbIncrementalSource {
         Ok(MongodbIncrementalSource {
             client,
             database: database.to_string(),
-            resume_token: Arc::new(Mutex::new(initial_resume_token)),
+            resume_token: Arc::new(Mutex::new(initial_resume_token.clone())),
+            seen_token: Arc::new(Mutex::new(initial_resume_token)),
         })
     }
 
@@ -127,12 +162,22 @@ impl MongodbIncrementalSource {
         Ok(Box::new(MongoChangeStream::new(stream, initial_token)))
     }
 
-    /// Get the current checkpoint
+    /// Get the current sink-safe checkpoint (token advanced only after sink).
     pub async fn get_checkpoint(&self) -> Result<MongoDBCheckpoint> {
         Ok(MongoDBCheckpoint {
             resume_token: self.resume_token.lock().await.clone(),
             timestamp: Utc::now(),
         })
+    }
+
+    /// Shared resume-token handle for sink-safe progress (updated on watermark advance).
+    pub fn resume_token_handle(&self) -> Arc<Mutex<Vec<u8>>> {
+        Arc::clone(&self.resume_token)
+    }
+
+    /// Last token observed while polling (may be ahead of the sink-safe handle).
+    pub fn seen_token_handle(&self) -> Arc<Mutex<Vec<u8>>> {
+        Arc::clone(&self.seen_token)
     }
 
     /// Cleanup resources
@@ -181,17 +226,17 @@ impl MongodbIncrementalSource {
         // Create the change stream
         let change_stream = database.watch().with_options(options).await?;
         let database_name = self.database.clone();
-        let resume_token = self.resume_token.clone();
+        let seen_token = self.seen_token.clone();
 
         // Convert MongoDB change stream to our ChangeEvent stream
         let stream = change_stream
             .map(move |result| {
                 let database_name = database_name.clone();
-                let resume_token = resume_token.clone();
+                let seen_token = seen_token.clone();
                 async move {
                     match result {
                         Ok(event) => {
-                            Self::convert_change_event(event, &database_name, resume_token).await
+                            Self::convert_change_event(event, &database_name, seen_token).await
                         }
                         Err(e) => Err(anyhow!("MongoDB change stream error: {e}")),
                     }
@@ -211,12 +256,11 @@ impl MongodbIncrementalSource {
     async fn convert_change_event(
         event: ChangeStreamEvent<Document>,
         _database_name: &str,
-        resume_token: Arc<Mutex<Vec<u8>>>,
+        seen_token: Arc<Mutex<Vec<u8>>>,
     ) -> Result<UniversalChange> {
-        // Extract and store the resume token from the event's _id field
-        // The _id field contains the resume token for this specific event
+        // Track the fetch-time resume token separately from the sink-safe bookmark.
         if let Ok(token_bytes) = bson::to_vec(&event.id) {
-            *resume_token.lock().await = token_bytes;
+            *seen_token.lock().await = token_bytes;
         }
 
         // Determine operation type
@@ -272,24 +316,25 @@ impl MongodbIncrementalSource {
 type MongoStreamType =
     Arc<Mutex<std::pin::Pin<Box<dyn futures::Stream<Item = Result<UniversalChange>> + Send>>>>;
 
-/// A change stream wrapper for MongoDB incremental sync
+/// A change stream wrapper for MongoDB incremental sync.
+///
+/// Sink-safe resume tokens live on [`MongodbIncrementalSource`]'s
+/// `resume_token` handle (advanced via the SourceDriver after sink). This
+/// wrapper only yields decoded changes; [`ChangeStream::checkpoint`] always
+/// returns `None` so callers cannot confuse an unread initial token for a
+/// sunk watermark.
 pub struct MongoChangeStream {
     // Wrap in Arc<Mutex> to make it Sync
     stream: MongoStreamType,
-    current_checkpoint: Option<MongoDBCheckpoint>,
 }
 
 impl MongoChangeStream {
     pub fn new(
         stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<UniversalChange>> + Send>>,
-        initial_resume_token: Vec<u8>,
+        _initial_resume_token: Vec<u8>,
     ) -> Self {
         Self {
             stream: Arc::new(Mutex::new(stream)),
-            current_checkpoint: Some(MongoDBCheckpoint {
-                resume_token: initial_resume_token,
-                timestamp: Utc::now(),
-            }),
         }
     }
 }
@@ -302,23 +347,45 @@ impl ChangeStream for MongoChangeStream {
     }
 
     fn checkpoint(&self) -> Option<MongoDBCheckpoint> {
-        self.current_checkpoint.clone()
+        // Sink-safe resume is owned by MongodbChangeStreamDriver::resume_token
+        // (advanced on advance_watermark). Do not report a stale fetch-time token.
+        None
     }
 }
 
-/// Run incremental sync from MongoDB to SurrealDB
-///
-/// This function implements the incremental sync logic:
-/// 1. Connects to MongoDB and sets up Change Streams
-/// 2. Reads changes from the specified checkpoint (resume token)
-/// 3. Applies changes to SurrealDB
-/// 4. Continues streaming changes until stopped
+/// Run incremental sync from MongoDB to SurrealDB (identity transforms).
 pub async fn run_incremental_sync<S: SurrealSink>(
     surreal: &S,
     from_opts: SourceOpts,
     from_checkpoint: MongoDBCheckpoint,
     deadline: DateTime<Utc>,
     target_checkpoint: Option<MongoDBCheckpoint>,
+) -> anyhow::Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_incremental_sync_with_transforms(
+        surreal,
+        from_opts,
+        from_checkpoint,
+        ReplicationTailOptions::stream(deadline, target_checkpoint),
+        &pipeline,
+        &apply_opts,
+    )
+    .await
+}
+
+/// Incremental sync via `SourceDriver` + `run_source_runtime` (shared apply window).
+///
+/// Change stream events become [`PositionedEvent`]s with the resume token as
+/// position; apply goes through [`sync_transform::run_source_runtime_with`].
+/// Idle-stop and deadline semantics match the earlier Change Streams loop.
+pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
+    surreal: &S,
+    from_opts: SourceOpts,
+    from_checkpoint: MongoDBCheckpoint,
+    options: ReplicationTailOptions,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
 ) -> anyhow::Result<()> {
     use checkpoint::Checkpoint;
 
@@ -327,14 +394,23 @@ pub async fn run_incremental_sync<S: SurrealSink>(
         from_checkpoint.to_cli_string()
     );
 
-    // Extract MongoDB connection details from SourceOpts
+    if pipeline.is_identity() {
+        debug!("Incremental sync using identity transform pipeline");
+    } else {
+        info!(
+            stages = pipeline.len(),
+            max_in_flight = apply_opts.max_in_flight,
+            batch_size = apply_opts.batch_size,
+            "Incremental sync using transform pipeline"
+        );
+    }
+
     let connection_string = from_opts.source_uri.clone();
     let source_database = from_opts
         .source_database
         .clone()
         .ok_or_else(|| anyhow!("MongoDB source database name is required"))?;
 
-    // Create MongoDB incremental source with resume token from checkpoint
     let mut source = MongodbIncrementalSource::new(
         &connection_string,
         &source_database,
@@ -342,72 +418,153 @@ pub async fn run_incremental_sync<S: SurrealSink>(
     )
     .await?;
 
-    // Get change stream
-    let mut stream = source.get_changes().await?;
-
+    let stream = source.get_changes().await?;
+    let resume_token = source.resume_token_handle();
+    let seen_token = source.seen_token_handle();
     info!("Starting to consume MongoDB change stream...");
 
-    let mut change_count: u64 = 0;
-    let timeout_duration = std::time::Duration::from_secs(5);
+    let mut driver = MongodbChangeStreamDriver {
+        stream,
+        resume_token,
+        seen_token,
+        options: &options,
+        until_reached: false,
+        finished: false,
+        total_changes: 0,
+    };
 
-    loop {
-        let timeout_result = tokio::time::timeout(timeout_duration, stream.next()).await;
+    let runtime_opts = SourceRuntimeOpts::new();
+    let transformer = Arc::new(pipeline.clone());
+    let exit = sync_transform::run_source_runtime_with(
+        &mut driver,
+        surreal,
+        transformer,
+        apply_opts,
+        &runtime_opts,
+    )
+    .await?;
+
+    match exit {
+        sync_transform::RuntimeExit::Stopped(StopReason::Deadline) => {
+            info!("Reached deadline, stopping incremental sync");
+        }
+        sync_transform::RuntimeExit::Stopped(StopReason::Until) => {
+            info!("Reached target checkpoint, stopping incremental sync");
+        }
+        sync_transform::RuntimeExit::Stopped(StopReason::Finished) => {
+            info!("MongoDB change stream idle or ended, stopping incremental sync");
+        }
+        sync_transform::RuntimeExit::Stopped(StopReason::Cancelled) => {
+            info!("Cancellation requested, stopping incremental sync");
+        }
+    }
+
+    info!(
+        "MongoDB incremental sync completed. Processed {} changes",
+        driver.total_changes
+    );
+
+    drop(driver);
+    source.cleanup().await?;
+    Ok(())
+}
+
+/// MongoDB change-stream CDC driver for [`sync_transform::run_source_runtime_with`].
+///
+/// Position is the resume token for the emitted event. [`Self::advance_watermark`]
+/// advances the sink-safe token handle; fetch-time tokens stay on `seen_token` only.
+struct MongodbChangeStreamDriver<'a> {
+    stream: Box<dyn ChangeStream>,
+    /// Sink-safe bookmark (advanced in [`SourceDriver::advance_watermark`]).
+    resume_token: Arc<Mutex<Vec<u8>>>,
+    /// Last token observed while polling (source of PositionedEvent positions).
+    seen_token: Arc<Mutex<Vec<u8>>>,
+    options: &'a ReplicationTailOptions,
+    until_reached: bool,
+    finished: bool,
+    total_changes: u64,
+}
+
+#[async_trait::async_trait]
+impl SourceDriver for MongodbChangeStreamDriver<'_> {
+    type Position = Vec<u8>;
+
+    async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
+        if self.stop_reason().is_some() || self.finished {
+            return Ok(Vec::new());
+        }
+
+        let timeout_result =
+            tokio::time::timeout(self.options.idle_timeout, self.stream.next()).await;
         let result = match timeout_result {
             Ok(Some(r)) => r,
             Ok(None) => {
                 info!("Stream ended, stopping incremental sync");
-                break;
+                self.finished = true;
+                return Ok(Vec::new());
             }
             Err(_) => {
                 info!("Timeout waiting for changes, stopping incremental sync");
-                break;
+                self.finished = true;
+                return Ok(Vec::new());
             }
         };
+
         match result {
             Ok(change) => {
                 debug!("Received change: {change:?}");
+                let token = self.seen_token.lock().await.clone();
 
-                surreal.apply_universal_change(&change).await?;
-
-                change_count += 1;
-                if change_count.is_multiple_of(100) {
-                    info!("Processed {change_count} changes");
-                }
-
-                // Check if we've reached the target checkpoint
-                if let Some(ref target) = target_checkpoint {
-                    let current = source.get_checkpoint().await?;
-                    if current.resume_token >= target.resume_token {
+                if let Some(ref target) = self.options.until {
+                    if token >= target.resume_token {
+                        use checkpoint::Checkpoint;
                         info!(
-                            "Reached target checkpoint: {}, stopping incremental sync",
+                            "Reached target checkpoint: {}, stopping after this event",
                             target.to_cli_string()
                         );
-                        break;
+                        self.until_reached = true;
                     }
                 }
 
-                let now = Utc::now();
-
-                // Check if we've reached the deadline
-                if now >= deadline {
-                    info!("Reached deadline: {deadline}, stopping incremental sync");
-                    break;
-                }
+                Ok(vec![PositionedEvent::change(change, token)])
             }
             Err(e) => {
                 warn!("Error reading change stream: {e}");
-                // Decide whether to continue or break based on error type
-                // For now, we'll continue
+                // Continue on transient stream errors (same as earlier Change Streams loop).
+                Ok(Vec::new())
             }
         }
     }
 
-    info!("MongoDB incremental sync completed. Processed {change_count} changes");
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()> {
+        *self.resume_token.lock().await = position;
+        Ok(())
+    }
 
-    // Cleanup
-    source.cleanup().await?;
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
 
-    Ok(())
+    fn checkpoint_policy(&self) -> CheckpointPolicy {
+        CheckpointPolicy::AdvanceOnly
+    }
+
+    fn stop_reason(&self) -> Option<StopReason> {
+        if Utc::now() >= self.options.deadline {
+            return Some(StopReason::Deadline);
+        }
+        if self.until_reached {
+            return Some(StopReason::Until);
+        }
+        None
+    }
+
+    fn note_sunk_events(&mut self, count: u64) {
+        self.total_changes = self.total_changes.saturating_add(count);
+        if self.total_changes.is_multiple_of(100) {
+            info!("Processed {} changes", self.total_changes);
+        }
+    }
 }
 
 #[cfg(test)]

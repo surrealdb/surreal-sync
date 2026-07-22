@@ -17,6 +17,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 surreal-sink = { path = "../surreal-sink" }
 sync-core = { path = "../sync-core" }
+sync-transform = { path = "../sync-transform" }
 tokio = { version = "1.49", features = ["full"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1", "with-geo-types-0_7"] }
 tracing = "0.1"

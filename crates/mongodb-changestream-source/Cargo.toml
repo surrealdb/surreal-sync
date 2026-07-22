@@ -22,6 +22,9 @@ mongodb-types = { path = "../mongodb-types" }
 # Checkpoint management
 checkpoint = { path = "../checkpoint" }
 
+# Shared apply / transform pipeline
+sync-transform = { path = "../sync-transform" }
+
 # Async runtime
 tokio = { version = "1.49", features = ["full"] }
 tokio-stream = "0.1"

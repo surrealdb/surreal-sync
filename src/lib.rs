@@ -114,14 +114,3 @@ pub struct SurrealOpts {
     #[arg(long, env = "SURREAL_SDK_VERSION", value_parser = ["v2", "v3"])]
     pub surreal_sdk_version: Option<String>,
 }
-
-// CLI type → PostgreSQL logical replication library type conversions
-impl From<&SurrealOpts> for surreal_sync_postgresql_wal2json_source::sync::SurrealOpts {
-    fn from(opts: &SurrealOpts) -> Self {
-        Self {
-            surreal_endpoint: opts.surreal_endpoint.clone(),
-            surreal_username: opts.surreal_username.clone(),
-            surreal_password: opts.surreal_password.clone(),
-        }
-    }
-}

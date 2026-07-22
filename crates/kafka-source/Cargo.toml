@@ -15,6 +15,7 @@ kafka-types = { path = "../kafka-types" }
 # For sync functionality
 surreal-sink = { path = "../surreal-sink" }
 sync-core = { path = "../sync-core" }
+sync-transform = { path = "../sync-transform" }
 
 # Kafka client
 rdkafka = { version = "0.38", features = ["tokio", "sasl"] }
@@ -43,6 +44,9 @@ bytes = "1.0"
 base64 = "0.22"
 tempfile = "3.27"
 
+# Async traits
+async-trait = "0.1"
+
 # CLI argument parsing (for Config struct)
 clap = { version = "4.5", features = ["derive", "env"] }
 
@@ -53,3 +57,7 @@ chrono = { version = "0.4.41", features = ["serde"] }
 tokio-test = "0.4"
 tempfile = "3.27"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sync-transform = { path = "../sync-transform" }
+async-trait = "0.1"
+surreal-sink = { path = "../surreal-sink" }
+sync-core = { path = "../sync-core" }

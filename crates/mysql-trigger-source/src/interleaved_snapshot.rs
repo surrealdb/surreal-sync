@@ -22,9 +22,9 @@ use json_types::{convert_id_to_universal_value, JsonValueWithSchema};
 use mysql_async::{prelude::*, Pool, Row, Value};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
-    run_interleaved_snapshot, InterleavedSnapshotConfig, InterleavedSnapshotResult, PkTuple,
-    ReconciliationEvent, SnapshotCheckpointer, SnapshotSignal, TableSpec, WatermarkKind,
-    WatermarkSource,
+    run_interleaved_snapshot_with_transforms, InterleavedSnapshotConfig, InterleavedSnapshotResult,
+    PkTuple, ReconciliationEvent, SnapshotCheckpointer, SnapshotSignal, SnapshotTransforms,
+    TableSpec, WatermarkKind, WatermarkSource,
 };
 use sync_core::{
     DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,
@@ -510,9 +510,15 @@ where
     S: SurrealSink,
     C: SnapshotCheckpointer,
 {
-    let result =
-        run_interleaved_snapshot_full_sync_result(pool, database, sink, config, checkpointer)
-            .await?;
+    let result = run_interleaved_snapshot_full_sync_result(
+        pool,
+        database,
+        sink,
+        config,
+        checkpointer,
+        &SnapshotTransforms::identity(),
+    )
+    .await?;
     Ok(result.final_position)
 }
 
@@ -524,13 +530,40 @@ pub async fn run_interleaved_snapshot_full_sync_result<S, C>(
     sink: &S,
     config: &InterleavedSnapshotConfig,
     checkpointer: &mut C,
+    transforms: &SnapshotTransforms,
 ) -> Result<InterleavedSnapshotResult<i64>>
 where
     S: SurrealSink,
     C: SnapshotCheckpointer,
 {
     let mut source = MySqlWatermarkSource::new(pool, database).await?;
-    run_interleaved_snapshot(&mut source, sink, config, checkpointer).await
+    run_interleaved_snapshot_with_transforms(&mut source, sink, config, checkpointer, transforms)
+        .await
+}
+
+/// Interleaved snapshot with an explicit transform pipeline (returns position only).
+pub async fn run_interleaved_snapshot_full_sync_with_transforms<S, C>(
+    pool: Pool,
+    database: String,
+    sink: &S,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+    transforms: &SnapshotTransforms,
+) -> Result<i64>
+where
+    S: SurrealSink,
+    C: SnapshotCheckpointer,
+{
+    let result = run_interleaved_snapshot_full_sync_result(
+        pool,
+        database,
+        sink,
+        config,
+        checkpointer,
+        transforms,
+    )
+    .await?;
+    Ok(result.final_position)
 }
 
 /// Enumerate the user tables to snapshot, excluding the audit and signal tables

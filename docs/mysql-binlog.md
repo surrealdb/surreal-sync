@@ -2,6 +2,8 @@
 
 `surreal-sync from mysql-binlog` replicates MySQL and MariaDB tables into SurrealDB using the binary log (binlog) as a change-data-capture (CDC) stream. It registers as a replica, reads row-format binlog events, and applies them to SurrealDB — no triggers or audit tables on the source. The same subcommand works against both engines; surreal-sync auto-detects the flavor from `SELECT @@version` (override with `--flavor mysql` or `--flavor mariadb`).
 
+Optional transforms: pass `--transforms-config` with a TOML file. Omit the flag to leave rows unchanged. Details: [How sync works](sync-pipeline.md).
+
 The end-to-end model mirrors a mature CDC pipeline (Debezium-style **snapshot → stream → resume**), grounded in this project's commands and traits:
 
 1. **Snapshot** the selected tables into SurrealDB.
@@ -59,7 +61,7 @@ Use `--snapshot-mode` on `sync` to choose the phase mix:
 
 Changes are read by registering as a binlog replica (`COM_REGISTER_SLAVE` followed by `COM_BINLOG_DUMP`, or `COM_BINLOG_DUMP_GTID` on MySQL 8). Row-format events (`WRITE_ROWS`, `UPDATE_ROWS`, `DELETE_ROWS`, and MySQL `PARTIAL_UPDATE_ROWS`) are decoded and applied to SurrealDB. MySQL partial JSON row updates (`binlog_row_value_options=PARTIAL_JSON`) are reconstructed into the final JSON document before the change is applied, so normal MySQL 8 partial JSON logging can stay enabled. Every event's CRC32 checksum is verified before it is parsed, so a corrupt or truncated event fails loudly rather than being silently mis-decoded.
 
-Processing uses an apply-then-commit pattern with **at-least-once delivery** — design SurrealDB writes to be idempotent (upsert by primary key).
+Processing uses a sink-then-`advance_watermark` pattern with **at-least-once delivery** — design SurrealDB writes to be idempotent (upsert by primary key). For binlog, `advance_watermark` calls the protocol `client.commit` to mark the sink-safe position.
 
 ## Lifecycle: start, stop, resume, cancel
 
@@ -95,7 +97,7 @@ Because the streaming lower bound (`FullSyncStart`) is persisted before the snap
 
 ### Consistency & idempotency guarantees
 
-- **Delivery:** at-least-once. A crash between apply and commit may replay a bounded set of changes on restart.
+- **Delivery:** at-least-once. A crash between sink apply and `advance_watermark` may replay a bounded set of changes on restart.
 - **Idempotency:** make SurrealDB writes idempotent (upsert by primary key, keyed deletes). Every synced table must have a usable primary key.
 - **Interleaved snapshot** converges to a **consistent image at the streaming position** (live log event wins over an overlapping chunk read), not an inconsistent point-in-time dump.
 - **No silent downgrade:** a non-empty but unparseable GTID (from a checkpoint string *or* from the server's `@@global.gtid_executed` / `@@global.gtid_binlog_pos` at snapshot time) is a hard error, never a silent fall back to file+offset.
@@ -112,6 +114,8 @@ Pass exactly one of:
 - `--checkpoints-surreal-table <TABLE>` — checkpoints in a SurrealDB table (good for containers and supervised services).
 
 Checkpoints are written at snapshot start (`FullSyncStart`), snapshot handoff completion (`FullSyncEnd` — immutable t2 boundary, written once), and during streaming via `CatchUpProgress` (position updated on `--checkpoint-interval`, default 10 seconds; table coverage merged when ad-hoc snapshot batches complete). **Restart the same `sync` command** after any stop — surreal-sync reads the latest position from `CatchUpProgress` when present, otherwise `FullSyncEnd`, otherwise `FullSyncStart`; when both `CatchUpProgress` and `FullSyncEnd` exist, the furthest-ahead position wins.
+
+When using [`--transforms-config`](sync-pipeline.md), streaming `CatchUpProgress` does not advance past batches that are still transforming or waiting to be applied — it tracks the **last successfully sunk** position until that work drains. After drain, sunk watermarks persist promptly; on the checkpoint interval the store may also advance to the current binlog position through filtered/unrelated traffic (same rules as without transforms).
 
 ### Position formats (auto-captured)
 
@@ -288,6 +292,7 @@ WantedBy=multi-user.target
 | `--binlog-poll-timeout-ms` | `500` | Blocking read timeout for binlog polls in the replication tail |
 | `--idle-sleep-ms` | `100` | Sleep when a replication tail poll returns no events |
 | `--binlog-event-batch-size` | `32` | Max events per binlog read in the replication tail loop |
+| `--transforms-config` | (none) | TOML transform pipeline (`[[transforms]]`); omit for identity — see [How sync works](sync-pipeline.md) |
 | `--tables` | all tables | Comma-separated table filter |
 | `--server-id` | random | Unique replica id |
 | `--flavor` | auto-detect | `mysql` or `mariadb` |
@@ -427,7 +432,7 @@ Expected behavior for common DDL, for the streaming path (`incremental` / `sync`
 - **Monitoring lag.** Compare the consumer's committed position against the server head (`SHOW MASTER STATUS` / `SHOW BINLOG STATUS`, or `gtid_executed` / `@@global.gtid_binlog_pos`). In follow mode the persisted checkpoint is the authoritative "how far have we gotten" marker.
 - **Binlog rotation / expiry gaps.** If the server purges a binlog file the checkpoint still needs, resume fails. Size retention to cover downtime; use GTID so rotation itself never invalidates a checkpoint.
 - **`server_id` uniqueness.** Every consumer needs a distinct id; collisions cause replicas to drop each other. Pin `--server-id` for long-lived services.
-- **Restart semantics (at-least-once).** On restart surreal-sync resumes from the last committed checkpoint and may re-apply the in-flight transaction. Make SurrealDB writes idempotent (upsert by primary key, keyed deletes).
+- **Restart semantics (at-least-once).** On restart surreal-sync resumes from the last persisted checkpoint and may re-apply the in-flight transaction. Make SurrealDB writes idempotent (upsert by primary key, keyed deletes).
 - **TLS.** Use `--tls-mode required` for replication over untrusted networks.
 
 ## MariaDB notes
@@ -602,7 +607,7 @@ Ensure `binlog_row_metadata=FULL` so labels ship with the stream. surreal-sync r
 
 ### Duplicate or replayed changes
 
-Binlog CDC is at-least-once. If a batch fails after apply but before commit, events may replay on restart. Make SurrealDB writes idempotent (upsert by primary key).
+Binlog CDC is at-least-once. If a batch fails after sink apply but before `advance_watermark`, events may replay on restart. Make SurrealDB writes idempotent (upsert by primary key).
 
 ## Data type support
 
@@ -611,6 +616,7 @@ See [MySQL Data Types](mysql-data-types.md); MariaDB uses the same mappings (inc
 ## References
 
 - Implementation: [crates/mysql-binlog-source/](../crates/mysql-binlog-source/) and [crates/binlog-protocol/](../crates/binlog-protocol/)
+- [How sync works](sync-pipeline.md) — optional enrichment / ETL on the path into SurrealDB (`--transforms-config`)
 - [Full Sync Strategies](design/full-sync-strategies.md)
 - [MySQL Replication Documentation](https://dev.mysql.com/doc/refman/8.0/en/replication.html)
 - [MariaDB Binary Log Documentation](https://mariadb.com/kb/en/binary-log/)

@@ -9,9 +9,13 @@ mod neo4j_client;
 pub mod testing;
 
 pub use full_sync::{
-    convert_neo4j_type_to_universal_value, row_to_relation, run_full_sync, Neo4jConversionContext,
-    Neo4jJsonProperty, Relation, SourceOpts, SyncOpts,
+    convert_neo4j_type_to_universal_value, row_to_relation, run_full_sync,
+    run_full_sync_with_transforms, Neo4jConversionContext, Neo4jJsonProperty, Relation, SourceOpts,
+    SyncOpts,
 };
-pub use incremental_sync::{run_incremental_sync, Neo4jChangeStream, Neo4jIncrementalSource};
+pub use incremental_sync::{
+    apply_incremental_changes, run_incremental_sync, run_incremental_sync_with_transforms,
+    Neo4jChangeStream, Neo4jIncrementalSource, ReplicationTailOptions,
+};
 pub use neo4j_checkpoint::Neo4jCheckpoint;
 pub use neo4j_client::new_neo4j_client;

@@ -16,6 +16,7 @@
 //! - `kafka`: Kafka streaming sync
 //! - `csv`: CSV file import
 //! - `jsonl`: JSONL file import
+//! - `transforms`: Shared `--transforms-config` loader for all `from *` sync handlers
 
 pub mod common;
 pub mod csv;
@@ -28,6 +29,7 @@ pub mod neo4j;
 pub mod postgresql_pgoutput;
 pub mod postgresql_trigger;
 pub mod postgresql_wal2json;
+pub mod transforms;
 
 // Re-export common utilities (crate-internal only)
 pub(crate) use crate::config::parse_duration_to_secs;

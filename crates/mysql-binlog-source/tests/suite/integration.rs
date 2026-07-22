@@ -19,7 +19,16 @@ struct MemSink {
 
 #[async_trait::async_trait]
 impl surreal_sink::SurrealSink for MemSink {
-    async fn write_universal_rows(&self, _rows: &[sync_core::UniversalRow]) -> anyhow::Result<()> {
+    async fn write_universal_rows(&self, rows: &[sync_core::UniversalRow]) -> anyhow::Result<()> {
+        // Homogeneous Update upserts coalesce here; mirror observations.
+        let mut changes = self.changes.lock().expect("lock");
+        for row in rows {
+            changes.push(format!(
+                "{:?}:{}",
+                sync_core::UniversalChangeOp::Update,
+                row.table
+            ));
+        }
         Ok(())
     }
 
@@ -55,7 +64,16 @@ struct CaptureSink {
 
 #[async_trait::async_trait]
 impl surreal_sink::SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, _rows: &[sync_core::UniversalRow]) -> anyhow::Result<()> {
+    async fn write_universal_rows(&self, rows: &[sync_core::UniversalRow]) -> anyhow::Result<()> {
+        // Homogeneous Update upserts coalesce here; mirror into `changes`.
+        let mut changes = self.changes.lock().expect("lock");
+        for row in rows {
+            changes.push(UniversalChange::update(
+                row.table.clone(),
+                row.id.clone(),
+                row.fields.clone(),
+            ));
+        }
         Ok(())
     }
 
@@ -324,6 +342,94 @@ async fn gtid_checkpoint_resume_applies_subsequent_changes() -> Result<()> {
         persisted.position.position,
         BinlogCheckpoint::from_cli_string("file:mysql-bin.000001:4")?.position,
         "incremental sync should persist a real stream checkpoint"
+    );
+
+    drop(conn);
+    pool.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn filtered_only_catch_up_advances_catch_up_progress_when_drained() -> Result<()> {
+    // Syncing only `keep` while unrelated `noise` rows flood the binlog must still
+    // advance CatchUpProgress on the interval once the apply window is drained
+    // (no commits — filtered traffic never sinks).
+    crate::shared::init_logging();
+    let container = crate::shared::shared_mysql_binlog().await;
+    let db_name = "integ_filtered_catchup";
+    let conn_str = crate::shared::create_test_db(container, db_name).await?;
+
+    let pool = mysql_async::Pool::from_url(&conn_str)?;
+    let mut conn = pool.get_conn().await?;
+    conn.query_drop("CREATE TABLE keep (id INT PRIMARY KEY, n INT)")
+        .await?;
+    conn.query_drop("CREATE TABLE noise (id INT PRIMARY KEY, n INT)")
+        .await?;
+
+    let mut client = connect_client(&conn_str, 9_003_080).await?;
+    crate::shared::start_binlog_at_master_end(&mut client, &conn_str).await?;
+    let start = BinlogCheckpoint {
+        flavor: container.flavor(),
+        position: client.current_position(),
+        timestamp: chrono::Utc::now(),
+    };
+    drop(client);
+
+    for i in 1..=40 {
+        conn.exec_drop("INSERT INTO noise (id, n) VALUES (?, ?)", (i, i * 10))
+            .await?;
+    }
+
+    let sink = MemSink {
+        changes: std::sync::Mutex::new(Vec::new()),
+    };
+    let source_opts = SourceOpts {
+        connection_string: conn_str.clone(),
+        database: Some(db_name.to_string()),
+        tables: vec!["keep".to_string()],
+        server_id: Some(9_003_081),
+        flavor: Some(container.flavor()),
+        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        mariadb_gtid_strict_mode:
+            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+    };
+
+    let tmp = tempfile::TempDir::new()?;
+    let manager = checkpoint::SyncManager::new(checkpoint::FilesystemStore::new(tmp.path()));
+    use tokio_util::sync::CancellationToken;
+    let cancel = CancellationToken::new();
+    let canceller = cancel.clone();
+    tokio::spawn(async move {
+        // Enough time for interval persists through filtered noise; avoid a long deadline.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        canceller.cancel();
+    });
+    let mut options = ReplicationTailOptions::stream(None, None).with_cancel(cancel);
+    options.checkpoint_interval = Duration::from_millis(50);
+
+    run_replication_tail_with_checkpoints(
+        &sink,
+        source_opts,
+        start.clone(),
+        options,
+        Some(&manager),
+    )
+    .await?;
+
+    let applied = sink.changes.lock().expect("lock").clone();
+    assert!(
+        applied.is_empty(),
+        "filtered-only catch-up must not sink noise rows, got {applied:?}"
+    );
+
+    let persisted: CatchUpProgress = manager
+        .read_checkpoint(checkpoint::SyncPhase::CatchUpProgress)
+        .await?;
+    assert!(
+        persisted.position.position > start.position,
+        "CatchUpProgress must advance through filtered noise: start={:?} persisted={:?}",
+        start.position,
+        persisted.position.position
     );
 
     drop(conn);

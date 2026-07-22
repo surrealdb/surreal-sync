@@ -1,11 +1,17 @@
 //! The generic DBLog-style watermark snapshot loop.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use checkpoint::{InterleavedSnapshotCheckpoint, SnapshotTableProgress};
 use surreal_sink::SurrealSink;
-use sync_core::UniversalRow;
+use sync_core::{UniversalChange, UniversalRow};
+use sync_transform::{
+    run_source_runtime_with, ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver,
+    SourceRuntimeOpts,
+};
 use tracing::info;
 use uuid::Uuid;
 
@@ -28,6 +34,40 @@ impl Default for InterleavedSnapshotConfig {
     fn default() -> Self {
         Self {
             chunk_size: DEFAULT_CHUNK_SIZE,
+        }
+    }
+}
+
+/// Transform pipeline + apply options for interleaved snapshot sink writes.
+///
+/// Default is an identity pipeline with `batch_size = 1` (no transform stage
+/// dispatch; matches pre-transform behavior).
+#[derive(Debug, Clone)]
+pub struct SnapshotTransforms {
+    pub pipeline: Pipeline,
+    pub apply_opts: ApplyOpts,
+}
+
+impl Default for SnapshotTransforms {
+    fn default() -> Self {
+        Self::identity()
+    }
+}
+
+impl SnapshotTransforms {
+    /// Empty pipeline, per-row apply cadence.
+    pub fn identity() -> Self {
+        Self {
+            pipeline: Pipeline::new(),
+            apply_opts: ApplyOpts::identity(),
+        }
+    }
+
+    /// Borrowed view used by the runner.
+    pub fn from_refs(pipeline: &Pipeline, apply_opts: &ApplyOpts) -> Self {
+        Self {
+            pipeline: pipeline.clone(),
+            apply_opts: apply_opts.clone(),
         }
     }
 }
@@ -125,19 +165,8 @@ fn init_snapshot_state(
 /// primary-key-ordered chunks while concurrently consuming and applying the
 /// source's change stream to `sink`.
 ///
-/// For each chunk the loop:
-/// 1. writes a low watermark, reads the chunk into a primary-key-keyed buffer,
-///    and writes a high watermark;
-/// 2. consumes change-stream events, applying every data change to the sink,
-///    and while inside the open window drops any buffered row whose primary
-///    key also appears as an event (the log event wins);
-/// 3. on window close, flushes the surviving buffered rows as upserts;
-/// 4. checkpoints `{reconciliation_pos, per-table last_pk}` and calls
-///    [`WatermarkSource::commit_reconciled`] so the source can free applied
-///    change-log data.
-///
-/// On completion it returns the final stream position and the exact peak
-/// buffered-row count.
+/// Uses an identity transform pipeline. Prefer
+/// [`run_interleaved_snapshot_with_transforms`] when a [`Pipeline`] is configured.
 pub async fn run_interleaved_snapshot<S, K, C>(
     source: &mut S,
     sink: &K,
@@ -149,17 +178,79 @@ where
     K: SurrealSink,
     C: SnapshotCheckpointer,
 {
-    run_interleaved_snapshot_with_resume(source, sink, config, checkpointer, None).await
+    let transforms = SnapshotTransforms::identity();
+    run_interleaved_snapshot_with_resume_and_transforms(
+        source,
+        sink,
+        config,
+        checkpointer,
+        None,
+        &transforms,
+    )
+    .await
 }
 
 /// Like [`run_interleaved_snapshot`], but resumes from a saved per-chunk
-/// checkpoint when `resume` is set.
+/// checkpoint when `resume` is set. Identity transforms.
 pub async fn run_interleaved_snapshot_with_resume<S, K, C>(
     source: &mut S,
     sink: &K,
     config: &InterleavedSnapshotConfig,
     checkpointer: &mut C,
     resume: Option<&InterleavedSnapshotCheckpoint>,
+) -> Result<InterleavedSnapshotResult<S::Position>>
+where
+    S: WatermarkSource,
+    K: SurrealSink,
+    C: SnapshotCheckpointer,
+{
+    let transforms = SnapshotTransforms::identity();
+    run_interleaved_snapshot_with_resume_and_transforms(
+        source,
+        sink,
+        config,
+        checkpointer,
+        resume,
+        &transforms,
+    )
+    .await
+}
+
+/// [`run_interleaved_snapshot`] with an explicit transform pipeline.
+pub async fn run_interleaved_snapshot_with_transforms<S, K, C>(
+    source: &mut S,
+    sink: &K,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+    transforms: &SnapshotTransforms,
+) -> Result<InterleavedSnapshotResult<S::Position>>
+where
+    S: WatermarkSource,
+    K: SurrealSink,
+    C: SnapshotCheckpointer,
+{
+    run_interleaved_snapshot_with_resume_and_transforms(
+        source,
+        sink,
+        config,
+        checkpointer,
+        None,
+        transforms,
+    )
+    .await
+}
+
+/// Resume-capable watermark snapshot with transform → sink apply.
+///
+/// Checkpoint / `commit_reconciled` still run only after successful sink writes
+/// (transform ack is in-memory only).
+pub async fn run_interleaved_snapshot_with_resume_and_transforms<S, K, C>(
+    source: &mut S,
+    sink: &K,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+    resume: Option<&InterleavedSnapshotCheckpoint>,
+    transforms: &SnapshotTransforms,
 ) -> Result<InterleavedSnapshotResult<S::Position>>
 where
     S: WatermarkSource,
@@ -210,6 +301,7 @@ where
             table_index,
             &mut progress,
             &mut peak_buffered_rows,
+            transforms,
         )
         .await?;
     }
@@ -236,6 +328,32 @@ where
     K: SurrealSink,
     C: SnapshotCheckpointer,
 {
+    let transforms = SnapshotTransforms::identity();
+    run_adhoc_snapshot_tables_with_transforms(
+        source,
+        sink,
+        tables,
+        config,
+        checkpointer,
+        &transforms,
+    )
+    .await
+}
+
+/// [`run_adhoc_snapshot_tables`] with an explicit transform pipeline.
+pub async fn run_adhoc_snapshot_tables_with_transforms<S, K, C>(
+    source: &mut S,
+    sink: &K,
+    tables: Vec<TableSpec>,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+    transforms: &SnapshotTransforms,
+) -> Result<()>
+where
+    S: WatermarkSource,
+    K: SurrealSink,
+    C: SnapshotCheckpointer,
+{
     let mut progress: Vec<TableState> = tables
         .iter()
         .map(|t| TableState {
@@ -255,6 +373,7 @@ where
             table_index,
             &mut progress,
             &mut peak_buffered_rows,
+            transforms,
         )
         .await?;
     }
@@ -263,6 +382,11 @@ where
 
 /// Snapshot a single table in primary-key-ordered chunks, applying the same
 /// low/high watermark dedup window per chunk and checkpointing after each one.
+///
+/// One long-lived [`run_source_runtime_with`] spans every chunk so reconciliation
+/// polls continue under spare `max_in_flight` while ordered sink applies run
+/// (R∩W), and surviving buffer rows share that same apply window (M1).
+/// `commit_reconciled` / checkpointer run only after each chunk's events sink.
 #[allow(clippy::too_many_arguments)]
 async fn snapshot_one_table<S, K, C>(
     source: &mut S,
@@ -273,114 +397,314 @@ async fn snapshot_one_table<S, K, C>(
     table_index: usize,
     progress: &mut [TableState],
     peak_buffered_rows: &mut usize,
+    transforms: &SnapshotTransforms,
 ) -> Result<()>
 where
     S: WatermarkSource,
     K: SurrealSink,
     C: SnapshotCheckpointer,
 {
-    // Resume from the last copied primary key if progress already recorded one.
-    let mut after: Option<PkTuple> = progress[table_index].last_pk.clone();
+    let after = progress[table_index].last_pk.clone();
+    let mut driver = SnapshotTableDriver {
+        source,
+        checkpointer,
+        spec,
+        table_index,
+        progress,
+        peak_buffered_rows,
+        chunk_size: config.chunk_size,
+        after,
+        phase: SnapshotPhase::NeedChunk,
+        low_id: Uuid::nil(),
+        high_id: Uuid::nil(),
+        in_window: false,
+        buffer: HashMap::new(),
+        last_pk: None,
+        chunk_len: 0,
+        pending: VecDeque::new(),
+        next_pos: 0,
+        events_emitted: 0,
+        events_sunk: 0,
+        chunk_poll_complete: false,
+        finished: false,
+    };
 
-    loop {
-        // Open the dedup window before reading the chunk.
-        let low_id = Uuid::new_v4();
-        source.write_watermark(WatermarkKind::Low, low_id).await?;
-
-        let rows = source
-            .read_chunk(spec, after.as_ref(), config.chunk_size)
-            .await?;
-
-        if rows.is_empty() {
-            progress[table_index].done = true;
-            source.on_table_snapshot_complete(&spec.table).await?;
-            let position = source.current_position().await?;
-            checkpointer
-                .save_progress(&build_checkpoint(&position, progress)?)
-                .await?;
-            source.commit_reconciled(position).await?;
-            break;
-        }
-
-        let chunk_len = rows.len();
-
-        // Load the chunk into the primary-key-keyed buffer, tracking the
-        // peak inline at every insertion (event-based, exact maximum).
-        let mut buffer: HashMap<String, UniversalRow> = HashMap::with_capacity(chunk_len);
-        let mut last_pk: Option<PkTuple> = None;
-        for row in rows {
-            let pk = PkTuple::from_row(&row, &spec.pk_columns)?;
-            last_pk = Some(pk.clone());
-            buffer.insert(pk.key(), row);
-            if buffer.len() > *peak_buffered_rows {
-                *peak_buffered_rows = buffer.len();
-            }
-        }
-
-        // Close the dedup window after the chunk is read.
-        let high_id = Uuid::new_v4();
-        source.write_watermark(WatermarkKind::High, high_id).await?;
-
-        // Consume the stream until the high watermark passes by. Every
-        // data change is applied to the sink; while in-window, any buffered
-        // row touched by an event is dropped so the log event wins.
-        let mut in_window = false;
-        let mut window_closed = false;
-        while !window_closed {
-            let events = source.next_reconciliation_events().await?;
-            for event in events {
-                if let Some(watermark_id) = event.pk.single_uuid() {
-                    if watermark_id == low_id {
-                        in_window = true;
-                        continue;
-                    }
-                    if watermark_id == high_id {
-                        flush_buffer(sink, &mut buffer).await?;
-                        in_window = false;
-                        window_closed = true;
-                        continue;
-                    }
-                }
-
-                sink.apply_universal_change(&event.change).await?;
-                if in_window {
-                    buffer.remove(&event.pk.key());
-                }
-            }
-        }
-
-        after = last_pk.clone();
-        progress[table_index].last_pk = last_pk;
-
-        let table_done = chunk_len < config.chunk_size;
-        if table_done {
-            progress[table_index].done = true;
-            source.on_table_snapshot_complete(&spec.table).await?;
-        }
-
-        let position = source.current_position().await?;
-        checkpointer
-            .save_progress(&build_checkpoint(&position, progress)?)
-            .await?;
-        source.commit_reconciled(position).await?;
-
-        if table_done {
-            break;
-        }
-    }
-
+    let transformer = Arc::new(transforms.pipeline.clone());
+    let runtime_opts = SourceRuntimeOpts::new();
+    run_source_runtime_with(
+        &mut driver,
+        sink,
+        transformer,
+        &transforms.apply_opts,
+        &runtime_opts,
+    )
+    .await?;
     Ok(())
 }
 
-/// Flush the surviving buffered rows as upserts and clear the buffer.
-async fn flush_buffer<K: SurrealSink>(
-    sink: &K,
-    buffer: &mut HashMap<String, UniversalRow>,
-) -> Result<()> {
-    if buffer.is_empty() {
-        return Ok(());
+/// Phases of the per-table interleaved snapshot state machine.
+enum SnapshotPhase {
+    /// Open watermarks and read the next keyset chunk.
+    NeedChunk,
+    /// Consume reconciliation events until the high watermark; survivors are
+    /// flushed into the apply queue as soon as high is observed (before any
+    /// later events in the same poll batch).
+    Reconciling,
+    /// Wait until sunk count catches emitted count, then checkpoint.
+    AwaitingChunkSink,
+}
+
+/// Long-lived driver: chunk reads + reconciliation + buffer flush share one
+/// `run_source_runtime` apply window across the whole table.
+struct SnapshotTableDriver<'a, S, C>
+where
+    S: WatermarkSource,
+    C: SnapshotCheckpointer,
+{
+    source: &'a mut S,
+    checkpointer: &'a mut C,
+    spec: &'a TableSpec,
+    table_index: usize,
+    progress: &'a mut [TableState],
+    peak_buffered_rows: &'a mut usize,
+    chunk_size: usize,
+    after: Option<PkTuple>,
+    phase: SnapshotPhase,
+    low_id: Uuid,
+    high_id: Uuid,
+    in_window: bool,
+    buffer: HashMap<String, UniversalRow>,
+    last_pk: Option<PkTuple>,
+    chunk_len: usize,
+    pending: VecDeque<PositionedEvent<u64>>,
+    next_pos: u64,
+    events_emitted: u64,
+    events_sunk: u64,
+    chunk_poll_complete: bool,
+    finished: bool,
+}
+
+impl<'a, S, C> SnapshotTableDriver<'a, S, C>
+where
+    S: WatermarkSource,
+    C: SnapshotCheckpointer,
+{
+    fn push_change(&mut self, change: UniversalChange) {
+        let pos = self.next_pos;
+        self.next_pos = self.next_pos.saturating_add(1);
+        self.events_emitted = self.events_emitted.saturating_add(1);
+        self.pending.push_back(PositionedEvent::change(change, pos));
     }
-    let rows: Vec<UniversalRow> = buffer.drain().map(|(_, row)| row).collect();
-    sink.write_universal_rows(&rows).await?;
-    Ok(())
+
+    async fn open_chunk(&mut self) -> Result<()> {
+        let low_id = Uuid::new_v4();
+        self.source
+            .write_watermark(WatermarkKind::Low, low_id)
+            .await?;
+
+        let rows = self
+            .source
+            .read_chunk(self.spec, self.after.as_ref(), self.chunk_size)
+            .await?;
+
+        if rows.is_empty() {
+            self.progress[self.table_index].done = true;
+            self.source
+                .on_table_snapshot_complete(&self.spec.table)
+                .await?;
+            let position = self.source.current_position().await?;
+            self.checkpointer
+                .save_progress(&build_checkpoint(&position, self.progress)?)
+                .await?;
+            self.source.commit_reconciled(position).await?;
+            self.finished = true;
+            return Ok(());
+        }
+
+        self.chunk_len = rows.len();
+        self.buffer = HashMap::with_capacity(self.chunk_len);
+        self.last_pk = None;
+        for row in rows {
+            let pk = PkTuple::from_row(&row, &self.spec.pk_columns)?;
+            self.last_pk = Some(pk.clone());
+            self.buffer.insert(pk.key(), row);
+            if self.buffer.len() > *self.peak_buffered_rows {
+                *self.peak_buffered_rows = self.buffer.len();
+            }
+        }
+
+        let high_id = Uuid::new_v4();
+        self.source
+            .write_watermark(WatermarkKind::High, high_id)
+            .await?;
+
+        self.low_id = low_id;
+        self.high_id = high_id;
+        self.in_window = false;
+        self.events_emitted = 0;
+        self.events_sunk = 0;
+        self.chunk_poll_complete = false;
+        self.phase = SnapshotPhase::Reconciling;
+        Ok(())
+    }
+
+    fn queue_buffer_rows(&mut self) {
+        let rows: Vec<UniversalRow> = self.buffer.drain().map(|(_, row)| row).collect();
+        for row in rows {
+            let change = UniversalChange::update(row.table, row.id, row.fields);
+            self.push_change(change);
+        }
+        self.chunk_poll_complete = true;
+        self.phase = SnapshotPhase::AwaitingChunkSink;
+    }
+
+    async fn try_finish_chunk_after_sink(&mut self) -> Result<()> {
+        if !self.chunk_poll_complete || self.events_sunk < self.events_emitted {
+            return Ok(());
+        }
+
+        self.after = self.last_pk.clone();
+        self.progress[self.table_index].last_pk = self.last_pk.clone();
+
+        let table_done = self.chunk_len < self.chunk_size;
+        if table_done {
+            self.progress[self.table_index].done = true;
+            self.source
+                .on_table_snapshot_complete(&self.spec.table)
+                .await?;
+        }
+
+        let position = self.source.current_position().await?;
+        self.checkpointer
+            .save_progress(&build_checkpoint(&position, self.progress)?)
+            .await?;
+        self.source.commit_reconciled(position).await?;
+
+        if table_done {
+            self.finished = true;
+        } else {
+            // Next chunk may open while prior-chunk transforms already drained;
+            // the same ApplyContext stays alive across chunks (M1).
+            self.phase = SnapshotPhase::NeedChunk;
+            self.chunk_poll_complete = false;
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl<S, C> SourceDriver for SnapshotTableDriver<'_, S, C>
+where
+    S: WatermarkSource,
+    C: SnapshotCheckpointer,
+{
+    type Position = u64;
+
+    async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
+        loop {
+            if self.finished {
+                return Ok(Vec::new());
+            }
+
+            // Drain already-queued events first so the runtime can fill the window.
+            if !self.pending.is_empty() {
+                let mut out = Vec::with_capacity(self.pending.len().min(64));
+                while out.len() < 64 {
+                    match self.pending.pop_front() {
+                        Some(pe) => out.push(pe),
+                        None => break,
+                    }
+                }
+                return Ok(out);
+            }
+
+            match self.phase {
+                SnapshotPhase::NeedChunk => {
+                    self.open_chunk().await?;
+                    if self.finished {
+                        return Ok(Vec::new());
+                    }
+                    // Same poll: start reconciling the chunk we just opened.
+                    continue;
+                }
+                SnapshotPhase::Reconciling => {
+                    let events = self.source.next_reconciliation_events().await?;
+                    let mut saw_high = false;
+                    for event in events {
+                        if let Some(watermark_id) = event.pk.single_uuid() {
+                            if watermark_id == self.low_id {
+                                self.in_window = true;
+                                continue;
+                            }
+                            if watermark_id == self.high_id {
+                                self.in_window = false;
+                                // Flush survivors *before* any post-high events
+                                // that share this poll batch. Otherwise a Delete
+                                // that commits after high would be queued first
+                                // and then overwritten by a stale buffer upsert.
+                                self.queue_buffer_rows();
+                                saw_high = true;
+                                continue;
+                            }
+                        }
+
+                        if self.in_window {
+                            self.buffer.remove(&event.pk.key());
+                        }
+                        self.push_change(event.change);
+                    }
+
+                    if saw_high {
+                        if self.events_emitted == 0 {
+                            // Empty window (no CDC, no survivors): checkpoint now.
+                            self.try_finish_chunk_after_sink().await?;
+                            continue;
+                        }
+                        let mut out = Vec::with_capacity(self.pending.len().min(64));
+                        while out.len() < 64 {
+                            match self.pending.pop_front() {
+                                Some(pe) => out.push(pe),
+                                None => break,
+                            }
+                        }
+                        return Ok(out);
+                    }
+
+                    let mut out = Vec::with_capacity(self.pending.len().min(64));
+                    while out.len() < 64 {
+                        match self.pending.pop_front() {
+                            Some(pe) => out.push(pe),
+                            None => break,
+                        }
+                    }
+                    return Ok(out);
+                }
+                SnapshotPhase::AwaitingChunkSink => {
+                    // Sink-gated: do not open the next chunk until watermark advance catches up.
+                    return Ok(Vec::new());
+                }
+            }
+        }
+    }
+
+    async fn advance_watermark(&mut self, _position: Self::Position) -> Result<()> {
+        // Watermark advance is sink-ordered; chunk retention advances in
+        // note_sunk_events once emitted count is fully sunk (see
+        // try_finish_chunk_after_sink).
+        self.try_finish_chunk_after_sink().await
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn checkpoint_policy(&self) -> CheckpointPolicy {
+        // Durability is the interleaved checkpointer + commit_reconciled, not
+        // persist_checkpoint on this u64 apply index.
+        CheckpointPolicy::AdvanceOnly
+    }
+
+    fn note_sunk_events(&mut self, count: u64) {
+        self.events_sunk = self.events_sunk.saturating_add(count);
+    }
 }

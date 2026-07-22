@@ -8,7 +8,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use surreal_sink::SurrealSink;
 use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};
-use sync_core::{Schema, TypedValue, UniversalRow, UniversalType, UniversalValue};
+use sync_core::{
+    GeneratorTableDefinition, Schema, TypedValue, UniversalRow, UniversalType, UniversalValue,
+};
+use sync_transform::{
+    run_source_runtime, ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver,
+    SourceRuntimeOpts,
+};
 use tracing::{debug, info, warn};
 
 /// Configuration for CSV import
@@ -99,6 +105,143 @@ fn parse_value_with_schema(value: &str, schema_type: Option<&UniversalType>) -> 
     }
 }
 
+/// No-op sink for CSV `--dry-run` (still exercises the apply window).
+struct DryRunSink;
+
+#[async_trait::async_trait]
+impl SurrealSink for DryRunSink {
+    async fn write_universal_rows(&self, _rows: &[UniversalRow]) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_universal_relations(
+        &self,
+        _relations: &[sync_core::UniversalRelation],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn apply_universal_change(&self, _change: &sync_core::UniversalChange) -> Result<()> {
+        Ok(())
+    }
+
+    async fn apply_universal_relation_change(
+        &self,
+        _change: &sync_core::UniversalRelationChange,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Long-lived CSV reader that polls decode chunks into the apply window.
+///
+/// File reads continue under spare `max_in_flight` capacity — there is no
+/// outer accumulate→`run_source_runtime` barrier per `batch_size`.
+struct CsvStreamDriver {
+    reader: csv::Reader<Box<dyn std::io::Read + Send>>,
+    headers: Vec<String>,
+    table: String,
+    id_field: Option<String>,
+    table_schema: Option<GeneratorTableDefinition>,
+    poll_chunk: usize,
+    record_count: u64,
+    sunk_count: u64,
+    finished: bool,
+    /// First record already read (no-header column-count probe).
+    pending_first: Option<csv::StringRecord>,
+}
+
+impl CsvStreamDriver {
+    fn record_to_event(&mut self, record: &csv::StringRecord) -> Result<PositionedEvent<u64>> {
+        if record.len() != self.headers.len() {
+            anyhow::bail!(
+                "Column count mismatch in CSV row {}: expected {} columns ({}), but found {} columns",
+                self.record_count + 1,
+                self.headers.len(),
+                self.headers.join(", "),
+                record.len()
+            );
+        }
+
+        let mut data: HashMap<String, TypedValue> = HashMap::new();
+        for (i, value) in record.iter().enumerate() {
+            if i < self.headers.len() {
+                let column_name = &self.headers[i];
+                let schema_type = self
+                    .table_schema
+                    .as_ref()
+                    .and_then(|ts| ts.get_field_type(column_name));
+                let parsed_value = parse_value_with_schema(value, schema_type);
+                data.insert(column_name.clone(), parsed_value);
+            }
+        }
+
+        let id_value = if let Some(ref id_field) = self.id_field {
+            data.get(id_field)
+                .map(|tv| tv.value.clone())
+                .unwrap_or_else(|| UniversalValue::Ulid(ulid::Ulid::new()))
+        } else {
+            UniversalValue::Ulid(ulid::Ulid::new())
+        };
+
+        let fields: HashMap<String, UniversalValue> =
+            data.into_iter().map(|(k, tv)| (k, tv.value)).collect();
+        let row = UniversalRow::new(self.table.clone(), self.record_count, id_value, fields);
+        let pos = self.record_count;
+        self.record_count = self.record_count.saturating_add(1);
+        let change = sync_core::UniversalChange::update(row.table, row.id, row.fields);
+        Ok(PositionedEvent::change(change, pos))
+    }
+}
+
+#[async_trait::async_trait]
+impl SourceDriver for CsvStreamDriver {
+    type Position = u64;
+
+    async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
+        if self.finished {
+            return Ok(Vec::new());
+        }
+
+        let mut events = Vec::with_capacity(self.poll_chunk);
+        while events.len() < self.poll_chunk {
+            let record = if let Some(first) = self.pending_first.take() {
+                first
+            } else {
+                let mut record = csv::StringRecord::new();
+                match self.reader.read_record(&mut record) {
+                    Ok(true) => record,
+                    Ok(false) => {
+                        self.finished = true;
+                        break;
+                    }
+                    Err(e) => {
+                        return Err(anyhow::anyhow!("Failed to read CSV record: {e}"));
+                    }
+                }
+            };
+            events.push(self.record_to_event(&record)?);
+        }
+        Ok(events)
+    }
+
+    async fn advance_watermark(&mut self, _position: Self::Position) -> Result<()> {
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn checkpoint_policy(&self) -> CheckpointPolicy {
+        CheckpointPolicy::AdvanceOnly
+    }
+
+    fn note_sunk_events(&mut self, count: u64) {
+        self.sunk_count = self.sunk_count.saturating_add(count);
+    }
+}
+
 /// Process CSV data from a reader and import into SurrealDB
 ///
 /// This function handles all CSV parsing, data conversion, and SurrealDB insertion
@@ -109,6 +252,8 @@ async fn process_csv_reader<S: SurrealSink>(
     reader: Box<dyn std::io::Read + Send>,
     source_name: &str,
     metrics_collector: Option<&super::metrics::MetricsCollector>,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
 ) -> Result<()> {
     info!("Processing CSV from: {source_name}");
 
@@ -118,250 +263,91 @@ async fn process_csv_reader<S: SurrealSink>(
         .delimiter(config.delimiter)
         .from_reader(reader);
 
-    // Get headers if available
-    let headers = if config.has_headers {
-        csv_reader
+    let (headers, pending_first) = if config.has_headers {
+        let headers = csv_reader
             .headers()
             .context("Failed to read CSV headers")?
             .iter()
             .map(|h| h.to_string())
-            .collect::<Vec<String>>()
+            .collect::<Vec<String>>();
+        (headers, None)
     } else if let Some(ref column_names) = config.column_names {
-        // Use provided column names
-        column_names.clone()
+        (column_names.clone(), None)
     } else {
-        // Generate column names if no headers and no names provided
-        // We need to peek at the first record to determine column count
-        // Since we can't peek without consuming, we'll use a workaround:
-        // Read all records into memory first
-        let all_records: Vec<_> = csv_reader
-            .records()
-            .collect::<Result<Vec<_>, _>>()
-            .context("Failed to read CSV records")?;
-
-        if all_records.is_empty() {
-            warn!("CSV file is empty");
-            return Ok(());
-        }
-
-        let column_count = all_records[0].len();
-        let headers: Vec<String> = (0..column_count).map(|i| format!("column_{i}")).collect();
-
-        // Process all the records we just read
-        let mut total_processed = 0;
-        let mut record_count = 0;
-        let mut batch: Vec<UniversalRow> = Vec::new();
-
-        for record in all_records {
-            // Validate column count matches
-            if record.len() != headers.len() {
-                anyhow::bail!(
-                    "Column count mismatch in CSV row {}: expected {} columns ({}), but found {} columns",
-                    record_count + 1,
-                    headers.len(),
-                    headers.join(", "),
-                    record.len()
-                );
+        // No headers / names: probe the first record for column count, then
+        // stream that record + the rest (avoid loading the whole file).
+        let mut first = csv::StringRecord::new();
+        match csv_reader.read_record(&mut first) {
+            Ok(true) => {
+                let headers: Vec<String> =
+                    (0..first.len()).map(|i| format!("column_{i}")).collect();
+                (headers, Some(first))
             }
-
-            // Get table schema if available for type-aware parsing
-            let table_schema = config
-                .schema
-                .as_ref()
-                .and_then(|s| s.get_table(&config.table));
-
-            // Convert CSV record to typed data
-            let mut data: HashMap<String, TypedValue> = HashMap::new();
-
-            for (i, value) in record.iter().enumerate() {
-                if i < headers.len() {
-                    let column_name = &headers[i];
-
-                    // Get schema type for this column if available
-                    let schema_type = table_schema.and_then(|ts| ts.get_field_type(column_name));
-
-                    // Parse value with schema-aware conversion
-                    let parsed_value = parse_value_with_schema(value, schema_type);
-
-                    data.insert(column_name.clone(), parsed_value);
-                }
+            Ok(false) => {
+                warn!("CSV file is empty");
+                return Ok(());
             }
-
-            // Create the ID for the record
-            let id_value = if let Some(ref id_field) = config.id_field {
-                // Use specified field as ID
-                data.get(id_field)
-                    .map(|tv| tv.value.clone())
-                    .unwrap_or_else(|| UniversalValue::Ulid(ulid::Ulid::new()))
-            } else {
-                UniversalValue::Ulid(ulid::Ulid::new())
-            };
-
-            // Convert HashMap<String, TypedValue> to HashMap<String, UniversalValue>
-            let fields: HashMap<String, UniversalValue> =
-                data.into_iter().map(|(k, tv)| (k, tv.value)).collect();
-
-            let row =
-                UniversalRow::new(config.table.clone(), record_count as u64, id_value, fields);
-
-            batch.push(row);
-            record_count += 1;
-
-            // Process batch when it reaches the configured size
-            if batch.len() >= config.batch_size {
-                if !config.dry_run {
-                    surreal.write_universal_rows(&batch).await?;
-                    total_processed += batch.len();
-                } else {
-                    debug!("Dry run: Would insert batch of {} records", batch.len());
-                    total_processed += batch.len();
-                }
-
-                // Update metrics
-                if let Some(collector) = metrics_collector {
-                    collector.add_rows(batch.len() as u64);
-                }
-
-                batch.clear();
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to read CSV records: {e}"));
             }
         }
-
-        // Process remaining records
-        if !batch.is_empty() {
-            if !config.dry_run {
-                surreal.write_universal_rows(&batch).await?;
-                total_processed += batch.len();
-            } else {
-                debug!(
-                    "Dry run: Would insert final batch of {} records",
-                    batch.len()
-                );
-                total_processed += batch.len();
-            }
-
-            // Update metrics for final batch
-            if let Some(collector) = metrics_collector {
-                collector.add_rows(batch.len() as u64);
-            }
-        }
-
-        info!(
-            "Processed {record_count} records from {source_name} (total processed: {total_processed})",
-        );
-
-        // Return early since we already processed everything
-        return Ok(());
     };
 
     debug!("CSV headers/columns: {headers:?}");
 
-    // Get table schema if available for type-aware parsing
     let table_schema = config
         .schema
         .as_ref()
-        .and_then(|s| s.get_table(&config.table));
+        .and_then(|s| s.get_table(&config.table))
+        .cloned();
 
-    // Process records in batches
-    let mut batch: Vec<UniversalRow> = Vec::new();
-    let mut total_processed = 0;
-    let mut record_count = 0;
+    let mut driver = CsvStreamDriver {
+        reader: csv_reader,
+        headers,
+        table: config.table.clone(),
+        id_field: config.id_field.clone(),
+        table_schema,
+        poll_chunk: config.batch_size.max(1),
+        record_count: 0,
+        sunk_count: 0,
+        finished: false,
+        pending_first,
+    };
 
-    for result in csv_reader.records() {
-        let record = result.context("Failed to read CSV record")?;
-
-        // Validate column count matches
-        if record.len() != headers.len() {
-            anyhow::bail!(
-                "Column count mismatch in CSV row {}: expected {} columns ({}), but found {} columns",
-                record_count + 1,
-                headers.len(),
-                headers.join(", "),
-                record.len()
-            );
-        }
-
-        // Convert CSV record to typed data
-        let mut data: HashMap<String, TypedValue> = HashMap::new();
-
-        for (i, value) in record.iter().enumerate() {
-            if i < headers.len() {
-                let column_name = &headers[i];
-
-                // Get schema type for this column if available
-                let schema_type = table_schema.and_then(|ts| ts.get_field_type(column_name));
-
-                // Parse value with schema-aware conversion
-                let parsed_value = parse_value_with_schema(value, schema_type);
-
-                data.insert(column_name.clone(), parsed_value);
-            }
-        }
-
-        // Create the ID for the record
-        let id_value = if let Some(ref id_field) = config.id_field {
-            // Use specified field as ID
-            data.get(id_field)
-                .map(|tv| tv.value.clone())
-                .unwrap_or_else(|| UniversalValue::Ulid(ulid::Ulid::new()))
-        } else {
-            UniversalValue::Ulid(ulid::Ulid::new())
-        };
-
-        // Convert HashMap<String, TypedValue> to HashMap<String, UniversalValue>
-        let fields: HashMap<String, UniversalValue> =
-            data.into_iter().map(|(k, tv)| (k, tv.value)).collect();
-
-        let row = UniversalRow::new(config.table.clone(), record_count as u64, id_value, fields);
-
-        batch.push(row);
-        record_count += 1;
-
-        // Process batch when it reaches the configured size
-        if batch.len() >= config.batch_size {
-            if !config.dry_run {
-                surreal.write_universal_rows(&batch).await?;
-                total_processed += batch.len();
-            } else {
-                debug!("Dry run: Would insert batch of {} records", batch.len());
-                total_processed += batch.len();
-            }
-
-            // Update metrics
-            if let Some(collector) = metrics_collector {
-                collector.add_rows(batch.len() as u64);
-            }
-
-            batch.clear();
-        }
+    if config.dry_run {
+        let sink = DryRunSink;
+        run_source_runtime(
+            &mut driver,
+            &sink,
+            pipeline,
+            apply_opts,
+            &SourceRuntimeOpts::default(),
+        )
+        .await?;
+    } else {
+        run_source_runtime(
+            &mut driver,
+            surreal,
+            pipeline,
+            apply_opts,
+            &SourceRuntimeOpts::default(),
+        )
+        .await?;
     }
 
-    // Process remaining records
-    if !batch.is_empty() {
-        if !config.dry_run {
-            surreal.write_universal_rows(&batch).await?;
-            total_processed += batch.len();
-        } else {
-            debug!(
-                "Dry run: Would insert final batch of {} records",
-                batch.len()
-            );
-            total_processed += batch.len();
-        }
-
-        // Update metrics for final batch
-        if let Some(collector) = metrics_collector {
-            collector.add_rows(batch.len() as u64);
-        }
+    if let Some(collector) = metrics_collector {
+        collector.add_rows(driver.sunk_count);
     }
 
     info!(
-        "Processed {record_count} records from {source_name} (total processed: {total_processed})",
+        "Processed {} records from {source_name} (sunk: {})",
+        driver.record_count, driver.sunk_count,
     );
 
     Ok(())
 }
 
-/// Sync CSV files to SurrealDB
+/// Sync CSV files to SurrealDB with identity transforms.
 ///
 /// This function streams CSV files from various sources and imports them into a SurrealDB table
 /// in configurable batches.
@@ -373,6 +359,23 @@ async fn process_csv_reader<S: SurrealSink>(
 /// # Returns
 /// Returns Ok(()) on successful completion, or an error if the sync fails
 pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    sync_with_transforms(surreal, config, &pipeline, &apply_opts).await
+}
+
+/// Sync CSV files through a long-lived [`SourceDriver`] + [`run_source_runtime`].
+///
+/// The driver streams file reads into the apply window (`Config::batch_size`
+/// rows per poll); the runtime owns `max_in_flight` windowing with no
+/// per-chunk runtime restart barrier. **Multi-file imports start a fresh
+/// runtime per file** (intentional — no cross-file pipelining).
+pub async fn sync_with_transforms<S: SurrealSink>(
+    surreal: &S,
+    config: Config,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<()> {
     info!("Starting CSV sync to SurrealDB");
     info!("Target table: {}", config.table);
     info!("Sources to process: {:?}", config.sources);
@@ -383,6 +386,15 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
         config.http_uris
     );
     info!("Batch size: {}", config.batch_size);
+    if pipeline.is_identity() {
+        debug!("CSV sync using identity transform pipeline");
+    } else {
+        info!(
+            stages = pipeline.len(),
+            max_in_flight = apply_opts.max_in_flight,
+            "CSV sync using transform pipeline"
+        );
+    }
 
     if config.dry_run {
         warn!("Running in dry-run mode - no data will be written");
@@ -462,6 +474,8 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
             reader,
             &resolved_source.display_name(),
             metrics_ref,
+            pipeline,
+            apply_opts,
         )
         .await?;
     }
@@ -516,6 +530,7 @@ mod tests {
         }
 
         async fn apply_universal_change(&self, _change: &UniversalChange) -> anyhow::Result<()> {
+            self.rows_written.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 

@@ -8,13 +8,17 @@
 use anyhow::Context;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager};
 use surreal_sink::SurrealSink;
+use surreal_sync_interleaved_snapshot::SnapshotTransforms;
 use surreal_sync_mysql_binlog_source::{
-    request_snapshot, run_full_sync_cancellable, run_initial_interleaved_snapshot,
-    run_interleaved_snapshot_full_sync, run_replication_tail_with_checkpoints, BinlogCheckpoint,
-    InterleavedFullSyncOptions, ReplicationTailOptions, SourceOpts, SyncOpts,
+    request_snapshot, run_full_sync_cancellable_with_transforms,
+    run_initial_interleaved_snapshot_with_transforms,
+    run_interleaved_snapshot_full_sync_with_transforms, run_replication_tail_with_transforms,
+    BinlogCheckpoint, InterleavedFullSyncOptions, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
+use sync_transform::{ApplyOpts, Pipeline};
 use tokio_util::sync::CancellationToken;
 
+use super::transforms::load_transforms_from_args;
 use super::{get_sdk_version, parse_duration_to_secs, SdkVersion};
 use crate::{
     BinlogSnapshotModeArg, MariaDbGtidStrictModeArg, MySQLBinlogFlavorArg, MySQLBinlogSnapshotArgs,
@@ -205,6 +209,7 @@ async fn resolve_mysql_database(
     current.ok_or_else(|| anyhow::anyhow!("No MySQL database selected; pass --database"))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn binlog_snapshot_full<S, St>(
     sink: &S,
     source_opts: &SourceOpts,
@@ -213,6 +218,7 @@ async fn binlog_snapshot_full<S, St>(
     cancel: CancellationToken,
     sync_opts: &SyncOpts,
     manager: Option<&SyncManager<St>>,
+    transforms: &SnapshotTransforms,
 ) -> anyhow::Result<Option<surreal_sync_mysql_binlog_source::InterleavedFullSyncOutcome>>
 where
     S: SurrealSink,
@@ -220,13 +226,14 @@ where
 {
     match strategy {
         SyncStrategy::InterleavedSnapshot => {
-            let outcome = run_interleaved_snapshot_full_sync(
+            let outcome = run_interleaved_snapshot_full_sync_with_transforms(
                 sink,
                 source_opts,
                 chunk_size,
                 cancel,
                 manager,
                 InterleavedFullSyncOptions::default(),
+                transforms,
             )
             .await?;
             if outcome.cancelled {
@@ -243,7 +250,16 @@ where
             Ok(Some(outcome))
         }
         SyncStrategy::SequentialSnapshot => {
-            run_full_sync_cancellable(sink, source_opts, sync_opts, manager, &cancel).await?;
+            run_full_sync_cancellable_with_transforms(
+                sink,
+                source_opts,
+                sync_opts,
+                manager,
+                &cancel,
+                &transforms.pipeline,
+                &transforms.apply_opts,
+            )
+            .await?;
             tracing::info!("Sequential binlog full sync completed");
             Ok(None)
         }
@@ -252,6 +268,8 @@ where
 
 /// Run `from mysql-binlog sync`.
 pub async fn run_sync(args: MySQLBinlogSyncArgs) -> anyhow::Result<()> {
+    // Fail-fast on bad transforms config / worker spawn before connecting.
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     let sdk_version = get_sdk_version(
         &args.surreal.surreal_endpoint,
         args.surreal.surreal_sdk_version.as_deref(),
@@ -259,12 +277,17 @@ pub async fn run_sync(args: MySQLBinlogSyncArgs) -> anyhow::Result<()> {
     .await?;
     let cancel = install_shutdown_token();
     match sdk_version {
-        SdkVersion::V2 => run_sync_v2(args, cancel).await,
-        SdkVersion::V3 => run_sync_v3(args, cancel).await,
+        SdkVersion::V2 => run_sync_v2(args, cancel, pipeline, apply_opts).await,
+        SdkVersion::V3 => run_sync_v3(args, cancel, pipeline, apply_opts).await,
     }
 }
 
-async fn run_sync_v2(args: MySQLBinlogSyncArgs, cancel: CancellationToken) -> anyhow::Result<()> {
+async fn run_sync_v2(
+    args: MySQLBinlogSyncArgs,
+    cancel: CancellationToken,
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
+) -> anyhow::Result<()> {
     tracing::info!("Starting MySQL binlog sync to SurrealDB (SDK v2)");
     let surreal_opts = surreal2_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
@@ -280,7 +303,7 @@ async fn run_sync_v2(args: MySQLBinlogSyncArgs, cancel: CancellationToken) -> an
     match (checkpoint_dir, checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(&dir));
-            binlog_orchestrate(&sink, args, cancel, Some(&manager)).await
+            binlog_orchestrate(&sink, args, cancel, Some(&manager), pipeline, apply_opts).await
         }
         (None, Some(table)) => {
             let checkpoint_surreal = surreal2_sink::surreal_connect(
@@ -291,10 +314,13 @@ async fn run_sync_v2(args: MySQLBinlogSyncArgs, cancel: CancellationToken) -> an
             .await?;
             let manager =
                 SyncManager::new(checkpoint::Surreal2Store::new(checkpoint_surreal, table));
-            binlog_orchestrate(&sink, args, cancel, Some(&manager)).await
+            binlog_orchestrate(&sink, args, cancel, Some(&manager), pipeline, apply_opts).await
         }
         (None, None) => {
-            binlog_orchestrate::<_, checkpoint::NullStore>(&sink, args, cancel, None).await
+            binlog_orchestrate::<_, checkpoint::NullStore>(
+                &sink, args, cancel, None, pipeline, apply_opts,
+            )
+            .await
         }
         (Some(_), Some(_)) => {
             anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
@@ -302,7 +328,12 @@ async fn run_sync_v2(args: MySQLBinlogSyncArgs, cancel: CancellationToken) -> an
     }
 }
 
-async fn run_sync_v3(args: MySQLBinlogSyncArgs, cancel: CancellationToken) -> anyhow::Result<()> {
+async fn run_sync_v3(
+    args: MySQLBinlogSyncArgs,
+    cancel: CancellationToken,
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
+) -> anyhow::Result<()> {
     tracing::info!("Starting MySQL binlog sync to SurrealDB (SDK v3)");
     let surreal_opts = surreal3_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
@@ -318,14 +349,17 @@ async fn run_sync_v3(args: MySQLBinlogSyncArgs, cancel: CancellationToken) -> an
     match (checkpoint_dir, checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(&dir));
-            binlog_orchestrate(&sink, args, cancel, Some(&manager)).await
+            binlog_orchestrate(&sink, args, cancel, Some(&manager), pipeline, apply_opts).await
         }
         (None, Some(table)) => {
             let manager = SyncManager::new(checkpoint_surreal3::Surreal3Store::new(surreal, table));
-            binlog_orchestrate(&sink, args, cancel, Some(&manager)).await
+            binlog_orchestrate(&sink, args, cancel, Some(&manager), pipeline, apply_opts).await
         }
         (None, None) => {
-            binlog_orchestrate::<_, checkpoint::NullStore>(&sink, args, cancel, None).await
+            binlog_orchestrate::<_, checkpoint::NullStore>(
+                &sink, args, cancel, None, pipeline, apply_opts,
+            )
+            .await
         }
         (Some(_), Some(_)) => {
             anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
@@ -338,11 +372,18 @@ async fn binlog_orchestrate<S, St>(
     args: MySQLBinlogSyncArgs,
     cancel: CancellationToken,
     checkpoint_manager: Option<&SyncManager<St>>,
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
 ) -> anyhow::Result<()>
 where
     S: SurrealSink,
     St: CheckpointStore,
 {
+    let transforms = SnapshotTransforms {
+        pipeline,
+        apply_opts,
+    };
+
     let snapshot_mode = args.snapshot_mode;
     let strategy = args.strategy;
     let chunk_size = args.chunk_size;
@@ -362,6 +403,7 @@ where
                 cancel,
                 &sync_opts,
                 checkpoint_manager,
+                &transforms,
             )
             .await?;
             Ok(())
@@ -370,24 +412,27 @@ where
             let from_checkpoint =
                 checkpoint_from_arg_or_store(&from_explicit, checkpoint_manager, &source_opts)
                     .await?;
-            run_replication_tail_with_checkpoints(
+            run_replication_tail_with_transforms(
                 sink,
                 source_opts,
                 from_checkpoint,
                 stream_options,
                 checkpoint_manager,
+                &transforms.pipeline,
+                &transforms.apply_opts,
             )
             .await
         }
         BinlogSnapshotModeArg::Initial => {
             let interleaved_outcome = match strategy {
                 SyncStrategy::InterleavedSnapshot => {
-                    let initial = run_initial_interleaved_snapshot(
+                    let initial = run_initial_interleaved_snapshot_with_transforms(
                         sink,
                         &source_opts,
                         chunk_size,
                         cancel.clone(),
                         checkpoint_manager,
+                        &transforms,
                     )
                     .await?;
                     initial.sync_outcome
@@ -401,6 +446,7 @@ where
                         cancel.clone(),
                         &sync_opts,
                         checkpoint_manager,
+                        &transforms,
                     )
                     .await?;
                     None
@@ -416,12 +462,14 @@ where
                     );
                     return Ok(());
                 }
-                run_replication_tail_with_checkpoints(
+                run_replication_tail_with_transforms(
                     sink,
                     source_opts,
                     outcome.end,
                     stream_options,
                     checkpoint_manager,
+                    &transforms.pipeline,
+                    &transforms.apply_opts,
                 )
                 .await
             } else if strategy == SyncStrategy::SequentialSnapshot {
@@ -436,12 +484,14 @@ where
                         .await?
                     }
                 };
-                run_replication_tail_with_checkpoints(
+                run_replication_tail_with_transforms(
                     sink,
                     source_opts,
                     from_checkpoint,
                     stream_options,
                     checkpoint_manager,
+                    &transforms.pipeline,
+                    &transforms.apply_opts,
                 )
                 .await
             } else {

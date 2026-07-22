@@ -27,8 +27,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
-    run_interleaved_snapshot, InterleavedSnapshotConfig, NoopCheckpointer, PkTuple,
-    ReconciliationEvent, SnapshotSignal, TableSpec, WatermarkKind, WatermarkSource,
+    run_interleaved_snapshot_with_transforms, InterleavedSnapshotConfig, NoopCheckpointer, PkTuple,
+    ReconciliationEvent, SnapshotSignal, SnapshotTransforms, TableSpec, WatermarkKind,
+    WatermarkSource,
 };
 use sync_core::{UniversalChange, UniversalChangeOp, UniversalRow, UniversalValue};
 use tokio::sync::Mutex;
@@ -652,7 +653,7 @@ pub async fn request_snapshot(from_opts: &SourceOpts, tables: &[String]) -> Resu
     Ok(())
 }
 
-/// Run an interleaved snapshot full sync from PostgreSQL to SurrealDB.
+/// Run an interleaved snapshot full sync from PostgreSQL to SurrealDB (identity transforms).
 ///
 /// Builds the wal2json backend, runs the generic framework loop, and returns
 /// the final stream position. A downstream orchestrator hands this position to
@@ -663,10 +664,33 @@ pub async fn run_interleaved_snapshot_full_sync<S: SurrealSink>(
     from_opts: SourceOpts,
     chunk_size: usize,
 ) -> Result<Lsn> {
+    run_interleaved_snapshot_full_sync_with_transforms(
+        surreal,
+        from_opts,
+        chunk_size,
+        &SnapshotTransforms::identity(),
+    )
+    .await
+}
+
+/// Interleaved snapshot full sync with an explicit transform pipeline.
+pub async fn run_interleaved_snapshot_full_sync_with_transforms<S: SurrealSink>(
+    surreal: &S,
+    from_opts: SourceOpts,
+    chunk_size: usize,
+    transforms: &SnapshotTransforms,
+) -> Result<Lsn> {
     let mut source = Wal2JsonWatermarkSource::connect(&from_opts).await?;
     let config = InterleavedSnapshotConfig { chunk_size };
     let mut checkpointer = NoopCheckpointer;
-    let result = run_interleaved_snapshot(&mut source, surreal, &config, &mut checkpointer).await?;
+    let result = run_interleaved_snapshot_with_transforms(
+        &mut source,
+        surreal,
+        &config,
+        &mut checkpointer,
+        transforms,
+    )
+    .await?;
     info!(
         "wal2json watermark snapshot complete (final LSN: {}, peak buffered rows: {})",
         result.final_position, result.peak_buffered_rows

@@ -96,7 +96,10 @@ pub enum StreamEvent {
 pub struct PgWalClient {
     stream: LogicalReplicationStream,
     cancel: CancellationToken,
-    confirmed: Lsn,
+    /// Live read-head LSN (advanced on every polled WAL event).
+    stream_lsn: Lsn,
+    /// Highest LSN successfully sunk (advanced only via [`Self::commit`]).
+    applied_lsn: Lsn,
     relations: std::collections::HashMap<u32, RelationMeta>,
     feedback: Arc<SharedLsnFeedback>,
 }
@@ -126,7 +129,8 @@ impl PgWalClient {
         Ok(Self {
             stream,
             cancel: CancellationToken::new(),
-            confirmed: Lsn::new(0),
+            stream_lsn: Lsn::new(0),
+            applied_lsn: Lsn::new(0),
             relations: std::collections::HashMap::new(),
             feedback,
         })
@@ -158,18 +162,27 @@ impl PgWalClient {
             .await
             .map_err(|e| anyhow!("start replication failed: {e}"))?;
         if let Some(lsn) = start_lsn {
-            self.confirmed = lsn;
+            self.stream_lsn = lsn;
+            self.applied_lsn = lsn;
         }
         Ok(())
     }
 
+    /// Live read-head LSN (highest WAL position observed while polling).
     pub fn current_position(&self) -> Lsn {
-        self.confirmed
+        self.stream_lsn
+    }
+
+    /// Highest LSN successfully sunk (does not rewind the read-head).
+    pub fn applied_position(&self) -> Lsn {
+        self.applied_lsn
     }
 
     pub fn commit(&mut self, position: Lsn) {
-        if position > self.confirmed {
-            self.confirmed = position;
+        // Advance applied watermark only — never clobber stream_lsn used for
+        // filtered catch-up via current_position().
+        if position > self.applied_lsn {
+            self.applied_lsn = position;
         }
         self.feedback.update_applied_lsn(position.value());
         self.feedback.update_flushed_lsn(position.value());
@@ -274,7 +287,7 @@ impl PgWalClient {
         };
 
         let position = Lsn::from(event.lsn);
-        self.confirmed = position;
+        self.stream_lsn = position;
         self.feedback.update_flushed_lsn(position.value());
         self.stream
             .send_feedback()
@@ -375,7 +388,7 @@ impl PgWalClient {
     /// Re-wrap an existing stream while preserving relation cache and position.
     pub fn from_stream(
         stream: LogicalReplicationStream,
-        confirmed: Lsn,
+        stream_lsn: Lsn,
         relations: std::collections::HashMap<u32, RelationMeta>,
         cancel: CancellationToken,
     ) -> Self {
@@ -383,7 +396,8 @@ impl PgWalClient {
         Self {
             stream,
             cancel,
-            confirmed,
+            stream_lsn,
+            applied_lsn: stream_lsn,
             relations,
             feedback,
         }

@@ -76,9 +76,19 @@ pub trait ChangeStream: Send + Sync {
     /// Returns None when no more changes are available.
     async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>>;
 
-    /// Get the current checkpoint of the stream
-    /// This can be used to resume from this position later
+    /// Get the current sink-safe checkpoint of the stream.
+    ///
+    /// This advances only via [`ChangeStream::commit_sunk`], never on fetch —
+    /// so it never reports past events that are still transforming or unsunk.
     fn checkpoint(&self) -> Option<MySQLCheckpoint>;
+
+    /// Record that events through `sequence_id` were successfully sunk.
+    ///
+    /// The read-head used for audit-table pagination may already be ahead;
+    /// only this watermark is authoritative for "how far we've safely progressed."
+    fn commit_sunk(&mut self, sequence_id: i64) {
+        let _ = sequence_id;
+    }
 }
 
 /// MySQL incremental sync implementation using audit table-based change tracking
@@ -158,7 +168,10 @@ pub struct MySQLChangeStream {
     server_id: u32,
     /// Buffered changes, each paired with its source `sequence_id`.
     buffer: Vec<(i64, UniversalChange)>,
-    last_sequence_id: i64,
+    /// Highest sequence_id fetched into the buffer (audit pagination cursor).
+    read_sequence_id: i64,
+    /// Highest sequence_id successfully sunk (authoritative resume watermark).
+    sunk_sequence_id: i64,
     database_schema: Option<DatabaseSchema>,
 }
 
@@ -176,7 +189,8 @@ impl MySQLChangeStream {
             connection: Some(connection),
             server_id,
             buffer: Vec::new(),
-            last_sequence_id: starting_sequence_id,
+            read_sequence_id: starting_sequence_id,
+            sunk_sequence_id: starting_sequence_id,
             database_schema,
         })
     }
@@ -287,7 +301,7 @@ impl MySQLChangeStream {
              LIMIT 100"
                 .to_string();
 
-        let rows: Vec<Row> = conn.exec(query, (self.last_sequence_id,)).await?;
+        let rows: Vec<Row> = conn.exec(query, (self.read_sequence_id,)).await?;
         let mut changes = Vec::new();
 
         for row in rows {
@@ -378,7 +392,8 @@ impl MySQLChangeStream {
                 UniversalChange::new(op, table_name.clone(), record_id, universal_data),
             ));
 
-            self.last_sequence_id = sequence_id;
+            // Advance read-head only; sunk watermark waits for commit_sunk.
+            self.read_sequence_id = sequence_id;
         }
 
         Ok(changes)
@@ -417,9 +432,15 @@ impl ChangeStream for MySQLChangeStream {
 
     fn checkpoint(&self) -> Option<MySQLCheckpoint> {
         Some(MySQLCheckpoint {
-            sequence_id: self.last_sequence_id,
+            sequence_id: self.sunk_sequence_id,
             timestamp: Utc::now(),
         })
+    }
+
+    fn commit_sunk(&mut self, sequence_id: i64) {
+        if sequence_id > self.sunk_sequence_id {
+            self.sunk_sequence_id = sequence_id;
+        }
     }
 }
 

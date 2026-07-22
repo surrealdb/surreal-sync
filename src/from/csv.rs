@@ -4,6 +4,7 @@
 //! CLI command:
 //! - Import: `from csv --files ... --table ... --to-namespace ... --to-database ...`
 
+use super::transforms::load_transforms_from_args;
 use super::{get_sdk_version, load_schema_if_provided, SdkVersion};
 use crate::CsvArgs;
 
@@ -29,6 +30,7 @@ async fn run_v2(args: CsvArgs) -> anyhow::Result<()> {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     let schema = load_schema_if_provided(&args.schema_file)?;
 
     // Connect to SurrealDB using v2 SDK
@@ -57,7 +59,7 @@ async fn run_v2(args: CsvArgs) -> anyhow::Result<()> {
         dry_run: args.surreal.dry_run,
         schema,
     };
-    surreal_sync::csv::sync(&sink, config).await?;
+    surreal_sync::csv::sync_with_transforms(&sink, config, &pipeline, &apply_opts).await?;
 
     tracing::info!("CSV import completed successfully");
     Ok(())
@@ -71,6 +73,7 @@ async fn run_v3(args: CsvArgs) -> anyhow::Result<()> {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     let schema = load_schema_if_provided(&args.schema_file)?;
 
     // Connect to SurrealDB using v3 SDK
@@ -99,7 +102,7 @@ async fn run_v3(args: CsvArgs) -> anyhow::Result<()> {
         dry_run: args.surreal.dry_run,
         schema,
     };
-    surreal_sync::csv::sync(&sink, config).await?;
+    surreal_sync::csv::sync_with_transforms(&sink, config, &pipeline, &apply_opts).await?;
 
     tracing::info!("CSV import completed successfully");
     Ok(())

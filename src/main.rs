@@ -87,8 +87,8 @@ use rustls::crypto::CryptoProvider;
 use std::path::PathBuf;
 use surreal_sync::SurrealOpts;
 
-/// Full-sync strategy for sources that support the interleaved snapshot
-/// framework (PostgreSQL wal2json, PostgreSQL trigger, MySQL).
+/// Full-sync strategy for sources that support interleaved snapshot
+/// (PostgreSQL wal2json, PostgreSQL trigger, MySQL).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, ValueEnum)]
 enum SyncStrategy {
     /// DBLog-style watermark snapshot copied concurrently/interleaved with the
@@ -266,6 +266,11 @@ struct MongoDBFullArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -312,6 +317,11 @@ struct MongoDBIncrementalArgs {
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
+
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -401,6 +411,11 @@ struct Neo4jFullArgs {
     /// If a node does not have this property, the Neo4j internal node ID is used as fallback.
     #[arg(long, default_value = "id")]
     id_property: String,
+
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -492,6 +507,11 @@ struct Neo4jIncrementalArgs {
     #[arg(long, default_value = "id")]
     id_property: String,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -555,6 +575,11 @@ struct PostgreSQLTriggerFullArgs {
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -603,6 +628,11 @@ struct PostgreSQLTriggerIncrementalArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -637,6 +667,11 @@ struct PostgreSQLTriggerSyncArgs {
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
+
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -718,6 +753,11 @@ struct MySQLFullArgs {
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -769,6 +809,11 @@ struct MySQLIncrementalArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -811,6 +856,11 @@ struct MySQLSyncArgs {
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
+
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -1029,6 +1079,11 @@ struct MySQLBinlogSyncArgs {
     #[arg(long, default_value_t = 32)]
     binlog_event_batch_size: usize,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -1149,6 +1204,11 @@ struct PostgreSQLPgoutputSyncArgs {
     #[arg(long, default_value_t = 32)]
     wal_event_batch_size: usize,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -1232,6 +1292,11 @@ struct PostgreSQLLogicalFullArgs {
     #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
     chunk_size: usize,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -1288,6 +1353,11 @@ struct PostgreSQLLogicalIncrementalArgs {
     #[arg(long, default_value = "3600")]
     timeout: String,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -1330,6 +1400,11 @@ struct PostgreSQLLogicalSyncArgs {
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
+
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -1382,6 +1457,11 @@ struct KafkaArgs {
     /// After this time, the consumer will stop and exit.
     #[arg(long, default_value = "1h")]
     timeout: String,
+
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -1442,6 +1522,11 @@ struct CsvArgs {
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
 
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -1475,6 +1560,11 @@ struct JsonlArgs {
     /// Schema file for type-aware conversion
     #[arg(long, value_name = "PATH")]
     schema_file: Option<PathBuf>,
+
+    /// TOML file describing the transform pipeline (`[[transforms]]`).
+    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
+    #[arg(long, value_name = "PATH")]
+    transforms_config: Option<PathBuf>,
 
     #[command(flatten)]
     surreal: SurrealOpts,

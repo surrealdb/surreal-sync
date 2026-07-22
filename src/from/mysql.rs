@@ -9,9 +9,13 @@ use anyhow::Context;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use surreal_sink::SurrealSink;
 use surreal_sync::orchestrate_snapshot_then_incremental;
-use surreal_sync_interleaved_snapshot::{InterleavedSnapshotConfig, NoopCheckpointer};
-use surreal_sync_mysql_trigger_source::MySQLCheckpoint;
+use surreal_sync_interleaved_snapshot::{
+    InterleavedSnapshotConfig, NoopCheckpointer, SnapshotTransforms,
+};
+use surreal_sync_mysql_trigger_source::{MySQLCheckpoint, ReplicationTailOptions};
+use sync_transform::{ApplyOpts, Pipeline};
 
+use super::transforms::load_transforms_from_args;
 use super::{get_sdk_version, load_schema_if_provided, SdkVersion};
 use crate::{MySQLFullArgs, MySQLIncrementalArgs, MySQLSnapshotArgs, MySQLSyncArgs, SyncStrategy};
 
@@ -67,6 +71,7 @@ async fn run_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
     };
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     // Handle checkpoint storage
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
@@ -74,11 +79,13 @@ async fn run_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
             // Filesystem checkpoint storage
             let store = checkpoint::FilesystemStore::new(dir);
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_mysql_trigger_source::run_full_sync(
+            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms(
                 &sink,
                 &source_opts,
                 &sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
@@ -92,21 +99,28 @@ async fn run_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
             .await?;
             let store = checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone());
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_mysql_trigger_source::run_full_sync(
+            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms(
                 &sink,
                 &source_opts,
                 &sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (None, None) => {
             // No checkpoint storage
-            surreal_sync_mysql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(
                 &sink,
                 &source_opts,
                 &sync_opts,
                 None,
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
@@ -152,6 +166,7 @@ async fn run_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
     };
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     // Handle checkpoint storage
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
@@ -159,11 +174,13 @@ async fn run_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
             // Filesystem checkpoint storage
             let store = checkpoint::FilesystemStore::new(dir);
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_mysql_trigger_source::run_full_sync(
+            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms(
                 &sink,
                 &source_opts,
                 &sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
@@ -177,21 +194,28 @@ async fn run_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
             .await?;
             let store = checkpoint_surreal3::Surreal3Store::new(checkpoint_surreal, table.clone());
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_mysql_trigger_source::run_full_sync(
+            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms(
                 &sink,
                 &source_opts,
                 &sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (None, None) => {
             // No checkpoint storage
-            surreal_sync_mysql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms::<
+                _,
+                checkpoint::NullStore,
+            >(
                 &sink,
                 &source_opts,
                 &sync_opts,
                 None,
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
@@ -294,12 +318,14 @@ async fn run_incremental_v2(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
-    surreal_sync_mysql_trigger_source::run_incremental_sync(
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    surreal_sync_mysql_trigger_source::run_incremental_sync_with_transforms(
         &sink,
         source_opts,
         from_checkpoint,
-        deadline,
-        mysql_to,
+        ReplicationTailOptions::stream(deadline, mysql_to),
+        &pipeline,
+        &apply_opts,
     )
     .await?;
 
@@ -337,6 +363,7 @@ async fn mysql_snapshot_full<S, St>(
     database: Option<String>,
     chunk_size: usize,
     manager: Option<&SyncManager<St>>,
+    transforms: &SnapshotTransforms,
 ) -> anyhow::Result<()>
 where
     S: SurrealSink,
@@ -346,14 +373,16 @@ where
     let database = resolve_mysql_database(&pool, &database).await?;
     let config = InterleavedSnapshotConfig { chunk_size };
     let mut checkpointer = NoopCheckpointer;
-    let final_seq = surreal_sync_mysql_trigger_source::run_interleaved_snapshot_full_sync(
-        pool,
-        database,
-        sink,
-        &config,
-        &mut checkpointer,
-    )
-    .await?;
+    let final_seq =
+        surreal_sync_mysql_trigger_source::run_interleaved_snapshot_full_sync_with_transforms(
+            pool,
+            database,
+            sink,
+            &config,
+            &mut checkpointer,
+            transforms,
+        )
+        .await?;
 
     if let Some(manager) = manager {
         let checkpoint = MySQLCheckpoint {
@@ -385,6 +414,12 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    let transforms = SnapshotTransforms {
+        pipeline,
+        apply_opts,
+    };
+
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
@@ -394,6 +429,7 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.database,
                 args.chunk_size,
                 Some(&manager),
+                &transforms,
             )
             .await
         }
@@ -414,6 +450,7 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.database,
                 args.chunk_size,
                 Some(&manager),
+                &transforms,
             )
             .await
         }
@@ -424,6 +461,7 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.database,
                 args.chunk_size,
                 None,
+                &transforms,
             )
             .await
         }
@@ -447,6 +485,12 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
             .await?;
     let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
 
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    let transforms = SnapshotTransforms {
+        pipeline,
+        apply_opts,
+    };
+
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
@@ -456,6 +500,7 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.database,
                 args.chunk_size,
                 Some(&manager),
+                &transforms,
             )
             .await
         }
@@ -470,6 +515,7 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.database,
                 args.chunk_size,
                 Some(&manager),
+                &transforms,
             )
             .await
         }
@@ -480,6 +526,7 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.database,
                 args.chunk_size,
                 None,
+                &transforms,
             )
             .await
         }
@@ -493,18 +540,23 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
 /// full sync followed by incremental from the handed-off position, in one
 /// process.
 pub async fn run_sync(args: MySQLSyncArgs) -> anyhow::Result<()> {
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     let sdk_version = get_sdk_version(
         &args.surreal.surreal_endpoint,
         args.surreal.surreal_sdk_version.as_deref(),
     )
     .await?;
     match sdk_version {
-        SdkVersion::V2 => run_sync_v2(args).await,
-        SdkVersion::V3 => run_sync_v3(args).await,
+        SdkVersion::V2 => run_sync_v2(args, pipeline, apply_opts).await,
+        SdkVersion::V3 => run_sync_v3(args, pipeline, apply_opts).await,
     }
 }
 
-async fn run_sync_v2(args: MySQLSyncArgs) -> anyhow::Result<()> {
+async fn run_sync_v2(
+    args: MySQLSyncArgs,
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
+) -> anyhow::Result<()> {
     tracing::info!("Starting interleaved snapshot sync from MySQL to SurrealDB (SDK v2)");
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
@@ -517,10 +569,14 @@ async fn run_sync_v2(args: MySQLSyncArgs) -> anyhow::Result<()> {
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
-    mysql_orchestrate(&sink, args).await
+    mysql_orchestrate(&sink, args, pipeline, apply_opts).await
 }
 
-async fn run_sync_v3(args: MySQLSyncArgs) -> anyhow::Result<()> {
+async fn run_sync_v3(
+    args: MySQLSyncArgs,
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
+) -> anyhow::Result<()> {
     tracing::info!("Starting interleaved snapshot sync from MySQL to SurrealDB (SDK v3)");
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
@@ -533,10 +589,15 @@ async fn run_sync_v3(args: MySQLSyncArgs) -> anyhow::Result<()> {
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
     let sink = surreal3_sink::Surreal3Sink::new(surreal);
-    mysql_orchestrate(&sink, args).await
+    mysql_orchestrate(&sink, args, pipeline, apply_opts).await
 }
 
-async fn mysql_orchestrate<S: SurrealSink>(sink: &S, args: MySQLSyncArgs) -> anyhow::Result<()> {
+async fn mysql_orchestrate<S: SurrealSink>(
+    sink: &S,
+    args: MySQLSyncArgs,
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
+) -> anyhow::Result<()> {
     let pool = surreal_sync_mysql_trigger_source::new_mysql_pool(&args.connection_string)?;
     let database = resolve_mysql_database(&pool, &args.database).await?;
     let config = InterleavedSnapshotConfig {
@@ -556,17 +617,22 @@ async fn mysql_orchestrate<S: SurrealSink>(sink: &S, args: MySQLSyncArgs) -> any
         mysql_boolean_paths: args.boolean_paths.clone(),
     };
 
+    let transforms = SnapshotTransforms {
+        pipeline: pipeline.clone(),
+        apply_opts: apply_opts.clone(),
+    };
     let snapshot_pool = pool.clone();
     let snapshot_db = database.clone();
     orchestrate_snapshot_then_incremental(
         async move {
             let mut checkpointer = NoopCheckpointer;
-            surreal_sync_mysql_trigger_source::run_interleaved_snapshot_full_sync(
+            surreal_sync_mysql_trigger_source::run_interleaved_snapshot_full_sync_with_transforms(
                 snapshot_pool,
                 snapshot_db,
                 sink,
                 &config,
                 &mut checkpointer,
+                &transforms,
             )
             .await
         },
@@ -575,12 +641,13 @@ async fn mysql_orchestrate<S: SurrealSink>(sink: &S, args: MySQLSyncArgs) -> any
             timestamp: chrono::Utc::now(),
         },
         |from_checkpoint| {
-            surreal_sync_mysql_trigger_source::run_incremental_sync(
+            surreal_sync_mysql_trigger_source::run_incremental_sync_with_transforms(
                 sink,
                 source_opts,
                 from_checkpoint,
-                deadline,
-                None,
+                ReplicationTailOptions::stream(deadline, None),
+                &pipeline,
+                &apply_opts,
             )
         },
     )
@@ -675,12 +742,14 @@ async fn run_incremental_v3(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
             .await?;
     let sink = surreal3_sink::Surreal3Sink::new(surreal);
 
-    surreal_sync_mysql_trigger_source::run_incremental_sync(
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+    surreal_sync_mysql_trigger_source::run_incremental_sync_with_transforms(
         &sink,
         source_opts,
         from_checkpoint,
-        deadline,
-        mysql_to,
+        ReplicationTailOptions::stream(deadline, mysql_to),
+        &pipeline,
+        &apply_opts,
     )
     .await?;
 

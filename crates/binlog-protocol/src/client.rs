@@ -285,17 +285,18 @@ impl BinlogClient {
     }
 
     pub fn commit(&mut self, position: BinlogPosition) {
-        if let BinlogPosition::FilePos { file, pos } = &position {
-            self.binlog_file = file.clone();
-            self.binlog_pos = *pos as u32;
-        }
-        self.tracker.commit(position);
+        // Do not rewind the live read-head tracker. `on_event` already advances
+        // it past everything polled; sink-safe watermarks live in the
+        // SourceDriver (`last_sunk_checkpoint`). Rewinding here under W>1 would
+        // blunt filtered-only catch-up that reads `current_position()`.
+        let _ = position;
     }
 
     pub fn flavor(&self) -> Flavor {
         self.flavor
     }
 
+    /// Live read-head (highest position observed while polling).
     pub fn current_position(&self) -> BinlogPosition {
         self.tracker.position()
     }

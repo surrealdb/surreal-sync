@@ -2,6 +2,8 @@
 
 `surreal-sync from neo4j` as a sub-command to `surreal-sync` that exports Neo4j nodes and relationships to SurrealDB tables.
 
+Optional transforms: pass `--transforms-config` with a TOML file. Omit the flag to leave rows unchanged. Details: [How sync works](sync-pipeline.md).
+
 It supports inconsistent full syncs and consistent incremental syncs, and together provides ability to reproduce consistent snapshots from the source Neo4j graph onto the target SurrealDB tables.
 
 ## How It Works

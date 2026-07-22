@@ -2,6 +2,8 @@
 
 `surreal-sync from postgresql` exports PostgreSQL tables to SurrealDB using logical replication with the [wal2json](https://github.com/eulerto/wal2json) output plugin.
 
+Optional transforms: pass `--transforms-config` with a TOML file. Omit the flag to leave rows unchanged. Details: [How sync works](sync-pipeline.md).
+
 The default **interleaved-snapshot** workflow copies tables in resumable, primary-key-ordered chunks while continuously consuming the WAL change stream. Watermark reconciliation aligns each chunk with live changes (the log event wins), so the target converges to a **consistent image at the end LSN** and can keep tracking live — it is not an inconsistent monolithic dump. The replication slot advances as changes are consumed, keeping WAL retention bounded. Use the combined `sync` command for a single-process snapshot plus incremental handoff.
 
 > **Other strategies:** For the legacy sequential-snapshot workflow (inconsistent monolithic snapshot plus a separate incremental replay from t1), see [PostgreSQL wal2json Legacy Full Sync](postgresql-wal2json/legacy.md).

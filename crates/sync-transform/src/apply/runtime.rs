@@ -1,0 +1,1051 @@
+//! Unified in-flight window runtime: transform → ordered sink → contiguous watermark advance.
+//!
+//! Handles row changes **and** relation changes through the same window,
+//! ordered sink, sink-safe positions, and flush/discard/poison invariants.
+//!
+//! The general incremental driver API is [`crate::SourceDriver`] /
+//! [`crate::run_source_runtime`]. [`run_change_feed`] remains a convenience for
+//! row-only feeds.
+
+use crate::apply::opts::ApplyOpts;
+use crate::apply::transform::BatchTransformer;
+use crate::apply::{
+    ApplyEvent, ChangeFeed, ChangeFeedRef, CheckpointPolicy, FailurePolicy, PositionedEvent,
+    RuntimeExit, SourceDriver, SourceRuntimeOpts,
+};
+use crate::pipeline::Pipeline;
+use anyhow::{anyhow, bail, Context, Result};
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use std::time::Instant;
+use surreal_sink::SurrealSink;
+use sync_core::{
+    UniversalChange, UniversalChangeOp, UniversalRelation, UniversalRelationChange, UniversalRow,
+};
+use tokio::task::JoinSet;
+use tracing::warn;
+
+/// Transform then sink rows via the same overlapping [`ApplyContext`] window as
+/// CDC. Shared by full sync and snapshot flushes.
+///
+/// Rows become upsert [`UniversalChange`]s and honor `max_in_flight` /
+/// `batch_size`. Homogeneous upsert batches coalesce to
+/// [`SurrealSink::write_universal_rows`] inside the ordered sink step.
+pub async fn write_rows<S: SurrealSink>(
+    sink: &S,
+    pipeline: &Pipeline,
+    rows: Vec<UniversalRow>,
+    opts: &ApplyOpts,
+) -> Result<()> {
+    write_rows_with(sink, Arc::new(pipeline.clone()), rows, opts).await
+}
+
+/// Transform then sink relations via the same overlapping [`ApplyContext`]
+/// window as CDC (see [`write_rows`]).
+pub async fn write_relations<S: SurrealSink>(
+    sink: &S,
+    pipeline: &Pipeline,
+    relations: Vec<UniversalRelation>,
+    opts: &ApplyOpts,
+) -> Result<()> {
+    write_relations_with(sink, Arc::new(pipeline.clone()), relations, opts).await
+}
+
+/// Transform then apply each change via [`SurrealSink::apply_universal_change`].
+pub async fn apply_changes<S: SurrealSink>(
+    sink: &S,
+    pipeline: &Pipeline,
+    changes: Vec<UniversalChange>,
+    opts: &ApplyOpts,
+) -> Result<()> {
+    apply_changes_with(sink, Arc::new(pipeline.clone()), changes, opts).await
+}
+
+/// Transform then apply each relation change via
+/// [`SurrealSink::apply_universal_relation_change`].
+pub async fn apply_relation_changes<S: SurrealSink>(
+    sink: &S,
+    pipeline: &Pipeline,
+    changes: Vec<UniversalRelationChange>,
+    opts: &ApplyOpts,
+) -> Result<()> {
+    apply_relation_changes_with(sink, Arc::new(pipeline.clone()), changes, opts).await
+}
+
+/// Like [`apply_changes`] but accepts any [`BatchTransformer`] behind [`Arc`].
+///
+/// Always honors `max_in_flight` / `batch_size` via [`ApplyContext`].
+pub async fn apply_changes_with<S, T>(
+    sink: &S,
+    transformer: Arc<T>,
+    changes: Vec<UniversalChange>,
+    opts: &ApplyOpts,
+) -> Result<()>
+where
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let mut ctx = ApplyContext::new(sink, transformer, opts);
+    for (i, change) in changes.into_iter().enumerate() {
+        ctx.push_change(change, i as u64).await?;
+    }
+    ctx.flush().await?;
+    Ok(())
+}
+
+/// Like [`apply_relation_changes`] but accepts any [`BatchTransformer`] behind [`Arc`].
+pub async fn apply_relation_changes_with<S, T>(
+    sink: &S,
+    transformer: Arc<T>,
+    changes: Vec<UniversalRelationChange>,
+    opts: &ApplyOpts,
+) -> Result<()>
+where
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let mut ctx = ApplyContext::new(sink, transformer, opts);
+    for (i, change) in changes.into_iter().enumerate() {
+        ctx.push_relation_change(change, i as u64).await?;
+    }
+    ctx.flush().await?;
+    Ok(())
+}
+
+/// Like [`write_rows`] but accepts any [`BatchTransformer`] behind [`Arc`].
+pub async fn write_rows_with<S, T>(
+    sink: &S,
+    transformer: Arc<T>,
+    rows: Vec<UniversalRow>,
+    opts: &ApplyOpts,
+) -> Result<()>
+where
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
+    if rows.is_empty() {
+        return Ok(());
+    }
+    // Overlapping window: convert rows to upserts and push through ApplyContext
+    // so max_in_flight can absorb slow transforms within a chunk.
+    let mut ctx = ApplyContext::new(sink, transformer, opts);
+    for (i, row) in rows.into_iter().enumerate() {
+        let change = UniversalChange::update(row.table, row.id, row.fields);
+        ctx.push_change(change, i as u64).await?;
+    }
+    ctx.flush().await?;
+    Ok(())
+}
+
+/// Like [`write_relations`] but accepts any [`BatchTransformer`] behind [`Arc`].
+pub async fn write_relations_with<S, T>(
+    sink: &S,
+    transformer: Arc<T>,
+    relations: Vec<UniversalRelation>,
+    opts: &ApplyOpts,
+) -> Result<()>
+where
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
+    if relations.is_empty() {
+        return Ok(());
+    }
+    let mut ctx = ApplyContext::new(sink, transformer, opts);
+    for (i, relation) in relations.into_iter().enumerate() {
+        let change = UniversalRelationChange::update(relation);
+        ctx.push_relation_change(change, i as u64).await?;
+    }
+    ctx.flush().await?;
+    Ok(())
+}
+
+/// Ordered sink apply for a transformed batch.
+///
+/// Homogeneous upsert (`Update`) batches coalesce to
+/// [`SurrealSink::write_universal_rows`] /
+/// [`SurrealSink::write_universal_relations`] so large `write_rows` /
+/// `write_relations` vecs keep a bulk trait call **inside** the window. CDC
+/// `Create` / `Delete` (and mixed batches) stay on per-event apply.
+pub(crate) async fn apply_transformed_sink_events<S: SurrealSink>(
+    sink: &S,
+    events: &[ApplyEvent],
+) -> Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    if let Some(rows) = try_coalesce_row_upserts(events) {
+        return sink
+            .write_universal_rows(&rows)
+            .await
+            .context("sink write_universal_rows");
+    }
+    if let Some(relations) = try_coalesce_relation_upserts(events) {
+        return sink
+            .write_universal_relations(&relations)
+            .await
+            .context("sink write_universal_relations");
+    }
+    for event in events {
+        match event {
+            ApplyEvent::Change(change) => {
+                sink.apply_universal_change(change)
+                    .await
+                    .context("sink apply_universal_change")?;
+            }
+            ApplyEvent::RelationChange(change) => {
+                sink.apply_universal_relation_change(change)
+                    .await
+                    .context("sink apply_universal_relation_change")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn try_coalesce_row_upserts(events: &[ApplyEvent]) -> Option<Vec<UniversalRow>> {
+    let mut rows = Vec::with_capacity(events.len());
+    for event in events {
+        match event {
+            ApplyEvent::Change(change) if change.operation == UniversalChangeOp::Update => {
+                let data = change.data.as_ref()?.clone();
+                rows.push(UniversalRow::new(
+                    change.table.clone(),
+                    0,
+                    change.id.clone(),
+                    data,
+                ));
+            }
+            _ => return None,
+        }
+    }
+    Some(rows)
+}
+
+fn try_coalesce_relation_upserts(events: &[ApplyEvent]) -> Option<Vec<UniversalRelation>> {
+    let mut relations = Vec::with_capacity(events.len());
+    for event in events {
+        match event {
+            ApplyEvent::RelationChange(change) if change.operation == UniversalChangeOp::Update => {
+                relations.push(change.relation.clone());
+            }
+            _ => return None,
+        }
+    }
+    Some(relations)
+}
+
+/// Convenience loop for row-only [`ChangeFeed`] sources.
+///
+/// Equivalent to [`crate::run_source_runtime`] over a [`ChangeFeedDriver`].
+/// Prefer [`crate::SourceDriver`] when you need relation events or schema /
+/// ad-hoc / cancel / checkpoint hooks (schema refresh, ad-hoc snapshot,
+/// cancel/deadline, persist_checkpoint).
+pub async fn run_change_feed<F, S>(
+    feed: &mut F,
+    sink: &S,
+    pipeline: &Pipeline,
+    opts: &ApplyOpts,
+) -> Result<()>
+where
+    F: ChangeFeed,
+    S: SurrealSink,
+{
+    run_change_feed_with(feed, sink, Arc::new(pipeline.clone()), opts).await
+}
+
+/// Like [`run_change_feed`] but accepts any [`BatchTransformer`] behind [`Arc`].
+pub async fn run_change_feed_with<F, S, T>(
+    feed: &mut F,
+    sink: &S,
+    transformer: Arc<T>,
+    opts: &ApplyOpts,
+) -> Result<()>
+where
+    F: ChangeFeed,
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+{
+    let mut driver = ChangeFeedRef::new(feed);
+    let exit = crate::apply::source_driver::run_source_runtime_with(
+        &mut driver,
+        sink,
+        transformer,
+        opts,
+        &SourceRuntimeOpts::default(),
+    )
+    .await?;
+    match exit {
+        RuntimeExit::Stopped(_) => Ok(()),
+    }
+}
+
+struct CompletedBatch<P> {
+    batch_id: u64,
+    last_position: P,
+    /// Pre-transform input event count (for `note_sunk_events` / skip).
+    event_count: u64,
+    result: Result<Vec<ApplyEvent>>,
+}
+
+struct TransformOutcome<P> {
+    epoch: u64,
+    seq: u64,
+    batch_id: u64,
+    last_position: P,
+    event_count: u64,
+    result: Result<Vec<ApplyEvent>>,
+}
+
+/// Batch ready for ordered sink apply (transform done; sink slot reserved).
+pub(crate) struct PreparedSinkBatch<P> {
+    pub(crate) batch_id: u64,
+    pub(crate) last_position: P,
+    pub(crate) event_count: u64,
+    pub(crate) result: Result<Vec<ApplyEvent>>,
+}
+
+/// Library / custom-loop driver sharing the same ordered apply path as
+/// [`crate::run_source_runtime`].
+///
+/// Accepts row [`UniversalChange`] and [`UniversalRelationChange`] into one
+/// buffer / window. Identity and non-identity pipelines share one path: every
+/// batch is spawned onto the transform [`JoinSet`] (identity is an async
+/// no-op). Sink apply is ordered and may overlap with polling / transforming
+/// later batches; `push_*` / `flush` still return `Some(position)` only after
+/// that batch’s sink succeeds. They do **not** call
+/// [`SourceDriver::advance_watermark`] / [`ChangeFeed::advance_watermark`].
+///
+/// # Poisoning after [`FailurePolicy::Fail`]
+///
+/// After a batch fails under [`FailurePolicy::Fail`], this context is
+/// **poisoned**: successors are discarded, and further push/flush return `Err`
+/// immediately. Do not reuse — create a new context and replay from the last
+/// successful sink-safe watermark.
+pub struct ApplyContext<'a, S, T, P = ()> {
+    sink: &'a S,
+    transformer: Arc<T>,
+    opts: &'a ApplyOpts,
+    buffer: Vec<PositionedEvent<P>>,
+    next_batch_id: u64,
+    next_seq: u64,
+    next_to_apply: u64,
+    in_flight: HashSet<u64>,
+    completed: HashMap<u64, CompletedBatch<P>>,
+    join_set: JoinSet<TransformOutcome<P>>,
+    /// True while a prepared sink batch is being applied (slot reserved).
+    sink_in_flight: bool,
+    buffer_started: Option<tokio::time::Instant>,
+    /// Bumped on fail-discard so stale JoinSet tasks are ignored.
+    epoch: u64,
+    /// Set after [`FailurePolicy::Fail`]; context must not be reused.
+    poisoned: bool,
+    /// Events successfully sunk since the last [`Self::take_sunk_change_count`].
+    sunk_since_take: u64,
+    /// Deferred sink-safe position for [`CheckpointPolicy::IntervalWhenDrained`].
+    pending_checkpoint: Option<P>,
+    /// Last wall-clock time a deferred checkpoint was persisted.
+    last_checkpoint_persist: Instant,
+}
+
+impl<'a, S, T, P> ApplyContext<'a, S, T, P>
+where
+    S: SurrealSink,
+    T: BatchTransformer + 'static,
+    P: Clone + Send + Sync + 'static,
+{
+    /// Create an apply context bound to a sink, transformer, and options.
+    pub fn new(sink: &'a S, transformer: Arc<T>, opts: &'a ApplyOpts) -> Self {
+        Self {
+            sink,
+            transformer,
+            opts,
+            buffer: Vec::new(),
+            next_batch_id: 1,
+            next_seq: 0,
+            next_to_apply: 0,
+            in_flight: HashSet::new(),
+            completed: HashMap::new(),
+            join_set: JoinSet::new(),
+            sink_in_flight: false,
+            buffer_started: None,
+            epoch: 0,
+            poisoned: false,
+            sunk_since_take: 0,
+            pending_checkpoint: None,
+            last_checkpoint_persist: Instant::now(),
+        }
+    }
+
+    /// Whether this context was poisoned by a [`FailurePolicy::Fail`] error.
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Number of events waiting to form a batch.
+    pub fn buffer_len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Number of batches currently transforming (JoinSet path).
+    pub fn in_flight_count(&self) -> usize {
+        self.in_flight.len()
+    }
+
+    /// Whether an ordered sink apply is in progress (slot reserved).
+    pub fn sink_in_flight(&self) -> bool {
+        self.sink_in_flight
+    }
+
+    /// Batches occupying the apply window: transforming + awaiting/in sink.
+    ///
+    /// [`ApplyOpts::max_in_flight`] bounds this total so a slow sink back-pressures
+    /// new transforms while still allowing overlap (reads / transforms / writes).
+    pub fn window_occupancy(&self) -> usize {
+        self.in_flight.len() + self.completed.len() + usize::from(self.sink_in_flight)
+    }
+
+    /// Take and reset the count of events sunk since the previous take.
+    pub fn take_sunk_change_count(&mut self) -> u64 {
+        std::mem::take(&mut self.sunk_since_take)
+    }
+
+    /// Number of transform results waiting for ordered sink apply.
+    pub fn completed_waiting_count(&self) -> usize {
+        self.completed.len()
+    }
+
+    /// Whether any buffered, in-flight, completed-waiting, or sinking work remains.
+    ///
+    /// Used by checkpoint policies that must not persist a read-ahead position
+    /// while transform/apply still has unsunk work.
+    pub fn has_unsunk_work(&self) -> bool {
+        self.buffer_len() > 0
+            || self.in_flight_count() > 0
+            || self.completed_waiting_count() > 0
+            || self.sink_in_flight
+    }
+
+    /// Whether the apply window is fully drained (no unsunk work).
+    pub fn is_fully_drained(&self) -> bool {
+        !self.has_unsunk_work()
+    }
+
+    fn ensure_not_poisoned(&self) -> Result<()> {
+        if self.poisoned {
+            bail!(
+                "ApplyContext is poisoned after FailurePolicy::Fail; \
+                 create a new context and replay from the last successful advance_watermark"
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn push_buffered_event(&mut self, pe: PositionedEvent<P>) {
+        if self.buffer.is_empty() {
+            self.buffer_started = Some(tokio::time::Instant::now());
+        }
+        self.buffer.push(pe);
+    }
+
+    pub(crate) fn should_flush_partial_public(&self) -> bool {
+        self.should_flush_partial()
+    }
+
+    fn should_flush_partial(&self) -> bool {
+        match self.buffer_started {
+            Some(started) => started.elapsed() >= self.opts.batch_max_wait,
+            None => false,
+        }
+    }
+
+    /// Push one row change; may start transforms and drain ordered sink.
+    ///
+    /// Returns the last position successfully sunk (caller should `advance_watermark`).
+    pub async fn push_change(&mut self, change: UniversalChange, position: P) -> Result<Option<P>> {
+        self.ensure_not_poisoned()?;
+        self.push_buffered_event(PositionedEvent::change(change, position));
+        while self.try_start_full_batch() {}
+        self.collect_ready_transforms().await?;
+        self.drain_ordered_no_advance().await
+    }
+
+    /// Push one relation change into the same window as row changes.
+    pub async fn push_relation_change(
+        &mut self,
+        change: UniversalRelationChange,
+        position: P,
+    ) -> Result<Option<P>> {
+        self.ensure_not_poisoned()?;
+        self.push_buffered_event(PositionedEvent::relation_change(change, position));
+        while self.try_start_full_batch() {}
+        self.collect_ready_transforms().await?;
+        self.drain_ordered_no_advance().await
+    }
+
+    /// Push a unified positioned event.
+    pub async fn push_event(&mut self, event: ApplyEvent, position: P) -> Result<Option<P>> {
+        self.ensure_not_poisoned()?;
+        self.push_buffered_event(PositionedEvent::new(event, position));
+        while self.try_start_full_batch() {}
+        self.collect_ready_transforms().await?;
+        self.drain_ordered_no_advance().await
+    }
+
+    /// Collect JoinSet results that are already ready (non-blocking after a yield).
+    ///
+    /// Identity and non-identity share the same JoinSet path: ready tasks are
+    /// drained via [`poll_join_ready`]; slow transforms stay in-flight so the
+    /// caller can keep pushing / overlapping work.
+    async fn collect_ready_transforms(&mut self) -> Result<()> {
+        self.poll_join_ready().await
+    }
+
+    /// Flush remaining buffered events and wait for in-flight work.
+    pub async fn flush(&mut self) -> Result<Option<P>> {
+        self.ensure_not_poisoned()?;
+        let mut last = None;
+        loop {
+            while self.try_start_partial_batch() {}
+
+            if let Some(p) = self.drain_ordered_no_advance().await? {
+                last = Some(p);
+            }
+
+            if self.buffer.is_empty()
+                && self.in_flight.is_empty()
+                && self.completed.is_empty()
+                && !self.sink_in_flight
+            {
+                break;
+            }
+
+            if self.in_flight_count() > 0 {
+                self.wait_one_completion().await?;
+                continue;
+            }
+
+            if !self.buffer.is_empty() {
+                if !self.try_start_partial_batch() {
+                    bail!(
+                        "flush: {} buffered event(s) but window would not accept a batch",
+                        self.buffer.len()
+                    );
+                }
+                continue;
+            }
+
+            bail!(
+                "flush: {} completed batch(es) waiting but none is next_to_apply={}",
+                self.completed.len(),
+                self.next_to_apply
+            );
+        }
+        Ok(last)
+    }
+
+    /// Transform then sink rows (same as [`write_rows_with`]).
+    pub async fn write_rows(&self, rows: Vec<UniversalRow>) -> Result<()> {
+        self.ensure_not_poisoned()?;
+        write_rows_with(self.sink, Arc::clone(&self.transformer), rows, self.opts).await
+    }
+
+    /// Transform then sink relations (same as [`write_relations_with`]).
+    pub async fn write_relations(&self, relations: Vec<UniversalRelation>) -> Result<()> {
+        self.ensure_not_poisoned()?;
+        write_relations_with(
+            self.sink,
+            Arc::clone(&self.transformer),
+            relations,
+            self.opts,
+        )
+        .await
+    }
+
+    pub(crate) fn try_start_full_batch(&mut self) -> bool {
+        if self.buffer.len() < self.opts.batch_size {
+            return false;
+        }
+        self.start_batch_from_buffer(self.opts.batch_size)
+    }
+
+    pub(crate) fn try_start_partial_batch(&mut self) -> bool {
+        if self.buffer.is_empty() {
+            return false;
+        }
+        let n = self.buffer.len();
+        self.start_batch_from_buffer(n)
+    }
+
+    fn start_batch_from_buffer(&mut self, n: usize) -> bool {
+        if n == 0 {
+            return false;
+        }
+        // One window for identity and transforms: occupancy includes transforming,
+        // completed-waiting, and the in-flight ordered sink slot.
+        if self.window_occupancy() >= self.opts.max_in_flight {
+            return false;
+        }
+
+        let batch: Vec<PositionedEvent<P>> = self.buffer.drain(..n).collect();
+        if self.buffer.is_empty() {
+            self.buffer_started = None;
+        } else {
+            self.buffer_started = Some(tokio::time::Instant::now());
+        }
+
+        let last_position = batch.last().expect("n > 0").position.clone();
+        let events: Vec<ApplyEvent> = batch.into_iter().map(|pe| pe.event).collect();
+        let event_count = events.len() as u64;
+
+        let batch_id = self.next_batch_id;
+        self.next_batch_id = self.next_batch_id.saturating_add(1);
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.saturating_add(1);
+
+        self.in_flight.insert(seq);
+
+        let transformer = Arc::clone(&self.transformer);
+        let timeout = self.opts.timeout;
+        let epoch = self.epoch;
+        // Identity uses the same JoinSet path (async no-op) so poll/transform/sink
+        // can overlap; do not sync-insert into `completed` (that serialized the window).
+        let identity = transformer.is_identity();
+        self.join_set.spawn(async move {
+            let result = if identity {
+                Ok(events)
+            } else {
+                match tokio::time::timeout(timeout, transformer.transform_events(batch_id, events))
+                    .await
+                {
+                    Ok(inner) => inner,
+                    Err(_) => Err(anyhow!(
+                        "transform timeout after {:?} for batch_id={batch_id}",
+                        timeout
+                    )),
+                }
+            };
+            TransformOutcome {
+                epoch,
+                seq,
+                batch_id,
+                last_position,
+                event_count,
+                result,
+            }
+        });
+        true
+    }
+
+    pub(crate) async fn poll_join_ready_public(&mut self) -> Result<()> {
+        self.poll_join_ready().await
+    }
+
+    pub(crate) async fn wait_one_completion_public(&mut self) -> Result<()> {
+        self.wait_one_completion().await
+    }
+
+    pub(crate) async fn try_interval_persist_public(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+    ) -> Result<()> {
+        self.try_interval_persist(driver).await
+    }
+
+    fn try_poll_join(&mut self) -> Option<Result<TransformOutcome<P>>> {
+        let handle = self.join_set.try_join_next()?;
+        Some(match handle {
+            Ok(outcome) => Ok(outcome),
+            Err(e) => Err(anyhow!("transform task join error: {e}")),
+        })
+    }
+
+    async fn poll_join_ready(&mut self) -> Result<()> {
+        while let Some(outcome) = self.try_poll_join() {
+            self.handle_outcome(outcome?)?;
+        }
+        if self.in_flight_count() > 0 {
+            tokio::task::yield_now().await;
+            while let Some(outcome) = self.try_poll_join() {
+                self.handle_outcome(outcome?)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn wait_one_completion(&mut self) -> Result<()> {
+        let outcome = self
+            .join_set
+            .join_next()
+            .await
+            .ok_or_else(|| anyhow!("no in-flight transform tasks"))?
+            .map_err(|e| anyhow!("transform task join error: {e}"))?;
+        self.handle_outcome(outcome)
+    }
+
+    fn handle_outcome(&mut self, outcome: TransformOutcome<P>) -> Result<()> {
+        if outcome.epoch != self.epoch {
+            return Ok(());
+        }
+        if !self.in_flight.remove(&outcome.seq) {
+            return Ok(());
+        }
+        self.completed.insert(
+            outcome.seq,
+            CompletedBatch {
+                batch_id: outcome.batch_id,
+                last_position: outcome.last_position,
+                event_count: outcome.event_count,
+                result: outcome.result,
+            },
+        );
+        Ok(())
+    }
+
+    /// Reserve the next ordered batch for sink apply (non-blocking).
+    ///
+    /// Returns `None` when the sink slot is busy or the next seq is not ready.
+    /// Caller must apply (or skip) then call [`Self::finish_sink_ok_driver`] /
+    /// [`Self::finish_sink_ok_no_advance`] (or [`Self::release_sink_slot`] on abandon).
+    pub(crate) fn prepare_ordered_sink(&mut self) -> Option<PreparedSinkBatch<P>> {
+        if self.sink_in_flight {
+            return None;
+        }
+        let batch = self.completed.remove(&self.next_to_apply)?;
+        self.sink_in_flight = true;
+        Some(PreparedSinkBatch {
+            batch_id: batch.batch_id,
+            last_position: batch.last_position,
+            event_count: batch.event_count,
+            result: batch.result,
+        })
+    }
+
+    /// After a successful sink apply: note_sunk_events → advance_watermark → policy → persist.
+    ///
+    /// `sunk` is the **pre-transform input** event count (`batch.event_count`),
+    /// not the post-transform sink length.
+    pub(crate) async fn finish_sink_ok_driver(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+        last_position: P,
+        sunk: u64,
+    ) -> Result<()> {
+        self.sunk_since_take = self.sunk_since_take.saturating_add(sunk);
+        driver.note_sunk_events(sunk);
+        driver
+            .advance_watermark(last_position.clone())
+            .await
+            .context("advance_watermark")?;
+        // Free the sink slot before persist checks so IntervalWhenDrained sees a
+        // drained window when nothing else is outstanding.
+        self.next_to_apply += 1;
+        self.sink_in_flight = false;
+        self.after_advance_persist(driver, last_position).await?;
+        Ok(())
+    }
+
+    /// After sink/transform failure under driver path.
+    pub(crate) async fn finish_sink_err_driver(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+        batch_id: u64,
+        last_position: P,
+        event_count: u64,
+        e: anyhow::Error,
+    ) -> Result<()> {
+        self.sink_in_flight = false;
+        self.fail_or_skip_driver(driver, batch_id, last_position, event_count, e)
+            .await
+    }
+
+    /// After successful sink for push/flush (no driver advance_watermark).
+    pub(crate) fn finish_sink_ok_no_advance(&mut self, last_position: P, sunk: u64) -> P {
+        self.sunk_since_take = self.sunk_since_take.saturating_add(sunk);
+        self.next_to_apply += 1;
+        self.sink_in_flight = false;
+        last_position
+    }
+
+    /// After sink/transform failure for push/flush.
+    pub(crate) fn finish_sink_err_no_advance(
+        &mut self,
+        batch_id: u64,
+        last_position: P,
+        e: anyhow::Error,
+    ) -> Result<Option<P>> {
+        self.sink_in_flight = false;
+        self.fail_or_skip_no_feed(batch_id, last_position, e)
+    }
+
+    /// Drain ordered sink + driver advance_watermark (+ optional persist_checkpoint).
+    ///
+    /// Awaits each sink apply to completion (used by flush / schema/ad-hoc hooks).
+    pub(crate) async fn drain_ordered_driver(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+    ) -> Result<()> {
+        loop {
+            // Collect ready transform results without blocking.
+            self.poll_join_ready().await?;
+            let Some(batch) = self.prepare_ordered_sink() else {
+                break;
+            };
+            match batch.result {
+                Ok(events) => match self.apply_sink_events(&events).await {
+                    Ok(()) => {
+                        // Pre-transform input count — not post-transform
+                        // `events.len()` — so Kafka/wal2json watermarks stay
+                        // aligned under filter and fan-out.
+                        self.finish_sink_ok_driver(driver, batch.last_position, batch.event_count)
+                            .await?;
+                    }
+                    Err(e) => {
+                        self.finish_sink_err_driver(
+                            driver,
+                            batch.batch_id,
+                            batch.last_position,
+                            batch.event_count,
+                            e,
+                        )
+                        .await?;
+                    }
+                },
+                Err(e) => {
+                    self.finish_sink_err_driver(
+                        driver,
+                        batch.batch_id,
+                        batch.last_position,
+                        batch.event_count,
+                        e,
+                    )
+                    .await?;
+                }
+            }
+        }
+        self.try_interval_persist(driver).await
+    }
+
+    async fn after_advance_persist(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+        position: P,
+    ) -> Result<()> {
+        match driver.checkpoint_policy() {
+            CheckpointPolicy::PersistAfterAdvance => {
+                driver
+                    .persist_checkpoint(position)
+                    .await
+                    .context("persist_checkpoint")?;
+            }
+            CheckpointPolicy::AdvanceOnly => {}
+            CheckpointPolicy::IntervalWhenDrained { .. } => {
+                self.pending_checkpoint = Some(position);
+                // Persist sunk watermarks promptly once the window is empty
+                // (matches pre-SourceDriver last-sunk-on-sink cadence). Interval
+                // still gates filtered-only read_progress persists.
+                if self.is_fully_drained() {
+                    self.flush_pending_checkpoint(driver).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn try_interval_persist(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+    ) -> Result<()> {
+        let CheckpointPolicy::IntervalWhenDrained { interval } = driver.checkpoint_policy() else {
+            return Ok(());
+        };
+        if !self.is_fully_drained() {
+            return Ok(());
+        }
+        if self.last_checkpoint_persist.elapsed() < interval {
+            return Ok(());
+        }
+        if self.pending_checkpoint.is_some() {
+            return self.flush_pending_checkpoint(driver).await;
+        }
+        // No advance armed a pending watermark (filtered-only / idle catch-up).
+        // Ask the driver for a drained-safe read position to persist.
+        if let Some(position) = driver
+            .read_progress_for_persist()
+            .await
+            .context("read_progress_for_persist")?
+        {
+            driver
+                .persist_checkpoint(position)
+                .await
+                .context("persist_checkpoint")?;
+            self.last_checkpoint_persist = Instant::now();
+        }
+        Ok(())
+    }
+
+    async fn flush_pending_checkpoint(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+    ) -> Result<()> {
+        if let Some(position) = self.pending_checkpoint.take() {
+            driver
+                .persist_checkpoint(position)
+                .await
+                .context("persist_checkpoint")?;
+            self.last_checkpoint_persist = Instant::now();
+        }
+        Ok(())
+    }
+
+    /// Flush remaining work and advance_watermark via driver (used on cancel/deadline stop).
+    pub(crate) async fn flush_for_driver(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+    ) -> Result<()> {
+        if self.poisoned {
+            return Ok(());
+        }
+        loop {
+            while self.try_start_partial_batch() {}
+            self.drain_ordered_driver(driver).await?;
+            if self.buffer.is_empty()
+                && self.in_flight.is_empty()
+                && self.completed.is_empty()
+                && !self.sink_in_flight
+            {
+                // Force-persist any deferred IntervalWhenDrained position.
+                self.flush_pending_checkpoint(driver).await?;
+                return Ok(());
+            }
+            if self.in_flight_count() > 0 {
+                self.wait_one_completion().await?;
+                continue;
+            }
+            if !self.buffer.is_empty() {
+                if !self.try_start_partial_batch() {
+                    bail!(
+                        "flush_for_driver: {} buffered but window would not accept a batch",
+                        self.buffer.len()
+                    );
+                }
+                continue;
+            }
+            bail!(
+                "flush_for_driver: {} completed waiting but none is next_to_apply={}",
+                self.completed.len(),
+                self.next_to_apply
+            );
+        }
+    }
+
+    async fn drain_ordered_no_advance(&mut self) -> Result<Option<P>> {
+        let mut last = None;
+        loop {
+            self.poll_join_ready().await?;
+            let Some(batch) = self.prepare_ordered_sink() else {
+                break;
+            };
+            match batch.result {
+                Ok(events) => match self.apply_sink_events(&events).await {
+                    Ok(()) => {
+                        // Pre-transform input count (same as drain_ordered_driver)
+                        // so filter/fan-out cannot under/over-count sunk_since_take.
+                        last = Some(
+                            self.finish_sink_ok_no_advance(batch.last_position, batch.event_count),
+                        );
+                    }
+                    Err(e) => {
+                        last = self.finish_sink_err_no_advance(
+                            batch.batch_id,
+                            batch.last_position,
+                            e,
+                        )?;
+                    }
+                },
+                Err(e) => {
+                    last =
+                        self.finish_sink_err_no_advance(batch.batch_id, batch.last_position, e)?;
+                }
+            }
+        }
+        Ok(last)
+    }
+
+    async fn fail_or_skip_driver(
+        &mut self,
+        driver: &mut impl SourceDriver<Position = P>,
+        batch_id: u64,
+        last_position: P,
+        event_count: u64,
+        e: anyhow::Error,
+    ) -> Result<()> {
+        match self.opts.failure_policy {
+            FailurePolicy::Fail => {
+                self.discard_successors();
+                Err(e).with_context(|| format!("batch {batch_id} failed"))
+            }
+            FailurePolicy::Skip => {
+                warn!(
+                    batch_id,
+                    error = %e,
+                    "skipping failed batch (failure_policy=skip); advancing watermark past it"
+                );
+                // Account for skipped events so drivers that gate advance on
+                // note_sunk_events (e.g. wal2json slot) do not stall.
+                driver.note_sunk_events(event_count);
+                driver
+                    .advance_watermark(last_position.clone())
+                    .await
+                    .context("advance_watermark after skip")?;
+                self.after_advance_persist(driver, last_position).await?;
+                self.next_to_apply += 1;
+                Ok(())
+            }
+        }
+    }
+
+    fn fail_or_skip_no_feed(
+        &mut self,
+        batch_id: u64,
+        last_position: P,
+        e: anyhow::Error,
+    ) -> Result<Option<P>> {
+        match self.opts.failure_policy {
+            FailurePolicy::Fail => {
+                self.discard_successors();
+                Err(e).with_context(|| format!("batch {batch_id} failed"))
+            }
+            FailurePolicy::Skip => {
+                warn!(
+                    batch_id,
+                    error = %e,
+                    "skipping failed batch (failure_policy=skip)"
+                );
+                self.next_to_apply += 1;
+                Ok(Some(last_position))
+            }
+        }
+    }
+
+    fn discard_successors(&mut self) {
+        self.epoch = self.epoch.saturating_add(1);
+        self.in_flight.clear();
+        self.completed.clear();
+        self.buffer.clear();
+        self.buffer_started = None;
+        self.sink_in_flight = false;
+        self.join_set.abort_all();
+        self.poisoned = true;
+    }
+
+    async fn apply_sink_events(&self, events: &[ApplyEvent]) -> Result<()> {
+        apply_transformed_sink_events(self.sink, events).await
+    }
+}

@@ -2,3 +2,4 @@ mod mysql_binlog_full_sync_only_cli;
 mod mysql_binlog_full_sync_only_lib;
 mod mysql_binlog_incremental_sync_only_cli;
 mod mysql_binlog_incremental_sync_only_lib;
+mod mysql_binlog_transforms_config_cli;

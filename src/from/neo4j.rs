@@ -8,6 +8,7 @@
 use anyhow::Context;
 use checkpoint::Checkpoint;
 
+use super::transforms::load_transforms_from_args;
 use super::{
     extract_json_fields_from_schema, get_sdk_version, load_schema_if_provided, SdkVersion,
 };
@@ -48,6 +49,8 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
     if args.surreal.dry_run {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
+
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     let schema = load_schema_if_provided(&args.schema_file)?;
 
@@ -91,9 +94,10 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
         None
     };
 
+    let (session_db, composite_constituent) = parse_composite_database(&args.database);
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
-        source_database: parse_composite_database(&args.database).0,
+        source_database: session_db,
         source_username: args.username,
         source_password: args.password,
         labels: args.tables,
@@ -103,7 +107,7 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
         assumed_start_timestamp,
         allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
         id_property: args.id_property.clone(),
-        composite_constituent: parse_composite_database(&args.database).1,
+        composite_constituent,
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
@@ -114,19 +118,19 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
     // Handle checkpoint storage
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
-            // Filesystem checkpoint storage
             let store = checkpoint::FilesystemStore::new(dir);
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_neo4j_source::run_full_sync(
+            surreal_sync_neo4j_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
                 sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (None, Some(table)) => {
-            // SurrealDB v2 checkpoint storage
             let checkpoint_surreal = surreal2_sink::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
@@ -135,26 +139,28 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
             .await?;
             let store = checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone());
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_neo4j_source::run_full_sync(
+            surreal_sync_neo4j_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
                 sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (None, None) => {
-            // No checkpoint storage
-            surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+            surreal_sync_neo4j_source::run_full_sync_with_transforms::<_, checkpoint::NullStore>(
                 &sink,
                 source_opts,
                 sync_opts,
                 None,
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (Some(_), Some(_)) => {
-            // Should be prevented by clap's conflicts_with
             anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
         }
     }
@@ -170,6 +176,8 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
     if args.surreal.dry_run {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
+
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     let schema = load_schema_if_provided(&args.schema_file)?;
 
@@ -213,9 +221,10 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
         None
     };
 
+    let (session_db, composite_constituent) = parse_composite_database(&args.database);
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
-        source_database: parse_composite_database(&args.database).0,
+        source_database: session_db,
         source_username: args.username,
         source_password: args.password,
         labels: args.tables,
@@ -225,7 +234,7 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
         assumed_start_timestamp,
         allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
         id_property: args.id_property.clone(),
-        composite_constituent: parse_composite_database(&args.database).1,
+        composite_constituent,
     };
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
@@ -236,19 +245,19 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
     // Handle checkpoint storage
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
-            // Filesystem checkpoint storage
             let store = checkpoint::FilesystemStore::new(dir);
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_neo4j_source::run_full_sync(
+            surreal_sync_neo4j_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
                 sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (None, Some(table)) => {
-            // SurrealDB v3 checkpoint storage
             let checkpoint_surreal = surreal3_sink::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
@@ -257,26 +266,28 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
             .await?;
             let store = checkpoint_surreal3::Surreal3Store::new(checkpoint_surreal, table.clone());
             let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_neo4j_source::run_full_sync(
+            surreal_sync_neo4j_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
                 sync_opts,
                 Some(&sync_manager),
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (None, None) => {
-            // No checkpoint storage
-            surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+            surreal_sync_neo4j_source::run_full_sync_with_transforms::<_, checkpoint::NullStore>(
                 &sink,
                 source_opts,
                 sync_opts,
                 None,
+                &pipeline,
+                &apply_opts,
             )
             .await?;
         }
         (Some(_), Some(_)) => {
-            // Should be prevented by clap's conflicts_with
             anyhow::bail!("Cannot specify both --checkpoint-dir and --checkpoints-surreal-table")
         }
     }
@@ -306,6 +317,8 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
     if args.surreal.dry_run {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
+
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     let schema = load_schema_if_provided(&args.schema_file)?;
 
@@ -337,12 +350,10 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
     let from_checkpoint = match (&args.incremental_from, &args.checkpoints_surreal_table) {
         (Some(s), _) => {
             tracing::info!("Starting from checkpoint: {}", s);
-            // Explicit checkpoint from CLI
             surreal_sync_neo4j_source::Neo4jCheckpoint::from_cli_string(s)?
         }
         (None, Some(table)) => {
             tracing::info!("Reading checkpoint from SurrealDB table: {}", table);
-            // Read from SurrealDB v2 checkpoint storage
             let checkpoint_surreal = surreal2_sink::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
@@ -384,7 +395,6 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
-    // Parse assumed_start_timestamp if provided
     let assumed_start_timestamp = if let Some(ts_str) = &args.assumed_start_timestamp {
         Some(
             chrono::DateTime::parse_from_rfc3339(ts_str)
@@ -395,9 +405,10 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         None
     };
 
+    let (session_db, composite_constituent) = parse_composite_database(&args.database);
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
-        source_database: parse_composite_database(&args.database).0,
+        source_database: session_db,
         source_username: args.username,
         source_password: args.password,
         labels: args.tables,
@@ -407,25 +418,31 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         assumed_start_timestamp,
         allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
         id_property: args.id_property.clone(),
-        composite_constituent: parse_composite_database(&args.database).1,
+        composite_constituent,
     };
 
-    // Connect to SurrealDB using v2 SDK
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
-    surreal_sync_neo4j_source::run_incremental_sync(
+    let sync_opts = surreal_sync_neo4j_source::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+    surreal_sync_neo4j_source::run_incremental_sync_with_transforms(
         &sink,
         source_opts,
-        surreal_sync_neo4j_source::SyncOpts {
-            batch_size: args.surreal.batch_size,
-            dry_run: args.surreal.dry_run,
-        },
+        sync_opts.clone(),
         from_checkpoint,
-        deadline,
-        neo4j_to,
+        surreal_sync_neo4j_source::ReplicationTailOptions::stream(
+            deadline,
+            neo4j_to,
+            sync_opts.dry_run,
+            sync_opts.batch_size,
+        ),
+        &pipeline,
+        &apply_opts,
     )
     .await?;
 
@@ -440,6 +457,8 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
     if args.surreal.dry_run {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
+
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     let schema = load_schema_if_provided(&args.schema_file)?;
 
@@ -461,7 +480,6 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         None
     };
 
-    // Get checkpoint from CLI arg or SurrealDB
     let surreal_opts = surreal3_sink::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
@@ -471,12 +489,10 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
     let from_checkpoint = match (&args.incremental_from, &args.checkpoints_surreal_table) {
         (Some(s), _) => {
             tracing::info!("Starting from checkpoint: {}", s);
-            // Explicit checkpoint from CLI
             surreal_sync_neo4j_source::Neo4jCheckpoint::from_cli_string(s)?
         }
         (None, Some(table)) => {
             tracing::info!("Reading checkpoint from SurrealDB table: {}", table);
-            // Read from SurrealDB v3 checkpoint storage
             let checkpoint_surreal = surreal3_sink::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
@@ -518,7 +534,6 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
-    // Parse assumed_start_timestamp if provided
     let assumed_start_timestamp = if let Some(ts_str) = &args.assumed_start_timestamp {
         Some(
             chrono::DateTime::parse_from_rfc3339(ts_str)
@@ -529,9 +544,10 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         None
     };
 
+    let (session_db, composite_constituent) = parse_composite_database(&args.database);
     let source_opts = surreal_sync_neo4j_source::SourceOpts {
         source_uri: args.connection_string,
-        source_database: parse_composite_database(&args.database).0,
+        source_database: session_db,
         source_username: args.username,
         source_password: args.password,
         labels: args.tables,
@@ -541,25 +557,31 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         assumed_start_timestamp,
         allow_empty_tracking_timestamp: args.allow_empty_tracking_timestamp,
         id_property: args.id_property.clone(),
-        composite_constituent: parse_composite_database(&args.database).1,
+        composite_constituent,
     };
 
-    // Connect to SurrealDB using v3 SDK
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
     let sink = surreal3_sink::Surreal3Sink::new(surreal);
 
-    surreal_sync_neo4j_source::run_incremental_sync(
+    let sync_opts = surreal_sync_neo4j_source::SyncOpts {
+        batch_size: args.surreal.batch_size,
+        dry_run: args.surreal.dry_run,
+    };
+    surreal_sync_neo4j_source::run_incremental_sync_with_transforms(
         &sink,
         source_opts,
-        surreal_sync_neo4j_source::SyncOpts {
-            batch_size: args.surreal.batch_size,
-            dry_run: args.surreal.dry_run,
-        },
+        sync_opts.clone(),
         from_checkpoint,
-        deadline,
-        neo4j_to,
+        surreal_sync_neo4j_source::ReplicationTailOptions::stream(
+            deadline,
+            neo4j_to,
+            sync_opts.dry_run,
+            sync_opts.batch_size,
+        ),
+        &pipeline,
+        &apply_opts,
     )
     .await?;
 

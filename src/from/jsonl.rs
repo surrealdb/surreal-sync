@@ -4,6 +4,7 @@
 //! CLI command:
 //! - Import: `from jsonl --path ... --to-namespace ... --to-database ...`
 
+use super::transforms::load_transforms_from_args;
 use super::{get_sdk_version, load_schema_if_provided, SdkVersion};
 use crate::JsonlArgs;
 
@@ -28,6 +29,8 @@ async fn run_v2(args: JsonlArgs) -> anyhow::Result<()> {
     if args.surreal.dry_run {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
+
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     // Load and convert schema to DatabaseSchema for type-aware JSONL conversion
     let schema = load_schema_if_provided(&args.schema_file)?.map(|s| s.to_database_schema());
@@ -55,7 +58,7 @@ async fn run_v2(args: JsonlArgs) -> anyhow::Result<()> {
         dry_run: args.surreal.dry_run,
         schema,
     };
-    surreal_sync::jsonl::sync(&sink, config).await?;
+    surreal_sync::jsonl::sync_with_transforms(&sink, config, &pipeline, &apply_opts).await?;
 
     tracing::info!("JSONL import completed successfully");
     Ok(())
@@ -68,6 +71,8 @@ async fn run_v3(args: JsonlArgs) -> anyhow::Result<()> {
     if args.surreal.dry_run {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
+
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
     // Load and convert schema to DatabaseSchema for type-aware JSONL conversion
     let schema = load_schema_if_provided(&args.schema_file)?.map(|s| s.to_database_schema());
@@ -95,7 +100,7 @@ async fn run_v3(args: JsonlArgs) -> anyhow::Result<()> {
         dry_run: args.surreal.dry_run,
         schema,
     };
-    surreal_sync::jsonl::sync(&sink, config).await?;
+    surreal_sync::jsonl::sync_with_transforms(&sink, config, &pipeline, &apply_opts).await?;
 
     tracing::info!("JSONL import completed successfully");
     Ok(())

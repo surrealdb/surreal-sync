@@ -7,7 +7,7 @@ pub mod conversion;
 mod sync;
 
 pub use conversion::ConversionRule;
-pub use sync::{sync, Config, SourceOpts};
+pub use sync::{sync, sync_with_transforms, Config, SourceOpts};
 
 // Re-export file source types for convenience
 pub use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};

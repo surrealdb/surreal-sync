@@ -12,6 +12,10 @@ use surreal_sync_file::{FileSource, DEFAULT_BUFFER_SIZE};
 use sync_core::{
     DatabaseSchema, TableDefinition, TypedValue, UniversalRow, UniversalType, UniversalValue,
 };
+use sync_transform::{
+    run_source_runtime, ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver,
+    SourceRuntimeOpts,
+};
 
 /// Source database connection options (JSONL-specific)
 #[derive(Clone, Debug)]
@@ -67,22 +71,123 @@ impl Default for Config {
     }
 }
 
+/// No-op sink for JSONL `--dry-run` (still exercises the apply window).
+struct DryRunSink;
+
+#[async_trait::async_trait]
+impl SurrealSink for DryRunSink {
+    async fn write_universal_rows(&self, _rows: &[UniversalRow]) -> Result<()> {
+        Ok(())
+    }
+
+    async fn write_universal_relations(
+        &self,
+        _relations: &[sync_core::UniversalRelation],
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    async fn apply_universal_change(&self, _change: &sync_core::UniversalChange) -> Result<()> {
+        Ok(())
+    }
+
+    async fn apply_universal_relation_change(
+        &self,
+        _change: &sync_core::UniversalRelationChange,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Long-lived JSONL line reader that polls decode chunks into the apply window.
+///
+/// File reads continue under spare `max_in_flight` capacity — there is no
+/// outer accumulate→`run_source_runtime` barrier per `batch_size`.
+struct JsonlStreamDriver {
+    lines: std::io::Lines<BufReader<Box<dyn std::io::Read + Send>>>,
+    table_name: String,
+    id_field: String,
+    rules: Vec<ConversionRule>,
+    table_schema: Option<TableDefinition>,
+    poll_chunk: usize,
+    line_count: u64,
+    sunk_count: u64,
+    finished: bool,
+}
+
+#[async_trait::async_trait]
+impl SourceDriver for JsonlStreamDriver {
+    type Position = u64;
+
+    async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
+        if self.finished {
+            return Ok(Vec::new());
+        }
+
+        let mut events = Vec::with_capacity(self.poll_chunk);
+        while events.len() < self.poll_chunk {
+            let Some(line_result) = self.lines.next() else {
+                self.finished = true;
+                break;
+            };
+            let line = line_result?;
+            self.line_count = self.line_count.saturating_add(1);
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            let json_value: Value = serde_json::from_str(&line)
+                .map_err(|e| anyhow!("Error parsing JSON at line {}: {e}", self.line_count))?;
+
+            let row = convert_json_to_universal_row(
+                &json_value,
+                &self.table_name,
+                &self.id_field,
+                &self.rules,
+                self.table_schema.as_ref(),
+                self.line_count,
+            )?;
+            let pos = self.line_count;
+            let change = sync_core::UniversalChange::update(row.table, row.id, row.fields);
+            events.push(PositionedEvent::change(change, pos));
+        }
+        Ok(events)
+    }
+
+    async fn advance_watermark(&mut self, _position: Self::Position) -> Result<()> {
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn checkpoint_policy(&self) -> CheckpointPolicy {
+        CheckpointPolicy::AdvanceOnly
+    }
+
+    fn note_sunk_events(&mut self, count: u64) {
+        self.sunk_count = self.sunk_count.saturating_add(count);
+    }
+}
+
 /// Process JSONL data from a reader and import into SurrealDB
 ///
 /// This function handles all JSONL parsing, data conversion, and SurrealDB insertion
 /// for a single JSONL source (file, S3, or HTTP).
+///
+/// [`ConversionRule`]s are applied while building each [`UniversalRow`], before
+/// the batch is passed through the transform [`Pipeline`].
 async fn process_jsonl_reader<S: SurrealSink>(
     surreal: &S,
     config: &Config,
     reader: Box<dyn std::io::Read + Send>,
     source_name: &str,
     rules: &[ConversionRule],
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
 ) -> Result<()> {
     tracing::info!("Processing JSONL from: {source_name}");
-
-    let buf_reader = BufReader::new(reader);
-    let mut batch: Vec<UniversalRow> = Vec::new();
-    let mut total_migrated = 0;
 
     // Determine table name from source name (filename without extension)
     let table_name = if source_name.starts_with("http://") || source_name.starts_with("https://") {
@@ -116,55 +221,45 @@ async fn process_jsonl_reader<S: SurrealSink>(
     let table_schema = config
         .schema
         .as_ref()
-        .and_then(|s| s.get_table(&table_name));
+        .and_then(|s| s.get_table(&table_name))
+        .cloned();
 
-    for (line_count, line) in buf_reader.lines().enumerate() {
-        let line = line?;
-        let line_count = line_count + 1; // Convert to 1-based line numbering for error messages
+    let mut driver = JsonlStreamDriver {
+        lines: BufReader::new(reader).lines(),
+        table_name: table_name.clone(),
+        id_field: config.id_field.clone(),
+        rules: rules.to_vec(),
+        table_schema,
+        poll_chunk: config.batch_size.max(1),
+        line_count: 0,
+        sunk_count: 0,
+        finished: false,
+    };
 
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        // Parse JSON line
-        let json_value: Value = serde_json::from_str(&line)
-            .map_err(|e| anyhow!("Error parsing JSON at line {line_count}: {e}"))?;
-
-        // Convert to universal row with schema-aware conversion
-        let row = convert_json_to_universal_row(
-            &json_value,
-            &table_name,
-            &config.id_field,
-            rules,
-            table_schema,
-            line_count as u64,
-        )?;
-
-        batch.push(row);
-
-        // Process batch when it reaches the batch size
-        if batch.len() >= config.batch_size {
-            if !config.dry_run {
-                surreal.write_universal_rows(&batch).await?;
-            }
-            total_migrated += batch.len();
-            tracing::debug!("Migrated batch of {} documents", batch.len());
-            batch.clear();
-        }
-    }
-
-    // Process remaining documents
-    if !batch.is_empty() {
-        if !config.dry_run {
-            surreal.write_universal_rows(&batch).await?;
-        }
-        total_migrated += batch.len();
-        tracing::debug!("Migrated final batch of {} documents", batch.len());
+    if config.dry_run {
+        let sink = DryRunSink;
+        run_source_runtime(
+            &mut driver,
+            &sink,
+            pipeline,
+            apply_opts,
+            &SourceRuntimeOpts::default(),
+        )
+        .await?;
+    } else {
+        run_source_runtime(
+            &mut driver,
+            surreal,
+            pipeline,
+            apply_opts,
+            &SourceRuntimeOpts::default(),
+        )
+        .await?;
     }
 
     tracing::info!(
         "Completed migration of {} documents from {} to table {}",
-        total_migrated,
+        driver.sunk_count,
         source_name,
         table_name
     );
@@ -172,7 +267,7 @@ async fn process_jsonl_reader<S: SurrealSink>(
     Ok(())
 }
 
-/// Sync JSONL files to SurrealDB
+/// Sync JSONL files to SurrealDB with identity transforms.
 ///
 /// This function streams JSONL files from various sources and imports them into SurrealDB tables.
 /// The table name is derived from the filename (without .jsonl extension).
@@ -184,11 +279,38 @@ async fn process_jsonl_reader<S: SurrealSink>(
 /// # Returns
 /// Returns Ok(()) on successful completion, or an error if the sync fails
 pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    sync_with_transforms(surreal, config, &pipeline, &apply_opts).await
+}
+
+/// Sync JSONL files through a long-lived [`SourceDriver`] + [`run_source_runtime`].
+///
+/// The driver streams line reads into the apply window (`Config::batch_size`
+/// rows per poll). [`Config::conversion_rules`] still run while decoding each
+/// line into a [`UniversalRow`], before any Pipeline stages. **Multi-file
+/// imports start a fresh runtime per file** (intentional — no cross-file
+/// pipelining).
+pub async fn sync_with_transforms<S: SurrealSink>(
+    surreal: &S,
+    config: Config,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<()> {
     tracing::info!("Starting JSONL migration");
     tracing::info!("Sources to process: {:?}", config.sources);
     tracing::info!("Files to process: {:?}", config.files);
     tracing::info!("S3 URIs to process: {:?}", config.s3_uris);
     tracing::info!("HTTP/HTTPS URIs to process: {:?}", config.http_uris);
+    if pipeline.is_identity() {
+        tracing::debug!("JSONL sync using identity transform pipeline");
+    } else {
+        tracing::info!(
+            stages = pipeline.len(),
+            max_in_flight = apply_opts.max_in_flight,
+            "JSONL sync using transform pipeline"
+        );
+    }
 
     if config.dry_run {
         tracing::warn!("Running in dry-run mode - no data will be written");
@@ -224,7 +346,16 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
                 .await
                 .with_context(|| format!("Failed to open JSONL source: {source_name}"))?;
 
-            process_jsonl_reader(surreal, &config, reader, &source_name, &rules).await?;
+            process_jsonl_reader(
+                surreal,
+                &config,
+                reader,
+                &source_name,
+                &rules,
+                pipeline,
+                apply_opts,
+            )
+            .await?;
             total_sources += 1;
         }
     }
@@ -240,7 +371,16 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
                 .open(DEFAULT_BUFFER_SIZE)
                 .await
                 .context("Failed to open JSONL file")?;
-            process_jsonl_reader(surreal, &config, reader, &source_name, &rules).await?;
+            process_jsonl_reader(
+                surreal,
+                &config,
+                reader,
+                &source_name,
+                &rules,
+                pipeline,
+                apply_opts,
+            )
+            .await?;
             total_sources += 1;
         }
     }
@@ -256,7 +396,16 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
                 .open(DEFAULT_BUFFER_SIZE)
                 .await
                 .context("Failed to open S3 JSONL file")?;
-            process_jsonl_reader(surreal, &config, reader, &source_name, &rules).await?;
+            process_jsonl_reader(
+                surreal,
+                &config,
+                reader,
+                &source_name,
+                &rules,
+                pipeline,
+                apply_opts,
+            )
+            .await?;
             total_sources += 1;
         }
     }
@@ -272,7 +421,16 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
                 .open(DEFAULT_BUFFER_SIZE)
                 .await
                 .context("Failed to open HTTP/HTTPS JSONL file")?;
-            process_jsonl_reader(surreal, &config, reader, &source_name, &rules).await?;
+            process_jsonl_reader(
+                surreal,
+                &config,
+                reader,
+                &source_name,
+                &rules,
+                pipeline,
+                apply_opts,
+            )
+            .await?;
             total_sources += 1;
         }
     }

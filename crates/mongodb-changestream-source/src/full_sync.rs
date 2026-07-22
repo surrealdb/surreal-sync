@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 use surreal_sink::SurrealSink;
 use sync_core::{DatabaseSchema, UniversalRow, UniversalType, UniversalValue};
+use sync_transform::{ApplyOpts, Pipeline};
 
 /// Source database connection options (MongoDB-specific, library type without clap)
 #[derive(Clone, Debug)]
@@ -55,24 +56,57 @@ pub async fn migrate_from_mongodb<S: SurrealSink>(
     run_full_sync::<S, checkpoint::NullStore>(surreal, from_opts, sync_opts, None).await
 }
 
-/// Enhanced version that supports checkpoint emission for incremental sync coordination
-///
-/// # Arguments
-/// * `surreal` - SurrealDB sink for writing data
-/// * `from_opts` - Source database options
-/// * `sync_opts` - Sync configuration options
-/// * `sync_manager` - Optional sync manager for checkpoint emission
+/// Full sync with identity transforms (checkpoint emission optional).
 pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
     surreal: &S,
     from_opts: SourceOpts,
     sync_opts: SyncOpts,
     sync_manager: Option<&SyncManager<CS>>,
 ) -> anyhow::Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_full_sync_with_transforms(
+        surreal,
+        from_opts,
+        sync_opts,
+        sync_manager,
+        &pipeline,
+        &apply_opts,
+    )
+    .await
+}
+
+/// Full sync via [`RowChunkDriver`] /
+/// [`run_source_runtime`](sync_transform::run_source_runtime).
+///
+/// # Arguments
+/// * `surreal` - SurrealDB sink for writing data
+/// * `from_opts` - Source database options
+/// * `sync_opts` - Sync configuration options
+/// * `sync_manager` - Optional sync manager for checkpoint emission
+/// * `pipeline` - Transform pipeline (identity when empty)
+/// * `apply_opts` - Apply window options for the pipeline
+pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
+    surreal: &S,
+    from_opts: SourceOpts,
+    sync_opts: SyncOpts,
+    sync_manager: Option<&SyncManager<CS>>,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> anyhow::Result<()> {
     tracing::info!("Starting MongoDB migration");
     tracing::debug!(
         "migrate_from_mongodb function called with URI: {}",
         from_opts.source_uri
     );
+    if pipeline.is_identity() {
+        tracing::debug!("Full sync using identity transform pipeline");
+    } else {
+        tracing::info!(
+            stages = pipeline.len(),
+            "Full sync using transform pipeline"
+        );
+    }
 
     // Connect to MongoDB
     tracing::debug!(
@@ -164,100 +198,102 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
             continue;
         }
 
-        // Process documents in batches
+        // Process documents through a long-lived RowChunkDriver so the next
+        // cursor read can overlap prior-chunk transform/sink when max_in_flight > 1.
         tracing::debug!("Creating cursor for collection: {}", collection_name);
-        let mut cursor = collection.find(doc! {}).await?;
+        let cursor = collection.find(doc! {}).await?;
         tracing::debug!(
             "Cursor created successfully for collection: {}",
             collection_name
         );
-        let mut batch: Vec<UniversalRow> = Vec::new();
-        let mut processed = 0;
 
-        tracing::debug!(
-            "Starting to iterate through documents in collection: {}",
-            collection_name
-        );
-        while cursor.advance().await? {
-            tracing::trace!(
-                "Processing document {} in collection: {}",
-                processed + 1,
-                collection_name
+        if sync_opts.dry_run {
+            let mut cursor = cursor;
+            let mut processed = 0usize;
+            while cursor.advance().await? {
+                processed += 1;
+            }
+            total_migrated += processed;
+            tracing::info!(
+                "Dry-run scanned collection '{}': {} documents",
+                collection_name,
+                processed
             );
-            let doc = cursor.current();
-            tracing::trace!("Got current document from cursor");
+            continue;
+        }
 
-            // Convert MongoDB BSON document
-            tracing::trace!("Converting RawDocument to owned Document");
-            let doc_owned: mongodb::bson::Document = doc.try_into()?;
+        use async_trait::async_trait;
+        use std::sync::Arc;
+        use sync_transform::{
+            run_source_runtime_with, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
+        };
 
-            // Convert using BSON mode
-            tracing::trace!("Using BSON mode for document conversion");
+        struct MongoCursorChunks<'a> {
+            cursor: mongodb::Cursor<mongodb::bson::Document>,
+            collection_name: String,
+            batch_size: usize,
+            schema: Option<&'a DatabaseSchema>,
+            next_index: u64,
+            exhausted: bool,
+        }
 
-            // Add debug logging to see the BSON document
-            if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                tracing::debug!("BSON document: {:?}", doc_owned);
-            }
-
-            // Convert BSON document to UniversalRow with schema-aware conversion
-            let surreal_record = convert_bson_document_to_record_with_schema(
-                doc_owned,
-                &collection_name,
-                processed as u64,
-                sync_opts.schema.as_ref(),
-            )?;
-
-            if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
-                tracing::debug!("Final document for SurrealDB: {surreal_record:?}",);
-            }
-
-            batch.push(surreal_record);
-
-            if batch.len() >= sync_opts.batch_size {
-                tracing::debug!(
-                    "Batch size reached ({}), processing batch for collection: {}",
-                    batch.len(),
-                    collection_name
-                );
-                if !sync_opts.dry_run {
-                    tracing::debug!("Migrating batch of {} documents to SurrealDB", batch.len());
-                    surreal.write_universal_rows(&batch).await?;
-                    tracing::debug!("Batch migration completed");
-                } else {
-                    tracing::debug!("Dry-run mode: skipping actual migration of batch");
+        #[async_trait]
+        impl RowChunkSource for MongoCursorChunks<'_> {
+            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+                if self.exhausted {
+                    return Ok(None);
                 }
-                processed += batch.len();
-                total_migrated += batch.len();
+                let mut batch = Vec::with_capacity(self.batch_size);
+                while batch.len() < self.batch_size {
+                    if !self.cursor.advance().await? {
+                        self.exhausted = true;
+                        break;
+                    }
+                    let doc_owned: mongodb::bson::Document = self.cursor.current().try_into()?;
+                    if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                        tracing::debug!("BSON document: {:?}", doc_owned);
+                    }
+                    let row = convert_bson_document_to_record_with_schema(
+                        doc_owned,
+                        &self.collection_name,
+                        self.next_index,
+                        self.schema,
+                    )?;
+                    if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                        tracing::debug!("Final document for SurrealDB: {row:?}");
+                    }
+                    self.next_index = self.next_index.saturating_add(1);
+                    batch.push(row);
+                }
+                if batch.is_empty() {
+                    self.exhausted = true;
+                    return Ok(None);
+                }
                 tracing::info!(
-                    "Processed {}/{} documents from '{}'",
-                    processed,
-                    total_docs,
-                    collection_name
+                    "Read {} documents from '{}' (index {})",
+                    batch.len(),
+                    self.collection_name,
+                    self.next_index
                 );
-                batch.clear();
+                Ok(Some(batch))
             }
         }
 
-        // Process remaining documents in the last batch
-        if !batch.is_empty() {
-            tracing::debug!(
-                "Processing final batch of {} documents for collection: {}",
-                batch.len(),
-                collection_name
-            );
-            if !sync_opts.dry_run {
-                tracing::debug!(
-                    "Migrating final batch of {} documents to SurrealDB",
-                    batch.len()
-                );
-                surreal.write_universal_rows(&batch).await?;
-                tracing::debug!("Final batch migration completed");
-            } else {
-                tracing::debug!("Dry-run mode: skipping actual migration of final batch");
-            }
-            processed += batch.len();
-            total_migrated += batch.len();
-        }
+        let chunks = MongoCursorChunks {
+            cursor,
+            collection_name: collection_name.clone(),
+            batch_size: sync_opts.batch_size.max(1),
+            schema: sync_opts.schema.as_ref(),
+            next_index: 0,
+            exhausted: false,
+        };
+        let mut driver = RowChunkDriver::new(chunks);
+        let transformer = Arc::new(pipeline.clone());
+        let runtime_opts = SourceRuntimeOpts::new();
+        run_source_runtime_with(&mut driver, surreal, transformer, apply_opts, &runtime_opts)
+            .await?;
+        let processed = driver.sunk_count() as usize;
+        total_migrated += processed;
 
         tracing::info!(
             "Completed migration of collection '{}': {} documents",

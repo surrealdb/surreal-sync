@@ -9,6 +9,7 @@ use sync_core::{ColumnDefinition, TableDefinition, UniversalType, UniversalValue
 /// Test that schema collection correctly identifies array types
 #[tokio::test]
 async fn test_schema_collection_identifies_array_types() {
+    let _guard = crate::shared::lock_shared_db().await;
     let container = crate::shared::postgres().await;
 
     let (client, connection) =
@@ -122,6 +123,7 @@ fn test_json_array_conversion_with_schema() {
 /// Test the complete flow: schema collection + JSON conversion
 #[tokio::test]
 async fn test_complete_array_flow() {
+    let _guard = crate::shared::lock_shared_db().await;
     let container = crate::shared::postgres().await;
 
     let (client, connection) =

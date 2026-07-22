@@ -16,9 +16,12 @@ use sync_core::{
     classify_table, DatabaseSchema, TableKind, UniversalChange, UniversalChangeOp,
     UniversalRelationChange, UniversalValue,
 };
+use sync_transform::{
+    ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver, SourceRuntimeOpts,
+    StopReason,
+};
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
-use tracing::debug;
 
 // ============================================================================
 // Traits for PostgreSQL incremental sync
@@ -64,12 +67,35 @@ pub trait ChangeStream: Send + Sync {
     /// Returns None when no more changes are available.
     async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>>;
 
-    /// Get the current checkpoint of the stream
-    /// This can be used to resume from this position later
+    /// Sink-safe checkpoint: advances only via [`ChangeStream::commit_sunk`].
     fn checkpoint(&self) -> Option<PostgreSQLCheckpoint>;
+
+    /// Record that events through `sequence_id` were successfully sunk.
+    fn commit_sunk(&mut self, sequence_id: i64) {
+        let _ = sequence_id;
+    }
 }
 
-/// Run incremental sync from PostgreSQL to SurrealDB
+/// Options for the PostgreSQL trigger replication tail.
+#[derive(Clone, Debug)]
+pub struct ReplicationTailOptions {
+    pub deadline: DateTime<Utc>,
+    pub until: Option<PostgreSQLCheckpoint>,
+    /// Historical cap to avoid infinite loops in tests (same as pre-port behavior).
+    pub max_changes: u64,
+}
+
+impl ReplicationTailOptions {
+    pub fn stream(deadline: DateTime<Utc>, until: Option<PostgreSQLCheckpoint>) -> Self {
+        Self {
+            deadline,
+            until,
+            max_changes: 1000,
+        }
+    }
+}
+
+/// Run incremental sync from PostgreSQL to SurrealDB (identity transforms).
 pub async fn run_incremental_sync<S: SurrealSink>(
     surreal: &S,
     from_opts: SourceOpts,
@@ -77,14 +103,34 @@ pub async fn run_incremental_sync<S: SurrealSink>(
     deadline: chrono::DateTime<chrono::Utc>,
     target_checkpoint: Option<PostgreSQLCheckpoint>,
 ) -> Result<()> {
+    let pipeline = Pipeline::new();
+    let apply_opts = ApplyOpts::identity();
+    run_incremental_sync_with_transforms(
+        surreal,
+        from_opts,
+        from_checkpoint,
+        ReplicationTailOptions::stream(deadline, target_checkpoint),
+        &pipeline,
+        &apply_opts,
+    )
+    .await
+}
+
+/// Incremental sync via `SourceDriver` + `run_source_runtime` (shared apply window).
+pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
+    surreal: &S,
+    from_opts: SourceOpts,
+    from_checkpoint: PostgreSQLCheckpoint,
+    options: ReplicationTailOptions,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<()> {
     log::debug!("🎯 ENTERING run_incremental_sync function with checkpoint: {from_checkpoint:?}");
     info!(
         "Starting PostgreSQL incremental sync from checkpoint: {}",
         from_checkpoint.to_cli_string()
     );
 
-    // Create PostgreSQL incremental source using trigger-based tracking (reliable, no special config needed)
-    // sequence_id is directly available from the checkpoint
     let sequence_id = from_checkpoint.sequence_id;
 
     log::debug!("🚀 Creating PostgreSQL incremental source");
@@ -92,21 +138,18 @@ pub async fn run_incremental_sync<S: SurrealSink>(
     let mut source = PostgresIncrementalSource::new(client, sequence_id);
     log::debug!("PostgreSQL incremental source created");
 
-    // Initialize source (schema collection)
     log::debug!("🔧 Initializing source");
     source.initialize().await?;
     log::debug!("Source initialized");
 
-    // Collect schema with FK info for record link and relation conversion
     let schema_client =
         surreal_sync_postgresql::new_postgresql_client(&from_opts.source_uri).await?;
     let db_schema = {
         let client = schema_client.lock().await;
         surreal_sync_postgresql::schema::collect_database_schema_with_fks(&client).await?
     };
-    let relation_table_overrides = &from_opts.relation_tables;
+    let relation_table_overrides = from_opts.relation_tables.clone();
 
-    // Get list of user tables to track
     let (pg_client, pg_connection) =
         tokio_postgres::connect(&from_opts.source_uri, tokio_postgres::NoTls).await?;
 
@@ -123,101 +166,179 @@ pub async fn run_incremental_sync<S: SurrealSink>(
     .await?;
     info!("Setting up tracking for tables: {tables:?}");
 
-    // Set up trigger-based tracking - this creates audit tables and triggers
     log::debug!("🔨 Setting up tracking for tables: {tables:?}");
     source.setup_tracking(tables).await?;
     log::debug!("Tracking setup completed");
 
-    // Get change stream
     log::debug!("📡 Getting change stream");
-    let mut stream = source.get_changes().await?;
+    let stream = source.get_changes().await?;
     log::debug!("Change stream obtained");
 
     info!("Starting to consume PostgreSQL change stream...");
 
-    let mut change_count: u64 = 0;
-    while let Some(result) = stream.next().await {
-        log::debug!("🔄 Main loop: Got result from stream.next(), change_count: {change_count}");
-        match result {
-            Ok(mut change) => {
-                debug!("Received change: {:?}", change);
+    let mut driver = PostgresTriggerSourceDriver {
+        stream,
+        db_schema,
+        relation_table_overrides,
+        options: &options,
+        until_reached: false,
+        finished: false,
+        total_changes: 0,
+    };
 
-                // Check if we've reached the deadline
-                if chrono::Utc::now() >= deadline {
-                    info!("Reached deadline: {deadline}, stopping incremental sync");
-                    break;
-                }
+    let runtime_opts = SourceRuntimeOpts::new();
+    let transformer = Arc::new(pipeline.clone());
+    let exit = sync_transform::run_source_runtime_with(
+        &mut driver,
+        surreal,
+        transformer,
+        apply_opts,
+        &runtime_opts,
+    )
+    .await?;
 
-                // Check if we've reached the target checkpoint
-                if let Some(ref target) = target_checkpoint {
-                    if let Some(current_checkpoint) = stream.checkpoint() {
-                        if current_checkpoint.sequence_id >= target.sequence_id {
-                            info!(
-                                "Reached target checkpoint: {}, stopping incremental sync",
-                                target.to_cli_string()
-                            );
-                            break;
-                        }
-                    }
-                }
-
-                // Apply FK transforms based on table classification
-                let table_def = db_schema.get_table(&change.table);
-                let table_kind = table_def.map(|td| classify_table(td, relation_table_overrides));
-
-                match table_kind {
-                    Some(TableKind::Relation {
-                        ref in_fk,
-                        ref out_fk,
-                    }) => {
-                        let op = change.operation;
-                        let data = change.data.take().unwrap_or_default();
-                        let relation =
-                            surreal_sync_postgresql::fk_transform::build_relation_from_change(
-                                &change.table,
-                                change.id,
-                                data,
-                                in_fk,
-                                out_fk,
-                            );
-                        let rel_change = UniversalRelationChange::new(op, relation);
-                        surreal.apply_universal_relation_change(&rel_change).await?;
-                    }
-                    _ => {
-                        if let (Some(td), Some(ref mut data)) = (table_def, change.data.as_mut()) {
-                            surreal_sync_postgresql::fk_transform::transform_fk_values(data, td);
-                        }
-                        surreal.apply_universal_change(&change).await?;
-                    }
-                }
-
-                change_count += 1;
-                if change_count.is_multiple_of(100) {
-                    info!("Processed {change_count} changes");
-                }
-            }
-            Err(e) => {
-                warn!("Error reading change stream: {e}");
-                break;
-            }
+    match exit {
+        sync_transform::RuntimeExit::Stopped(StopReason::Deadline) => {
+            info!("Reached deadline, stopping incremental sync");
         }
-
-        // Stop after reasonable number of changes to avoid infinite loop
-        if change_count >= 1000 {
-            info!("Processed {change_count} changes, stopping to prevent infinite loop");
-            break;
+        sync_transform::RuntimeExit::Stopped(StopReason::Until) => {
+            info!("Reached target checkpoint, stopping incremental sync");
+        }
+        sync_transform::RuntimeExit::Stopped(StopReason::Finished) => {
+            info!("PostgreSQL trigger source finished");
+        }
+        sync_transform::RuntimeExit::Stopped(StopReason::Cancelled) => {
+            info!("Cancellation requested, stopping incremental sync");
         }
     }
 
-    info!("PostgreSQL incremental sync completed. Processed {change_count} changes");
+    info!(
+        "PostgreSQL incremental sync completed. Processed {} changes",
+        driver.total_changes
+    );
 
-    // Cleanup
     log::debug!("Starting cleanup");
     source.cleanup().await?;
     log::debug!("Cleanup completed");
 
     log::debug!("run_incremental_sync about to return Ok(())");
     Ok(())
+}
+
+struct PostgresTriggerSourceDriver<'a> {
+    stream: Box<dyn ChangeStream>,
+    db_schema: DatabaseSchema,
+    relation_table_overrides: Vec<String>,
+    options: &'a ReplicationTailOptions,
+    until_reached: bool,
+    finished: bool,
+    total_changes: u64,
+}
+
+impl PostgresTriggerSourceDriver<'_> {
+    fn enrich_at(&self, sequence_id: i64, mut change: UniversalChange) -> PositionedEvent<i64> {
+        let table_def = self.db_schema.get_table(&change.table);
+        let table_kind = table_def.map(|td| classify_table(td, &self.relation_table_overrides));
+
+        match table_kind {
+            Some(TableKind::Relation {
+                ref in_fk,
+                ref out_fk,
+            }) => {
+                let op = change.operation;
+                let data = change.data.take().unwrap_or_default();
+                let relation = surreal_sync_postgresql::fk_transform::build_relation_from_change(
+                    &change.table,
+                    change.id,
+                    data,
+                    in_fk,
+                    out_fk,
+                );
+                let rel_change = UniversalRelationChange::new(op, relation);
+                PositionedEvent::relation_change(rel_change, sequence_id)
+            }
+            _ => {
+                if let (Some(td), Some(ref mut data)) = (table_def, change.data.as_mut()) {
+                    surreal_sync_postgresql::fk_transform::transform_fk_values(data, td);
+                }
+                PositionedEvent::change(change, sequence_id)
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl SourceDriver for PostgresTriggerSourceDriver<'_> {
+    type Position = i64;
+
+    async fn poll_work(&mut self) -> Result<Vec<PositionedEvent<Self::Position>>> {
+        if self.stop_reason().is_some() || self.finished {
+            return Ok(Vec::new());
+        }
+
+        match self.stream.next_with_sequence_id().await {
+            None => {
+                self.finished = true;
+                Ok(Vec::new())
+            }
+            Some(Err(e)) => {
+                warn!("Error reading change stream: {e}");
+                self.finished = true;
+                Ok(Vec::new())
+            }
+            Some(Ok((sequence_id, change))) => {
+                if let Some(ref target) = self.options.until {
+                    if sequence_id >= target.sequence_id {
+                        info!(
+                            "Reached target checkpoint: {}, stopping incremental sync",
+                            target.to_cli_string()
+                        );
+                        self.until_reached = true;
+                        // Still emit this change? Historical loop checked AFTER reading
+                        // but BEFORE apply when current >= target. Looking at old code:
+                        // it checked stream.checkpoint() after receiving change, and
+                        // if >= target, break WITHOUT applying. So skip apply.
+                        return Ok(Vec::new());
+                    }
+                }
+                Ok(vec![self.enrich_at(sequence_id, change)])
+            }
+        }
+    }
+
+    async fn advance_watermark(&mut self, position: Self::Position) -> Result<()> {
+        self.stream.commit_sunk(position);
+        Ok(())
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+
+    fn checkpoint_policy(&self) -> CheckpointPolicy {
+        CheckpointPolicy::AdvanceOnly
+    }
+
+    fn stop_reason(&self) -> Option<StopReason> {
+        if Utc::now() >= self.options.deadline {
+            return Some(StopReason::Deadline);
+        }
+        if self.until_reached {
+            return Some(StopReason::Until);
+        }
+        if self.total_changes >= self.options.max_changes {
+            info!(
+                "Processed {} changes, stopping to prevent infinite loop",
+                self.total_changes
+            );
+            return Some(StopReason::Finished);
+        }
+        None
+    }
+
+    fn note_sunk_events(&mut self, count: u64) {
+        self.total_changes = self.total_changes.saturating_add(count);
+    }
 }
 
 /// Configuration for tracking a table in PostgreSQL
@@ -583,7 +704,10 @@ impl IncrementalSource for PostgresIncrementalSource {
 pub struct PostgresChangeStream {
     client: Arc<Mutex<Client>>,
     tracking_table: String,
-    last_sequence: i64,
+    /// Highest sequence_id fetched (audit pagination read-head).
+    read_sequence: i64,
+    /// Highest sequence_id successfully sunk (authoritative resume watermark).
+    sunk_sequence: i64,
     /// Buffered changes, each paired with its source `sequence_id`.
     buffer: Vec<(i64, UniversalChange)>,
     empty_poll_count: usize,
@@ -603,7 +727,8 @@ impl PostgresChangeStream {
         Ok(Self {
             client,
             tracking_table,
-            last_sequence: start_sequence,
+            read_sequence: start_sequence,
+            sunk_sequence: start_sequence,
             buffer: Vec::new(),
             empty_poll_count: 0,
             database_schema,
@@ -613,8 +738,8 @@ impl PostgresChangeStream {
 
     async fn fetch_changes(&mut self) -> Result<Vec<(i64, UniversalChange)>> {
         log::debug!(
-            "PostgresChangeStream::fetch_changes() called, last_sequence: {}",
-            self.last_sequence
+            "PostgresChangeStream::fetch_changes() called, read_sequence: {}",
+            self.read_sequence
         );
         let client = self.client.lock().await;
 
@@ -640,7 +765,7 @@ impl PostgresChangeStream {
             self.tracking_table
         );
 
-        let rows = client.query(&query, &[&self.last_sequence]).await?;
+        let rows = client.query(&query, &[&self.read_sequence]).await?;
         log::debug!(
             "PostgresChangeStream::fetch_changes() got {} rows from audit table",
             rows.len()
@@ -843,7 +968,8 @@ impl PostgresChangeStream {
                 UniversalChange::new(op, table_name, record_id, data),
             ));
 
-            self.last_sequence = sequence_id;
+            // Advance read-head only; sunk watermark waits for commit_sunk.
+            self.read_sequence = sequence_id;
         }
 
         Ok(changes)
@@ -862,9 +988,9 @@ impl ChangeStream for PostgresChangeStream {
 
     async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>> {
         log::debug!(
-            "🔄 PostgresChangeStream::next_with_sequence_id() called, empty_poll_count: {}, last_sequence: {}",
+            "🔄 PostgresChangeStream::next_with_sequence_id() called, empty_poll_count: {}, read_sequence: {}",
             self.empty_poll_count,
-            self.last_sequence
+            self.read_sequence
         );
         loop {
             // Return buffered changes first
@@ -900,9 +1026,15 @@ impl ChangeStream for PostgresChangeStream {
 
     fn checkpoint(&self) -> Option<PostgreSQLCheckpoint> {
         Some(PostgreSQLCheckpoint {
-            sequence_id: self.last_sequence,
+            sequence_id: self.sunk_sequence,
             timestamp: Utc::now(),
         })
+    }
+
+    fn commit_sunk(&mut self, sequence_id: i64) {
+        if sequence_id > self.sunk_sequence {
+            self.sunk_sequence = sequence_id;
+        }
     }
 }
 

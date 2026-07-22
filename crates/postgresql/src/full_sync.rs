@@ -9,8 +9,8 @@ use rust_decimal::Decimal;
 use std::collections::HashMap;
 use surreal_sink::SurrealSink;
 use sync_core::{
-    classify_table, DatabaseSchema, GeometryType, TableKind, UniversalRow, UniversalType,
-    UniversalValue,
+    classify_table, DatabaseSchema, GeometryType, TableKind, UniversalRelation, UniversalRow,
+    UniversalType, UniversalValue,
 };
 use tokio_postgres::types::ToSql;
 use tokio_postgres::{Client, Row};
@@ -27,24 +27,20 @@ pub struct SyncOpts {
     pub dry_run: bool,
 }
 
-/// Migrate a single table from PostgreSQL to SurrealDB.
+/// Convert all rows of a table with FK enrichment (no sink writes).
 ///
 /// When `schema` is provided and the table has foreign keys, FK column values
-/// are automatically converted to SurrealDB record links.  If the table is
-/// classified as a relation (join) table, rows are synced as graph edges
-/// via `RELATE` instead of regular records.
-pub async fn migrate_table<S: SurrealSink>(
+/// become SurrealDB record links. Relation (join) tables become graph edges.
+/// Callers that apply through the shared transform path should batch these into
+/// [`sync_transform::write_rows`] / [`sync_transform::write_relations`].
+pub async fn convert_table(
     client: &Client,
-    surreal: &S,
     table_name: &str,
-    sync_opts: &SyncOpts,
     schema: Option<&DatabaseSchema>,
     relation_table_overrides: &[String],
-) -> Result<usize> {
-    // Get primary key column(s)
+) -> Result<(Vec<UniversalRow>, Vec<UniversalRelation>)> {
     let pk_columns = get_primary_key_columns(client, table_name).await?;
 
-    // Determine table kind (entity vs relation)
     let table_kind = schema
         .and_then(|s| s.get_table(table_name))
         .map(|td| classify_table(td, relation_table_overrides));
@@ -53,7 +49,6 @@ pub async fn migrate_table<S: SurrealSink>(
         info!("Table '{table_name}' classified as relation table, will sync as RELATE edges");
     }
 
-    // Query all data from the table
     let query = format!("SELECT * FROM {table_name}");
     log::info!("Full sync querying table {table_name} with: {query}");
     let rows = client.query(&query, &[]).await?;
@@ -65,20 +60,17 @@ pub async fn migrate_table<S: SurrealSink>(
 
     if rows.is_empty() {
         log::info!("Table {table_name} is empty, skipping");
-        return Ok(0);
+        return Ok((Vec::new(), Vec::new()));
     }
 
     let table_def = schema.and_then(|s| s.get_table(table_name));
-
     let mut row_batch = Vec::new();
     let mut rel_batch = Vec::new();
-    let mut total_processed = 0;
 
     for (row_index, row) in rows.iter().enumerate() {
         match &table_kind {
             Some(TableKind::Relation { in_fk, out_fk }) => {
-                // For relation tables, include ALL columns (including PK) so FK
-                // extraction can find them. The relation ID is generated from the row index.
+                // Include ALL columns (including PK) so FK extraction can find them.
                 let all_fields = convert_all_columns_to_universal_values(row)?;
                 let rel_id = UniversalValue::Int64(row_index as i64);
                 let relation = fk_transform::build_relation_from_row(
@@ -95,45 +87,57 @@ pub async fn migrate_table<S: SurrealSink>(
                 row_batch.push(record);
             }
         }
-
-        let current_batch_len = row_batch.len() + rel_batch.len();
-        if current_batch_len >= sync_opts.batch_size {
-            if !sync_opts.dry_run {
-                if !row_batch.is_empty() {
-                    surreal.write_universal_rows(&row_batch).await?;
-                }
-                if !rel_batch.is_empty() {
-                    surreal.write_universal_relations(&rel_batch).await?;
-                }
-            } else {
-                debug!(
-                    "Dry-run: Would insert {} records/relations into {}",
-                    current_batch_len, table_name
-                );
-            }
-            total_processed += current_batch_len;
-            row_batch.clear();
-            rel_batch.clear();
-        }
     }
 
-    // Process remaining
-    let remaining = row_batch.len() + rel_batch.len();
-    if remaining > 0 {
-        if !sync_opts.dry_run {
-            if !row_batch.is_empty() {
-                surreal.write_universal_rows(&row_batch).await?;
-            }
-            if !rel_batch.is_empty() {
-                surreal.write_universal_relations(&rel_batch).await?;
-            }
-        } else {
-            debug!(
-                "Dry-run: Would insert {} records/relations into {}",
-                remaining, table_name
-            );
-        }
-        total_processed += remaining;
+    Ok((row_batch, rel_batch))
+}
+
+/// Migrate a single table from PostgreSQL to SurrealDB through the shared apply
+/// path (`write_rows` / `write_relations`).
+///
+/// When `schema` is provided and the table has foreign keys, FK column values
+/// are automatically converted to SurrealDB record links.  If the table is
+/// classified as a relation (join) table, rows are synced as graph edges
+/// via `RELATE` instead of regular records.
+///
+/// Prefer a source `run_full_sync_with_transforms` entrypoint (keyset /
+/// `RowChunkDriver`) for production syncs — this helper still loads the whole
+/// table via [`convert_table`] before applying.
+#[deprecated(
+    note = "prefer run_full_sync_with_transforms / convert_table + write_rows; this loads the whole table then applies through write_rows / the shared apply path"
+)]
+pub async fn migrate_table<S: SurrealSink>(
+    client: &Client,
+    surreal: &S,
+    table_name: &str,
+    sync_opts: &SyncOpts,
+    schema: Option<&DatabaseSchema>,
+    relation_table_overrides: &[String],
+) -> Result<usize> {
+    let (rows, relations) =
+        convert_table(client, table_name, schema, relation_table_overrides).await?;
+    if rows.is_empty() && relations.is_empty() {
+        return Ok(0);
+    }
+
+    let total_processed = rows.len() + relations.len();
+    if sync_opts.dry_run {
+        debug!(
+            "Dry-run: Would insert {} records / {} relations into {table_name}",
+            rows.len(),
+            relations.len()
+        );
+        return Ok(total_processed);
+    }
+
+    let pipeline = sync_transform::Pipeline::new();
+    let apply_opts =
+        sync_transform::ApplyOpts::identity().with_batch_size(sync_opts.batch_size.max(1));
+    if !rows.is_empty() {
+        sync_transform::write_rows(surreal, &pipeline, rows, &apply_opts).await?;
+    }
+    if !relations.is_empty() {
+        sync_transform::write_relations(surreal, &pipeline, relations, &apply_opts).await?;
     }
 
     Ok(total_processed)
@@ -161,9 +165,10 @@ pub struct TableChunk {
 /// rows are returned.
 ///
 /// When `schema` is provided and the table has foreign keys, foreign-key column
-/// values are converted to SurrealDB record links, matching `migrate_table`.
+/// values are converted to SurrealDB record links, matching [`convert_table`] /
+/// the shared apply full-sync path.
 ///
-/// This is an additive, chunked alternative to `migrate_table`; it does not
+/// This is an additive, chunked alternative to loading a whole table; it does not
 /// write to a sink and does not handle relation (join) tables.
 pub async fn read_table_chunk(
     client: &Client,
@@ -183,7 +188,7 @@ pub async fn read_table_chunk(
 
     // Build the keyset predicate and bind the cursor values (if any).
     // `Send` is required so callers can drive this read from a `Send` async
-    // context (e.g. the watermark snapshot framework's trait methods).
+    // context (e.g. interleaved-snapshot trait methods).
     let mut boxed_params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
     let where_clause = match after {
         Some(cursor) => {
@@ -240,6 +245,172 @@ pub async fn read_table_chunk(
     Ok(TableChunk { rows: out, last_pk })
 }
 
+/// A chunk of relation edges from a join table, with optional keyset cursor.
+#[derive(Debug, Clone)]
+pub struct RelationChunk {
+    /// Converted relations in read order.
+    pub relations: Vec<UniversalRelation>,
+    /// Primary-key cursor of the last row (for keyset continuation).
+    pub last_pk: Option<Vec<UniversalValue>>,
+}
+
+/// Keyset-paginated read of a relation (join) table as SurrealDB edges.
+#[allow(clippy::too_many_arguments)]
+pub async fn read_relation_chunk(
+    client: &Client,
+    table_name: &str,
+    pk_columns: &[String],
+    after: Option<&[UniversalValue]>,
+    limit: usize,
+    in_fk: &sync_core::ForeignKeyDefinition,
+    out_fk: &sync_core::ForeignKeyDefinition,
+    row_index_base: u64,
+) -> Result<RelationChunk> {
+    if pk_columns.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Table '{table_name}' has no primary key columns; keyset chunk reads require a primary key"
+        ));
+    }
+
+    let order_by = pk_columns.join(", ");
+    let mut boxed_params: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
+    let where_clause = match after {
+        Some(cursor) => {
+            if cursor.len() != pk_columns.len() {
+                return Err(anyhow::anyhow!(
+                    "Keyset cursor length ({}) does not match primary key column count ({}) for table '{table_name}'",
+                    cursor.len(),
+                    pk_columns.len()
+                ));
+            }
+            let placeholders: Vec<String> =
+                (1..=pk_columns.len()).map(|i| format!("${i}")).collect();
+            for value in cursor {
+                boxed_params.push(pk_value_to_sql(value)?);
+            }
+            if pk_columns.len() == 1 {
+                format!("WHERE {} > {}", pk_columns[0], placeholders[0])
+            } else {
+                format!(
+                    "WHERE ({}) > ({})",
+                    pk_columns.join(", "),
+                    placeholders.join(", ")
+                )
+            }
+        }
+        None => String::new(),
+    };
+
+    let query =
+        format!("SELECT * FROM {table_name} {where_clause} ORDER BY {order_by} LIMIT {limit}");
+    debug!("Chunk-reading relation table {table_name} with: {query}");
+
+    let params: Vec<&(dyn ToSql + Sync)> = boxed_params
+        .iter()
+        .map(|b| b.as_ref() as &(dyn ToSql + Sync))
+        .collect();
+
+    let rows = client.query(&query, &params).await?;
+    let mut out = Vec::with_capacity(rows.len());
+    let mut last_pk: Option<Vec<UniversalValue>> = None;
+    for (i, row) in rows.iter().enumerate() {
+        let all_fields = convert_all_columns_to_universal_values(row)?;
+        let rel_id = UniversalValue::Int64((row_index_base + i as u64) as i64);
+        out.push(fk_transform::build_relation_from_row(
+            table_name, rel_id, all_fields, in_fk, out_fk,
+        ));
+        last_pk = Some(extract_pk_cursor_values(row, pk_columns)?);
+    }
+
+    Ok(RelationChunk {
+        relations: out,
+        last_pk,
+    })
+}
+
+/// OFFSET/LIMIT chunk read for tables without a usable primary key.
+///
+/// Prefer keyset pagination when a PK exists; this path avoids loading the
+/// whole table into memory when only OFFSET streaming is available.
+///
+/// Pages are ordered by `ctid` so successive OFFSET scans are deterministic on
+/// a quiescent table. Concurrent inserts/deletes can still shift offsets and
+/// cause skipped or duplicated rows — prefer a primary key with keyset reads
+/// or interleaved-snapshot when the table may be written during full sync.
+/// When the table has no PK, row ids are synthetic `Int64(row_index)` values
+/// (MySQL-style), not source primary keys.
+pub async fn read_offset_table_chunk(
+    client: &Client,
+    table_name: &str,
+    offset: usize,
+    limit: usize,
+    schema: Option<&DatabaseSchema>,
+    relation_table_overrides: &[String],
+) -> Result<(Vec<UniversalRow>, Vec<UniversalRelation>)> {
+    let pk_columns = get_primary_key_columns(client, table_name).await?;
+    let table_kind = schema
+        .and_then(|s| s.get_table(table_name))
+        .map(|td| classify_table(td, relation_table_overrides));
+    // ORDER BY ctid keeps OFFSET pages stable when the table is not mutating.
+    let query = format!("SELECT * FROM {table_name} ORDER BY ctid OFFSET {offset} LIMIT {limit}");
+    debug!("Offset-reading table {table_name} with: {query}");
+    let rows = client.query(&query, &[]).await?;
+    if rows.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let table_def = schema.and_then(|s| s.get_table(table_name));
+    let mut row_batch = Vec::new();
+    let mut rel_batch = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        let row_index = (offset + i) as u64;
+        match &table_kind {
+            Some(TableKind::Relation { in_fk, out_fk }) => {
+                let all_fields = convert_all_columns_to_universal_values(row)?;
+                let rel_id = UniversalValue::Int64(row_index as i64);
+                rel_batch.push(fk_transform::build_relation_from_row(
+                    table_name, rel_id, all_fields, in_fk, out_fk,
+                ));
+            }
+            _ => {
+                let mut record =
+                    convert_row_to_universal_row(table_name, row, &pk_columns, row_index)?;
+                if let Some(td) = table_def {
+                    fk_transform::transform_fk_values(&mut record.fields, td);
+                }
+                row_batch.push(record);
+            }
+        }
+    }
+    Ok((row_batch, rel_batch))
+}
+
+/// OFFSET/LIMIT chunk of a known relation table (no PK keyset available).
+///
+/// Ordered by `ctid` for deterministic paging. Unsafe under concurrent writes
+/// to the source table — see [`read_offset_table_chunk`].
+pub async fn read_offset_relation_chunk(
+    client: &Client,
+    table_name: &str,
+    offset: usize,
+    limit: usize,
+    in_fk: &sync_core::ForeignKeyDefinition,
+    out_fk: &sync_core::ForeignKeyDefinition,
+) -> Result<Vec<UniversalRelation>> {
+    let query = format!("SELECT * FROM {table_name} ORDER BY ctid OFFSET {offset} LIMIT {limit}");
+    debug!("Offset-reading relation table {table_name} with: {query}");
+    let rows = client.query(&query, &[]).await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        let all_fields = convert_all_columns_to_universal_values(row)?;
+        let rel_id = UniversalValue::Int64((offset + i) as i64);
+        out.push(fk_transform::build_relation_from_row(
+            table_name, rel_id, all_fields, in_fk, out_fk,
+        ));
+    }
+    Ok(out)
+}
+
 /// Extract the raw primary-key column values from a row, in primary-key column
 /// order, for use as a keyset-pagination cursor.
 fn extract_pk_cursor_values(row: &Row, pk_columns: &[String]) -> Result<Vec<UniversalValue>> {
@@ -283,7 +454,10 @@ fn pk_value_to_sql(value: &UniversalValue) -> Result<Box<dyn ToSql + Sync + Send
     }
 }
 
-/// Get primary key columns for a table
+/// Get primary key columns for a table.
+///
+/// Returns an empty vec when the table has no primary key so callers can fall
+/// back to OFFSET streaming (synthetic row ids) instead of failing the probe.
 pub async fn get_primary_key_columns(client: &Client, table_name: &str) -> Result<Vec<String>> {
     let query = format!(
         "
@@ -297,14 +471,7 @@ pub async fn get_primary_key_columns(client: &Client, table_name: &str) -> Resul
     );
 
     let rows = client.query(&query, &[]).await?;
-
-    if rows.is_empty() {
-        Err(anyhow::anyhow!(
-            "Table '{table_name}' has no primary key defined - primary key is required for sync operations",
-        ))
-    } else {
-        Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
-    }
+    Ok(rows.iter().map(|row| row.get::<_, String>(0)).collect())
 }
 
 fn convert_row_to_universal_row(
@@ -313,22 +480,24 @@ fn convert_row_to_universal_row(
     pk_columns: &[String],
     row_index: u64,
 ) -> anyhow::Result<UniversalRow> {
-    let (id, data) = convert_row_to_keys_and_universal_values(row, pk_columns)?;
+    let (id, data) = convert_row_to_keys_and_universal_values(row, pk_columns, row_index)?;
     Ok(UniversalRow::new(table.to_string(), row_index, id, data))
 }
 
-/// Convert a PostgreSQL row to a map of universal values
+/// Convert a PostgreSQL row to a map of universal values.
+///
+/// When `pk_columns` is empty, the id is a synthetic `Int64(row_index)` (same
+/// convention as MySQL LIMIT/OFFSET full sync).
 fn convert_row_to_keys_and_universal_values(
     row: &Row,
     pk_columns: &[String],
+    row_index: u64,
 ) -> Result<(UniversalValue, HashMap<String, UniversalValue>)> {
     let mut record = HashMap::new();
 
-    // Generate ID from primary key columns
+    // Generate ID from primary key columns, or a stable synthetic index.
     let id = if pk_columns.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Table has no primary key defined - primary key is required for sync"
-        ));
+        UniversalValue::Int64(row_index as i64)
     } else if pk_columns.len() == 1 {
         // Single primary key column - extract its value
         let pk_col = &pk_columns[0];

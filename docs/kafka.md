@@ -2,6 +2,8 @@
 
 The Kafka source in surreal-sync allows you to import Kafka messages into SurrealDB. This is an **incremental-only source** that consumes messages from Kafka topics and syncs them to SurrealDB tables.
 
+Optional transforms: pass `--transforms-config` with a TOML file. Omit the flag to leave rows unchanged. Details: [How sync works](sync-pipeline.md).
+
 ## How It Works
 
 The Kafka source acts as a Kafka consumer in a consumer group, subscribing to a specific topic in the cluster.
@@ -67,7 +69,7 @@ surreal-sync from kafka \
 | `--buffer-size <SIZE>` | 1000 | Maximum decoded protobuf messages held in internal peek buffer |
 | `--session-timeout-ms <MS>` | "30000" | Kafka session timeout in milliseconds |
 | `--num-consumers <COUNT>` | 1 | Number of consumers in the consumer group to spawn |
-| `--kafka-batch-size <COUNT>` | 100 | Number of decoded protobuf messages to fetch and process per batch |
+| `--kafka-batch-size <COUNT>` | 100 | Messages to fetch per Kafka poll into the apply window (`max_in_flight` / transform `batch_size` still apply). After sink, consumer-group offsets commit for **all** messages in that sunk batch (`commit_batch`), and `max_messages` counts sunk messages (not commit calls). |
 
 ### SASL Authentication
 

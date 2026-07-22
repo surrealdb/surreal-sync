@@ -41,7 +41,7 @@ pub use kafka_types::{
 };
 
 // Re-export sync functions
-pub use sync::{run_incremental_sync, Config};
+pub use sync::{run_incremental_sync, run_incremental_sync_with_transforms, Config};
 
 // Re-export consumer types
 pub use client::Client;

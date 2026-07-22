@@ -2,6 +2,8 @@
 
 The JSONL source in surreal-sync allows you to import JSON Lines (JSONL) files into SurrealDB. Each JSONL file becomes a table in SurrealDB, and each line in the file becomes a document in that table.
 
+Optional transforms: pass `--transforms-config` with a TOML file. Omit the flag to leave rows unchanged. Details: [How sync works](sync-pipeline.md).
+
 ## Overview
 
 JSONL source is particularly useful for:

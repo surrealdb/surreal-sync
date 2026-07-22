@@ -14,6 +14,7 @@ surreal-sync-file = { path = "../file" }
 
 # Schema support for type-aware conversion
 sync-core = { path = "../sync-core" }
+sync-transform = { path = "../sync-transform" }
 
 # Type conversion crates
 csv-types = { path = "../csv-types" }
@@ -51,6 +52,7 @@ surreal-sink = { path = "../surreal-sink" }
 surreal2-sink = { path = "../surreal2-sink" }
 surreal3-sink = { path = "../surreal3-sink" }
 surreal-version = { path = "../surreal-version" }
+sync-transform = { path = "../sync-transform" }
 
 # SurrealDB for tests
 surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }

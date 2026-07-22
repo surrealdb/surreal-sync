@@ -111,9 +111,9 @@ prebuild-test-images: prepull-binlog-images
 # are run separately because nextest does not execute them.
 test: fmt clippy build-debug prebuild-test-images
 	@echo "Running unit + integration tests (cargo-nextest)..."
-	SURREAL_SYNC_BIN=$(SURREAL_SYNC_BIN) cargo nextest run --workspace
+	SURREAL_SYNC_BIN=$(SURREAL_SYNC_BIN) cargo nextest run --workspace --all-features
 	@echo "Running documentation tests..."
-	cargo test --workspace --doc
+	cargo test --workspace --all-features --doc
 	@echo "✅ All tests passed"
 
 # Clean build artifacts

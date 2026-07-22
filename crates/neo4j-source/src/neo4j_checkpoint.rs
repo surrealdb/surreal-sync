@@ -7,26 +7,79 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Neo4j-specific checkpoint containing timestamp
+fn i64_min() -> i64 {
+    i64::MIN
+}
+
+/// Neo4j-specific checkpoint containing timestamp and optional keyset tie-breaks.
+///
+/// `after_node_id` / `after_rel_id` advance within a dense timestamp bucket so
+/// crash-resume does not re-process same-timestamp siblings already sunk.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Neo4jCheckpoint {
     /// Timestamp for checkpoint
     pub timestamp: DateTime<Utc>,
+    /// Last sunk Neo4j node id at `timestamp` (keyset tie-break). Default `i64::MIN`.
+    #[serde(default = "i64_min")]
+    pub after_node_id: i64,
+    /// Last sunk Neo4j relationship id at `timestamp` (keyset tie-break). Default `i64::MIN`.
+    #[serde(default = "i64_min")]
+    pub after_rel_id: i64,
+}
+
+impl Neo4jCheckpoint {
+    /// Timestamp-only checkpoint (tie-breaks at the start of the bucket).
+    pub fn at(timestamp: DateTime<Utc>) -> Self {
+        Self {
+            timestamp,
+            after_node_id: i64::MIN,
+            after_rel_id: i64::MIN,
+        }
+    }
 }
 
 impl checkpoint::Checkpoint for Neo4jCheckpoint {
     const DATABASE_TYPE: &'static str = "neo4j";
 
     fn to_cli_string(&self) -> String {
-        self.timestamp.to_rfc3339()
+        if self.after_node_id == i64::MIN && self.after_rel_id == i64::MIN {
+            self.timestamp.to_rfc3339()
+        } else {
+            format!(
+                "{}|n:{}|r:{}",
+                self.timestamp.to_rfc3339(),
+                self.after_node_id,
+                self.after_rel_id
+            )
+        }
     }
 
     fn from_cli_string(s: &str) -> Result<Self> {
-        let timestamp = DateTime::parse_from_rfc3339(s)
+        // Optional suffix: `<rfc3339>|n:<node_id>|r:<rel_id>`
+        let (ts_part, after_node_id, after_rel_id) = if let Some((ts, rest)) = s.split_once("|n:") {
+            let (node_s, rel_s) = rest
+                .split_once("|r:")
+                .ok_or_else(|| anyhow::anyhow!("Invalid Neo4j checkpoint tie-break suffix"))?;
+            let node_id: i64 = node_s
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid Neo4j after_node_id: {e}"))?;
+            let rel_id: i64 = rel_s
+                .parse()
+                .map_err(|e| anyhow::anyhow!("Invalid Neo4j after_rel_id: {e}"))?;
+            (ts, node_id, rel_id)
+        } else {
+            (s, i64::MIN, i64::MIN)
+        };
+
+        let timestamp = DateTime::parse_from_rfc3339(ts_part)
             .map_err(|e| anyhow::anyhow!("Invalid Neo4j checkpoint timestamp format: {e}"))?
             .with_timezone(&Utc);
 
-        Ok(Self { timestamp })
+        Ok(Self {
+            timestamp,
+            after_node_id,
+            after_rel_id,
+        })
     }
 }
 
@@ -39,9 +92,7 @@ mod tests {
 
     #[test]
     fn test_neo4j_checkpoint_cli_string_roundtrip() {
-        let original = Neo4jCheckpoint {
-            timestamp: Utc::now(),
-        };
+        let original = Neo4jCheckpoint::at(Utc::now());
 
         // Encode to CLI string (RFC3339 timestamp)
         let cli_string = original.to_cli_string();
@@ -54,13 +105,27 @@ mod tests {
             original.timestamp.timestamp(),
             decoded.timestamp.timestamp()
         );
+        assert_eq!(decoded.after_node_id, i64::MIN);
+        assert_eq!(decoded.after_rel_id, i64::MIN);
+    }
+
+    #[test]
+    fn test_neo4j_checkpoint_tie_break_cli_roundtrip() {
+        let original = Neo4jCheckpoint {
+            timestamp: DateTime::parse_from_rfc3339("2024-06-15T14:30:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            after_node_id: 42,
+            after_rel_id: 7,
+        };
+        let cli = original.to_cli_string();
+        let decoded = Neo4jCheckpoint::from_cli_string(&cli).unwrap();
+        assert_eq!(original, decoded);
     }
 
     #[test]
     fn test_neo4j_checkpoint_file_roundtrip() {
-        let original = Neo4jCheckpoint {
-            timestamp: Utc::now(),
-        };
+        let original = Neo4jCheckpoint::at(Utc::now());
 
         let file = CheckpointFile::new(&original, SyncPhase::FullSyncEnd).unwrap();
 
@@ -82,6 +147,8 @@ mod tests {
         let manager = SyncManager::new(store);
         let original = Neo4jCheckpoint {
             timestamp: Utc::now(),
+            after_node_id: 99,
+            after_rel_id: 3,
         };
 
         manager
@@ -95,6 +162,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(original.timestamp.timestamp(), loaded.timestamp.timestamp());
+        assert_eq!(original.after_node_id, loaded.after_node_id);
+        assert_eq!(original.after_rel_id, loaded.after_rel_id);
     }
 
     #[test]
@@ -123,9 +192,7 @@ mod tests {
 
     #[test]
     fn test_neo4j_checkpoint_file_type_mismatch() {
-        let checkpoint = Neo4jCheckpoint {
-            timestamp: Utc::now(),
-        };
+        let checkpoint = Neo4jCheckpoint::at(Utc::now());
 
         let file = CheckpointFile::new(&checkpoint, SyncPhase::FullSyncStart).unwrap();
 
@@ -140,5 +207,13 @@ mod tests {
         let result: Result<Neo4jCheckpoint> = modified_file.parse();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("type mismatch"));
+    }
+
+    #[test]
+    fn test_legacy_checkpoint_json_without_tie_breaks() {
+        let json = r#"{"timestamp":"2024-06-15T14:30:00Z"}"#;
+        let cp: Neo4jCheckpoint = serde_json::from_str(json).unwrap();
+        assert_eq!(cp.after_node_id, i64::MIN);
+        assert_eq!(cp.after_rel_id, i64::MIN);
     }
 }

@@ -48,6 +48,7 @@ See source-specific guides for more details:
 - **[Neo4j](docs/neo4j.md)**: Full and incremental sync using timestamp-based tracking
 - **[JSONL](docs/jsonl.md)**: Bulk import from JSON Lines files
 - **[Kafka](docs/kafka.md)**: Kafka consumer that subscribes to a topic, importing Kafka message payloads into SurrealDB with optional deduplication
+- **[How sync works](docs/sync-pipeline.md)**: End-to-end pipeline (source → apply/transforms → sink → watermark), including optional `--transforms-config`
 
 ## Development
 

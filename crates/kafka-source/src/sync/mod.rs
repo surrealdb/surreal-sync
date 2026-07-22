@@ -5,4 +5,4 @@
 
 mod incremental;
 
-pub use incremental::{run_incremental_sync, Config};
+pub use incremental::{run_incremental_sync, run_incremental_sync_with_transforms, Config};
