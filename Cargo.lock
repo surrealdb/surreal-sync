@@ -8063,6 +8063,7 @@ name = "surreal-sync-snowflake-source"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "reqwest 0.12.20",
  "serde",
  "serde_json",
@@ -8070,6 +8071,7 @@ dependencies = [
  "snowflake-types",
  "surreal-sink",
  "sync-core",
+ "sync-transform",
  "tokio",
  "tracing",
 ]

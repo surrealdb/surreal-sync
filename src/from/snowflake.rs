@@ -4,11 +4,14 @@
 //! CLI command (ingestion-only, no full/incremental split):
 //! - `from snowflake --account ... --user ... --private-key-path ... \
 //!    --warehouse ... --database ... --schema ... [--tables ...] [--id-columns ...] \
-//!    --to-namespace ... --to-database ...`
+//!    [--transforms-config ...] --to-namespace ... --to-database ...`
 
 use anyhow::Context;
-use surreal_sync_snowflake_source::{run_full_sync, SnowflakeClient, SourceOpts, SyncOpts};
+use surreal_sync_snowflake_source::{
+    run_full_sync_with_transforms, SnowflakeClient, SourceOpts, SyncOpts,
+};
 
+use super::transforms::load_transforms_from_args;
 use super::{get_sdk_version, SdkVersion};
 use crate::SnowflakeArgs;
 
@@ -64,6 +67,7 @@ async fn run_v2(args: SnowflakeArgs) -> anyhow::Result<()> {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     let (source_opts, sync_opts) = build_opts(&args)?;
     let client = SnowflakeClient::new(&source_opts)?;
 
@@ -77,7 +81,15 @@ async fn run_v2(args: SnowflakeArgs) -> anyhow::Result<()> {
             .await?;
     let sink = surreal2_sink::Surreal2Sink::new(surreal);
 
-    run_full_sync(&client, &sink, &source_opts, &sync_opts).await?;
+    run_full_sync_with_transforms(
+        &client,
+        &sink,
+        &source_opts,
+        &sync_opts,
+        &pipeline,
+        &apply_opts,
+    )
+    .await?;
 
     tracing::info!("Snowflake ingestion completed successfully");
     Ok(())
@@ -90,6 +102,7 @@ async fn run_v3(args: SnowflakeArgs) -> anyhow::Result<()> {
         tracing::info!("Running in dry-run mode - no data will be written");
     }
 
+    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     let (source_opts, sync_opts) = build_opts(&args)?;
     let client = SnowflakeClient::new(&source_opts)?;
 
@@ -103,7 +116,15 @@ async fn run_v3(args: SnowflakeArgs) -> anyhow::Result<()> {
             .await?;
     let sink = surreal3_sink::Surreal3Sink::new(surreal);
 
-    run_full_sync(&client, &sink, &source_opts, &sync_opts).await?;
+    run_full_sync_with_transforms(
+        &client,
+        &sink,
+        &source_opts,
+        &sync_opts,
+        &pipeline,
+        &apply_opts,
+    )
+    .await?;
 
     tracing::info!("Snowflake ingestion completed successfully");
     Ok(())
