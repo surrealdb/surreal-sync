@@ -29,6 +29,7 @@ pub mod neo4j;
 pub mod postgresql_pgoutput;
 pub mod postgresql_trigger;
 pub mod postgresql_wal2json;
+pub mod snowflake;
 pub mod transforms;
 
 // Re-export common utilities (crate-internal only)
