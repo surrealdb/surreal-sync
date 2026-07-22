@@ -67,7 +67,11 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
 
     let sequence_id = from_checkpoint.sequence_id;
     let pool = super::client::new_mysql_pool(&from_opts.source_uri)?;
-    let mut source = super::source::MySQLIncrementalSource::new(pool, sequence_id);
+    let mut source = super::source::MySQLIncrementalSource::with_id_column_overrides(
+        pool,
+        sequence_id,
+        from_opts.id_column_overrides,
+    );
     source.initialize().await?;
 
     let stream = source.get_changes().await?;

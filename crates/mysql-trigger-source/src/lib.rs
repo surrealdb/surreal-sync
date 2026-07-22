@@ -28,13 +28,15 @@ pub use incremental_sync::{
 };
 pub use interleaved_snapshot::{
     request_snapshot, run_interleaved_snapshot_full_sync,
-    run_interleaved_snapshot_full_sync_result, run_interleaved_snapshot_full_sync_with_transforms,
-    MySqlWatermarkSource,
+    run_interleaved_snapshot_full_sync_result,
+    run_interleaved_snapshot_full_sync_result_with_overrides,
+    run_interleaved_snapshot_full_sync_with_transforms,
+    run_interleaved_snapshot_full_sync_with_transforms_and_overrides, MySqlWatermarkSource,
 };
 pub use source::{ChangeStream, IncrementalSource, MySQLChangeStream, MySQLIncrementalSource};
 
 /// MySQL source connection options
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct SourceOpts {
     /// MySQL connection URI
     pub source_uri: String,
@@ -44,6 +46,8 @@ pub struct SourceOpts {
     pub tables: Vec<String>,
     /// MySQL JSON paths that contain boolean values stored as 0/1
     pub mysql_boolean_paths: Option<Vec<String>>,
+    /// Optional per-table primary-key overrides (`table → ordered columns`).
+    pub id_column_overrides: sync_core::IdColumnOverrides,
 }
 
 /// Sync options (non-connection related)

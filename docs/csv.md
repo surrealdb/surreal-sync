@@ -35,10 +35,23 @@ surreal-sync csv \
   --to-namespace store \
   --to-database main \
   --delimiter ";" \           # Use semicolon delimiter
-  --id-field product_id \     # Use product_id column as record ID
+  --id-field product_id \     # Single-column record ID
   --batch-size 500 \          # Process 500 records at a time
   --dry-run                   # Test without writing data
 ```
+
+For a composite ID, prefer `--id-columns` (takes precedence over `--id-field`):
+
+```bash
+surreal-sync csv \
+  --files orders.csv \
+  --table orders \
+  --to-namespace store \
+  --to-database main \
+  --id-columns order_id,line_id
+```
+
+Multi-column IDs become Surreal array keys (`orders:[1, 2]`). To restore colon-joined Text, add `type = "flatten_id"` in `--transforms-config` — see [How sync works — Record IDs](sync-pipeline.md#record-ids-and-composite-primary-keys).
 
 ## Command Options
 
@@ -50,7 +63,8 @@ surreal-sync csv \
 | `--to-database` | Target database | - |
 | `--has-headers` | Whether CSV has headers | `true` |
 | `--delimiter` | CSV delimiter character | `,` |
-| `--id-field` | Field to use as record ID | auto-generated |
+| `--id-field` | Single field to use as record ID | auto-generated |
+| `--id-columns` | Columns forming the record ID (comma-separated); two or more → Array ID (overrides `--id-field`) | - |
 | `--batch-size` | Records per poll into the long-lived apply window (file reads continue under spare `max_in_flight`) | `1000` |
 | `--dry-run` | Test without writing | `false` |
 

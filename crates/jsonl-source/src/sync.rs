@@ -42,6 +42,10 @@ pub struct Config {
     /// Field to use as record ID (default: "id")
     pub id_field: String,
 
+    /// Multi-column record ID fields (takes precedence over `id_field` when non-empty).
+    /// When two or more are set, the ID is an [`UniversalValue::Array`].
+    pub id_columns: Vec<String>,
+
     /// Conversion rules for transforming JSON objects to Thing references
     pub conversion_rules: Vec<String>,
 
@@ -63,6 +67,7 @@ impl Default for Config {
             s3_uris: vec![],
             http_uris: vec![],
             id_field: "id".to_string(),
+            id_columns: Vec::new(),
             conversion_rules: vec![],
             batch_size: 1000,
             dry_run: false,
@@ -107,6 +112,7 @@ struct JsonlStreamDriver {
     lines: std::io::Lines<BufReader<Box<dyn std::io::Read + Send>>>,
     table_name: String,
     id_field: String,
+    id_columns: Vec<String>,
     rules: Vec<ConversionRule>,
     table_schema: Option<TableDefinition>,
     poll_chunk: usize,
@@ -143,6 +149,7 @@ impl SourceDriver for JsonlStreamDriver {
                 &json_value,
                 &self.table_name,
                 &self.id_field,
+                &self.id_columns,
                 &self.rules,
                 self.table_schema.as_ref(),
                 self.line_count,
@@ -228,6 +235,7 @@ async fn process_jsonl_reader<S: SurrealSink>(
         lines: BufReader::new(reader).lines(),
         table_name: table_name.clone(),
         id_field: config.id_field.clone(),
+        id_columns: config.id_columns.clone(),
         rules: rules.to_vec(),
         table_schema,
         poll_chunk: config.batch_size.max(1),
@@ -446,46 +454,52 @@ fn convert_json_to_universal_row(
     value: &Value,
     table_name: &str,
     id_field: &str,
+    id_columns: &[String],
     rules: &[ConversionRule],
     table_schema: Option<&TableDefinition>,
     record_index: u64,
 ) -> Result<UniversalRow> {
-    let mut id_value: Option<UniversalValue> = None;
+    let effective_id_cols: Vec<&str> = if id_columns.is_empty() {
+        vec![id_field]
+    } else {
+        id_columns.iter().map(|s| s.as_str()).collect()
+    };
 
     if let Value::Object(obj) = value {
         let mut fields: HashMap<String, UniversalValue> = HashMap::new();
+        let mut id_parts: Vec<Option<UniversalValue>> = vec![None; effective_id_cols.len()];
 
         for (key, val) in obj {
-            if key == id_field {
-                // Extract ID for the record as UniversalValue
-                if let Value::String(s) = val {
-                    id_value = Some(UniversalValue::Text(s.clone()));
+            if let Some(idx) = effective_id_cols.iter().position(|c| *c == key) {
+                let part = if let Value::String(s) = val {
+                    UniversalValue::Text(s.clone())
                 } else if let Value::Number(n) = val {
                     if let Some(i) = n.as_i64() {
-                        id_value = Some(UniversalValue::Int64(i));
+                        UniversalValue::Int64(i)
                     } else if let Some(u) = n.as_u64() {
-                        id_value = Some(UniversalValue::Int64(u as i64));
+                        UniversalValue::Int64(u as i64)
                     } else {
                         anyhow::bail!("ID field number must be an integer: {n}");
                     }
                 } else {
                     return Err(anyhow!("ID field must be a string or number"));
-                }
+                };
+                id_parts[idx] = Some(part);
             } else {
-                // Get schema type hint for this field if available
                 let data_type = table_schema.and_then(|ts| ts.get_column_type(key));
-
-                // Convert the value to UniversalValue
                 let v = convert_value_to_universal(val, rules, data_type);
                 fields.insert(key.clone(), v);
             }
         }
 
-        // Require ID field
-        let id = match id_value {
-            Some(id) => id,
-            None => return Err(anyhow!("Missing ID field: {id_field}")),
-        };
+        let mut parts = Vec::with_capacity(effective_id_cols.len());
+        for (i, col) in effective_id_cols.iter().enumerate() {
+            match id_parts[i].take() {
+                Some(p) => parts.push(p),
+                None => return Err(anyhow!("Missing ID field: {col}")),
+            }
+        }
+        let id = sync_core::build_composite_record_id(parts);
 
         Ok(UniversalRow::new(
             table_name.to_string(),

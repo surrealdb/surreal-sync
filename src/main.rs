@@ -866,6 +866,11 @@ struct MySQLSyncArgs {
     #[arg(long, value_name = "PATH")]
     transforms_config: Option<PathBuf>,
 
+    /// Optional per-table primary-key overrides (`table=col1,col2`, repeatable).
+    /// When omitted, primary keys are discovered from INFORMATION_SCHEMA.
+    #[arg(long = "id-columns", value_name = "TABLE=COLS")]
+    id_columns: Vec<String>,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -1514,6 +1519,11 @@ struct CsvArgs {
     #[arg(long)]
     id_field: Option<String>,
 
+    /// Columns forming the SurrealDB record ID (comma-separated). When two or
+    /// more are set, the ID is a Surreal array key. Takes precedence over `--id-field`.
+    #[arg(long, value_delimiter = ',')]
+    id_columns: Vec<String>,
+
     /// Column names when has_headers is false (comma-separated)
     #[arg(long, value_delimiter = ',')]
     column_names: Option<Vec<String>>,
@@ -1556,6 +1566,11 @@ struct JsonlArgs {
     /// ID field name (default: "id")
     #[arg(long, default_value = "id")]
     id_field: String,
+
+    /// Columns forming the SurrealDB record ID (comma-separated). When two or
+    /// more are set, the ID is a Surreal array key. Takes precedence over `--id-field`.
+    #[arg(long, value_delimiter = ',')]
+    id_columns: Vec<String>,
 
     /// Conversion rules (format: 'type="page_id",page_id page:page_id')
     #[arg(long = "rule", value_name = "RULE")]

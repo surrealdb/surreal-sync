@@ -217,3 +217,39 @@ async fn conversion_rules_run_before_pipeline_stages() {
         Some(("page".to_string(), "p1".to_string()))
     );
 }
+
+#[tokio::test]
+async fn flatten_id_toml_rewrites_composite_array_id_to_text() {
+    let mut temp_file = NamedTempFile::with_suffix(".jsonl").unwrap();
+    writeln!(temp_file, r#"{{"a":"a","b":"b","amount":1}}"#).unwrap();
+    writeln!(temp_file, r#"{{"a":1,"b":2,"amount":2}}"#).unwrap();
+    temp_file.flush().unwrap();
+
+    let config = Config {
+        files: vec![temp_file.path().to_path_buf()],
+        id_columns: vec!["a".to_string(), "b".to_string()],
+        batch_size: 10,
+        dry_run: false,
+        ..Default::default()
+    };
+
+    let cfg = sync_transform::parse_transforms_toml(
+        r#"
+[[transforms]]
+type = "flatten_id"
+"#,
+    )
+    .expect("parse flatten_id toml");
+    let pipeline = sync_transform::Pipeline::from_config(&cfg).expect("pipeline");
+    let apply_opts = sync_transform::ApplyOpts::from_transforms_config(&cfg);
+
+    let sink = CaptureSink::new();
+    sync_with_transforms(&sink, config, &pipeline, &apply_opts)
+        .await
+        .expect("flatten_id sync");
+
+    let rows = sink.rows.lock().expect("lock").clone();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].id, UniversalValue::Text("a:b".into()));
+    assert_eq!(rows[1].id, UniversalValue::Text("1:2".into()));
+}

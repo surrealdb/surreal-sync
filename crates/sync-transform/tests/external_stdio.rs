@@ -487,8 +487,12 @@ retry.jitter = false
     );
     let cfg = sync_transform::parse_transforms_toml(&recover_then_fail).unwrap();
     assert_eq!(cfg.stages.len(), 2);
-    let ConfiguredStage::Command(a) = &cfg.stages[0];
-    let ConfiguredStage::Command(b) = &cfg.stages[1];
+    let ConfiguredStage::Command(a) = &cfg.stages[0] else {
+        panic!("expected Command stage");
+    };
+    let ConfiguredStage::Command(b) = &cfg.stages[1] else {
+        panic!("expected Command stage");
+    };
     assert_eq!(a.retry.max_attempts, 3);
     assert_eq!(b.retry.max_attempts, 1);
 

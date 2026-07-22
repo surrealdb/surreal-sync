@@ -79,6 +79,10 @@ pub struct Config {
     /// Field name to use as record ID when use_message_key_as_id is false (default: "id")
     #[clap(long, default_value = "id")]
     pub id_field: String,
+    /// Multi-column record ID fields from the payload (takes precedence over
+    /// `id_field` when non-empty). Ignored when `use_message_key_as_id` is set.
+    #[clap(long, value_delimiter = ',')]
+    pub id_columns: Vec<String>,
     /// Maximum number of messages to process before exiting.
     /// When set, the sync will exit immediately after processing this many messages
     /// instead of waiting for the deadline. Useful for loadtest scenarios where
@@ -217,6 +221,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync +
         let table_schema = table_schema.clone();
         let use_message_key_as_id = config.use_message_key_as_id;
         let id_field = config.id_field.clone();
+        let id_columns = config.id_columns.clone();
         let kafka_batch_size = config.kafka_batch_size;
         let handle = tokio::spawn(async move {
             let mut driver = KafkaSourceDriver {
@@ -225,6 +230,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink + Send + Sync +
                 table_schema,
                 use_message_key_as_id,
                 id_field,
+                id_columns,
                 kafka_batch_size,
                 pending_acks: VecDeque::new(),
                 ready_to_commit: Vec::new(),
@@ -291,6 +297,7 @@ struct KafkaSourceDriver {
     table_schema: Option<TableDefinition>,
     use_message_key_as_id: bool,
     id_field: String,
+    id_columns: Vec<String>,
     kafka_batch_size: usize,
     /// Messages received but not yet noted as sunk (FIFO, poll order).
     pending_acks: VecDeque<Message>,
@@ -350,6 +357,7 @@ impl SourceDriver for KafkaSourceDriver {
                 self.use_message_key_as_id,
                 message_key.as_deref(),
                 &self.id_field,
+                &self.id_columns,
                 batch_row_index(base_index, offset),
             )?;
             let change = row_to_upsert_change(row);
@@ -428,13 +436,15 @@ fn row_to_upsert_change(row: UniversalRow) -> UniversalChange {
 
 /// Convert typed values to UniversalRow.
 ///
-/// Either uses the message key (base64 encoded) as ID, or extracts the ID from a specified field.
+/// Either uses the message key (base64 encoded) as ID, or extracts the ID from
+/// one or more payload fields (`id_columns` when non-empty, else `id_field`).
 fn typed_values_to_universal_row(
     mut typed_values: HashMap<String, TypedValue>,
     table_name: &str,
     use_message_key_as_id: bool,
     message_key: Option<&[u8]>,
     id_field: &str,
+    id_columns: &[String],
     record_index: u64,
 ) -> Result<UniversalRow> {
     let id_value = if use_message_key_as_id {
@@ -444,10 +454,19 @@ fn typed_values_to_universal_row(
         let base64_str = base64::engine::general_purpose::STANDARD.encode(key_bytes);
         UniversalValue::Text(base64_str)
     } else {
-        let id_typed_value = typed_values
-            .remove(id_field)
-            .ok_or_else(|| anyhow::anyhow!("Message has no '{id_field}' field"))?;
-        id_typed_value.value
+        let cols: Vec<&str> = if id_columns.is_empty() {
+            vec![id_field]
+        } else {
+            id_columns.iter().map(|s| s.as_str()).collect()
+        };
+        let mut parts = Vec::with_capacity(cols.len());
+        for col in &cols {
+            let id_typed_value = typed_values
+                .remove(*col)
+                .ok_or_else(|| anyhow::anyhow!("Message has no '{col}' field"))?;
+            parts.push(id_typed_value.value);
+        }
+        sync_core::build_composite_record_id(parts)
     };
 
     let fields: HashMap<String, UniversalValue> = typed_values

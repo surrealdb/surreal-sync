@@ -40,11 +40,11 @@ pub async fn collect_database_schema(client: &Client) -> Result<DatabaseSchema> 
 
     let pk_rows = client.query(pk_query, &[]).await?;
 
-    let mut pk_columns: HashMap<String, String> = HashMap::new();
+    let mut pk_columns: HashMap<String, Vec<String>> = HashMap::new();
     for row in pk_rows {
         let table_name: String = row.get(0);
         let column_name: String = row.get(1);
-        pk_columns.entry(table_name).or_insert(column_name);
+        pk_columns.entry(table_name).or_default().push(column_name);
     }
 
     let mut table_columns: HashMap<String, Vec<(String, UniversalType)>> = HashMap::new();
@@ -104,10 +104,11 @@ pub async fn collect_database_schema(client: &Client) -> Result<DatabaseSchema> 
     let mut tables = Vec::new();
 
     for (table_name, columns) in table_columns {
-        let pk_col_name = pk_columns
+        let pk_list = pk_columns
             .get(&table_name)
             .cloned()
-            .unwrap_or_else(|| "id".to_string());
+            .unwrap_or_else(|| vec!["id".to_string()]);
+        let pk_col_name = pk_list[0].clone();
 
         let mut primary_key: Option<ColumnDefinition> = None;
         let mut other_columns = Vec::new();
@@ -123,7 +124,11 @@ pub async fn collect_database_schema(client: &Client) -> Result<DatabaseSchema> 
         let pk =
             primary_key.unwrap_or_else(|| ColumnDefinition::new(pk_col_name, UniversalType::Int64));
 
-        tables.push(TableDefinition::new(table_name, pk, other_columns));
+        let mut table_def = TableDefinition::new(table_name, pk, other_columns);
+        if pk_list.len() > 1 {
+            table_def.composite_primary_key = Some(pk_list);
+        }
+        tables.push(table_def);
     }
 
     Ok(DatabaseSchema::new(tables))

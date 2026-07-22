@@ -100,6 +100,7 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
         source_database: Some(format!("test_{test_id}")),
         tables: vec![],
         mysql_boolean_paths: None,
+        id_column_overrides: Default::default(),
     };
 
     let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {

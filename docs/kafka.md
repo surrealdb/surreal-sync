@@ -145,7 +145,10 @@ These settings control how record IDs are determined for deduplication:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--use-message-key-as-id` | false | Use Kafka message key as SurrealDB record ID (base64 encoded) |
-| `--id-field <FIELD>` | "id" | Field name to extract from message payload as record ID (ignored if `--use-message-key-as-id` is set) |
+| `--id-field <FIELD>` | "id" | Field name to extract from message payload as record ID (ignored if `--use-message-key-as-id` or `--id-columns` is set) |
+| `--id-columns <A,B,...>` | (none) | Payload fields forming the record ID; two or more → Array ID (ignored if `--use-message-key-as-id` is set) |
+
+Multi-column Array IDs and optional `flatten_id`: [How sync works — Record IDs](sync-pipeline.md#record-ids-and-composite-primary-keys).
 
 ## Understanding ID Strategy
 
@@ -153,7 +156,7 @@ These settings control how record IDs are determined for deduplication:
 
 SurrealDB uses record IDs for [upsert](https://surrealdb.com/docs/surrealql/statements/upsert) behavior. When a record with the same ID already exists, it gets updated instead of creating a duplicate. This is critical for deduplication when importing change logs or event streams.
 
-### Two Approaches
+### Approaches
 
 **Approach 1: Use Kafka Message Key** (`--use-message-key-as-id`)
 
@@ -195,6 +198,9 @@ surreal-sync from kafka \
   --to-database users
 ```
 
+**Approach 3: Composite payload fields** (`--id-columns a,b`)
+
+Builds an Array record ID from multiple payload fields (same semantics as CSV/JSONL). Takes precedence over `--id-field`.
 ## Understanding Timeout and Max Messages
 
 ### Timeout (`--timeout <DURATION>`)
@@ -464,12 +470,12 @@ For production deployments that need continuous consumption:
     --topic your-topic --from-beginning \
     --property print.key=true
   ```
-- If messages don't have keys, use `--id-field` instead of `--use-message-key-as-id`
+- If messages don't have keys, use `--id-field` or `--id-columns` instead of `--use-message-key-as-id`
 
 **Problem:** "Message has no '{field_name}' field"
 
 **Solutions:**
-- Ensure the field specified by `--id-field` exists in ALL messages
+- Ensure the field(s) specified by `--id-field` / `--id-columns` exist in ALL messages
 - Check message payload structure using dry run mode
 - Verify field name spelling (case-sensitive)
 - If field name varies, consider using message keys instead

@@ -20,7 +20,7 @@ See [Full Sync Strategies](design/full-sync-strategies.md) for the consistency g
 
 You need appropriate permissions to create triggers and tables in the PostgreSQL database, because sync relies on database triggers to capture changes.
 
-Every table you select for sync must have a usable primary key. `surreal-sync` also writes a small `surreal_sync_signal` table on the source for watermark signalling.
+Every table you select for sync must have a usable primary key (single- or multi-column). Composite PKs become SurrealDB array record IDs (`table:[k1, k2]`) by default; join-table relations stay colon-flattened. Optional `flatten_id` / custom workers: [How sync works — Record IDs](sync-pipeline.md#record-ids-and-composite-primary-keys). `surreal-sync` also writes a small `surreal_sync_signal` table on the source for watermark signalling.
 
 The database name must be included in the connection string (for example, `postgresql://user:pass@host:5432/myapp`).
 

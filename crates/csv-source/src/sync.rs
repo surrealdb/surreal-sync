@@ -48,6 +48,10 @@ pub struct Config {
     /// Optional field to use as record ID
     pub id_field: Option<String>,
 
+    /// Optional multi-column record ID fields (takes precedence over `id_field`).
+    /// When two or more are set, the ID is an [`UniversalValue::Array`].
+    pub id_columns: Vec<String>,
+
     /// Optional column names when has_headers is false
     /// If provided, must match the number of columns in the CSV
     pub column_names: Option<Vec<String>>,
@@ -76,6 +80,7 @@ impl Default for Config {
             has_headers: true,
             delimiter: b',',
             id_field: None,
+            id_columns: Vec::new(),
             column_names: None,
             emit_metrics: None,
             dry_run: false,
@@ -142,6 +147,7 @@ struct CsvStreamDriver {
     headers: Vec<String>,
     table: String,
     id_field: Option<String>,
+    id_columns: Vec<String>,
     table_schema: Option<GeneratorTableDefinition>,
     poll_chunk: usize,
     record_count: u64,
@@ -152,6 +158,16 @@ struct CsvStreamDriver {
 }
 
 impl CsvStreamDriver {
+    fn effective_id_columns(&self) -> Vec<String> {
+        if !self.id_columns.is_empty() {
+            self.id_columns.clone()
+        } else if let Some(ref f) = self.id_field {
+            vec![f.clone()]
+        } else {
+            Vec::new()
+        }
+    }
+
     fn record_to_event(&mut self, record: &csv::StringRecord) -> Result<PositionedEvent<u64>> {
         if record.len() != self.headers.len() {
             anyhow::bail!(
@@ -176,12 +192,23 @@ impl CsvStreamDriver {
             }
         }
 
-        let id_value = if let Some(ref id_field) = self.id_field {
-            data.get(id_field)
+        let id_cols = self.effective_id_columns();
+        let id_value = if id_cols.is_empty() {
+            UniversalValue::Ulid(ulid::Ulid::new())
+        } else if id_cols.len() == 1 {
+            data.get(&id_cols[0])
                 .map(|tv| tv.value.clone())
                 .unwrap_or_else(|| UniversalValue::Ulid(ulid::Ulid::new()))
         } else {
-            UniversalValue::Ulid(ulid::Ulid::new())
+            let mut parts = Vec::with_capacity(id_cols.len());
+            for col in &id_cols {
+                let part = data
+                    .get(col)
+                    .map(|tv| tv.value.clone())
+                    .unwrap_or(UniversalValue::Null);
+                parts.push(part);
+            }
+            sync_core::build_composite_record_id(parts)
         };
 
         let fields: HashMap<String, UniversalValue> =
@@ -306,6 +333,7 @@ async fn process_csv_reader<S: SurrealSink>(
         headers,
         table: config.table.clone(),
         id_field: config.id_field.clone(),
+        id_columns: config.id_columns.clone(),
         table_schema,
         poll_chunk: config.batch_size.max(1),
         record_count: 0,

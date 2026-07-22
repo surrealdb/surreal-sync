@@ -85,6 +85,7 @@ async fn test_kafka_sasl_ssl_mtls_sync() -> Result<(), Box<dyn std::error::Error
         table_name: Some("all_types_users".to_string()),
         use_message_key_as_id: false,
         id_field: "id".to_string(),
+        id_columns: Vec::new(),
         max_messages: None,
         sasl_username: Some(secrets.sasl_username.clone()),
         sasl_password: Some(secrets.sasl_password.clone()),

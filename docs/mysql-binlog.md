@@ -176,7 +176,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX
 FLUSH PRIVILEGES;
 ```
 
-Every table you select for sync must have a usable primary key. surreal-sync creates a small `surreal_sync_signal` table on the source for watermark signalling; its changes are captured directly from the binlog (no triggers).
+Every table you select for sync must have a usable primary key (single- or multi-column). Composite PKs become SurrealDB array record IDs (`table:[k1, k2]`) by default; join-table relations stay colon-flattened. Optional `flatten_id` / custom workers: [How sync works — Record IDs](sync-pipeline.md#record-ids-and-composite-primary-keys). surreal-sync creates a small `surreal_sync_signal` table on the source for watermark signalling; its changes are captured directly from the binlog (no triggers).
 
 ### Recommended — MySQL and MariaDB
 
@@ -425,7 +425,7 @@ Expected behavior for common DDL, for the streaming path (`incremental` / `sync`
 | **Drop primary key** | Clear error — a keyable primary key is required; fix schema or re-snapshot. | Clear error at schema collection for the affected synced table. |
 | **Create new table** | Not synced automatically; use [`snapshot`](#ad-hoc-snapshots-signalling) to add it to a running follower. | Snapshot only covers `--tables` selected at start; use `snapshot` signalling to add more. |
 
-**Primary keys.** Every synced table must have a usable primary key. A synced table without one is rejected with a clear error on the snapshot path (`full`/interleaved), and its change events cannot be keyed on the streaming path. (Internally, PK-less tables that are merely *present* in the database but not synced do not block a run.)
+**Primary keys.** Every synced table must have a usable primary key (single- or multi-column). A synced table without one is rejected with a clear error on the snapshot path (`full`/interleaved), and its change events cannot be keyed on the streaming path. (Internally, PK-less tables that are merely *present* in the database but not synced do not block a run.) Composite key → Array ID defaults: [How sync works — Record IDs](sync-pipeline.md#record-ids-and-composite-primary-keys).
 
 ## Operational concerns
 

@@ -99,6 +99,7 @@ async fn test_csv_with_custom_column_names() {
         has_headers: false,
         delimiter: b',',
         id_field: Some("user_id".to_string()),
+        id_columns: Vec::new(),
         column_names: Some(vec![
             "user_id".to_string(),
             "name".to_string(),
@@ -203,6 +204,7 @@ async fn test_csv_column_count_mismatch_error() {
         has_headers: false,
         delimiter: b',',
         id_field: Some("user_id".to_string()),
+        id_columns: Vec::new(),
         column_names: Some(vec![
             "user_id".to_string(),
             "name".to_string(),
@@ -275,6 +277,7 @@ async fn test_csv_without_headers_auto_generated_names() {
         has_headers: false,
         delimiter: b',',
         id_field: Some("column_0".to_string()),
+        id_columns: Vec::new(),
         column_names: None,
         emit_metrics: None,
         dry_run: false,
@@ -370,6 +373,7 @@ async fn test_csv_column_count_mismatch_with_extra_columns_in_row() {
         has_headers: false,
         delimiter: b',',
         id_field: Some("id".to_string()),
+        id_columns: Vec::new(),
         column_names: Some(vec![
             "id".to_string(),
             "name".to_string(),

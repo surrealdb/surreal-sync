@@ -48,8 +48,8 @@ pub async fn collect_mysql_database_schema(
         }
     };
 
-    // Build primary key lookup: table_name -> first PK column name
-    let mut pk_columns: HashMap<String, String> = HashMap::new();
+    // Build primary key lookup: table_name -> ordered PK column names
+    let mut pk_columns: HashMap<String, Vec<String>> = HashMap::new();
     for row in pk_rows {
         let table_name: String = row
             .get(0)
@@ -57,8 +57,7 @@ pub async fn collect_mysql_database_schema(
         let column_name: String = row
             .get(1)
             .ok_or_else(|| anyhow::anyhow!("Missing column name in PK query"))?;
-        // Only store first PK column (for composite PKs, we use the first one)
-        pk_columns.entry(table_name).or_insert(column_name);
+        pk_columns.entry(table_name).or_default().push(column_name);
     }
 
     // Build tables with columns
@@ -99,11 +98,12 @@ pub async fn collect_mysql_database_schema(
     let mut tables = Vec::new();
 
     for (table_name, columns) in table_columns {
-        // Find primary key column or use "id" as default
-        let pk_col_name = pk_columns
+        // Find primary key columns or use "id" as default
+        let pk_list = pk_columns
             .get(&table_name)
             .cloned()
-            .unwrap_or_else(|| "id".to_string());
+            .unwrap_or_else(|| vec!["id".to_string()]);
+        let pk_col_name = pk_list[0].clone();
 
         // Find the PK column type and remaining columns
         let mut primary_key: Option<ColumnDefinition> = None;
@@ -123,7 +123,11 @@ pub async fn collect_mysql_database_schema(
             ColumnDefinition::new(pk_col_name, UniversalType::Int64)
         });
 
-        tables.push(TableDefinition::new(table_name, pk, other_columns));
+        let mut table_def = TableDefinition::new(table_name, pk, other_columns);
+        if pk_list.len() > 1 {
+            table_def.composite_primary_key = Some(pk_list);
+        }
+        tables.push(table_def);
     }
 
     Ok(DatabaseSchema::new(tables))

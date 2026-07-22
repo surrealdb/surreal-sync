@@ -119,6 +119,7 @@ async fn identity_sync_writes_rows() {
         table: "people".to_string(),
         batch_size: 10,
         id_field: Some("id".to_string()),
+        id_columns: Vec::new(),
         dry_run: false,
         ..Default::default()
     };
@@ -145,6 +146,7 @@ async fn external_mutate_rewrites_name_through_source_driver() {
         table: "people".to_string(),
         batch_size: 10,
         id_field: Some("id".to_string()),
+        id_columns: Vec::new(),
         dry_run: false,
         ..Default::default()
     };
@@ -172,4 +174,91 @@ async fn external_mutate_rewrites_name_through_source_driver() {
     for row in &rows {
         assert_eq!(row_name(row).as_deref(), Some("mutated"));
     }
+}
+
+#[tokio::test]
+async fn composite_id_columns_emit_array_ids() {
+    let mut temp_file = NamedTempFile::new().unwrap();
+    writeln!(temp_file, "a,b,amount").unwrap();
+    writeln!(temp_file, "x:y,z,1").unwrap();
+    writeln!(temp_file, "x,y:z,2").unwrap();
+    temp_file.flush().unwrap();
+
+    let config = Config {
+        files: vec![temp_file.path().to_path_buf()],
+        table: "ledger".to_string(),
+        batch_size: 10,
+        id_field: None,
+        id_columns: vec!["a".to_string(), "b".to_string()],
+        dry_run: false,
+        ..Default::default()
+    };
+
+    let sink = CaptureSink::new();
+    sync(&sink, config).await.expect("composite id sync");
+    let rows = sink.rows.lock().expect("lock").clone();
+    assert_eq!(rows.len(), 2);
+    for row in &rows {
+        match &row.id {
+            UniversalValue::Array { elements, .. } => {
+                assert_eq!(elements.len(), 2);
+            }
+            other => panic!("expected Array id, got {other:?}"),
+        }
+    }
+    // Extreme `:` values stay distinct as Arrays (would collide if flattened).
+    let keys: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| match &r.id {
+            UniversalValue::Array { elements, .. } => elements
+                .iter()
+                .map(|e| match e {
+                    UniversalValue::Text(s)
+                    | UniversalValue::VarChar { value: s, .. }
+                    | UniversalValue::Char { value: s, .. } => s.clone(),
+                    other => panic!("unexpected id part: {other:?}"),
+                })
+                .collect(),
+            _ => unreachable!(),
+        })
+        .collect();
+    assert!(keys.contains(&vec!["x:y".into(), "z".into()]));
+    assert!(keys.contains(&vec!["x".into(), "y:z".into()]));
+}
+
+#[tokio::test]
+async fn flatten_id_toml_rewrites_composite_array_id_to_text() {
+    let mut temp_file = NamedTempFile::new().unwrap();
+    writeln!(temp_file, "a,b,amount").unwrap();
+    writeln!(temp_file, "a,b,1").unwrap();
+    temp_file.flush().unwrap();
+
+    let config = Config {
+        files: vec![temp_file.path().to_path_buf()],
+        table: "ledger".to_string(),
+        batch_size: 10,
+        id_field: None,
+        id_columns: vec!["a".to_string(), "b".to_string()],
+        dry_run: false,
+        ..Default::default()
+    };
+
+    let cfg = sync_transform::parse_transforms_toml(
+        r#"
+[[transforms]]
+type = "flatten_id"
+"#,
+    )
+    .expect("parse flatten_id toml");
+    let pipeline = sync_transform::Pipeline::from_config(&cfg).expect("pipeline");
+    let apply_opts = sync_transform::ApplyOpts::from_transforms_config(&cfg);
+
+    let sink = CaptureSink::new();
+    sync_with_transforms(&sink, config, &pipeline, &apply_opts)
+        .await
+        .expect("flatten_id sync");
+
+    let rows = sink.rows.lock().expect("lock").clone();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, UniversalValue::Text("a:b".into()));
 }

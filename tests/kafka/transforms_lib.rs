@@ -142,6 +142,7 @@ async fn kafka_external_mutate_rewrites_name_through_source_driver(
         table_name: Some("people".to_string()),
         use_message_key_as_id: false,
         id_field: "id".to_string(),
+        id_columns: Vec::new(),
         max_messages: Some(2),
         sasl_username: None,
         sasl_password: None,
