@@ -5,7 +5,8 @@
 //! There is no CDC/incremental support and no durable source cursor — this is an
 //! ingestion-only source. Rows still go through the shared transform/apply path
 //! ([`run_full_sync_with_transforms`]) so `--transforms-config` batching and
-//! `max_in_flight` apply within each table.
+//! `max_in_flight` apply within each table. Source reads stream **one Snowflake
+//! result partition at a time**, sliced into `batch_size` apply chunks.
 //!
 //! # Usage
 //! ```ignore
@@ -20,10 +21,10 @@ pub mod autoconf;
 pub mod client;
 pub mod full_sync;
 
-pub use client::{QueryResult, SnowflakeClient};
+pub use client::{QueryResult, QueryStream, SnowflakeClient};
 pub use full_sync::{
-    apply_query_result_with_transforms, migrate_table, migrate_table_with_transforms,
-    run_full_sync, run_full_sync_with_transforms,
+    apply_query_result_with_transforms, apply_query_stream_with_transforms, migrate_table,
+    migrate_table_with_transforms, run_full_sync, run_full_sync_with_transforms,
 };
 
 /// Connection + selection options for the Snowflake source (no clap types).

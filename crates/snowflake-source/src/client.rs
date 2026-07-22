@@ -4,6 +4,10 @@
 //! and result-partition pagination. Result decoding into `UniversalValue`s is
 //! the job of the `snowflake-types` crate; this module only produces the raw
 //! `(rowType, data)` pair.
+//!
+//! Large results are exposed via [`QueryStream`], which keeps **one partition**
+//! in memory at a time and yields bounded [`QueryStream::next_batch`] slices for
+//! the apply path.
 
 use std::time::{Duration, Instant};
 
@@ -16,12 +20,101 @@ use crate::SourceOpts;
 
 /// A decoded (but not yet type-converted) result set: column metadata plus every
 /// data row across all partitions.
+///
+/// Prefer [`SnowflakeClient::execute_query_stream`] for large tables — this type
+/// materializes the full result and is mainly for small queries (DDL, discovery).
 #[derive(Debug, Clone)]
 pub struct QueryResult {
     /// Per-column metadata (`resultSetMetaData.rowType`).
     pub columns: Vec<ColumnType>,
     /// Rows, each a vector of raw JSON cells aligned with `columns`.
     pub rows: Vec<Vec<JsonValue>>,
+}
+
+/// Streaming view of a statement result: one Snowflake partition buffered at a
+/// time, sliced into caller-sized batches.
+pub struct QueryStream<'a> {
+    client: &'a SnowflakeClient,
+    columns: Vec<ColumnType>,
+    /// Statement handle used to fetch partitions `1..partition_count`.
+    handle: Option<String>,
+    /// Total partitions reported by Snowflake (or `1` when data arrived without
+    /// `partitionInfo`).
+    partition_count: usize,
+    /// Next partition index to fetch after the current buffer is exhausted.
+    next_partition: usize,
+    /// Rows for the partition currently being drained.
+    current: Vec<Vec<JsonValue>>,
+    /// Offset within [`Self::current`].
+    current_offset: usize,
+}
+
+impl<'a> QueryStream<'a> {
+    /// Column metadata for the statement (stable for the life of the stream).
+    pub fn columns(&self) -> &[ColumnType] {
+        &self.columns
+    }
+
+    /// Yield up to `max_rows` raw cells from the current partition, fetching the
+    /// next partition only when the buffer is empty.
+    ///
+    /// Returns `Ok(None)` when the result is fully consumed. A returned batch may
+    /// be smaller than `max_rows` when a partition ends mid-batch (callers should
+    /// treat that as a normal, final partial batch for that partition).
+    pub async fn next_batch(&mut self, max_rows: usize) -> Result<Option<Vec<Vec<JsonValue>>>> {
+        let max_rows = max_rows.max(1);
+        loop {
+            if self.current_offset >= self.current.len() {
+                self.current.clear();
+                self.current_offset = 0;
+                if !self.fetch_next_partition_if_needed().await? {
+                    return Ok(None);
+                }
+                // Empty partitions are skipped by continuing the loop.
+                continue;
+            }
+
+            let end = (self.current_offset + max_rows).min(self.current.len());
+            let batch = self.current[self.current_offset..end].to_vec();
+            self.current_offset = end;
+
+            // Drop the partition buffer once fully drained so peak memory stays
+            // near one partition (+ the in-flight apply window).
+            if self.current_offset >= self.current.len() {
+                self.current.clear();
+                self.current.shrink_to_fit();
+                self.current_offset = 0;
+            }
+
+            if batch.is_empty() {
+                continue;
+            }
+            return Ok(Some(batch));
+        }
+    }
+
+    async fn fetch_next_partition_if_needed(&mut self) -> Result<bool> {
+        if self.next_partition >= self.partition_count {
+            return Ok(false);
+        }
+
+        // Partition 0 is always loaded into `current` at stream open. Subsequent
+        // partitions are fetched by index (`next_partition` starts at 1).
+        let handle = self
+            .handle
+            .as_deref()
+            .ok_or_else(|| anyhow!("multi-partition result missing statementHandle"))?;
+        let partition = self.next_partition;
+        tracing::debug!(
+            partition,
+            partition_count = self.partition_count,
+            "Fetching Snowflake result partition"
+        );
+        self.current = self.client.fetch_partition(handle, partition).await?;
+        self.next_partition += 1;
+        self.current_offset = 0;
+        Ok(true)
+    }
 }
 
 /// Client for a single Snowflake account, bound to one warehouse/database/schema.
@@ -119,9 +212,12 @@ impl SnowflakeClient {
             .map_err(|e| anyhow!("failed to generate Snowflake JWT: {e}"))
     }
 
-    /// Execute a SQL statement and return the fully-paginated result set.
-    pub async fn execute_query(&self, sql: &str) -> Result<QueryResult> {
-        tracing::debug!("Snowflake execute: {sql}");
+    /// Execute a SQL statement and stream partitions one at a time.
+    ///
+    /// Peak source-side memory is roughly one Snowflake result partition (plus
+    /// whatever the caller retains from [`QueryStream::next_batch`]).
+    pub async fn execute_query_stream(&self, sql: &str) -> Result<QueryStream<'_>> {
+        tracing::debug!("Snowflake execute (stream): {sql}");
 
         let mut body = serde_json::Map::new();
         body.insert("statement".into(), JsonValue::String(sql.to_string()));
@@ -142,28 +238,51 @@ impl SnowflakeClient {
 
         let url = format!("{}/api/v2/statements", self.base_url);
         let (status, resp) = self.send_post(&url, &body).await?;
-
-        // Drive an async (202) statement to completion.
         let resp = self.await_completion(status, resp).await?;
 
         let meta = resp
             .result_set_meta_data
             .ok_or_else(|| anyhow!("Snowflake response missing resultSetMetaData"))?;
         let columns = meta.row_type;
+        let current = resp.data.unwrap_or_default();
 
-        // Partition 0 arrives inline; fetch the rest by index.
-        let mut rows = resp.data.unwrap_or_default();
-        let partition_count = meta.partition_info.len();
-        if partition_count > 1 {
-            let handle = resp
-                .statement_handle
-                .ok_or_else(|| anyhow!("multi-partition result missing statementHandle"))?;
-            for partition in 1..partition_count {
-                let mut more = self.fetch_partition(&handle, partition).await?;
-                rows.append(&mut more);
+        // Snowflake normally reports partitionInfo; when it is absent but rows
+        // arrived inline, treat that as a single already-buffered partition.
+        let partition_count = if meta.partition_info.is_empty() {
+            if current.is_empty() {
+                0
+            } else {
+                1
             }
-        }
+        } else {
+            meta.partition_info.len()
+        };
 
+        Ok(QueryStream {
+            client: self,
+            columns,
+            handle: resp.statement_handle,
+            partition_count,
+            // Partition 0 is already in `current`; the next fetch (if any) is 1.
+            next_partition: 1,
+            current,
+            current_offset: 0,
+        })
+    }
+
+    /// Execute a SQL statement and return the fully-paginated result set.
+    ///
+    /// Convenience for small results (DDL, `INFORMATION_SCHEMA`, tests). Prefer
+    /// [`Self::execute_query_stream`] for table ingestion.
+    pub async fn execute_query(&self, sql: &str) -> Result<QueryResult> {
+        let mut stream = self.execute_query_stream(sql).await?;
+        let columns = stream.columns().to_vec();
+        let mut rows = Vec::new();
+        // Drain with a large batch size; partitions still arrive one at a time,
+        // then are appended here (intentional full materialization).
+        while let Some(mut batch) = stream.next_batch(10_000).await? {
+            rows.append(&mut batch);
+        }
         Ok(QueryResult { columns, rows })
     }
 

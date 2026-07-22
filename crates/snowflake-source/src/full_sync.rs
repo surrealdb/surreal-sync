@@ -6,9 +6,13 @@
 //! not enforced (and are frequently absent), so ID columns are optional — like
 //! CSV, sequential ids are generated when omitted.
 //!
-//! There is no CDC and no durable source cursor: watermarks advance
-//! in-memory through the shared apply path (`CheckpointPolicy::AdvanceOnly`),
-//! but there is nothing to resume after a process restart.
+//! Source reads are **partition-bounded**: the SQL REST API returns result
+//! partitions; we keep one partition buffered and slice it into
+//! `sync_opts.batch_size` apply chunks (a trailing chunk may be smaller when
+//! `partition_len % batch_size != 0`). There is no CDC and no durable source
+//! cursor — watermarks advance in-memory through the shared apply path
+//! (`CheckpointPolicy::AdvanceOnly`), but there is nothing to resume after a
+//! process restart.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -16,19 +20,19 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use serde_json::Value as JsonValue;
-use snowflake_types::convert_cell;
+use snowflake_types::{convert_cell, ColumnType};
 use surreal_sink::SurrealSink;
 use sync_core::{UniversalRow, UniversalValue};
 use sync_transform::{
     run_source_runtime_with, ApplyOpts, Pipeline, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
 };
 
-use crate::client::{QueryResult, SnowflakeClient};
+use crate::client::{QueryResult, QueryStream, SnowflakeClient};
 use crate::{autoconf, SourceOpts, SyncOpts};
 
 /// Ingest every selected table with an identity transform pipeline.
 ///
-/// Returns the total number of rows sunk (0 in dry-run).
+/// Returns the total number of rows sunk (0 in dry-run after a scan).
 pub async fn run_full_sync<S: SurrealSink>(
     client: &SnowflakeClient,
     sink: &S,
@@ -110,7 +114,8 @@ pub async fn migrate_table<S: SurrealSink>(
         .await
 }
 
-/// Ingest a single table through [`RowChunkDriver`].
+/// Ingest a single table through [`RowChunkDriver`], streaming Snowflake
+/// partitions and slicing each into `sync_opts.batch_size` apply chunks.
 pub async fn migrate_table_with_transforms<S: SurrealSink>(
     client: &SnowflakeClient,
     sink: &S,
@@ -125,17 +130,11 @@ pub async fn migrate_table_with_transforms<S: SurrealSink>(
     let table_upper = table.to_ascii_uppercase();
     let sql = format!("SELECT * FROM \"{db}\".\"{schema}\".\"{table_upper}\"");
 
-    let result = client.execute_query(&sql).await?;
-
-    if result.rows.is_empty() {
-        tracing::info!("Table '{table}' is empty, skipping");
-        return Ok(0);
-    }
-
-    apply_query_result_with_transforms(
+    let stream = client.execute_query_stream(&sql).await?;
+    apply_query_stream_with_transforms(
         sink,
         &table_upper,
-        &result,
+        stream,
         opts,
         sync_opts,
         pipeline,
@@ -144,7 +143,83 @@ pub async fn migrate_table_with_transforms<S: SurrealSink>(
     .await
 }
 
-/// Convert a fetched [`QueryResult`] and push it through the shared apply path.
+/// Push a live [`QueryStream`] through the shared apply path (production path).
+pub async fn apply_query_stream_with_transforms<S: SurrealSink>(
+    sink: &S,
+    table: &str,
+    mut stream: QueryStream<'_>,
+    opts: &SourceOpts,
+    sync_opts: &SyncOpts,
+    pipeline: &Pipeline,
+    apply_opts: &ApplyOpts,
+) -> Result<usize> {
+    let columns = stream.columns().to_vec();
+    let id_indices = resolve_id_columns(&columns, &opts.id_columns)?;
+    let id_index_set: HashSet<usize> = id_indices.iter().copied().collect();
+    let batch_size = sync_opts.batch_size.max(1);
+
+    if sync_opts.dry_run {
+        let mut converted = 0usize;
+        while let Some(raw_batch) = stream.next_batch(batch_size).await? {
+            for row in raw_batch {
+                convert_row(table, converted, &row, &columns, &id_indices, &id_index_set)?;
+                converted += 1;
+            }
+        }
+        tracing::info!("Dry-run scanned table '{table}': {converted} row(s)");
+        return Ok(converted);
+    }
+
+    struct SnowflakePartitionChunks<'a> {
+        stream: QueryStream<'a>,
+        columns: Vec<ColumnType>,
+        table: String,
+        id_indices: Vec<usize>,
+        id_index_set: HashSet<usize>,
+        batch_size: usize,
+        next_row_index: usize,
+    }
+
+    #[async_trait]
+    impl RowChunkSource for SnowflakePartitionChunks<'_> {
+        async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+            let Some(raw_batch) = self.stream.next_batch(self.batch_size).await? else {
+                return Ok(None);
+            };
+            let mut batch = Vec::with_capacity(raw_batch.len());
+            for row in raw_batch {
+                let row_index = self.next_row_index;
+                batch.push(convert_row(
+                    &self.table,
+                    row_index,
+                    &row,
+                    &self.columns,
+                    &self.id_indices,
+                    &self.id_index_set,
+                )?);
+                self.next_row_index = self.next_row_index.saturating_add(1);
+            }
+            Ok(Some(batch))
+        }
+    }
+
+    let chunks = SnowflakePartitionChunks {
+        stream,
+        columns,
+        table: table.to_string(),
+        id_indices,
+        id_index_set,
+        batch_size,
+        next_row_index: 0,
+    };
+    let mut driver = RowChunkDriver::new(chunks);
+    let transformer = Arc::new(pipeline.clone());
+    let runtime_opts = SourceRuntimeOpts::new();
+    run_source_runtime_with(&mut driver, sink, transformer, apply_opts, &runtime_opts).await?;
+    Ok(driver.sunk_count() as usize)
+}
+
+/// Convert an in-memory [`QueryResult`] and push it through the shared apply path.
 ///
 /// Exposed for tests that build result sets without talking to Snowflake.
 pub async fn apply_query_result_with_transforms<S: SurrealSink>(
@@ -156,21 +231,30 @@ pub async fn apply_query_result_with_transforms<S: SurrealSink>(
     pipeline: &Pipeline,
     apply_opts: &ApplyOpts,
 ) -> Result<usize> {
-    let id_indices = resolve_id_columns(result, &opts.id_columns)?;
+    let id_indices = resolve_id_columns(&result.columns, &opts.id_columns)?;
     let id_index_set: HashSet<usize> = id_indices.iter().copied().collect();
+    let batch_size = sync_opts.batch_size.max(1);
 
     if sync_opts.dry_run {
         let mut converted = 0usize;
         for (row_index, row) in result.rows.iter().enumerate() {
-            convert_row(table, row_index, row, result, &id_indices, &id_index_set)?;
+            convert_row(
+                table,
+                row_index,
+                row,
+                &result.columns,
+                &id_indices,
+                &id_index_set,
+            )?;
             converted += 1;
         }
         tracing::info!("Dry-run scanned table '{table}': {converted} row(s)");
         return Ok(converted);
     }
 
-    struct SnowflakeRowChunks<'a> {
-        result: &'a QueryResult,
+    struct InMemoryRowChunks<'a> {
+        rows: &'a [Vec<JsonValue>],
+        columns: &'a [ColumnType],
         table: String,
         id_indices: Vec<usize>,
         id_index_set: HashSet<usize>,
@@ -179,20 +263,19 @@ pub async fn apply_query_result_with_transforms<S: SurrealSink>(
     }
 
     #[async_trait]
-    impl RowChunkSource for SnowflakeRowChunks<'_> {
+    impl RowChunkSource for InMemoryRowChunks<'_> {
         async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
-            if self.next_index >= self.result.rows.len() {
+            if self.next_index >= self.rows.len() {
                 return Ok(None);
             }
-            let end = (self.next_index + self.batch_size).min(self.result.rows.len());
+            let end = (self.next_index + self.batch_size).min(self.rows.len());
             let mut batch = Vec::with_capacity(end - self.next_index);
             for row_index in self.next_index..end {
-                let row = &self.result.rows[row_index];
                 batch.push(convert_row(
                     &self.table,
                     row_index,
-                    row,
-                    self.result,
+                    &self.rows[row_index],
+                    self.columns,
                     &self.id_indices,
                     &self.id_index_set,
                 )?);
@@ -202,12 +285,13 @@ pub async fn apply_query_result_with_transforms<S: SurrealSink>(
         }
     }
 
-    let chunks = SnowflakeRowChunks {
-        result,
+    let chunks = InMemoryRowChunks {
+        rows: &result.rows,
+        columns: &result.columns,
         table: table.to_string(),
         id_indices,
         id_index_set,
-        batch_size: sync_opts.batch_size.max(1),
+        batch_size,
         next_index: 0,
     };
     let mut driver = RowChunkDriver::new(chunks);
@@ -221,20 +305,20 @@ fn convert_row(
     table: &str,
     row_index: usize,
     row: &[JsonValue],
-    result: &QueryResult,
+    columns: &[ColumnType],
     id_indices: &[usize],
     id_index_set: &HashSet<usize>,
 ) -> Result<UniversalRow> {
-    if row.len() != result.columns.len() {
+    if row.len() != columns.len() {
         return Err(anyhow!(
             "row {row_index} of table '{table}' has {} cells but {} columns were declared",
             row.len(),
-            result.columns.len()
+            columns.len()
         ));
     }
 
     let mut fields: HashMap<String, UniversalValue> = HashMap::new();
-    for (i, col) in result.columns.iter().enumerate() {
+    for (i, col) in columns.iter().enumerate() {
         // When ID columns are explicit, keep them out of the field map so the
         // record ID is not duplicated as a field (matches the PostgreSQL PK behavior).
         if id_index_set.contains(&i) {
@@ -255,12 +339,11 @@ fn convert_row(
 
 /// Map the configured ID column names to their positions in the result set.
 /// Names are matched case-insensitively (Snowflake upper-cases identifiers).
-fn resolve_id_columns(result: &QueryResult, id_columns: &[String]) -> Result<Vec<usize>> {
+fn resolve_id_columns(columns: &[ColumnType], id_columns: &[String]) -> Result<Vec<usize>> {
     let mut indices = Vec::with_capacity(id_columns.len());
     for name in id_columns {
         let wanted = name.trim().to_ascii_uppercase();
-        let idx = result
-            .columns
+        let idx = columns
             .iter()
             .position(|c| c.name.to_ascii_uppercase() == wanted)
             .ok_or_else(|| anyhow!("id column '{name}' not found in result set"))?;
