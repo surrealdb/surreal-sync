@@ -338,6 +338,60 @@ async fn tls_sql_pool_modes_on_tls_server() -> Result<()> {
 }
 
 #[tokio::test]
+async fn tls_preferred_does_not_fallback_on_auth_failure() -> Result<()> {
+    crate::shared::init_logging();
+    let c = TlsMysqlContainer::start("ss-mysql-tls-preferred-auth").await?;
+    let (host, port, username, _) = parse_mysql_uri(&c.connection_string)?;
+    let err = BinlogClient::connect(ReplicaOptions {
+        host,
+        port,
+        username,
+        password: "wrong-password".into(),
+        server_id: 9_100_008,
+        ssl: SslMode::Preferred(SslOptions {
+            ca: Some(c.ca_path()),
+            cert: None,
+            key: None,
+        }),
+        blocking_poll: Duration::from_millis(200),
+        flavor: None,
+        mariadb_flags: binlog_protocol::MariaDbDumpFlags {
+            send_annotate_rows: true,
+        },
+        mariadb_gtid_strict_mode: binlog_protocol::MariaDbGtidStrictMode::ServerDefault,
+    })
+    .await;
+    assert!(err.is_err(), "wrong password must fail under preferred");
+    let msg = format!("{:?}", err.unwrap_err());
+    assert!(
+        !msg.contains("retrying without TLS"),
+        "preferred must not fall back on auth errors: {msg}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn tls_sql_pool_preferred_does_not_fallback_on_auth_failure() -> Result<()> {
+    crate::shared::init_logging();
+    let c = TlsMysqlContainer::start("ss-mysql-tls-pool-auth").await?;
+    let bad_uri = c.connection_string.replace("testpass", "wrong-password");
+    let err = mysql_types::new_mysql_pool_with_ssl(
+        &bad_uri,
+        &SslMode::Preferred(SslOptions {
+            ca: Some(c.ca_path()),
+            cert: None,
+            key: None,
+        }),
+    )
+    .await;
+    assert!(
+        err.is_err(),
+        "preferred SQL pool must not fall back when auth fails"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn caching_sha2_full_auth_over_tls_required() -> Result<()> {
     crate::shared::init_logging();
     let c = TlsMysqlContainer::start("ss-mysql-tls-sha2").await?;

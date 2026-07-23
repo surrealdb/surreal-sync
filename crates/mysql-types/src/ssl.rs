@@ -60,6 +60,16 @@ fn pool_plaintext(connection_string: &str) -> Result<Pool> {
         .with_context(|| format!("invalid MySQL connection string: {connection_string}"))
 }
 
+/// Whether a pool connect failure under Preferred should retry without TLS.
+fn is_tls_encryption_failure(err: &mysql_async::Error) -> bool {
+    use mysql_async::{DriverError, Error, IoError};
+    match err {
+        Error::Io(IoError::Tls(_)) => true,
+        Error::Driver(DriverError::NoClientSslFlagFromServer) => true,
+        _ => false,
+    }
+}
+
 /// Create a MySQL pool honouring [`SslMode`].
 ///
 /// For [`SslMode::Preferred`], probes an SSL connection and falls back to
@@ -72,12 +82,15 @@ pub async fn new_mysql_pool_with_ssl(connection_string: &str, ssl: &SslMode) -> 
             let pool = pool_with_ssl(connection_string, options)?;
             match pool.get_conn().await {
                 Ok(_conn) => Ok(pool),
-                Err(e) => {
+                Err(e) if is_tls_encryption_failure(&e) => {
                     warn!(
                         "TLS handshake failed under --tls-mode preferred ({e}); retrying without TLS"
                     );
                     pool_plaintext(connection_string)
                 }
+                Err(e) => Err(e).with_context(|| {
+                    format!("failed to connect to MySQL with TLS: {connection_string}")
+                }),
             }
         }
     }
