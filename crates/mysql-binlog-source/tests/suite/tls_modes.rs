@@ -29,6 +29,10 @@ fn parse_mysql_uri(uri: &str) -> Result<(String, u16, String, String)> {
     Ok((host, port, username, password))
 }
 
+fn invalid_password(correct: &str) -> String {
+    format!("{correct}-invalid")
+}
+
 struct TlsMysqlContainer {
     name: String,
     connection_string: String,
@@ -496,12 +500,12 @@ async fn tls_sql_pool_modes_on_tls_server() -> Result<()> {
 async fn tls_preferred_does_not_fallback_on_auth_failure() -> Result<()> {
     crate::shared::init_logging();
     let c = TlsMysqlContainer::start("ss-mysql-tls-preferred-auth").await?;
-    let (host, port, username, _) = parse_mysql_uri(&c.connection_string)?;
+    let (host, port, username, password) = parse_mysql_uri(&c.connection_string)?;
     let err = BinlogClient::connect(ReplicaOptions {
         host,
         port,
         username,
-        password: "wrong-password".into(),
+        password: invalid_password(&password),
         server_id: 9_100_008,
         ssl: SslMode::Preferred(SslOptions {
             ca: Some(c.ca_path()),
@@ -529,7 +533,11 @@ async fn tls_preferred_does_not_fallback_on_auth_failure() -> Result<()> {
 async fn tls_sql_pool_preferred_does_not_fallback_on_auth_failure() -> Result<()> {
     crate::shared::init_logging();
     let c = TlsMysqlContainer::start("ss-mysql-tls-pool-auth").await?;
-    let bad_uri = c.connection_string.replace("testpass", "wrong-password");
+    let (host, port, username, password) = parse_mysql_uri(&c.connection_string)?;
+    let bad_uri = format!(
+        "mysql://{username}:{}@{host}:{port}/testdb",
+        invalid_password(&password)
+    );
     let err = mysql_types::new_mysql_pool_with_ssl(
         &bad_uri,
         &SslMode::Preferred(SslOptions {
