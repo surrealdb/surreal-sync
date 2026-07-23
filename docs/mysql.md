@@ -27,10 +27,14 @@ Every table you select for sync must have a usable primary key (single- or multi
 Encrypt the MySQL connection with the same flags as binlog sync:
 
 - `--tls-mode disabled` (default) — plain connection.
-- `--tls-mode preferred` — try TLS; fall back to plain if TLS is unavailable.
-- `--tls-mode required` — require TLS.
-- `--tls-ca <PATH>` — optional CA file for strict server verification. Omit it to encrypt without requiring a public CA (common for self-signed Docker MySQL).
+- `--tls-mode preferred` — try TLS first; fall back to plain if encryption cannot be established.
+- `--tls-mode required` — require TLS; fail if encryption cannot be established.
+- `--tls-ca <PATH>` — optional CA file to verify the server certificate. Use on untrusted networks so you know you are connecting to the intended server.
 - `--tls-cert` / `--tls-key` — optional client certificate pair.
+
+Without `--tls-ca`, `required` and `preferred` still encrypt the session but do not verify the server identity — fine for local Docker or self-signed lab setups, risky on public networks. Use `--tls-ca` with the hostname you expect in `--connection-string` (your cloud endpoint, not a tunnel alias) when connecting to managed MySQL.
+
+The same flags apply to snapshot signalling and streaming.
 
 ## Combined sync
 

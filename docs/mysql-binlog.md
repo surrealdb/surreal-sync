@@ -215,10 +215,14 @@ gtid_strict_mode=ON   # recommended
 Use `--tls-mode` when MySQL is only reachable over an untrusted network (or when your server requires encrypted clients):
 
 - `--tls-mode disabled` (default) — plain connection. Fine on a trusted network or VPN.
-- `--tls-mode preferred` — try TLS; if the server cannot do TLS (or the handshake fails), continue without encryption.
+- `--tls-mode preferred` — try TLS first; if the server cannot encrypt the connection (or the TLS handshake fails), surreal-sync falls back to a plain connection.
 - `--tls-mode required` — always use TLS; fail if encryption cannot be established.
-- `--tls-ca <PATH>` — trust this CA when checking the server certificate. Pass this when you want strict verification (for example a private CA). If you omit it, surreal-sync still encrypts in `preferred`/`required` but does not require a public CA match — typical for self-signed lab or Docker MySQL setups.
+- `--tls-ca <PATH>` — trust this CA when checking the server certificate. Use this when you need to confirm you are talking to the intended server (private CA, cloud provider CA bundle, etc.).
 - `--tls-cert <PATH>` / `--tls-key <PATH>` — present a client certificate when the server asks for one (both required together).
+
+**Encryption vs verification.** With `preferred` or `required`, surreal-sync encrypts the session even when you omit `--tls-ca`. Without `--tls-ca`, it does **not** verify that the server certificate belongs to the host you expect — the connection is encrypted, but an attacker on the path could present another certificate. On untrusted networks, use `--tls-mode required` **and** pass the CA that signed your server (or your provider’s CA bundle) via `--tls-ca`.
+
+**Connection string hostname.** Put the hostname you expect the server to identify as in `--connection-string` (for example the RDS/Aurora/Cloud SQL endpoint, not only `127.0.0.1` when tunnelling). When you pass `--tls-ca`, that name is checked against the certificate. For managed MySQL, download the provider’s CA file and pass it with `--tls-ca`.
 
 The same flags apply to the SQL connection used for snapshots and to the binlog replication stream.
 
