@@ -82,31 +82,15 @@
 //! - PostgreSQL: `postgresql:sequence:123` (trigger-based audit table)
 //! - MySQL: `mysql:sequence:456` (trigger-based audit table)
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
-use rustls::crypto::CryptoProvider;
+use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 use surreal_sync::SurrealOpts;
 
-/// Full-sync strategy for sources that support interleaved snapshot
-/// (PostgreSQL wal2json, PostgreSQL trigger, MySQL).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, ValueEnum)]
-enum SyncStrategy {
-    /// DBLog-style watermark snapshot copied concurrently/interleaved with the
-    /// change stream: resumable, bounded memory, and does not pin the source
-    /// change log for the whole snapshot (bounded retention). The default;
-    /// requires a primary key on every table.
-    #[default]
-    InterleavedSnapshot,
-    /// Monolithic `SELECT *` per table, then a separate replay of the [t1,t2]
-    /// change log on top. The source log is pinned for the whole snapshot
-    /// (unbounded retention). Opt-out for tables without a usable primary key
-    /// or when writing watermark rows to the source is not allowed.
-    SequentialSnapshot,
-}
-
-/// Default chunk size for the watermark snapshot (matches Debezium's
-/// incremental snapshot default).
-const DEFAULT_CHUNK_SIZE: usize = 1024;
+// Shared with library mysql-binlog CLI (also used by other `from *` clap args).
+pub(crate) use surreal_sync::mysql_binlog::{
+    Commands as MySQLBinlogCommands, SnapshotModeArg as BinlogSnapshotModeArg, SyncStrategy,
+    TlsArgs as MySQLTlsArgs, DEFAULT_CHUNK_SIZE,
+};
 
 // Load testing imports
 use loadtest_populate_csv::CSVPopulateArgs;
@@ -905,265 +889,6 @@ struct MySQLSnapshotArgs {
 }
 
 // =============================================================================
-// MySQL Binlog Commands and Args
-// =============================================================================
-
-/// Engine flavor override for binlog CDC (auto-detected from server when omitted).
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum MySQLBinlogFlavorArg {
-    #[value(name = "mysql")]
-    MySql,
-    #[value(name = "mariadb")]
-    MariaDb,
-}
-
-impl From<MySQLBinlogFlavorArg> for surreal_sync_mysql_binlog_source::Flavor {
-    fn from(value: MySQLBinlogFlavorArg) -> Self {
-        match value {
-            MySQLBinlogFlavorArg::MySql => Self::MySql,
-            MySQLBinlogFlavorArg::MariaDb => Self::MariaDb,
-        }
-    }
-}
-
-/// MariaDB `@slave_gtid_strict_mode` behavior for GTID resume sessions.
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum MariaDbGtidStrictModeArg {
-    #[default]
-    ServerDefault,
-    On,
-    Off,
-}
-
-impl From<MariaDbGtidStrictModeArg> for surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode {
-    fn from(value: MariaDbGtidStrictModeArg) -> Self {
-        match value {
-            MariaDbGtidStrictModeArg::ServerDefault => Self::ServerDefault,
-            MariaDbGtidStrictModeArg::On => Self::On,
-            MariaDbGtidStrictModeArg::Off => Self::Off,
-        }
-    }
-}
-
-/// TLS behavior for MySQL/MariaDB SQL and binlog connections.
-#[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum MySQLTlsModeArg {
-    #[default]
-    Disabled,
-    Preferred,
-    Required,
-}
-
-#[derive(Clone, Debug, Args, Default)]
-struct MySQLTlsArgs {
-    /// TLS mode for MySQL connections (`disabled`, `preferred`, or `required`)
-    #[arg(long, value_enum, default_value_t = MySQLTlsModeArg::default())]
-    tls_mode: MySQLTlsModeArg,
-
-    /// PEM CA bundle used to verify the MySQL server certificate (ignored when `--tls-mode disabled`)
-    #[arg(long, value_name = "PATH")]
-    tls_ca: Option<String>,
-
-    /// PEM client certificate for MySQL TLS client auth (ignored when `--tls-mode disabled`)
-    #[arg(long, value_name = "PATH")]
-    tls_cert: Option<String>,
-
-    /// PEM private key for MySQL TLS client auth (ignored when `--tls-mode disabled`; requires `--tls-cert`)
-    #[arg(long, value_name = "PATH")]
-    tls_key: Option<String>,
-}
-
-impl MySQLTlsArgs {
-    fn ssl_mode(&self) -> surreal_sync_mysql_binlog_source::SslMode {
-        let options = surreal_sync_mysql_binlog_source::SslOptions {
-            ca: self.tls_ca.clone(),
-            cert: self.tls_cert.clone(),
-            key: self.tls_key.clone(),
-        };
-        match self.tls_mode {
-            MySQLTlsModeArg::Disabled => surreal_sync_mysql_binlog_source::SslMode::Disabled,
-            MySQLTlsModeArg::Preferred => {
-                surreal_sync_mysql_binlog_source::SslMode::Preferred(options)
-            }
-            MySQLTlsModeArg::Required => {
-                surreal_sync_mysql_binlog_source::SslMode::Required(options)
-            }
-        }
-    }
-
-    fn trigger_ssl_mode(&self) -> surreal_sync_mysql_trigger_source::SslMode {
-        match self.ssl_mode() {
-            surreal_sync_mysql_binlog_source::SslMode::Disabled => {
-                surreal_sync_mysql_trigger_source::SslMode::Disabled
-            }
-            surreal_sync_mysql_binlog_source::SslMode::Preferred(o) => {
-                surreal_sync_mysql_trigger_source::SslMode::Preferred(
-                    surreal_sync_mysql_trigger_source::SslOptions {
-                        ca: o.ca,
-                        cert: o.cert,
-                        key: o.key,
-                    },
-                )
-            }
-            surreal_sync_mysql_binlog_source::SslMode::Required(o) => {
-                surreal_sync_mysql_trigger_source::SslMode::Required(
-                    surreal_sync_mysql_trigger_source::SslOptions {
-                        ca: o.ca,
-                        cert: o.cert,
-                        key: o.key,
-                    },
-                )
-            }
-        }
-    }
-}
-
-#[derive(Subcommand)]
-enum MySQLBinlogCommands {
-    /// Snapshot and/or stream sync from MySQL/MariaDB binlog
-    Sync(Box<MySQLBinlogSyncArgs>),
-    /// Trigger an ad-hoc snapshot of additional tables against a running `sync`
-    Snapshot(MySQLBinlogSnapshotArgs),
-}
-
-/// Controls whether `sync` runs an initial snapshot, streams only, or snapshots only.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
-enum BinlogSnapshotModeArg {
-    /// Interleaved snapshot then continuous stream (default).
-    #[default]
-    Initial,
-    /// Stream only from `--from` or the checkpoint store (no snapshot).
-    Never,
-    /// Snapshot only, then exit (no stream).
-    Only,
-}
-
-/// Combined snapshot+stream sync for MySQL/MariaDB binlog.
-#[derive(Args)]
-struct MySQLBinlogSyncArgs {
-    /// MySQL connection string
-    #[arg(long, env = "MYSQL_URI")]
-    connection_string: String,
-
-    /// MySQL database name (extracted from connection string if not provided)
-    #[arg(long, env = "MYSQL_DATABASE")]
-    database: Option<String>,
-
-    /// Tables to sync (comma-separated, empty means all tables)
-    #[arg(long, value_delimiter = ',')]
-    tables: Vec<String>,
-
-    /// Unique replica server id for this binlog consumer (random if omitted)
-    #[arg(long)]
-    server_id: Option<u32>,
-
-    /// Override auto-detected engine flavor (mysql or mariadb)
-    #[arg(long, value_enum)]
-    flavor: Option<MySQLBinlogFlavorArg>,
-
-    /// MariaDB @slave_gtid_strict_mode for GTID resume sessions
-    #[arg(long, value_enum, default_value_t = MariaDbGtidStrictModeArg::default())]
-    mariadb_gtid_strict_mode: MariaDbGtidStrictModeArg,
-
-    #[command(flatten)]
-    tls: MySQLTlsArgs,
-
-    /// Target SurrealDB namespace
-    #[arg(long)]
-    to_namespace: String,
-
-    /// Target SurrealDB database
-    #[arg(long)]
-    to_database: String,
-
-    /// Snapshot phase: initial (snapshot then stream), never (stream only), only (snapshot then exit)
-    #[arg(long, value_enum, default_value_t = BinlogSnapshotModeArg::default())]
-    snapshot_mode: BinlogSnapshotModeArg,
-
-    /// Stream resume/start position (`head` = current master, or a checkpoint string).
-    /// Used with `never` and when resuming `initial`. If omitted, reads from the checkpoint store
-    /// (falling back to head when empty).
-    #[arg(long)]
-    from: Option<String>,
-
-    /// Stop the stream phase after this wall-clock duration (e.g. 3600s, 30m, 300).
-    #[arg(long, value_name = "DURATION", conflicts_with = "stop_at")]
-    stop_after: Option<String>,
-
-    /// Stop the stream phase at this binlog checkpoint
-    #[arg(long, value_name = "CHECKPOINT", conflicts_with = "stop_after")]
-    stop_at: Option<String>,
-
-    /// Full-sync strategy for the snapshot phase (interleaved-snapshot is the default)
-    #[arg(long, value_enum, default_value_t = SyncStrategy::default())]
-    strategy: SyncStrategy,
-
-    /// Rows read per keyset chunk during snapshot phases
-    #[arg(long, default_value_t = DEFAULT_CHUNK_SIZE)]
-    chunk_size: usize,
-
-    /// Directory to persist snapshot and stream checkpoints
-    #[arg(long, value_name = "DIR", conflicts_with = "checkpoints_surreal_table")]
-    checkpoint_dir: Option<String>,
-
-    /// SurrealDB table for persisting snapshot and stream checkpoints
-    #[arg(long, value_name = "TABLE", conflicts_with = "checkpoint_dir")]
-    checkpoints_surreal_table: Option<String>,
-
-    /// Persist stream checkpoints at this interval in seconds
-    #[arg(long, default_value = "10")]
-    checkpoint_interval: u64,
-
-    /// Blocking read timeout for binlog packet polls during the replication tail (milliseconds)
-    #[arg(long, default_value = "500")]
-    binlog_poll_timeout_ms: u64,
-
-    /// Sleep when a replication tail poll returns no events (milliseconds)
-    #[arg(long, default_value = "100")]
-    idle_sleep_ms: u64,
-
-    /// Max events requested per binlog read in the replication tail loop
-    #[arg(long, default_value_t = 32)]
-    binlog_event_batch_size: usize,
-
-    /// TOML file describing the transform pipeline (`[[transforms]]`).
-    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
-    #[arg(long, value_name = "PATH")]
-    transforms_config: Option<PathBuf>,
-
-    #[command(flatten)]
-    surreal: SurrealOpts,
-}
-
-/// Trigger an ad-hoc snapshot of additional tables for MySQL binlog by inserting
-/// an execute-snapshot signal row.
-#[derive(Args)]
-struct MySQLBinlogSnapshotArgs {
-    /// MySQL connection string
-    #[arg(long, env = "MYSQL_URI")]
-    connection_string: String,
-
-    /// MySQL database name (extracted from connection string if not provided)
-    #[arg(long, env = "MYSQL_DATABASE")]
-    database: Option<String>,
-
-    /// Unique replica server id for this binlog consumer (random if omitted)
-    #[arg(long)]
-    server_id: Option<u32>,
-
-    /// Override auto-detected engine flavor (mysql or mariadb)
-    #[arg(long, value_enum)]
-    flavor: Option<MySQLBinlogFlavorArg>,
-
-    /// Tables to snapshot (comma-separated)
-    #[arg(long, value_delimiter = ',', required = true)]
-    tables: Vec<String>,
-
-    #[command(flatten)]
-    tls: MySQLTlsArgs,
-}
-
-// =============================================================================
 // PostgreSQL pgoutput WAL Commands and Args
 // =============================================================================
 
@@ -1782,16 +1507,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
-    // Install the crypto provider before any TLS operations occur
-    if let Err(err) = CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
-    {
-        eprintln!("Error setting up crypto provider for TLS: {err:?}");
-    }
-
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
+    surreal_sync::init();
 
     let cli = Cli::parse();
 
@@ -1837,12 +1553,9 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
             MySQLCommands::Sync(args) => from::mysql::run_sync(args).await?,
             MySQLCommands::Snapshot(args) => from::mysql::run_snapshot_signal(args).await?,
         },
-        FromSource::MySQLBinlog { command } => match command {
-            MySQLBinlogCommands::Sync(args) => from::mysql_binlog::run_sync(*args).await?,
-            MySQLBinlogCommands::Snapshot(args) => {
-                from::mysql_binlog::run_snapshot_signal(args).await?
-            }
-        },
+        FromSource::MySQLBinlog { command } => {
+            surreal_sync::mysql_binlog::run_command(command).await?
+        }
         FromSource::PostgreSQLPgoutput { command } => match command {
             PostgreSQLPgoutputCommands::Sync(args) => {
                 from::postgresql_pgoutput::run_sync(*args).await?
@@ -1887,56 +1600,4 @@ async fn handle_loadtest_command(command: LoadtestCommand) -> anyhow::Result<()>
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn mysql_tls_args_default_to_disabled() {
-        let args = MySQLTlsArgs::default();
-        assert!(matches!(
-            args.ssl_mode(),
-            surreal_sync_mysql_binlog_source::SslMode::Disabled
-        ));
-    }
-
-    #[test]
-    fn mysql_tls_args_preserve_ca_and_client_cert_paths() {
-        let args = MySQLTlsArgs {
-            tls_mode: MySQLTlsModeArg::Required,
-            tls_ca: Some("ca.pem".to_string()),
-            tls_cert: Some("client.pem".to_string()),
-            tls_key: Some("client-key.pem".to_string()),
-        };
-        let surreal_sync_mysql_binlog_source::SslMode::Required(options) = args.ssl_mode() else {
-            panic!("expected required TLS mode");
-        };
-        assert_eq!(options.ca.as_deref(), Some("ca.pem"));
-        assert_eq!(options.cert.as_deref(), Some("client.pem"));
-        assert_eq!(options.key.as_deref(), Some("client-key.pem"));
-    }
-
-    #[test]
-    fn mariadb_gtid_strict_mode_arg_maps_to_source_option() {
-        assert_eq!(
-            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::from(
-                MariaDbGtidStrictModeArg::ServerDefault
-            ),
-            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault
-        );
-        assert_eq!(
-            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::from(
-                MariaDbGtidStrictModeArg::On
-            ),
-            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::On
-        );
-        assert_eq!(
-            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::from(
-                MariaDbGtidStrictModeArg::Off
-            ),
-            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::Off
-        );
-    }
 }

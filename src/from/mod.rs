@@ -11,13 +11,14 @@
 //! - `postgresql_trigger`: PostgreSQL trigger-based CDC sync
 //! - `postgresql_wal2json`: PostgreSQL WAL-based logical replication sync
 //! - `mysql`: MySQL trigger-based CDC sync
-//! - `mysql_binlog`: MySQL/MariaDB binlog CDC sync
 //! - `postgresql_pgoutput`: PostgreSQL pgoutput WAL CDC sync
 //! - `kafka`: Kafka streaming sync
 //! - `csv`: CSV file import
 //! - `jsonl`: JSONL file import
 //! - `snowflake`: Snowflake full snapshot ingestion (SQL REST API)
-//! - `transforms`: Shared `--transforms-config` loader for all `from *` sync handlers
+//! - `transforms`: Re-export of [`surreal_sync::transforms`] for binary handlers
+//!
+//! MySQL/MariaDB binlog CDC lives in the library as [`surreal_sync::mysql_binlog`].
 
 pub mod common;
 pub mod csv;
@@ -25,7 +26,6 @@ pub mod jsonl;
 pub mod kafka;
 pub mod mongodb;
 pub mod mysql;
-pub mod mysql_binlog;
 pub mod neo4j;
 pub mod postgresql_pgoutput;
 pub mod postgresql_trigger;
