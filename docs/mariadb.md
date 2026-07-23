@@ -24,7 +24,7 @@ Every table you select for sync must have a usable primary key (single- or multi
 
 ## TLS
 
-Use the same `--tls-mode` / `--tls-ca` / `--tls-cert` / `--tls-key` flags as MySQL trigger sync (MariaDB speaks the MySQL protocol). See [Surreal-Sync for MySQL — TLS](mysql.md#tls).
+MariaDB uses the same `--tls-mode`, `--tls-ca`, `--tls-cert`, and `--tls-key` flags as MySQL trigger sync. See [Surreal-Sync for MySQL — TLS](mysql.md#tls) for mode semantics, preferred fallback, and when to pass a CA. Binlog CDC uses the same flags — see [MySQL Binlog — TLS](mysql-binlog.md#tls-for-mysql-connections).
 
 ## Combined sync
 

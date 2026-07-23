@@ -24,17 +24,37 @@ Every table you select for sync must have a usable primary key (single- or multi
 
 ## TLS
 
-Encrypt the MySQL connection with the same flags as binlog sync:
+Use `--tls-mode` when MariaDB is only reachable over an untrusted network (or when your server requires encrypted clients). The same flags work for `sync`, `full`, `incremental`, and ad-hoc `snapshot`:
 
-- `--tls-mode disabled` (default) — plain connection.
-- `--tls-mode preferred` — try TLS first; fall back to plain if encryption cannot be established.
-- `--tls-mode required` — require TLS; fail if encryption cannot be established.
-- `--tls-ca <PATH>` — optional CA file to verify the server certificate. Use on untrusted networks so you know you are connecting to the intended server.
-- `--tls-cert` / `--tls-key` — optional client certificate pair.
+- `--tls-mode disabled` (default) — plain connection. Fine on a trusted network or VPN.
+- `--tls-mode preferred` — try TLS first; if the server cannot encrypt the connection (or the TLS handshake fails), surreal-sync falls back to a plain connection.
+- `--tls-mode required` — always use TLS; fail if encryption cannot be established.
+- `--tls-ca <PATH>` — trust this CA when checking the server certificate. Use this when you need to confirm you are talking to the intended server.
+- `--tls-cert <PATH>` / `--tls-key <PATH>` — present a client certificate when the server asks for one (both required together).
 
-Without `--tls-ca`, `required` and `preferred` still encrypt the session but do not verify the server identity — fine for local Docker or self-signed lab setups, risky on public networks. Use `--tls-ca` with the hostname you expect in `--connection-string` (your cloud endpoint, not a tunnel alias) when connecting to managed MySQL.
+**Encryption vs verification.** With `preferred` or `required`, surreal-sync encrypts the session even when you omit `--tls-ca`. Without `--tls-ca`, it does **not** verify that the server certificate belongs to the host you expect — the connection is encrypted, but an attacker on the path could present another certificate. On untrusted networks, use `--tls-mode required` **and** pass the CA that signed your server via `--tls-ca`.
 
-The same flags apply to snapshot signalling and streaming.
+**Connection string hostname.** Put the hostname you expect the server to identify as in `--connection-string` (for example your MariaDB cloud endpoint, not only `127.0.0.1` when tunnelling). When you pass `--tls-ca`, that name is checked against the certificate.
+
+Example with TLS on combined sync and snapshot signalling:
+
+```bash
+surreal-sync from mysql sync \
+  --connection-string "$CONNECTION_STRING" \
+  --database "myapp" \
+  --tls-mode required \
+  --tls-ca /path/to/ca.pem \
+  ...
+
+surreal-sync from mysql snapshot \
+  --connection-string "$CONNECTION_STRING" \
+  --database "myapp" \
+  --tables "new_table" \
+  --tls-mode required \
+  --tls-ca /path/to/ca.pem
+```
+
+For binlog CDC (recommended for MariaDB), see [Surreal-Sync for MySQL Binlog — TLS](mysql-binlog.md#tls-for-mysql-connections).
 
 ## Combined sync
 
