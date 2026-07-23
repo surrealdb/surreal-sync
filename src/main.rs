@@ -205,7 +205,7 @@ enum FromSource {
 
     /// Ingest from Snowflake (full one-shot snapshot via the SQL REST API v2)
     #[command(name = "snowflake")]
-    Snowflake(SnowflakeArgs),
+    Snowflake(surreal_sync::snowflake::Args),
 }
 
 // =============================================================================
@@ -1356,71 +1356,6 @@ struct JsonlArgs {
 }
 
 // =============================================================================
-// Snowflake Args (single command - ingestion-only)
-// =============================================================================
-
-#[derive(Args)]
-struct SnowflakeArgs {
-    /// Snowflake account identifier (as used in the host
-    /// `<account>.snowflakecomputing.com`, e.g. "myorg-myaccount")
-    #[arg(long, env = "SNOWFLAKE_ACCOUNT")]
-    account: String,
-
-    /// Snowflake user whose key-pair is registered for JWT auth
-    #[arg(long, env = "SNOWFLAKE_USER")]
-    user: String,
-
-    /// Path to the unencrypted PKCS#8 private key PEM file
-    #[arg(long, value_name = "PATH", env = "SNOWFLAKE_PRIVATE_KEY_PATH")]
-    private_key_path: PathBuf,
-
-    /// Passphrase for an encrypted private key (currently unsupported)
-    #[arg(long, env = "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")]
-    private_key_passphrase: Option<String>,
-
-    /// Virtual warehouse used to run the queries
-    #[arg(long, env = "SNOWFLAKE_WAREHOUSE")]
-    warehouse: String,
-
-    /// Database to read from
-    #[arg(long, env = "SNOWFLAKE_DATABASE")]
-    database: String,
-
-    /// Schema within the database
-    #[arg(long, default_value = "PUBLIC", env = "SNOWFLAKE_SCHEMA")]
-    schema: String,
-
-    /// Role to assume for the session (optional)
-    #[arg(long, env = "SNOWFLAKE_ROLE")]
-    role: Option<String>,
-
-    /// Tables to ingest (comma-separated, empty means all tables in the schema)
-    #[arg(long, value_delimiter = ',')]
-    tables: Vec<String>,
-
-    /// Columns forming the SurrealDB record ID (comma-separated). When omitted, a
-    /// sequential per-table index is generated.
-    #[arg(long, value_delimiter = ',')]
-    id_columns: Vec<String>,
-
-    /// Target SurrealDB namespace
-    #[arg(long)]
-    to_namespace: String,
-
-    /// Target SurrealDB database
-    #[arg(long)]
-    to_database: String,
-
-    /// TOML file describing the transform pipeline (`[[transforms]]`).
-    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
-    #[arg(long, value_name = "PATH")]
-    transforms_config: Option<PathBuf>,
-
-    #[command(flatten)]
-    surreal: SurrealOpts,
-}
-
-// =============================================================================
 // Loadtest Commands
 // =============================================================================
 
@@ -1581,7 +1516,7 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
         FromSource::Kafka(args) => from::kafka::run(args).await?,
         FromSource::Csv(args) => from::csv::run(args).await?,
         FromSource::Jsonl(args) => from::jsonl::run(args).await?,
-        FromSource::Snowflake(args) => from::snowflake::run(args).await?,
+        FromSource::Snowflake(args) => surreal_sync::snowflake::run_args(args).await?,
     }
     Ok(())
 }

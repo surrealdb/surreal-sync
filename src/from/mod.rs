@@ -15,10 +15,11 @@
 //! - `kafka`: Kafka streaming sync
 //! - `csv`: CSV file import
 //! - `jsonl`: JSONL file import
-//! - `snowflake`: Snowflake full snapshot ingestion (SQL REST API)
 //! - `transforms`: Re-export of [`surreal_sync::transforms`] for binary handlers
 //!
-//! MySQL/MariaDB binlog CDC lives in the library as [`surreal_sync::mysql_binlog`].
+//! Library entrypoints (not under `from/`):
+//! - [`surreal_sync::mysql_binlog`] — MySQL/MariaDB binlog CDC
+//! - [`surreal_sync::snowflake`] — Snowflake full snapshot ingestion
 
 pub mod common;
 pub mod csv;
@@ -30,7 +31,6 @@ pub mod neo4j;
 pub mod postgresql_pgoutput;
 pub mod postgresql_trigger;
 pub mod postgresql_wal2json;
-pub mod snowflake;
 pub mod transforms;
 
 // Re-export common utilities (crate-internal only)

@@ -1,22 +1,26 @@
-//! Custom in-process MySQL binlog transforms (embedder example).
+//! Custom in-process Snowflake transforms (embedder example).
 //!
-//! Same flags as `surreal-sync from mysql-binlog sync|snapshot`, but argv is
-//! source-shaped (no `from mysql-binlog` prefix):
+//! Same flags as `surreal-sync from snowflake`, but without the `from snowflake`
+//! prefix:
 //!
 //! ```bash
-//! cargo run --example mysql_binlog_custom_transform -- sync \
-//!   --connection-string 'mysql://user:pass@127.0.0.1:3306/app' \
-//!   --database app \
-//!   --to-namespace prod --to-database app \
-//!   --checkpoint-dir ./checkpoints
+//! cargo run --example snowflake_custom_transform -- \
+//!   --account myorg-myaccount \
+//!   --user sync_user \
+//!   --private-key-path ./rsa_key.p8 \
+//!   --warehouse COMPUTE_WH \
+//!   --database APP \
+//!   --schema PUBLIC \
+//!   --to-namespace prod --to-database app
 //! ```
 
 use anyhow::Result;
 use std::collections::HashMap;
-use surreal_sync::mysql_binlog;
+use surreal_sync::snowflake;
 use surreal_sync::{FlattenId, InPlaceTransform, UniversalChange, UniversalRow, UniversalValue};
 
-/// Drop columns that must not leave the source VPC (CDC often mirrors more than the target needs).
+/// Drop columns that must not leave the source VPC (imports often mirror more
+/// than the target needs).
 struct RedactPii;
 
 impl RedactPii {
@@ -36,7 +40,7 @@ impl InPlaceTransform for RedactPii {
     }
 
     fn transform_change(&self, change: &mut UniversalChange) -> Result<()> {
-        // Create/Update carry `data`; Delete does not — leave id/table alone.
+        // Snowflake imports rows only; keep the change path for trait completeness.
         if let Some(data) = change.data.as_mut() {
             Self::scrub(data);
         }
@@ -110,13 +114,13 @@ impl InPlaceTransform for FkToRecordLink {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Parses argv (`sync|snapshot` + flags), loads optional --transforms-config,
-    // then appends these in-place transforms (after any TOML transforms), and
-    // runs the same orchestration as stock `surreal-sync from mysql-binlog`.
+    // Parses argv (same flags as `surreal-sync from snowflake`), loads optional
+    // --transforms-config, then appends these in-place transforms (after any
+    // TOML transforms), and runs the same import as the stock binary.
     //
     // `Box<dyn InPlaceTransform>` so different concrete types can share one list
     // (Rust arrays are homogeneous).
-    mysql_binlog::run([
+    snowflake::run([
         Box::new(FlattenId::default()) as Box<dyn InPlaceTransform>,
         Box::new(RedactPii),
         Box::new(RenameFields),

@@ -335,11 +335,6 @@ pub async fn run_command(command: Commands) -> anyhow::Result<()> {
     }
 }
 
-/// Box an [`InPlaceTransform`] for heterogeneous stage lists passed to [`run`].
-pub fn stage(t: impl InPlaceTransform + 'static) -> Box<dyn InPlaceTransform> {
-    Box::new(t)
-}
-
 /// Top-level clap root for source-shaped argv (`sync|snapshot …`).
 #[derive(Parser)]
 #[command(

@@ -60,8 +60,10 @@ jobs:
       with:
         cache: true
 
-    - name: Compile embedder example
-      run: cargo build --profile ci --example mysql_binlog_custom_transform
+    - name: Compile embedder examples
+      run: |
+        cargo build --profile ci --example mysql_binlog_custom_transform
+        cargo build --profile ci --example snowflake_custom_transform
 
   build:
     runs-on: ubuntu-latest
