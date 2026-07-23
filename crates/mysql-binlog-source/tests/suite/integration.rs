@@ -657,6 +657,69 @@ async fn repl_user_can_stream_changes() -> Result<()> {
     Ok(())
 }
 
+/// MySQL 8 `caching_sha2_password` full auth over plaintext (RSA) must succeed
+/// without TLS. A freshly created user forces a cache miss (AuthMoreData 0x04).
+#[tokio::test]
+async fn caching_sha2_rsa_full_auth_without_tls() -> Result<()> {
+    crate::shared::init_logging();
+    let container = crate::shared::shared_mysql_binlog().await;
+    let db_name = "integ_sha2_rsa";
+    let admin_conn = crate::shared::create_test_db(container, db_name).await?;
+
+    let admin_pool = mysql_async::Pool::from_url(&admin_conn)?;
+    let mut admin = admin_pool.get_conn().await?;
+
+    // Unique user so the server has no cached password hash yet.
+    let user = format!("sha2_rsa_{}", std::process::id());
+    let pass = "sha2_rsa_pass";
+    admin
+        .query_drop(format!("DROP USER IF EXISTS '{user}'@'%'"))
+        .await?;
+    admin
+        .query_drop(format!(
+            "CREATE USER '{user}'@'%' IDENTIFIED WITH caching_sha2_password BY '{pass}'"
+        ))
+        .await?;
+    admin
+        .query_drop(format!(
+            "GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO '{user}'@'%'"
+        ))
+        .await?;
+    admin
+        .query_drop(format!("GRANT SELECT ON `{db_name}`.* TO '{user}'@'%'"))
+        .await?;
+    admin.query_drop("FLUSH PRIVILEGES").await?;
+
+    let sha2_conn = admin_conn.replacen("root:testpass@", &format!("{user}:{pass}@"), 1);
+    let (host, port, username, password, _) = crate::shared::parse_mysql_uri(&sha2_conn)?;
+
+    // Plaintext connection: must use RSA full auth, not TLS cleartext.
+    let client = BinlogClient::connect(ReplicaOptions {
+        host,
+        port,
+        username,
+        password,
+        server_id: 9_003_020,
+        ssl: SslMode::Disabled,
+        blocking_poll: Duration::from_millis(200),
+        flavor: None,
+        mariadb_flags: binlog_protocol::MariaDbDumpFlags {
+            send_annotate_rows: true,
+        },
+        mariadb_gtid_strict_mode: binlog_protocol::MariaDbGtidStrictMode::ServerDefault,
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("caching_sha2 RSA full auth failed: {e}"))?;
+
+    drop(client);
+    admin
+        .query_drop(format!("DROP USER IF EXISTS '{user}'@'%'"))
+        .await?;
+    drop(admin);
+    admin_pool.disconnect().await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn mysql_runtime_checkpoint_is_gtid() -> Result<()> {
     crate::shared::init_logging();
