@@ -23,7 +23,10 @@ use surreal_sync_postgresql_trigger_source::{PostgreSQLCheckpoint, ReplicationTa
 use sync_transform::{ApplyOpts, Pipeline};
 
 use super::transforms::load_transforms_from_args;
-use super::{extract_postgresql_database, get_sdk_version, load_schema_if_provided, SdkVersion};
+use super::{
+    extract_postgresql_database, get_sdk_version, load_schema_if_provided, make_surreal2_sink,
+    make_surreal3_sink, SdkVersion,
+};
 use crate::config::load_config;
 use crate::{
     PostgreSQLTriggerFullArgs, PostgreSQLTriggerIncrementalArgs, PostgreSQLTriggerSnapshotArgs,
@@ -92,6 +95,7 @@ fn resolve_full_args(args: PostgreSQLTriggerFullArgs) -> anyhow::Result<Resolved
                 batch_size: sink.batch_size,
                 dry_run: sink.dry_run,
                 surreal_sdk_version: args.surreal.surreal_sdk_version.or(sink.sdk_version),
+                zero_temporal: sink.zero_temporal,
             },
         })
     } else {
@@ -152,6 +156,7 @@ fn resolve_incremental_args(
                 batch_size: sink.batch_size,
                 dry_run: sink.dry_run,
                 surreal_sdk_version: args.surreal.surreal_sdk_version.or(sink.sdk_version),
+                zero_temporal: sink.zero_temporal,
             },
         })
     } else {
@@ -218,7 +223,7 @@ async fn run_full_v2(args: ResolvedTriggerFullArgs) -> anyhow::Result<()> {
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     let source_database = extract_postgresql_database(&args.connection_string);
     let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
@@ -301,7 +306,7 @@ async fn run_full_v3(args: ResolvedTriggerFullArgs) -> anyhow::Result<()> {
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
+    let sink = make_surreal3_sink(surreal.clone(), args.surreal.zero_temporal);
 
     let source_database = extract_postgresql_database(&args.connection_string);
     let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
@@ -439,7 +444,7 @@ async fn run_full_interleaved_snapshot_v2(args: ResolvedTriggerFullArgs) -> anyh
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
     let source_opts = trigger_source_opts(&args.connection_string, args.tables.clone());
 
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
@@ -510,7 +515,7 @@ async fn run_full_interleaved_snapshot_v3(args: ResolvedTriggerFullArgs) -> anyh
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
+    let sink = make_surreal3_sink(surreal.clone(), args.surreal.zero_temporal);
     let source_opts = trigger_source_opts(&args.connection_string, args.tables.clone());
 
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
@@ -592,7 +597,7 @@ async fn run_sync_v2(
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
     pg_trigger_orchestrate(&sink, args, pipeline, apply_opts).await
 }
 
@@ -613,7 +618,7 @@ async fn run_sync_v3(
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+    let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
     pg_trigger_orchestrate(&sink, args, pipeline, apply_opts).await
 }
 
@@ -768,7 +773,7 @@ async fn run_incremental_v2(args: ResolvedTriggerIncrementalArgs) -> anyhow::Res
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     surreal_sync_postgresql_trigger_source::run_incremental_sync_with_transforms(
@@ -857,7 +862,7 @@ async fn run_incremental_v3(args: ResolvedTriggerIncrementalArgs) -> anyhow::Res
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+    let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
 
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     surreal_sync_postgresql_trigger_source::run_incremental_sync_with_transforms(

@@ -10,7 +10,8 @@ use checkpoint::Checkpoint;
 
 use super::transforms::load_transforms_from_args;
 use super::{
-    extract_json_fields_from_schema, get_sdk_version, load_schema_if_provided, SdkVersion,
+    extract_json_fields_from_schema, get_sdk_version, load_schema_if_provided, make_surreal2_sink,
+    make_surreal3_sink, SdkVersion,
 };
 use crate::{Neo4jFullArgs, Neo4jIncrementalArgs};
 
@@ -81,7 +82,7 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     // Parse assumed_start_timestamp if provided
     let assumed_start_timestamp = if let Some(ts_str) = &args.assumed_start_timestamp {
@@ -208,7 +209,7 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
+    let sink = make_surreal3_sink(surreal.clone(), args.surreal.zero_temporal);
 
     // Parse assumed_start_timestamp if provided
     let assumed_start_timestamp = if let Some(ts_str) = &args.assumed_start_timestamp {
@@ -424,7 +425,7 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
         batch_size: args.surreal.batch_size,
@@ -563,7 +564,7 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+    let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
         batch_size: args.surreal.batch_size,

@@ -19,7 +19,9 @@ use sync_transform::{ApplyOpts, Pipeline};
 use tokio_util::sync::CancellationToken;
 
 use super::transforms::load_transforms_from_args;
-use super::{get_sdk_version, parse_duration_to_secs, SdkVersion};
+use super::{
+    get_sdk_version, make_surreal2_sink, make_surreal3_sink, parse_duration_to_secs, SdkVersion,
+};
 use crate::{
     BinlogSnapshotModeArg, MariaDbGtidStrictModeArg, MySQLBinlogFlavorArg, MySQLBinlogSnapshotArgs,
     MySQLBinlogSyncArgs, SyncStrategy,
@@ -297,7 +299,7 @@ async fn run_sync_v2(
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
     let checkpoint_dir = args.checkpoint_dir.clone();
     let checkpoints_surreal_table = args.checkpoints_surreal_table.clone();
     match (checkpoint_dir, checkpoints_surreal_table) {
@@ -343,7 +345,7 @@ async fn run_sync_v3(
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
+    let sink = make_surreal3_sink(surreal.clone(), args.surreal.zero_temporal);
     let checkpoint_dir = args.checkpoint_dir.clone();
     let checkpoints_surreal_table = args.checkpoints_surreal_table.clone();
     match (checkpoint_dir, checkpoints_surreal_table) {

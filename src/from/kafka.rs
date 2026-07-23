@@ -8,7 +8,9 @@ use anyhow::Context;
 use sync_core::Schema;
 
 use super::transforms::load_transforms_from_args;
-use super::{get_sdk_version, parse_duration_to_secs, SdkVersion};
+use super::{
+    get_sdk_version, make_surreal2_sink, make_surreal3_sink, parse_duration_to_secs, SdkVersion,
+};
 use crate::KafkaArgs;
 
 /// Run Kafka streaming sync, dispatching to appropriate SDK version.
@@ -51,7 +53,7 @@ async fn run_v2(args: KafkaArgs) -> anyhow::Result<()> {
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = std::sync::Arc::new(surreal2_sink::Surreal2Sink::new(surreal));
+    let sink = std::sync::Arc::new(make_surreal2_sink(surreal, args.surreal.zero_temporal));
 
     let table_schema = if let Some(schema_path) = args.schema_file {
         let schema = Schema::from_file(&schema_path)
@@ -107,7 +109,7 @@ async fn run_v3(args: KafkaArgs) -> anyhow::Result<()> {
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = std::sync::Arc::new(surreal3_sink::Surreal3Sink::new(surreal));
+    let sink = std::sync::Arc::new(make_surreal3_sink(surreal, args.surreal.zero_temporal));
 
     let table_schema = if let Some(schema_path) = args.schema_file {
         let schema = Schema::from_file(&schema_path)

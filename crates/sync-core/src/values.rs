@@ -199,6 +199,32 @@ pub enum UniversalValue {
 
     /// Null value (can be any nullable type)
     Null,
+
+    /// Source emitted a temporal that is not a valid calendar/chrono value
+    /// (e.g. MySQL/MariaDB zero date `0000-00-00`).
+    ///
+    /// Distinct from [`UniversalValue::Null`]: SQL NULL stays `Null`; MySQL-style
+    /// zero dates/timestamps use this sentinel so transforms retain the intended
+    /// column type before the SurrealDB sink maps it.
+    ZeroTemporal {
+        /// Intended column type (`Date`, `Time`, `LocalDateTime`, `ZonedDateTime`, …)
+        intended_type: UniversalType,
+        /// Optional source literal for transforms/debugging, e.g. `"0000-00-00 00:00:00"`
+        source: Option<String>,
+    },
+}
+
+/// How the SurrealDB sink represents [`UniversalValue::ZeroTemporal`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ZeroTemporalPolicy {
+    /// SurrealDB `NONE` (undefined). Default — safe for typed datetime fields.
+    #[default]
+    None,
+    /// SurrealDB `NULL`.
+    Null,
+    /// Canonical MySQL-style zero literal string (e.g. `"0000-00-00"`).
+    String,
 }
 
 /// Geometry data representation.
@@ -286,11 +312,65 @@ impl UniversalValue {
         Self::Jsonb(Box::new(value))
     }
 
+    /// Create a zero-temporal sentinel with the intended column type.
+    pub fn zero_temporal(intended_type: UniversalType, source: Option<String>) -> Self {
+        Self::ZeroTemporal {
+            intended_type,
+            source,
+        }
+    }
+
+    /// Canonical MySQL-style zero literal for an intended temporal type.
+    pub fn canonical_zero_literal(intended_type: &UniversalType) -> &'static str {
+        match intended_type {
+            UniversalType::Date => "0000-00-00",
+            UniversalType::Time | UniversalType::TimeTz => "00:00:00",
+            UniversalType::LocalDateTime
+            | UniversalType::LocalDateTimeNano
+            | UniversalType::ZonedDateTime => "0000-00-00 00:00:00",
+            _ => "0000-00-00 00:00:00",
+        }
+    }
+
+    /// Whether `s` is a MySQL/MariaDB zero date or zero datetime literal.
+    ///
+    /// Matches `0000-00-00` and `0000-00-00 00:00:00` with optional fractional seconds.
+    pub fn is_mysql_zero_temporal_literal(s: &str) -> bool {
+        let s = s.trim();
+        if s == "0000-00-00" {
+            return true;
+        }
+        s.starts_with("0000-00-00 00:00:00")
+    }
+
+    /// Whether year/month/day are the MySQL zero-date triple `(0, 0, 0)`.
+    pub fn is_mysql_zero_date_ymd(year: u16, month: u8, day: u8) -> bool {
+        year == 0 && month == 0 && day == 0
+    }
+
+    /// Whether `intended_type` may be used with [`UniversalValue::ZeroTemporal`].
+    pub fn is_zero_temporal_type(intended_type: &UniversalType) -> bool {
+        matches!(
+            intended_type,
+            UniversalType::Date
+                | UniversalType::Time
+                | UniversalType::LocalDateTime
+                | UniversalType::LocalDateTimeNano
+                | UniversalType::ZonedDateTime
+                | UniversalType::TimeTz
+        )
+    }
+
     // === Predicates ===
 
     /// Check if this value is null.
     pub fn is_null(&self) -> bool {
         matches!(self, Self::Null)
+    }
+
+    /// Check if this value is a zero-temporal sentinel.
+    pub fn is_zero_temporal(&self) -> bool {
+        matches!(self, Self::ZeroTemporal { .. })
     }
 
     // === Accessors ===
@@ -423,6 +503,7 @@ impl UniversalValue {
             Self::Thing { .. } => "Thing",
             Self::Object(_) => "Object",
             Self::Null => "Null",
+            Self::ZeroTemporal { .. } => "ZeroTemporal",
         }
     }
 
@@ -501,6 +582,7 @@ impl UniversalValue {
             // Null doesn't have a single type - this is a special case
             // We use Text as a placeholder, but callers should handle Null explicitly
             Self::Null => UniversalType::Text,
+            Self::ZeroTemporal { intended_type, .. } => intended_type.clone(),
         }
     }
 }
@@ -536,6 +618,7 @@ impl TypedValue {
     /// # Strict 1:1 Valid Combinations
     ///
     /// - `Null` is valid for any type
+    /// - `ZeroTemporal` is valid when `sync_type` equals `intended_type` and is temporal
     /// - `Bool` type requires `Bool` value
     /// - `TinyInt` type requires `TinyInt` value
     /// - `SmallInt` type requires `SmallInt` value
@@ -568,6 +651,18 @@ impl TypedValue {
         // Null is always valid for any type
         if matches!(value, UniversalValue::Null) {
             return Ok(Self::new(sync_type, value));
+        }
+
+        // ZeroTemporal is valid when sync_type matches intended_type and is temporal
+        if let UniversalValue::ZeroTemporal { intended_type, .. } = &value {
+            if sync_type == *intended_type && UniversalValue::is_zero_temporal_type(&sync_type) {
+                return Ok(Self::new(sync_type, value));
+            }
+            return Err(TypedValueError {
+                expected_value: Self::expected_value_description(&sync_type),
+                actual_value: value.variant_name().to_string(),
+                sync_type,
+            });
         }
 
         // Strict 1:1 validation - each type requires its exact corresponding value variant
@@ -752,6 +847,25 @@ impl TypedValue {
     /// Create a null typed value with a specified type.
     pub fn null(sync_type: UniversalType) -> Self {
         Self::new(sync_type, UniversalValue::Null)
+    }
+
+    /// Create a zero-temporal typed value with the intended column type.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `intended_type` is not a temporal type allowed for zero temporals.
+    pub fn zero_temporal(intended_type: UniversalType, source: Option<String>) -> Self {
+        assert!(
+            UniversalValue::is_zero_temporal_type(&intended_type),
+            "zero_temporal requires a temporal UniversalType, got {intended_type:?}"
+        );
+        Self::new(
+            intended_type.clone(),
+            UniversalValue::ZeroTemporal {
+                intended_type,
+                source,
+            },
+        )
     }
 
     /// Create a decimal typed value.
@@ -1231,6 +1345,33 @@ mod tests {
         assert!(TypedValue::try_with_type(UniversalType::Bool, UniversalValue::Null).is_ok());
         assert!(TypedValue::try_with_type(UniversalType::Int32, UniversalValue::Null).is_ok());
         assert!(TypedValue::try_with_type(UniversalType::Text, UniversalValue::Null).is_ok());
+
+        // ZeroTemporal is valid when sync_type matches intended_type
+        assert!(TypedValue::try_with_type(
+            UniversalType::Date,
+            UniversalValue::zero_temporal(UniversalType::Date, Some("0000-00-00".into()))
+        )
+        .is_ok());
+        assert!(TypedValue::try_with_type(
+            UniversalType::LocalDateTime,
+            UniversalValue::zero_temporal(
+                UniversalType::LocalDateTime,
+                Some("0000-00-00 00:00:00".into())
+            )
+        )
+        .is_ok());
+        // Mismatched intended_type is invalid
+        assert!(TypedValue::try_with_type(
+            UniversalType::Date,
+            UniversalValue::zero_temporal(UniversalType::LocalDateTime, None)
+        )
+        .is_err());
+        // Non-temporal intended_type is invalid
+        assert!(TypedValue::try_with_type(
+            UniversalType::Text,
+            UniversalValue::zero_temporal(UniversalType::Text, None)
+        )
+        .is_err());
 
         // JSON type with Json value (strict 1:1)
         assert!(TypedValue::try_with_type(

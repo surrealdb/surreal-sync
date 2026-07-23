@@ -15,6 +15,7 @@ pub use rows::{
     universal_value_to_surreal_id, write_universal_relations, write_universal_rows,
 };
 pub use sink_impl::Surreal2Sink;
+pub use sync_core::ZeroTemporalPolicy;
 pub use write::{
     apply_change, apply_universal_change, write_record, write_records, write_relation,
     write_relations,
@@ -23,6 +24,9 @@ pub use write::{
 // Re-export SurrealDB types for use by source crates
 pub use surrealdb::engine::any::Any as SurrealEngine;
 pub use surrealdb::Surreal;
+
+/// Connected SurrealDB v2 client used by [`Surreal2Sink`].
+pub type SurrealClient = Surreal<SurrealEngine>;
 
 // Re-export the SurrealSink trait
 pub use surreal_sink::SurrealSink;

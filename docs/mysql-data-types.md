@@ -93,9 +93,12 @@ Note: Complex spatial operations specific to MySQL are not preserved.
 
 ### Data Integrity Notes
 
-- **NULL handling**: MySQL NULL values become SurrealDB null
-- **Zero dates**: MySQL zero dates ('0000-00-00') may cause conversion issues
-- **Invalid dates**: Invalid MySQL dates are converted to null with warning
+- **NULL handling**: MySQL NULL values become SurrealDB `NONE` (via `UniversalValue::Null`)
+- **Zero dates**: MySQL/MariaDB zero dates (`0000-00-00`, `0000-00-00 00:00:00`) become `UniversalValue::ZeroTemporal` with the intended column type preserved for transforms. The SurrealDB sink maps them according to `[sink.surrealdb] zero_temporal`:
+  - `none` (default) → SurrealDB `NONE`
+  - `null` → SurrealDB `NULL`
+  - `string` → literal string such as `"0000-00-00"` / `"0000-00-00 00:00:00"`
+- **Invalid dates**: Non-zero invalid calendar values (e.g. month 13) still fail conversion; they are not treated as zero dates
 - **Charset encoding**: Text data is converted assuming UTF-8 encoding
 
 ## Testing and Validation

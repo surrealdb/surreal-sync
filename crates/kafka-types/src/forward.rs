@@ -320,6 +320,18 @@ pub fn encode_generated_value(
                 .write_string(field_number, &json_str)
                 .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
         }
+
+        UniversalValue::ZeroTemporal {
+            intended_type,
+            source,
+        } => {
+            let s = source
+                .as_deref()
+                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+            stream
+                .write_string(field_number, s)
+                .map_err(|e| KafkaTypesError::ProtobufEncode(e.to_string()))?;
+        }
     }
     Ok(())
 }
@@ -465,6 +477,15 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
                 .map(|(k, v)| (k.clone(), universal_value_to_json(v)))
                 .collect();
             serde_json::Value::Object(obj)
+        }
+        UniversalValue::ZeroTemporal {
+            intended_type,
+            source,
+        } => {
+            let s = source
+                .as_deref()
+                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+            serde_json::Value::String(s.to_string())
         }
     }
 }

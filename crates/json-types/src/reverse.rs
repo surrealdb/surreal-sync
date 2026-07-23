@@ -200,21 +200,27 @@ impl From<JsonValueWithSchema> for TypedValue {
 
             // Date/time types - multiple formats supported
             (UniversalType::LocalDateTime, serde_json::Value::String(s)) => {
-                if let Some(dt) = parse_datetime_string(s) {
+                if UniversalValue::is_mysql_zero_temporal_literal(s) {
+                    TypedValue::zero_temporal(UniversalType::LocalDateTime, Some(s.clone()))
+                } else if let Some(dt) = parse_datetime_string(s) {
                     TypedValue::datetime(dt)
                 } else {
                     TypedValue::null(UniversalType::LocalDateTime)
                 }
             }
             (UniversalType::LocalDateTimeNano, serde_json::Value::String(s)) => {
-                if let Some(dt) = parse_datetime_string(s) {
+                if UniversalValue::is_mysql_zero_temporal_literal(s) {
+                    TypedValue::zero_temporal(UniversalType::LocalDateTimeNano, Some(s.clone()))
+                } else if let Some(dt) = parse_datetime_string(s) {
                     TypedValue::datetime_nano(dt)
                 } else {
                     TypedValue::null(UniversalType::LocalDateTimeNano)
                 }
             }
             (UniversalType::ZonedDateTime, serde_json::Value::String(s)) => {
-                if let Some(dt) = parse_datetime_string(s) {
+                if UniversalValue::is_mysql_zero_temporal_literal(s) {
+                    TypedValue::zero_temporal(UniversalType::ZonedDateTime, Some(s.clone()))
+                } else if let Some(dt) = parse_datetime_string(s) {
                     TypedValue::timestamptz(dt)
                 } else {
                     TypedValue::null(UniversalType::ZonedDateTime)
@@ -223,7 +229,9 @@ impl From<JsonValueWithSchema> for TypedValue {
 
             // Date stored as string
             (UniversalType::Date, serde_json::Value::String(s)) => {
-                if let Ok(dt) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+                if UniversalValue::is_mysql_zero_temporal_literal(s) {
+                    TypedValue::zero_temporal(UniversalType::Date, Some(s.clone()))
+                } else if let Ok(dt) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
                     let datetime = dt.and_hms_opt(0, 0, 0).unwrap();
                     let utc_dt = DateTime::<Utc>::from_naive_utc_and_offset(datetime, Utc);
                     TypedValue::date(utc_dt)
@@ -932,6 +940,33 @@ mod tests {
         } else {
             panic!("Expected Date, got {:?}", tv.value);
         }
+    }
+
+    #[test]
+    fn test_zero_date_literal_emits_zero_temporal() {
+        let jv = JsonValueWithSchema::new(json!("0000-00-00"), UniversalType::Date);
+        let tv = TypedValue::from(jv);
+        assert!(matches!(
+            tv.value,
+            UniversalValue::ZeroTemporal {
+                intended_type: UniversalType::Date,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_zero_datetime_literal_emits_zero_temporal() {
+        let jv =
+            JsonValueWithSchema::new(json!("0000-00-00 00:00:00"), UniversalType::LocalDateTime);
+        let tv = TypedValue::from(jv);
+        assert!(matches!(
+            tv.value,
+            UniversalValue::ZeroTemporal {
+                intended_type: UniversalType::LocalDateTime,
+                ..
+            }
+        ));
     }
 
     #[test]

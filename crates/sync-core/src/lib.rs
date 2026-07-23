@@ -79,4 +79,5 @@ pub use types::{GeometryType, ToDdl, UniversalType};
 pub use values::{
     GeometryData, RowConverter, TypedValue, TypedValueError, UniversalChange, UniversalChangeOp,
     UniversalRelation, UniversalRow, UniversalRowBuilder, UniversalThingRef, UniversalValue,
+    ZeroTemporalPolicy,
 };

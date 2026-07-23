@@ -48,6 +48,7 @@
 //! and struct definitions.
 
 use clap::Parser;
+use sync_core::ZeroTemporalPolicy;
 
 pub mod testing;
 
@@ -113,4 +114,9 @@ pub struct SurrealOpts {
     /// SurrealDB SDK version to use. Auto-detects from server if not specified.
     #[arg(long, env = "SURREAL_SDK_VERSION", value_parser = ["v2", "v3"])]
     pub surreal_sdk_version: Option<String>,
+
+    /// How zero temporal values (e.g. MySQL `0000-00-00`) are written to SurrealDB.
+    /// Set via config file `[sink.surrealdb] zero_temporal`; not a CLI flag.
+    #[arg(skip)]
+    pub zero_temporal: ZeroTemporalPolicy,
 }

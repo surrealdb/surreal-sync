@@ -5,7 +5,9 @@
 //! - Import: `from csv --files ... --table ... --to-namespace ... --to-database ...`
 
 use super::transforms::load_transforms_from_args;
-use super::{get_sdk_version, load_schema_if_provided, SdkVersion};
+use super::{
+    get_sdk_version, load_schema_if_provided, make_surreal2_sink, make_surreal3_sink, SdkVersion,
+};
 use crate::CsvArgs;
 
 /// Run CSV import, dispatching to appropriate SDK version.
@@ -42,7 +44,7 @@ async fn run_v2(args: CsvArgs) -> anyhow::Result<()> {
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     let config = surreal_sync::csv::Config {
         sources: vec![],
@@ -86,7 +88,7 @@ async fn run_v3(args: CsvArgs) -> anyhow::Result<()> {
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+    let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
 
     let config = surreal_sync::csv::Config {
         sources: vec![],

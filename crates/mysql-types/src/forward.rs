@@ -168,6 +168,16 @@ impl From<UniversalValue> for MySQLValue {
                     serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default();
                 MySQLValue(Value::Bytes(json_str.into_bytes()))
             }
+
+            UniversalValue::ZeroTemporal {
+                intended_type,
+                source,
+            } => {
+                let s = source.unwrap_or_else(|| {
+                    UniversalValue::canonical_zero_literal(&intended_type).to_string()
+                });
+                MySQLValue(Value::Bytes(s.into_bytes()))
+            }
         }
     }
 }
@@ -258,6 +268,15 @@ fn generated_to_json(gv: UniversalValue) -> serde_json::Value {
                 .map(|(k, v)| (k, generated_to_json(v)))
                 .collect();
             serde_json::Value::Object(obj)
+        }
+        UniversalValue::ZeroTemporal {
+            intended_type,
+            source,
+        } => {
+            let s = source.unwrap_or_else(|| {
+                UniversalValue::canonical_zero_literal(&intended_type).to_string()
+            });
+            serde_json::Value::String(s)
         }
     }
 }

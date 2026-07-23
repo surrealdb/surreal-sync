@@ -146,6 +146,16 @@ impl From<UniversalValue> for CsvValue {
                     .collect();
                 CsvValue(serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default())
             }
+
+            UniversalValue::ZeroTemporal {
+                intended_type,
+                source,
+            } => {
+                let s = source.unwrap_or_else(|| {
+                    UniversalValue::canonical_zero_literal(&intended_type).to_string()
+                });
+                CsvValue(s)
+            }
         }
     }
 }
@@ -219,6 +229,15 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
                 .map(|(k, v)| (k.clone(), generated_value_to_json(v)))
                 .collect();
             serde_json::Value::Object(obj)
+        }
+        UniversalValue::ZeroTemporal {
+            intended_type,
+            source,
+        } => {
+            let s = source
+                .as_deref()
+                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+            serde_json::Value::String(s.to_string())
         }
     }
 }
