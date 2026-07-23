@@ -433,13 +433,10 @@ async fn tls_required_fails_when_server_cannot_use_tls() -> Result<()> {
         "expected a TLS capability error, got: {msg}"
     );
 
-    let pool_err = mysql_types::new_mysql_pool_with_ssl(
-        &c.connection_string,
-        &SslMode::required(),
-    )
-    .await?
-    .get_conn()
-    .await;
+    let pool_err = mysql_types::new_mysql_pool_with_ssl(&c.connection_string, &SslMode::required())
+        .await?
+        .get_conn()
+        .await;
     assert!(
         pool_err.is_err(),
         "required SQL pool must fail when the server cannot use TLS"

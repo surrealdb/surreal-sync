@@ -63,11 +63,10 @@ fn pool_plaintext(connection_string: &str) -> Result<Pool> {
 /// Whether a pool connect failure under Preferred should retry without TLS.
 fn is_tls_encryption_failure(err: &mysql_async::Error) -> bool {
     use mysql_async::{DriverError, Error, IoError};
-    match err {
-        Error::Io(IoError::Tls(_)) => true,
-        Error::Driver(DriverError::NoClientSslFlagFromServer) => true,
-        _ => false,
-    }
+    matches!(
+        err,
+        Error::Io(IoError::Tls(_)) | Error::Driver(DriverError::NoClientSslFlagFromServer)
+    )
 }
 
 /// Create a MySQL pool honouring [`SslMode`].
