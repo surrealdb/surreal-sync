@@ -485,15 +485,15 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 
 ### Advanced: embedding surreal-sync
 
-Use the library entrypoint when you want **in-process** Rust transforms (zero
-child-process / NDJSON overhead) while keeping the same mysql-binlog CLI flags
-and orchestration as the stock binary.
+Use a library entrypoint when you want **in-process** Rust transforms (zero
+child-process / NDJSON overhead) while keeping the same CLI flags and behavior
+as the stock binary for that source.
 
 **When to use in-process vs `command` workers**
 
 | Approach | Use when |
 |----------|----------|
-| [`InPlaceTransform`](https://docs.rs/sync-transform) via [`mysql_binlog::run`](../src/mysql_binlog/mod.rs) | Mutate-only / same-length stages in Rust (redact, rename, flatten IDs, FK → record links) |
+| [`InPlaceTransform`](https://docs.rs/sync-transform) via [`mysql_binlog::run`](../src/mysql_binlog/mod.rs) or [`snowflake::run`](../src/snowflake/mod.rs) | Mutate-only / same-length stages in Rust (redact, rename, flatten IDs, FK → record links) |
 | TOML `type = "command"` | External language workers, heavy enrichment, or filter/fan-out that needs a custom `BatchTransformer` |
 
 Filter-out or fan-out of events is out of scope for `InPlaceTransform` — use a
@@ -502,12 +502,12 @@ Filter-out or fan-out of events is out of scope for `InPlaceTransform` — use a
 **Composition rules**
 
 1. Optional `--transforms-config` TOML is loaded first (same rules as the stock CLI).
-2. Rust stages passed to `mysql_binlog::run([...])` are **appended** after TOML stages.
+2. Rust stages passed to `mysql_binlog::run([...])` / `snowflake::run([...])` are **appended** after TOML stages.
 3. If the flag is omitted (identity `ApplyOpts`) but Rust stages are added, opts are upgraded to `ApplyOpts::default()` so batching is on.
 
-**Example**
+**Examples**
 
-See [`examples/mysql_binlog_custom_transform.rs`](../examples/mysql_binlog_custom_transform.rs)
+MySQL/MariaDB binlog — [`examples/mysql_binlog_custom_transform.rs`](../examples/mysql_binlog_custom_transform.rs)
 (`FlattenId`, PII redaction, field rename, FK → record link). Argv is
 source-shaped (`sync|snapshot …`), not `from mysql-binlog …`. Mixed stage types
 are passed via `mysql_binlog::stage(...)` (Rust arrays are homogeneous):
@@ -520,8 +520,24 @@ cargo run --example mysql_binlog_custom_transform -- sync \
   --checkpoint-dir ./checkpoints
 ```
 
+Snowflake — [`examples/snowflake_custom_transform.rs`](../examples/snowflake_custom_transform.rs)
+(same transform chain). Argv is the same flat flags as `surreal-sync from snowflake`
+(no `from snowflake` prefix):
+
+```bash
+cargo run --example snowflake_custom_transform -- \
+  --account myorg-myaccount \
+  --user sync_user \
+  --private-key-path ./rsa_key.p8 \
+  --warehouse COMPUTE_WH \
+  --database APP \
+  --schema PUBLIC \
+  --to-namespace prod --to-database app
+```
+
 Call `surreal_sync::init()` yourself only if you use lower-level APIs such as
-`mysql_binlog::run_sync`; `mysql_binlog::run` initializes crypto + tracing for you.
+`mysql_binlog::run_sync` or `snowflake::run_sync`; `::run` initializes crypto +
+tracing for you.
 
 For apply-loop / driver details, see `sync-transform` rustdoc (`ApplyContext`,
 `SourceDriver`, `FlattenId`). Per-table ID overrides (`table=col1,col2`) live in

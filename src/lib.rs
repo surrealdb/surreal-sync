@@ -12,10 +12,14 @@
 //!
 //! # Embedding
 //!
-//! Depend on this crate and call [`mysql_binlog::run`] with in-process
-//! [`InPlaceTransform`] stages (same CLI flags as `surreal-sync from mysql-binlog`,
-//! source-shaped argv: `sync|snapshot …`). See
-//! `examples/mysql_binlog_custom_transform.rs` and `docs/sync-pipeline.md`.
+//! Depend on this crate and call a source entrypoint with in-process
+//! [`InPlaceTransform`] stages — same CLI flags as the stock binary, without the
+//! `from <source>` prefix:
+//!
+//! - [`mysql_binlog::run`] — `sync|snapshot …` (see `examples/mysql_binlog_custom_transform.rs`)
+//! - [`snowflake::run`] — flat Snowflake flags (see `examples/snowflake_custom_transform.rs`)
+//!
+//! Details: `docs/sync-pipeline.md`.
 //!
 //! # Database-Specific Sync Crates
 //!
@@ -59,14 +63,16 @@ use rustls::crypto::CryptoProvider;
 use sync_core::ZeroTemporalPolicy;
 
 pub mod mysql_binlog;
+pub mod snowflake;
 pub(crate) mod sync_helpers;
 pub mod testing;
 pub mod transforms;
 
 /// Install the TLS crypto provider and initialize tracing (same as the stock binary).
 ///
-/// Called automatically by [`mysql_binlog::run`]. Call this yourself if you use
-/// lower-level entrypoints such as [`mysql_binlog::run_sync`].
+/// Called automatically by [`mysql_binlog::run`] and [`snowflake::run`]. Call this
+/// yourself if you use lower-level entrypoints such as [`mysql_binlog::run_sync`]
+/// or [`snowflake::run_sync`].
 pub fn init() {
     if let Err(err) = CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
     {
