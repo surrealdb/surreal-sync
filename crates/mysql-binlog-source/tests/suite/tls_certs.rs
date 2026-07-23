@@ -8,10 +8,12 @@ use tempfile::TempDir;
 
 const OPENSSL_IMAGE: &str = "alpine/openssl:latest";
 
-/// CA + server certificate files for a TLS-enabled MySQL test container.
+/// CA, server, and client certificate files for TLS MySQL/MariaDB tests.
 pub struct MysqlTlsSecrets {
     pub dir: TempDir,
     pub ca_pem: PathBuf,
+    pub client_cert: PathBuf,
+    pub client_key: PathBuf,
 }
 
 impl MysqlTlsSecrets {
@@ -31,7 +33,12 @@ subjectAltName=DNS:localhost,IP:127.0.0.1
 EOF
 openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
   -out server.crt -days 3650 -extfile server.ext
-chmod 644 ca.pem server.crt server.key
+openssl genrsa -traditional -out client.key 2048
+openssl req -new -key client.key -out client.csr \
+  -subj "/CN=SurrealSyncTestClient"
+openssl x509 -req -in client.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+  -out client.crt -days 3650
+chmod 644 ca.pem server.crt server.key client.crt client.key
 "#;
         std::fs::write(work.join("generate.sh"), script)?;
         #[cfg(unix)]
@@ -73,13 +80,26 @@ chmod 644 ca.pem server.crt server.key
         let ca_pem = work.join("ca.pem");
         let server_cert = work.join("server.crt");
         let server_key = work.join("server.key");
-        for path in [&ca_pem, &server_cert, &server_key] {
+        let client_cert = work.join("client.crt");
+        let client_key = work.join("client.key");
+        for path in [
+            &ca_pem,
+            &server_cert,
+            &server_key,
+            &client_cert,
+            &client_key,
+        ] {
             if !path.exists() {
                 anyhow::bail!("expected cert file missing: {}", path.display());
             }
         }
 
-        Ok(Self { dir, ca_pem })
+        Ok(Self {
+            dir,
+            ca_pem,
+            client_cert,
+            client_key,
+        })
     }
 
     pub fn secrets_dir(&self) -> &Path {

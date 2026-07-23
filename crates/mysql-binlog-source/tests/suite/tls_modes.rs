@@ -4,8 +4,8 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use binlog_protocol::test_images::mysql_binlog_image;
-use binlog_protocol::{BinlogClient, ReplicaOptions, SslMode, SslOptions};
+use binlog_protocol::test_images::{mariadb_binlog_image, mysql_binlog_image};
+use binlog_protocol::{BinlogClient, Flavor, ReplicaOptions, SslMode, SslOptions};
 use mysql_async::prelude::*;
 
 use crate::tls_certs::MysqlTlsSecrets;
@@ -32,11 +32,53 @@ fn parse_mysql_uri(uri: &str) -> Result<(String, u16, String, String)> {
 struct TlsMysqlContainer {
     name: String,
     connection_string: String,
+    flavor: Option<Flavor>,
     _secrets: MysqlTlsSecrets,
 }
 
 impl TlsMysqlContainer {
+    async fn start_mysql(name: &str) -> Result<Self> {
+        Self::start_with_image(
+            name,
+            &mysql_binlog_image(),
+            None,
+            &[
+                "--log-bin=mysql-bin",
+                "--binlog-format=ROW",
+                "--gtid-mode=ON",
+                "--enforce-gtid-consistency=ON",
+                "--server-id=1",
+                "--log-slave-updates=ON",
+            ],
+        )
+        .await
+    }
+
+    async fn start_mariadb(name: &str) -> Result<Self> {
+        Self::start_with_image(
+            name,
+            &mariadb_binlog_image(),
+            Some(Flavor::MariaDb),
+            &[
+                "--log-bin=mysql-bin",
+                "--binlog-format=ROW",
+                "--server-id=1",
+                "--gtid-strict-mode=ON",
+            ],
+        )
+        .await
+    }
+
     async fn start(name: &str) -> Result<Self> {
+        Self::start_mysql(name).await
+    }
+
+    async fn start_with_image(
+        name: &str,
+        image: &str,
+        flavor: Option<Flavor>,
+        engine_args: &[&str],
+    ) -> Result<Self> {
         let secrets = MysqlTlsSecrets::generate()?;
         let secrets_dir = secrets
             .secrets_dir()
@@ -50,39 +92,38 @@ impl TlsMysqlContainer {
             .stderr(Stdio::null())
             .status();
 
-        let image = mysql_binlog_image();
-        let args = [
-            "run",
-            "--name",
-            name,
-            "-e",
-            "MYSQL_ROOT_PASSWORD=testpass",
-            "-e",
-            "MYSQL_DATABASE=testdb",
-            "-p",
-            "0:3306",
-            "-v",
-            &format!("{secrets_dir}:/certs:ro"),
-            "-d",
-            &image,
-            "--log-bin=mysql-bin",
-            "--binlog-format=ROW",
-            "--gtid-mode=ON",
-            "--enforce-gtid-consistency=ON",
-            "--server-id=1",
-            "--log-slave-updates=ON",
-            "--ssl-ca=/certs/ca.pem",
-            "--ssl-cert=/certs/server.crt",
-            "--ssl-key=/certs/server.key",
-            "--require_secure_transport=OFF",
+        let mut args = vec![
+            "run".to_string(),
+            "--name".to_string(),
+            name.to_string(),
+            "-e".to_string(),
+            "MYSQL_ROOT_PASSWORD=testpass".to_string(),
+            "-e".to_string(),
+            "MYSQL_DATABASE=testdb".to_string(),
+            "-p".to_string(),
+            "0:3306".to_string(),
+            "-v".to_string(),
+            format!("{secrets_dir}:/certs:ro"),
+            "-d".to_string(),
+            image.to_string(),
         ];
+        for arg in engine_args {
+            args.push(arg.to_string());
+        }
+        args.extend([
+            "--ssl-ca=/certs/ca.pem".to_string(),
+            "--ssl-cert=/certs/server.crt".to_string(),
+            "--ssl-key=/certs/server.key".to_string(),
+            "--require_secure_transport=OFF".to_string(),
+        ]);
+
         let output = Command::new("docker")
-            .args(args)
+            .args(&args)
             .output()
-            .context("start TLS MySQL container")?;
+            .context("start TLS database container")?;
         if !output.status.success() {
             anyhow::bail!(
-                "start TLS MySQL failed: {}",
+                "start TLS database failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
         }
@@ -92,6 +133,7 @@ impl TlsMysqlContainer {
         let container = Self {
             name: name.to_string(),
             connection_string,
+            flavor,
             _secrets: secrets,
         };
         container.wait_ready(120).await?;
@@ -100,6 +142,14 @@ impl TlsMysqlContainer {
 
     fn ca_path(&self) -> String {
         self._secrets.ca_pem.to_string_lossy().into_owned()
+    }
+
+    fn client_cert_path(&self) -> String {
+        self._secrets.client_cert.to_string_lossy().into_owned()
+    }
+
+    fn client_key_path(&self) -> String {
+        self._secrets.client_key.to_string_lossy().into_owned()
     }
 
     async fn wait_ready(&self, timeout_secs: u64) -> Result<()> {
@@ -131,7 +181,7 @@ impl TlsMysqlContainer {
             server_id,
             ssl,
             blocking_poll: Duration::from_millis(200),
-            flavor: None,
+            flavor: self.flavor,
             mariadb_flags: binlog_protocol::MariaDbDumpFlags {
                 send_annotate_rows: true,
             },
@@ -362,7 +412,7 @@ async fn tls_preferred_does_not_fallback_on_auth_failure() -> Result<()> {
     })
     .await;
     assert!(err.is_err(), "wrong password must fail under preferred");
-    let msg = format!("{:?}", err.unwrap_err());
+    let msg = err.err().map(|e| e.to_string()).unwrap_or_default();
     assert!(
         !msg.contains("retrying without TLS"),
         "preferred must not fall back on auth errors: {msg}"
@@ -443,5 +493,119 @@ async fn caching_sha2_full_auth_over_tls_required() -> Result<()> {
         .await?;
     drop(admin);
     pool.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn tls_client_certificate_auth_connects() -> Result<()> {
+    crate::shared::init_logging();
+    let c = TlsMysqlContainer::start("ss-mysql-tls-client-cert").await?;
+
+    let pool = mysql_async::Pool::from_url(&c.connection_string)?;
+    let mut admin = pool.get_conn().await?;
+    let user = format!("cert_user_{}", std::process::id());
+    let pass = "cert_pass";
+    admin
+        .query_drop(format!("DROP USER IF EXISTS '{user}'@'%'"))
+        .await?;
+    admin
+        .query_drop(format!(
+            "CREATE USER '{user}'@'%' IDENTIFIED BY '{pass}' REQUIRE X509"
+        ))
+        .await?;
+    admin
+        .query_drop(format!(
+            "GRANT REPLICATION SLAVE, REPLICATION CLIENT ON *.* TO '{user}'@'%'"
+        ))
+        .await?;
+    admin
+        .query_drop(format!("GRANT SELECT ON testdb.* TO '{user}'@'%'"))
+        .await?;
+    admin.query_drop("FLUSH PRIVILEGES").await?;
+    drop(admin);
+    pool.disconnect().await?;
+
+    let (host, port, _, _) = parse_mysql_uri(&c.connection_string)?;
+    let client = BinlogClient::connect(ReplicaOptions {
+        host,
+        port,
+        username: user.clone(),
+        password: pass.to_string(),
+        server_id: 9_100_009,
+        ssl: SslMode::Required(SslOptions {
+            ca: Some(c.ca_path()),
+            cert: Some(c.client_cert_path()),
+            key: Some(c.client_key_path()),
+        }),
+        blocking_poll: Duration::from_millis(200),
+        flavor: None,
+        mariadb_flags: binlog_protocol::MariaDbDumpFlags {
+            send_annotate_rows: true,
+        },
+        mariadb_gtid_strict_mode: binlog_protocol::MariaDbGtidStrictMode::ServerDefault,
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("client certificate auth failed: {e}"))?;
+    drop(client);
+
+    let (host, port, _, _) = parse_mysql_uri(&c.connection_string)?;
+    let user_uri = format!("mysql://{user}:{pass}@{host}:{port}/testdb");
+    let pool = mysql_types::new_mysql_pool_with_ssl(
+        &user_uri,
+        &SslMode::Required(SslOptions {
+            ca: Some(c.ca_path()),
+            cert: Some(c.client_cert_path()),
+            key: Some(c.client_key_path()),
+        }),
+    )
+    .await?;
+    let mut conn = pool.get_conn().await?;
+    let _: Option<i32> = conn.query_first("SELECT 1").await?;
+    drop(conn);
+    pool.disconnect().await?;
+
+    let pool = mysql_async::Pool::from_url(&c.connection_string)?;
+    let mut admin = pool.get_conn().await?;
+    admin
+        .query_drop(format!("DROP USER IF EXISTS '{user}'@'%'"))
+        .await?;
+    drop(admin);
+    pool.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn mariadb_tls_required_with_ca_connects() -> Result<()> {
+    crate::shared::init_logging();
+    let c = TlsMysqlContainer::start_mariadb("ss-mariadb-tls-required").await?;
+    let client = c
+        .connect_binlog(
+            SslMode::Required(SslOptions {
+                ca: Some(c.ca_path()),
+                cert: None,
+                key: None,
+            }),
+            9_100_010,
+        )
+        .await?;
+    drop(client);
+    Ok(())
+}
+
+#[tokio::test]
+async fn mariadb_tls_preferred_with_ca_connects() -> Result<()> {
+    crate::shared::init_logging();
+    let c = TlsMysqlContainer::start_mariadb("ss-mariadb-tls-preferred").await?;
+    let client = c
+        .connect_binlog(
+            SslMode::Preferred(SslOptions {
+                ca: Some(c.ca_path()),
+                cert: None,
+                key: None,
+            }),
+            9_100_011,
+        )
+        .await?;
+    drop(client);
     Ok(())
 }
