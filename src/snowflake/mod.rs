@@ -59,11 +59,7 @@ fn build_opts(args: &Args) -> anyhow::Result<(SourceOpts, SyncOpts)> {
 ///
 /// Shared by the stock binary and embedders. Call [`crate::init`] first if you
 /// use this directly (not needed when calling [`run`]).
-pub async fn run_sync(
-    args: Args,
-    pipeline: Pipeline,
-    apply_opts: ApplyOpts,
-) -> anyhow::Result<()> {
+pub async fn run_sync(args: Args, pipeline: Pipeline, apply_opts: ApplyOpts) -> anyhow::Result<()> {
     let sdk_version = get_sdk_version(
         &args.surreal.surreal_endpoint,
         args.surreal.surreal_sdk_version.as_deref(),
@@ -113,11 +109,7 @@ pub async fn run(extra: impl IntoIterator<Item = Box<dyn InPlaceTransform>>) -> 
     run_with_extra_transforms(cli.args, extra).await
 }
 
-async fn run_sync_v2(
-    args: Args,
-    pipeline: Pipeline,
-    apply_opts: ApplyOpts,
-) -> anyhow::Result<()> {
+async fn run_sync_v2(args: Args, pipeline: Pipeline, apply_opts: ApplyOpts) -> anyhow::Result<()> {
     tracing::info!("Starting Snowflake ingestion (SDK v2)");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
     if args.surreal.dry_run {
@@ -151,11 +143,7 @@ async fn run_sync_v2(
     Ok(())
 }
 
-async fn run_sync_v3(
-    args: Args,
-    pipeline: Pipeline,
-    apply_opts: ApplyOpts,
-) -> anyhow::Result<()> {
+async fn run_sync_v3(args: Args, pipeline: Pipeline, apply_opts: ApplyOpts) -> anyhow::Result<()> {
     tracing::info!("Starting Snowflake ingestion (SDK v3)");
     tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
     if args.surreal.dry_run {
