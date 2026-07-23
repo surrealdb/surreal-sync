@@ -1,12 +1,27 @@
-//! MySQL/MariaDB binlog CDC sync handlers.
+//! MySQL/MariaDB binlog CDC — library entrypoint for stock CLI and embedders.
 //!
-//! Source crate: crates/mysql-binlog-source/
-//! CLI commands:
-//! - `from mysql-binlog sync` — snapshot and/or stream (see `--snapshot-mode`)
-//! - `from mysql-binlog snapshot` — ad-hoc execute-snapshot signal insert
+//! # Embedder usage
+//!
+//! Parse source-shaped argv (`sync` | `snapshot` + the same flags as
+//! `surreal-sync from mysql-binlog`) and append in-process
+//! [`InPlaceTransform`](sync_transform::InPlaceTransform) stages:
+//!
+//! ```ignore
+//! surreal_sync::mysql_binlog::run([FlattenId::default(), /* … */]).await?;
+//! ```
+//!
+//! See `examples/mysql_binlog_custom_transform.rs`.
+
+mod args;
+
+pub use args::{
+    Commands, FlavorArg, MariaDbGtidStrictModeArg, SnapshotArgs, SnapshotModeArg, SyncArgs,
+    SyncStrategy, TlsArgs, TlsModeArg, DEFAULT_CHUNK_SIZE,
+};
 
 use anyhow::Context;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager};
+use clap::Parser;
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::SnapshotTransforms;
 use surreal_sync_mysql_binlog_source::{
@@ -15,21 +30,17 @@ use surreal_sync_mysql_binlog_source::{
     run_interleaved_snapshot_full_sync_with_transforms, run_replication_tail_with_transforms,
     BinlogCheckpoint, InterleavedFullSyncOptions, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
-use sync_transform::{ApplyOpts, Pipeline};
+use sync_transform::{ApplyOpts, InPlaceTransform, Pipeline};
 use tokio_util::sync::CancellationToken;
 
-use super::transforms::load_transforms_from_args;
-use super::{
+use crate::sync_helpers::{
     get_sdk_version, make_surreal2_sink, make_surreal3_sink, parse_duration_to_secs, SdkVersion,
 };
-use crate::{
-    BinlogSnapshotModeArg, MariaDbGtidStrictModeArg, MySQLBinlogFlavorArg, MySQLBinlogSnapshotArgs,
-    MySQLBinlogSyncArgs, SyncStrategy,
-};
+use crate::transforms::{load_transforms_from_args, merge_inplace_boxed};
 
 /// Create a cancellation token that fires on SIGINT/SIGTERM so snapshot and
 /// stream phases can stop gracefully and flush a resumable checkpoint.
-fn install_shutdown_token() -> CancellationToken {
+pub fn install_shutdown_token() -> CancellationToken {
     let token = CancellationToken::new();
     let child = token.clone();
     tokio::spawn(async move {
@@ -63,7 +74,7 @@ async fn shutdown_signal() {
     }
 }
 
-fn binlog_source_opts(args: &MySQLBinlogSyncArgs) -> SourceOpts {
+fn binlog_source_opts(args: &SyncArgs) -> SourceOpts {
     binlog_source_opts_from(BinlogSourceOptsInput {
         connection_string: args.connection_string.clone(),
         database: args.database.clone(),
@@ -80,7 +91,7 @@ struct BinlogSourceOptsInput {
     database: Option<String>,
     tables: Vec<String>,
     server_id: Option<u32>,
-    flavor: Option<MySQLBinlogFlavorArg>,
+    flavor: Option<FlavorArg>,
     mariadb_gtid_strict_mode: MariaDbGtidStrictModeArg,
     ssl: surreal_sync_mysql_binlog_source::SslMode,
 }
@@ -116,7 +127,7 @@ fn parse_stop_after_deadline(
     })
 }
 
-fn binlog_stream_options(args: &MySQLBinlogSyncArgs) -> anyhow::Result<ReplicationTailOptions> {
+fn binlog_stream_options(args: &SyncArgs) -> anyhow::Result<ReplicationTailOptions> {
     let until_checkpoint = args
         .stop_at
         .as_ref()
@@ -268,10 +279,12 @@ where
     }
 }
 
-/// Run `from mysql-binlog sync`.
-pub async fn run_sync(args: MySQLBinlogSyncArgs) -> anyhow::Result<()> {
-    // Fail-fast on bad transforms config / worker spawn before connecting.
-    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
+/// Core sync entry: run with an already-built pipeline (shared by binary + embedder).
+pub async fn run_sync(
+    args: SyncArgs,
+    pipeline: Pipeline,
+    apply_opts: ApplyOpts,
+) -> anyhow::Result<()> {
     let sdk_version = get_sdk_version(
         &args.surreal.surreal_endpoint,
         args.surreal.surreal_sdk_version.as_deref(),
@@ -284,8 +297,73 @@ pub async fn run_sync(args: MySQLBinlogSyncArgs) -> anyhow::Result<()> {
     }
 }
 
+/// Load `--transforms-config` (if any), append Rust [`InPlaceTransform`] stages,
+/// apply the ApplyOpts upgrade rule, then [`run_sync`].
+///
+/// Pass [`Box<dyn InPlaceTransform>`] so heterogeneous stages can share one list.
+pub async fn run_sync_with_extra_transforms(
+    args: SyncArgs,
+    extra: impl IntoIterator<Item = Box<dyn InPlaceTransform>>,
+) -> anyhow::Result<()> {
+    let (pipeline, apply_opts) = merge_inplace_boxed(args.transforms_config.as_deref(), extra)?;
+    run_sync(args, pipeline, apply_opts).await
+}
+
+/// Dispatch a parsed [`Commands`] with optional extra in-place stages on `sync`.
+///
+/// Snapshot signals ignore `extra` (they only insert an execute-snapshot row).
+pub async fn run_command_with_extra_transforms(
+    command: Commands,
+    extra: impl IntoIterator<Item = Box<dyn InPlaceTransform>>,
+) -> anyhow::Result<()> {
+    match command {
+        Commands::Sync(args) => run_sync_with_extra_transforms(*args, extra).await,
+        Commands::Snapshot(args) => run_snapshot_signal(args).await,
+    }
+}
+
+/// Dispatch a parsed [`Commands`] with no extra Rust stages (stock binary path).
+pub async fn run_command(command: Commands) -> anyhow::Result<()> {
+    match command {
+        Commands::Sync(args) => {
+            // Fail-fast on bad transforms config / worker spawn before connecting.
+            let (pipeline, apply_opts) =
+                load_transforms_from_args(args.transforms_config.as_deref())?;
+            run_sync(*args, pipeline, apply_opts).await
+        }
+        Commands::Snapshot(args) => run_snapshot_signal(args).await,
+    }
+}
+
+/// Box an [`InPlaceTransform`] for heterogeneous stage lists passed to [`run`].
+pub fn stage(t: impl InPlaceTransform + 'static) -> Box<dyn InPlaceTransform> {
+    Box::new(t)
+}
+
+/// Top-level clap root for source-shaped argv (`sync|snapshot …`).
+#[derive(Parser)]
+#[command(
+    name = "surreal-sync-mysql-binlog",
+    about = "Embeddable MySQL/MariaDB binlog sync (same flags as `surreal-sync from mysql-binlog`)"
+)]
+struct EmbedCli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+/// Embedder entrypoint: [`crate::init`], parse source-shaped argv, append
+/// in-place stages, run the same orchestration as stock `from mysql-binlog`.
+///
+/// Pass [`Box<dyn InPlaceTransform>`] values so stages of different concrete
+/// types can be listed together (see the `mysql_binlog_custom_transform` example).
+pub async fn run(extra: impl IntoIterator<Item = Box<dyn InPlaceTransform>>) -> anyhow::Result<()> {
+    crate::init();
+    let cli = EmbedCli::parse();
+    run_command_with_extra_transforms(cli.command, extra).await
+}
+
 async fn run_sync_v2(
-    args: MySQLBinlogSyncArgs,
+    args: SyncArgs,
     cancel: CancellationToken,
     pipeline: Pipeline,
     apply_opts: ApplyOpts,
@@ -331,7 +409,7 @@ async fn run_sync_v2(
 }
 
 async fn run_sync_v3(
-    args: MySQLBinlogSyncArgs,
+    args: SyncArgs,
     cancel: CancellationToken,
     pipeline: Pipeline,
     apply_opts: ApplyOpts,
@@ -371,7 +449,7 @@ async fn run_sync_v3(
 
 async fn binlog_orchestrate<S, St>(
     sink: &S,
-    args: MySQLBinlogSyncArgs,
+    args: SyncArgs,
     cancel: CancellationToken,
     checkpoint_manager: Option<&SyncManager<St>>,
     pipeline: Pipeline,
@@ -396,7 +474,7 @@ where
     let sync_opts = binlog_sync_opts(args.surreal.batch_size, args.surreal.dry_run);
 
     match snapshot_mode {
-        BinlogSnapshotModeArg::Only => {
+        SnapshotModeArg::Only => {
             binlog_snapshot_full(
                 sink,
                 &source_opts,
@@ -410,7 +488,7 @@ where
             .await?;
             Ok(())
         }
-        BinlogSnapshotModeArg::Never => {
+        SnapshotModeArg::Never => {
             let from_checkpoint =
                 checkpoint_from_arg_or_store(&from_explicit, checkpoint_manager, &source_opts)
                     .await?;
@@ -425,7 +503,7 @@ where
             )
             .await
         }
-        BinlogSnapshotModeArg::Initial => {
+        SnapshotModeArg::Initial => {
             let interleaved_outcome = match strategy {
                 SyncStrategy::InterleavedSnapshot => {
                     let initial = run_initial_interleaved_snapshot_with_transforms(
@@ -505,7 +583,7 @@ where
 
 /// Emit an ad-hoc execute-snapshot signal so a running `sync` snapshots the
 /// requested tables.
-pub async fn run_snapshot_signal(args: MySQLBinlogSnapshotArgs) -> anyhow::Result<()> {
+pub async fn run_snapshot_signal(args: SnapshotArgs) -> anyhow::Result<()> {
     let pool = new_mysql_pool_with_ssl(&args.connection_string, &args.tls.ssl_mode()).await?;
     let database = resolve_mysql_database(&pool, &args.database).await?;
     request_snapshot(&pool, &database, &args.tables).await?;

@@ -10,6 +10,13 @@
 //! - Reliable checkpointing: Resume sync from any point after failures
 //! - Portability: Trigger-based approaches work in any environment
 //!
+//! # Embedding
+//!
+//! Depend on this crate and call [`mysql_binlog::run`] with in-process
+//! [`InPlaceTransform`] stages (same CLI flags as `surreal-sync from mysql-binlog`,
+//! source-shaped argv: `sync|snapshot …`). See
+//! `examples/mysql_binlog_custom_transform.rs` and `docs/sync-pipeline.md`.
+//!
 //! # Database-Specific Sync Crates
 //!
 //! Each database has its own dedicated sync crate:
@@ -48,9 +55,28 @@
 //! and struct definitions.
 
 use clap::Parser;
+use rustls::crypto::CryptoProvider;
 use sync_core::ZeroTemporalPolicy;
 
+pub mod mysql_binlog;
+pub(crate) mod sync_helpers;
 pub mod testing;
+pub mod transforms;
+
+/// Install the TLS crypto provider and initialize tracing (same as the stock binary).
+///
+/// Called automatically by [`mysql_binlog::run`]. Call this yourself if you use
+/// lower-level entrypoints such as [`mysql_binlog::run_sync`].
+pub fn init() {
+    if let Err(err) = CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
+    {
+        eprintln!("Error setting up crypto provider for TLS: {err:?}");
+    }
+
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+}
 
 /// Run a watermark snapshot+stream full sync and then continue with the
 /// source's existing incremental runner from the handed-off stream position,
@@ -84,6 +110,10 @@ where
 // Re-export CSV and JSONL crates for convenience
 pub use surreal_sync_csv_source as csv;
 pub use surreal_sync_jsonl_source as jsonl;
+
+// Transform + core types for embedders (one dependency: surreal-sync)
+pub use sync_core::{UniversalChange, UniversalChangeOp, UniversalRow, UniversalValue};
+pub use sync_transform::{ApplyOpts, FlattenId, InPlaceTransform, Pipeline};
 
 #[derive(Parser, Clone)]
 pub struct SurrealOpts {
