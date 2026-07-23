@@ -1012,6 +1012,7 @@ dependencies = [
  "rand_core 0.6.4",
  "rsa",
  "rust_decimal",
+ "rustls 0.23.41",
  "rustls-pemfile 2.2.0",
  "serde",
  "serde_json",
@@ -1022,7 +1023,6 @@ dependencies = [
  "tokio-rustls 0.26.4",
  "tracing",
  "tracing-subscriber",
- "webpki-roots 1.0.8",
  "zstd",
 ]
 
@@ -2570,7 +2570,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a3d7db9596fecd151c5f638c0ee5d5bd487b6e0ea232e5dc96d5250f6f94b1d"
 dependencies = [
  "crc32fast",
- "libz-sys",
  "miniz_oxide",
 ]
 
@@ -4691,6 +4690,7 @@ dependencies = [
 name = "mysql-types"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "binlog-protocol",
  "chrono",
@@ -4698,11 +4698,13 @@ dependencies = [
  "json-types",
  "mysql_async",
  "rust_decimal",
+ "rustls 0.23.41",
  "serde",
  "serde_json",
  "sync-core",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -4724,14 +4726,18 @@ dependencies = [
  "pem",
  "percent-encoding",
  "rand 0.9.4",
+ "rustls 0.23.41",
+ "rustls-pemfile 2.2.0",
  "serde",
  "serde_json",
  "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-rustls 0.26.4",
  "tokio-util",
  "twox-hash",
  "url",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
@@ -7890,6 +7896,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "binlog-protocol",
  "checkpoint",
  "chrono",
  "futures",

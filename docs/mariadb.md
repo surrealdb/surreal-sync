@@ -22,6 +22,10 @@ You need appropriate permissions to create triggers and tables in the MariaDB da
 
 Every table you select for sync must have a usable primary key (single- or multi-column). Composite PKs become SurrealDB array record IDs (`table:[k1, k2]`) by default; join-table relations stay colon-flattened. Optional `flatten_id` / custom workers: [How sync works — Record IDs](sync-pipeline.md#record-ids-and-composite-primary-keys). `surreal-sync` also writes a small `surreal_sync_signal` table on the source for watermark signalling.
 
+## TLS
+
+Use the same `--tls-mode` / `--tls-ca` / `--tls-cert` / `--tls-key` flags as MySQL trigger sync (MariaDB speaks the MySQL protocol). See [Surreal-Sync for MySQL — TLS](mysql.md#tls).
+
 ## Combined sync
 
 The `sync` command runs the watermark snapshot and continues incremental sync from the handed-off end position in one process — no separate incremental replay pass is needed to reach consistency.

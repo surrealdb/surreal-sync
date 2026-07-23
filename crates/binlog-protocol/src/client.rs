@@ -3,7 +3,7 @@ use crate::event::{EventBody, EventParser, RawEvent};
 use crate::flavor::mariadb::register;
 use crate::flavor::mysql::dump_gtid;
 use crate::flavor::Flavor;
-use crate::options::{ReplicaOptions, ResumePosition};
+use crate::options::{ReplicaOptions, ResumePosition, SslMode};
 use crate::shared::checksum::event_body;
 use crate::shared::event_header::EventHeader;
 use crate::shared::position::PositionTracker;
@@ -89,6 +89,23 @@ pub struct BinlogClient {
 
 impl BinlogClient {
     pub async fn connect(opts: ReplicaOptions) -> Result<Self, Error> {
+        match Self::connect_once(opts.clone()).await {
+            Ok(client) => Ok(client),
+            // Preferred already sent an SSL request before the handshake failed; fall back
+            // on a fresh plaintext TCP connection (MySQL-client Preferred semantics).
+            Err(Error::Ssl(msg)) if opts.ssl.is_preferred() => {
+                tracing::warn!(
+                    "TLS handshake failed under --tls-mode preferred ({msg}); retrying without TLS"
+                );
+                let mut plain = opts;
+                plain.ssl = SslMode::Disabled;
+                Self::connect_once(plain).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn connect_once(opts: ReplicaOptions) -> Result<Self, Error> {
         let mut channel = PacketChannel::connect(&opts.host, opts.port).await?;
         let hs = handshake(&mut channel).await?;
         authenticate(

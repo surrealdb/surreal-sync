@@ -11,8 +11,9 @@ pub struct SslOptions {
     pub key: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum SslMode {
+    #[default]
     Disabled,
     Preferred(SslOptions),
     Required(SslOptions),
@@ -25,6 +26,14 @@ impl SslMode {
 
     pub fn required() -> Self {
         Self::Required(SslOptions::default())
+    }
+
+    pub fn is_preferred(&self) -> bool {
+        matches!(self, Self::Preferred(_))
+    }
+
+    pub fn is_required(&self) -> bool {
+        matches!(self, Self::Required(_))
     }
 
     pub fn options(&self) -> Option<&SslOptions> {

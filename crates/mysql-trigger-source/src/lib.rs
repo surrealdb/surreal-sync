@@ -18,7 +18,7 @@ pub mod testing;
 
 pub use change_tracking::setup_mysql_change_tracking;
 pub use checkpoint::{get_current_checkpoint, MySQLCheckpoint};
-pub use client::new_mysql_pool;
+pub use client::{new_mysql_pool, new_mysql_pool_with_ssl};
 pub use full_sync::{
     get_primary_key_columns, read_table_chunk, run_full_sync, run_full_sync_with_transforms,
     TableChunk,
@@ -35,6 +35,8 @@ pub use interleaved_snapshot::{
 };
 pub use source::{ChangeStream, IncrementalSource, MySQLChangeStream, MySQLIncrementalSource};
 
+pub use binlog_protocol::{SslMode, SslOptions};
+
 /// MySQL source connection options
 #[derive(Clone, Debug, Default)]
 pub struct SourceOpts {
@@ -48,6 +50,8 @@ pub struct SourceOpts {
     pub mysql_boolean_paths: Option<Vec<String>>,
     /// Optional per-table primary-key overrides (`table → ordered columns`).
     pub id_column_overrides: sync_core::IdColumnOverrides,
+    /// TLS mode for the SQL connection pool
+    pub ssl: SslMode,
 }
 
 /// Sync options (non-connection related)

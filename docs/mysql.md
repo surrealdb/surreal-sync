@@ -22,6 +22,16 @@ You need appropriate permissions to create triggers and tables in the MySQL data
 
 Every table you select for sync must have a usable primary key (single- or multi-column). Composite PKs become SurrealDB array record IDs (`table:[k1, k2]`) by default; join-table relations stay colon-flattened. Optional `flatten_id` / custom workers: [How sync works — Record IDs](sync-pipeline.md#record-ids-and-composite-primary-keys). `surreal-sync` also writes a small `surreal_sync_signal` table on the source for watermark signalling.
 
+## TLS
+
+Encrypt the MySQL connection with the same flags as binlog sync:
+
+- `--tls-mode disabled` (default) — plain connection.
+- `--tls-mode preferred` — try TLS; fall back to plain if TLS is unavailable.
+- `--tls-mode required` — require TLS.
+- `--tls-ca <PATH>` — optional CA file for strict server verification. Omit it to encrypt without requiring a public CA (common for self-signed Docker MySQL).
+- `--tls-cert` / `--tls-key` — optional client certificate pair.
+
 ## Combined sync
 
 The `sync` command runs the watermark snapshot and continues incremental sync from the handed-off end position in one process — no separate incremental replay pass is needed to reach consistency.

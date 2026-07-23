@@ -7,7 +7,7 @@ use crate::{SourceOpts, SyncOpts};
 use anyhow::Result;
 use async_trait::async_trait;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
-use mysql_async::{prelude::*, Params, Pool, Row, Value};
+use mysql_async::{prelude::*, Params, Row, Value};
 use mysql_types::{row_to_typed_values_with_config, RowConversionConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -73,13 +73,15 @@ pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
     }
 
     // Create connection pool with better error context
-    let pool = Pool::from_url(&from_opts.source_uri).map_err(|e| {
-        anyhow::anyhow!(
-            "Failed to create MySQL connection pool from URI '{}': {}",
-            sanitize_connection_string(&from_opts.source_uri),
-            e
-        )
-    })?;
+    let pool = super::client::new_mysql_pool_with_ssl(&from_opts.source_uri, &from_opts.ssl)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to create MySQL connection pool from URI '{}': {}",
+                sanitize_connection_string(&from_opts.source_uri),
+                e
+            )
+        })?;
 
     let mut conn = pool.get_conn().await.map_err(|e| {
         anyhow::anyhow!(

@@ -210,14 +210,17 @@ binlog_row_image=FULL
 gtid_strict_mode=ON   # recommended
 ```
 
-### TLS for the replication connection
+### TLS for MySQL connections
 
-Provide `--tls-mode` to encrypt the replication connection when the server is reachable only over an untrusted network:
+Use `--tls-mode` when MySQL is only reachable over an untrusted network (or when your server requires encrypted clients):
 
-- `--tls-mode disabled` (default) — plaintext; use only on a trusted network or VPN.
-- `--tls-mode preferred` — use TLS if the server offers it.
-- `--tls-mode required` — require TLS; fail if unavailable.
-- `--tls-ca <PATH>` / `--tls-cert <PATH>` / `--tls-key <PATH>` — verify the server and/or present a client certificate.
+- `--tls-mode disabled` (default) — plain connection. Fine on a trusted network or VPN.
+- `--tls-mode preferred` — try TLS; if the server cannot do TLS (or the handshake fails), continue without encryption.
+- `--tls-mode required` — always use TLS; fail if encryption cannot be established.
+- `--tls-ca <PATH>` — trust this CA when checking the server certificate. Pass this when you want strict verification (for example a private CA). If you omit it, surreal-sync still encrypts in `preferred`/`required` but does not require a public CA match — typical for self-signed lab or Docker MySQL setups.
+- `--tls-cert <PATH>` / `--tls-key <PATH>` — present a client certificate when the server asks for one (both required together).
+
+The same flags apply to the SQL connection used for snapshots and to the binlog replication stream.
 
 ### Authentication plugins
 

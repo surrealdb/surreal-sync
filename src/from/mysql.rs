@@ -68,6 +68,7 @@ async fn run_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
         tables: args.tables,
         mysql_boolean_paths: args.boolean_paths,
         id_column_overrides: Default::default(),
+        ssl: args.tls.trigger_ssl_mode(),
     };
 
     let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
@@ -164,6 +165,7 @@ async fn run_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
         tables: args.tables,
         mysql_boolean_paths: args.boolean_paths,
         id_column_overrides: Default::default(),
+        ssl: args.tls.trigger_ssl_mode(),
     };
 
     let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
@@ -315,6 +317,7 @@ async fn run_incremental_v2(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
         tables: args.tables,
         mysql_boolean_paths: args.boolean_paths,
         id_column_overrides: Default::default(),
+        ssl: args.tls.trigger_ssl_mode(),
     };
 
     // Connect to SurrealDB using v2 SDK
@@ -367,6 +370,7 @@ async fn mysql_snapshot_full<S, St>(
     connection_string: String,
     database: Option<String>,
     chunk_size: usize,
+    ssl: surreal_sync_mysql_trigger_source::SslMode,
     manager: Option<&SyncManager<St>>,
     transforms: &SnapshotTransforms,
 ) -> anyhow::Result<()>
@@ -374,7 +378,8 @@ where
     S: SurrealSink,
     St: CheckpointStore,
 {
-    let pool = surreal_sync_mysql_trigger_source::new_mysql_pool(&connection_string)?;
+    let pool = surreal_sync_mysql_trigger_source::new_mysql_pool_with_ssl(&connection_string, &ssl)
+        .await?;
     let database = resolve_mysql_database(&pool, &database).await?;
     let config = InterleavedSnapshotConfig { chunk_size };
     let mut checkpointer = NoopCheckpointer;
@@ -433,6 +438,7 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.connection_string,
                 args.database,
                 args.chunk_size,
+                args.tls.trigger_ssl_mode(),
                 Some(&manager),
                 &transforms,
             )
@@ -454,6 +460,7 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.connection_string,
                 args.database,
                 args.chunk_size,
+                args.tls.trigger_ssl_mode(),
                 Some(&manager),
                 &transforms,
             )
@@ -465,6 +472,7 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.connection_string,
                 args.database,
                 args.chunk_size,
+                args.tls.trigger_ssl_mode(),
                 None,
                 &transforms,
             )
@@ -504,6 +512,7 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.connection_string,
                 args.database,
                 args.chunk_size,
+                args.tls.trigger_ssl_mode(),
                 Some(&manager),
                 &transforms,
             )
@@ -519,6 +528,7 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.connection_string,
                 args.database,
                 args.chunk_size,
+                args.tls.trigger_ssl_mode(),
                 Some(&manager),
                 &transforms,
             )
@@ -530,6 +540,7 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.connection_string,
                 args.database,
                 args.chunk_size,
+                args.tls.trigger_ssl_mode(),
                 None,
                 &transforms,
             )
@@ -603,7 +614,11 @@ async fn mysql_orchestrate<S: SurrealSink>(
     pipeline: Pipeline,
     apply_opts: ApplyOpts,
 ) -> anyhow::Result<()> {
-    let pool = surreal_sync_mysql_trigger_source::new_mysql_pool(&args.connection_string)?;
+    let pool = surreal_sync_mysql_trigger_source::new_mysql_pool_with_ssl(
+        &args.connection_string,
+        &args.tls.trigger_ssl_mode(),
+    )
+    .await?;
     let database = resolve_mysql_database(&pool, &args.database).await?;
     let config = InterleavedSnapshotConfig {
         chunk_size: args.chunk_size,
@@ -623,6 +638,7 @@ async fn mysql_orchestrate<S: SurrealSink>(
         tables: args.tables.clone(),
         mysql_boolean_paths: args.boolean_paths.clone(),
         id_column_overrides,
+        ssl: args.tls.trigger_ssl_mode(),
     };
 
     let transforms = SnapshotTransforms {
@@ -667,7 +683,11 @@ async fn mysql_orchestrate<S: SurrealSink>(
 /// Emit an ad-hoc `execute-snapshot` signal so a running `sync` snapshots the
 /// requested tables.
 pub async fn run_snapshot_signal(args: MySQLSnapshotArgs) -> anyhow::Result<()> {
-    let pool = surreal_sync_mysql_trigger_source::new_mysql_pool(&args.connection_string)?;
+    let pool = surreal_sync_mysql_trigger_source::new_mysql_pool_with_ssl(
+        &args.connection_string,
+        &args.tls.trigger_ssl_mode(),
+    )
+    .await?;
     let database = resolve_mysql_database(&pool, &args.database).await?;
     surreal_sync_mysql_trigger_source::request_snapshot(pool, database, &args.tables).await?;
     tracing::info!(
@@ -745,6 +765,7 @@ async fn run_incremental_v3(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
         tables: args.tables,
         mysql_boolean_paths: args.boolean_paths,
         id_column_overrides: Default::default(),
+        ssl: args.tls.trigger_ssl_mode(),
     };
 
     // Connect to SurrealDB using v3 SDK

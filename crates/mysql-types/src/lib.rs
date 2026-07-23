@@ -34,6 +34,7 @@ pub mod ddl;
 pub mod forward;
 pub mod reverse;
 pub mod schema;
+pub mod ssl;
 
 pub use binlog::{
     apply_mysql_json_diffs_to_cell, binlog_cell_to_universal_value, BinlogColumnMeta,
@@ -46,3 +47,4 @@ pub use reverse::{
     RowConversionConfig,
 };
 pub use schema::mysql_column_to_universal_type;
+pub use ssl::new_mysql_pool_with_ssl;
