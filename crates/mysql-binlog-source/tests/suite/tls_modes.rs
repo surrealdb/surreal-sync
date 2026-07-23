@@ -202,6 +202,110 @@ impl Drop for TlsMysqlContainer {
     }
 }
 
+/// MySQL container with TLS explicitly disabled on the server.
+struct PlaintextOnlyContainer {
+    name: String,
+    connection_string: String,
+}
+
+impl PlaintextOnlyContainer {
+    async fn start(name: &str) -> Result<Self> {
+        let _ = Command::new("docker")
+            .args(["rm", "-f", name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+
+        let image = mysql_binlog_image();
+        let output = Command::new("docker")
+            .args([
+                "run",
+                "--name",
+                name,
+                "-e",
+                "MYSQL_ROOT_PASSWORD=testpass",
+                "-e",
+                "MYSQL_DATABASE=testdb",
+                "-p",
+                "0:3306",
+                "-d",
+                &image,
+                "--ssl=0",
+                "--log-bin=mysql-bin",
+                "--binlog-format=ROW",
+                "--gtid-mode=ON",
+                "--enforce-gtid-consistency=ON",
+                "--server-id=1",
+                "--log-slave-updates=ON",
+            ])
+            .output()
+            .context("start plaintext-only MySQL container")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "start plaintext-only MySQL failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let host_port = wait_for_port(name)?;
+        let connection_string = format!("mysql://root:testpass@127.0.0.1:{host_port}/testdb");
+        let container = Self {
+            name: name.to_string(),
+            connection_string,
+        };
+        container.wait_ready(120).await?;
+        Ok(container)
+    }
+
+    async fn wait_ready(&self, timeout_secs: u64) -> Result<()> {
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(timeout_secs) {
+            if let Ok(pool) = mysql_async::Pool::from_url(&self.connection_string) {
+                if let Ok(mut conn) = pool.get_conn().await {
+                    let ok: Result<Option<i32>, _> = conn.query_first("SELECT 1").await;
+                    drop(conn);
+                    let _ = pool.disconnect().await;
+                    if ok.is_ok() {
+                        return Ok(());
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+        }
+        anyhow::bail!("plaintext-only MySQL not ready within {timeout_secs}s")
+    }
+
+    async fn connect_binlog(&self, ssl: SslMode, server_id: u32) -> Result<BinlogClient> {
+        let (host, port, username, password) = parse_mysql_uri(&self.connection_string)?;
+        BinlogClient::connect(ReplicaOptions {
+            host,
+            port,
+            username,
+            password,
+            server_id,
+            ssl,
+            blocking_poll: Duration::from_millis(200),
+            flavor: None,
+            mariadb_flags: binlog_protocol::MariaDbDumpFlags {
+                send_annotate_rows: true,
+            },
+            mariadb_gtid_strict_mode: binlog_protocol::MariaDbGtidStrictMode::ServerDefault,
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+}
+
+impl Drop for PlaintextOnlyContainer {
+    fn drop(&mut self) {
+        let _ = Command::new("docker")
+            .args(["rm", "-f", &self.name])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+}
+
 fn wait_for_port(name: &str) -> Result<u16> {
     for _ in 0..20 {
         let output = Command::new("docker")
@@ -315,27 +419,31 @@ async fn tls_required_without_ca_connects_self_signed() -> Result<()> {
 }
 
 #[tokio::test]
-async fn tls_required_fails_when_server_has_no_ssl() -> Result<()> {
+async fn tls_required_fails_when_server_cannot_use_tls() -> Result<()> {
     crate::shared::init_logging();
-    // Prefer a server that does not advertise CLIENT_SSL. Stock MySQL 8 images
-    // usually still enable SSL with auto-generated certs, so we simulate the
-    // failure path by requiring TLS against a host that is not MySQL — skip if
-    // the shared server does advertise SSL (common). Instead: use Required with
-    // an invalid host after confirming capability check exists via unit path.
-    //
-    // Practical check: Required with a CA that does not match still fails (no fallback).
-    let c = TlsMysqlContainer::start("ss-mysql-tls-required-badca").await?;
-    let err = c
-        .connect_binlog(
-            SslMode::Required(SslOptions {
-                ca: Some("/nonexistent/missing-ca.pem".into()),
-                cert: None,
-                key: None,
-            }),
-            9_100_006,
-        )
-        .await;
-    assert!(err.is_err(), "required must not fall back to plaintext");
+    let c = PlaintextOnlyContainer::start("ss-mysql-no-tls-required").await?;
+    let err = c.connect_binlog(SslMode::required(), 9_100_006).await;
+    assert!(
+        err.is_err(),
+        "required must fail when the server cannot use TLS"
+    );
+    let msg = err.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        msg.contains("CLIENT_SSL") || msg.contains("TLS") || msg.contains("ssl"),
+        "expected a TLS capability error, got: {msg}"
+    );
+
+    let pool_err = mysql_types::new_mysql_pool_with_ssl(
+        &c.connection_string,
+        &SslMode::required(),
+    )
+    .await?
+    .get_conn()
+    .await;
+    assert!(
+        pool_err.is_err(),
+        "required SQL pool must fail when the server cannot use TLS"
+    );
     Ok(())
 }
 
