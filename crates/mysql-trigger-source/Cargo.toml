@@ -5,13 +5,14 @@ edition = "2021"
 description = "MySQL trigger-based sync for surreal-sync"
 
 [dependencies]
-mysql_async = "0.36"
+mysql_async = { version = "0.36", default-features = false, features = ["derive", "rustls-tls", "tls12", "aws-lc-rs", "minimal"] }
 surreal-sink = { path = "../surreal-sink" }
 surreal-sync-interleaved-snapshot = { path = "../interleaved-snapshot" }
 sync-core = { path = "../sync-core" }
 sync-transform = { path = "../sync-transform" }
 checkpoint = { path = "../checkpoint" }
 mysql-types = { path = "../mysql-types" }
+binlog-protocol = { path = "../binlog-protocol" }
 json-types = { path = "../json-types" }
 uuid = { version = "1.10", features = ["v4", "serde"] }
 tokio = { version = "1.49", features = ["full"] }
@@ -33,3 +34,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 sync-transform = { path = "../sync-transform" }
 surreal2-sink = { path = "../surreal2-sink" }
+anyhow = "1.0.100"

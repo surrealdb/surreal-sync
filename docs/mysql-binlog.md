@@ -210,14 +210,23 @@ binlog_row_image=FULL
 gtid_strict_mode=ON   # recommended
 ```
 
-### TLS for the replication connection
+### TLS for MySQL connections
 
-Provide `--tls-mode` to encrypt the replication connection when the server is reachable only over an untrusted network:
+Use `--tls-mode` when MySQL is only reachable over an untrusted network (or when your server requires encrypted clients):
 
-- `--tls-mode disabled` (default) — plaintext; use only on a trusted network or VPN.
-- `--tls-mode preferred` — use TLS if the server offers it.
-- `--tls-mode required` — require TLS; fail if unavailable.
-- `--tls-ca <PATH>` / `--tls-cert <PATH>` / `--tls-key <PATH>` — verify the server and/or present a client certificate.
+- `--tls-mode disabled` (default) — plain connection. Fine on a trusted network or VPN.
+- `--tls-mode preferred` — try TLS first; if the server cannot encrypt the connection (or the TLS handshake fails), surreal-sync falls back to a plain connection.
+- `--tls-mode required` — always use TLS; fail if encryption cannot be established.
+- `--tls-ca <PATH>` — trust this CA when checking the server certificate. Use this when you need to confirm you are talking to the intended server (private CA, cloud provider CA bundle, etc.).
+- `--tls-cert <PATH>` / `--tls-key <PATH>` — present a client certificate when the server asks for one (both required together).
+
+**Encryption vs verification.** With `preferred` or `required`, surreal-sync encrypts the session even when you omit `--tls-ca`. Without `--tls-ca`, it does **not** verify that the server certificate belongs to the host you expect — the connection is encrypted, but an attacker on the path could present another certificate. On untrusted networks, use `--tls-mode required` **and** pass the CA that signed your server (or your provider’s CA bundle) via `--tls-ca`.
+
+**Connection string hostname.** Put the hostname you expect the server to identify as in `--connection-string` (for example the RDS/Aurora/Cloud SQL endpoint, not only `127.0.0.1` when tunnelling). When you pass `--tls-ca`, that name is checked against the certificate. For managed MySQL, download the provider’s CA file and pass it with `--tls-ca`.
+
+The same flags apply to the SQL connection used for snapshots and to the binlog replication stream.
+
+When `--tls-mode disabled`, `--tls-ca`, `--tls-cert`, and `--tls-key` are ignored.
 
 ### Authentication plugins
 
@@ -371,10 +380,13 @@ While a `sync` follower is streaming, snapshot additional tables on the fly. The
 surreal-sync from mysql-binlog snapshot \
   --connection-string "$CONNECTION_STRING" \
   --database "myapp" \
-  --tables "new_table,another_table"
+  --tables "new_table,another_table" \
+  --tls-mode required \
+  --tls-ca /path/to/ca.pem
 ```
 
 - `--tables` (required): comma-separated tables to snapshot.
+- TLS flags (`--tls-mode`, `--tls-ca`, `--tls-cert`, `--tls-key`) apply here the same way as on `sync`.
 
 ### Adding tables to a running sync
 

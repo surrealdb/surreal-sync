@@ -9,13 +9,16 @@ license = "MIT"
 sync-core = { path = "../sync-core" }
 json-types = { path = "../json-types" }
 binlog-protocol = { path = "../binlog-protocol" }
-mysql_async = { version = "0.36" }
+mysql_async = { version = "0.36", default-features = false, features = ["derive", "rustls-tls", "tls12", "aws-lc-rs", "minimal"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 base64 = "0.22"
+anyhow = "1.0.100"
+tracing = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std"] }
 
 [dev-dependencies]
 tokio = { version = "1.49", features = ["full"] }

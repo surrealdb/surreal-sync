@@ -763,6 +763,9 @@ struct MySQLFullArgs {
     transforms_config: Option<PathBuf>,
 
     #[command(flatten)]
+    tls: MySQLTlsArgs,
+
+    #[command(flatten)]
     surreal: SurrealOpts,
 }
 
@@ -819,6 +822,9 @@ struct MySQLIncrementalArgs {
     transforms_config: Option<PathBuf>,
 
     #[command(flatten)]
+    tls: MySQLTlsArgs,
+
+    #[command(flatten)]
     surreal: SurrealOpts,
 }
 
@@ -872,6 +878,9 @@ struct MySQLSyncArgs {
     id_columns: Vec<String>,
 
     #[command(flatten)]
+    tls: MySQLTlsArgs,
+
+    #[command(flatten)]
     surreal: SurrealOpts,
 }
 
@@ -890,6 +899,9 @@ struct MySQLSnapshotArgs {
     /// Tables to snapshot (comma-separated)
     #[arg(long, value_delimiter = ',', required = true)]
     tables: Vec<String>,
+
+    #[command(flatten)]
+    tls: MySQLTlsArgs,
 }
 
 // =============================================================================
@@ -933,9 +945,9 @@ impl From<MariaDbGtidStrictModeArg> for surreal_sync_mysql_binlog_source::MariaD
     }
 }
 
-/// TLS behavior for the raw MySQL binlog replication connection.
+/// TLS behavior for MySQL/MariaDB SQL and binlog connections.
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
-enum MySQLBinlogTlsModeArg {
+enum MySQLTlsModeArg {
     #[default]
     Disabled,
     Preferred,
@@ -943,25 +955,25 @@ enum MySQLBinlogTlsModeArg {
 }
 
 #[derive(Clone, Debug, Args, Default)]
-struct MySQLBinlogTlsArgs {
-    /// TLS mode for the raw binlog replication connection
-    #[arg(long, value_enum, default_value_t = MySQLBinlogTlsModeArg::default())]
-    tls_mode: MySQLBinlogTlsModeArg,
+struct MySQLTlsArgs {
+    /// TLS mode for MySQL connections (`disabled`, `preferred`, or `required`)
+    #[arg(long, value_enum, default_value_t = MySQLTlsModeArg::default())]
+    tls_mode: MySQLTlsModeArg,
 
-    /// PEM CA bundle used to verify the MySQL server certificate
+    /// PEM CA bundle used to verify the MySQL server certificate (ignored when `--tls-mode disabled`)
     #[arg(long, value_name = "PATH")]
     tls_ca: Option<String>,
 
-    /// PEM client certificate for MySQL TLS client auth
+    /// PEM client certificate for MySQL TLS client auth (ignored when `--tls-mode disabled`)
     #[arg(long, value_name = "PATH")]
     tls_cert: Option<String>,
 
-    /// PEM private key for MySQL TLS client auth
+    /// PEM private key for MySQL TLS client auth (ignored when `--tls-mode disabled`; requires `--tls-cert`)
     #[arg(long, value_name = "PATH")]
     tls_key: Option<String>,
 }
 
-impl MySQLBinlogTlsArgs {
+impl MySQLTlsArgs {
     fn ssl_mode(&self) -> surreal_sync_mysql_binlog_source::SslMode {
         let options = surreal_sync_mysql_binlog_source::SslOptions {
             ca: self.tls_ca.clone(),
@@ -969,12 +981,38 @@ impl MySQLBinlogTlsArgs {
             key: self.tls_key.clone(),
         };
         match self.tls_mode {
-            MySQLBinlogTlsModeArg::Disabled => surreal_sync_mysql_binlog_source::SslMode::Disabled,
-            MySQLBinlogTlsModeArg::Preferred => {
+            MySQLTlsModeArg::Disabled => surreal_sync_mysql_binlog_source::SslMode::Disabled,
+            MySQLTlsModeArg::Preferred => {
                 surreal_sync_mysql_binlog_source::SslMode::Preferred(options)
             }
-            MySQLBinlogTlsModeArg::Required => {
+            MySQLTlsModeArg::Required => {
                 surreal_sync_mysql_binlog_source::SslMode::Required(options)
+            }
+        }
+    }
+
+    fn trigger_ssl_mode(&self) -> surreal_sync_mysql_trigger_source::SslMode {
+        match self.ssl_mode() {
+            surreal_sync_mysql_binlog_source::SslMode::Disabled => {
+                surreal_sync_mysql_trigger_source::SslMode::Disabled
+            }
+            surreal_sync_mysql_binlog_source::SslMode::Preferred(o) => {
+                surreal_sync_mysql_trigger_source::SslMode::Preferred(
+                    surreal_sync_mysql_trigger_source::SslOptions {
+                        ca: o.ca,
+                        cert: o.cert,
+                        key: o.key,
+                    },
+                )
+            }
+            surreal_sync_mysql_binlog_source::SslMode::Required(o) => {
+                surreal_sync_mysql_trigger_source::SslMode::Required(
+                    surreal_sync_mysql_trigger_source::SslOptions {
+                        ca: o.ca,
+                        cert: o.cert,
+                        key: o.key,
+                    },
+                )
             }
         }
     }
@@ -1028,7 +1066,7 @@ struct MySQLBinlogSyncArgs {
     mariadb_gtid_strict_mode: MariaDbGtidStrictModeArg,
 
     #[command(flatten)]
-    tls: MySQLBinlogTlsArgs,
+    tls: MySQLTlsArgs,
 
     /// Target SurrealDB namespace
     #[arg(long)]
@@ -1120,6 +1158,9 @@ struct MySQLBinlogSnapshotArgs {
     /// Tables to snapshot (comma-separated)
     #[arg(long, value_delimiter = ',', required = true)]
     tables: Vec<String>,
+
+    #[command(flatten)]
+    tls: MySQLTlsArgs,
 }
 
 // =============================================================================
@@ -1853,8 +1894,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mysql_binlog_tls_args_default_to_disabled() {
-        let args = MySQLBinlogTlsArgs::default();
+    fn mysql_tls_args_default_to_disabled() {
+        let args = MySQLTlsArgs::default();
         assert!(matches!(
             args.ssl_mode(),
             surreal_sync_mysql_binlog_source::SslMode::Disabled
@@ -1862,9 +1903,9 @@ mod tests {
     }
 
     #[test]
-    fn mysql_binlog_tls_args_preserve_ca_and_client_cert_paths() {
-        let args = MySQLBinlogTlsArgs {
-            tls_mode: MySQLBinlogTlsModeArg::Required,
+    fn mysql_tls_args_preserve_ca_and_client_cert_paths() {
+        let args = MySQLTlsArgs {
+            tls_mode: MySQLTlsModeArg::Required,
             tls_ca: Some("ca.pem".to_string()),
             tls_cert: Some("client.pem".to_string()),
             tls_key: Some("client-key.pem".to_string()),

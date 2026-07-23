@@ -25,7 +25,7 @@ use crate::catch_up::{
 use crate::change::cdc_change_to_universal;
 use crate::checkpoint::BinlogCheckpoint;
 use crate::client::{
-    connect_binlog_client_with_poll, get_pool_conn, new_mysql_pool, resolve_database,
+    connect_binlog_client_with_poll, get_pool_conn, new_mysql_pool_with_ssl, resolve_database,
     start_binlog_from_checkpoint, use_database, DEFAULT_BINLOG_POLL_TIMEOUT,
 };
 use crate::schema::{collect_mysql_database_schema, get_table_column_names_ordinal};
@@ -181,7 +181,7 @@ where
         );
     }
 
-    let pool = new_mysql_pool(&from_opts.connection_string)?;
+    let pool = new_mysql_pool_with_ssl(&from_opts.connection_string, &from_opts.ssl).await?;
     let database = resolve_database(&pool, &from_opts).await?;
     let mut conn = get_pool_conn(&pool, &from_opts.connection_string).await?;
     use_database(&mut conn, &database).await?;

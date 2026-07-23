@@ -128,6 +128,7 @@ async fn identity_and_external_mutate_incremental() -> Result<()> {
         tables: vec!["people".to_string()],
         mysql_boolean_paths: None,
         id_column_overrides: Default::default(),
+        ssl: Default::default(),
     };
     let from_checkpoint = MySQLCheckpoint {
         sequence_id: 0,
@@ -230,6 +231,7 @@ async fn composite_pk_entity_writes_surreal_array_record_ids() -> Result<()> {
         tables: vec!["ledger".to_string()],
         mysql_boolean_paths: None,
         id_column_overrides: Default::default(),
+        ssl: Default::default(),
     };
     let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
         batch_size: 100,
@@ -335,6 +337,7 @@ async fn flatten_id_toml_writes_surreal_text_record_ids() -> Result<()> {
         tables: vec!["ledger".to_string()],
         mysql_boolean_paths: None,
         id_column_overrides: Default::default(),
+        ssl: Default::default(),
     };
     let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
         batch_size: 100,

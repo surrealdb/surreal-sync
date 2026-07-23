@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use binlog_protocol::{
     BinlogClient, Flavor, MariaDbDumpFlags, MariaDbGtidList, ReplicaOptions, ResumePosition,
+    SslMode,
 };
 use mysql_async::{prelude::*, Pool, Row};
 use tracing::info;
@@ -37,8 +38,9 @@ pub fn parse_mysql_uri(uri: &str) -> Result<(String, u16, String, String, Option
     Ok((host, port, username, password, dbpart))
 }
 
-pub fn new_mysql_pool(connection_string: &str) -> Result<Pool> {
-    Ok(Pool::from_url(connection_string)?)
+/// Create a MySQL SQL pool honouring TLS mode (with Preferred plaintext fallback).
+pub async fn new_mysql_pool_with_ssl(connection_string: &str, ssl: &SslMode) -> Result<Pool> {
+    mysql_types::new_mysql_pool_with_ssl(connection_string, ssl).await
 }
 
 /// Short, actionable message when a MySQL TCP/connect attempt fails.

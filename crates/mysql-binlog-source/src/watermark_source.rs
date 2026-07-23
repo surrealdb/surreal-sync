@@ -26,8 +26,8 @@ use crate::catch_up::{
 use crate::change::cdc_change_to_universal;
 use crate::checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogReconciliationPos};
 use crate::client::{
-    connect_binlog_client, get_pool_conn, new_mysql_pool, resolve_database, start_binlog_at_end,
-    start_binlog_from_checkpoint, use_database,
+    connect_binlog_client, get_pool_conn, new_mysql_pool_with_ssl, resolve_database,
+    start_binlog_at_end, start_binlog_from_checkpoint, use_database,
 };
 use crate::full_sync::{get_primary_key_columns, read_table_chunk};
 use crate::schema::{collect_mysql_database_schema, get_table_column_names_ordinal};
@@ -108,7 +108,7 @@ impl BinlogWatermarkSource {
         from_opts: &SourceOpts,
         options: ConnectOptions,
     ) -> Result<Self> {
-        let pool = new_mysql_pool(&from_opts.connection_string)?;
+        let pool = new_mysql_pool_with_ssl(&from_opts.connection_string, &from_opts.ssl).await?;
         let database = resolve_database(&pool, from_opts).await?;
         let mut conn = get_pool_conn(&pool, &from_opts.connection_string).await?;
         use_database(&mut conn, &database).await?;
@@ -173,7 +173,7 @@ impl BinlogWatermarkSource {
 
     /// Resolve the table names that would be snapshotted for these source options.
     pub async fn resolve_snapshot_table_names(from_opts: &SourceOpts) -> Result<Vec<String>> {
-        let pool = new_mysql_pool(&from_opts.connection_string)?;
+        let pool = new_mysql_pool_with_ssl(&from_opts.connection_string, &from_opts.ssl).await?;
         let database = resolve_database(&pool, from_opts).await?;
         let mut conn = get_pool_conn(&pool, &from_opts.connection_string).await?;
         use_database(&mut conn, &database).await?;

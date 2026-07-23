@@ -21,8 +21,8 @@ use crate::catch_up::{
 };
 use crate::checkpoint::BinlogCheckpoint;
 use crate::client::{
-    connect_binlog_client, get_pool_conn, new_mysql_pool, resolve_database, show_master_status,
-    use_database,
+    connect_binlog_client, get_pool_conn, new_mysql_pool_with_ssl, resolve_database,
+    show_master_status, use_database,
 };
 use crate::schema::collect_mysql_database_schema;
 use crate::signal::SIGNAL_TABLE;
@@ -103,7 +103,7 @@ pub async fn run_full_sync_cancellable_with_transforms<S: SurrealSink, CS: Check
         );
     }
 
-    let pool = new_mysql_pool(&from_opts.connection_string)?;
+    let pool = new_mysql_pool_with_ssl(&from_opts.connection_string, &from_opts.ssl).await?;
     let database = resolve_database(&pool, from_opts).await?;
     let mut conn = get_pool_conn(&pool, &from_opts.connection_string).await?;
     use_database(&mut conn, &database).await?;
@@ -539,7 +539,7 @@ pub async fn read_table_chunk(
 /// from it streams only changes committed after this instant — the explicit,
 /// resumable equivalent of "start fresh from the current position".
 pub async fn capture_head_checkpoint(from_opts: &SourceOpts) -> Result<BinlogCheckpoint> {
-    let pool = new_mysql_pool(&from_opts.connection_string)?;
+    let pool = new_mysql_pool_with_ssl(&from_opts.connection_string, &from_opts.ssl).await?;
     let flavor = connect_binlog_client(from_opts).await?.flavor();
     let checkpoint = capture_binlog_checkpoint(&pool, flavor).await?;
     pool.disconnect().await?;

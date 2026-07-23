@@ -3,8 +3,16 @@ use std::sync::Arc;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
+use tokio_rustls::rustls::crypto::{
+    verify_tls12_signature, verify_tls13_signature, CryptoProvider,
+};
+use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use tokio_rustls::rustls::{
+    ClientConfig, DigitallySignedStruct, Error as RustlsError, RootCertStore, SignatureScheme,
+};
 use tokio_rustls::TlsConnector;
 
 use crate::error::Error;
@@ -317,9 +325,10 @@ async fn negotiate_tls(
     };
     if handshake.capabilities & CLIENT_SSL == 0 {
         return match ssl {
+            // Preferred: server has no SSL — stay on plaintext.
             SslMode::Preferred(_) => Ok(()),
             SslMode::Required(_) => Err(Error::Ssl(
-                "server does not advertise CLIENT_SSL capability".into(),
+                "server does not advertise CLIENT_SSL capability; use a TLS-enabled MySQL server or --tls-mode preferred/disabled".into(),
             )),
             SslMode::Disabled => Ok(()),
         };
@@ -327,7 +336,12 @@ async fn negotiate_tls(
 
     let request = build_ssl_request(true);
     channel.write_packet(&request).await?;
-    channel.upgrade_tls(host, options).await
+    channel.upgrade_tls(host, options).await.map_err(|e| match e {
+        Error::Ssl(msg) if ssl.is_required() => Error::Ssl(format!(
+            "{msg}; for self-signed servers pass --tls-ca <path> or omit --tls-ca to encrypt without public-CA verification"
+        )),
+        other => other,
+    })
 }
 
 async fn drain_auth_tail(channel: &mut PacketChannel) -> Result<(), Error> {
@@ -447,8 +461,13 @@ fn auth_switch_response(
 }
 
 async fn tls_config(options: &SslOptions) -> Result<ClientConfig, Error> {
-    let mut roots = RootCertStore::empty();
-    if let Some(ca) = &options.ca {
+    // Ensure a process-wide rustls provider (needed when multiple crates pull rustls).
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
+    // With --tls-ca: verify the server against that CA.
+    // Without --tls-ca: encrypt without requiring a public-CA match (MySQL REQUIRED semantics).
+    let builder = if let Some(ca) = &options.ca {
+        let mut roots = RootCertStore::empty();
         let certs = load_certs(ca).await?;
         let (added, ignored) = roots.add_parsable_certificates(certs);
         if added == 0 {
@@ -456,11 +475,13 @@ async fn tls_config(options: &SslOptions) -> Result<ClientConfig, Error> {
                 "no usable CA certificates found in {ca} (ignored {ignored})"
             )));
         }
+        ClientConfig::builder().with_root_certificates(roots)
     } else {
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    }
+        ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert::new()?))
+    };
 
-    let builder = ClientConfig::builder().with_root_certificates(roots);
     match (&options.cert, &options.key) {
         (Some(cert), Some(key)) => {
             let certs = load_certs(cert).await?;
@@ -473,6 +494,58 @@ async fn tls_config(options: &SslOptions) -> Result<ClientConfig, Error> {
         (Some(_), None) | (None, Some(_)) => Err(Error::Ssl(
             "--tls-cert and --tls-key must be provided together".into(),
         )),
+    }
+}
+
+/// Encrypt-only verifier used when `--tls-ca` is omitted (MySQL `--ssl-mode=REQUIRED`).
+#[derive(Debug)]
+struct AcceptAnyServerCert {
+    algorithms: tokio_rustls::rustls::crypto::WebPkiSupportedAlgorithms,
+}
+
+impl AcceptAnyServerCert {
+    fn new() -> Result<Self, Error> {
+        let provider = CryptoProvider::get_default().cloned().ok_or_else(|| {
+            Error::Ssl("no rustls CryptoProvider installed; cannot build TLS client config".into())
+        })?;
+        Ok(Self {
+            algorithms: provider.signature_verification_algorithms,
+        })
+    }
+}
+
+impl ServerCertVerifier for AcceptAnyServerCert {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, RustlsError> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        verify_tls12_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, RustlsError> {
+        verify_tls13_signature(message, cert, dss, &self.algorithms)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.algorithms.supported_schemes()
     }
 }
 

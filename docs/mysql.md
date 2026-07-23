@@ -22,6 +22,42 @@ You need appropriate permissions to create triggers and tables in the MySQL data
 
 Every table you select for sync must have a usable primary key (single- or multi-column). Composite PKs become SurrealDB array record IDs (`table:[k1, k2]`) by default; join-table relations stay colon-flattened. Optional `flatten_id` / custom workers: [How sync works — Record IDs](sync-pipeline.md#record-ids-and-composite-primary-keys). `surreal-sync` also writes a small `surreal_sync_signal` table on the source for watermark signalling.
 
+## TLS
+
+Use `--tls-mode` when MariaDB is only reachable over an untrusted network (or when your server requires encrypted clients). The same flags work for `sync`, `full`, `incremental`, and ad-hoc `snapshot`:
+
+- `--tls-mode disabled` (default) — plain connection. Fine on a trusted network or VPN.
+- `--tls-mode preferred` — try TLS first; if the server cannot encrypt the connection (or the TLS handshake fails), surreal-sync falls back to a plain connection.
+- `--tls-mode required` — always use TLS; fail if encryption cannot be established.
+- `--tls-ca <PATH>` — trust this CA when checking the server certificate. Use this when you need to confirm you are talking to the intended server.
+- `--tls-cert <PATH>` / `--tls-key <PATH>` — present a client certificate when the server asks for one (both required together).
+
+**Encryption vs verification.** With `preferred` or `required`, surreal-sync encrypts the session even when you omit `--tls-ca`. Without `--tls-ca`, it does **not** verify that the server certificate belongs to the host you expect — the connection is encrypted, but an attacker on the path could present another certificate. On untrusted networks, use `--tls-mode required` **and** pass the CA that signed your server via `--tls-ca`.
+
+**Connection string hostname.** Put the hostname you expect the server to identify as in `--connection-string` (for example your MariaDB cloud endpoint, not only `127.0.0.1` when tunnelling). When you pass `--tls-ca`, that name is checked against the certificate.
+
+Example with TLS on combined sync and snapshot signalling:
+
+```bash
+surreal-sync from mysql sync \
+  --connection-string "$CONNECTION_STRING" \
+  --database "myapp" \
+  --tls-mode required \
+  --tls-ca /path/to/ca.pem \
+  ...
+
+surreal-sync from mysql snapshot \
+  --connection-string "$CONNECTION_STRING" \
+  --database "myapp" \
+  --tables "new_table" \
+  --tls-mode required \
+  --tls-ca /path/to/ca.pem
+```
+
+For binlog CDC (recommended for MariaDB), see [Surreal-Sync for MySQL Binlog — TLS](mysql-binlog.md#tls-for-mysql-connections).
+
+When `--tls-mode disabled`, `--tls-ca`, `--tls-cert`, and `--tls-key` are ignored.
+
 ## Combined sync
 
 The `sync` command runs the watermark snapshot and continues incremental sync from the handed-off end position in one process — no separate incremental replay pass is needed to reach consistency.

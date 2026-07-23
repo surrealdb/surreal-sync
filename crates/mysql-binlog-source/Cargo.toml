@@ -12,7 +12,7 @@ checkpoint = { path = "../checkpoint" }
 chrono = { version = "0.4", features = ["serde"] }
 json-types = { path = "../json-types" }
 mysql-types = { path = "../mysql-types" }
-mysql_async = "0.36"
+mysql_async = { version = "0.36", default-features = false, features = ["derive", "rustls-tls", "tls12", "aws-lc-rs", "minimal"] }
 surreal-sync-mysql-trigger-source = { path = "../mysql-trigger-source" }
 rand = "0.10"
 serde = { version = "1.0", features = ["derive"] }
@@ -36,6 +36,8 @@ surreal-sync-interleaved-snapshot = { path = "../interleaved-snapshot" }
 surreal2-sink = { path = "../surreal2-sink" }
 surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
 serde = { version = "1.0", features = ["derive"] }
+anyhow = "1.0"
+mysql-types = { path = "../mysql-types" }
 
 [lib]
 name = "surreal_sync_mysql_binlog_source"

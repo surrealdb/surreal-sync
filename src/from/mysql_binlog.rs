@@ -10,7 +10,7 @@ use checkpoint::{Checkpoint, CheckpointStore, SyncManager};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::SnapshotTransforms;
 use surreal_sync_mysql_binlog_source::{
-    request_snapshot, run_full_sync_cancellable_with_transforms,
+    new_mysql_pool_with_ssl, request_snapshot, run_full_sync_cancellable_with_transforms,
     run_initial_interleaved_snapshot_with_transforms,
     run_interleaved_snapshot_full_sync_with_transforms, run_replication_tail_with_transforms,
     BinlogCheckpoint, InterleavedFullSyncOptions, ReplicationTailOptions, SourceOpts, SyncOpts,
@@ -506,7 +506,7 @@ where
 /// Emit an ad-hoc execute-snapshot signal so a running `sync` snapshots the
 /// requested tables.
 pub async fn run_snapshot_signal(args: MySQLBinlogSnapshotArgs) -> anyhow::Result<()> {
-    let pool = mysql_async::Pool::from_url(&args.connection_string)?;
+    let pool = new_mysql_pool_with_ssl(&args.connection_string, &args.tls.ssl_mode()).await?;
     let database = resolve_mysql_database(&pool, &args.database).await?;
     request_snapshot(&pool, &database, &args.tables).await?;
     tracing::info!(

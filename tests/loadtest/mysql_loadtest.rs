@@ -110,6 +110,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         tables: vec![],
         mysql_boolean_paths: None,
         id_column_overrides: Default::default(),
+        ssl: Default::default(),
     };
 
     let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
