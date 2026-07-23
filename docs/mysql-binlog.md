@@ -219,6 +219,22 @@ Provide `--tls-mode` to encrypt the replication connection when the server is re
 - `--tls-mode required` — require TLS; fail if unavailable.
 - `--tls-ca <PATH>` / `--tls-cert <PATH>` / `--tls-key <PATH>` — verify the server and/or present a client certificate.
 
+### Authentication plugins
+
+MySQL 8 defaults to `caching_sha2_password`. surreal-sync supports the stages of that plugin (and the older `mysql_native_password` plugin) as follows:
+
+| Path | Meaning | surreal-sync |
+|------|---------|--------------|
+| Fast auth (`0x03`) | Server already has the password hash in cache | Supported |
+| Full auth + TLS (`0x04`) | Cache miss; send password in clear over TLS | Supported |
+| Full auth + RSA (`0x04`, no TLS) | Cache miss; encrypt password with the server RSA key | Supported |
+| `mysql_native_password` | Older SHA1 scramble plugin | Supported |
+| `sha256_password` | Different legacy plugin | Not supported |
+
+With `--tls-mode disabled` (the default), a cache miss uses RSA public-key encryption so the password is not sent in cleartext. Prefer `--tls-mode required` (with a CA) on untrusted networks so the whole replication session is encrypted, not only the password exchange.
+
+You may still create a replication user with `IDENTIFIED WITH mysql_native_password` for compatibility with older clients; it is optional for surreal-sync.
+
 ### Binlog compression
 
 surreal-sync transparently decodes MySQL 8's compressed transaction payloads (`TRANSACTION_PAYLOAD`, zstd). If you use per-column compression or a compression scheme surreal-sync does not yet decode, it fails with a clear error rather than importing corrupt data; disable that feature or open an issue:

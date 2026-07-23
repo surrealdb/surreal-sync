@@ -1009,6 +1009,7 @@ dependencies = [
  "insta",
  "libc",
  "mysql_async",
+ "rand_core 0.6.4",
  "rsa",
  "rust_decimal",
  "rustls-pemfile 2.2.0",

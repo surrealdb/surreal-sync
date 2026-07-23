@@ -9,8 +9,11 @@ use tokio_rustls::TlsConnector;
 
 use crate::error::Error;
 use crate::options::{SslMode, SslOptions};
+use rsa::pkcs8::DecodePublicKey;
 
 const UTF8_MB4_GENERAL_CI: u16 = 0x002d;
+/// MySQL auth scramble / nonce length (trailing NUL from the handshake is trimmed).
+const SCRAMBLE_LENGTH: usize = 20;
 const CLIENT_PROTOCOL_41: u32 = 512;
 const CLIENT_SSL: u32 = 2048;
 const CLIENT_SECURE_CONNECTION: u32 = 32768;
@@ -191,6 +194,7 @@ pub async fn authenticate(
 ) -> Result<(), Error> {
     negotiate_tls(channel, handshake, host, ssl).await?;
 
+    let mut scramble = handshake.scramble.clone();
     let auth = build_auth_packet(handshake, username, password, channel.tls_active())?;
     channel.write_packet(&auth).await?;
     let mut packet = channel.read_packet().await?;
@@ -216,15 +220,16 @@ pub async fn authenticate(
                         return Ok(());
                     }
                     Some(0x04) => {
-                        if !channel.tls_active() {
-                            return Err(Error::Auth(
-                                "caching_sha2_password full authentication requires TLS; use --tls-mode preferred or required"
-                                    .into(),
-                            ));
+                        if channel.tls_active() {
+                            let mut response = password.as_bytes().to_vec();
+                            response.push(0);
+                            channel.write_packet(&response).await?;
+                        } else {
+                            // Non-TLS full auth: RSA-encrypt the password with the
+                            // server's public key (caching_sha2_password).
+                            perform_caching_sha2_rsa_full_auth(channel, password, &scramble)
+                                .await?;
                         }
-                        let mut response = password.as_bytes().to_vec();
-                        response.push(0);
-                        channel.write_packet(&response).await?;
                         packet = channel.read_packet().await?;
                     }
                     other => {
@@ -243,7 +248,8 @@ pub async fn authenticate(
                     .find_map(|(i, &b)| if b == 0 { Some(i) } else { None })
                     .unwrap_or(0);
                 let plugin_data = &packet[1 + plugin.len() + 1..1 + plugin.len() + 1 + data_end];
-                let response = auth_switch_response(&plugin, password, plugin_data)?;
+                scramble = normalize_scramble(plugin_data);
+                let response = auth_switch_response(&plugin, password, &scramble)?;
                 channel.write_packet(&response).await?;
                 packet = channel.read_packet().await?;
             }
@@ -254,6 +260,50 @@ pub async fn authenticate(
             }
         }
     }
+}
+
+/// Request the server RSA public key and send an RSA-OAEP encrypted password
+/// for `caching_sha2_password` full authentication over a plaintext connection.
+async fn perform_caching_sha2_rsa_full_auth(
+    channel: &mut PacketChannel,
+    password: &str,
+    scramble: &[u8],
+) -> Result<(), Error> {
+    // 0x02 = PublicKeyRequest
+    channel.write_packet(&[0x02]).await?;
+    let key_pkt = channel.read_packet().await?;
+    check_error_packet(&key_pkt, "failed to get RSA public key")?;
+    if key_pkt.first() != Some(&0x01) {
+        return Err(Error::Auth(format!(
+            "unexpected RSA key response prefix: {:02x}",
+            key_pkt.first().copied().unwrap_or(0)
+        )));
+    }
+    // AuthMoreData: [0x01, PEM..., optional 0x00]
+    let pem_bytes = key_pkt[1..].strip_suffix(&[0x00]).unwrap_or(&key_pkt[1..]);
+    let pub_key_pem = std::str::from_utf8(pem_bytes)
+        .map_err(|e| Error::Auth(format!("invalid UTF-8 in RSA public key: {e}")))?;
+    let pub_key = rsa::RsaPublicKey::from_public_key_pem(pub_key_pem)
+        .map_err(|e| Error::Auth(format!("failed to parse RSA public key: {e}")))?;
+
+    // XOR null-terminated password with the 20-byte scramble (repeating).
+    let mut plain = password.as_bytes().to_vec();
+    plain.push(0);
+    if scramble.is_empty() {
+        return Err(Error::Auth(
+            "caching_sha2_password RSA full auth requires a non-empty scramble".into(),
+        ));
+    }
+    for (i, byte) in plain.iter_mut().enumerate() {
+        *byte ^= scramble[i % scramble.len()];
+    }
+
+    // MySQL uses RSAES-OAEP with SHA-1 (MySQL 8.0.5+).
+    let padding = rsa::Oaep::new::<sha1::Sha1>();
+    let encrypted = pub_key
+        .encrypt(&mut rand_core::OsRng, padding, &plain)
+        .map_err(|e| Error::Auth(format!("RSA encryption failed: {e}")))?;
+    channel.write_packet(&encrypted).await
 }
 
 async fn negotiate_tls(
@@ -509,6 +559,7 @@ fn parse_handshake(packet: &[u8]) -> Result<Handshake, Error> {
 
     let mut scramble = scramble_part1.to_vec();
     scramble.extend_from_slice(scramble_part2);
+    scramble = normalize_scramble(&scramble);
 
     let auth_plugin = if capabilities & CLIENT_PLUGIN_AUTH != 0 {
         read_null_string(&packet[pos..])
@@ -522,6 +573,14 @@ fn parse_handshake(packet: &[u8]) -> Result<Handshake, Error> {
         capabilities,
         auth_plugin,
     })
+}
+
+/// Pad or truncate to the canonical 20-byte MySQL scramble (trailing handshake NUL
+/// is dropped when the concatenated length is 21, matching mysql_async).
+fn normalize_scramble(raw: &[u8]) -> Vec<u8> {
+    let mut scramble = raw.to_vec();
+    scramble.resize(SCRAMBLE_LENGTH, 0);
+    scramble
 }
 
 fn read_null_string(data: &[u8]) -> String {
