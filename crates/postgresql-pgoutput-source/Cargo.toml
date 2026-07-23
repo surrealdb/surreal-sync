@@ -36,7 +36,7 @@ chrono = { version = "0.4", features = ["serde"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 checkpoint = { path = "../checkpoint" }
 surreal2-sink = { path = "../surreal2-sink" }
-surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
+surrealdb = { version = "3.1.5", features = ["protocol-ws", "kv-mem"] }
 serde = { version = "1.0", features = ["derive"] }
 sync-transform = { path = "../sync-transform" }
 

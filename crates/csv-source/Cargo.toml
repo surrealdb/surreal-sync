@@ -55,7 +55,7 @@ surreal-version = { path = "../surreal-version" }
 sync-transform = { path = "../sync-transform" }
 
 # SurrealDB for tests
-surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
+surrealdb = { version = "3.1.5", features = ["protocol-ws", "kv-mem"] }
 surrealdb3 = { version = "3.1.5", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
 
 # HTTP test server
