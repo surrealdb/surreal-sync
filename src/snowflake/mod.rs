@@ -91,11 +91,6 @@ pub async fn run_args(args: Args) -> anyhow::Result<()> {
     run_sync(args, pipeline, apply_opts).await
 }
 
-/// Box an [`InPlaceTransform`] so different stage types can share one list.
-pub fn stage(t: impl InPlaceTransform + 'static) -> Box<dyn InPlaceTransform> {
-    Box::new(t)
-}
-
 /// Top-level clap root for source-shaped argv (same flags as `from snowflake`).
 #[derive(Parser)]
 #[command(

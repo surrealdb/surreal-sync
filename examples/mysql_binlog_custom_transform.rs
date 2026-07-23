@@ -111,16 +111,16 @@ impl InPlaceTransform for FkToRecordLink {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parses argv (`sync|snapshot` + flags), loads optional --transforms-config,
-    // then appends these in-place stages (after any TOML stages), and runs the
-    // same orchestration as stock `surreal-sync from mysql-binlog`.
+    // then appends these in-place transforms (after any TOML transforms), and
+    // runs the same orchestration as stock `surreal-sync from mysql-binlog`.
     //
-    // `stage(...)` boxes each transform so heterogeneous types can share one list
+    // `Box<dyn InPlaceTransform>` so different concrete types can share one list
     // (Rust arrays are homogeneous).
     mysql_binlog::run([
-        mysql_binlog::stage(FlattenId::default()),
-        mysql_binlog::stage(RedactPii),
-        mysql_binlog::stage(RenameFields),
-        mysql_binlog::stage(FkToRecordLink {
+        Box::new(FlattenId::default()) as Box<dyn InPlaceTransform>,
+        Box::new(RedactPii),
+        Box::new(RenameFields),
+        Box::new(FkToRecordLink {
             field: "org_id",
             table: "organizations",
         }),

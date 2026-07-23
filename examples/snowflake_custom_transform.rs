@@ -115,16 +115,16 @@ impl InPlaceTransform for FkToRecordLink {
 #[tokio::main]
 async fn main() -> Result<()> {
     // Parses argv (same flags as `surreal-sync from snowflake`), loads optional
-    // --transforms-config, then appends these in-place stages (after any TOML
-    // stages), and runs the same import as the stock binary.
+    // --transforms-config, then appends these in-place transforms (after any
+    // TOML transforms), and runs the same import as the stock binary.
     //
-    // `stage(...)` boxes each transform so different types can share one list
+    // `Box<dyn InPlaceTransform>` so different concrete types can share one list
     // (Rust arrays are homogeneous).
     snowflake::run([
-        snowflake::stage(FlattenId::default()),
-        snowflake::stage(RedactPii),
-        snowflake::stage(RenameFields),
-        snowflake::stage(FkToRecordLink {
+        Box::new(FlattenId::default()) as Box<dyn InPlaceTransform>,
+        Box::new(RedactPii),
+        Box::new(RenameFields),
+        Box::new(FkToRecordLink {
             field: "org_id",
             table: "organizations",
         }),

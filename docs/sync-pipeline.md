@@ -509,8 +509,8 @@ Filter-out or fan-out of events is out of scope for `InPlaceTransform` — use a
 
 MySQL/MariaDB binlog — [`examples/mysql_binlog_custom_transform.rs`](../examples/mysql_binlog_custom_transform.rs)
 (`FlattenId`, PII redaction, field rename, FK → record link). Argv is
-source-shaped (`sync|snapshot …`), not `from mysql-binlog …`. Mixed stage types
-are passed via `mysql_binlog::stage(...)` (Rust arrays are homogeneous):
+source-shaped (`sync|snapshot …`), not `from mysql-binlog …`. Mixed transform
+types are passed as `Box<dyn InPlaceTransform>` (Rust arrays are homogeneous):
 
 ```bash
 cargo run --example mysql_binlog_custom_transform -- sync \
