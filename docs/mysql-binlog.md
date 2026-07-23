@@ -226,6 +226,8 @@ Use `--tls-mode` when MySQL is only reachable over an untrusted network (or when
 
 The same flags apply to the SQL connection used for snapshots and to the binlog replication stream.
 
+When `--tls-mode disabled`, `--tls-ca`, `--tls-cert`, and `--tls-key` are ignored.
+
 ### Authentication plugins
 
 MySQL 8 defaults to `caching_sha2_password`. surreal-sync supports the stages of that plugin (and the older `mysql_native_password` plugin) as follows:

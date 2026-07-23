@@ -56,6 +56,8 @@ surreal-sync from mysql snapshot \
 
 For binlog CDC (recommended for MariaDB), see [Surreal-Sync for MySQL Binlog — TLS](mysql-binlog.md#tls-for-mysql-connections).
 
+When `--tls-mode disabled`, `--tls-ca`, `--tls-cert`, and `--tls-key` are ignored.
+
 ## Combined sync
 
 The `sync` command runs the watermark snapshot and continues incremental sync from the handed-off end position in one process — no separate incremental replay pass is needed to reach consistency.

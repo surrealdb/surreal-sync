@@ -960,15 +960,15 @@ struct MySQLTlsArgs {
     #[arg(long, value_enum, default_value_t = MySQLTlsModeArg::default())]
     tls_mode: MySQLTlsModeArg,
 
-    /// PEM CA bundle used to verify the MySQL server certificate
+    /// PEM CA bundle used to verify the MySQL server certificate (ignored when `--tls-mode disabled`)
     #[arg(long, value_name = "PATH")]
     tls_ca: Option<String>,
 
-    /// PEM client certificate for MySQL TLS client auth
+    /// PEM client certificate for MySQL TLS client auth (ignored when `--tls-mode disabled`)
     #[arg(long, value_name = "PATH")]
     tls_cert: Option<String>,
 
-    /// PEM private key for MySQL TLS client auth
+    /// PEM private key for MySQL TLS client auth (ignored when `--tls-mode disabled`; requires `--tls-cert`)
     #[arg(long, value_name = "PATH")]
     tls_key: Option<String>,
 }
