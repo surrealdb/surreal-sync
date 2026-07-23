@@ -12,7 +12,7 @@ checkpoint = { path = "../checkpoint" }
 chrono = { version = "0.4", features = ["serde"] }
 json-types = { path = "../json-types" }
 mysql-types = { path = "../mysql-types" }
-mysql_async = { version = "0.36", default-features = false, features = ["default-rustls"] }
+mysql_async = { version = "0.36", default-features = false, features = ["derive", "rustls-tls", "tls12", "aws-lc-rs", "minimal"] }
 surreal-sync-mysql-trigger-source = { path = "../mysql-trigger-source" }
 rand = "0.10"
 serde = { version = "1.0", features = ["derive"] }

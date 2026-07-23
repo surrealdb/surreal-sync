@@ -28,7 +28,7 @@ rustls-pemfile = "2.2.0"
 [dev-dependencies]
 hex = "0.4"
 tokio = { version = "1.49", features = ["full"] }
-mysql_async = { version = "0.36", default-features = false, features = ["default-rustls"] }
+mysql_async = { version = "0.36", default-features = false, features = ["derive", "rustls-tls", "tls12", "aws-lc-rs", "minimal"] }
 anyhow = "1.0.100"
 insta = { version = "1.48", features = ["json"] }
 serde = { version = "1.0.228", features = ["derive"] }
