@@ -34,5 +34,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 async-trait = "0.1"
 sync-transform = { path = "../sync-transform" }
 surreal2-sink = { path = "../surreal2-sink" }
-binlog-protocol = { path = "../binlog-protocol" }
 anyhow = "1.0.100"
