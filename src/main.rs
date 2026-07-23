@@ -1158,6 +1158,9 @@ struct MySQLBinlogSnapshotArgs {
     /// Tables to snapshot (comma-separated)
     #[arg(long, value_delimiter = ',', required = true)]
     tables: Vec<String>,
+
+    #[command(flatten)]
+    tls: MySQLTlsArgs,
 }
 
 // =============================================================================

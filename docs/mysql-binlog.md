@@ -374,10 +374,13 @@ While a `sync` follower is streaming, snapshot additional tables on the fly. The
 surreal-sync from mysql-binlog snapshot \
   --connection-string "$CONNECTION_STRING" \
   --database "myapp" \
-  --tables "new_table,another_table"
+  --tables "new_table,another_table" \
+  --tls-mode required \
+  --tls-ca /path/to/ca.pem
 ```
 
 - `--tables` (required): comma-separated tables to snapshot.
+- TLS flags (`--tls-mode`, `--tls-ca`, `--tls-cert`, `--tls-key`) apply here the same way as on `sync`.
 
 ### Adding tables to a running sync
 

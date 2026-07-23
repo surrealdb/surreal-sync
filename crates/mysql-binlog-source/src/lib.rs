@@ -24,6 +24,7 @@ pub use catch_up::{
 };
 pub use change::cdc_change_to_universal;
 pub use checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogReconciliationPos};
+pub use client::{connect_binlog_client, new_mysql_pool_with_ssl, parse_mysql_uri};
 pub use flavor::Flavor;
 pub use full_sync::{
     capture_head_checkpoint, run_full_sync, run_full_sync_cancellable,
