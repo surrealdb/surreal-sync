@@ -22,7 +22,7 @@
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
 use mysql_async::consts::{ColumnFlags, ColumnType};
 use mysql_async::Value;
-use sync_core::{TypedValue, UniversalType};
+use sync_core::{TypedValue, UniversalType, UniversalValue};
 use thiserror::Error;
 
 // Re-export from json-types for convenience
@@ -232,6 +232,15 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
 
             // Date/time types
             MYSQL_TYPE_DATE => {
+                if is_zero_mysql_value(&mv.value) {
+                    return Ok(TypedValue::zero_temporal(
+                        UniversalType::Date,
+                        Some(
+                            UniversalValue::canonical_zero_literal(&UniversalType::Date)
+                                .to_string(),
+                        ),
+                    ));
+                }
                 let dt = extract_date(&mv.value)?;
                 let datetime = dt.and_hms_opt(0, 0, 0).unwrap().and_utc();
                 Ok(TypedValue::date(datetime))
@@ -245,11 +254,29 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             }
 
             MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => {
+                if is_zero_mysql_value(&mv.value) {
+                    return Ok(TypedValue::zero_temporal(
+                        UniversalType::LocalDateTime,
+                        Some(
+                            UniversalValue::canonical_zero_literal(&UniversalType::LocalDateTime)
+                                .to_string(),
+                        ),
+                    ));
+                }
                 let dt = extract_datetime(&mv.value)?;
                 Ok(TypedValue::datetime(dt))
             }
 
             MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => {
+                if is_zero_mysql_value(&mv.value) {
+                    return Ok(TypedValue::zero_temporal(
+                        UniversalType::ZonedDateTime,
+                        Some(
+                            UniversalValue::canonical_zero_literal(&UniversalType::ZonedDateTime)
+                                .to_string(),
+                        ),
+                    ));
+                }
                 let dt = extract_datetime(&mv.value)?;
                 Ok(TypedValue::timestamptz(dt))
             }
@@ -456,6 +483,19 @@ fn extract_date(value: &Value) -> Result<NaiveDate, ConversionError> {
             expected: "date".to_string(),
             actual: value.clone(),
         }),
+    }
+}
+
+/// True when MySQL emits a zero date/datetime (`0000-00-00` / `0000-00-00 00:00:00`).
+fn is_zero_mysql_value(value: &Value) -> bool {
+    match value {
+        Value::Date(year, month, day, _, _, _, _) => {
+            UniversalValue::is_mysql_zero_date_ymd(*year, *month, *day)
+        }
+        Value::Bytes(b) => std::str::from_utf8(b)
+            .map(UniversalValue::is_mysql_zero_temporal_literal)
+            .unwrap_or(false),
+        _ => false,
     }
 }
 
@@ -1137,6 +1177,68 @@ mod tests {
         let err = result.unwrap_err();
         assert!(matches!(err, ConversionError::InvalidDateTime(_)));
         assert!(err.to_string().contains("month=13"));
+    }
+
+    #[test]
+    fn test_zero_date_emits_zero_temporal() {
+        let mv = MySQLValueWithSchema::new(
+            Value::Date(0, 0, 0, 0, 0, 0, 0),
+            ColumnType::MYSQL_TYPE_DATE,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(
+            tv.value,
+            UniversalValue::ZeroTemporal {
+                intended_type: UniversalType::Date,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_zero_datetime_emits_zero_temporal() {
+        let mv = MySQLValueWithSchema::new(
+            Value::Date(0, 0, 0, 0, 0, 0, 0),
+            ColumnType::MYSQL_TYPE_DATETIME,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(
+            tv.value,
+            UniversalValue::ZeroTemporal {
+                intended_type: UniversalType::LocalDateTime,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_zero_timestamp_emits_zero_temporal() {
+        let mv = MySQLValueWithSchema::new(
+            Value::Date(0, 0, 0, 0, 0, 0, 0),
+            ColumnType::MYSQL_TYPE_TIMESTAMP,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(
+            tv.value,
+            UniversalValue::ZeroTemporal {
+                intended_type: UniversalType::ZonedDateTime,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_zero_date_string_emits_zero_temporal() {
+        let mv = MySQLValueWithSchema::new(
+            Value::Bytes(b"0000-00-00".to_vec()),
+            ColumnType::MYSQL_TYPE_DATE,
+            ColumnFlags::empty(),
+        );
+        let tv = mv.to_typed_value().unwrap();
+        assert!(matches!(tv.value, UniversalValue::ZeroTemporal { .. }));
     }
 
     #[test]

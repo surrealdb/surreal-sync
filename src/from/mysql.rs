@@ -16,7 +16,9 @@ use surreal_sync_mysql_trigger_source::{MySQLCheckpoint, ReplicationTailOptions}
 use sync_transform::{ApplyOpts, Pipeline};
 
 use super::transforms::load_transforms_from_args;
-use super::{get_sdk_version, load_schema_if_provided, SdkVersion};
+use super::{
+    get_sdk_version, load_schema_if_provided, make_surreal2_sink, make_surreal3_sink, SdkVersion,
+};
 use crate::{MySQLFullArgs, MySQLIncrementalArgs, MySQLSnapshotArgs, MySQLSyncArgs, SyncStrategy};
 
 /// Run MySQL full sync, dispatching by strategy then SDK version.
@@ -58,7 +60,7 @@ async fn run_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
         source_uri: args.connection_string,
@@ -154,7 +156,7 @@ async fn run_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
+    let sink = make_surreal3_sink(surreal.clone(), args.surreal.zero_temporal);
 
     let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
         source_uri: args.connection_string,
@@ -319,7 +321,7 @@ async fn run_incremental_v2(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     surreal_sync_mysql_trigger_source::run_incremental_sync_with_transforms(
@@ -415,7 +417,7 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     let transforms = SnapshotTransforms {
@@ -486,7 +488,7 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
+    let sink = make_surreal3_sink(surreal.clone(), args.surreal.zero_temporal);
 
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     let transforms = SnapshotTransforms {
@@ -571,7 +573,7 @@ async fn run_sync_v2(
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
     mysql_orchestrate(&sink, args, pipeline, apply_opts).await
 }
 
@@ -591,7 +593,7 @@ async fn run_sync_v3(
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+    let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
     mysql_orchestrate(&sink, args, pipeline, apply_opts).await
 }
 
@@ -749,7 +751,7 @@ async fn run_incremental_v3(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+    let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
 
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
     surreal_sync_mysql_trigger_source::run_incremental_sync_with_transforms(

@@ -23,7 +23,9 @@ use surreal_sync_postgresql_wal2json_source::{
 use sync_transform::{ApplyOpts, Pipeline};
 
 use super::transforms::load_transforms_from_args;
-use super::{get_sdk_version, load_schema_if_provided, SdkVersion};
+use super::{
+    get_sdk_version, load_schema_if_provided, make_surreal2_sink, make_surreal3_sink, SdkVersion,
+};
 use crate::config::load_config;
 use crate::{
     PostgreSQLLogicalFullArgs, PostgreSQLLogicalIncrementalArgs, PostgreSQLLogicalSnapshotArgs,
@@ -106,6 +108,7 @@ fn resolve_full_args(args: PostgreSQLLogicalFullArgs) -> anyhow::Result<Resolved
                 batch_size: sink.batch_size,
                 dry_run: sink.dry_run,
                 surreal_sdk_version: args.surreal.surreal_sdk_version.or(sink.sdk_version),
+                zero_temporal: sink.zero_temporal,
             },
         })
     } else {
@@ -178,6 +181,7 @@ fn resolve_incremental_args(
                 batch_size: sink.batch_size,
                 dry_run: sink.dry_run,
                 surreal_sdk_version: args.surreal.surreal_sdk_version.or(sink.sdk_version),
+                zero_temporal: sink.zero_temporal,
             },
         })
     } else {
@@ -248,7 +252,7 @@ async fn run_full_v2(args: ResolvedWal2jsonFullArgs) -> anyhow::Result<()> {
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
         connection_string: args.connection_string,
@@ -332,7 +336,7 @@ async fn run_full_v3(args: ResolvedWal2jsonFullArgs) -> anyhow::Result<()> {
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
+    let sink = make_surreal3_sink(surreal.clone(), args.surreal.zero_temporal);
 
     let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
         connection_string: args.connection_string,
@@ -467,7 +471,7 @@ async fn run_incremental_v2(args: ResolvedWal2jsonIncrementalArgs) -> anyhow::Re
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
         connection_string: args.connection_string,
@@ -553,7 +557,7 @@ async fn run_incremental_v3(args: ResolvedWal2jsonIncrementalArgs) -> anyhow::Re
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+    let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
 
     let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
         connection_string: args.connection_string,
@@ -648,7 +652,7 @@ async fn run_full_interleaved_snapshot_v2(args: ResolvedWal2jsonFullArgs) -> any
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
     let source_opts = wal2json_source_opts(
         &args.connection_string,
         &args.slot,
@@ -724,7 +728,7 @@ async fn run_full_interleaved_snapshot_v3(args: ResolvedWal2jsonFullArgs) -> any
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
+    let sink = make_surreal3_sink(surreal.clone(), args.surreal.zero_temporal);
     let source_opts = wal2json_source_opts(
         &args.connection_string,
         &args.slot,
@@ -811,7 +815,7 @@ async fn run_sync_v2(
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
     wal2json_orchestrate(&sink, args, pipeline, apply_opts).await
 }
 
@@ -832,7 +836,7 @@ async fn run_sync_v3(
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+    let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
     wal2json_orchestrate(&sink, args, pipeline, apply_opts).await
 }
 

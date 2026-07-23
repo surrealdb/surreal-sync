@@ -12,7 +12,7 @@ use surreal_sync_snowflake_source::{
 };
 
 use super::transforms::load_transforms_from_args;
-use super::{get_sdk_version, SdkVersion};
+use super::{get_sdk_version, make_surreal2_sink, make_surreal3_sink, SdkVersion};
 use crate::SnowflakeArgs;
 
 /// Run Snowflake ingestion, dispatching to the detected SurrealDB SDK version.
@@ -79,7 +79,7 @@ async fn run_v2(args: SnowflakeArgs) -> anyhow::Result<()> {
     let surreal =
         surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal2_sink::Surreal2Sink::new(surreal);
+    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     run_full_sync_with_transforms(
         &client,
@@ -114,7 +114,7 @@ async fn run_v3(args: SnowflakeArgs) -> anyhow::Result<()> {
     let surreal =
         surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
             .await?;
-    let sink = surreal3_sink::Surreal3Sink::new(surreal);
+    let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
 
     run_full_sync_with_transforms(
         &client,

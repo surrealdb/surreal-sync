@@ -22,10 +22,55 @@ impl SurrealValue {
     pub fn as_inner(&self) -> &Value {
         &self.0
     }
-}
 
-impl From<TypedValue> for SurrealValue {
-    fn from(tv: TypedValue) -> Self {
+    /// Convert a zero-temporal sentinel using the given sink policy.
+    pub fn from_zero_temporal(
+        intended_type: &UniversalType,
+        source: Option<&str>,
+        policy: sync_core::ZeroTemporalPolicy,
+    ) -> Self {
+        match policy {
+            sync_core::ZeroTemporalPolicy::None => SurrealValue(Value::None),
+            sync_core::ZeroTemporalPolicy::Null => SurrealValue(Value::Null),
+            sync_core::ZeroTemporalPolicy::String => {
+                let s = source
+                    .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type))
+                    .to_string();
+                SurrealValue(Value::Strand(Strand::from(s)))
+            }
+        }
+    }
+
+    /// Convert a [`UniversalValue`] with an explicit zero-temporal policy.
+    pub fn from_universal_with_policy(
+        value: UniversalValue,
+        policy: sync_core::ZeroTemporalPolicy,
+    ) -> Self {
+        match value {
+            UniversalValue::ZeroTemporal {
+                intended_type,
+                source,
+            } => Self::from_zero_temporal(&intended_type, source.as_deref(), policy),
+            UniversalValue::Array { elements, .. } => {
+                let surreal_arr: Vec<Value> = elements
+                    .into_iter()
+                    .map(|v| Self::from_universal_with_policy(v, policy).into_inner())
+                    .collect();
+                SurrealValue(Value::Array(Array::from(surreal_arr)))
+            }
+            UniversalValue::Object(map) => {
+                let mut obj = BTreeMap::new();
+                for (k, v) in map {
+                    obj.insert(k, Self::from_universal_with_policy(v, policy).into_inner());
+                }
+                SurrealValue(Value::Object(Object::from(obj)))
+            }
+            other => SurrealValue::from(other),
+        }
+    }
+
+    /// Convert a [`TypedValue`] with an explicit zero-temporal policy.
+    pub fn from_typed_with_policy(tv: TypedValue, policy: sync_core::ZeroTemporalPolicy) -> Self {
         match (&tv.sync_type, &tv.value) {
             // JSON can be a string that needs parsing
             (UniversalType::Json, UniversalValue::Text(s)) => {
@@ -61,15 +106,21 @@ impl From<TypedValue> for SurrealValue {
                             sync_type: (**element_type).clone(),
                             value: v.clone(),
                         };
-                        SurrealValue::from(tv).into_inner()
+                        Self::from_typed_with_policy(tv, policy).into_inner()
                     })
                     .collect();
                 SurrealValue(Value::Array(Array::from(surreal_arr)))
             }
 
-            // For all other cases, delegate to From<UniversalValue>
-            _ => SurrealValue::from(tv.value),
+            // For all other cases, delegate to policy-aware UniversalValue conversion
+            _ => Self::from_universal_with_policy(tv.value, policy),
         }
+    }
+}
+
+impl From<TypedValue> for SurrealValue {
+    fn from(tv: TypedValue) -> Self {
+        Self::from_typed_with_policy(tv, sync_core::ZeroTemporalPolicy::default())
     }
 }
 
@@ -226,6 +277,16 @@ impl From<UniversalValue> for SurrealValue {
                 }
                 SurrealValue(Value::Object(Object::from(obj)))
             }
+
+            // Zero temporal — default sink policy is NONE (see ZeroTemporalPolicy)
+            UniversalValue::ZeroTemporal {
+                intended_type,
+                source,
+            } => SurrealValue::from_zero_temporal(
+                &intended_type,
+                source.as_deref(),
+                sync_core::ZeroTemporalPolicy::default(),
+            ),
         }
     }
 }
@@ -362,6 +423,30 @@ mod tests {
         let tv = TypedValue::null(UniversalType::Text);
         let surreal_val: SurrealValue = tv.into();
         assert!(matches!(surreal_val.0, Value::None));
+    }
+
+    #[test]
+    fn test_zero_temporal_policies() {
+        let zero = UniversalValue::zero_temporal(UniversalType::Date, Some("0000-00-00".into()));
+
+        let none = SurrealValue::from_universal_with_policy(
+            zero.clone(),
+            sync_core::ZeroTemporalPolicy::None,
+        );
+        assert!(matches!(none.0, Value::None));
+
+        let null = SurrealValue::from_universal_with_policy(
+            zero.clone(),
+            sync_core::ZeroTemporalPolicy::Null,
+        );
+        assert!(matches!(null.0, Value::Null));
+
+        let strand =
+            SurrealValue::from_universal_with_policy(zero, sync_core::ZeroTemporalPolicy::String);
+        match strand.0 {
+            Value::Strand(s) => assert_eq!(s.as_str(), "0000-00-00"),
+            other => panic!("expected Strand, got {other:?}"),
+        }
     }
 
     #[test]

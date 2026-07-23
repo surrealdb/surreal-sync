@@ -157,6 +157,12 @@ fn binlog_cell_to_typed_value(
         }
         MYSQL_TYPE_DATE => {
             let (year, month, day) = extract_date_parts(cell)?;
+            if UniversalValue::is_mysql_zero_date_ymd(year, month, day) {
+                return Ok(TypedValue::zero_temporal(
+                    UniversalType::Date,
+                    Some(UniversalValue::canonical_zero_literal(&UniversalType::Date).to_string()),
+                ));
+            }
             let date = NaiveDate::from_ymd_opt(year as i32, month as u32, day as u32).ok_or_else(
                 || {
                     ConversionError::InvalidDateTime(format!(
@@ -187,6 +193,20 @@ fn binlog_cell_to_typed_value(
             ))
         }
         MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => {
+            if let CellValue::DateTime {
+                year, month, day, ..
+            } = cell
+            {
+                if UniversalValue::is_mysql_zero_date_ymd(*year, *month, *day) {
+                    return Ok(TypedValue::zero_temporal(
+                        UniversalType::LocalDateTime,
+                        Some(
+                            UniversalValue::canonical_zero_literal(&UniversalType::LocalDateTime)
+                                .to_string(),
+                        ),
+                    ));
+                }
+            }
             Ok(TypedValue::datetime(extract_datetime(cell)?))
         }
         MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => {
@@ -1396,6 +1416,50 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, ConversionError::InvalidDateTime(_)));
+    }
+
+    #[test]
+    fn test_zero_date_emits_zero_temporal() {
+        let column = col("d", MYSQL_TYPE_DATE, ColumnMetadata::None);
+        let value = convert(
+            &CellValue::Date {
+                year: 0,
+                month: 0,
+                day: 0,
+            },
+            &column,
+        );
+        assert!(matches!(
+            value,
+            UniversalValue::ZeroTemporal {
+                intended_type: UniversalType::Date,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_zero_datetime_emits_zero_temporal() {
+        let column = col("dt", MYSQL_TYPE_DATETIME, ColumnMetadata::None);
+        let value = convert(
+            &CellValue::DateTime {
+                year: 0,
+                month: 0,
+                day: 0,
+                hour: 0,
+                minute: 0,
+                second: 0,
+                micros: 0,
+            },
+            &column,
+        );
+        assert!(matches!(
+            value,
+            UniversalValue::ZeroTemporal {
+                intended_type: UniversalType::LocalDateTime,
+                ..
+            }
+        ));
     }
 
     #[test]

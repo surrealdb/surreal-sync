@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::path::Path;
+use sync_core::ZeroTemporalPolicy;
 
 /// Generic config file structure. `S` is the source-specific config type,
 /// determined by which subcommand is being run.
@@ -40,6 +41,10 @@ pub struct SurrealDBSinkConfig {
     pub dry_run: bool,
 
     pub sdk_version: Option<String>,
+
+    /// How zero temporal values (e.g. MySQL `0000-00-00`) are written to SurrealDB.
+    #[serde(default)]
+    pub zero_temporal: ZeroTemporalPolicy,
 }
 
 fn default_surreal_endpoint() -> String {
@@ -94,5 +99,27 @@ database = "db"
         assert_eq!(config.sink.surrealdb.username, "root");
         assert_eq!(config.sink.surrealdb.batch_size, 1000);
         assert!(!config.sink.surrealdb.dry_run);
+        assert_eq!(
+            config.sink.surrealdb.zero_temporal,
+            ZeroTemporalPolicy::None
+        );
+    }
+
+    #[test]
+    fn test_load_zero_temporal_policy() {
+        let toml_str = r#"
+[source]
+name = "test"
+
+[sink.surrealdb]
+namespace = "ns"
+database = "db"
+zero_temporal = "string"
+"#;
+        let config: ConfigFile<DummySource> = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.sink.surrealdb.zero_temporal,
+            ZeroTemporalPolicy::String
+        );
     }
 }

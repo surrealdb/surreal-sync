@@ -4,7 +4,7 @@ use std::time::Duration;
 use surreal3_types::{RecordWithSurrealValues as Record, Relation, SurrealValue};
 use surrealdb::types::{Number, RecordId, RecordIdKey, Value};
 use surrealdb::Surreal;
-use sync_core::{UniversalChange, UniversalChangeOp, UniversalRelationChange};
+use sync_core::{UniversalChange, UniversalChangeOp, UniversalRelationChange, ZeroTemporalPolicy};
 use tokio::time::sleep;
 
 use crate::rows::{universal_relation_to_surreal_relation, universal_value_to_surreal_id};
@@ -121,6 +121,7 @@ pub async fn apply_change(
 pub async fn apply_universal_change(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     change: &UniversalChange,
+    zero_temporal: ZeroTemporalPolicy,
 ) -> anyhow::Result<()> {
     // Convert ID from UniversalValue to SurrealDB ID
     let surreal_id = universal_value_to_surreal_id(&change.id)?;
@@ -139,7 +140,7 @@ pub async fn apply_universal_change(
             let surreal_data: HashMap<String, surrealdb::types::Value> = data
                 .iter()
                 .map(|(k, v)| {
-                    let sv = SurrealValue::from(v.clone());
+                    let sv = SurrealValue::from_universal_with_policy(v.clone(), zero_temporal);
                     (k.clone(), sv.into_inner())
                 })
                 .collect();
@@ -473,10 +474,12 @@ pub async fn write_relations(
 pub async fn apply_universal_relation_change(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     change: &UniversalRelationChange,
+    zero_temporal: ZeroTemporalPolicy,
 ) -> anyhow::Result<()> {
     match change.operation {
         UniversalChangeOp::Create | UniversalChangeOp::Update => {
-            let surreal_rel = universal_relation_to_surreal_relation(&change.relation)?;
+            let surreal_rel =
+                universal_relation_to_surreal_relation(&change.relation, zero_temporal)?;
             write_relation(surreal, &surreal_rel).await?;
             tracing::trace!(
                 "Successfully upserted relation: {:?}",

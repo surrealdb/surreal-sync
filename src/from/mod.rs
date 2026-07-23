@@ -37,5 +37,5 @@ pub mod transforms;
 pub(crate) use crate::config::parse_duration_to_secs;
 pub(crate) use common::{
     extract_json_fields_from_schema, extract_postgresql_database, get_sdk_version,
-    load_schema_if_provided, SdkVersion,
+    load_schema_if_provided, make_surreal2_sink, make_surreal3_sink, SdkVersion,
 };

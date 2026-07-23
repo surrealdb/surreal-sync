@@ -224,6 +224,17 @@ pub fn universal_to_cypher_literal(
                 .collect();
             Ok(format!("{{{}}}", entries.join(", ")))
         }
+
+        // Zero temporal - preserve as escaped MySQL-style literal string
+        UniversalValue::ZeroTemporal {
+            intended_type,
+            source,
+        } => {
+            let s = source
+                .as_deref()
+                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+            Ok(escape_neo4j_string(s))
+        }
     }
 }
 

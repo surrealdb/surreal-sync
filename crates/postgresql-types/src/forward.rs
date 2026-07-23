@@ -179,6 +179,16 @@ impl From<UniversalValue> for PostgreSQLValue {
                     .collect();
                 PostgreSQLValue::Json(serde_json::Value::Object(obj))
             }
+
+            UniversalValue::ZeroTemporal {
+                intended_type,
+                source,
+            } => {
+                let s = source.unwrap_or_else(|| {
+                    UniversalValue::canonical_zero_literal(&intended_type).to_string()
+                });
+                PostgreSQLValue::Text(s)
+            }
         }
     }
 }

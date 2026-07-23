@@ -235,6 +235,16 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
 
         // TimeTz - stored as string to preserve timezone format
         UniversalValue::TimeTz(s) => escape_neo4j_string(s),
+
+        UniversalValue::ZeroTemporal {
+            intended_type,
+            source,
+        } => {
+            let s = source
+                .as_deref()
+                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+            escape_neo4j_string(s)
+        }
     }
 }
 
@@ -318,6 +328,15 @@ fn universal_to_json(value: &UniversalValue) -> serde_json::Value {
         }
         // TimeTz - stored as string to preserve timezone format
         UniversalValue::TimeTz(s) => serde_json::json!(s),
+        UniversalValue::ZeroTemporal {
+            intended_type,
+            source,
+        } => {
+            let s = source
+                .as_deref()
+                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+            serde_json::json!(s)
+        }
     }
 }
 

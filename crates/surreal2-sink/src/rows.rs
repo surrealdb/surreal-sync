@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use surreal2_types::{RecordWithSurrealValues, Relation, SurrealValue};
 use surrealdb::sql::{Array, Id, Strand, Thing, Value};
 use surrealdb::Surreal;
-use sync_core::{UniversalRelation, UniversalRow, UniversalValue};
+use sync_core::{UniversalRelation, UniversalRow, UniversalValue, ZeroTemporalPolicy};
 
 /// Convert UniversalValue ID to SurrealDB Id.
 ///
@@ -73,7 +73,10 @@ fn universal_value_to_id_array_element(value: &UniversalValue) -> Result<Value> 
 /// Convert UniversalRow to RecordWithSurrealValues.
 ///
 /// Returns an error if the row's ID type is not supported.
-pub fn universal_row_to_surreal_record(row: &UniversalRow) -> Result<RecordWithSurrealValues> {
+pub fn universal_row_to_surreal_record(
+    row: &UniversalRow,
+    zero_temporal: ZeroTemporalPolicy,
+) -> Result<RecordWithSurrealValues> {
     let id = universal_value_to_surreal_id(&row.id)?;
     let thing = Thing::from((row.table.as_str(), id));
 
@@ -82,7 +85,7 @@ pub fn universal_row_to_surreal_record(row: &UniversalRow) -> Result<RecordWithS
         .iter()
         .map(|(k, v)| {
             let typed = v.clone().to_typed_value();
-            let surreal_val: SurrealValue = typed.into();
+            let surreal_val = SurrealValue::from_typed_with_policy(typed, zero_temporal);
             (k.clone(), surreal_val.into_inner())
         })
         .collect();
@@ -96,9 +99,10 @@ pub fn universal_row_to_surreal_record(row: &UniversalRow) -> Result<RecordWithS
 pub async fn write_universal_rows(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     rows: &[UniversalRow],
+    zero_temporal: ZeroTemporalPolicy,
 ) -> Result<()> {
     for row in rows {
-        let record = universal_row_to_surreal_record(row)?;
+        let record = universal_row_to_surreal_record(row, zero_temporal)?;
         write_record(surreal, &record).await?;
     }
     Ok(())
@@ -107,7 +111,10 @@ pub async fn write_universal_rows(
 /// Convert UniversalRelation to SurrealDB Relation.
 ///
 /// Returns an error if any ID type is not supported.
-pub fn universal_relation_to_surreal_relation(rel: &UniversalRelation) -> Result<Relation> {
+pub fn universal_relation_to_surreal_relation(
+    rel: &UniversalRelation,
+    zero_temporal: ZeroTemporalPolicy,
+) -> Result<Relation> {
     // Convert the relation's own ID
     let id = universal_value_to_surreal_id(&rel.id)?;
     let thing_id = Thing::from((rel.relation_type.as_str(), id));
@@ -126,7 +133,7 @@ pub fn universal_relation_to_surreal_relation(rel: &UniversalRelation) -> Result
         .iter()
         .map(|(k, v)| {
             let typed = v.clone().to_typed_value();
-            let surreal_val: SurrealValue = typed.into();
+            let surreal_val = SurrealValue::from_typed_with_policy(typed, zero_temporal);
             (k.clone(), surreal_val)
         })
         .collect();
@@ -145,9 +152,10 @@ pub fn universal_relation_to_surreal_relation(rel: &UniversalRelation) -> Result
 pub async fn write_universal_relations(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     relations: &[UniversalRelation],
+    zero_temporal: ZeroTemporalPolicy,
 ) -> Result<()> {
     for rel in relations {
-        let surreal_rel = universal_relation_to_surreal_relation(rel)?;
+        let surreal_rel = universal_relation_to_surreal_relation(rel, zero_temporal)?;
         write_relation(surreal, &surreal_rel).await?;
     }
     Ok(())

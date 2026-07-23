@@ -213,6 +213,16 @@ impl From<UniversalValue> for BsonValue {
                 }
                 BsonValue(Bson::Document(doc))
             }
+
+            UniversalValue::ZeroTemporal {
+                intended_type,
+                source,
+            } => {
+                let s = source.unwrap_or_else(|| {
+                    UniversalValue::canonical_zero_literal(&intended_type).to_string()
+                });
+                BsonValue(Bson::String(s))
+            }
         }
     }
 }
@@ -324,6 +334,15 @@ fn generated_value_to_bson(value: &UniversalValue) -> Bson {
                 doc.insert(k.clone(), generated_value_to_bson(v));
             }
             Bson::Document(doc)
+        }
+        UniversalValue::ZeroTemporal {
+            intended_type,
+            source,
+        } => {
+            let s = source
+                .as_deref()
+                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+            Bson::String(s.to_string())
         }
     }
 }
