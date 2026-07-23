@@ -22,7 +22,7 @@ See [Full Sync Strategies](design/full-sync-strategies.md) for the consistency g
 - wal2json extension 2.0 or later
 - `wal_level = logical` in PostgreSQL configuration
 - A database user with permission to create and use logical replication slots
-- Every table you select for sync must have a usable primary key
+- Every table you select for sync must have a usable primary key (single- or multi-column). Composite PKs become SurrealDB array record IDs (`table:[k1, k2]`) by default; join-table relations stay colon-flattened. Optional `flatten_id` / custom workers: [How sync works — Record IDs](sync-pipeline.md#record-ids-and-composite-primary-keys)
 - `surreal-sync` writes a small `surreal_sync_signal` table on the source for watermark signalling (captured by the slot)
 
 Verify wal2json is available:

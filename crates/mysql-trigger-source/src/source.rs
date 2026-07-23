@@ -25,7 +25,10 @@ use super::checkpoint::MySQLCheckpoint;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::Utc;
-use json_types::{convert_id_to_universal_with_database_schema, JsonValueWithSchema};
+use json_types::{
+    convert_id_to_universal_value, convert_id_to_universal_with_database_schema,
+    JsonValueWithSchema,
+};
 use log::info;
 use mysql_async::{prelude::*, Conn, Pool, Row, Value};
 use sync_core::{
@@ -97,10 +100,19 @@ pub struct MySQLIncrementalSource {
     server_id: u32,
     sequence_id: i64,
     database_schema: Option<DatabaseSchema>,
+    id_column_overrides: sync_core::IdColumnOverrides,
 }
 
 impl MySQLIncrementalSource {
     pub fn new(pool: Pool, initial_sequence_id: i64) -> Self {
+        Self::with_id_column_overrides(pool, initial_sequence_id, Default::default())
+    }
+
+    pub fn with_id_column_overrides(
+        pool: Pool,
+        initial_sequence_id: i64,
+        id_column_overrides: sync_core::IdColumnOverrides,
+    ) -> Self {
         let server_id = rand::random::<u32>() % 1000000 + 1000000; // Random ID between 1M-2M
 
         Self {
@@ -108,6 +120,7 @@ impl MySQLIncrementalSource {
             server_id,
             sequence_id: initial_sequence_id,
             database_schema: None,
+            id_column_overrides,
         }
     }
 }
@@ -125,7 +138,9 @@ impl IncrementalSource for MySQLIncrementalSource {
 
         // Collect database schema for type-aware conversion
         let mut conn = self.pool.get_conn().await?;
-        let schema = super::schema::collect_mysql_database_schema(&mut conn).await?;
+        let mut schema = super::schema::collect_mysql_database_schema(&mut conn).await?;
+        sync_core::apply_id_column_overrides(&mut schema, &self.id_column_overrides)
+            .map_err(|e| anyhow!("{e}"))?;
         self.database_schema = Some(schema);
         info!("Collected MySQL database schema for type-aware conversion");
 
@@ -234,38 +249,28 @@ impl MySQLChangeStream {
         &self,
         obj: serde_json::Map<String, serde_json::Value>,
         table_name: &str,
-        exclude_id: bool,
+        pk_columns: &[String],
         row_id: &str,
     ) -> Result<HashMap<String, TypedValue>> {
         let mut result = HashMap::new();
 
         for (key, val) in obj {
-            // Skip the 'id' field as it's used as the record ID (row_id)
-            // SurrealDB doesn't allow 'id' in content when using UPSERT $record_id
-            //
-            // LIMITATION: MySQL incremental sync assumes the primary key column
-            // is always named 'id'. Tables with different primary key column names
-            // (e.g., 'user_id') won't sync correctly. Additionally, if a table has
-            // an 'id' column that is NOT the primary key, this check will incorrectly
-            // skip it, causing data loss for that column.
-            //
-            // The row_id comes from NEW.id/OLD.id in the trigger (see change_tracking.rs)
-            // and the JSON 'id' field also contains the same value.
-            if exclude_id && key == "id" {
-                // Verify they match - row_id should equal the JSON id value
+            // Skip primary-key columns — they form the SurrealDB record ID.
+            // SurrealDB doesn't allow 'id' in content when using UPSERT $record_id.
+            if pk_columns.iter().any(|c| c == &key) {
+                continue;
+            }
+            // Also skip a literal "id" field when it duplicates a single-column
+            // PK that was recorded under a different name in row_id (legacy).
+            if key == "id" && pk_columns.len() == 1 {
                 let json_id_str = match &val {
                     serde_json::Value::Number(n) => n.to_string(),
                     serde_json::Value::String(s) => s.clone(),
                     other => format!("{other}"),
                 };
-                if row_id != json_id_str {
-                    anyhow::bail!(
-                        "row_id and JSON id field mismatch in table '{table_name}': \
-                        row_id={row_id}, json_id={json_id_str}. \
-                        This may indicate the 'id' column is not the primary key."
-                    );
+                if row_id == json_id_str || pk_columns[0] == "id" {
+                    continue;
                 }
-                continue;
             }
 
             let tv = self.json_to_typed_value(val, &key, table_name)?;
@@ -273,6 +278,73 @@ impl MySQLChangeStream {
         }
 
         Ok(result)
+    }
+
+    /// Resolve ordered PK column names for a table from schema (fallback: `["id"]`).
+    fn pk_columns_for(&self, table_name: &str) -> Vec<String> {
+        self.database_schema
+            .as_ref()
+            .and_then(|s| s.get_table(table_name))
+            .map(|t| {
+                t.primary_key_column_names()
+                    .into_iter()
+                    .map(|s| s.to_string())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec!["id".to_string()])
+    }
+
+    /// Convert audit `row_id` (scalar string or JSON array) to a UniversalValue ID.
+    fn row_id_to_universal(
+        &self,
+        row_id: &str,
+        table_name: &str,
+        pk_columns: &[String],
+    ) -> Result<UniversalValue> {
+        let schema = self.database_schema.as_ref();
+        if pk_columns.len() <= 1 {
+            let col = pk_columns.first().map(|s| s.as_str()).unwrap_or("id");
+            if let Some(schema) = schema {
+                return convert_id_to_universal_with_database_schema(
+                    row_id, table_name, col, schema,
+                );
+            }
+            return Ok(UniversalValue::Text(row_id.to_string()));
+        }
+
+        // Composite: triggers store JSON_ARRAY(...) in row_id.
+        let parsed: serde_json::Value = serde_json::from_str(row_id).map_err(|e| {
+            anyhow!("composite row_id '{row_id}' for table '{table_name}' is not valid JSON: {e}")
+        })?;
+        let elements = parsed
+            .as_array()
+            .ok_or_else(|| anyhow!("composite row_id '{row_id}' is not a JSON array"))?;
+        if elements.len() != pk_columns.len() {
+            return Err(anyhow!(
+                "composite row_id '{row_id}' has {} parts but table '{table_name}' has {} key columns",
+                elements.len(),
+                pk_columns.len()
+            ));
+        }
+        let mut values = Vec::with_capacity(pk_columns.len());
+        for (col, elem) in pk_columns.iter().zip(elements.iter()) {
+            let id_str = match elem {
+                serde_json::Value::String(s) => s.clone(),
+                serde_json::Value::Number(n) => n.to_string(),
+                other => other.to_string(),
+            };
+            let part = if let Some(schema) = schema {
+                convert_id_to_universal_with_database_schema(&id_str, table_name, col, schema)?
+            } else {
+                let ty = UniversalType::Text;
+                convert_id_to_universal_value(&id_str, table_name, &ty)?
+            };
+            values.push(part);
+        }
+        Ok(UniversalValue::Array {
+            elements: values,
+            element_type: Box::new(UniversalType::Text),
+        })
     }
 
     async fn fetch_changes(&mut self) -> Result<Vec<(i64, UniversalChange)>> {
@@ -322,6 +394,7 @@ impl MySQLChangeStream {
             };
 
             // Convert JSON data to UniversalValue map using TypedValue conversion flow
+            let pk_columns = self.pk_columns_for(&table_name);
             let universal_data: Option<HashMap<String, UniversalValue>> = match operation.as_str() {
                 "INSERT" | "UPDATE" => {
                     if let Some(Value::Bytes(json_data)) = new_data {
@@ -347,7 +420,7 @@ impl MySQLChangeStream {
                                     let typed_values = self.json_object_to_typed_values(
                                         map,
                                         &table_name,
-                                        true, // exclude 'id' field
+                                        &pk_columns,
                                         &row_id,
                                     )?;
 
@@ -377,14 +450,9 @@ impl MySQLChangeStream {
             };
 
             // Convert the string row_id to UniversalValue using schema information
-            // This ensures that BIGINT IDs are stored as numbers, UUIDs as UUIDs, etc.
-            let record_id: UniversalValue = if let Some(schema) = &self.database_schema {
-                // Use schema-aware conversion to get proper ID type
-                convert_id_to_universal_with_database_schema(&row_id, &table_name, "id", schema)?
-            } else {
-                // Fallback to string ID if no schema available (shouldn't happen)
-                UniversalValue::Text(row_id.clone())
-            };
+            // (scalar or JSON-array composite keys).
+            let record_id: UniversalValue =
+                self.row_id_to_universal(&row_id, &table_name, &pk_columns)?;
 
             // Create change record using universal types
             changes.push((

@@ -137,6 +137,7 @@ async fn test_jsonl_migration_e2e() -> Result<(), Box<dyn std::error::Error>> {
         s3_uris: vec![],
         http_uris: vec![],
         id_field: "id".to_string(),
+        id_columns: Vec::new(),
         conversion_rules,
         batch_size: 1000,
         dry_run: false,
@@ -338,6 +339,7 @@ async fn test_jsonl_with_custom_id_field() -> Result<(), Box<dyn std::error::Err
         s3_uris: vec![],
         http_uris: vec![],
         id_field: "item_id".to_string(),
+        id_columns: Vec::new(),
         conversion_rules: vec![],
         batch_size: 1000,
         dry_run: false,
@@ -432,6 +434,7 @@ async fn test_jsonl_with_complex_id_field() {
         s3_uris: vec![],
         http_uris: vec![],
         id_field: "timestamp".to_string(),
+        id_columns: Vec::new(),
         conversion_rules: vec![],
         batch_size: 1000,
         dry_run: false,
@@ -512,6 +515,200 @@ async fn test_jsonl_with_complex_id_field() {
             assert_eq!(items[1].id, expected_id_1);
             assert_eq!(items[1].level, "INFO");
             assert_eq!(items[1].target, "surreal::env");
+        }
+    }
+
+    std::fs::remove_dir_all(&test_dir).unwrap();
+}
+
+/// Entity table with composite `id_columns` → SurrealDB array record IDs.
+///
+/// Includes strings containing `:` and `_` so Array keys stay distinct where a
+/// colon/underscore-flattened Text id would collide.
+#[tokio::test]
+async fn test_jsonl_composite_pk_array_record_ids() {
+    tracing_subscriber::fmt()
+        .with_env_filter("surreal_sync_jsonl_source=debug")
+        .try_init()
+        .ok();
+
+    let mut db = SurrealDbContainer::new("test-jsonl-composite-pk-array");
+    db.start().unwrap();
+    db.wait_until_ready(30).unwrap();
+
+    let test_dir = PathBuf::from("/tmp/jsonl_test_composite_pk_array");
+    std::fs::create_dir_all(&test_dir).unwrap();
+    let test_file = test_dir.join("ledger.jsonl");
+    // Pairs that collide under `:` or `_` flattening must remain distinct Arrays.
+    std::fs::write(
+        &test_file,
+        r#"{"a":"x:y","b":"z","amount":1}
+{"a":"x","b":"y:z","amount":2}
+{"a":"a_b","b":"c","amount":3}
+{"a":"a","b":"b_c","amount":4}
+{"a":1,"b":2,"amount":10}
+"#,
+    )
+    .unwrap();
+
+    let config = Config {
+        sources: vec![surreal_sync_jsonl_source::FileSource::Local(PathBuf::from(
+            format!("{}/", test_dir.display()),
+        ))],
+        files: vec![],
+        s3_uris: vec![],
+        http_uris: vec![],
+        id_field: "id".to_string(),
+        id_columns: vec!["a".to_string(), "b".to_string()],
+        conversion_rules: vec![],
+        batch_size: 1000,
+        dry_run: false,
+        schema: None,
+    };
+
+    match db.detected_version {
+        Some(SurrealMajorVersion::V3) => {
+            use surrealdb3::types::{RecordId, RecordIdKey, SurrealValue, Value};
+
+            let surreal = surrealdb3::engine::any::connect(db.ws_endpoint())
+                .await
+                .unwrap();
+            surreal
+                .signin(surrealdb3::opt::auth::Root {
+                    username: "root".to_string(),
+                    password: "root".to_string(),
+                })
+                .await
+                .unwrap();
+            surreal.use_ns("test_ns").use_db("test_db").await.unwrap();
+            let _ = surreal.query("DELETE FROM ledger").await;
+
+            let sink = surreal3_sink::Surreal3Sink::new(surreal.clone());
+            sync(&sink, config).await.unwrap();
+
+            #[derive(Debug, SurrealValue)]
+            #[surreal(crate = "surrealdb3::types")]
+            struct LedgerRow {
+                id: RecordId,
+                amount: i64,
+            }
+
+            let mut r = surreal
+                .query("SELECT id, amount FROM ledger")
+                .await
+                .unwrap();
+            let rows: Vec<LedgerRow> = r.take(0).unwrap();
+            assert_eq!(rows.len(), 5, "array IDs must not collide: {rows:?}");
+
+            let mut amounts_by_key: Vec<(Vec<String>, i64)> = rows
+                .into_iter()
+                .map(|row| {
+                    let key = match row.id.key {
+                        RecordIdKey::Array(arr) => arr
+                            .into_iter()
+                            .map(|v| match v {
+                                Value::String(s) => s,
+                                Value::Number(n) => n.to_string(),
+                                other => panic!("unexpected array id element: {other:?}"),
+                            })
+                            .collect(),
+                        other => panic!("expected RecordIdKey::Array, got {other:?}"),
+                    };
+                    (key, row.amount)
+                })
+                .collect();
+            amounts_by_key.sort_by(|a, b| a.0.cmp(&b.0));
+
+            assert!(amounts_by_key
+                .iter()
+                .any(|(k, a)| { k == &vec!["x:y".to_string(), "z".to_string()] && *a == 1 }));
+            assert!(amounts_by_key
+                .iter()
+                .any(|(k, a)| { k == &vec!["x".to_string(), "y:z".to_string()] && *a == 2 }));
+            assert!(amounts_by_key
+                .iter()
+                .any(|(k, a)| { k == &vec!["a_b".to_string(), "c".to_string()] && *a == 3 }));
+            assert!(amounts_by_key
+                .iter()
+                .any(|(k, a)| { k == &vec!["a".to_string(), "b_c".to_string()] && *a == 4 }));
+            assert!(amounts_by_key
+                .iter()
+                .any(|(k, a)| { k == &vec!["1".to_string(), "2".to_string()] && *a == 10 }));
+
+            let _ = surreal.query("DELETE FROM ledger").await;
+        }
+        _ => {
+            use surrealdb::sql::{Id, Thing, Value};
+
+            let surreal = surrealdb::engine::any::connect(db.ws_endpoint())
+                .await
+                .unwrap();
+            surreal
+                .signin(surrealdb::opt::auth::Root {
+                    username: "root",
+                    password: "root",
+                })
+                .await
+                .unwrap();
+            surreal.use_ns("test_ns").use_db("test_db").await.unwrap();
+            let _: Vec<Thing> = surreal
+                .query("DELETE FROM ledger")
+                .await
+                .unwrap()
+                .take("id")
+                .unwrap_or_default();
+
+            let sink = surreal2_sink::Surreal2Sink::new(surreal.clone());
+            sync(&sink, config).await.unwrap();
+
+            #[derive(Debug, serde::Deserialize)]
+            struct LedgerRow {
+                id: Thing,
+                amount: i64,
+            }
+
+            let mut r = surreal
+                .query("SELECT id, amount FROM ledger")
+                .await
+                .unwrap();
+            let rows: Vec<LedgerRow> = r.take(0).unwrap();
+            assert_eq!(rows.len(), 5, "array IDs must not collide: {rows:?}");
+
+            let mut amounts_by_key: Vec<(Vec<String>, i64)> = rows
+                .into_iter()
+                .map(|row| {
+                    let key = match row.id.id {
+                        Id::Array(arr) => arr
+                            .0
+                            .into_iter()
+                            .map(|v| match v {
+                                Value::Strand(s) => s.as_string(),
+                                Value::Number(n) => n.to_string(),
+                                other => panic!("unexpected array id element: {other:?}"),
+                            })
+                            .collect(),
+                        other => panic!("expected Id::Array, got {other:?}"),
+                    };
+                    (key, row.amount)
+                })
+                .collect();
+            amounts_by_key.sort_by(|a, b| a.0.cmp(&b.0));
+
+            assert!(amounts_by_key
+                .iter()
+                .any(|(k, a)| { k == &vec!["x:y".to_string(), "z".to_string()] && *a == 1 }));
+            assert!(amounts_by_key
+                .iter()
+                .any(|(k, a)| { k == &vec!["x".to_string(), "y:z".to_string()] && *a == 2 }));
+            assert!(amounts_by_key
+                .iter()
+                .any(|(k, a)| { k == &vec!["a_b".to_string(), "c".to_string()] && *a == 3 }));
+            assert!(amounts_by_key
+                .iter()
+                .any(|(k, a)| { k == &vec!["a".to_string(), "b_c".to_string()] && *a == 4 }));
+            assert!(amounts_by_key
+                .iter()
+                .any(|(k, a)| { k == &vec!["1".to_string(), "2".to_string()] && *a == 10 }));
         }
     }
 

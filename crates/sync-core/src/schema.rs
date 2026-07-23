@@ -210,6 +210,12 @@ impl DatabaseSchema {
             .and_then(|&idx| self.tables.get(idx))
     }
 
+    /// Get a mutable table schema by name.
+    pub fn get_table_mut(&mut self, name: &str) -> Option<&mut TableDefinition> {
+        let idx = *self.table_map.get(name)?;
+        self.tables.get_mut(idx)
+    }
+
     /// Get the type of a column in a specific table.
     pub fn get_column_type(
         &self,

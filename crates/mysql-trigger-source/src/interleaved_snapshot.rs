@@ -110,6 +110,16 @@ impl MySqlWatermarkSource {
     /// Connect, set up the signal table and change-tracking triggers, collect
     /// schema, and capture the starting stream position.
     pub async fn new(pool: Pool, database: String) -> Result<Self> {
+        Self::with_id_column_overrides(pool, database, Default::default()).await
+    }
+
+    /// Like [`Self::new`] but applies per-table primary-key overrides after
+    /// schema discovery.
+    pub async fn with_id_column_overrides(
+        pool: Pool,
+        database: String,
+        id_column_overrides: sync_core::IdColumnOverrides,
+    ) -> Result<Self> {
         let mut conn = pool.get_conn().await?;
 
         conn.query_drop(format!("USE `{database}`")).await?;
@@ -120,12 +130,27 @@ impl MySqlWatermarkSource {
 
         setup_mysql_change_tracking(&mut conn, &database).await?;
 
-        let schema = collect_mysql_database_schema(&mut conn).await?;
+        let mut schema = collect_mysql_database_schema(&mut conn).await?;
+        sync_core::apply_id_column_overrides(&mut schema, &id_column_overrides)
+            .map_err(|e| anyhow!("{e}"))?;
 
         let mut tables = Vec::new();
         let mut pk_by_table = HashMap::new();
         for table_name in get_snapshot_tables(&mut conn, &database).await? {
-            let pk_columns = get_primary_key_columns(&mut conn, &database, &table_name).await?;
+            let pk_columns = if let Some(td) = schema.get_table(&table_name) {
+                let cols: Vec<String> = td
+                    .primary_key_column_names()
+                    .into_iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                if cols.is_empty() {
+                    get_primary_key_columns(&mut conn, &database, &table_name).await?
+                } else {
+                    cols
+                }
+            } else {
+                get_primary_key_columns(&mut conn, &database, &table_name).await?
+            };
             if pk_columns.is_empty() {
                 return Err(anyhow!(
                     "Table '{table_name}' has no primary key; watermark snapshot requires a primary key \
@@ -536,7 +561,34 @@ where
     S: SurrealSink,
     C: SnapshotCheckpointer,
 {
-    let mut source = MySqlWatermarkSource::new(pool, database).await?;
+    run_interleaved_snapshot_full_sync_result_with_overrides(
+        pool,
+        database,
+        sink,
+        config,
+        checkpointer,
+        transforms,
+        Default::default(),
+    )
+    .await
+}
+
+/// Like [`run_interleaved_snapshot_full_sync_result`] with PK column overrides.
+pub async fn run_interleaved_snapshot_full_sync_result_with_overrides<S, C>(
+    pool: Pool,
+    database: String,
+    sink: &S,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+    transforms: &SnapshotTransforms,
+    id_column_overrides: sync_core::IdColumnOverrides,
+) -> Result<InterleavedSnapshotResult<i64>>
+where
+    S: SurrealSink,
+    C: SnapshotCheckpointer,
+{
+    let mut source =
+        MySqlWatermarkSource::with_id_column_overrides(pool, database, id_column_overrides).await?;
     run_interleaved_snapshot_with_transforms(&mut source, sink, config, checkpointer, transforms)
         .await
 }
@@ -561,6 +613,33 @@ where
         config,
         checkpointer,
         transforms,
+    )
+    .await?;
+    Ok(result.final_position)
+}
+
+/// Interleaved snapshot with transforms and optional PK overrides.
+pub async fn run_interleaved_snapshot_full_sync_with_transforms_and_overrides<S, C>(
+    pool: Pool,
+    database: String,
+    sink: &S,
+    config: &InterleavedSnapshotConfig,
+    checkpointer: &mut C,
+    transforms: &SnapshotTransforms,
+    id_column_overrides: sync_core::IdColumnOverrides,
+) -> Result<i64>
+where
+    S: SurrealSink,
+    C: SnapshotCheckpointer,
+{
+    let result = run_interleaved_snapshot_full_sync_result_with_overrides(
+        pool,
+        database,
+        sink,
+        config,
+        checkpointer,
+        transforms,
+        id_column_overrides,
     )
     .await?;
     Ok(result.final_position)

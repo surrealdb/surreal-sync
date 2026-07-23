@@ -4,13 +4,15 @@ use crate::write::{write_record, write_relation};
 use anyhow::{bail, Result};
 use std::collections::HashMap;
 use surreal3_types::{RecordWithSurrealValues, Relation, SurrealValue};
-use surrealdb::types::{RecordId, RecordIdKey, Value};
+use surrealdb::types::{Array, Number, RecordId, RecordIdKey, Value};
 use surrealdb::Surreal;
 use sync_core::{UniversalRelation, UniversalRow, UniversalValue};
 
 /// Convert UniversalValue ID to SurrealDB RecordIdKey.
 ///
 /// Returns an error for unsupported ID types - never falls back silently.
+/// Composite primary keys arrive as [`UniversalValue::Array`] and become
+/// SurrealDB array record IDs (`table:[k1, k2]`).
 pub fn universal_value_to_surreal_id(value: &UniversalValue) -> Result<RecordIdKey> {
     match value {
         UniversalValue::Text(s) => Ok(RecordIdKey::String(s.clone())),
@@ -23,9 +25,47 @@ pub fn universal_value_to_surreal_id(value: &UniversalValue) -> Result<RecordIdK
             // Convert ULID to string since SurrealDB doesn't have native ULID ID type
             Ok(RecordIdKey::String(u.to_string()))
         }
+        UniversalValue::Array { elements, .. } => {
+            if elements.is_empty() {
+                bail!("Composite SurrealDB ID Array must not be empty");
+            }
+            let mut vals = Vec::with_capacity(elements.len());
+            for (i, el) in elements.iter().enumerate() {
+                vals.push(
+                    universal_value_to_id_array_element(el)
+                        .map_err(|e| anyhow::anyhow!("composite ID element [{i}]: {e}"))?,
+                );
+            }
+            Ok(RecordIdKey::Array(Array::from(vals)))
+        }
         other => bail!(
             "Unsupported UniversalValue type for SurrealDB ID: {other:?}. \
-             Supported types: Text, VarChar, Char, Int32, Int64, Uuid, Ulid"
+             Supported types: Text, VarChar, Char, Int32, Int64, Uuid, Ulid, Array"
+        ),
+    }
+}
+
+/// Convert one element of a composite (Array) record ID to a SurrealDB [`Value`].
+fn universal_value_to_id_array_element(value: &UniversalValue) -> Result<Value> {
+    match value {
+        UniversalValue::Text(s) => Ok(Value::String(s.clone())),
+        UniversalValue::VarChar { value, .. } | UniversalValue::Char { value, .. } => {
+            Ok(Value::String(value.clone()))
+        }
+        UniversalValue::Int8 { value, .. } => Ok(Value::Number(Number::Int(*value as i64))),
+        UniversalValue::Int16(n) => Ok(Value::Number(Number::Int(*n as i64))),
+        UniversalValue::Int32(n) => Ok(Value::Number(Number::Int(*n as i64))),
+        UniversalValue::Int64(n) => Ok(Value::Number(Number::Int(*n))),
+        UniversalValue::Bool(b) => Ok(Value::Bool(*b)),
+        UniversalValue::Null => Ok(Value::None),
+        UniversalValue::Uuid(u) => Ok(Value::Uuid(surrealdb::types::Uuid::from(*u))),
+        UniversalValue::Ulid(u) => Ok(Value::String(u.to_string())),
+        UniversalValue::Array { .. } => {
+            bail!("Nested arrays are not supported in composite SurrealDB IDs")
+        }
+        other => bail!(
+            "Unsupported type in composite SurrealDB ID: {other:?}. \
+             Supported element types: Text, VarChar, Char, Int8/16/32/64, Bool, Null, Uuid, Ulid"
         ),
     }
 }
@@ -170,5 +210,59 @@ mod tests {
         let value = UniversalValue::Bool(true);
         let result = universal_value_to_surreal_id(&value);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_universal_value_to_surreal_id_array_ints() {
+        let value = UniversalValue::Array {
+            elements: vec![UniversalValue::Int32(4), UniversalValue::Int64(2)],
+            element_type: Box::new(sync_core::UniversalType::Int32),
+        };
+        let id = universal_value_to_surreal_id(&value).unwrap();
+        match id {
+            RecordIdKey::Array(arr) => {
+                assert_eq!(arr.len(), 2);
+                assert!(matches!(&arr[0], Value::Number(Number::Int(4))));
+                assert!(matches!(&arr[1], Value::Number(Number::Int(2))));
+            }
+            other => panic!("expected RecordIdKey::Array, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_universal_value_to_surreal_id_array_mixed() {
+        let uuid = uuid::Uuid::new_v4();
+        let value = UniversalValue::Array {
+            elements: vec![
+                UniversalValue::Text("a_b".to_string()),
+                UniversalValue::Uuid(uuid),
+            ],
+            element_type: Box::new(sync_core::UniversalType::Text),
+        };
+        let id = universal_value_to_surreal_id(&value).unwrap();
+        assert!(matches!(id, RecordIdKey::Array(arr) if arr.len() == 2));
+    }
+
+    #[test]
+    fn test_universal_value_to_surreal_id_array_empty_rejected() {
+        let value = UniversalValue::Array {
+            elements: vec![],
+            element_type: Box::new(sync_core::UniversalType::Text),
+        };
+        let err = universal_value_to_surreal_id(&value).unwrap_err();
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn test_universal_value_to_surreal_id_nested_array_rejected() {
+        let value = UniversalValue::Array {
+            elements: vec![UniversalValue::Array {
+                elements: vec![UniversalValue::Int32(1)],
+                element_type: Box::new(sync_core::UniversalType::Int32),
+            }],
+            element_type: Box::new(sync_core::UniversalType::Text),
+        };
+        let err = universal_value_to_surreal_id(&value).unwrap_err();
+        assert!(err.to_string().contains("Nested arrays"));
     }
 }

@@ -357,21 +357,19 @@ fn resolve_id_columns(columns: &[ColumnType], id_columns: &[String]) -> Result<V
 /// - No ID columns: sequential per-table index (`Int64`). Deterministic within a
 ///   run, but not stable across re-runs.
 /// - Single ID column: the cell as `Int64` when it parses as an integer, else `Text`.
-/// - Composite ID columns: the cells joined with `:` into `Text`.
-///
-/// All produced variants are legal SurrealDB record-ID types
-/// (see `crates/surreal3-sink/src/rows.rs`).
+/// - Composite ID columns: an [`UniversalValue::Array`] of scalar parts (Surreal
+///   array record ID). Use the `flatten_id` transform to restore colon-joined Text.
 fn build_record_id(row: &[JsonValue], row_index: usize, id_indices: &[usize]) -> UniversalValue {
     match id_indices {
         [] => UniversalValue::Int64(row_index as i64),
         [only] => cell_to_id_scalar(&row[*only]),
         many => {
-            let joined = many
-                .iter()
-                .map(|&i| cell_to_string(&row[i]))
-                .collect::<Vec<_>>()
-                .join(":");
-            UniversalValue::Text(joined)
+            let parts: Vec<UniversalValue> =
+                many.iter().map(|&i| cell_to_id_scalar(&row[i])).collect();
+            UniversalValue::Array {
+                elements: parts,
+                element_type: Box::new(sync_core::UniversalType::Text),
+            }
         }
     }
 }
@@ -419,11 +417,17 @@ mod tests {
     }
 
     #[test]
-    fn composite_id_joins_with_colon() {
+    fn composite_id_is_array() {
         let row = vec![json!("a"), json!("b"), json!("c")];
         assert_eq!(
             build_record_id(&row, 0, &[0, 2]),
-            UniversalValue::Text("a:c".to_string())
+            UniversalValue::Array {
+                elements: vec![
+                    UniversalValue::Text("a".to_string()),
+                    UniversalValue::Text("c".to_string()),
+                ],
+                element_type: Box::new(sync_core::UniversalType::Text),
+            }
         );
     }
 }

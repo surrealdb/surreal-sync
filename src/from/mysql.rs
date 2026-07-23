@@ -65,6 +65,7 @@ async fn run_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
         source_database: args.database,
         tables: args.tables,
         mysql_boolean_paths: args.boolean_paths,
+        id_column_overrides: Default::default(),
     };
 
     let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
@@ -160,6 +161,7 @@ async fn run_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
         source_database: args.database,
         tables: args.tables,
         mysql_boolean_paths: args.boolean_paths,
+        id_column_overrides: Default::default(),
     };
 
     let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
@@ -310,6 +312,7 @@ async fn run_incremental_v2(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
         source_database: args.database,
         tables: args.tables,
         mysql_boolean_paths: args.boolean_paths,
+        id_column_overrides: Default::default(),
     };
 
     // Connect to SurrealDB using v2 SDK
@@ -610,11 +613,14 @@ async fn mysql_orchestrate<S: SurrealSink>(
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
+    let id_column_overrides = sync_core::parse_id_column_overrides(&args.id_columns, None)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
         source_uri: args.connection_string.clone(),
         source_database: Some(database.clone()),
         tables: args.tables.clone(),
         mysql_boolean_paths: args.boolean_paths.clone(),
+        id_column_overrides,
     };
 
     let transforms = SnapshotTransforms {
@@ -623,16 +629,18 @@ async fn mysql_orchestrate<S: SurrealSink>(
     };
     let snapshot_pool = pool.clone();
     let snapshot_db = database.clone();
+    let snapshot_overrides = source_opts.id_column_overrides.clone();
     orchestrate_snapshot_then_incremental(
         async move {
             let mut checkpointer = NoopCheckpointer;
-            surreal_sync_mysql_trigger_source::run_interleaved_snapshot_full_sync_with_transforms(
+            surreal_sync_mysql_trigger_source::run_interleaved_snapshot_full_sync_with_transforms_and_overrides(
                 snapshot_pool,
                 snapshot_db,
                 sink,
                 &config,
                 &mut checkpointer,
                 &transforms,
+                snapshot_overrides,
             )
             .await
         },
@@ -734,6 +742,7 @@ async fn run_incremental_v3(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
         source_database: args.database,
         tables: args.tables,
         mysql_boolean_paths: args.boolean_paths,
+        id_column_overrides: Default::default(),
     };
 
     // Connect to SurrealDB using v3 SDK

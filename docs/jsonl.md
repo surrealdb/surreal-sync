@@ -351,6 +351,20 @@ Example JSONL with custom ID field:
 {"item_id": "prod2", "name": "Gadget", "price": 29.99}
 ```
 
+### Composite ID columns
+
+Use `--id-columns` for a multi-column Array record ID (takes precedence over `--id-field`):
+
+```bash
+surreal-sync from jsonl \
+  --path /path/to/jsonl \
+  --to-namespace myns \
+  --to-database mydb \
+  --id-columns order_id,line_id
+```
+
+Defaults and optional `flatten_id`: [How sync works — Record IDs](sync-pipeline.md#record-ids-and-composite-primary-keys).
+
 ## Advanced Options
 
 ### Batch Size
@@ -397,7 +411,7 @@ surreal-sync from jsonl \
 
 ## Troubleshooting
 
-1. **Missing ID Field**: If you see "Missing ID field" errors, ensure your JSON objects have the ID field (default: "id") or specify the correct field with `--id-field`.
+1. **Missing ID Field**: If you see "Missing ID field" errors, ensure your JSON objects have the ID field (default: "id"), specify `--id-field`, or list columns with `--id-columns`.
 
 2. **Invalid Rule Format**: Conversion rules must follow the exact format. Check for proper quoting and spacing.
 

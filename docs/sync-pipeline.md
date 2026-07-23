@@ -139,6 +139,47 @@ This keeps resume from replaying past docs that never landed in SurrealDB, witho
 
 **Warning — data loss by configuration:** `failure_policy = "skip"` means a failed transform or sink batch is **never** applied to SurrealDB, yet `advance_watermark` still runs past it. Those source events are gone for this sync unless you re-seed from an earlier checkpoint or re-run a full sync. Prefer the default `fail` unless dropping bad batches is an explicit, accepted trade-off.
 
+## Record IDs and composite primary keys
+
+Sources that discover a multi-column primary key (or that you configure with multiple ID columns) emit SurrealDB **array record IDs** by default:
+
+```text
+table:[k1, k2]     # e.g. users:[42, "us-east"]
+```
+
+A single-column key stays a scalar ID (`users:42`). SQL CDC / trigger sources take composite keys from the source schema; file sources, Kafka, and Snowflake take them from `--id-columns` (see below).
+
+### Flatten to Text (`flatten_id`)
+
+To join composite parts into a single Text ID (historical colon style), add an in-process stage:
+
+```toml
+[[transforms]]
+type = "flatten_id"
+separator = ":"
+```
+
+`separator` defaults to `":"`. Example: Array id `[42, "us-east"]` becomes Text `"42:us-east"`. Scalar IDs are left unchanged.
+
+### Custom workers
+
+A `type = "command"` worker may rewrite the `id` field on the NDJSON wire (same as any other field). Use that when you need a shape other than Array or colon-flattened Text.
+
+### Relations vs entities
+
+Join tables classified as **relations** (FK heuristic / overrides in sync-core) always flatten composite edge IDs with `:` — SurrealDB relation edge IDs must be a simple type, not an Array. **Entity** tables keep Array IDs unless you flatten them with `flatten_id` (or a custom worker).
+
+### `--id-columns` (CSV, JSONL, Kafka, Snowflake)
+
+| Source | Flag | Behavior |
+|--------|------|----------|
+| `from csv` / `from jsonl` / `from kafka` | `--id-columns a,b` | Multi-column → Array record ID (takes precedence over `--id-field`) |
+| `from snowflake` | `--id-columns a,b` | Same; omit for a sequential per-table index |
+
+Library / embedders can also apply per-table overrides via sync-core (`parse_id_column_overrides` / `apply_id_column_overrides`) using `table=col1,col2` entries. That helper is not exposed as a SQL-source CLI flag today — SQL sources use discovered primary keys.
+
+**Snowflake breaking change:** composite `--id-columns` previously produced colon-joined Text IDs; they now produce Array IDs. Restore the old shape with `type = "flatten_id"` (`separator = ":"`).
+
 ## Optional transform workers
 
 Use transforms when you need enrichment or light ETL (e.g. call an OCR/embedding worker, reshape fields) before upserts and deletes land in the target. If you want source data unchanged, omit transforms entirely — that is the default.
@@ -149,6 +190,7 @@ Use transforms when you need enrichment or light ETL (e.g. call an OCR/embedding
 |------------|--------|
 | No config → docs pass through unchanged (no stages / no worker) | Available |
 | External worker over child-process stdio (NDJSON) | Available (`type = "command"`) |
+| In-process `flatten_id` (Array IDs → Text) | Available (`type = "flatten_id"`) |
 | `--transforms-config` on every `from *` sync path listed below | Available |
 | `failure_policy` `fail` (default) or `skip` | Available (`[pipeline]`) |
 | Per-stage `retry` / backoff | Available on each `[[transforms]]` command stage |
@@ -158,7 +200,7 @@ Use transforms when you need enrichment or light ETL (e.g. call an OCR/embedding
 ### What is not available yet
 
 - HTTP / Unix-socket / TCP workers
-- Built-in field-mapping DSL, WASM plugins, or declarative rules in TOML
+- General field-mapping DSL, WASM plugins, or other declarative rules in TOML (beyond `flatten_id`)
 - Exactly-once end-to-end (delivery is at-least-once; see [Sink and durability](#sink-and-durability))
 - Dead-letter queues or worker-side durable queues
 
@@ -282,11 +324,18 @@ v1 supports only `stdio.framer = "ndjson"`, but the framer is still **per stage*
 | No `--transforms-config` | No stages; no worker I/O; docs pass through on the shared apply path |
 | Empty / whitespace-only file, or `transforms = []` | Same as above |
 | Lone `type = "passthrough"` | Collapses to no-op (unnecessary for operators) |
-| One or more `type = "command"` stages | Those stages run in order |
+| One or more `type = "command"` / `type = "flatten_id"` stages | Those stages run in listed order |
 
 **Omit transforms entirely for “do nothing.”** **Omit `passthrough` when configuring `command`.** `passthrough` exists mainly for tests/library completeness, not as something you must write. See [When you omit transforms](#when-you-omit-transforms).
 
-`[pipeline]` keys are documented under [Apply window / `[pipeline]` knobs](#apply-window--pipeline-knobs).
+`[pipeline]` keys are documented under [Apply window / `[pipeline]` knobs](#apply-window--pipeline-knobs). Record-ID defaults and `flatten_id` are covered under [Record IDs and composite primary keys](#record-ids-and-composite-primary-keys).
+
+#### `[[transforms]]` schema (`type = "flatten_id"`)
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `type` | (required) | `"flatten_id"` |
+| `separator` | `":"` | Joiner between Array ID parts (must be non-empty) |
 
 #### `[[transforms]]` schema (`type = "command"`)
 
@@ -378,7 +427,7 @@ if __name__ == "__main__":
     main()
 ```
 
-Make it executable and point `command` at it. Item JSON is the serde shape of surreal-sync’s universal row/change documents (typed values under `fields` / `data`, etc.). Start by echoing; then mutate fields your enrichment needs.
+Make it executable and point `command` at it. Item JSON is the serde shape of surreal-sync’s universal row/change documents (typed values under `fields` / `data`, etc.). Start by echoing; then mutate fields your enrichment needs — including rewriting `id` when you need a custom composite-key shape (see [Record IDs and composite primary keys](#record-ids-and-composite-primary-keys)).
 
 #### Tips for enrichment tools
 
@@ -405,7 +454,7 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 
 ### Limitations
 
-- No custom code in the TOML config — logic lives in your external worker (or, for embedders, library APIs; see rustdoc for `sync-transform`).
+- No general field-mapping DSL in TOML — enrichment logic lives in your external worker (or library APIs). The built-in exception is `type = "flatten_id"`.
 - Filter / reshape / fan-out via the worker’s returned item list (`count` may differ from the request) on **homogeneous** batches only. Mixed change+relation batches must preserve length of each kind.
 - Relation events are first-class on the External NDJSON wire (`kind: relation_change` / `relation`); they are never silently skipped past External stages.
 - At-least-once delivery, not exactly-once.
@@ -436,4 +485,4 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 
 ### Advanced: embedding surreal-sync
 
-For in-process transforms and custom drivers, see `sync-transform` rustdoc (`ApplyContext`, `SourceDriver`). TOML only covers external command workers.
+For in-process transforms and custom drivers, see `sync-transform` rustdoc (`ApplyContext`, `SourceDriver`, `FlattenId`). Per-table ID overrides (`table=col1,col2`) live in sync-core (`parse_id_column_overrides` / `apply_id_column_overrides`). TOML covers external command workers and `flatten_id`.

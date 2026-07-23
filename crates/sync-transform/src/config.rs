@@ -15,6 +15,7 @@
 
 use crate::apply::{ApplyOpts, FailurePolicy};
 use crate::external::{ChildStdioMode, ExternalTransform, RetryPolicy};
+use crate::flatten_id::{FlattenId, DEFAULT_FLATTEN_ID_SEPARATOR};
 use crate::framer::FramerKind;
 use crate::pipeline::Pipeline;
 use anyhow::{bail, Context, Result};
@@ -54,6 +55,15 @@ pub struct PipelineSection {
 pub enum ConfiguredStage {
     /// Spawn a child worker and speak framed stdio (`type = "command"`).
     Command(CommandStageConfig),
+    /// Flatten Array record IDs to Text (`type = "flatten_id"`).
+    FlattenId(FlattenIdStageConfig),
+}
+
+/// Flatten-id stage settings from TOML (`type = "flatten_id"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlattenIdStageConfig {
+    /// Joiner between composite key parts (default `:`).
+    pub separator: String,
 }
 
 /// Command-stage settings from TOML (`type = "command"`).
@@ -171,6 +181,9 @@ impl Pipeline {
                     .with_timeout(cmd.timeout)
                     .with_retry(cmd.retry.clone());
                     pipeline.push_external(external);
+                }
+                ConfiguredStage::FlattenId(flat) => {
+                    pipeline.push_inplace(FlattenId::new(flat.separator.clone()));
                 }
             }
         }
@@ -297,6 +310,14 @@ struct RawPipeline {
 enum RawStage {
     Passthrough {},
     Command(RawCommandStage),
+    FlattenId(RawFlattenIdStage),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFlattenIdStage {
+    #[serde(default)]
+    separator: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -364,6 +385,19 @@ impl TryFrom<RawTransformsFile> for TransformsConfig {
                         },
                     )?;
                     stages.push(ConfiguredStage::Command(stage));
+                }
+                RawStage::FlattenId(raw) => {
+                    let separator = raw
+                        .separator
+                        .unwrap_or_else(|| DEFAULT_FLATTEN_ID_SEPARATOR.to_string());
+                    if separator.is_empty() {
+                        bail!(
+                            "transforms[{i}] (type = \"flatten_id\"): separator must not be empty"
+                        );
+                    }
+                    stages.push(ConfiguredStage::FlattenId(FlattenIdStageConfig {
+                        separator,
+                    }));
                 }
             }
         }
@@ -508,6 +542,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn flatten_id_parses_with_default_separator() {
+        let cfg = parse_transforms_toml(
+            r#"
+[[transforms]]
+type = "flatten_id"
+"#,
+        )
+        .unwrap();
+        assert_eq!(cfg.stages.len(), 1);
+        match &cfg.stages[0] {
+            ConfiguredStage::FlattenId(f) => assert_eq!(f.separator, ":"),
+            other => panic!("expected FlattenId, got {other:?}"),
+        }
+        let pipeline = Pipeline::from_config(&cfg).unwrap();
+        assert!(!pipeline.is_identity());
+    }
+
+    #[test]
+    fn flatten_id_custom_separator() {
+        let cfg = parse_transforms_toml(
+            r#"
+[[transforms]]
+type = "flatten_id"
+separator = "_"
+"#,
+        )
+        .unwrap();
+        match &cfg.stages[0] {
+            ConfiguredStage::FlattenId(f) => assert_eq!(f.separator, "_"),
+            other => panic!("expected FlattenId, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn empty_string_is_identity() {
         let cfg = parse_transforms_toml("").unwrap();
         assert!(cfg.is_identity());
@@ -569,7 +637,9 @@ command = ["kreuzberg-worker"]
         .unwrap();
         assert!(!cfg.is_identity());
         assert_eq!(cfg.stages.len(), 1);
-        let ConfiguredStage::Command(cmd) = &cfg.stages[0];
+        let ConfiguredStage::Command(cmd) = &cfg.stages[0] else {
+            panic!("expected Command stage");
+        };
         assert_eq!(cmd.command, vec!["kreuzberg-worker"]);
         assert_eq!(cmd.mode, ChildStdioMode::Persistent);
         assert_eq!(cmd.stdio.framer, FramerKind::Ndjson);
@@ -613,7 +683,9 @@ retry.jitter = false
         assert_eq!(cfg.pipeline.timeout, Some(Duration::from_secs(120)));
         assert_eq!(cfg.pipeline.max_in_flight, Some(2));
 
-        let ConfiguredStage::Command(cmd) = &cfg.stages[0];
+        let ConfiguredStage::Command(cmd) = &cfg.stages[0] else {
+            panic!("expected Command stage");
+        };
         assert_eq!(cmd.mode, ChildStdioMode::Persistent);
         assert_eq!(cmd.timeout, Some(Duration::from_secs(60)));
         assert_eq!(cmd.retry.max_attempts, 5);
@@ -659,8 +731,12 @@ retry.jitter = false
         )
         .unwrap();
         assert_eq!(cfg.stages.len(), 2);
-        let ConfiguredStage::Command(a) = &cfg.stages[0];
-        let ConfiguredStage::Command(b) = &cfg.stages[1];
+        let ConfiguredStage::Command(a) = &cfg.stages[0] else {
+            panic!("expected Command stage");
+        };
+        let ConfiguredStage::Command(b) = &cfg.stages[1] else {
+            panic!("expected Command stage");
+        };
         assert_eq!(a.command, vec!["ocr-worker"]);
         assert_eq!(a.mode, ChildStdioMode::Persistent);
         assert_eq!(a.retry.max_attempts, 5);
@@ -691,7 +767,9 @@ command = ["worker", "--flag"]
 "#,
         )
         .unwrap();
-        let ConfiguredStage::Command(cmd) = &cfg.stages[0];
+        let ConfiguredStage::Command(cmd) = &cfg.stages[0] else {
+            panic!("expected Command stage");
+        };
         assert_eq!(cmd.mode, ChildStdioMode::Transient);
         assert_eq!(cmd.command, vec!["worker", "--flag"]);
         let opts = ApplyOpts::from_transforms_config(&cfg);

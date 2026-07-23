@@ -45,6 +45,7 @@
 //! ```
 
 pub mod foreign_keys;
+pub mod id_columns;
 pub mod relation_change;
 pub mod schema;
 pub mod types;
@@ -53,6 +54,12 @@ pub mod values;
 // Re-exports for convenience
 // Foreign key types
 pub use foreign_keys::{classify_table, ForeignKeyDefinition, TableKind};
+
+// ID / primary-key column helpers
+pub use id_columns::{
+    apply_id_column_overrides, build_composite_record_id, flatten_composite_id,
+    parse_id_column_overrides, stringify_id_part, IdColumnOverrides, IdColumnsError,
+};
 
 // Base types (context-neutral, no generators)
 pub use schema::{ColumnDefinition, DatabaseSchema, TableDefinition};

@@ -94,6 +94,7 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             s3_uris: vec![],
             http_uris: vec![],
             id_field: "id".to_string(),
+            id_columns: Vec::new(),
             conversion_rules: vec![],
             batch_size: BATCH_SIZE,
             dry_run: false,

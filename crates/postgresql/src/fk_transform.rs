@@ -112,22 +112,7 @@ fn inject_missing_fk_from_composite_id(
 /// Flatten a composite (Array) ID into a string ID.
 /// Simple IDs are returned as-is. Array IDs are joined with `:` separators.
 fn flatten_composite_id(id: UniversalValue) -> UniversalValue {
-    match id {
-        UniversalValue::Array { elements, .. } => {
-            let parts: Vec<String> = elements
-                .into_iter()
-                .map(|v| match v {
-                    UniversalValue::Int32(n) => n.to_string(),
-                    UniversalValue::Int64(n) => n.to_string(),
-                    UniversalValue::Text(s) => s,
-                    UniversalValue::Uuid(u) => u.to_string(),
-                    other => format!("{other:?}"),
-                })
-                .collect();
-            UniversalValue::Text(parts.join(":"))
-        }
-        other => other,
-    }
+    sync_core::flatten_composite_id(id, ":")
 }
 
 /// Extract and remove the FK value from the fields map.

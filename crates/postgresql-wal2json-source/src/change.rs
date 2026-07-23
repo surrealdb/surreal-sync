@@ -196,19 +196,31 @@ pub fn wal2json_to_psql(wal2json_value: &serde_json::Value) -> Result<Action> {
                     UniversalValue::Null
                 };
             } else if action_str == "D" {
-                // For DELETE with no columns, try to extract from PK info
+                // For DELETE with no columns, extract the full PK (including composites).
                 if let Some(pk_array) = obj.get("pk").and_then(|v| v.as_array()) {
-                    if let Some(pk) = pk_array.first() {
+                    let mut pk_values = Vec::new();
+                    for pk in pk_array {
                         if let Some(pk_name) = pk.get("name").and_then(|n| n.as_str()) {
                             if let Some(pk_value) = pk.get("value") {
                                 let pk_type =
                                     pk.get("type").and_then(|t| t.as_str()).unwrap_or("text");
-                                primary_key_value =
+                                let converted =
                                     convert_postgres_wal2json_value(Some(pk_value), pk_type)?;
-                                columns.insert(pk_name.to_string(), primary_key_value.clone());
+                                columns.insert(pk_name.to_string(), converted.clone());
+                                pk_values.push(converted);
                             }
                         }
                     }
+                    primary_key_value = if pk_values.len() == 1 {
+                        pk_values.into_iter().next().unwrap()
+                    } else if pk_values.len() > 1 {
+                        UniversalValue::Array {
+                            elements: pk_values,
+                            element_type: Box::new(UniversalType::Text),
+                        }
+                    } else {
+                        UniversalValue::Null
+                    };
                 }
             }
 

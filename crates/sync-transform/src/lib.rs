@@ -41,6 +41,7 @@ mod apply;
 mod config;
 mod cow;
 mod external;
+mod flatten_id;
 mod framer;
 mod inplace;
 mod pipeline;
@@ -56,8 +57,8 @@ pub use apply::{
 };
 pub use config::{
     ensure_command_resolvable, load_pipeline_and_opts, load_transforms_config, parse_humantime,
-    parse_transforms_toml, CommandStageConfig, ConfiguredStage, PipelineSection, StdioConfig,
-    TransformsConfig,
+    parse_transforms_toml, CommandStageConfig, ConfiguredStage, FlattenIdStageConfig,
+    PipelineSection, StdioConfig, TransformsConfig,
 };
 pub use cow::CowBatch;
 pub use external::{
@@ -65,6 +66,7 @@ pub use external::{
     PersistentChildStdio, RequestHeader, ResponseHeader, RetryPolicy, TransientChildStdio,
     WireItemKind, WireResponse, RELATION_WIRE_BATCH_ID_BIT,
 };
+pub use flatten_id::{FlattenId, DEFAULT_FLATTEN_ID_SEPARATOR};
 pub use framer::{Framer, FramerKind, NdjsonFramer};
 pub use inplace::{InPlaceTransform, Passthrough};
 pub use pipeline::{Pipeline, Stage};

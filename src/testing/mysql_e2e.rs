@@ -46,6 +46,7 @@ pub async fn run_full_sync_e2e(
         mysql_boolean_paths: Some(vec![
             "all_types_users.metadata=settings.notifications".to_string()
         ]),
+        id_column_overrides: Default::default(),
     };
 
     let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
@@ -121,6 +122,7 @@ pub async fn run_incremental_e2e(
         source_database: Some(test_db_name),
         tables: vec![],
         mysql_boolean_paths: Some(vec!["all_types_posts.post_categories".to_string()]),
+        id_column_overrides: Default::default(),
     };
 
     let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
