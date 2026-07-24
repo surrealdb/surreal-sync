@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use rand::RngExt;
-use sync_core::Value;
+use surreal_sync_core::Value;
 
 // Hardcoded increment range (can be made configurable later)
 const DEFAULT_MIN_INCREMENT_MS: i64 = 1;

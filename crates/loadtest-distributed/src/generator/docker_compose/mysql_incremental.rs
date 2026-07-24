@@ -1,6 +1,6 @@
 //! MySQL trigger-based incremental sync Docker Compose service generators.
 //!
-//! Source crate: crates/mysql-trigger-source/
+//! Source crate: crates/mysql/ (from_trigger)
 //! SourceChoice: MysqlTriggerIncremental
 //! SourceType: MySQLTriggerIncremental
 //! CLI commands:

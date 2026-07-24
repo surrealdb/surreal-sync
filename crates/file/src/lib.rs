@@ -3,6 +3,17 @@
 //! This crate provides a unified interface for reading files from various sources,
 //! with support for directory enumeration (for local and S3).
 //!
+//! # Features
+//!
+//! | Feature | Default | What it enables |
+//! |---------|---------|-----------------|
+//! | `local` | yes | Local filesystem paths and directory listing |
+//! | `http` | yes | `http://` / `https://` single-file URLs (`reqwest`) |
+//! | `s3` | yes | `s3://bucket/key` objects and prefixes (`aws-sdk-s3`) |
+//!
+//! Disable backends you do not need with `default-features = false` and an
+//! explicit feature list, e.g. `features = ["local"]`.
+//!
 //! # Source Types
 //!
 //! - **Local**: Files or directories on the local filesystem
@@ -31,15 +42,22 @@
 //! }
 //! ```
 
+#[cfg(feature = "http")]
 mod http;
+#[cfg(feature = "local")]
 mod local;
+#[cfg(feature = "s3")]
 mod s3;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+#[cfg(feature = "local")]
 use std::path::PathBuf;
 
+#[cfg(feature = "http")]
 pub use http::HttpFileReader;
+#[cfg(feature = "local")]
 pub use local::LocalFileReader;
+#[cfg(feature = "s3")]
 pub use s3::{S3Client, S3FileReader};
 
 /// Default buffer size for reading operations (1MB)
@@ -49,38 +67,61 @@ pub const DEFAULT_BUFFER_SIZE: usize = 1024 * 1024;
 #[derive(Debug, Clone)]
 pub enum FileSource {
     /// Local filesystem path (file or directory if ends with /)
+    #[cfg(feature = "local")]
     Local(PathBuf),
     /// S3 location (object or prefix if ends with /)
+    #[cfg(feature = "s3")]
     S3 { bucket: String, key: String },
     /// HTTP/HTTPS URL (single file only)
+    #[cfg(feature = "http")]
     Http(String),
 }
 
 impl FileSource {
     /// Parse a string into a FileSource, auto-detecting the source type
     ///
-    /// - `s3://bucket/key` -> S3
-    /// - `http://` or `https://` -> Http
-    /// - Everything else -> Local
+    /// - `s3://bucket/key` -> S3 (requires feature `s3`)
+    /// - `http://` or `https://` -> Http (requires feature `http`)
+    /// - Everything else -> Local (requires feature `local`)
     pub fn parse(uri: &str) -> Result<Self> {
         if uri.starts_with("s3://") {
-            let (bucket, key) = parse_s3_uri(uri)?;
-            Ok(FileSource::S3 { bucket, key })
+            #[cfg(feature = "s3")]
+            {
+                let (bucket, key) = parse_s3_uri(uri)?;
+                Ok(FileSource::S3 { bucket, key })
+            }
+            #[cfg(not(feature = "s3"))]
+            anyhow::bail!("S3 URI requires the `s3` feature of surreal-sync-file (got {uri})")
         } else if uri.starts_with("http://") || uri.starts_with("https://") {
-            Ok(FileSource::Http(uri.to_string()))
+            #[cfg(feature = "http")]
+            {
+                Ok(FileSource::Http(uri.to_string()))
+            }
+            #[cfg(not(feature = "http"))]
+            anyhow::bail!("HTTP URI requires the `http` feature of surreal-sync-file (got {uri})")
         } else {
-            Ok(FileSource::Local(PathBuf::from(uri)))
+            #[cfg(feature = "local")]
+            {
+                Ok(FileSource::Local(PathBuf::from(uri)))
+            }
+            #[cfg(not(feature = "local"))]
+            anyhow::bail!(
+                "Local path requires the `local` feature of surreal-sync-file (got {uri})"
+            )
         }
     }
 
     /// Check if this source represents a directory/prefix (ends with /)
     pub fn is_directory(&self) -> bool {
         match self {
+            #[cfg(feature = "local")]
             FileSource::Local(path) => {
                 path.to_string_lossy().ends_with('/')
                     || path.to_string_lossy().ends_with(std::path::MAIN_SEPARATOR)
             }
+            #[cfg(feature = "s3")]
             FileSource::S3 { key, .. } => key.ends_with('/'),
+            #[cfg(feature = "http")]
             FileSource::Http(_) => false, // HTTP doesn't support directories
         }
     }
@@ -91,6 +132,7 @@ impl FileSource {
     /// If this is a single file, returns it directly.
     pub async fn resolve(&self) -> Result<Vec<ResolvedSource>> {
         match self {
+            #[cfg(feature = "local")]
             FileSource::Local(path) => {
                 if self.is_directory() {
                     local::list_directory(path).await
@@ -98,6 +140,7 @@ impl FileSource {
                     Ok(vec![ResolvedSource::Local(path.clone())])
                 }
             }
+            #[cfg(feature = "s3")]
             FileSource::S3 { bucket, key } => {
                 if self.is_directory() {
                     let client = S3Client::new().await?;
@@ -109,6 +152,7 @@ impl FileSource {
                     }])
                 }
             }
+            #[cfg(feature = "http")]
             FileSource::Http(url) => Ok(vec![ResolvedSource::Http(url.clone())]),
         }
     }
@@ -116,8 +160,11 @@ impl FileSource {
     /// Get a display name for logging
     pub fn display_name(&self) -> String {
         match self {
+            #[cfg(feature = "local")]
             FileSource::Local(path) => path.display().to_string(),
+            #[cfg(feature = "s3")]
             FileSource::S3 { bucket, key } => format!("s3://{bucket}/{key}"),
+            #[cfg(feature = "http")]
             FileSource::Http(url) => url.clone(),
         }
     }
@@ -127,10 +174,13 @@ impl FileSource {
 #[derive(Debug, Clone)]
 pub enum ResolvedSource {
     /// Local file
+    #[cfg(feature = "local")]
     Local(PathBuf),
     /// S3 object
+    #[cfg(feature = "s3")]
     S3 { bucket: String, key: String },
     /// HTTP/HTTPS URL
+    #[cfg(feature = "http")]
     Http(String),
 }
 
@@ -138,10 +188,13 @@ impl ResolvedSource {
     /// Open this source and return a reader
     pub async fn open(&self, buffer_size: usize) -> Result<Box<dyn std::io::Read + Send>> {
         match self {
+            #[cfg(feature = "local")]
             ResolvedSource::Local(path) => LocalFileReader::open(path.clone(), buffer_size).await,
+            #[cfg(feature = "s3")]
             ResolvedSource::S3 { bucket, key } => {
                 S3FileReader::open(bucket.clone(), key.clone(), buffer_size).await
             }
+            #[cfg(feature = "http")]
             ResolvedSource::Http(url) => HttpFileReader::open(url.clone(), buffer_size).await,
         }
     }
@@ -149,8 +202,11 @@ impl ResolvedSource {
     /// Get a display name for logging
     pub fn display_name(&self) -> String {
         match self {
+            #[cfg(feature = "local")]
             ResolvedSource::Local(path) => path.display().to_string(),
+            #[cfg(feature = "s3")]
             ResolvedSource::S3 { bucket, key } => format!("s3://{bucket}/{key}"),
+            #[cfg(feature = "http")]
             ResolvedSource::Http(url) => url.clone(),
         }
     }
@@ -158,10 +214,13 @@ impl ResolvedSource {
     /// Get the file extension (without the dot)
     pub fn extension(&self) -> Option<&str> {
         match self {
+            #[cfg(feature = "local")]
             ResolvedSource::Local(path) => path.extension().and_then(|e| e.to_str()),
+            #[cfg(feature = "s3")]
             ResolvedSource::S3 { key, .. } => {
                 key.rsplit('.').next().filter(|ext| !ext.contains('/'))
             }
+            #[cfg(feature = "http")]
             ResolvedSource::Http(url) => {
                 // Extract path from URL, then get extension
                 url.rsplit('/')
@@ -174,7 +233,9 @@ impl ResolvedSource {
 }
 
 /// Parse S3 URI in the format: s3://bucket/key/to/file
+#[cfg(feature = "s3")]
 pub fn parse_s3_uri(uri: &str) -> Result<(String, String)> {
+    use anyhow::Context;
     let uri = uri
         .strip_prefix("s3://")
         .context("S3 URI must start with 's3://'")?;
@@ -191,6 +252,7 @@ pub fn parse_s3_uri(uri: &str) -> Result<(String, String)> {
 mod tests {
     use super::*;
 
+    #[cfg(feature = "local")]
     #[test]
     fn test_parse_local_file() {
         let source = FileSource::parse("/data/file.csv").unwrap();
@@ -198,6 +260,7 @@ mod tests {
         assert!(!source.is_directory());
     }
 
+    #[cfg(feature = "local")]
     #[test]
     fn test_parse_local_directory() {
         let source = FileSource::parse("/data/files/").unwrap();
@@ -205,6 +268,7 @@ mod tests {
         assert!(source.is_directory());
     }
 
+    #[cfg(feature = "s3")]
     #[test]
     fn test_parse_s3_object() {
         let source = FileSource::parse("s3://my-bucket/data/file.csv").unwrap();
@@ -212,6 +276,7 @@ mod tests {
         assert!(!source.is_directory());
     }
 
+    #[cfg(feature = "s3")]
     #[test]
     fn test_parse_s3_prefix() {
         let source = FileSource::parse("s3://my-bucket/data/").unwrap();
@@ -219,6 +284,7 @@ mod tests {
         assert!(source.is_directory());
     }
 
+    #[cfg(feature = "http")]
     #[test]
     fn test_parse_http_url() {
         let source = FileSource::parse("https://example.com/data.csv").unwrap();
@@ -226,12 +292,14 @@ mod tests {
         assert!(!source.is_directory());
     }
 
+    #[cfg(feature = "local")]
     #[test]
     fn test_resolved_extension_local() {
         let resolved = ResolvedSource::Local(PathBuf::from("/data/file.csv"));
         assert_eq!(resolved.extension(), Some("csv"));
     }
 
+    #[cfg(feature = "s3")]
     #[test]
     fn test_resolved_extension_s3() {
         let resolved = ResolvedSource::S3 {
@@ -241,12 +309,14 @@ mod tests {
         assert_eq!(resolved.extension(), Some("jsonl"));
     }
 
+    #[cfg(feature = "http")]
     #[test]
     fn test_resolved_extension_http() {
         let resolved = ResolvedSource::Http("https://example.com/data.csv".to_string());
         assert_eq!(resolved.extension(), Some("csv"));
     }
 
+    #[cfg(feature = "http")]
     #[test]
     fn test_resolved_extension_http_with_query() {
         // URLs with query strings are edge cases - extension extraction may not work
@@ -261,6 +331,7 @@ mod tests {
         let _ = ext;
     }
 
+    #[cfg(feature = "s3")]
     #[test]
     fn test_parse_s3_uri_valid() {
         let (bucket, key) = parse_s3_uri("s3://my-bucket/path/to/file.csv").unwrap();
@@ -268,12 +339,14 @@ mod tests {
         assert_eq!(key, "path/to/file.csv");
     }
 
+    #[cfg(feature = "s3")]
     #[test]
     fn test_parse_s3_uri_no_prefix() {
         let result = parse_s3_uri("my-bucket/path/to/file.csv");
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "s3")]
     #[test]
     fn test_parse_s3_uri_no_key() {
         let result = parse_s3_uri("s3://my-bucket");

@@ -5,7 +5,7 @@ use crate::insert::{generate_create_table, generate_drop_table, insert_batch, DE
 use loadtest_generator::DataGenerator;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use sync_core::{Row, Schema};
+use surreal_sync_core::{Row, Schema};
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls};
 use tracing::{debug, info};

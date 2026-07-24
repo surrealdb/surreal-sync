@@ -10,7 +10,7 @@
 use loadtest_populate_mongodb::MongoDBPopulator;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use sync_core::Schema;
+use surreal_sync_core::Schema;
 
 const SEED: u64 = 42;
 const BATCH_SIZE: usize = 10;
@@ -117,23 +117,19 @@ async fn test_mongodb_loadtest_small_scale() -> Result<(), Box<dyn std::error::E
     // Create version-aware sink and run sync
     match &surreal_conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_mongodb_changestream_source::run_full_sync::<_, checkpoint::NullStore>(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-            )
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_mongodb_changestream_source::run_full_sync::<
+                _,
+                surreal_sync_core::NullStore,
+            >(&sink, source_opts, sync_opts, None)
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_mongodb_changestream_source::run_full_sync::<_, checkpoint::NullStore>(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-            )
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_mongodb_changestream_source::run_full_sync::<
+                _,
+                surreal_sync_core::NullStore,
+            >(&sink, source_opts, sync_opts, None)
             .await?;
         }
     }

@@ -5,14 +5,14 @@ use std::process::Command;
 use std::sync::Mutex;
 
 use mongodb::bson::doc;
-use surreal_sink::SurrealSink;
 use surreal_sync::testing::generate_test_id;
+use surreal_sync_core::SurrealSink;
+use surreal_sync_core::{Change, Row, Value};
 use surreal_sync_mongodb_changestream_source::{
     run_full_sync_with_transforms, run_incremental_sync_with_transforms, MongoDBCheckpoint,
     ReplicationTailOptions, SourceOpts, SyncOpts,
 };
-use sync_core::{Change, Row, Value};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
+use surreal_sync_runtime::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 
 struct CaptureSink {
     changes: Mutex<Vec<Change>>,
@@ -45,7 +45,10 @@ impl SurrealSink for CaptureSink {
         Ok(())
     }
 
-    async fn write_relations(&self, _relations: &[sync_core::Relation]) -> anyhow::Result<()> {
+    async fn write_relations(
+        &self,
+        _relations: &[surreal_sync_core::Relation],
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 
@@ -56,7 +59,7 @@ impl SurrealSink for CaptureSink {
 
     async fn apply_relation_change(
         &self,
-        _change: &sync_core::RelationChange,
+        _change: &surreal_sync_core::RelationChange,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -75,7 +78,9 @@ fn ensure_fixture_worker() -> PathBuf {
             .args([
                 "build",
                 "-p",
-                "sync-transform",
+                "surreal-sync-runtime",
+                "--features",
+                "test-support",
                 "--bin",
                 "sync-transform-fixture-worker",
             ])
@@ -119,8 +124,8 @@ async fn identity_and_external_mutate_incremental() -> Result<(), Box<dyn std::e
     // Establish resume token via empty full sync checkpoint emission.
     let checkpoint_dir = format!(".test-mongo-xf-checkpoints-{test_id}");
     surreal_sync::testing::checkpoint::cleanup_checkpoint_dir(&checkpoint_dir)?;
-    let store = checkpoint::FilesystemStore::new(&checkpoint_dir);
-    let sync_manager = checkpoint::SyncManager::new(store);
+    let store = surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(&checkpoint_dir);
+    let sync_manager = surreal_sync_core::SyncManager::new(store);
 
     let source_opts = SourceOpts {
         source_uri: container.connection_uri(),
@@ -146,9 +151,11 @@ async fn identity_and_external_mutate_incremental() -> Result<(), Box<dyn std::e
     )
     .await?;
 
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
-            .await?;
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        surreal_sync_core::SyncPhase::FullSyncStart,
+    )
+    .await?;
     let from_checkpoint: MongoDBCheckpoint = checkpoint_file.parse()?;
 
     people
@@ -249,7 +256,7 @@ async fn external_mutate_full_sync_rows() -> Result<(), Box<dyn std::error::Erro
     pipeline.push_external(ext);
     let apply_opts = ApplyOpts::identity().with_batch_size(1);
     let sink = CaptureSink::new();
-    run_full_sync_with_transforms::<_, checkpoint::NullStore>(
+    run_full_sync_with_transforms::<_, surreal_sync_core::NullStore>(
         &sink,
         SourceOpts {
             source_uri: container.connection_uri(),

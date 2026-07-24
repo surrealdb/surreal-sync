@@ -22,9 +22,9 @@ use chrono::Utc;
 use neo4rs::{Graph, Query};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use surreal_sink::SurrealSink;
-use sync_core::{Change, Relation, RelationChange, Row, Type, Value};
-use sync_transform::{
+use surreal_sync_core::SurrealSink;
+use surreal_sync_core::{Change, Relation, RelationChange, Row, Type, Value};
+use surreal_sync_runtime::{
     ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver, SourceRuntimeOpts,
     StopReason,
 };
@@ -590,7 +590,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
     pipeline: &Pipeline,
     apply_opts: &ApplyOpts,
 ) -> anyhow::Result<()> {
-    use checkpoint::Checkpoint;
+    use surreal_sync_core::Checkpoint;
 
     tracing::info!(
         "Starting Neo4j incremental sync from checkpoint: {}",
@@ -667,7 +667,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
             stream.commit_sunk(position);
             if let Some(ref target) = options.until {
                 if position.timestamp_millis >= target.timestamp.timestamp_millis() {
-                    use checkpoint::Checkpoint;
+                    use surreal_sync_core::Checkpoint;
                     tracing::info!(
                         "Reached target checkpoint: {}, stopping incremental sync",
                         target.to_cli_string()
@@ -709,7 +709,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
 
     let runtime_opts = SourceRuntimeOpts::new();
     let transformer = Arc::new(pipeline.clone());
-    let exit = sync_transform::run_source_runtime_with(
+    let exit = surreal_sync_runtime::run_source_runtime_with(
         &mut driver,
         surreal,
         transformer,
@@ -719,16 +719,16 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
     .await?;
 
     match exit {
-        sync_transform::RuntimeExit::Stopped(StopReason::Deadline) => {
+        surreal_sync_runtime::RuntimeExit::Stopped(StopReason::Deadline) => {
             tracing::info!("Reached deadline, stopping incremental sync");
         }
-        sync_transform::RuntimeExit::Stopped(StopReason::Until) => {
+        surreal_sync_runtime::RuntimeExit::Stopped(StopReason::Until) => {
             tracing::info!("Reached target checkpoint, stopping incremental sync");
         }
-        sync_transform::RuntimeExit::Stopped(StopReason::Finished) => {
+        surreal_sync_runtime::RuntimeExit::Stopped(StopReason::Finished) => {
             tracing::info!("Neo4j source caught up (no more timestamped changes)");
         }
-        sync_transform::RuntimeExit::Stopped(StopReason::Cancelled) => {
+        surreal_sync_runtime::RuntimeExit::Stopped(StopReason::Cancelled) => {
             tracing::info!("Cancellation requested, stopping incremental sync");
         }
     }
@@ -779,7 +779,7 @@ impl SourceDriver for Neo4jSourceDriver<'_> {
 
                 if let Some(ref target) = self.options.until {
                     if self.last_position.timestamp_millis >= target.timestamp.timestamp_millis() {
-                        use checkpoint::Checkpoint;
+                        use surreal_sync_core::Checkpoint;
                         tracing::info!(
                             "Reached target checkpoint: {}, stopping after this event",
                             target.to_cli_string()

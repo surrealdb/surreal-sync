@@ -4,10 +4,12 @@
 //! constraints from PostgreSQL, producing a `DatabaseSchema` with FK info
 //! ready for record-link and relation-table classification.
 
+use crate::types::postgresql_column_to_universal_type;
 use anyhow::Result;
-use postgresql_types::postgresql_column_to_universal_type;
 use std::collections::HashMap;
-use sync_core::{ColumnDefinition, DatabaseSchema, ForeignKeyDefinition, TableDefinition, Type};
+use surreal_sync_core::{
+    ColumnDefinition, DatabaseSchema, ForeignKeyDefinition, TableDefinition, Type,
+};
 use tokio_postgres::Client;
 
 /// (source_columns, referenced_table, referenced_columns) grouped per constraint.
@@ -245,7 +247,7 @@ pub async fn collect_composite_primary_keys(
 /// to each `TableDefinition` in the schema.
 pub async fn enrich_schema_with_fks(
     client: &Client,
-    schema: &mut sync_core::DatabaseSchema,
+    schema: &mut surreal_sync_core::DatabaseSchema,
 ) -> Result<()> {
     let fk_map = collect_foreign_keys(client).await?;
     let cpk_map = collect_composite_primary_keys(client).await?;

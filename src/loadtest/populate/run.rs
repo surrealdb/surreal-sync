@@ -1,7 +1,7 @@
 //! Populate command runner.
 
 use anyhow::Context;
-use sync_core::Schema;
+use surreal_sync_core::Schema;
 
 use super::mask_connection_password;
 use crate::loadtest::populate_verify::post_metrics_to_aggregator;

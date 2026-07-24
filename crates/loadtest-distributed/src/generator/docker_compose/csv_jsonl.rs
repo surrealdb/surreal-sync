@@ -1,8 +1,8 @@
 //! CSV and JSONL file import Docker Compose service generators.
 //!
 //! Source crates:
-//! - crates/csv-source/
-//! - crates/jsonl-source/
+//! - crates/csv/ (from_csv)
+//! - crates/json/ (from_jsonl)
 //!
 //! SourceChoice: Csv, Jsonl
 //!

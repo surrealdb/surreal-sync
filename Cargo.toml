@@ -1,13 +1,44 @@
 [workspace]
-members = ["crates/binlog-protocol", "crates/mysql-binlog-source", "crates/kafka-source", "crates/kafka-producer", "crates/kafka-types", "crates/postgresql", "crates/postgresql-wal2json-source", "crates/postgresql-pgoutput-source", "crates/pgoutput-protocol", "crates/postgresql-trigger-source", "crates/csv-source", "crates/jsonl-source", "crates/file", "crates/sync-core", "crates/sync-transform", "crates/loadtest-generator", "crates/loadtest-populate", "crates/mysql-types", "crates/postgresql-types", "crates/mongodb-types", "crates/surreal2-types", "crates/surreal3-types", "crates/json-types", "crates/csv-types", "crates/neo4j-types", "crates/loadtest-populate-mysql", "crates/loadtest-populate-postgresql", "crates/loadtest-populate-mongodb", "crates/loadtest-populate-csv", "crates/loadtest-populate-jsonl", "crates/loadtest-populate-neo4j", "crates/loadtest-populate-kafka", "crates/loadtest-verify-surreal2", "crates/loadtest-verify-surreal3", "crates/surreal-sink", "crates/surreal2-sink", "crates/surreal3-sink", "crates/surreal-client", "crates/surreal2-client", "crates/surreal3-client", "crates/surreal-version", "crates/mongodb-changestream-source", "crates/neo4j-source", "crates/checkpoint", "crates/checkpoint-surreal3", "crates/mysql-trigger-source", "crates/loadtest-distributed", "crates/surrealdb-multi-sdk-demo", "crates/interleaved-snapshot", "crates/snowflake-types", "crates/snowflake-source"]
+members = [
+    "crates/postgresql",
+    "crates/file",
+    "crates/sync-core",
+    "crates/runtime",
+    "crates/loadtest-generator",
+    "crates/loadtest-populate",
+    "crates/mysql",
+    "crates/mongodb-types",
+    "crates/neo4j-types",
+    "crates/loadtest-populate-mysql",
+    "crates/loadtest-populate-postgresql",
+    "crates/loadtest-populate-mongodb",
+    "crates/loadtest-populate-csv",
+    "crates/loadtest-populate-jsonl",
+    "crates/loadtest-populate-neo4j",
+    "crates/loadtest-populate-kafka",
+    "crates/loadtest-verify-surreal2",
+    "crates/loadtest-verify-surreal3",
+    "crates/surreal",
+    "crates/mongodb-changestream-source",
+    "crates/neo4j-source",
+    "crates/loadtest-distributed",
+    "crates/surrealdb-multi-sdk-demo",
+    "crates/snowflake",
+    "crates/json",
+    "crates/csv",
+    "crates/kafka",
+    "examples/from-mysql-binlog",
+    "examples/from-snowflake",
+]
 resolver = "2"
 
 [package]
 name = "surreal-sync"
-version = "0.3.4"
+version = "0.6.0"
 edition = "2021"
-description = "A tool for migrating Neo4j and MongoDB data to SurrealDB"
+description = "Command-line tool for syncing data from various sources into SurrealDB"
 authors = ["surreal-sync contributors"]
+publish = false
 
 [features]
 default = []
@@ -71,17 +102,13 @@ csv = "1.3"
 aws-sdk-s3 = "1.54"
 aws-config = "1.5"
 
-# Kafka source
-surreal-sync-kafka-source = { path = "crates/kafka-source" }
-
-# PostgreSQL logical replication (WAL) library
-surreal-sync-postgresql-wal2json-source = { path = "crates/postgresql-wal2json-source" }
-
-# CSV source
-surreal-sync-csv-source = { path = "crates/csv-source" }
-
-# JSONL source
-surreal-sync-jsonl-source = { path = "crates/jsonl-source" }
+# Origin family crates
+surreal-sync-kafka = { path = "crates/kafka", features = ["from_kafka", "producer"] }
+surreal-sync-postgresql = { path = "crates/postgresql", features = ["from_wal2json", "from_pgoutput", "from_trigger"] }
+surreal-sync-csv = { path = "crates/csv", features = ["from_csv"] }
+surreal-sync-json = { path = "crates/json", features = ["from_jsonl"] }
+surreal-sync-mysql = { path = "crates/mysql", features = ["from_binlog", "from_trigger"] }
+surreal-sync-snowflake = { path = "crates/snowflake", features = ["from_snowflake"] }
 
 # Load testing populators
 loadtest-populate-mysql = { path = "crates/loadtest-populate-mysql" }
@@ -100,26 +127,14 @@ loadtest-verify-surreal3 = { path = "crates/loadtest-verify-surreal3" }
 loadtest-distributed = { path = "crates/loadtest-distributed" }
 
 # Sync core (for LoadTestSchema)
-sync-core = { path = "crates/sync-core" }
+surreal-sync-core = { path = "crates/sync-core" }
+surreal-sync-runtime = { path = "crates/runtime", features = ["cli"] }
 
-# Transform pipeline framework
-sync-transform = { path = "crates/sync-transform" }
+# SurrealDB sink / client (v2+v3+reqwest for CLI dual-SDK auto-detect)
+surreal-sync-surreal = { path = "crates/surreal", features = ["v2", "v3", "reqwest"] }
 
-# Checkpoint management
-checkpoint = { path = "crates/checkpoint" }
-
-# Type conversion crates
-json-types = { path = "crates/json-types" }
-mysql-types = { path = "crates/mysql-types" }
-postgresql-types = { path = "crates/postgresql-types" }
-surreal2-types = { path = "crates/surreal2-types" }
-kafka-types = { path = "crates/kafka-types" }
+# Neo4j types (origin still separate)
 neo4j-types = { path = "crates/neo4j-types" }
-surreal2-sink = { path = "crates/surreal2-sink" }
-surreal3-sink = { path = "crates/surreal3-sink" }
-surreal3-types = { path = "crates/surreal3-types" }
-surreal-version = { path = "crates/surreal-version" }
-checkpoint-surreal3 = { path = "crates/checkpoint-surreal3" }
 
 # MongoDB source
 surreal-sync-mongodb-changestream-source = { path = "crates/mongodb-changestream-source" }
@@ -127,33 +142,7 @@ surreal-sync-mongodb-changestream-source = { path = "crates/mongodb-changestream
 # Neo4j source
 surreal-sync-neo4j-source = { path = "crates/neo4j-source" }
 
-# MySQL trigger-based sync
-surreal-sync-mysql-trigger-source = { path = "crates/mysql-trigger-source" }
-
-# MySQL/MariaDB binlog CDC sync
-surreal-sync-mysql-binlog-source = { path = "crates/mysql-binlog-source" }
-
-# PostgreSQL pgoutput WAL CDC sync
-surreal-sync-postgresql-pgoutput-source = { path = "crates/postgresql-pgoutput-source" }
-
-# PostgreSQL trigger-based sync
-surreal-sync-postgresql-trigger-source = { path = "crates/postgresql-trigger-source" }
-
-# PostgreSQL shared utilities
-surreal-sync-postgresql = { path = "crates/postgresql" }
-
-# Watermark-based interleaved snapshot full-sync framework
-surreal-sync-interleaved-snapshot = { path = "crates/interleaved-snapshot" }
-
-# Snowflake ingestion source (SQL REST API v2, key-pair JWT auth)
-surreal-sync-snowflake-source = { path = "crates/snowflake-source" }
-snowflake-types = { path = "crates/snowflake-types" }
-
-# Binlog protocol (Flavor for binlog test containers)
-binlog-protocol = { path = "crates/binlog-protocol" }
-
-# Version-independent sink trait (used by the interleaved-snapshot orchestrator)
-surreal-sink = { path = "crates/surreal-sink" }
+# Used by some integration tests / process helpers
 libc = "0.2.183"
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 
@@ -161,9 +150,6 @@ openssl = { version = "0.10", features = ["vendored"], optional = true }
 # Testing
 tokio-test = "0.4"
 tempfile = "3.27"
-
-# Kafka producer library for Kafka source testing
-surreal-sync-kafka-producer = { path = "crates/kafka-producer" }
 
 # Load testing generator
 loadtest-generator = { path = "crates/loadtest-generator" }

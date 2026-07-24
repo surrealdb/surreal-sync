@@ -2,13 +2,13 @@
 
 use crate::error::CSVPopulatorError;
 use csv::Writer;
-use csv_types::CsvValue;
 use loadtest_generator::DataGenerator;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::Path;
 use std::time::{Duration, Instant};
-use sync_core::{GeneratorTableDefinition, Row, Schema, TypedValue};
+use surreal_sync_core::{GeneratorTableDefinition, Row, Schema, TypedValue};
+use surreal_sync_csv::types::CsvValue;
 use tracing::{debug, info};
 
 /// Default buffer size for CSV writing.
@@ -323,7 +323,7 @@ fn internal_row_to_csv_record(row: &Row, table_schema: &GeneratorTableDefinition
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::Value;
+    use surreal_sync_core::Value;
     use tempfile::TempDir;
 
     fn test_schema() -> Schema {

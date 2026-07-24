@@ -1,12 +1,13 @@
 [package]
 name = "loadtest-populate-mongodb"
-version = "0.1.0"
+version = "0.6.0"
 edition = "2021"
+publish = false
 description = "MongoDB populator for load testing surreal-sync"
 license = "MIT"
 
 [dependencies]
-sync-core = { path = "../sync-core" }
+surreal-sync-core = { path = "../sync-core" }
 loadtest-generator = { path = "../loadtest-generator" }
 loadtest-populate = { path = "../loadtest-populate" }
 loadtest-distributed = { path = "../loadtest-distributed" }

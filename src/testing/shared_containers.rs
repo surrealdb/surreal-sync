@@ -10,7 +10,7 @@ use tokio::sync::OnceCell;
 use crate::testing::mysql_binlog_container::MySQLBinlogContainer;
 use crate::testing::postgresql_pgoutput_container::PostgresPgoutputContainer;
 use surreal_sync_postgresql::testing::container::PostgresContainer;
-use surreal_version::testing::SurrealDbContainer;
+use surreal_sync_surreal::version::testing::SurrealDbContainer;
 
 /// Track container names for cleanup at process exit.
 static CONTAINER_NAMES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
@@ -105,13 +105,13 @@ async fn create_postgres_test_db_from_admin(
 }
 
 /// Returns a shared MySQL container, starting it on first call.
-pub async fn shared_mysql() -> &'static surreal_sync_mysql_trigger_source::testing::MySQLContainer {
-    static MY: OnceCell<surreal_sync_mysql_trigger_source::testing::MySQLContainer> =
+pub async fn shared_mysql() -> &'static surreal_sync_mysql::from_trigger::testing::MySQLContainer {
+    static MY: OnceCell<surreal_sync_mysql::from_trigger::testing::MySQLContainer> =
         OnceCell::const_new();
     MY.get_or_init(|| async {
         let name = format!("shared-mysql-{}", std::process::id());
         register_container(&name);
-        let mut c = surreal_sync_mysql_trigger_source::testing::MySQLContainer::new(&name);
+        let mut c = surreal_sync_mysql::from_trigger::testing::MySQLContainer::new(&name);
         c.start().expect("MySQL start failed");
         c.wait_until_ready(30)
             .await
@@ -123,7 +123,7 @@ pub async fn shared_mysql() -> &'static surreal_sync_mysql_trigger_source::testi
 
 /// Create a fresh MySQL database for a test.
 pub async fn create_mysql_test_db(
-    container: &surreal_sync_mysql_trigger_source::testing::MySQLContainer,
+    container: &surreal_sync_mysql::from_trigger::testing::MySQLContainer,
     test_id: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let db_name = format!("test_{test_id}");
@@ -143,17 +143,17 @@ pub async fn create_mysql_test_db(
 
 /// Returns a shared MariaDB container, starting it on first call.
 ///
-/// Uses the same [`MySQLContainer`](surreal_sync_mysql_trigger_source::testing::MySQLContainer)
+/// Uses the same [`MySQLContainer`](surreal_sync_mysql::from_trigger::testing::MySQLContainer)
 /// as MySQL (MariaDB speaks the MySQL wire protocol) but with the `mariadb:11`
 /// image.
-pub async fn shared_mariadb() -> &'static surreal_sync_mysql_trigger_source::testing::MySQLContainer
+pub async fn shared_mariadb() -> &'static surreal_sync_mysql::from_trigger::testing::MySQLContainer
 {
-    static MDB: OnceCell<surreal_sync_mysql_trigger_source::testing::MySQLContainer> =
+    static MDB: OnceCell<surreal_sync_mysql::from_trigger::testing::MySQLContainer> =
         OnceCell::const_new();
     MDB.get_or_init(|| async {
         let name = format!("shared-mariadb-{}", std::process::id());
         register_container(&name);
-        let mut c = surreal_sync_mysql_trigger_source::testing::MySQLContainer::mariadb(&name);
+        let mut c = surreal_sync_mysql::from_trigger::testing::MySQLContainer::mariadb(&name);
         c.start().expect("MariaDB start failed");
         c.wait_until_ready(60)
             .await
@@ -165,10 +165,10 @@ pub async fn shared_mariadb() -> &'static surreal_sync_mysql_trigger_source::tes
 
 /// Create a fresh MariaDB database for a test.
 ///
-/// MariaDB uses the same [`MySQLContainer`](surreal_sync_mysql_trigger_source::testing::MySQLContainer)
+/// MariaDB uses the same [`MySQLContainer`](surreal_sync_mysql::from_trigger::testing::MySQLContainer)
 /// as MySQL, so this delegates to [`create_mysql_test_db`].
 pub async fn create_mariadb_test_db(
-    container: &surreal_sync_mysql_trigger_source::testing::MySQLContainer,
+    container: &surreal_sync_mysql::from_trigger::testing::MySQLContainer,
     test_id: u64,
 ) -> Result<String, Box<dyn std::error::Error>> {
     create_mysql_test_db(container, test_id).await
@@ -264,16 +264,16 @@ pub async fn setup_binlog_user(
     use mysql_async::prelude::Queryable;
 
     let create_user = match container.flavor() {
-        binlog_protocol::Flavor::MySql => {
+        surreal_sync_mysql::binlog_protocol::Flavor::MySql => {
             "CREATE USER IF NOT EXISTS 'surreal_sync'@'%' \
              IDENTIFIED WITH mysql_native_password BY 'surreal_sync_pass'"
         }
-        binlog_protocol::Flavor::MariaDb => {
+        surreal_sync_mysql::binlog_protocol::Flavor::MariaDb => {
             "CREATE USER IF NOT EXISTS 'surreal_sync'@'%' IDENTIFIED BY 'surreal_sync_pass'"
         }
     };
     conn.query_drop(create_user).await?;
-    if container.flavor() == binlog_protocol::Flavor::MySql {
+    if container.flavor() == surreal_sync_mysql::binlog_protocol::Flavor::MySql {
         conn.query_drop("SET GLOBAL binlog_row_value_options = ''")
             .await?;
     }
@@ -326,4 +326,4 @@ pub async fn shared_neo4j() -> &'static surreal_sync_neo4j_source::testing::cont
 }
 
 // Kafka container shared accessor is defined inline in the kafka test binary
-// because the surreal_sync_kafka_producer crate has linking constraints.
+// because the surreal_sync_kafka::producer crate has linking constraints.

@@ -38,7 +38,7 @@ impl Neo4jCheckpoint {
     }
 }
 
-impl checkpoint::Checkpoint for Neo4jCheckpoint {
+impl surreal_sync_core::Checkpoint for Neo4jCheckpoint {
     const DATABASE_TYPE: &'static str = "neo4j";
 
     fn to_cli_string(&self) -> String {
@@ -86,8 +86,10 @@ impl checkpoint::Checkpoint for Neo4jCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use checkpoint::{Checkpoint, CheckpointFile, FilesystemStore, SyncManager, SyncPhase};
+    use surreal_sync_core::{Checkpoint, CheckpointFile, SyncManager, SyncPhase};
+
     use chrono::{Datelike, Timelike};
+    use surreal_sync_runtime::checkpoint_fs::FilesystemStore;
     use tempfile::TempDir;
 
     #[test]

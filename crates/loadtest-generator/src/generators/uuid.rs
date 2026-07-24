@@ -1,7 +1,7 @@
 //! UUID value generator.
 
 use rand::RngExt;
-use sync_core::Value;
+use surreal_sync_core::Value;
 use uuid::Uuid;
 
 /// Generate a random UUID v4 using the provided RNG.

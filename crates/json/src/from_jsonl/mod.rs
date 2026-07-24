@@ -1,0 +1,13 @@
+//! JSONL import for SurrealDB
+//!
+//! This module provides functionality for importing JSONL (JSON Lines) files into SurrealDB.
+//! It supports conversion rules that transform JSON objects into SurrealDB Thing references.
+
+pub mod conversion;
+mod sync;
+
+pub use conversion::ConversionRule;
+pub use sync::{sync, sync_with_transforms, Config, SourceOpts};
+
+// Re-export file source types for convenience
+pub use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};

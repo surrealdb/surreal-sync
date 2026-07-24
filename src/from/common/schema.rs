@@ -2,7 +2,7 @@
 
 use anyhow::Context;
 use std::path::PathBuf;
-use sync_core::Schema;
+use surreal_sync_core::Schema;
 
 /// Load a schema file if provided.
 pub fn load_schema_if_provided(schema_file: &Option<PathBuf>) -> anyhow::Result<Option<Schema>> {
@@ -18,7 +18,7 @@ pub fn load_schema_if_provided(schema_file: &Option<PathBuf>) -> anyhow::Result<
 /// Extract JSON field paths from a schema (e.g., ["users.profile_data", "products.metadata"]).
 /// This is used to auto-populate Neo4j JSON properties from the schema file.
 pub fn extract_json_fields_from_schema(schema: &Schema) -> Vec<String> {
-    use sync_core::Type;
+    use surreal_sync_core::Type;
 
     let mut json_fields = Vec::new();
     for table in &schema.tables {

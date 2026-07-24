@@ -1,3 +1,3 @@
-//! Re-export shared `--transforms-config` helpers from the library.
+//! Re-export shared `--transforms-config` helpers from surreal-sync-runtime.
 
-pub use surreal_sync::transforms::*;
+pub use surreal_sync_runtime::load_transforms_from_args;

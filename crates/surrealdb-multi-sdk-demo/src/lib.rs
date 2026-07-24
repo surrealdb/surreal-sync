@@ -189,7 +189,7 @@ mod type_safety_demo {
 mod tests {
     use super::*;
     use std::sync::{Mutex, OnceLock};
-    use surreal_version::testing::SurrealDbContainer;
+    use surreal_sync_surreal::version::testing::SurrealDbContainer;
 
     const V2_IMAGE: &str = "surrealdb/surrealdb:v2.6.5";
     const V3_IMAGE: &str = "surrealdb/surrealdb:v3.1.5";

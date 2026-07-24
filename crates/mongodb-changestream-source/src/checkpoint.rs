@@ -20,7 +20,7 @@ pub struct MongoDBCheckpoint {
     pub timestamp: DateTime<Utc>,
 }
 
-impl checkpoint::Checkpoint for MongoDBCheckpoint {
+impl surreal_sync_core::Checkpoint for MongoDBCheckpoint {
     const DATABASE_TYPE: &'static str = "mongodb";
 
     fn to_cli_string(&self) -> String {
@@ -102,7 +102,9 @@ pub async fn get_current_checkpoint(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use checkpoint::{Checkpoint, CheckpointFile, FilesystemStore, SyncManager, SyncPhase};
+    use surreal_sync_core::{Checkpoint, CheckpointFile, SyncManager, SyncPhase};
+
+    use surreal_sync_runtime::checkpoint_fs::FilesystemStore;
     use tempfile::TempDir;
 
     #[test]

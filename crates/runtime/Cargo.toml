@@ -1,0 +1,56 @@
+[package]
+name = "surreal-sync-runtime"
+version = "0.6.0"
+publish = true
+edition = "2021"
+description = "Shared runtime: apply pipeline, init, SurrealDB config, and transform loading for surreal-sync"
+authors = ["surreal-sync contributors"]
+repository = "https://github.com/surrealdb/surreal-sync"
+homepage = "https://github.com/surrealdb/surreal-sync"
+documentation = "https://docs.rs/surreal-sync-runtime"
+
+[features]
+default = ["checkpoint_fs"]
+# Clap-derived SurrealCliOpts for argv-parsing `run` / stock CLI. Sinks must
+# depend on the default (clap-free) feature set.
+cli = ["dep:clap"]
+# Filesystem checkpoint storage (`surreal_sync_runtime::checkpoint_fs`).
+checkpoint_fs = ["dep:chrono"]
+# Shared harness doubles for apply-loop tests and the fixture-worker binary.
+test-support = []
+
+# Test-only NDJSON transform worker — not installed by default `cargo install`.
+[[bin]]
+name = "sync-transform-fixture-worker"
+path = "src/bin/fixture_worker.rs"
+required-features = ["test-support"]
+
+[[test]]
+name = "external_stdio"
+path = "tests/external_stdio.rs"
+required-features = ["test-support"]
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"], optional = true }
+clap = { version = "4.5", features = ["derive", "env"], optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+surreal-sync-core = { path = "../sync-core", version = "0.6.0" }
+tokio = { version = "1.49", features = ["macros", "rt", "sync", "time", "process", "io-util", "fs"] }
+toml = "1.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
+[dev-dependencies]
+serde = { version = "1.0", features = ["derive"] }
+tempfile = "3.27"
+tokio = { version = "1.49", features = ["macros", "rt-multi-thread", "sync", "time", "process", "io-util", "fs", "test-util"] }
+
+[lib]
+name = "surreal_sync_runtime"
+path = "src/lib.rs"

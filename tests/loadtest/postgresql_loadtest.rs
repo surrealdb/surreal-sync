@@ -10,7 +10,7 @@
 use loadtest_populate_postgresql::PostgreSQLPopulator;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use sync_core::Schema;
+use surreal_sync_core::Schema;
 use tokio_postgres::NoTls;
 
 const SEED: u64 = 42;
@@ -108,7 +108,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
     // === PHASE 2: RUN SYNC from PostgreSQL to SurrealDB ===
     tracing::info!("Running full sync from PostgreSQL to SurrealDB");
 
-    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_postgresql::from_trigger::SourceOpts {
         source_uri: pg_conn_string.clone(),
         source_database: Some("public".to_string()),
         tables: vec![],
@@ -123,8 +123,8 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
     // Create version-appropriate sink and run sync
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_postgresql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_postgresql::from_trigger::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 source_opts,
                 sync_opts,
@@ -133,8 +133,8 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_postgresql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_postgresql::from_trigger::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 source_opts,
                 sync_opts,

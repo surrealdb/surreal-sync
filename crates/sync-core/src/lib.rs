@@ -11,25 +11,25 @@
 //!
 //! # Architecture
 //!
-//! The sync-core crate sits at the foundation of the sync framework:
+//! The `surreal-sync-core` crate sits at the foundation of the sync framework:
 //!
 //! ```text
-//! sync-core (this crate)
+//! surreal-sync-core (this crate)
 //!    │
-//!    ├─── loadtest-generator  (depends on sync-core for types)
+//!    ├─── loadtest-generator  (depends on surreal-sync-core for types)
 //!    │
-//!    ├─── mysql-types         (implements From/Into for MySQL)
-//!    ├─── postgresql-types    (implements From/Into for PostgreSQL)
+//!    ├─── surreal-sync-mysql  (implements From/Into for MySQL)
+//!    ├─── surreal-sync-postgresql::types    (implements From/Into for PostgreSQL)
 //!    ├─── mongodb-types       (implements From/Into for MongoDB)
 //!    ├─── surrealdb-types     (implements From/Into for SurrealDB)
-//!    └─── json-types          (implements From/Into for JSON/CSV)
+//!    └─── surreal-sync-json::types          (implements From/Into for JSON/CSV)
 //! ```
 //!
 //! # Example
 //!
 //! ```rust
-//! use sync_core::types::Type;
-//! use sync_core::values::{Value, TypedValue};
+//! use surreal_sync_core::types::Type;
+//! use surreal_sync_core::values::{Value, TypedValue};
 //!
 //! // Create a typed value using factory methods
 //! let value = TypedValue::int32(42);
@@ -44,14 +44,28 @@
 //! // let mysql_value: MySQLValue = value.into();
 //! ```
 
+pub mod checkpoint;
 pub mod foreign_keys;
 pub mod id_columns;
 pub mod relation_change;
 pub mod schema;
+pub mod sink;
+pub mod transform;
 pub mod types;
 pub mod values;
 
 // Re-exports for convenience
+// Checkpoint API (storage backends live in separate crates)
+pub use sink::{SinkConnect, SinkWithCheckpoints, SurrealConfig, SurrealSdkVersion, SurrealSink};
+
+pub use checkpoint::{
+    Checkpoint, CheckpointFile, CheckpointID, CheckpointStorage, CheckpointStore,
+    InterleavedSnapshotCheckpoint, NullStore, NullSyncManager, SnapshotCheckpointer,
+    SnapshotTableProgress, StoredCheckpoint, SyncConfig, SyncManager, SyncPhase,
+};
+
+pub use transform::{InPlaceTransform, Passthrough};
+
 // Foreign key types
 pub use foreign_keys::{classify_table, ForeignKeyDefinition, TableKind};
 

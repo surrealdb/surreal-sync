@@ -22,7 +22,9 @@ fn ensure_fixture_worker() -> PathBuf {
             .args([
                 "build",
                 "-p",
-                "sync-transform",
+                "surreal-sync-runtime",
+                "--features",
+                "test-support",
                 "--bin",
                 "sync-transform-fixture-worker",
             ])
@@ -112,10 +114,13 @@ async fn test_postgresql_wal2json_incremental_cli_transforms_config_mutate(
         )
         .await?;
 
-    use checkpoint::{Checkpoint, SyncPhase};
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, SyncPhase::FullSyncStart).await?;
-    let wal_checkpoint: surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint =
+    use surreal_sync_core::{Checkpoint, SyncPhase};
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        SyncPhase::FullSyncStart,
+    )
+    .await?;
+    let wal_checkpoint: surreal_sync_postgresql::from_wal2json::PostgreSQLLogicalCheckpoint =
         checkpoint_file.parse()?;
     let checkpoint_string = wal_checkpoint.to_cli_string();
 

@@ -18,9 +18,9 @@ use mongodb::{
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use surreal_sink::SurrealSink;
-use sync_core::{Change, ChangeOp, Value};
-use sync_transform::{
+use surreal_sync_core::SurrealSink;
+use surreal_sync_core::{Change, ChangeOp, Value};
+use surreal_sync_runtime::{
     ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver, SourceRuntimeOpts,
     StopReason,
 };
@@ -375,7 +375,7 @@ pub async fn run_incremental_sync<S: SurrealSink>(
 /// Incremental sync via `SourceDriver` + `run_source_runtime` (shared apply window).
 ///
 /// Change stream events become [`PositionedEvent`]s with the resume token as
-/// position; apply goes through [`sync_transform::run_source_runtime_with`].
+/// position; apply goes through [`surreal_sync_runtime::run_source_runtime_with`].
 /// Idle-stop and deadline semantics match the earlier Change Streams loop.
 pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
     surreal: &S,
@@ -385,7 +385,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
     pipeline: &Pipeline,
     apply_opts: &ApplyOpts,
 ) -> anyhow::Result<()> {
-    use checkpoint::Checkpoint;
+    use surreal_sync_core::Checkpoint;
 
     info!(
         "Starting MongoDB incremental sync from checkpoint: {}",
@@ -433,7 +433,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
 
     let runtime_opts = SourceRuntimeOpts::new();
     let transformer = Arc::new(pipeline.clone());
-    let exit = sync_transform::run_source_runtime_with(
+    let exit = surreal_sync_runtime::run_source_runtime_with(
         &mut driver,
         surreal,
         transformer,
@@ -443,16 +443,16 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
     .await?;
 
     match exit {
-        sync_transform::RuntimeExit::Stopped(StopReason::Deadline) => {
+        surreal_sync_runtime::RuntimeExit::Stopped(StopReason::Deadline) => {
             info!("Reached deadline, stopping incremental sync");
         }
-        sync_transform::RuntimeExit::Stopped(StopReason::Until) => {
+        surreal_sync_runtime::RuntimeExit::Stopped(StopReason::Until) => {
             info!("Reached target checkpoint, stopping incremental sync");
         }
-        sync_transform::RuntimeExit::Stopped(StopReason::Finished) => {
+        surreal_sync_runtime::RuntimeExit::Stopped(StopReason::Finished) => {
             info!("MongoDB change stream idle or ended, stopping incremental sync");
         }
-        sync_transform::RuntimeExit::Stopped(StopReason::Cancelled) => {
+        surreal_sync_runtime::RuntimeExit::Stopped(StopReason::Cancelled) => {
             info!("Cancellation requested, stopping incremental sync");
         }
     }
@@ -467,7 +467,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
     Ok(())
 }
 
-/// MongoDB change-stream CDC driver for [`sync_transform::run_source_runtime_with`].
+/// MongoDB change-stream CDC driver for [`surreal_sync_runtime::run_source_runtime_with`].
 ///
 /// Position is the resume token for the emitted event. [`Self::advance_watermark`]
 /// advances the sink-safe token handle; fetch-time tokens stay on `seen_token` only.
@@ -515,7 +515,7 @@ impl SourceDriver for MongodbChangeStreamDriver<'_> {
 
                 if let Some(ref target) = self.options.until {
                     if token >= target.resume_token {
-                        use checkpoint::Checkpoint;
+                        use surreal_sync_core::Checkpoint;
                         info!(
                             "Reached target checkpoint: {}, stopping after this event",
                             target.to_cli_string()

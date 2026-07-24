@@ -4,7 +4,7 @@
 //! sources' tests are, so this test is **gated on credentials** and cleanly
 //! skips when they are absent (mirroring the `NEO4J_ENTERPRISE_*` pattern in
 //! `tests/neo4j/`). The always-on correctness coverage for this source lives in
-//! the `snowflake-types` unit tests.
+//! the `surreal-sync-snowflake (types)` unit tests.
 //!
 //! To run it against a real account, set:
 //!   SNOWFLAKE_ACCOUNT, SNOWFLAKE_USER, SNOWFLAKE_PRIVATE_KEY_PATH,
@@ -14,7 +14,9 @@
 
 use surreal_sync::testing::surreal::{connect_auto, is_v3, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use surreal_sync_snowflake_source::{run_full_sync, SnowflakeClient, SourceOpts, SyncOpts};
+use surreal_sync_snowflake::from_snowflake::client::SnowflakeClient;
+use surreal_sync_snowflake::from_snowflake::full_sync::run_full_sync;
+use surreal_sync_snowflake::from_snowflake::{SourceOpts, SyncOpts};
 
 /// Read all required Snowflake env vars, or return `None` (skip) if any is unset.
 fn snowflake_opts_from_env(tables: Vec<String>, id_columns: Vec<String>) -> Option<SourceOpts> {
@@ -114,28 +116,28 @@ async fn snowflake_full_sync_ingests_selected_table() {
 
     // --- Run the ingestion through the version-appropriate sink ---
     if is_v3(&conn) {
-        let opts = surreal3_sink::SurrealOpts {
+        let opts = surreal_sync_surreal::v3::SurrealOpts {
             surreal_endpoint: sdb.ws_endpoint(),
             surreal_username: "root".to_string(),
             surreal_password: "root".to_string(),
         };
-        let surreal = surreal3_sink::surreal_connect(&opts, &ns, &sdb_name)
+        let surreal = surreal_sync_surreal::v3::surreal_connect(&opts, &ns, &sdb_name)
             .await
             .expect("v3 sink connect failed");
-        let sink = surreal3_sink::Surreal3Sink::new(surreal);
+        let sink = surreal_sync_surreal::v3::Surreal3Sink::new(surreal);
         run_full_sync(&client, &sink, &source_opts, &sync_opts)
             .await
             .expect("v3 ingestion failed");
     } else {
-        let opts = surreal2_sink::SurrealOpts {
+        let opts = surreal_sync_surreal::v2::SurrealOpts {
             surreal_endpoint: sdb.ws_endpoint(),
             surreal_username: "root".to_string(),
             surreal_password: "root".to_string(),
         };
-        let surreal = surreal2_sink::surreal_connect(&opts, &ns, &sdb_name)
+        let surreal = surreal_sync_surreal::v2::surreal_connect(&opts, &ns, &sdb_name)
             .await
             .expect("v2 sink connect failed");
-        let sink = surreal2_sink::Surreal2Sink::new(surreal);
+        let sink = surreal_sync_surreal::v2::Surreal2Sink::new(surreal);
         run_full_sync(&client, &sink, &source_opts, &sync_opts)
             .await
             .expect("v2 ingestion failed");

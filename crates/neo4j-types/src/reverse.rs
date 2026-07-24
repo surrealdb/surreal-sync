@@ -19,8 +19,8 @@ use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZon
 use chrono_tz::Tz;
 use neo4rs::BoltType;
 use std::str::FromStr;
-use sync_core::types::GeometryType;
-use sync_core::{Type, TypedValue, Value};
+use surreal_sync_core::types::GeometryType;
+use surreal_sync_core::{Type, TypedValue, Value};
 
 /// Configuration options for reverse conversion.
 #[derive(Debug, Clone)]
@@ -323,7 +323,7 @@ fn convert_bolt_to_universal_value_with_type(
             Ok((
                 Value::Geometry {
                     geometry_type: GeometryType::Point,
-                    data: sync_core::values::GeometryData(geojson),
+                    data: surreal_sync_core::values::GeometryData(geojson),
                 },
                 Type::Geometry {
                     geometry_type: GeometryType::Point,
@@ -342,7 +342,7 @@ fn convert_bolt_to_universal_value_with_type(
             Ok((
                 Value::Geometry {
                     geometry_type: GeometryType::Point,
-                    data: sync_core::values::GeometryData(geojson),
+                    data: surreal_sync_core::values::GeometryData(geojson),
                 },
                 Type::Geometry {
                     geometry_type: GeometryType::Point,
@@ -459,7 +459,7 @@ fn universal_value_to_json(value: &Value) -> serde_json::Value {
         ),
         Value::Enum { value, .. } => serde_json::Value::String(value.clone()),
         Value::Geometry { data, .. } => {
-            let sync_core::values::GeometryData(json) = data;
+            let surreal_sync_core::values::GeometryData(json) = data;
             json.clone()
         }
         Value::Duration(d) => serde_json::json!({

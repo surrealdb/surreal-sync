@@ -5,7 +5,7 @@
 use bson::Bson;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
-use sync_core::{Type, TypedValue, Value};
+use surreal_sync_core::{Type, TypedValue, Value};
 
 /// Parse an ISO 8601 duration string (PTxS or PTx.xxxxxxxxxS format).
 ///
@@ -386,7 +386,7 @@ mod tests {
     use super::*;
     use bson::{doc, DateTime as BsonDateTime};
     use chrono::{Datelike, TimeZone, Utc};
-    use sync_core::GeometryType;
+    use surreal_sync_core::GeometryType;
 
     #[test]
     fn test_null_conversion() {

@@ -6,7 +6,7 @@
 //! - `{rand:N}` - random N-digit number
 
 use rand::RngExt;
-use sync_core::Value;
+use surreal_sync_core::Value;
 use uuid::Uuid;
 
 /// Generate a string based on a pattern with placeholders.

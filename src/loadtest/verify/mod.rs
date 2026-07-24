@@ -24,17 +24,17 @@ pub async fn run_verify(args: VerifyArgs) -> anyhow::Result<()> {
 
     // Auto-detect server version
     tracing::info!("Detecting SurrealDB server version at {}", http_endpoint);
-    let detected = surreal_version::detect_server_version(&http_endpoint).await;
+    let detected = surreal_sync_surreal::version::detect_server_version(&http_endpoint).await;
 
     match detected {
         Ok(version) => {
             tracing::info!("Detected SurrealDB server version: {:?}", version);
             match version {
-                surreal_version::SurrealMajorVersion::V2 => {
+                surreal_sync_surreal::version::SurrealMajorVersion::V2 => {
                     tracing::info!("Using SurrealDB SDK v2 for verification");
                     run_verify_v2(args).await
                 }
-                surreal_version::SurrealMajorVersion::V3 => {
+                surreal_sync_surreal::version::SurrealMajorVersion::V3 => {
                     tracing::info!("Using SurrealDB SDK v3 for verification");
                     run_verify_v3(args).await
                 }

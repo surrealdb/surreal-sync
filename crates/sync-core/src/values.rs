@@ -515,7 +515,7 @@ impl Value {
     /// # Example
     ///
     /// ```rust
-    /// use sync_core::{Value, Type};
+    /// use surreal_sync_core::{Value, Type};
     ///
     /// let value = Value::Int32(42);
     /// let typed = value.to_typed_value();

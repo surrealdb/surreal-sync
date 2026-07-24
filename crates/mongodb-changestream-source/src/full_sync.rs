@@ -2,14 +2,14 @@
 //!
 //! This module provides full synchronization from MongoDB to SurrealDB.
 
-use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 use mongodb::{bson::doc, options::ClientOptions, Client as MongoClient};
 use mongodb_types::BsonValueWithSchema;
 use std::collections::HashMap;
 use std::time::Duration;
-use surreal_sink::SurrealSink;
-use sync_core::{DatabaseSchema, Row, Type, Value};
-use sync_transform::{ApplyOpts, Pipeline};
+use surreal_sync_core::SurrealSink;
+use surreal_sync_core::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
+use surreal_sync_core::{DatabaseSchema, Row, Type, Value};
+use surreal_sync_runtime::{ApplyOpts, Pipeline};
 
 /// Source database connection options (MongoDB-specific, library type without clap)
 #[derive(Clone, Debug)]
@@ -53,7 +53,7 @@ pub async fn migrate_from_mongodb<S: SurrealSink>(
     from_opts: SourceOpts,
     sync_opts: SyncOpts,
 ) -> anyhow::Result<()> {
-    run_full_sync::<S, checkpoint::NullStore>(surreal, from_opts, sync_opts, None).await
+    run_full_sync::<S, surreal_sync_core::NullStore>(surreal, from_opts, sync_opts, None).await
 }
 
 /// Full sync with identity transforms (checkpoint emission optional).
@@ -77,7 +77,7 @@ pub async fn run_full_sync<S: SurrealSink, CS: CheckpointStore>(
 }
 
 /// Full sync via [`RowChunkDriver`] /
-/// [`run_source_runtime`](sync_transform::run_source_runtime).
+/// [`run_source_runtime`](surreal_sync_runtime::run_source_runtime).
 ///
 /// # Arguments
 /// * `surreal` - SurrealDB sink for writing data
@@ -224,7 +224,7 @@ pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
 
         use async_trait::async_trait;
         use std::sync::Arc;
-        use sync_transform::{
+        use surreal_sync_runtime::{
             run_source_runtime_with, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
         };
 

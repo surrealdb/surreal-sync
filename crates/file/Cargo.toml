@@ -1,21 +1,33 @@
 [package]
 name = "surreal-sync-file"
-version = "0.1.0"
+version = "0.6.0"
+publish = true
 edition = "2021"
 description = "File source abstraction for surreal-sync (local, S3, HTTP)"
 authors = ["surreal-sync contributors"]
+repository = "https://github.com/surrealdb/surreal-sync"
+homepage = "https://github.com/surrealdb/surreal-sync"
+documentation = "https://docs.rs/surreal-sync-file"
+
+[features]
+# All backends on by default. Opt out with `default-features = false` and pick
+# `local` / `http` / `s3` as needed (e.g. local-only embedders).
+default = ["local", "http", "s3"]
+local = []
+http = ["dep:reqwest"]
+s3 = ["dep:aws-sdk-s3", "dep:aws-config", "dep:tokio-util"]
 
 [dependencies]
-# HTTP client
-reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-features = false }
+# HTTP client (feature `http`)
+reqwest = { version = "0.12", features = ["stream", "rustls-tls"], default-features = false, optional = true }
 
-# AWS S3
-aws-sdk-s3 = "1.54"
-aws-config = "1.5"
+# AWS S3 (feature `s3`)
+aws-sdk-s3 = { version = "1.54", optional = true }
+aws-config = { version = "1.5", optional = true }
+tokio-util = { version = "0.7", features = ["io-util"], optional = true }
 
-# Async runtime
+# Async runtime (local uses `tokio::fs`; http/s3 use async I/O)
 tokio = { version = "1.49", features = ["full"] }
-tokio-util = { version = "0.7", features = ["io-util"] }
 
 # Error handling
 anyhow = "1.0"

@@ -1,6 +1,6 @@
 //! PostgreSQL WAL2JSON incremental sync Docker Compose service generators.
 //!
-//! Source crate: crates/postgresql-wal2json-source/
+//! Source crate: crates/postgresql/ (from_wal2json)
 //! SourceChoice: PostgresqlWal2JsonIncremental (aliases: postgresql-wal2json, postgresql-logical)
 //! SourceType: PostgreSQLWal2JsonIncremental
 //! CLI commands:

@@ -110,13 +110,13 @@ Use `--snapshot-mode only` followed by `--snapshot-mode never` to schedule snaps
 
 ```bash
 make build-debug && cargo test -p surreal-sync --test postgresql_pgoutput -- --nocapture
-cargo test -p surreal-sync-postgresql-pgoutput-source --test suite -- --nocapture
+cargo test -p surreal-sync-postgresql --features from_pgoutput --test from_pgoutput_suite -- --nocapture
 ```
 
 Integration tests use stock `postgres:16` with `wal_level=logical` (no wal2json image build).
 
 ## References
 
-- Implementation: [crates/postgresql-pgoutput-source/](../crates/postgresql-pgoutput-source/) and [crates/pgoutput-protocol/](../crates/pgoutput-protocol/)
+- Implementation: [crates/postgresql/src/from_pgoutput/](../crates/postgresql/src/from_pgoutput/) and [crates/postgresql/src/pgoutput_protocol/](../crates/postgresql/src/pgoutput_protocol/)
 - [Full Sync Strategies](design/full-sync-strategies.md)
 - [PostgreSQL Logical Replication](https://www.postgresql.org/docs/current/logical-replication.html)

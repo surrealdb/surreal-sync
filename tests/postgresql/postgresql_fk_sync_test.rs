@@ -85,7 +85,7 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
     let conn = connect_auto(&surreal_config).await?;
 
     // --- Full sync via RowChunkDriver + write_rows / shared apply path ---
-    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_postgresql::from_trigger::SourceOpts {
         source_uri: test_conn_str.clone(),
         source_database: Some(format!("test_{test_id}")),
         tables: vec![],
@@ -95,25 +95,25 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
         batch_size: 1000,
         dry_run: false,
     };
-    let pipeline = sync_transform::Pipeline::new();
-    let apply_opts = sync_transform::ApplyOpts::identity();
+    let pipeline = surreal_sync_runtime::Pipeline::new();
+    let apply_opts = surreal_sync_runtime::ApplyOpts::identity();
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_postgresql::from_trigger::run_full_sync_with_transforms::<
                 _,
-                checkpoint::NullStore,
+                surreal_sync_core::NullStore,
             >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
 
             verify_fk_sync_v2(client).await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_postgresql::from_trigger::run_full_sync_with_transforms::<
                 _,
-                checkpoint::NullStore,
+                surreal_sync_core::NullStore,
             >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
 
@@ -271,7 +271,7 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
     let surreal_config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&surreal_config).await?;
 
-    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_postgresql::from_trigger::SourceOpts {
         source_uri: test_conn_str.clone(),
         source_database: Some(format!("test_{test_id}")),
         tables: vec![],
@@ -281,15 +281,15 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
         batch_size: 1000,
         dry_run: false,
     };
-    let pipeline = sync_transform::Pipeline::new();
-    let apply_opts = sync_transform::ApplyOpts::identity();
+    let pipeline = surreal_sync_runtime::Pipeline::new();
+    let apply_opts = surreal_sync_runtime::ApplyOpts::identity();
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_postgresql::from_trigger::run_full_sync_with_transforms::<
                 _,
-                checkpoint::NullStore,
+                surreal_sync_core::NullStore,
             >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
 
@@ -317,10 +317,10 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
             println!("PASS: people:1 mentorship outward={outward:?} inward={inward:?} (total={total_links})");
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_postgresql_trigger_source::run_full_sync_with_transforms::<
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_postgresql::from_trigger::run_full_sync_with_transforms::<
                 _,
-                checkpoint::NullStore,
+                surreal_sync_core::NullStore,
             >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
 

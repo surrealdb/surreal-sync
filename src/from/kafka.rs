@@ -1,11 +1,11 @@
 //! Kafka streaming sync handler.
 //!
-//! Source crate: crates/kafka-source/
+//! Source crate: crates/kafka/ (from_kafka)
 //! CLI command:
 //! - Streaming: `from kafka --brokers ... --topic ... --to-namespace ... --to-database ...`
 
 use anyhow::Context;
-use sync_core::Schema;
+use surreal_sync_core::Schema;
 
 use super::transforms::load_transforms_from_args;
 use super::{
@@ -45,14 +45,17 @@ async fn run_v2(args: KafkaArgs) -> anyhow::Result<()> {
     tracing::info!("Will consume until deadline: {}", deadline);
 
     // Connect to SurrealDB using v2 SDK
-    let surreal_opts = surreal2_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v2::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
         surreal_password: args.surreal.surreal_password,
     };
-    let surreal =
-        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v2::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = std::sync::Arc::new(make_surreal2_sink(surreal, args.surreal.zero_temporal));
 
     let table_schema = if let Some(schema_path) = args.schema_file {
@@ -70,7 +73,7 @@ async fn run_v2(args: KafkaArgs) -> anyhow::Result<()> {
         None
     };
 
-    surreal_sync_kafka_source::run_incremental_sync_with_transforms(
+    surreal_sync_kafka::from_kafka::run_incremental_sync_with_transforms(
         sink,
         args.config,
         deadline,
@@ -101,14 +104,17 @@ async fn run_v3(args: KafkaArgs) -> anyhow::Result<()> {
     tracing::info!("Will consume until deadline: {}", deadline);
 
     // Connect to SurrealDB using v3 SDK
-    let surreal_opts = surreal3_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v3::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
         surreal_password: args.surreal.surreal_password,
     };
-    let surreal =
-        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v3::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = std::sync::Arc::new(make_surreal3_sink(surreal, args.surreal.zero_temporal));
 
     let table_schema = if let Some(schema_path) = args.schema_file {
@@ -126,7 +132,7 @@ async fn run_v3(args: KafkaArgs) -> anyhow::Result<()> {
         None
     };
 
-    surreal_sync_kafka_source::run_incremental_sync_with_transforms(
+    surreal_sync_kafka::from_kafka::run_incremental_sync_with_transforms(
         sink,
         args.config,
         deadline,

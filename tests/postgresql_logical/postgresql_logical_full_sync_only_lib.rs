@@ -55,7 +55,7 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
     let table_names: Vec<String> = dataset.tables.iter().map(|t| t.name.clone()).collect();
 
     // Create source options
-    let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
+    let source_opts = surreal_sync_postgresql::from_wal2json::SourceOpts {
         connection_string: connection_string.clone(),
         slot_name: "surreal_sync_lib_test_slot".to_string(),
         tables: table_names,
@@ -72,8 +72,8 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
     // Run full sync with appropriate sink based on detected version
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_postgresql_wal2json_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_postgresql::from_wal2json::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 source_opts,
                 sync_opts,
@@ -82,8 +82,8 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_postgresql_wal2json_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_postgresql::from_wal2json::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 source_opts,
                 sync_opts,

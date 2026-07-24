@@ -77,10 +77,13 @@ async fn test_postgresql_incremental_sync_cli() -> Result<(), Box<dyn std::error
 
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
 
-    use checkpoint::{Checkpoint, SyncPhase};
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, SyncPhase::FullSyncStart).await?;
-    let pg_checkpoint: surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint =
+    use surreal_sync_core::{Checkpoint, SyncPhase};
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        SyncPhase::FullSyncStart,
+    )
+    .await?;
+    let pg_checkpoint: surreal_sync_postgresql::from_trigger::PostgreSQLCheckpoint =
         checkpoint_file.parse()?;
     let checkpoint_string = pg_checkpoint.to_cli_string();
 

@@ -1,0 +1,166 @@
+[package]
+name = "surreal-sync-mysql"
+version = "0.6.0"
+edition = "2021"
+description = "MySQL type conversions, shared helpers, binlog protocol, and CDC origins for surreal-sync"
+publish = true
+repository = "https://github.com/surrealdb/surreal-sync"
+homepage = "https://github.com/surrealdb/surreal-sync"
+documentation = "https://docs.rs/surreal-sync-mysql"
+
+[features]
+# Full MySQL stack by default. Advanced users can opt out:
+#   default-features = false, features = ["from_trigger"]
+#   default-features = false, features = ["binlog_protocol", "from_binlog"]
+default = ["binlog_protocol", "from_binlog", "from_trigger"]
+# Wire protocol + cell conversion helpers (`binlog` / `binlog_protocol` modules).
+binlog_protocol = [
+    "dep:bytes",
+    "dep:crc32fast",
+    "dep:rust_decimal",
+    "dep:byteorder",
+    "dep:sha1",
+    "dep:sha2",
+    "dep:rsa",
+    "dep:rand_core",
+    "dep:hex",
+    "dep:zstd",
+    "dep:tokio",
+    "dep:tokio-rustls",
+    "dep:rustls-pemfile",
+]
+from_binlog = [
+    "binlog_protocol",
+    "dep:async-trait",
+    "dep:clap",
+    "dep:rand",
+    "dep:surreal-sync-runtime",
+    "dep:tokio",
+    "dep:tokio-util",
+    "tokio/full",
+]
+from_trigger = [
+    "dep:async-trait",
+    "dep:futures",
+    "dep:log",
+    "dep:rand",
+    "dep:surreal-sync-runtime",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "tokio/full",
+]
+
+[dependencies]
+surreal-sync-core = { path = "../sync-core", version = "0.6.0" }
+surreal-sync-json = { path = "../json", version = "0.6.0" }
+mysql_async = { version = "0.36", default-features = false, features = ["derive", "rustls-tls", "tls12", "aws-lc-rs", "minimal"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+base64 = "0.22"
+anyhow = "1.0.100"
+tracing = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"] }
+
+# `binlog_protocol` (optional)
+tokio = { version = "1.49", features = ["net", "io-util", "time", "rt", "macros", "fs"], optional = true }
+bytes = { version = "1.12", optional = true }
+crc32fast = { version = "1.5", optional = true }
+rust_decimal = { version = "1.39", features = ["std"], optional = true }
+byteorder = { version = "1.5", optional = true }
+sha1 = { version = "0.10", optional = true }
+sha2 = { version = "0.10", optional = true }
+rsa = { version = "0.9", features = ["sha2"], optional = true }
+rand_core = { version = "0.6", features = ["getrandom"], optional = true }
+hex = { version = "0.4", optional = true }
+zstd = { version = "0.13.3", optional = true }
+tokio-rustls = { version = "0.26.4", optional = true }
+rustls-pemfile = { version = "2.2.0", optional = true }
+
+# Optional: `from_binlog` / `from_trigger`
+async-trait = { version = "0.1", optional = true }
+clap = { version = "4.5", features = ["derive", "env"], optional = true }
+futures = { version = "0.3", optional = true }
+log = { version = "0.4", optional = true }
+rand = { version = "0.10", optional = true }
+surreal-sync-runtime = { path = "../runtime", version = "0.6.0", features = ["cli"], optional = true }
+tokio-stream = { version = "0.1", optional = true }
+tokio-util = { version = "0.7", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.49", features = ["full"] }
+rust_decimal = "1.39"
+hex = "0.4"
+mysql_async = { version = "0.36", default-features = false, features = ["derive", "rustls-tls", "tls12", "aws-lc-rs", "minimal"] }
+anyhow = "1.0.100"
+insta = { version = "1.48", features = ["json"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+libc = "0.2.183"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3.27"
+async-trait = "0.1"
+surreal-sync-surreal = { path = "../surreal", version = "0.6.0", features = ["v2", "v3"] }
+surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
+surreal-sync-runtime = { path = "../runtime", version = "0.6.0" }
+
+[lib]
+name = "surreal_sync_mysql"
+path = "src/lib.rs"
+
+[[test]]
+name = "binlog_protocol_write_rows_v2"
+path = "tests/binlog_protocol/write_rows_v2.rs"
+required-features = ["binlog_protocol"]
+
+[[test]]
+name = "binlog_protocol_unsupported_events"
+path = "tests/binlog_protocol/unsupported_events.rs"
+required-features = ["binlog_protocol"]
+
+[[test]]
+name = "binlog_protocol_replay_captured"
+path = "tests/binlog_protocol/replay_captured.rs"
+required-features = ["binlog_protocol"]
+
+[[test]]
+name = "binlog_protocol_coverage_matrix"
+path = "tests/binlog_protocol/coverage_matrix.rs"
+required-features = ["binlog_protocol"]
+
+[[test]]
+name = "binlog_protocol_capture_fixtures"
+path = "tests/binlog_protocol/capture_fixtures.rs"
+required-features = ["binlog_protocol"]
+
+[[test]]
+name = "from_binlog_suite"
+path = "tests/from_binlog/suite/main.rs"
+required-features = ["from_binlog"]
+
+[[test]]
+name = "from_trigger_transforms"
+path = "tests/from_trigger/transforms.rs"
+required-features = ["from_trigger"]
+
+[[test]]
+name = "from_trigger_set_column"
+path = "tests/from_trigger/set_column.rs"
+required-features = ["from_trigger"]
+
+[[test]]
+name = "from_trigger_tls_modes"
+path = "tests/from_trigger/tls_modes.rs"
+required-features = ["from_trigger"]
+
+[[test]]
+name = "from_trigger_interleaved_snapshot"
+path = "tests/from_trigger/interleaved_snapshot.rs"
+required-features = ["from_trigger"]
+
+[[test]]
+name = "from_trigger_mariadb_interleaved_snapshot"
+path = "tests/from_trigger/mariadb_interleaved_snapshot.rs"
+required-features = ["from_trigger"]

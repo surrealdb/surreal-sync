@@ -1,0 +1,579 @@
+//! PostgreSQL logical replication client and slot
+//!
+//! This module provides Client and Slot structs for managing PostgreSQL
+//! logical replication using regular SQL connections and wal2json.
+//!
+//! # How It Works Under the Hood
+//!
+//! ## Connection Model
+//!
+//! This implementation uses **regular SQL connections** via `tokio-postgres`
+//! rather than the PostgreSQL replication protocol. This is due to a limitation
+//! in the `tokio-postgres` library which doesn't support streaming replication
+//! connections.
+//!
+//! **What this means:**
+//! - Changes are retrieved in batches using SQL queries (`pg_logical_slot_peek_changes`)
+//! - Slot position is advanced using SQL functions (`pg_replication_slot_advance`)
+//! - Slightly higher latency compared to streaming replication
+//! - Better compatibility with connection poolers and proxies
+//! - No need for special replication connection permissions
+//!
+//! ## Transaction Handling
+//!
+//! The wal2json output includes transaction markers that ensure transactional consistency:
+//!
+//! - **BEGIN**: Starts a transaction (includes transaction ID `xid` and timestamp)
+//! - **INSERT/UPDATE/DELETE**: Data modification operations within the transaction
+//! - **COMMIT**: Commits the transaction (includes `nextlsn` for slot advancement)
+//!
+//! All changes within a transaction are processed as a batch. The slot is only
+//! advanced after the entire transaction is committed, ensuring transactional
+//! consistency and preventing partial transaction processing.
+//!
+//! **Transaction Validation:**
+//! - Each data change is validated to ensure it belongs to the current open transaction
+//! - Transaction IDs (xid) are checked for consistency across BEGIN/COMMIT/data changes
+//! - Only committed transactions are visible (in-progress transactions remain invisible)
+//!
+//! ## At-Least-Once Delivery Pattern
+//!
+//! The implementation follows a three-phase pattern to guarantee no data loss:
+//!
+//! ```text
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │ 1. PEEK: Retrieve changes without consuming them from the slot │
+//! │    let (changes, nextlsn) = slot.peek().await?;                 │
+//! └─────────────────────────────────────────────────────────────────┘
+//!                               │
+//!                               ▼
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │ 2. PROCESS: Apply all changes to the target database            │
+//! │    for change in &changes {                                     │
+//! │        process_change_to_surrealdb(&change)?;                   │
+//! │    }                                                             │
+//! └─────────────────────────────────────────────────────────────────┘
+//!                               │
+//!                               ▼
+//! ┌─────────────────────────────────────────────────────────────────┐
+//! │ 3. ADVANCE: Only mark changes as consumed after success         │
+//! │    slot.advance(&nextlsn).await?;                               │
+//! └─────────────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! **Guarantees:**
+//! - If processing fails at step 2, changes remain in the slot and will be re-delivered
+//! - No data is ever lost (at-least-once delivery)
+//! - Changes may be re-delivered if processing fails (requires idempotent handling)
+//!
+//! ## LSN-Based Checkpointing
+//!
+//! PostgreSQL uses Log Sequence Numbers (LSN) to identify positions in the
+//! Write-Ahead Log. LSNs are represented as `segment/offset` (e.g., `0/1949850`).
+//!
+//! **Two-Phase Checkpoint Emission:**
+//! - **t1 checkpoint**: Captured before full sync begins (starting LSN)
+//! - **t2 checkpoint**: Captured after full sync completes (ending LSN)
+//!
+//! **Why incremental sync starts from t1, not t2:**
+//!
+//! Depending on the database isolation level, the full sync might capture:
+//! - Data exactly at t1 (with SERIALIZABLE isolation)
+//! - Mixed data between t1 and t2 (with READ COMMITTED isolation)
+//!
+//! Starting incremental sync from t1 ensures no changes are missed regardless
+//! of isolation level, following at-least-once delivery semantics. Some changes
+//! may be replayed that were already captured during full sync, but this is
+//! acceptable with idempotent processing.
+//!
+//! ## Streaming Behavior
+//!
+//! **Transaction-to-Transaction Streaming (✅ Supported):**
+//! - This implementation streams transactions continuously
+//! - As soon as a transaction commits, it becomes visible via `peek()`
+//! - Multiple transactions are processed one after another
+//! - This is the normal mode of operation for logical replication
+//!
+//! **Intra-Transaction Streaming (❌ Not Supported):**
+//! - Cannot process parts of a single large transaction before it commits
+//! - Large transactions appear atomically (all-or-nothing)
+//! - May cause memory spikes for very large transactions (millions of rows)
+//!
+//! To support intra-transaction streaming would require:
+//! - Switching from SQL functions to the streaming replication protocol
+//! - Using `pg_recvlogical` or implementing the replication protocol
+//! - Handling streaming callbacks: `stream_start_cb`, `stream_change_cb`, `stream_commit_cb`
+//! - See: https://www.postgresql.org/docs/current/logicaldecoding-streaming.html
+//!
+//! Note: wal2json itself supports both modes. The limitation is our use of the
+//! SQL function interface (`pg_logical_slot_peek_changes`), which only returns
+//! committed transactions regardless of wal2json's output format.
+
+use anyhow::{bail, Context, Result};
+use std::sync::Arc;
+use tokio_postgres::Client as PgClient;
+use tracing::{debug, info};
+
+use crate::from_wal2json::change::{wal2json_to_psql, Action};
+use crate::from_wal2json::wal2json::parse_wal2json;
+
+/// A change action paired with the WAL LSN at which it occurred.
+///
+/// The LSN is the per-row position reported by `pg_logical_slot_peek_changes`,
+/// allowing each change to carry its own stream position rather than only the
+/// transaction's commit `nextlsn`.
+#[derive(Debug, Clone)]
+pub struct ChangeAtLsn {
+    /// The per-row WAL LSN (e.g. "0/1949850").
+    pub lsn: String,
+    /// The decoded change action.
+    pub action: Action,
+}
+
+/// Client for PostgreSQL logical replication
+///
+/// Manages the connection and configuration for logical replication
+/// using regular SQL connections (not replication protocol).
+pub struct Client {
+    /// The PostgreSQL client connection
+    pg_client: Arc<PgClient>,
+    /// List of table names to track for replication
+    table_names: Vec<String>,
+}
+
+impl Client {
+    /// Creates a new logical replication client
+    ///
+    /// # Arguments
+    /// * `pg_client` - A connected tokio_postgres Client
+    /// * `table_names` - List of table names to track for replication
+    pub fn new(pg_client: PgClient, table_names: Vec<String>) -> Self {
+        Self {
+            pg_client: Arc::new(pg_client),
+            table_names,
+        }
+    }
+
+    /// Gets the current WAL LSN position
+    ///
+    /// This is useful for capturing the LSN position before taking a snapshot,
+    /// so you can later replay all changes from that point onwards. This ensures
+    /// consistency when the snapshot might be taken at a lower isolation level.
+    ///
+    /// # Returns
+    /// * `Result<String>` - The current WAL LSN as a string (e.g., "0/1949850")
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Capture LSN before taking snapshot
+    /// let start_lsn = client.get_current_wal_lsn().await?;
+    ///
+    /// // Take your snapshot here
+    /// take_database_snapshot().await?;
+    ///
+    /// // Later, replay changes from the captured LSN
+    /// // using pg_logical_slot_peek_changes with the start_lsn
+    /// ```
+    pub async fn get_current_wal_lsn(&self) -> Result<String> {
+        info!("Getting current WAL LSN position");
+
+        let query = "SELECT pg_current_wal_lsn()::text";
+        let rows = self
+            .pg_client
+            .query(query, &[])
+            .await
+            .context("Failed to get current WAL LSN")?;
+
+        if rows.is_empty() {
+            bail!("No result returned from pg_current_wal_lsn()");
+        }
+
+        let lsn: String = rows[0]
+            .try_get(0)
+            .context("Failed to extract LSN from query result")?;
+
+        info!("Current WAL LSN: {}", lsn);
+        Ok(lsn)
+    }
+
+    /// Gets the current WAL LSN position as a checkpoint
+    ///
+    /// This is a convenience method that returns a PostgreSQLLogicalCheckpoint
+    /// instead of a raw LSN string.
+    pub async fn get_current_wal_lsn_checkpoint(
+        &self,
+    ) -> Result<crate::from_wal2json::checkpoint::PostgreSQLLogicalCheckpoint> {
+        let lsn = self.get_current_wal_lsn().await?;
+        Ok(
+            crate::from_wal2json::checkpoint::PostgreSQLLogicalCheckpoint {
+                lsn,
+                timestamp: chrono::Utc::now(),
+            },
+        )
+    }
+
+    /// Returns a reference to the underlying PostgreSQL client
+    ///
+    /// This is useful when you need to perform operations that require
+    /// direct access to the tokio_postgres::Client.
+    pub fn pg_client(&self) -> &PgClient {
+        &self.pg_client
+    }
+
+    /// Creates a logical replication slot if it doesn't exist
+    ///
+    /// # Arguments
+    /// * `slot_name` - Name for the replication slot
+    ///
+    /// # Returns
+    /// * `Result<()>` - Ok if slot exists or was created successfully
+    pub async fn create_slot(&self, slot_name: &str) -> Result<()> {
+        info!("Checking logical replication slot: {}", slot_name);
+
+        // Check if the slot already exists
+        let check_slot_query = "SELECT slot_name FROM pg_replication_slots WHERE slot_name = $1";
+        let rows = self
+            .pg_client
+            .query(check_slot_query, &[&slot_name])
+            .await
+            .context("Failed to check for existing replication slot")?;
+
+        if rows.is_empty() {
+            // Create the logical replication slot with wal2json plugin
+            info!("Creating new logical replication slot: {}", slot_name);
+            let create_slot_query =
+                format!("SELECT pg_create_logical_replication_slot('{slot_name}', 'wal2json')",);
+            self.pg_client
+                .execute(&create_slot_query, &[])
+                .await
+                .context("Failed to create logical replication slot")?;
+            info!("Successfully created replication slot: {}", slot_name);
+        } else {
+            info!("Replication slot already exists: {}", slot_name);
+        }
+
+        // List all replication slots for debugging
+        let list_slots_query =
+            "SELECT slot_name, plugin, slot_type, active FROM pg_replication_slots";
+        let slots = self
+            .pg_client
+            .query(list_slots_query, &[])
+            .await
+            .context("Failed to list replication slots")?;
+
+        for slot in &slots {
+            let name: &str = slot.get(0);
+            let plugin: &str = slot.get(1);
+            let slot_type: &str = slot.get(2);
+            let active: bool = slot.get(3);
+            debug!(
+                "Slot: {} | Plugin: {} | Type: {} | Active: {}",
+                name, plugin, slot_type, active
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Drops a replication slot
+    ///
+    /// Cleans up the replication slot when it's no longer needed.
+    ///
+    /// # Arguments
+    /// * `slot_name` - Name of the replication slot to drop
+    ///
+    /// # Returns
+    /// * `Result<()>` - Ok if slot was dropped successfully
+    pub async fn drop_slot(&self, slot_name: &str) -> Result<()> {
+        info!("Dropping replication slot: {}", slot_name);
+        let query = format!("SELECT pg_drop_replication_slot('{slot_name}')");
+        self.pg_client
+            .execute(&query, &[])
+            .await
+            .context("Failed to drop replication slot")?;
+        info!("Successfully dropped replication slot: {}", slot_name);
+        Ok(())
+    }
+
+    /// Starts logical replication and returns a Slot
+    ///
+    /// Returns a Slot for consuming changes from an existing replication slot.
+    /// The slot must already exist - use `create_slot()` to create one if needed,
+    /// or create it manually using PostgreSQL commands.
+    ///
+    /// # Arguments
+    /// * `slot_name` - Name for the replication slot (default: "test_slot")
+    ///
+    /// # Returns
+    /// * `Result<Slot>` - A Slot for consuming replication changes
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Option 1: Create slot using this library
+    /// client.create_slot("my_slot").await?;
+    /// let slot = client.start_replication(Some("my_slot")).await?;
+    ///
+    /// // Option 2: Assume slot was created manually via SQL
+    /// // SELECT pg_create_logical_replication_slot('my_slot', 'wal2json');
+    /// let slot = client.start_replication(Some("my_slot")).await?;
+    /// ```
+    pub async fn start_replication(&self, slot_name: Option<&str>) -> Result<Slot> {
+        let slot_name = slot_name.unwrap_or("test_slot");
+
+        info!("Starting logical replication with slot: {}", slot_name);
+
+        // Create and return a Slot for the existing slot
+        Ok(Slot::new(
+            Arc::clone(&self.pg_client),
+            slot_name.to_string(),
+            self.table_names.clone(),
+        ))
+    }
+}
+
+/// Slot for consuming logical replication changes
+///
+/// Provides an interface for reading changes from a PostgreSQL
+/// logical replication slot using pg_logical_slot_peek_changes and
+/// pg_logical_slot_advance.
+pub struct Slot {
+    /// The PostgreSQL client connection
+    pg_client: Arc<PgClient>,
+    /// Name of the replication slot
+    slot_name: String,
+    /// List of table names to filter (if needed)
+    table_names: Vec<String>,
+}
+
+impl Slot {
+    /// Creates a new Slot instance
+    fn new(pg_client: Arc<PgClient>, slot_name: String, table_names: Vec<String>) -> Self {
+        Self {
+            pg_client,
+            slot_name,
+            table_names,
+        }
+    }
+
+    /// Advances the replication slot to the specified LSN
+    ///
+    /// This consumes all changes up to and including the specified LSN.
+    /// Should only be called after successfully processing changes.
+    ///
+    /// # Arguments
+    /// * `lsn` - The Log Sequence Number to advance to
+    ///
+    /// # Returns
+    /// * `Result<()>` - Ok if advancement was successful
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Peek at available changes
+    /// let changes = slot.peek().await?;
+    ///
+    /// if !changes.is_empty() {
+    ///     // Process all changes in the batch
+    ///     for (lsn, change) in &changes {
+    ///         handle_change(&change)?;
+    ///     }
+    ///
+    ///     // Advance to the last LSN after all changes are processed
+    ///     let last_lsn = &changes.last().unwrap().0;
+    ///     slot.advance(last_lsn).await?;
+    /// }
+    /// ```
+    pub async fn advance(&self, lsn: &str) -> Result<()> {
+        info!(
+            "Advancing replication slot {} to LSN: {}",
+            self.slot_name, lsn
+        );
+
+        // Use pg_replication_slot_advance to move the slot forward
+        // This is more efficient than consuming with pg_logical_slot_get_changes
+        let query = format!(
+            "SELECT pg_replication_slot_advance('{}', '{}')",
+            self.slot_name, lsn
+        );
+
+        self.pg_client
+            .execute(&query, &[])
+            .await
+            .context("Failed to advance replication slot")?;
+
+        debug!("Successfully advanced slot to LSN: {}", lsn);
+        Ok(())
+    }
+
+    /// Peek at changes without consuming them
+    ///
+    /// Uses pg_logical_slot_peek_changes to look at changes without consuming them.
+    /// Returns a tuple containing the changes and the nextlsn to use for advancement.
+    ///
+    /// # Returns
+    /// * `Result<(Vec<Action>, String)>` - Tuple of (changes, nextlsn)
+    ///   - changes: Vector of Action enums (Insert, Update, Delete - excluding transaction begin/commit)
+    ///   - nextlsn: The nextlsn from the last commit action, to be used with advance()
+    ///
+    /// # Usage Pattern (batch processing with at-least-once delivery)
+    /// ```ignore
+    /// loop {
+    ///     // 1. Peek at available changes
+    ///     let (changes, nextlsn) = slot.peek().await?;
+    ///
+    ///     if changes.is_empty() {
+    ///         break; // No more changes
+    ///     }
+    ///
+    ///     // 2. Process all changes in the batch
+    ///     for change in &changes {
+    ///         process_change(&change)?;
+    ///     }
+    ///
+    ///     // 3. Advance to nextlsn after successful processing
+    ///     slot.advance(&nextlsn).await?;
+    /// }
+    /// ```
+    pub async fn peek(&self) -> Result<(Vec<Action>, String)> {
+        let (changes, nextlsn) = self.peek_with_positions().await?;
+        Ok((changes.into_iter().map(|c| c.action).collect(), nextlsn))
+    }
+
+    /// Peek at changes without consuming them, preserving each change's per-row LSN.
+    ///
+    /// This is the position-carrying variant of [`Slot::peek`]: every returned
+    /// [`ChangeAtLsn`] keeps the WAL LSN of the individual change, in addition to
+    /// the transaction `nextlsn` returned alongside the batch.
+    ///
+    /// # Returns
+    /// * `Result<(Vec<ChangeAtLsn>, String)>` - Tuple of (changes-with-LSN, nextlsn)
+    pub async fn peek_with_positions(&self) -> Result<(Vec<ChangeAtLsn>, String)> {
+        // wal2json options for formatting
+        //
+        // 'format-version', '2' - use format version 2
+        // 'include-lsn', 'true' - include LSN and nextlsn fields in the output
+        // 'include-pk', 'true' - add primary key information as pk. Column name and data type is included
+        let wal2json_options = "'format-version', '2', 'include-lsn', 'true', 'include-pk', 'true'";
+
+        let query = format!(
+            "SELECT lsn::text, xid::text, data FROM pg_logical_slot_peek_changes('{}', NULL, NULL, {})",
+            self.slot_name, wal2json_options
+        );
+
+        let rows = self
+            .pg_client
+            .query(&query, &[])
+            .await
+            .context("Failed to peek changes from replication slot")?;
+
+        let mut changes = Vec::new();
+        let mut last_nextlsn = String::new();
+        let mut current_xid: Option<String> = None;
+
+        for row in rows {
+            let lsn: String = row.get(0);
+            let xid: String = row.get(1);
+            let data: String = row.get(2);
+
+            match parse_wal2json(&data) {
+                Ok(parsed) => {
+                    // Convert to strongly-typed Action
+                    match wal2json_to_psql(&parsed) {
+                        Ok(action) => {
+                            match &action {
+                                Action::Begin {
+                                    xid: action_xid, ..
+                                } => {
+                                    // Begin transaction
+                                    if let Some(previous_xid) = current_xid.as_ref() {
+                                        bail!("Found Begin transaction xid={action_xid} while previous transaction xid={previous_xid} is not committed");
+                                    }
+                                    current_xid = Some(xid.clone());
+                                    debug!("Begin transaction xid={}", xid);
+                                }
+                                Action::Commit { nextlsn, .. } => {
+                                    // Commit transaction - extract nextlsn
+                                    if let Some(ref expected_xid) = current_xid {
+                                        if expected_xid != &xid {
+                                            bail!("Transaction xid mismatch: expected {expected_xid} but got {xid} in Commit");
+                                        }
+                                    } else {
+                                        bail!("Found Commit for xid={xid} without corresponding Begin");
+                                    }
+
+                                    last_nextlsn = nextlsn.clone();
+                                    debug!("Commit transaction xid={xid} with nextlsn: {nextlsn}");
+                                    current_xid = None;
+                                }
+                                Action::Insert(row) | Action::Update(row) | Action::Delete(row) => {
+                                    // Insert, Update, or Delete - actual data changes
+                                    // Validate transaction consistency
+                                    if let Some(ref expected_xid) = current_xid {
+                                        if expected_xid != &xid {
+                                            bail!("Transaction xid mismatch: expected {expected_xid} but got {xid} in {action} action");
+                                        }
+                                    } else {
+                                        bail!("Found {action} action with xid={xid} outside of transaction");
+                                    }
+
+                                    // Table filtering: Client-side filtering after reading from WAL
+                                    //
+                                    // IMPORTANT: All changes are read from the WAL regardless of the
+                                    // table filter. Filtering happens in-memory by checking each change's
+                                    // table name against the configured table_names list.
+                                    //
+                                    // This means:
+                                    // - Multiple processes with different table filters will read the SAME
+                                    //   WAL data (once per replication slot)
+                                    // - For parallel processing, use separate replication slots (different
+                                    //   --slot names), each maintaining its own position in the WAL
+                                    // - Each slot causes the WAL to be read again, so partitioning tables
+                                    //   across multiple processes increases WAL read load proportionally
+                                    let should_include = if !self.table_names.is_empty() {
+                                        self.table_names.iter().any(|t| t == &row.table)
+                                    } else {
+                                        true
+                                    };
+
+                                    if should_include {
+                                        changes.push(ChangeAtLsn {
+                                            lsn: lsn.clone(),
+                                            action,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            bail!("Failed to convert wal2json to Action: {e}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    bail!("Failed to parse wal2json data, due to {e}: {data}");
+                }
+            }
+        }
+
+        // Missing COMMIT validation (defensive programming)
+        //
+        // According to PostgreSQL documentation, pg_logical_slot_peek_changes() only
+        // returns committed transactions. If we see changes but no COMMIT marker with
+        // nextlsn, this indicates one of:
+        //
+        // 1. Bug in wal2json output plugin
+        // 2. Data corruption in WAL
+        // 3. Logic error in our parsing code
+        //
+        // This should NOT happen during normal operation. Long-running transactions
+        // remain invisible until they commit, at which point they appear with complete
+        // BEGIN...COMMIT markers.
+        //
+        // This check is defensive programming to catch unexpected scenarios rather
+        // than silently returning incomplete data that could violate ACID guarantees.
+        if last_nextlsn.is_empty() && !changes.is_empty() {
+            bail!("Found changes but no COMMIT marker with nextlsn. This indicates a bug in wal2json, data corruption, or parsing error.");
+        }
+
+        Ok((changes, last_nextlsn))
+    }
+}

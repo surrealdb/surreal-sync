@@ -13,7 +13,7 @@ use surreal_sync::testing::{
     surreal::{connect_auto, SurrealConnection},
     TestConfig,
 };
-use sync_core::Schema;
+use surreal_sync_core::Schema;
 
 const SEED: u64 = 42;
 const BATCH_SIZE: usize = 10;
@@ -104,7 +104,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     // === PHASE 2: RUN SYNC from MySQL to SurrealDB ===
     tracing::info!("Running full sync from MySQL to SurrealDB");
 
-    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_mysql::from_trigger::SourceOpts {
         source_uri: mysql_conn_string.clone(),
         source_database: Some(format!("test_{test_id}")),
         tables: vec![],
@@ -113,7 +113,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         ssl: Default::default(),
     };
 
-    let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
+    let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: BATCH_SIZE,
         dry_run: false,
     };
@@ -121,8 +121,8 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     // Create version-aware sink and run sync
     match &surreal {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_mysql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_mysql::from_trigger::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -131,8 +131,8 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_mysql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_mysql::from_trigger::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 &source_opts,
                 &sync_opts,

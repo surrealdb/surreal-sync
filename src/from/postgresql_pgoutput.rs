@@ -1,21 +1,21 @@
 //! PostgreSQL pgoutput WAL CDC sync handlers.
 //!
-//! Source crate: crates/postgresql-pgoutput-source/
+//! Source crate: crates/postgresql/ (from_pgoutput)
 //! CLI commands:
 //! - `from postgresql-pgoutput sync` — snapshot and/or stream (see `--snapshot-mode`)
 //! - `from postgresql-pgoutput snapshot` — ad-hoc execute-snapshot signal insert
 
 use anyhow::Context;
-use checkpoint::{Checkpoint, CheckpointStore, SyncManager};
-use surreal_sink::SurrealSink;
-use surreal_sync_interleaved_snapshot::SnapshotTransforms;
-use surreal_sync_postgresql_pgoutput_source::{
+use surreal_sync_core::SurrealSink;
+use surreal_sync_core::{Checkpoint, CheckpointStore, SyncManager};
+use surreal_sync_postgresql::from_pgoutput::{
     request_snapshot, run_full_sync_cancellable_with_transforms,
     run_initial_interleaved_snapshot_with_transforms,
     run_interleaved_snapshot_full_sync_with_transforms, run_replication_tail_with_transforms,
     InterleavedFullSyncOptions, PgoutputCheckpoint, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
-use sync_transform::{ApplyOpts, Pipeline};
+use surreal_sync_runtime::SnapshotTransforms;
+use surreal_sync_runtime::{ApplyOpts, Pipeline};
 use tokio_util::sync::CancellationToken;
 
 use super::transforms::load_transforms_from_args;
@@ -107,8 +107,8 @@ fn wal_stream_options(args: &PostgreSQLPgoutputSyncArgs) -> anyhow::Result<Repli
 async fn read_latest_replication_checkpoint<St: CheckpointStore>(
     manager: &SyncManager<St>,
 ) -> anyhow::Result<PgoutputCheckpoint> {
-    use checkpoint::SyncPhase;
-    use surreal_sync_postgresql_pgoutput_source::{max_pgoutput_checkpoint, CatchUpProgress};
+    use surreal_sync_core::SyncPhase;
+    use surreal_sync_postgresql::from_pgoutput::{max_pgoutput_checkpoint, CatchUpProgress};
 
     let catch_up = manager
         .read_checkpoint::<CatchUpProgress>(SyncPhase::CatchUpProgress)
@@ -141,7 +141,7 @@ async fn checkpoint_from_arg_or_store<St: CheckpointStore>(
 ) -> anyhow::Result<PgoutputCheckpoint> {
     if is_start_at_head(explicit) {
         tracing::info!("Starting stream at current WAL head");
-        return surreal_sync_postgresql_pgoutput_source::capture_head_checkpoint(source_opts).await;
+        return surreal_sync_postgresql::from_pgoutput::capture_head_checkpoint(source_opts).await;
     }
 
     match (explicit, manager) {
@@ -157,7 +157,7 @@ async fn checkpoint_from_arg_or_store<St: CheckpointStore>(
                     tracing::info!(
                         "No checkpoint found in store ({read_err}); starting at current WAL head"
                     );
-                    surreal_sync_postgresql_pgoutput_source::capture_head_checkpoint(source_opts)
+                    surreal_sync_postgresql::from_pgoutput::capture_head_checkpoint(source_opts)
                         .await
                 }
             }
@@ -178,7 +178,7 @@ async fn wal_snapshot_full<S, St>(
     sync_opts: &SyncOpts,
     manager: Option<&SyncManager<St>>,
     transforms: &SnapshotTransforms,
-) -> anyhow::Result<Option<surreal_sync_postgresql_pgoutput_source::InterleavedFullSyncOutcome>>
+) -> anyhow::Result<Option<surreal_sync_postgresql::from_pgoutput::InterleavedFullSyncOutcome>>
 where
     S: SurrealSink,
     St: CheckpointStore,
@@ -248,35 +248,42 @@ async fn run_sync_v2(
     apply_opts: ApplyOpts,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting PostgreSQL WAL sync to SurrealDB (SDK v2)");
-    let surreal_opts = surreal2_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v2::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
     };
-    let surreal =
-        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v2::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
     let checkpoint_dir = args.checkpoint_dir.clone();
     let checkpoints_surreal_table = args.checkpoints_surreal_table.clone();
     match (checkpoint_dir, checkpoints_surreal_table) {
         (Some(dir), None) => {
-            let manager = SyncManager::new(checkpoint::FilesystemStore::new(&dir));
+            let manager = SyncManager::new(
+                surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(&dir),
+            );
             wal_orchestrate(&sink, args, cancel, Some(&manager), pipeline, apply_opts).await
         }
         (None, Some(table)) => {
-            let checkpoint_surreal = surreal2_sink::surreal_connect(
+            let checkpoint_surreal = surreal_sync_surreal::v2::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
                 &args.to_database,
             )
             .await?;
-            let manager =
-                SyncManager::new(checkpoint::Surreal2Store::new(checkpoint_surreal, table));
+            let manager = SyncManager::new(surreal_sync_surreal::v2::Surreal2Store::new(
+                checkpoint_surreal,
+                table,
+            ));
             wal_orchestrate(&sink, args, cancel, Some(&manager), pipeline, apply_opts).await
         }
         (None, None) => {
-            wal_orchestrate::<_, checkpoint::NullStore>(
+            wal_orchestrate::<_, surreal_sync_core::NullStore>(
                 &sink, args, cancel, None, pipeline, apply_opts,
             )
             .await
@@ -294,28 +301,34 @@ async fn run_sync_v3(
     apply_opts: ApplyOpts,
 ) -> anyhow::Result<()> {
     tracing::info!("Starting PostgreSQL WAL sync to SurrealDB (SDK v3)");
-    let surreal_opts = surreal3_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v3::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
     };
-    let surreal =
-        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v3::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal3_sink(surreal.clone(), args.surreal.zero_temporal);
     let checkpoint_dir = args.checkpoint_dir.clone();
     let checkpoints_surreal_table = args.checkpoints_surreal_table.clone();
     match (checkpoint_dir, checkpoints_surreal_table) {
         (Some(dir), None) => {
-            let manager = SyncManager::new(checkpoint::FilesystemStore::new(&dir));
+            let manager = SyncManager::new(
+                surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(&dir),
+            );
             wal_orchestrate(&sink, args, cancel, Some(&manager), pipeline, apply_opts).await
         }
         (None, Some(table)) => {
-            let manager = SyncManager::new(checkpoint_surreal3::Surreal3Store::new(surreal, table));
+            let manager =
+                SyncManager::new(surreal_sync_surreal::v3::Surreal3Store::new(surreal, table));
             wal_orchestrate(&sink, args, cancel, Some(&manager), pipeline, apply_opts).await
         }
         (None, None) => {
-            wal_orchestrate::<_, checkpoint::NullStore>(
+            wal_orchestrate::<_, surreal_sync_core::NullStore>(
                 &sink, args, cancel, None, pipeline, apply_opts,
             )
             .await
@@ -435,7 +448,7 @@ where
                 let from_checkpoint = match checkpoint_manager {
                     Some(manager) => read_latest_replication_checkpoint(manager).await?,
                     None => {
-                        checkpoint_from_arg_or_store::<checkpoint::NullStore>(
+                        checkpoint_from_arg_or_store::<surreal_sync_core::NullStore>(
                             &from_explicit,
                             None,
                             &source_opts,

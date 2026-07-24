@@ -146,10 +146,10 @@ When there are no new committed transactions, incremental sync may appear idle. 
 
 ## Data Type Support
 
-See [PostgreSQL Data Types](postgresql-data-types.md) for data type mapping information. wal2json-specific parsing details and limitations (for example, array parsing) are documented in the [source crate README](../crates/postgresql-wal2json-source/README.md).
+See [PostgreSQL Data Types](postgresql-data-types.md) for data type mapping information. wal2json-specific parsing details and limitations (for example, array parsing) are documented in the [`from_wal2json` module docs](../crates/postgresql/src/from_wal2json/mod.rs).
 
 ## References
 
 - [wal2json GitHub Repository](https://github.com/eulerto/wal2json)
 - [PostgreSQL Logical Replication Documentation](https://www.postgresql.org/docs/current/logical-replication.html)
-- Implementation: [crates/postgresql-wal2json-source/](../crates/postgresql-wal2json-source/)
+- Implementation: [crates/postgresql/src/from_wal2json/](../crates/postgresql/src/from_wal2json/)

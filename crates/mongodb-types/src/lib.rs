@@ -12,7 +12,7 @@
 //!
 //! ```ignore
 //! use mongodb_types::BsonValue;
-//! use sync_core::TypedValue;
+//! use surreal_sync_core::TypedValue;
 //!
 //! // Convert TypedValue to BSON value
 //! let tv = TypedValue::text("hello");

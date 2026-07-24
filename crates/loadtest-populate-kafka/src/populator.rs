@@ -13,7 +13,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use sync_core::{Row, Schema};
+use surreal_sync_core::{Row, Schema};
 use tempfile::TempDir;
 use tracing::{debug, info};
 
@@ -332,7 +332,7 @@ impl KafkaPopulator {
     async fn publish_batch(
         &self,
         topic: &str,
-        table_schema: &sync_core::GeneratorTableDefinition,
+        table_schema: &surreal_sync_core::GeneratorTableDefinition,
         rows: &[Row],
     ) -> Result<u64, KafkaPopulatorError> {
         // First, encode all messages (key + payload pairs)

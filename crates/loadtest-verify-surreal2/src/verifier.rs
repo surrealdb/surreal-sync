@@ -6,10 +6,10 @@ use crate::report::{FieldMismatch, MismatchInfo, MissingInfo, VerificationReport
 use loadtest_generator::DataGenerator;
 use rust_decimal::Decimal;
 use std::time::{Duration, Instant};
+use surreal_sync_core::{GeneratorTableDefinition, Row, Schema};
 use surrealdb2::engine::any::Any;
 use surrealdb2::sql::Value as SurrealValue;
 use surrealdb2::Surreal;
-use sync_core::{GeneratorTableDefinition, Row, Schema};
 use tracing::{debug, info, warn};
 
 /// Streaming verifier that generates expected data and compares with SurrealDB.
@@ -245,15 +245,17 @@ impl StreamingVerifier {
 
         // Construct proper Thing based on ID type to match how sync stores records
         let thing = match &expected_row.id {
-            sync_core::Value::Uuid(u) => Thing::from((
+            surreal_sync_core::Value::Uuid(u) => Thing::from((
                 self.table_name.as_str(),
                 Id::Uuid(surrealdb2::sql::Uuid::from(*u)),
             )),
-            sync_core::Value::Int64(i) => Thing::from((self.table_name.as_str(), Id::Number(*i))),
-            sync_core::Value::Int32(i) => {
+            surreal_sync_core::Value::Int64(i) => {
+                Thing::from((self.table_name.as_str(), Id::Number(*i)))
+            }
+            surreal_sync_core::Value::Int32(i) => {
                 Thing::from((self.table_name.as_str(), Id::Number(*i as i64)))
             }
-            sync_core::Value::Text(s) => {
+            surreal_sync_core::Value::Text(s) => {
                 Thing::from((self.table_name.as_str(), Id::String(s.clone())))
             }
             other => {
@@ -319,10 +321,10 @@ impl StreamingVerifier {
         &self,
         response: &mut surrealdb2::Response,
         field_name: &str,
-        data_type: &sync_core::Type,
+        data_type: &surreal_sync_core::Type,
         record_id: &surrealdb2::sql::Thing,
     ) -> Result<Option<SurrealValue>, VerifyError> {
-        use sync_core::Type;
+        use surreal_sync_core::Type;
 
         match data_type {
             Type::Bool => {
@@ -543,12 +545,12 @@ impl StreamingVerifier {
 }
 
 /// Format a Value ID for display.
-fn format_id(value: &sync_core::Value) -> String {
+fn format_id(value: &surreal_sync_core::Value) -> String {
     match value {
-        sync_core::Value::Uuid(u) => u.to_string(),
-        sync_core::Value::Int64(i) => i.to_string(),
-        sync_core::Value::Int32(i) => i.to_string(),
-        sync_core::Value::Text(s) => s.clone(),
+        surreal_sync_core::Value::Uuid(u) => u.to_string(),
+        surreal_sync_core::Value::Int64(i) => i.to_string(),
+        surreal_sync_core::Value::Int32(i) => i.to_string(),
+        surreal_sync_core::Value::Text(s) => s.clone(),
         _ => format!("{value:?}"),
     }
 }
@@ -629,12 +631,12 @@ tables:
     fn test_format_id() {
         let uuid = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         assert_eq!(
-            format_id(&sync_core::Value::Uuid(uuid)),
+            format_id(&surreal_sync_core::Value::Uuid(uuid)),
             "550e8400-e29b-41d4-a716-446655440000"
         );
-        assert_eq!(format_id(&sync_core::Value::Int64(12345)), "12345");
+        assert_eq!(format_id(&surreal_sync_core::Value::Int64(12345)), "12345");
         assert_eq!(
-            format_id(&sync_core::Value::Text("test-id".to_string())),
+            format_id(&surreal_sync_core::Value::Text("test-id".to_string())),
             "test-id"
         );
     }

@@ -55,7 +55,7 @@ async fn test_mongodb_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> 
     // Execute full sync with appropriate sink based on detected version
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
             surreal_sync_mongodb_changestream_source::migrate_from_mongodb::<_>(
                 &sink,
                 source_opts,
@@ -64,7 +64,7 @@ async fn test_mongodb_full_sync_lib() -> Result<(), Box<dyn std::error::Error>> 
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
             surreal_sync_mongodb_changestream_source::migrate_from_mongodb::<_>(
                 &sink,
                 source_opts,

@@ -6,7 +6,7 @@
 //! - Incremental sync: `from neo4j incremental --connection-string ... --tables ... --checkpoints-surreal-table ...`
 
 use anyhow::Context;
-use checkpoint::Checkpoint;
+use surreal_sync_core::Checkpoint;
 
 use super::transforms::load_transforms_from_args;
 use super::{
@@ -74,14 +74,17 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
     };
 
     // Connect to SurrealDB using v2 SDK
-    let surreal_opts = surreal2_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v2::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
     };
-    let surreal =
-        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v2::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     // Parse assumed_start_timestamp if provided
@@ -119,8 +122,8 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
     // Handle checkpoint storage
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
-            let store = checkpoint::FilesystemStore::new(dir);
-            let sync_manager = checkpoint::SyncManager::new(store);
+            let store = surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(dir);
+            let sync_manager = surreal_sync_core::SyncManager::new(store);
             surreal_sync_neo4j_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
@@ -132,14 +135,15 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
             .await?;
         }
         (None, Some(table)) => {
-            let checkpoint_surreal = surreal2_sink::surreal_connect(
+            let checkpoint_surreal = surreal_sync_surreal::v2::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
                 &args.to_database,
             )
             .await?;
-            let store = checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone());
-            let sync_manager = checkpoint::SyncManager::new(store);
+            let store =
+                surreal_sync_surreal::v2::Surreal2Store::new(checkpoint_surreal, table.clone());
+            let sync_manager = surreal_sync_core::SyncManager::new(store);
             surreal_sync_neo4j_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
@@ -151,14 +155,10 @@ async fn run_full_v2(args: Neo4jFullArgs) -> anyhow::Result<()> {
             .await?;
         }
         (None, None) => {
-            surreal_sync_neo4j_source::run_full_sync_with_transforms::<_, checkpoint::NullStore>(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-                &pipeline,
-                &apply_opts,
-            )
+            surreal_sync_neo4j_source::run_full_sync_with_transforms::<
+                _,
+                surreal_sync_core::NullStore,
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
         }
         (Some(_), Some(_)) => {
@@ -201,14 +201,17 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
     };
 
     // Connect to SurrealDB using v3 SDK
-    let surreal_opts = surreal3_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v3::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
     };
-    let surreal =
-        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v3::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal3_sink(surreal.clone(), args.surreal.zero_temporal);
 
     // Parse assumed_start_timestamp if provided
@@ -246,8 +249,8 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
     // Handle checkpoint storage
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
-            let store = checkpoint::FilesystemStore::new(dir);
-            let sync_manager = checkpoint::SyncManager::new(store);
+            let store = surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(dir);
+            let sync_manager = surreal_sync_core::SyncManager::new(store);
             surreal_sync_neo4j_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
@@ -259,14 +262,15 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
             .await?;
         }
         (None, Some(table)) => {
-            let checkpoint_surreal = surreal3_sink::surreal_connect(
+            let checkpoint_surreal = surreal_sync_surreal::v3::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
                 &args.to_database,
             )
             .await?;
-            let store = checkpoint_surreal3::Surreal3Store::new(checkpoint_surreal, table.clone());
-            let sync_manager = checkpoint::SyncManager::new(store);
+            let store =
+                surreal_sync_surreal::v3::Surreal3Store::new(checkpoint_surreal, table.clone());
+            let sync_manager = surreal_sync_core::SyncManager::new(store);
             surreal_sync_neo4j_source::run_full_sync_with_transforms(
                 &sink,
                 source_opts,
@@ -278,14 +282,10 @@ async fn run_full_v3(args: Neo4jFullArgs) -> anyhow::Result<()> {
             .await?;
         }
         (None, None) => {
-            surreal_sync_neo4j_source::run_full_sync_with_transforms::<_, checkpoint::NullStore>(
-                &sink,
-                source_opts,
-                sync_opts,
-                None,
-                &pipeline,
-                &apply_opts,
-            )
+            surreal_sync_neo4j_source::run_full_sync_with_transforms::<
+                _,
+                surreal_sync_core::NullStore,
+            >(&sink, source_opts, sync_opts, None, &pipeline, &apply_opts)
             .await?;
         }
         (Some(_), Some(_)) => {
@@ -342,7 +342,7 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
     };
 
     // Get checkpoint from CLI arg or SurrealDB
-    let surreal_opts = surreal2_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v2::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
@@ -355,17 +355,18 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         }
         (None, Some(table)) => {
             tracing::info!("Reading checkpoint from SurrealDB table: {}", table);
-            let checkpoint_surreal = surreal2_sink::surreal_connect(
+            let checkpoint_surreal = surreal_sync_surreal::v2::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
                 &args.to_database,
             )
             .await?;
-            let store = checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone());
-            let sync_manager = checkpoint::SyncManager::new(store);
+            let store =
+                surreal_sync_surreal::v2::Surreal2Store::new(checkpoint_surreal, table.clone());
+            let sync_manager = surreal_sync_core::SyncManager::new(store);
             sync_manager
                 .read_checkpoint::<surreal_sync_neo4j_source::Neo4jCheckpoint>(
-                    checkpoint::SyncPhase::FullSyncStart,
+                    surreal_sync_core::SyncPhase::FullSyncStart,
                 )
                 .await
                 .with_context(|| "Failed to read t1 checkpoint from SurrealDB")?
@@ -422,9 +423,12 @@ async fn run_incremental_v2(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         composite_constituent,
     };
 
-    let surreal =
-        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v2::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {
@@ -481,7 +485,7 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         None
     };
 
-    let surreal_opts = surreal3_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v3::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
@@ -494,17 +498,18 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         }
         (None, Some(table)) => {
             tracing::info!("Reading checkpoint from SurrealDB table: {}", table);
-            let checkpoint_surreal = surreal3_sink::surreal_connect(
+            let checkpoint_surreal = surreal_sync_surreal::v3::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
                 &args.to_database,
             )
             .await?;
-            let store = checkpoint_surreal3::Surreal3Store::new(checkpoint_surreal, table.clone());
-            let sync_manager = checkpoint::SyncManager::new(store);
+            let store =
+                surreal_sync_surreal::v3::Surreal3Store::new(checkpoint_surreal, table.clone());
+            let sync_manager = surreal_sync_core::SyncManager::new(store);
             sync_manager
                 .read_checkpoint::<surreal_sync_neo4j_source::Neo4jCheckpoint>(
-                    checkpoint::SyncPhase::FullSyncStart,
+                    surreal_sync_core::SyncPhase::FullSyncStart,
                 )
                 .await
                 .with_context(|| "Failed to read t1 checkpoint from SurrealDB")?
@@ -561,9 +566,12 @@ async fn run_incremental_v3(args: Neo4jIncrementalArgs) -> anyhow::Result<()> {
         composite_constituent,
     };
 
-    let surreal =
-        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v3::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
 
     let sync_opts = surreal_sync_neo4j_source::SyncOpts {

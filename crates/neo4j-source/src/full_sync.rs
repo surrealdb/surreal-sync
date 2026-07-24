@@ -5,12 +5,12 @@
 use neo4rs::{ConfigBuilder, Graph, Query};
 use std::collections::HashMap;
 use std::collections::HashSet;
-use surreal_sink::SurrealSink;
-use sync_core::{Relation, Row, ThingRef, Value};
-use sync_transform::{ApplyOpts, Pipeline};
+use surreal_sync_core::SurrealSink;
+use surreal_sync_core::{Relation, Row, ThingRef, Value};
+use surreal_sync_runtime::{ApplyOpts, Pipeline};
 
 use crate::neo4j_checkpoint::Neo4jCheckpoint;
-use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
+use surreal_sync_core::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
 
 /// Source database connection options (Neo4j-specific, library type without clap)
 #[derive(Clone, Debug)]
@@ -396,7 +396,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
 
         use async_trait::async_trait;
         use std::sync::Arc;
-        use sync_transform::{
+        use surreal_sync_runtime::{
             run_source_runtime_with, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
         };
 
@@ -569,7 +569,7 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
 
         use async_trait::async_trait;
         use std::sync::Arc;
-        use sync_transform::{
+        use surreal_sync_runtime::{
             run_source_runtime_with, RelationChunkDriver, RelationChunkSource, SourceRuntimeOpts,
         };
 
@@ -758,7 +758,7 @@ fn convert_neo4j_node_to_universal_kvs(
         "labels".to_string(),
         Value::Array {
             elements: labels_universal_values,
-            element_type: Box::new(sync_core::Type::Text),
+            element_type: Box::new(surreal_sync_core::Type::Text),
         },
     );
 

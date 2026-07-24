@@ -26,7 +26,7 @@
 //!
 //! ```rust
 //! use loadtest_generator::DataGenerator;
-//! use sync_core::Schema;
+//! use surreal_sync_core::Schema;
 //!
 //! let schema = Schema::from_yaml(r#"
 //! version: 1

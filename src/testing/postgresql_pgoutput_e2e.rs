@@ -4,7 +4,7 @@ use crate::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
 use crate::testing::{create_unified_full_dataset, SourceDatabase, TestConfig};
-use surreal_sync_postgresql_pgoutput_source::{
+use surreal_sync_postgresql::from_pgoutput::{
     capture_head_checkpoint, run_full_sync, run_replication_tail_with_checkpoints,
     PgoutputCheckpoint, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
@@ -82,13 +82,13 @@ pub async fn run_postgresql_pgoutput_full_sync_e2e(
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            run_full_sync::<_, checkpoint::NullStore>(&sink, &source_opts, &sync_opts, None)
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            run_full_sync::<_, surreal_sync_core::NullStore>(&sink, &source_opts, &sync_opts, None)
                 .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            run_full_sync::<_, checkpoint::NullStore>(&sink, &source_opts, &sync_opts, None)
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            run_full_sync::<_, surreal_sync_core::NullStore>(&sink, &source_opts, &sync_opts, None)
                 .await?;
         }
     }
@@ -139,16 +139,17 @@ pub async fn run_postgresql_pgoutput_incremental_e2e(
         dry_run: false,
     };
 
-    let checkpoint_store = checkpoint::FilesystemStore::new(&checkpoint_dir);
-    let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
+    let checkpoint_store =
+        surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(&checkpoint_dir);
+    let sync_manager = surreal_sync_core::SyncManager::new(checkpoint_store);
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
             run_full_sync(&sink, &source_opts, &sync_opts, Some(&sync_manager)).await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
             run_full_sync(&sink, &source_opts, &sync_opts, Some(&sync_manager)).await?;
         }
     }
@@ -157,15 +158,17 @@ pub async fn run_postgresql_pgoutput_incremental_e2e(
 
     crate::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
 
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
-            .await?;
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        surreal_sync_core::SyncPhase::FullSyncStart,
+    )
+    .await?;
     let wal_checkpoint: PgoutputCheckpoint = checkpoint_file.parse()?;
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            run_replication_tail_with_checkpoints::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            run_replication_tail_with_checkpoints::<_, surreal_sync_core::NullStore>(
                 &sink,
                 source_opts,
                 wal_checkpoint,
@@ -178,8 +181,8 @@ pub async fn run_postgresql_pgoutput_incremental_e2e(
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            run_replication_tail_with_checkpoints::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            run_replication_tail_with_checkpoints::<_, surreal_sync_core::NullStore>(
                 &sink,
                 source_opts,
                 wal_checkpoint,

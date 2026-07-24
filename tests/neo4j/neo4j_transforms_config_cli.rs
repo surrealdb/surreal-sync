@@ -22,7 +22,9 @@ fn ensure_fixture_worker() -> PathBuf {
             .args([
                 "build",
                 "-p",
-                "sync-transform",
+                "surreal-sync-runtime",
+                "--features",
+                "test-support",
                 "--bin",
                 "sync-transform-fixture-worker",
             ])

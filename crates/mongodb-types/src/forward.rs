@@ -3,8 +3,8 @@
 //! This module provides conversion from sync-core's `TypedValue` to MongoDB BSON values.
 
 use bson::{Bson, DateTime as BsonDateTime};
-use sync_core::values::GeometryData;
-use sync_core::{GeometryType, Type, TypedValue, Value};
+use surreal_sync_core::values::GeometryData;
+use surreal_sync_core::{GeometryType, Type, TypedValue, Value};
 
 /// Wrapper for BSON values that can be inserted into MongoDB.
 #[derive(Debug, Clone)]
@@ -293,7 +293,7 @@ fn generated_value_to_bson(value: &Value) -> Bson {
         }
         Value::Enum { value, .. } => Bson::String(value.clone()),
         Value::Geometry { data, .. } => {
-            use sync_core::values::GeometryData;
+            use surreal_sync_core::values::GeometryData;
             let GeometryData(json_val) = data;
             serde_json_to_bson(json_val)
         }

@@ -125,11 +125,11 @@ pub fn list_checkpoint_files<P: AsRef<Path>>(
 /// ```
 ///
 /// # Note
-/// Prefer using `checkpoint::get_checkpoint_for_phase()` from the checkpoint crate directly
+/// Prefer using `surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase()` from the checkpoint crate directly
 /// for new code.
 pub fn read_t1_checkpoint<P: AsRef<Path>>(
     checkpoint_dir: P,
-) -> anyhow::Result<checkpoint::CheckpointFile> {
+) -> anyhow::Result<surreal_sync_core::CheckpointFile> {
     // Find all checkpoint files
     let checkpoint_files = list_checkpoint_files(&checkpoint_dir)?;
 
@@ -153,16 +153,16 @@ pub fn read_t1_checkpoint<P: AsRef<Path>>(
     // Read and parse t1 checkpoint file
     // Note: Files are stored in StoredCheckpoint format, need to convert to CheckpointFile
     let t1_content = std::fs::read_to_string(t1_files[0].path())?;
-    let stored: checkpoint::StoredCheckpoint = serde_json::from_str(&t1_content)?;
+    let stored: surreal_sync_core::StoredCheckpoint = serde_json::from_str(&t1_content)?;
 
     // Convert StoredCheckpoint to CheckpointFile
     let checkpoint_data: serde_json::Value = serde_json::from_str(&stored.checkpoint_data)?;
     let phase = match stored.phase.as_str() {
-        "full_sync_start" => checkpoint::SyncPhase::FullSyncStart,
-        "full_sync_end" => checkpoint::SyncPhase::FullSyncEnd,
+        "full_sync_start" => surreal_sync_core::SyncPhase::FullSyncStart,
+        "full_sync_end" => surreal_sync_core::SyncPhase::FullSyncEnd,
         other => anyhow::bail!("Unknown sync phase: {other}"),
     };
-    let t1_checkpoint = checkpoint::CheckpointFile {
+    let t1_checkpoint = surreal_sync_core::CheckpointFile {
         database_type: stored.database_type,
         checkpoint: checkpoint_data,
         phase,
@@ -254,19 +254,19 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
     let t2_content = std::fs::read_to_string(t2_files[0].path())?;
 
     // Parse checkpoint file format - files are stored as StoredCheckpoint
-    let t1_stored: checkpoint::StoredCheckpoint = serde_json::from_str(&t1_content)?;
-    let t2_stored: checkpoint::StoredCheckpoint = serde_json::from_str(&t2_content)?;
+    let t1_stored: surreal_sync_core::StoredCheckpoint = serde_json::from_str(&t1_content)?;
+    let t2_stored: surreal_sync_core::StoredCheckpoint = serde_json::from_str(&t2_content)?;
 
     // Helper to convert StoredCheckpoint to CheckpointFile
     let stored_to_file =
-        |stored: checkpoint::StoredCheckpoint| -> anyhow::Result<checkpoint::CheckpointFile> {
+        |stored: surreal_sync_core::StoredCheckpoint| -> anyhow::Result<surreal_sync_core::CheckpointFile> {
             let checkpoint_data: serde_json::Value = serde_json::from_str(&stored.checkpoint_data)?;
             let phase = match stored.phase.as_str() {
-                "full_sync_start" => checkpoint::SyncPhase::FullSyncStart,
-                "full_sync_end" => checkpoint::SyncPhase::FullSyncEnd,
+                "full_sync_start" => surreal_sync_core::SyncPhase::FullSyncStart,
+                "full_sync_end" => surreal_sync_core::SyncPhase::FullSyncEnd,
                 other => anyhow::bail!("Unknown sync phase: {other}"),
             };
-            Ok(checkpoint::CheckpointFile {
+            Ok(surreal_sync_core::CheckpointFile {
                 database_type: stored.database_type,
                 checkpoint: checkpoint_data,
                 phase,
@@ -303,9 +303,9 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
 
         "mysql" => {
             // MySQL: Sequence ID progression
-            let t1_checkpoint: surreal_sync_mysql_trigger_source::MySQLCheckpoint =
+            let t1_checkpoint: surreal_sync_mysql::from_trigger::MySQLCheckpoint =
                 t1_file.parse()?;
-            let t2_checkpoint: surreal_sync_mysql_trigger_source::MySQLCheckpoint =
+            let t2_checkpoint: surreal_sync_mysql::from_trigger::MySQLCheckpoint =
                 t2_file.parse()?;
 
             assert!(
@@ -322,9 +322,9 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
 
         "postgresql" => {
             // PostgreSQL: Sequence ID progression
-            let t1_checkpoint: surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint =
+            let t1_checkpoint: surreal_sync_postgresql::from_trigger::PostgreSQLCheckpoint =
                 t1_file.parse()?;
-            let t2_checkpoint: surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint =
+            let t2_checkpoint: surreal_sync_postgresql::from_trigger::PostgreSQLCheckpoint =
                 t2_file.parse()?;
 
             assert!(
@@ -340,9 +340,9 @@ pub fn verify_t1_t2_checkpoints<P: AsRef<Path>>(checkpoint_dir: P) -> anyhow::Re
         }
 
         "postgresql-pgoutput" => {
-            let t1_checkpoint: surreal_sync_postgresql_pgoutput_source::PgoutputCheckpoint =
+            let t1_checkpoint: surreal_sync_postgresql::from_pgoutput::PgoutputCheckpoint =
                 t1_file.parse()?;
-            let t2_checkpoint: surreal_sync_postgresql_pgoutput_source::PgoutputCheckpoint =
+            let t2_checkpoint: surreal_sync_postgresql::from_pgoutput::PgoutputCheckpoint =
                 t2_file.parse()?;
 
             assert!(

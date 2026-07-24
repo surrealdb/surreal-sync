@@ -1,7 +1,8 @@
 [package]
 name = "loadtest-distributed"
-version = "0.1.0"
+version = "0.6.0"
 edition = "2021"
+publish = false
 description = "Container-based distributed load testing for surreal-sync (library)"
 license = "MIT"
 
@@ -14,7 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Schema and generator (needed for generating loadtest configurations)
-sync-core = { path = "../sync-core" }
+surreal-sync-core = { path = "../sync-core" }
 loadtest-generator = { path = "../loadtest-generator" }
 
 # CLI and serialization

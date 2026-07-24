@@ -1,0 +1,16 @@
+[package]
+name = "surreal-sync-example-from-mysql-binlog"
+version = "0.6.0"
+edition = "2021"
+publish = false
+description = "Embedder example: MySQL/MariaDB binlog CDC with in-process transforms"
+
+[[bin]]
+name = "surreal-sync-example-from-mysql-binlog"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+tokio = { version = "1.49", features = ["full"] }
+surreal-sync-mysql = { path = "../../crates/mysql", features = ["from_binlog"] }
+surreal-sync-surreal = { path = "../../crates/surreal" }

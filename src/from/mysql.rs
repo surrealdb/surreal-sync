@@ -1,19 +1,17 @@
 //! MySQL trigger-based CDC sync handlers.
 //!
-//! Source crate: crates/mysql-trigger-source/
+//! Source crate: crates/mysql/ (from_trigger)
 //! CLI commands:
 //! - Full sync: `from mysql full --connection-string ... --tables ... --checkpoints-surreal-table ...`
 //! - Incremental sync: `from mysql incremental --connection-string ... --tables ... --checkpoints-surreal-table ...`
 
 use anyhow::Context;
-use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
-use surreal_sink::SurrealSink;
 use surreal_sync::orchestrate_snapshot_then_incremental;
-use surreal_sync_interleaved_snapshot::{
-    InterleavedSnapshotConfig, NoopCheckpointer, SnapshotTransforms,
-};
-use surreal_sync_mysql_trigger_source::{MySQLCheckpoint, ReplicationTailOptions};
-use sync_transform::{ApplyOpts, Pipeline};
+use surreal_sync_core::SurrealSink;
+use surreal_sync_core::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
+use surreal_sync_mysql::from_trigger::{MySQLCheckpoint, ReplicationTailOptions};
+use surreal_sync_runtime::{ApplyOpts, Pipeline};
+use surreal_sync_runtime::{InterleavedSnapshotConfig, NoopCheckpointer, SnapshotTransforms};
 
 use super::transforms::load_transforms_from_args;
 use super::{
@@ -52,26 +50,29 @@ async fn run_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
     // Connect to SurrealDB using v2 SDK
-    let surreal_opts = surreal2_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v2::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
     };
-    let surreal =
-        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v2::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
-    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_mysql::from_trigger::SourceOpts {
         source_uri: args.connection_string,
         source_database: args.database,
         tables: args.tables,
         mysql_boolean_paths: args.boolean_paths,
         id_column_overrides: Default::default(),
-        ssl: args.tls.trigger_ssl_mode(),
+        ssl: args.tls.ssl_mode(),
     };
 
-    let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
+    let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
     };
@@ -81,9 +82,9 @@ async fn run_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             // Filesystem checkpoint storage
-            let store = checkpoint::FilesystemStore::new(dir);
-            let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms(
+            let store = surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(dir);
+            let sync_manager = surreal_sync_core::SyncManager::new(store);
+            surreal_sync_mysql::from_trigger::run_full_sync_with_transforms(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -95,15 +96,16 @@ async fn run_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
         }
         (None, Some(table)) => {
             // SurrealDB v2 checkpoint storage
-            let checkpoint_surreal = surreal2_sink::surreal_connect(
+            let checkpoint_surreal = surreal_sync_surreal::v2::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
                 &args.to_database,
             )
             .await?;
-            let store = checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone());
-            let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms(
+            let store =
+                surreal_sync_surreal::v2::Surreal2Store::new(checkpoint_surreal, table.clone());
+            let sync_manager = surreal_sync_core::SyncManager::new(store);
+            surreal_sync_mysql::from_trigger::run_full_sync_with_transforms(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -115,9 +117,9 @@ async fn run_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
         }
         (None, None) => {
             // No checkpoint storage
-            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms::<
+            surreal_sync_mysql::from_trigger::run_full_sync_with_transforms::<
                 _,
-                checkpoint::NullStore,
+                surreal_sync_core::NullStore,
             >(
                 &sink,
                 &source_opts,
@@ -149,26 +151,29 @@ async fn run_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
     // Connect to SurrealDB using v3 SDK
-    let surreal_opts = surreal3_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v3::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
     };
-    let surreal =
-        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v3::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal3_sink(surreal.clone(), args.surreal.zero_temporal);
 
-    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_mysql::from_trigger::SourceOpts {
         source_uri: args.connection_string,
         source_database: args.database,
         tables: args.tables,
         mysql_boolean_paths: args.boolean_paths,
         id_column_overrides: Default::default(),
-        ssl: args.tls.trigger_ssl_mode(),
+        ssl: args.tls.ssl_mode(),
     };
 
-    let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
+    let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
     };
@@ -178,9 +183,9 @@ async fn run_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
             // Filesystem checkpoint storage
-            let store = checkpoint::FilesystemStore::new(dir);
-            let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms(
+            let store = surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(dir);
+            let sync_manager = surreal_sync_core::SyncManager::new(store);
+            surreal_sync_mysql::from_trigger::run_full_sync_with_transforms(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -192,15 +197,16 @@ async fn run_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
         }
         (None, Some(table)) => {
             // SurrealDB v3 checkpoint storage
-            let checkpoint_surreal = surreal3_sink::surreal_connect(
+            let checkpoint_surreal = surreal_sync_surreal::v3::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
                 &args.to_database,
             )
             .await?;
-            let store = checkpoint_surreal3::Surreal3Store::new(checkpoint_surreal, table.clone());
-            let sync_manager = checkpoint::SyncManager::new(store);
-            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms(
+            let store =
+                surreal_sync_surreal::v3::Surreal3Store::new(checkpoint_surreal, table.clone());
+            let sync_manager = surreal_sync_core::SyncManager::new(store);
+            surreal_sync_mysql::from_trigger::run_full_sync_with_transforms(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -212,9 +218,9 @@ async fn run_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
         }
         (None, None) => {
             // No checkpoint storage
-            surreal_sync_mysql_trigger_source::run_full_sync_with_transforms::<
+            surreal_sync_mysql::from_trigger::run_full_sync_with_transforms::<
                 _,
-                checkpoint::NullStore,
+                surreal_sync_core::NullStore,
             >(
                 &sink,
                 &source_opts,
@@ -260,7 +266,7 @@ async fn run_incremental_v2(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
     // Get checkpoint from CLI arg or SurrealDB
-    let surreal_opts = surreal2_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v2::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
@@ -270,22 +276,23 @@ async fn run_incremental_v2(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
         (Some(s), _) => {
             tracing::info!("Starting from checkpoint: {}", s);
             // Explicit checkpoint from CLI
-            surreal_sync_mysql_trigger_source::MySQLCheckpoint::from_cli_string(s)?
+            surreal_sync_mysql::from_trigger::MySQLCheckpoint::from_cli_string(s)?
         }
         (None, Some(table)) => {
             tracing::info!("Reading checkpoint from SurrealDB table: {}", table);
             // Read from SurrealDB v2 checkpoint storage
-            let checkpoint_surreal = surreal2_sink::surreal_connect(
+            let checkpoint_surreal = surreal_sync_surreal::v2::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
                 &args.to_database,
             )
             .await?;
-            let store = checkpoint::Surreal2Store::new(checkpoint_surreal, table.clone());
-            let sync_manager = checkpoint::SyncManager::new(store);
+            let store =
+                surreal_sync_surreal::v2::Surreal2Store::new(checkpoint_surreal, table.clone());
+            let sync_manager = surreal_sync_core::SyncManager::new(store);
             sync_manager
-                .read_checkpoint::<surreal_sync_mysql_trigger_source::MySQLCheckpoint>(
-                    checkpoint::SyncPhase::FullSyncStart,
+                .read_checkpoint::<surreal_sync_mysql::from_trigger::MySQLCheckpoint>(
+                    surreal_sync_core::SyncPhase::FullSyncStart,
                 )
                 .await
                 .with_context(|| "Failed to read t1 checkpoint from SurrealDB")?
@@ -302,7 +309,7 @@ async fn run_incremental_v2(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
     let mysql_to = args
         .incremental_to
         .as_ref()
-        .map(|s| surreal_sync_mysql_trigger_source::MySQLCheckpoint::from_cli_string(s))
+        .map(|s| surreal_sync_mysql::from_trigger::MySQLCheckpoint::from_cli_string(s))
         .transpose()?;
 
     let timeout_seconds: i64 = args
@@ -311,23 +318,26 @@ async fn run_incremental_v2(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
-    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_mysql::from_trigger::SourceOpts {
         source_uri: args.connection_string,
         source_database: args.database,
         tables: args.tables,
         mysql_boolean_paths: args.boolean_paths,
         id_column_overrides: Default::default(),
-        ssl: args.tls.trigger_ssl_mode(),
+        ssl: args.tls.ssl_mode(),
     };
 
     // Connect to SurrealDB using v2 SDK
-    let surreal =
-        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v2::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
-    surreal_sync_mysql_trigger_source::run_incremental_sync_with_transforms(
+    surreal_sync_mysql::from_trigger::run_incremental_sync_with_transforms(
         &sink,
         source_opts,
         from_checkpoint,
@@ -370,7 +380,7 @@ async fn mysql_snapshot_full<S, St>(
     connection_string: String,
     database: Option<String>,
     chunk_size: usize,
-    ssl: surreal_sync_mysql_trigger_source::SslMode,
+    ssl: surreal_sync_mysql::from_trigger::SslMode,
     manager: Option<&SyncManager<St>>,
     transforms: &SnapshotTransforms,
 ) -> anyhow::Result<()>
@@ -378,13 +388,13 @@ where
     S: SurrealSink,
     St: CheckpointStore,
 {
-    let pool = surreal_sync_mysql_trigger_source::new_mysql_pool_with_ssl(&connection_string, &ssl)
-        .await?;
+    let pool =
+        surreal_sync_mysql::from_trigger::new_mysql_pool_with_ssl(&connection_string, &ssl).await?;
     let database = resolve_mysql_database(&pool, &database).await?;
     let config = InterleavedSnapshotConfig { chunk_size };
     let mut checkpointer = NoopCheckpointer;
     let final_seq =
-        surreal_sync_mysql_trigger_source::run_interleaved_snapshot_full_sync_with_transforms(
+        surreal_sync_mysql::from_trigger::run_interleaved_snapshot_full_sync_with_transforms(
             pool,
             database,
             sink,
@@ -414,14 +424,17 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
     tracing::info!("Starting interleaved snapshot full sync from MySQL to SurrealDB (SDK v2)");
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    let surreal_opts = surreal2_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v2::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
     };
-    let surreal =
-        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v2::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
@@ -432,26 +445,28 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
 
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
-            let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
+            let manager = SyncManager::new(
+                surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(dir),
+            );
             mysql_snapshot_full(
                 &sink,
                 args.connection_string,
                 args.database,
                 args.chunk_size,
-                args.tls.trigger_ssl_mode(),
+                args.tls.ssl_mode(),
                 Some(&manager),
                 &transforms,
             )
             .await
         }
         (None, Some(table)) => {
-            let checkpoint_surreal = surreal2_sink::surreal_connect(
+            let checkpoint_surreal = surreal_sync_surreal::v2::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
                 &args.to_database,
             )
             .await?;
-            let manager = SyncManager::new(checkpoint::Surreal2Store::new(
+            let manager = SyncManager::new(surreal_sync_surreal::v2::Surreal2Store::new(
                 checkpoint_surreal,
                 table.clone(),
             ));
@@ -460,19 +475,19 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.connection_string,
                 args.database,
                 args.chunk_size,
-                args.tls.trigger_ssl_mode(),
+                args.tls.ssl_mode(),
                 Some(&manager),
                 &transforms,
             )
             .await
         }
         (None, None) => {
-            mysql_snapshot_full::<_, checkpoint::NullStore>(
+            mysql_snapshot_full::<_, surreal_sync_core::NullStore>(
                 &sink,
                 args.connection_string,
                 args.database,
                 args.chunk_size,
-                args.tls.trigger_ssl_mode(),
+                args.tls.ssl_mode(),
                 None,
                 &transforms,
             )
@@ -488,14 +503,17 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
     tracing::info!("Starting interleaved snapshot full sync from MySQL to SurrealDB (SDK v3)");
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    let surreal_opts = surreal3_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v3::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
     };
-    let surreal =
-        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v3::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal3_sink(surreal.clone(), args.surreal.zero_temporal);
 
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
@@ -506,20 +524,22 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
 
     match (&args.checkpoint_dir, &args.checkpoints_surreal_table) {
         (Some(dir), None) => {
-            let manager = SyncManager::new(checkpoint::FilesystemStore::new(dir));
+            let manager = SyncManager::new(
+                surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(dir),
+            );
             mysql_snapshot_full(
                 &sink,
                 args.connection_string,
                 args.database,
                 args.chunk_size,
-                args.tls.trigger_ssl_mode(),
+                args.tls.ssl_mode(),
                 Some(&manager),
                 &transforms,
             )
             .await
         }
         (None, Some(table)) => {
-            let manager = SyncManager::new(checkpoint_surreal3::Surreal3Store::new(
+            let manager = SyncManager::new(surreal_sync_surreal::v3::Surreal3Store::new(
                 surreal,
                 table.clone(),
             ));
@@ -528,19 +548,19 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.connection_string,
                 args.database,
                 args.chunk_size,
-                args.tls.trigger_ssl_mode(),
+                args.tls.ssl_mode(),
                 Some(&manager),
                 &transforms,
             )
             .await
         }
         (None, None) => {
-            mysql_snapshot_full::<_, checkpoint::NullStore>(
+            mysql_snapshot_full::<_, surreal_sync_core::NullStore>(
                 &sink,
                 args.connection_string,
                 args.database,
                 args.chunk_size,
-                args.tls.trigger_ssl_mode(),
+                args.tls.ssl_mode(),
                 None,
                 &transforms,
             )
@@ -576,14 +596,17 @@ async fn run_sync_v2(
     tracing::info!("Starting interleaved snapshot sync from MySQL to SurrealDB (SDK v2)");
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    let surreal_opts = surreal2_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v2::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
     };
-    let surreal =
-        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v2::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
     mysql_orchestrate(&sink, args, pipeline, apply_opts).await
 }
@@ -596,14 +619,17 @@ async fn run_sync_v3(
     tracing::info!("Starting interleaved snapshot sync from MySQL to SurrealDB (SDK v3)");
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
-    let surreal_opts = surreal3_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v3::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
     };
-    let surreal =
-        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v3::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
     mysql_orchestrate(&sink, args, pipeline, apply_opts).await
 }
@@ -614,9 +640,9 @@ async fn mysql_orchestrate<S: SurrealSink>(
     pipeline: Pipeline,
     apply_opts: ApplyOpts,
 ) -> anyhow::Result<()> {
-    let pool = surreal_sync_mysql_trigger_source::new_mysql_pool_with_ssl(
+    let pool = surreal_sync_mysql::from_trigger::new_mysql_pool_with_ssl(
         &args.connection_string,
-        &args.tls.trigger_ssl_mode(),
+        &args.tls.ssl_mode(),
     )
     .await?;
     let database = resolve_mysql_database(&pool, &args.database).await?;
@@ -630,15 +656,15 @@ async fn mysql_orchestrate<S: SurrealSink>(
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
-    let id_column_overrides = sync_core::parse_id_column_overrides(&args.id_columns, None)
+    let id_column_overrides = surreal_sync_core::parse_id_column_overrides(&args.id_columns, None)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
-    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_mysql::from_trigger::SourceOpts {
         source_uri: args.connection_string.clone(),
         source_database: Some(database.clone()),
         tables: args.tables.clone(),
         mysql_boolean_paths: args.boolean_paths.clone(),
         id_column_overrides,
-        ssl: args.tls.trigger_ssl_mode(),
+        ssl: args.tls.ssl_mode(),
     };
 
     let transforms = SnapshotTransforms {
@@ -651,7 +677,7 @@ async fn mysql_orchestrate<S: SurrealSink>(
     orchestrate_snapshot_then_incremental(
         async move {
             let mut checkpointer = NoopCheckpointer;
-            surreal_sync_mysql_trigger_source::run_interleaved_snapshot_full_sync_with_transforms_and_overrides(
+            surreal_sync_mysql::from_trigger::run_interleaved_snapshot_full_sync_with_transforms_and_overrides(
                 snapshot_pool,
                 snapshot_db,
                 sink,
@@ -667,7 +693,7 @@ async fn mysql_orchestrate<S: SurrealSink>(
             timestamp: chrono::Utc::now(),
         },
         |from_checkpoint| {
-            surreal_sync_mysql_trigger_source::run_incremental_sync_with_transforms(
+            surreal_sync_mysql::from_trigger::run_incremental_sync_with_transforms(
                 sink,
                 source_opts,
                 from_checkpoint,
@@ -683,13 +709,13 @@ async fn mysql_orchestrate<S: SurrealSink>(
 /// Emit an ad-hoc `execute-snapshot` signal so a running `sync` snapshots the
 /// requested tables.
 pub async fn run_snapshot_signal(args: MySQLSnapshotArgs) -> anyhow::Result<()> {
-    let pool = surreal_sync_mysql_trigger_source::new_mysql_pool_with_ssl(
+    let pool = surreal_sync_mysql::from_trigger::new_mysql_pool_with_ssl(
         &args.connection_string,
-        &args.tls.trigger_ssl_mode(),
+        &args.tls.ssl_mode(),
     )
     .await?;
     let database = resolve_mysql_database(&pool, &args.database).await?;
-    surreal_sync_mysql_trigger_source::request_snapshot(pool, database, &args.tables).await?;
+    surreal_sync_mysql::from_trigger::request_snapshot(pool, database, &args.tables).await?;
     tracing::info!(
         "Requested ad-hoc snapshot of tables {:?} via execute-snapshot signal",
         args.tables
@@ -708,7 +734,7 @@ async fn run_incremental_v3(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
     let _schema = load_schema_if_provided(&args.schema_file)?;
 
     // Get checkpoint from CLI arg or SurrealDB
-    let surreal_opts = surreal3_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v3::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint.clone(),
         surreal_username: args.surreal.surreal_username.clone(),
         surreal_password: args.surreal.surreal_password.clone(),
@@ -718,22 +744,23 @@ async fn run_incremental_v3(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
         (Some(s), _) => {
             tracing::info!("Starting from checkpoint: {}", s);
             // Explicit checkpoint from CLI
-            surreal_sync_mysql_trigger_source::MySQLCheckpoint::from_cli_string(s)?
+            surreal_sync_mysql::from_trigger::MySQLCheckpoint::from_cli_string(s)?
         }
         (None, Some(table)) => {
             tracing::info!("Reading checkpoint from SurrealDB table: {}", table);
             // Read from SurrealDB v3 checkpoint storage
-            let checkpoint_surreal = surreal3_sink::surreal_connect(
+            let checkpoint_surreal = surreal_sync_surreal::v3::surreal_connect(
                 &surreal_opts,
                 &args.to_namespace,
                 &args.to_database,
             )
             .await?;
-            let store = checkpoint_surreal3::Surreal3Store::new(checkpoint_surreal, table.clone());
-            let sync_manager = checkpoint::SyncManager::new(store);
+            let store =
+                surreal_sync_surreal::v3::Surreal3Store::new(checkpoint_surreal, table.clone());
+            let sync_manager = surreal_sync_core::SyncManager::new(store);
             sync_manager
-                .read_checkpoint::<surreal_sync_mysql_trigger_source::MySQLCheckpoint>(
-                    checkpoint::SyncPhase::FullSyncStart,
+                .read_checkpoint::<surreal_sync_mysql::from_trigger::MySQLCheckpoint>(
+                    surreal_sync_core::SyncPhase::FullSyncStart,
                 )
                 .await
                 .with_context(|| "Failed to read t1 checkpoint from SurrealDB")?
@@ -750,7 +777,7 @@ async fn run_incremental_v3(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
     let mysql_to = args
         .incremental_to
         .as_ref()
-        .map(|s| surreal_sync_mysql_trigger_source::MySQLCheckpoint::from_cli_string(s))
+        .map(|s| surreal_sync_mysql::from_trigger::MySQLCheckpoint::from_cli_string(s))
         .transpose()?;
 
     let timeout_seconds: i64 = args
@@ -759,23 +786,26 @@ async fn run_incremental_v3(args: MySQLIncrementalArgs) -> anyhow::Result<()> {
         .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_seconds);
 
-    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_mysql::from_trigger::SourceOpts {
         source_uri: args.connection_string,
         source_database: args.database,
         tables: args.tables,
         mysql_boolean_paths: args.boolean_paths,
         id_column_overrides: Default::default(),
-        ssl: args.tls.trigger_ssl_mode(),
+        ssl: args.tls.ssl_mode(),
     };
 
     // Connect to SurrealDB using v3 SDK
-    let surreal =
-        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v3::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
 
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
-    surreal_sync_mysql_trigger_source::run_incremental_sync_with_transforms(
+    surreal_sync_mysql::from_trigger::run_incremental_sync_with_transforms(
         &sink,
         source_opts,
         from_checkpoint,

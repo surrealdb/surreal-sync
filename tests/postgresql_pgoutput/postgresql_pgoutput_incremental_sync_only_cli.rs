@@ -73,10 +73,13 @@ async fn test_postgresql_pgoutput_stream_only_cli() -> Result<(), Box<dyn std::e
 
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
 
-    use checkpoint::{Checkpoint, SyncPhase};
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, SyncPhase::FullSyncStart).await?;
-    let wal_checkpoint: surreal_sync_postgresql_pgoutput_source::PgoutputCheckpoint =
+    use surreal_sync_core::{Checkpoint, SyncPhase};
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        SyncPhase::FullSyncStart,
+    )
+    .await?;
+    let wal_checkpoint: surreal_sync_postgresql::from_pgoutput::PgoutputCheckpoint =
         checkpoint_file.parse()?;
     let checkpoint_string = wal_checkpoint.to_cli_string();
 

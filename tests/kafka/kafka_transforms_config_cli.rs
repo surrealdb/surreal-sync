@@ -7,8 +7,8 @@ use std::time::Duration;
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
 use surreal_sync::testing::surreal::{cleanup_auto, connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use surreal_sync_kafka_producer::container::KafkaContainer;
-use surreal_sync_kafka_producer::{publish_test_users, KafkaTestProducer};
+use surreal_sync_kafka::producer::container::KafkaContainer;
+use surreal_sync_kafka::producer::{publish_test_users, KafkaTestProducer};
 use tokio::time::sleep;
 
 fn fixture_worker_path() -> PathBuf {
@@ -24,7 +24,9 @@ fn ensure_fixture_worker() -> PathBuf {
             .args([
                 "build",
                 "-p",
-                "sync-transform",
+                "surreal-sync-runtime",
+                "--features",
+                "test-support",
                 "--bin",
                 "sync-transform-fixture-worker",
             ])
@@ -64,7 +66,7 @@ async fn test_kafka_cli_transforms_config_mutate() -> Result<(), Box<dyn std::er
     let proto_path = format!("{work_dir}/user.proto");
     std::fs::write(
         &proto_path,
-        include_str!("../../crates/kafka-producer/proto/user.proto"),
+        include_str!("../../crates/kafka/proto/user.proto"),
     )?;
 
     let transforms_toml = format!(

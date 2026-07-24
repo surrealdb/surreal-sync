@@ -14,7 +14,7 @@
 //!
 //! ## Import Note
 //!
-//! This test imports directly from `surreal_sync_kafka_source` crate (not re-exported
+//! This test imports directly from `surreal_sync_kafka` crate (not re-exported
 //! through main crate). This follows the pattern established for other database-
 //! specific sync crates (mysql-trigger, postgresql-trigger, etc.).
 
@@ -26,18 +26,18 @@ use surreal_sync::testing::surreal::{
 use surreal_sync::testing::{
     create_unified_full_dataset, generate_test_id, SourceDatabase, TestConfig,
 };
-use surreal_sync_kafka_producer::container::KafkaContainer;
-use surreal_sync_kafka_producer::{
+use surreal_sync_kafka::from_kafka::Config as KafkaConfig;
+use surreal_sync_kafka::producer::container::KafkaContainer;
+use surreal_sync_kafka::producer::{
     publish_test_posts, publish_test_relations, publish_test_users, KafkaTestProducer,
 };
-use surreal_sync_kafka_source::Config as KafkaConfig;
 use tokio::time::sleep;
 
 #[tokio::test]
 async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing for debug output
     tracing_subscriber::fmt()
-        .with_env_filter("surreal_sync=debug,surreal_sync_kafka_source=debug")
+        .with_env_filter("surreal_sync=debug,surreal_sync_kafka=debug")
         .try_init()
         .ok();
 
@@ -109,7 +109,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     let user_proto_path = proto_dir.path().join("user.proto");
     std::fs::write(
         &user_proto_path,
-        include_str!("../../crates/kafka-producer/proto/user.proto"),
+        include_str!("../../crates/kafka/proto/user.proto"),
     )?;
 
     // Run sync for users topic with a deadline
@@ -144,14 +144,14 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // Run all three syncs with appropriate sink based on detected version
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = Arc::new(surreal2_sink::Surreal2Sink::new(client.clone()));
+            let sink = Arc::new(surreal_sync_surreal::v2::Surreal2Sink::new(client.clone()));
 
             // Sync users
             let sync_handle = tokio::spawn({
                 let config = user_config.clone();
                 let sink_clone = sink.clone();
                 async move {
-                    surreal_sync_kafka_source::run_incremental_sync(
+                    surreal_sync_kafka::from_kafka::run_incremental_sync(
                         sink_clone, config, deadline, None,
                     )
                     .await
@@ -171,7 +171,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
             let post_proto_path = proto_dir.path().join("post.proto");
             std::fs::write(
                 &post_proto_path,
-                include_str!("../../crates/kafka-producer/proto/post.proto"),
+                include_str!("../../crates/kafka/proto/post.proto"),
             )?;
 
             let post_config = KafkaConfig {
@@ -204,7 +204,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
                 let config = post_config;
                 let sink_clone = sink.clone();
                 async move {
-                    surreal_sync_kafka_source::run_incremental_sync(
+                    surreal_sync_kafka::from_kafka::run_incremental_sync(
                         sink_clone, config, deadline, None,
                     )
                     .await
@@ -224,7 +224,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
             let relation_proto_path = proto_dir.path().join("user_post_relation.proto");
             std::fs::write(
                 &relation_proto_path,
-                include_str!("../../crates/kafka-producer/proto/user_post_relation.proto"),
+                include_str!("../../crates/kafka/proto/user_post_relation.proto"),
             )?;
 
             let relation_config = KafkaConfig {
@@ -257,7 +257,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
                 let config = relation_config;
                 let sink_clone = sink.clone();
                 async move {
-                    surreal_sync_kafka_source::run_incremental_sync(
+                    surreal_sync_kafka::from_kafka::run_incremental_sync(
                         sink_clone, config, deadline, None,
                     )
                     .await
@@ -273,14 +273,14 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
             }
         }
         SurrealConnection::V3(client) => {
-            let sink = Arc::new(surreal3_sink::Surreal3Sink::new(client.clone()));
+            let sink = Arc::new(surreal_sync_surreal::v3::Surreal3Sink::new(client.clone()));
 
             // Sync users
             let sync_handle = tokio::spawn({
                 let config = user_config.clone();
                 let sink_clone = sink.clone();
                 async move {
-                    surreal_sync_kafka_source::run_incremental_sync(
+                    surreal_sync_kafka::from_kafka::run_incremental_sync(
                         sink_clone, config, deadline, None,
                     )
                     .await
@@ -300,7 +300,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
             let post_proto_path = proto_dir.path().join("post.proto");
             std::fs::write(
                 &post_proto_path,
-                include_str!("../../crates/kafka-producer/proto/post.proto"),
+                include_str!("../../crates/kafka/proto/post.proto"),
             )?;
 
             let post_config = KafkaConfig {
@@ -333,7 +333,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
                 let config = post_config;
                 let sink_clone = sink.clone();
                 async move {
-                    surreal_sync_kafka_source::run_incremental_sync(
+                    surreal_sync_kafka::from_kafka::run_incremental_sync(
                         sink_clone, config, deadline, None,
                     )
                     .await
@@ -353,7 +353,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
             let relation_proto_path = proto_dir.path().join("user_post_relation.proto");
             std::fs::write(
                 &relation_proto_path,
-                include_str!("../../crates/kafka-producer/proto/user_post_relation.proto"),
+                include_str!("../../crates/kafka/proto/user_post_relation.proto"),
             )?;
 
             let relation_config = KafkaConfig {
@@ -386,7 +386,7 @@ async fn test_kafka_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
                 let config = relation_config;
                 let sink_clone = sink.clone();
                 async move {
-                    surreal_sync_kafka_source::run_incremental_sync(
+                    surreal_sync_kafka::from_kafka::run_incremental_sync(
                         sink_clone, config, deadline, None,
                     )
                     .await

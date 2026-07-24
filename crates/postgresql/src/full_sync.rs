@@ -7,8 +7,8 @@ use anyhow::Result;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use rust_decimal::Decimal;
 use std::collections::HashMap;
-use surreal_sink::SurrealSink;
-use sync_core::{
+use surreal_sync_core::SurrealSink;
+use surreal_sync_core::{
     classify_table, DatabaseSchema, GeometryType, Relation, Row, TableKind, Type, Value,
 };
 use tokio_postgres::types::ToSql;
@@ -31,7 +31,7 @@ pub struct SyncOpts {
 /// When `schema` is provided and the table has foreign keys, FK column values
 /// become SurrealDB record links. Relation (join) tables become graph edges.
 /// Callers that apply through the shared transform path should batch these into
-/// [`sync_transform::write_rows`] / [`sync_transform::write_relations`].
+/// [`surreal_sync_runtime::write_rows`] / [`surreal_sync_runtime::write_relations`].
 pub async fn convert_table(
     client: &Client,
     table_name: &str,
@@ -129,14 +129,14 @@ pub async fn migrate_table<S: SurrealSink>(
         return Ok(total_processed);
     }
 
-    let pipeline = sync_transform::Pipeline::new();
+    let pipeline = surreal_sync_runtime::Pipeline::new();
     let apply_opts =
-        sync_transform::ApplyOpts::identity().with_batch_size(sync_opts.batch_size.max(1));
+        surreal_sync_runtime::ApplyOpts::identity().with_batch_size(sync_opts.batch_size.max(1));
     if !rows.is_empty() {
-        sync_transform::write_rows(surreal, &pipeline, rows, &apply_opts).await?;
+        surreal_sync_runtime::write_rows(surreal, &pipeline, rows, &apply_opts).await?;
     }
     if !relations.is_empty() {
-        sync_transform::write_relations(surreal, &pipeline, relations, &apply_opts).await?;
+        surreal_sync_runtime::write_relations(surreal, &pipeline, relations, &apply_opts).await?;
     }
 
     Ok(total_processed)
@@ -261,8 +261,8 @@ pub async fn read_relation_chunk(
     pk_columns: &[String],
     after: Option<&[Value]>,
     limit: usize,
-    in_fk: &sync_core::ForeignKeyDefinition,
-    out_fk: &sync_core::ForeignKeyDefinition,
+    in_fk: &surreal_sync_core::ForeignKeyDefinition,
+    out_fk: &surreal_sync_core::ForeignKeyDefinition,
     row_index_base: u64,
 ) -> Result<RelationChunk> {
     if pk_columns.is_empty() {
@@ -393,8 +393,8 @@ pub async fn read_offset_relation_chunk(
     table_name: &str,
     offset: usize,
     limit: usize,
-    in_fk: &sync_core::ForeignKeyDefinition,
-    out_fk: &sync_core::ForeignKeyDefinition,
+    in_fk: &surreal_sync_core::ForeignKeyDefinition,
+    out_fk: &surreal_sync_core::ForeignKeyDefinition,
 ) -> Result<Vec<Relation>> {
     let query = format!("SELECT * FROM {table_name} ORDER BY ctid OFFSET {offset} LIMIT {limit}");
     debug!("Offset-reading relation table {table_name} with: {query}");

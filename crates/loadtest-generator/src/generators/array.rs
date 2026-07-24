@@ -2,7 +2,7 @@
 
 use rand::seq::{IndexedRandom, SliceRandom};
 use rand::RngExt;
-use sync_core::{Type, Value};
+use surreal_sync_core::{Type, Value};
 
 /// Convert a string value to the appropriate Value based on the target type.
 fn string_to_typed_value(s: &str, target_type: &Type) -> Value {

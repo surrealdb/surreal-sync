@@ -1,6 +1,7 @@
 [package]
 name = "surreal-sync-mongodb-changestream-source"
-version = "0.1.0"
+version = "0.6.0"
+publish = false
 edition = "2021"
 description = "MongoDB sync utilities for surreal-sync"
 license = "MIT"
@@ -10,20 +11,14 @@ license = "MIT"
 mongodb = "3.2.4"
 bson = { version = "2.15.0", features = ["chrono-0_4"] }
 
-# SurrealDB sink trait
-surreal-sink = { path = "../surreal-sink" }
-
 # Sync core traits
-sync-core = { path = "../sync-core" }
+surreal-sync-core = { path = "../sync-core" }
 
 # MongoDB types for schema-aware conversion
 mongodb-types = { path = "../mongodb-types" }
 
-# Checkpoint management
-checkpoint = { path = "../checkpoint" }
-
-# Shared apply / transform pipeline
-sync-transform = { path = "../sync-transform" }
+# Shared apply / transform pipeline + filesystem checkpoints
+surreal-sync-runtime = { path = "../runtime" }
 
 # Async runtime
 tokio = { version = "1.49", features = ["full"] }
@@ -43,4 +38,4 @@ base64 = "0.22"
 [dev-dependencies]
 tempfile = "3.27"
 surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
-surreal2-types = { path = "../surreal2-types" }
+surreal-sync-surreal = { path = "../surreal", default-features = false, features = ["v2"] }

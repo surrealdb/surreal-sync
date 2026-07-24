@@ -1,6 +1,6 @@
 [package]
 name = "surrealdb-multi-sdk-demo"
-version = "0.1.0"
+version = "0.6.0"
 edition = "2021"
 description = "Demo crate to verify both SurrealDB SDK v2 and v3 can coexist using Cargo aliasing"
 license = "MIT"
@@ -24,4 +24,4 @@ rust_decimal = "1.37"
 libc = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-surreal-version = { path = "../surreal-version" }
+surreal-sync-surreal = { path = "../surreal", default-features = false, features = ["reqwest"] }

@@ -39,7 +39,7 @@ pub async fn run_full_sync_e2e(
     crate::testing::mysql::create_tables_and_indices(&mut mysql_conn, &dataset).await?;
     crate::testing::mysql::insert_rows(&mut mysql_conn, &dataset).await?;
 
-    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_mysql::from_trigger::SourceOpts {
         source_uri: test_conn_str.to_string(),
         source_database: Some(format!("test_{test_id}")),
         tables: vec![],
@@ -50,15 +50,15 @@ pub async fn run_full_sync_e2e(
         ssl: Default::default(),
     };
 
-    let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
+    let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: 1000,
         dry_run: false,
     };
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_mysql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_mysql::from_trigger::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -67,8 +67,8 @@ pub async fn run_full_sync_e2e(
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_mysql_trigger_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_mysql::from_trigger::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -118,7 +118,7 @@ pub async fn run_incremental_e2e(
     crate::testing::mysql::cleanup_mysql_test_data(&mut mysql_conn).await?;
     crate::testing::mysql::create_tables_and_indices(&mut mysql_conn, &dataset).await?;
 
-    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_mysql::from_trigger::SourceOpts {
         source_uri: test_conn_str.to_string(),
         source_database: Some(test_db_name),
         tables: vec![],
@@ -127,18 +127,19 @@ pub async fn run_incremental_e2e(
         ssl: Default::default(),
     };
 
-    let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
+    let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: 1000,
         dry_run: false,
     };
 
-    let checkpoint_store = checkpoint::FilesystemStore::new(&checkpoint_dir);
-    let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
+    let checkpoint_store =
+        surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(&checkpoint_dir);
+    let sync_manager = surreal_sync_core::SyncManager::new(checkpoint_store);
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_mysql_trigger_source::run_full_sync(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_mysql::from_trigger::run_full_sync(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -147,8 +148,8 @@ pub async fn run_incremental_e2e(
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_mysql_trigger_source::run_full_sync(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_mysql::from_trigger::run_full_sync(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -162,16 +163,18 @@ pub async fn run_incremental_e2e(
 
     crate::testing::mysql::insert_rows(&mut mysql_conn, &dataset).await?;
 
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
-            .await?;
-    let sync_checkpoint: surreal_sync_mysql_trigger_source::MySQLCheckpoint =
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        surreal_sync_core::SyncPhase::FullSyncStart,
+    )
+    .await?;
+    let sync_checkpoint: surreal_sync_mysql::from_trigger::MySQLCheckpoint =
         checkpoint_file.parse()?;
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_mysql_trigger_source::run_incremental_sync(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_mysql::from_trigger::run_incremental_sync(
                 &sink,
                 source_opts,
                 sync_checkpoint,
@@ -181,8 +184,8 @@ pub async fn run_incremental_e2e(
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_mysql_trigger_source::run_incremental_sync(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_mysql::from_trigger::run_incremental_sync(
                 &sink,
                 source_opts,
                 sync_checkpoint,

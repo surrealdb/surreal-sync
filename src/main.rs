@@ -84,10 +84,10 @@
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
-use surreal_sync::SurrealOpts;
+use surreal_sync_runtime::SurrealCliOpts as SurrealOpts;
 
-// Shared with library mysql-binlog CLI (also used by other `from *` clap args).
-pub(crate) use surreal_sync::mysql_binlog::{
+// Shared with binary mysql-binlog CLI glue (also used by other `from *` clap args).
+pub(crate) use mysql_binlog::{
     Commands as MySQLBinlogCommands, SnapshotModeArg as BinlogSnapshotModeArg, SyncStrategy,
     TlsArgs as MySQLTlsArgs, DEFAULT_CHUNK_SIZE,
 };
@@ -113,6 +113,10 @@ mod from;
 
 // Loadtest command handlers
 mod loadtest;
+
+// Stock CLI auto-detect glue (both Surreal SDKs linked). Prefer from-* for embeds.
+mod mysql_binlog;
+mod snowflake;
 
 #[derive(Parser)]
 #[command(name = "surreal-sync")]
@@ -205,7 +209,7 @@ enum FromSource {
 
     /// Ingest from Snowflake (full one-shot snapshot via the SQL REST API v2)
     #[command(name = "snowflake")]
-    Snowflake(surreal_sync::snowflake::Args),
+    Snowflake(snowflake::Args),
 }
 
 // =============================================================================
@@ -1214,7 +1218,7 @@ struct PostgreSQLLogicalSnapshotArgs {
 struct KafkaArgs {
     /// Kafka source configuration
     #[command(flatten)]
-    config: surreal_sync_kafka_source::Config,
+    config: surreal_sync_kafka::from_kafka::Config,
 
     /// Target SurrealDB namespace
     #[arg(long)]
@@ -1442,7 +1446,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn run() -> anyhow::Result<()> {
-    surreal_sync::init();
+    surreal_sync_runtime::init();
 
     let cli = Cli::parse();
 
@@ -1488,9 +1492,7 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
             MySQLCommands::Sync(args) => from::mysql::run_sync(args).await?,
             MySQLCommands::Snapshot(args) => from::mysql::run_snapshot_signal(args).await?,
         },
-        FromSource::MySQLBinlog { command } => {
-            surreal_sync::mysql_binlog::run_command(command).await?
-        }
+        FromSource::MySQLBinlog { command } => mysql_binlog::run_command(command).await?,
         FromSource::PostgreSQLPgoutput { command } => match command {
             PostgreSQLPgoutputCommands::Sync(args) => {
                 from::postgresql_pgoutput::run_sync(*args).await?
@@ -1516,7 +1518,7 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
         FromSource::Kafka(args) => from::kafka::run(args).await?,
         FromSource::Csv(args) => from::csv::run(args).await?,
         FromSource::Jsonl(args) => from::jsonl::run(args).await?,
-        FromSource::Snowflake(args) => surreal_sync::snowflake::run_args(args).await?,
+        FromSource::Snowflake(args) => snowflake::run_args(args).await?,
     }
     Ok(())
 }

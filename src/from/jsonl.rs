@@ -1,6 +1,6 @@
 //! JSONL file import handler.
 //!
-//! Source crate: crates/jsonl-source/ (part of surreal_sync::jsonl)
+//! Source crate: crates/json/ (from_jsonl)
 //! CLI command:
 //! - Import: `from jsonl --path ... --to-namespace ... --to-database ...`
 
@@ -38,14 +38,17 @@ async fn run_v2(args: JsonlArgs) -> anyhow::Result<()> {
     let schema = load_schema_if_provided(&args.schema_file)?.map(|s| s.to_database_schema());
 
     // Connect to SurrealDB using v2 SDK
-    let surreal_opts = surreal2_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v2::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
         surreal_password: args.surreal.surreal_password,
     };
-    let surreal =
-        surreal2_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v2::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
 
     // Create config with file source
@@ -81,14 +84,17 @@ async fn run_v3(args: JsonlArgs) -> anyhow::Result<()> {
     let schema = load_schema_if_provided(&args.schema_file)?.map(|s| s.to_database_schema());
 
     // Connect to SurrealDB using v3 SDK
-    let surreal_opts = surreal3_sink::SurrealOpts {
+    let surreal_opts = surreal_sync_surreal::v3::SurrealOpts {
         surreal_endpoint: args.surreal.surreal_endpoint,
         surreal_username: args.surreal.surreal_username,
         surreal_password: args.surreal.surreal_password,
     };
-    let surreal =
-        surreal3_sink::surreal_connect(&surreal_opts, &args.to_namespace, &args.to_database)
-            .await?;
+    let surreal = surreal_sync_surreal::v3::surreal_connect(
+        &surreal_opts,
+        &args.to_namespace,
+        &args.to_database,
+    )
+    .await?;
     let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
 
     // Create config with file source

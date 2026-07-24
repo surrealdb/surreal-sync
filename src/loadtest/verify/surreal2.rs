@@ -2,7 +2,7 @@
 
 use anyhow::Context;
 use loadtest_verify_surreal2::VerifyArgs;
-use sync_core::Schema;
+use surreal_sync_core::Schema;
 
 use crate::loadtest::populate_verify::post_metrics_to_aggregator;
 

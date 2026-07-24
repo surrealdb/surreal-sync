@@ -13,7 +13,7 @@
 //!
 //! ```ignore
 //! use loadtest_populate_neo4j::Neo4jPopulator;
-//! use sync_core::Schema;
+//! use surreal_sync_core::Schema;
 //!
 //! // Load schema from YAML
 //! let schema = Schema::from_file("schema.yaml")?;

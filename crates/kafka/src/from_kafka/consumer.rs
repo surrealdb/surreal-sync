@@ -1,0 +1,618 @@
+//! Kafka consumer with peek buffer and manual offset management.
+//!
+//! Uses Message and Payload types from `crate::types`.
+
+use crate::from_kafka::error::{Error, Result};
+use crate::from_kafka::proto::decoder::ProtoDecoder;
+use crate::types::{Message, Payload};
+use rdkafka::config::ClientConfig;
+use rdkafka::consumer::{Consumer as RdkafkaConsumer, StreamConsumer as RdkafkaStreamConsumer};
+use rdkafka::message::{BorrowedMessage as RdkafkaBorrowedMessage, Message as RdkafkaMessage};
+use rdkafka::{Offset, TopicPartitionList};
+use std::collections::VecDeque;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Mutex;
+
+/// SASL authentication mechanism
+#[derive(Debug, Clone, Default, clap::ValueEnum)]
+pub enum SaslMechanism {
+    #[default]
+    #[clap(name = "SCRAM-SHA-256")]
+    ScramSha256,
+    #[clap(name = "SCRAM-SHA-512")]
+    ScramSha512,
+    #[clap(name = "PLAIN")]
+    Plain,
+}
+
+impl SaslMechanism {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SaslMechanism::ScramSha256 => "SCRAM-SHA-256",
+            SaslMechanism::ScramSha512 => "SCRAM-SHA-512",
+            SaslMechanism::Plain => "PLAIN",
+        }
+    }
+}
+
+/// Kafka security protocol
+#[derive(Debug, Clone, Default, clap::ValueEnum)]
+pub enum SecurityProtocol {
+    #[default]
+    #[clap(name = "SASL_PLAINTEXT")]
+    SaslPlaintext,
+    #[clap(name = "SASL_SSL")]
+    SaslSsl,
+    #[clap(name = "PLAINTEXT")]
+    Plaintext,
+    #[clap(name = "SSL")]
+    Ssl,
+}
+
+impl SecurityProtocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SecurityProtocol::SaslPlaintext => "SASL_PLAINTEXT",
+            SecurityProtocol::SaslSsl => "SASL_SSL",
+            SecurityProtocol::Plaintext => "PLAINTEXT",
+            SecurityProtocol::Ssl => "SSL",
+        }
+    }
+
+    pub fn requires_sasl(&self) -> bool {
+        matches!(
+            self,
+            SecurityProtocol::SaslPlaintext | SecurityProtocol::SaslSsl
+        )
+    }
+
+    pub fn uses_ssl(&self) -> bool {
+        matches!(self, SecurityProtocol::Ssl | SecurityProtocol::SaslSsl)
+    }
+}
+
+/// Configuration for Kafka consumer
+#[derive(Debug, Clone)]
+pub struct ConsumerConfig {
+    /// Kafka brokers (comma-separated list)
+    pub brokers: String,
+    /// Consumer group ID
+    pub group_id: String,
+    /// Topic to consume from
+    ///
+    /// All the messages' payloads must be of the same protobuf message type
+    /// specified by the .proto schema and the message_type field.
+    ///
+    /// In case of multiple topics, use separate consumers for each topic.
+    /// This is because we assume you may want to configure the proto schema file, and the proto message type in the
+    /// proto schema, and the number of consumers in the consumer group, buffer size, and so on,
+    /// per topic.
+    pub topic: String,
+    /// Protobuf message type name
+    ///
+    /// Must match a message defined in the provided .proto schema.
+    pub message_type: String,
+    /// Maximum buffer size for peeked messages
+    ///
+    /// The larger the buffer, the more messages can be peeked without blocking,
+    /// but it also consumes more memory.
+    /// Generally, a larger buffer is better for high-throughput scenarios,
+    /// in exchange for higher memory usage and higher chance of duplicates on failure.
+    pub buffer_size: usize,
+    /// Auto offset reset strategy ("earliest" or "latest")
+    ///
+    /// "earliest" means the consumer will start from the beginning of the topic
+    /// if no committed offsets are found for the consumer group.
+    /// "latest" means the consumer will start from the end of the topic.
+    ///
+    /// Generally, "earliest" is preferred for CDC use cases to avoid missing messages = missing updates.
+    pub auto_offset_reset: String,
+    /// Session timeout in milliseconds
+    pub session_timeout_ms: String,
+    /// Enable auto commit (should be false for manual offset management)
+    ///
+    /// This is false by default, as surreal-sync manages offsets manually to ensure
+    /// atomic processing and committing of batches.
+    pub enable_auto_commit: bool,
+    /// Optional SASL username for broker authentication
+    pub sasl_username: Option<String>,
+    /// Optional SASL password for broker authentication
+    pub sasl_password: Option<String>,
+    /// SASL mechanism (e.g. SCRAM-SHA-256, PLAIN). Required when security_protocol uses SASL.
+    pub sasl_mechanism: Option<SaslMechanism>,
+    /// Security protocol. When None, rdkafka defaults to PLAINTEXT (no auth).
+    pub security_protocol: Option<SecurityProtocol>,
+    /// Path to CA certificate file for broker verification (`ssl.ca.location`)
+    pub ssl_ca_location: Option<String>,
+    /// Path to client certificate file for mTLS (`ssl.certificate.location`)
+    pub ssl_certificate_location: Option<String>,
+    /// Path to client private key file for mTLS (`ssl.key.location`)
+    pub ssl_key_location: Option<String>,
+    /// Password for the client private key (`ssl.key.password`)
+    pub ssl_key_password: Option<String>,
+}
+
+impl Default for ConsumerConfig {
+    fn default() -> Self {
+        Self {
+            brokers: "localhost:9092".to_string(),
+            group_id: "surreal-sync-consumer".to_string(),
+            topic: "".to_string(),
+            message_type: "".to_string(),
+            buffer_size: 100,
+            auto_offset_reset: "earliest".to_string(),
+            session_timeout_ms: "6000".to_string(),
+            enable_auto_commit: false,
+            sasl_username: None,
+            sasl_password: None,
+            sasl_mechanism: None,
+            security_protocol: None,
+            ssl_ca_location: None,
+            ssl_certificate_location: None,
+            ssl_key_location: None,
+            ssl_key_password: None,
+        }
+    }
+}
+
+fn validate_mtls_pairing(config: &ConsumerConfig) -> Result<()> {
+    let has_cert = config.ssl_certificate_location.is_some();
+    let has_key = config.ssl_key_location.is_some();
+    if has_cert != has_key {
+        return Err(Error::Consumer(
+            "ssl_certificate_location and ssl_key_location must both be set for mTLS client authentication"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn ssl_config_entries(config: &ConsumerConfig) -> Vec<(&'static str, &str)> {
+    let mut entries = Vec::new();
+    let Some(protocol) = config.security_protocol.as_ref() else {
+        return entries;
+    };
+    if !protocol.uses_ssl() {
+        return entries;
+    }
+    if let Some(ca) = config.ssl_ca_location.as_deref() {
+        entries.push(("ssl.ca.location", ca));
+    }
+    if let Some(cert) = config.ssl_certificate_location.as_deref() {
+        entries.push(("ssl.certificate.location", cert));
+    }
+    if let Some(key) = config.ssl_key_location.as_deref() {
+        entries.push(("ssl.key.location", key));
+    }
+    if let Some(password) = config.ssl_key_password.as_deref() {
+        entries.push(("ssl.key.password", password));
+    }
+    entries
+}
+
+/// Kafka consumer with peek buffer and manual offset management
+pub struct Consumer {
+    consumer: Arc<RdkafkaStreamConsumer>,
+    decoder: Arc<ProtoDecoder>,
+    config: ConsumerConfig,
+    buffer: Arc<Mutex<VecDeque<Message>>>,
+}
+
+impl Consumer {
+    /// Create a new Kafka consumer
+    pub fn new(config: ConsumerConfig, decoder: ProtoDecoder) -> Result<Self> {
+        if let Some(ref protocol) = config.security_protocol {
+            if protocol.requires_sasl() {
+                if config.sasl_username.is_none() || config.sasl_password.is_none() {
+                    return Err(Error::Consumer(format!(
+                        "Security protocol '{}' requires both sasl_username and sasl_password",
+                        protocol.as_str()
+                    )));
+                }
+                if config.sasl_mechanism.is_none() {
+                    return Err(Error::Consumer(format!(
+                        "Security protocol '{}' requires sasl_mechanism to be set",
+                        protocol.as_str()
+                    )));
+                }
+            }
+        }
+
+        validate_mtls_pairing(&config)?;
+
+        let mut client_config = ClientConfig::new();
+        client_config
+            .set("bootstrap.servers", &config.brokers)
+            .set("group.id", &config.group_id)
+            .set("enable.auto.commit", config.enable_auto_commit.to_string())
+            .set("auto.offset.reset", &config.auto_offset_reset)
+            .set("session.timeout.ms", &config.session_timeout_ms)
+            .set("enable.partition.eof", "false");
+
+        if let Some(ref protocol) = config.security_protocol {
+            client_config.set("security.protocol", protocol.as_str());
+
+            if protocol.requires_sasl() {
+                client_config
+                    .set(
+                        "sasl.mechanism",
+                        config.sasl_mechanism.as_ref().unwrap().as_str(),
+                    )
+                    .set("sasl.username", config.sasl_username.as_deref().unwrap())
+                    .set("sasl.password", config.sasl_password.as_deref().unwrap());
+            }
+        }
+
+        for (key, value) in ssl_config_entries(&config) {
+            client_config.set(key, value);
+        }
+
+        let consumer: RdkafkaStreamConsumer = client_config
+            .create()
+            .map_err(|e| Error::Consumer(format!("Failed to create consumer: {e}")))?;
+
+        consumer
+            .subscribe(&[&config.topic])
+            .map_err(|e| Error::Consumer(format!("Failed to subscribe to topic: {e}")))?;
+
+        Ok(Self {
+            consumer: Arc::new(consumer),
+            decoder: Arc::new(decoder),
+            config,
+            buffer: Arc::new(Mutex::new(VecDeque::new())),
+        })
+    }
+
+    /// Peek at buffered messages without marking them as consumed
+    /// This fetches messages into the buffer up to buffer_size
+    pub async fn peek(&self, count: usize) -> Result<Vec<Message>> {
+        let mut buffer = self.buffer.lock().await;
+
+        // Fill buffer if needed
+        while buffer.len() < count && buffer.len() < self.config.buffer_size {
+            match tokio::time::timeout(Duration::from_millis(100), self.consumer.recv()).await {
+                Ok(Ok(msg)) => {
+                    let kafka_msg = self.decode_message(&msg)?;
+                    buffer.push_back(kafka_msg);
+                }
+                Ok(Err(e)) => return Err(Error::Consumer(format!("Error receiving message: {e}"))),
+                Err(_) => break, // Timeout, no more messages available right now
+            }
+        }
+
+        // Return uncommitted messages
+        Ok(buffer.iter().take(count).cloned().collect::<Vec<_>>())
+    }
+
+    /// Receive multiple messages (blocks until at least one message is available or timeout)
+    ///
+    /// The receive_timeout controls how long to wait for the first message when the buffer
+    /// is empty. This prevents the consumer from blocking indefinitely when no messages
+    /// are available. Default is 1 second.
+    pub async fn receive_batch(&self, max_count: usize) -> Result<Vec<Message>> {
+        self.receive_batch_with_timeout(max_count, Duration::from_secs(1))
+            .await
+    }
+
+    /// Receive multiple messages with a custom timeout for the initial blocking recv.
+    ///
+    /// Returns an empty Vec if no messages are available within the timeout.
+    pub async fn receive_batch_with_timeout(
+        &self,
+        max_count: usize,
+        receive_timeout: Duration,
+    ) -> Result<Vec<Message>> {
+        let mut messages = Vec::new();
+        let mut buffer = self.buffer.lock().await;
+
+        // Drain from buffer first
+        while let Some(buffered) = buffer.pop_front() {
+            messages.push(buffered);
+            if messages.len() >= max_count {
+                return Ok(messages);
+            }
+        }
+
+        drop(buffer); // Release lock before fetching
+
+        // Fetch at least one message with timeout
+        if messages.is_empty() {
+            match tokio::time::timeout(receive_timeout, self.consumer.recv()).await {
+                Ok(Ok(msg)) => messages.push(self.decode_message(&msg)?),
+                Ok(Err(e)) => return Err(Error::Consumer(format!("Error receiving message: {e}"))),
+                Err(_) => {
+                    // Timeout - no messages available, return empty batch
+                    return Ok(messages);
+                }
+            }
+        }
+
+        // Try to fetch more with short timeout
+        while messages.len() < max_count {
+            match tokio::time::timeout(Duration::from_millis(10), self.consumer.recv()).await {
+                Ok(Ok(msg)) => messages.push(self.decode_message(&msg)?),
+                _ => break,
+            }
+        }
+
+        Ok(messages)
+    }
+
+    /// Commit multiple messages' offsets
+    pub async fn commit_batch(&self, messages: &[Message]) -> Result<()> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+
+        let mut tpl = TopicPartitionList::new();
+        for message in messages {
+            tpl.add_partition_offset(
+                &message.topic,
+                message.partition,
+                Offset::Offset(message.offset + 1),
+            )
+            .map_err(|e| Error::Consumer(format!("Failed to add partition offset: {e}")))?;
+        }
+
+        self.consumer
+            .commit(&tpl, rdkafka::consumer::CommitMode::Sync)
+            .map_err(|e| Error::Consumer(format!("Failed to commit offset: {e}")))?;
+
+        // Safe under SourceDriver overlap: incremental sync only uses
+        // `receive_batch`, which drains the peek buffer into the returned
+        // messages (it does not leave in-flight work in the buffer). Clearing
+        // here cannot drop a concurrent peek ahead of an overlapping poll.
+        // If a future path peeks without draining under overlap, do not clear.
+        self.clear_buffer().await;
+
+        Ok(())
+    }
+
+    /// Clear the peek buffer
+    async fn clear_buffer(&self) {
+        let mut buffer = self.buffer.lock().await;
+        buffer.clear();
+    }
+
+    fn decode_message(&self, msg: &RdkafkaBorrowedMessage) -> Result<Message> {
+        let payload = msg
+            .payload()
+            .ok_or_else(|| Error::Consumer("Message has no payload".to_string()))?;
+
+        let decoded = self.decoder.decode(&self.config.message_type, payload)?;
+
+        Ok(Message {
+            payload: Payload::Protobuf(decoded),
+            topic: msg.topic().to_string(),
+            partition: msg.partition(),
+            offset: msg.offset(),
+            key: msg.key().map(|k| k.to_vec()),
+            timestamp: msg.timestamp().to_millis(),
+        })
+    }
+
+    /// Get the underlying consumer (for advanced use cases)
+    pub fn inner(&self) -> &RdkafkaStreamConsumer {
+        &self.consumer
+    }
+}
+
+/// Clone support for spawning multiple consumer tasks
+impl Clone for Consumer {
+    fn clone(&self) -> Self {
+        Self {
+            consumer: Arc::clone(&self.consumer),
+            decoder: Arc::clone(&self.decoder),
+            config: self.config.clone(),
+            buffer: Arc::clone(&self.buffer),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sasl_mechanism_as_str() {
+        assert_eq!(SaslMechanism::ScramSha256.as_str(), "SCRAM-SHA-256");
+        assert_eq!(SaslMechanism::ScramSha512.as_str(), "SCRAM-SHA-512");
+        assert_eq!(SaslMechanism::Plain.as_str(), "PLAIN");
+    }
+
+    #[test]
+    fn security_protocol_as_str() {
+        assert_eq!(SecurityProtocol::SaslPlaintext.as_str(), "SASL_PLAINTEXT");
+        assert_eq!(SecurityProtocol::SaslSsl.as_str(), "SASL_SSL");
+        assert_eq!(SecurityProtocol::Plaintext.as_str(), "PLAINTEXT");
+        assert_eq!(SecurityProtocol::Ssl.as_str(), "SSL");
+    }
+
+    #[test]
+    fn requires_sasl_for_sasl_protocols() {
+        assert!(SecurityProtocol::SaslPlaintext.requires_sasl());
+        assert!(SecurityProtocol::SaslSsl.requires_sasl());
+    }
+
+    #[test]
+    fn requires_sasl_false_for_non_sasl_protocols() {
+        assert!(!SecurityProtocol::Plaintext.requires_sasl());
+        assert!(!SecurityProtocol::Ssl.requires_sasl());
+    }
+
+    #[test]
+    fn uses_ssl_for_ssl_protocols() {
+        assert!(SecurityProtocol::Ssl.uses_ssl());
+        assert!(SecurityProtocol::SaslSsl.uses_ssl());
+    }
+
+    #[test]
+    fn uses_ssl_false_for_non_ssl_protocols() {
+        assert!(!SecurityProtocol::Plaintext.uses_ssl());
+        assert!(!SecurityProtocol::SaslPlaintext.uses_ssl());
+    }
+
+    fn config_with_sasl_protocol(protocol: SecurityProtocol) -> ConsumerConfig {
+        ConsumerConfig {
+            security_protocol: Some(protocol),
+            ..Default::default()
+        }
+    }
+
+    /// Extract the error from a Consumer::new result, panicking if it was Ok.
+    fn expect_err(result: Result<Consumer>) -> Error {
+        match result {
+            Err(e) => e,
+            Ok(_) => panic!("expected Consumer::new to fail, but it succeeded"),
+        }
+    }
+
+    #[test]
+    fn rejects_sasl_protocol_without_credentials() {
+        let config = config_with_sasl_protocol(SecurityProtocol::SaslPlaintext);
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err
+            .to_string()
+            .contains("requires both sasl_username and sasl_password"));
+    }
+
+    #[test]
+    fn rejects_sasl_protocol_with_username_only() {
+        let mut config = config_with_sasl_protocol(SecurityProtocol::SaslSsl);
+        config.sasl_username = Some("user".into());
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err
+            .to_string()
+            .contains("requires both sasl_username and sasl_password"));
+    }
+
+    #[test]
+    fn rejects_sasl_protocol_with_password_only() {
+        let mut config = config_with_sasl_protocol(SecurityProtocol::SaslPlaintext);
+        config.sasl_password = Some("pass".into());
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err
+            .to_string()
+            .contains("requires both sasl_username and sasl_password"));
+    }
+
+    #[test]
+    fn rejects_sasl_protocol_without_mechanism() {
+        let mut config = config_with_sasl_protocol(SecurityProtocol::SaslPlaintext);
+        config.sasl_username = Some("user".into());
+        config.sasl_password = Some("pass".into());
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err
+            .to_string()
+            .contains("requires sasl_mechanism to be set"));
+    }
+
+    #[tokio::test]
+    async fn accepts_non_sasl_protocol_without_credentials() {
+        // PLAINTEXT and SSL should not require any SASL fields.
+        // Consumer::new will fail later when trying to subscribe to an empty topic,
+        // but should NOT fail on SASL validation.
+        for protocol in [SecurityProtocol::Plaintext, SecurityProtocol::Ssl] {
+            let config = config_with_sasl_protocol(protocol);
+            let result = Consumer::new(config, dummy_decoder());
+            if let Err(e) = result {
+                assert!(
+                    !e.to_string().contains("sasl"),
+                    "unexpected SASL error for non-SASL protocol: {e}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn accepts_no_security_protocol() {
+        let config = ConsumerConfig::default();
+        let result = Consumer::new(config, dummy_decoder());
+        if let Err(e) = result {
+            assert!(
+                !e.to_string().contains("sasl"),
+                "unexpected SASL error when no protocol set: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_cert_without_key() {
+        let config = ConsumerConfig {
+            ssl_certificate_location: Some("/path/to/client.pem".into()),
+            ..Default::default()
+        };
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err.to_string().contains("ssl_certificate_location"));
+        assert!(err.to_string().contains("ssl_key_location"));
+    }
+
+    #[test]
+    fn rejects_key_without_cert() {
+        let config = ConsumerConfig {
+            ssl_key_location: Some("/path/to/client.key".into()),
+            ..Default::default()
+        };
+        let err = expect_err(Consumer::new(config, dummy_decoder()));
+        assert!(err.to_string().contains("ssl_certificate_location"));
+        assert!(err.to_string().contains("ssl_key_location"));
+    }
+
+    #[test]
+    fn ssl_config_skipped_for_plaintext_protocols() {
+        for protocol in [SecurityProtocol::Plaintext, SecurityProtocol::SaslPlaintext] {
+            let protocol_for_msg = format!("{protocol:?}");
+            let config = ConsumerConfig {
+                security_protocol: Some(protocol),
+                ssl_ca_location: Some("/ca.pem".into()),
+                ssl_certificate_location: Some("/client.pem".into()),
+                ssl_key_location: Some("/client.key".into()),
+                ssl_key_password: Some("secret".into()),
+                ..Default::default()
+            };
+            assert!(
+                ssl_config_entries(&config).is_empty(),
+                "SSL settings should not apply for {protocol_for_msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn ssl_config_applied_for_ssl_protocols() {
+        let config = ConsumerConfig {
+            security_protocol: Some(SecurityProtocol::SaslSsl),
+            ssl_ca_location: Some("/ca.pem".into()),
+            ssl_certificate_location: Some("/client.pem".into()),
+            ssl_key_location: Some("/client.key".into()),
+            ssl_key_password: Some("secret".into()),
+            ..Default::default()
+        };
+        let entries = ssl_config_entries(&config);
+        assert_eq!(entries.len(), 4);
+        assert!(entries.contains(&("ssl.ca.location", "/ca.pem")));
+        assert!(entries.contains(&("ssl.certificate.location", "/client.pem")));
+        assert!(entries.contains(&("ssl.key.location", "/client.key")));
+        assert!(entries.contains(&("ssl.key.password", "secret")));
+    }
+
+    #[test]
+    fn ssl_config_ca_only_without_mtls() {
+        let config = ConsumerConfig {
+            security_protocol: Some(SecurityProtocol::Ssl),
+            ssl_ca_location: Some("/ca.pem".into()),
+            ..Default::default()
+        };
+        let entries = ssl_config_entries(&config);
+        assert_eq!(entries, vec![("ssl.ca.location", "/ca.pem")]);
+    }
+
+    /// Minimal decoder — validation tests fail before decoding is ever attempted.
+    fn dummy_decoder() -> ProtoDecoder {
+        use crate::types::proto::ProtoSchema;
+        use std::collections::HashMap;
+        ProtoDecoder::new(ProtoSchema {
+            messages: HashMap::new(),
+        })
+    }
+}

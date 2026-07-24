@@ -11,7 +11,7 @@ use loadtest_populate_jsonl::JsonlPopulator;
 use surreal_sync::jsonl::{sync, Config, FileSource};
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use sync_core::Schema;
+use surreal_sync_core::Schema;
 use tempfile::TempDir;
 
 const SEED: u64 = 42;
@@ -103,11 +103,11 @@ async fn test_jsonl_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
 
         match &conn {
             SurrealConnection::V2(client) => {
-                let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+                let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
                 sync(&sink, config).await?;
             }
             SurrealConnection::V3(client) => {
-                let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+                let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
                 sync(&sink, config).await?;
             }
         }

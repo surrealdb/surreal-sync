@@ -1,6 +1,6 @@
 //! PostgreSQL trigger-based full sync Docker Compose service generator.
 //!
-//! Source crate: crates/postgresql-trigger-source/
+//! Source crate: crates/postgresql/ (from_trigger)
 //! SourceChoice: Postgresql
 //! SourceType: PostgreSQL
 //! CLI commands:

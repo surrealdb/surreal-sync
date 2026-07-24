@@ -19,12 +19,12 @@ pub enum SurrealConnection {
 /// Auto-detect SurrealDB version from endpoint
 pub async fn detect_version(
     endpoint: &str,
-) -> Result<surreal_version::SurrealMajorVersion, Box<dyn std::error::Error>> {
+) -> Result<surreal_sync_surreal::version::SurrealMajorVersion, Box<dyn std::error::Error>> {
     // Convert ws:// to http:// for version detection
     let http_endpoint = endpoint
         .replace("ws://", "http://")
         .replace("wss://", "https://");
-    surreal_version::detect_server_version(&http_endpoint)
+    surreal_sync_surreal::version::detect_server_version(&http_endpoint)
         .await
         .map_err(|e| e.into())
 }
@@ -34,7 +34,7 @@ pub async fn connect_auto(
     config: &TestConfig,
 ) -> Result<SurrealConnection, Box<dyn std::error::Error>> {
     match detect_version(&config.surreal_endpoint).await {
-        Ok(surreal_version::SurrealMajorVersion::V2) => {
+        Ok(surreal_sync_surreal::version::SurrealMajorVersion::V2) => {
             tracing::info!(
                 "Auto-detected SurrealDB v2 at {}, using v2 SDK",
                 config.surreal_endpoint
@@ -42,7 +42,7 @@ pub async fn connect_auto(
             let client = crate::testing::test_helpers::connect_surrealdb(config).await?;
             Ok(SurrealConnection::V2(client))
         }
-        Ok(surreal_version::SurrealMajorVersion::V3) => {
+        Ok(surreal_sync_surreal::version::SurrealMajorVersion::V3) => {
             tracing::info!(
                 "Auto-detected SurrealDB v3 at {}, using v3 SDK",
                 config.surreal_endpoint

@@ -7,7 +7,7 @@
 //!
 //! ```ignore
 //! use loadtest_jsonl::JsonlPopulator;
-//! use sync_core::Schema;
+//! use surreal_sync_core::Schema;
 //!
 //! let schema = Schema::from_file("schema.yaml")?;
 //! let mut populator = JsonlPopulator::new(schema, 42);

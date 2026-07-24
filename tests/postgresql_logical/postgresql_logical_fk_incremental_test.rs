@@ -73,7 +73,7 @@ async fn test_wal2json_fk_incremental_only() -> Result<(), Box<dyn std::error::E
         "book_tags".to_string(),
     ];
 
-    let source_opts = surreal_sync_postgresql_wal2json_source::SourceOpts {
+    let source_opts = surreal_sync_postgresql::from_wal2json::SourceOpts {
         connection_string: test_conn_str.clone(),
         slot_name: slot_name.clone(),
         tables: table_names.clone(),
@@ -86,14 +86,15 @@ async fn test_wal2json_fk_incremental_only() -> Result<(), Box<dyn std::error::E
         dry_run: false,
     };
 
-    let checkpoint_store = checkpoint::FilesystemStore::new(&checkpoint_dir);
-    let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
+    let checkpoint_store =
+        surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(&checkpoint_dir);
+    let sync_manager = surreal_sync_core::SyncManager::new(checkpoint_store);
 
     // --- Step 1: Run full sync on EMPTY tables (creates replication slot + checkpoint) ---
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_postgresql_wal2json_source::run_full_sync(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_postgresql::from_wal2json::run_full_sync(
                 &sink,
                 source_opts.clone(),
                 sync_opts.clone(),
@@ -102,8 +103,8 @@ async fn test_wal2json_fk_incremental_only() -> Result<(), Box<dyn std::error::E
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_postgresql_wal2json_source::run_full_sync(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_postgresql::from_wal2json::run_full_sync(
                 &sink,
                 source_opts.clone(),
                 sync_opts.clone(),
@@ -128,18 +129,20 @@ async fn test_wal2json_fk_incremental_only() -> Result<(), Box<dyn std::error::E
         .await?;
 
     // --- Step 3: Read checkpoint and run incremental sync ---
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
-            .await?;
-    let sync_checkpoint: surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint =
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        surreal_sync_core::SyncPhase::FullSyncStart,
+    )
+    .await?;
+    let sync_checkpoint: surreal_sync_postgresql::from_wal2json::PostgreSQLLogicalCheckpoint =
         checkpoint_file.parse()?;
 
     let deadline = chrono::Utc::now() + chrono::Duration::seconds(30);
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_postgresql_wal2json_source::run_incremental_sync(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_postgresql::from_wal2json::run_incremental_sync(
                 &sink,
                 source_opts.clone(),
                 sync_checkpoint.clone(),
@@ -151,8 +154,8 @@ async fn test_wal2json_fk_incremental_only() -> Result<(), Box<dyn std::error::E
             verify_fk_incremental_v2(client).await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_postgresql_wal2json_source::run_incremental_sync(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_postgresql::from_wal2json::run_incremental_sync(
                 &sink,
                 source_opts.clone(),
                 sync_checkpoint.clone(),
