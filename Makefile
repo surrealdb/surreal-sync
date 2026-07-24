@@ -1,4 +1,4 @@
-.PHONY: test check fmt clippy build build-debug clean clean-logs help install-tools install-hooks system-deps prebuild-test-images prepull-binlog-images print-test-images services-info
+.PHONY: test check fmt clippy build build-debug compile-embedder-examples clean clean-logs help install-tools install-hooks system-deps prebuild-test-images prepull-binlog-images print-test-images services-info
 
 include scripts/test-images.mk
 
@@ -6,6 +6,14 @@ include scripts/test-images.mk
 # We deliberately use the debug binary (not release) so the test path doesn't
 # trigger a second, full release compile of the dependency tree.
 SURREAL_SYNC_BIN := $(CURDIR)/target/debug/surreal-sync
+
+# Optional cargo profile for compile-embedder-examples (CI sets CARGO_PROFILE=ci).
+CARGO_PROFILE ?=
+ifneq ($(CARGO_PROFILE),)
+COMPILE_EMBEDDER_PROFILE_ARGS := --profile $(CARGO_PROFILE)
+else
+COMPILE_EMBEDDER_PROFILE_ARGS :=
+endif
 
 # macOS: help cargo's C build scripts (rdkafka, openssl-sys, ...) find Homebrew
 # OpenSSL, since the system has no pkg-config-discoverable OpenSSL by default.
@@ -26,9 +34,10 @@ help:
 	@echo "Surreal-Sync Development Targets:"
 	@echo ""
 	@echo "Quality Assurance:"
-	@echo "  test          - Build (debug) + run all checks and tests via cargo-nextest"
+	@echo "  test          - Build (debug) + compile embedder examples + run all checks and tests via cargo-nextest"
 	@echo "  clippy        - Run the clippy linter"
 	@echo "  fmt           - Format code"
+	@echo "  compile-embedder-examples - Compile examples/from-* embedder packages"
 	@echo ""
 	@echo "Development:"
 	@echo "  build         - Build the release binary"
@@ -96,6 +105,13 @@ build-debug:
 	cargo build
 	@echo "✅ Debug build complete"
 
+# Compile embedder example packages (examples/from-*). Same gate as the CI
+# "Compile embedder examples" step. CI passes CARGO_PROFILE=ci.
+compile-embedder-examples:
+	@echo "🔨 Compiling embedder examples..."
+	./scripts/compile-embedder-examples.sh $(COMPILE_EMBEDDER_PROFILE_ARGS)
+	@echo "✅ Embedder examples compiled"
+
 # Pre-pull binlog images and pre-build the custom PostgreSQL (wal2json) test image
 # so parallel test processes find them in Docker's layer cache instead of racing.
 prebuild-test-images: prepull-binlog-images
@@ -105,11 +121,12 @@ prebuild-test-images: prepull-binlog-images
 		crates/postgresql
 	@echo "✅ Test images ready"
 
-# Run fmt, clippy, build the debug binary, then the full test suite via nextest.
-# Integration tests spin up their own Docker containers, so a Docker daemon must
-# be running. nextest runs tests in parallel across the whole workspace; doctests
-# are run separately because nextest does not execute them.
-test: fmt clippy build-debug prebuild-test-images
+# Run fmt, clippy, build the debug binary, compile embedder examples, then the
+# full test suite via nextest. Integration tests spin up their own Docker
+# containers, so a Docker daemon must be running. nextest runs tests in parallel
+# across the whole workspace; doctests are run separately because nextest does
+# not execute them.
+test: fmt clippy build-debug compile-embedder-examples prebuild-test-images
 	@echo "Running unit + integration tests (cargo-nextest)..."
 	SURREAL_SYNC_BIN=$(SURREAL_SYNC_BIN) cargo nextest run --workspace --all-features
 	@echo "Running documentation tests..."

@@ -61,9 +61,7 @@ jobs:
         cache: true
 
     - name: Compile embedder examples
-      run: |
-        cargo build --profile ci -p surreal-sync-example-from-mysql-binlog
-        cargo build --profile ci -p surreal-sync-example-from-snowflake
+      run: make compile-embedder-examples CARGO_PROFILE=ci
 
     - name: Embed dependency tree gates
       run: |
