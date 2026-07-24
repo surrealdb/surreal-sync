@@ -1,7 +1,7 @@
 //! Field comparison logic.
 
+use surreal_sync_core::{GeometryData, Value};
 use surrealdb2::sql::Value as SurrealValue;
-use sync_core::{GeometryData, Value};
 
 /// Result of comparing two values.
 #[derive(Debug, Clone, PartialEq)]
@@ -582,7 +582,7 @@ mod tests {
 
         let expected = Value::Array {
             elements: vec![Value::Int32(1), Value::Int32(2), Value::Int32(3)],
-            element_type: Box::new(sync_core::Type::Int32),
+            element_type: Box::new(surreal_sync_core::Type::Int32),
         };
         let actual = SurrealValue::Array(Array::from(vec![
             SurrealValue::Number(Number::Int(1)),
@@ -598,7 +598,7 @@ mod tests {
 
         let expected = Value::Array {
             elements: vec![Value::Int32(1), Value::Int32(2)],
-            element_type: Box::new(sync_core::Type::Int32),
+            element_type: Box::new(surreal_sync_core::Type::Int32),
         };
         let actual = SurrealValue::Array(Array::from(vec![
             SurrealValue::Number(Number::Int(1)),
@@ -684,8 +684,8 @@ mod tests {
 
     #[test]
     fn test_compare_geometry_geojson() {
+        use surreal_sync_core::GeometryType;
         use surrealdb2::sql::Object;
-        use sync_core::GeometryType;
 
         let geojson = serde_json::json!({
             "type": "Point",

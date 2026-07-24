@@ -1,16 +1,17 @@
 [package]
 name = "loadtest-populate-kafka"
-version = "0.1.0"
+version = "0.6.0"
 edition = "2021"
+publish = false
 description = "Kafka populator for load testing surreal-sync"
 license = "MIT"
 
 [dependencies]
-sync-core = { path = "../sync-core" }
+surreal-sync-core = { path = "../sync-core" }
 loadtest-generator = { path = "../loadtest-generator" }
 loadtest-populate = { path = "../loadtest-populate" }
 loadtest-distributed = { path = "../loadtest-distributed" }
-kafka-types = { path = "../kafka-types" }
+surreal-sync-kafka = { path = "../kafka", default-features = false, features = ["types"] }
 
 clap = { version = "4.5", features = ["derive", "env"] }
 tokio = { version = "1.49", features = ["full"] }

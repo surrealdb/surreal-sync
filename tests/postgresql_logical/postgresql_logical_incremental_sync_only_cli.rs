@@ -94,11 +94,13 @@ async fn test_postgresql_logical_incremental_sync_cli() -> Result<(), Box<dyn st
     surreal_sync::testing::postgresql::insert_rows(&pg_client, &dataset).await?;
 
     // Read the t1 (FullSyncStart) checkpoint from the file
-    use checkpoint::{Checkpoint, SyncPhase};
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(".test-logical-checkpoints", SyncPhase::FullSyncStart)
-            .await?;
-    let pg_checkpoint: surreal_sync_postgresql_wal2json_source::PostgreSQLLogicalCheckpoint =
+    use surreal_sync_core::{Checkpoint, SyncPhase};
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        ".test-logical-checkpoints",
+        SyncPhase::FullSyncStart,
+    )
+    .await?;
+    let pg_checkpoint: surreal_sync_postgresql::from_wal2json::PostgreSQLLogicalCheckpoint =
         checkpoint_file.parse()?;
     let checkpoint_string = pg_checkpoint.to_cli_string();
 

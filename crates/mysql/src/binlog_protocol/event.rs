@@ -1,0 +1,193 @@
+use crate::binlog_protocol::error::Error;
+use crate::binlog_protocol::flavor::Flavor;
+use crate::binlog_protocol::shared::event_header::EventHeader;
+use crate::binlog_protocol::shared::event_type::EventType;
+use crate::binlog_protocol::shared::events::rows::RowsEvent;
+use crate::binlog_protocol::shared::events::{
+    rows_event_six_byte_table_id, table_id_from_post_header, FormatDescriptionEvent,
+    HeartbeatEvent, QueryEvent, RotateEvent, TableMapEvent, XidEvent, ROWS_HEADER_LEN_V2,
+};
+use crate::binlog_protocol::types::GtidMarker;
+
+fn rows_event_v2_var_header(raw_type_code: u8) -> bool {
+    matches!(raw_type_code, 30..=32 | 39)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct RawEvent {
+    pub header: EventHeader,
+    pub body: EventBody,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum EventBody {
+    FormatDescription(FormatDescriptionEvent),
+    Rotate(RotateEvent),
+    TableMap(TableMapEvent),
+    Rows(RowsEvent),
+    Xid(XidEvent),
+    Query(QueryEvent),
+    Heartbeat(HeartbeatEvent),
+    Gtid(GtidMarker),
+    TransactionPayload(Vec<RawEvent>),
+    Ignored,
+}
+
+pub struct EventParser {
+    flavor: Flavor,
+    checksum: bool,
+    /// Set when checksums are negotiated out-of-band via `SET
+    /// @master_binlog_checksum` (see [`enable_checksum`]). A live
+    /// COM_BINLOG_DUMP stream carries a per-event CRC32 whenever this session
+    /// variable is set, even though the FORMAT_DESCRIPTION event's declared
+    /// `checksum_alg` describes the *on-disk* binlog and is frequently 0. When
+    /// forced, the FDE must not downgrade `checksum` to false, otherwise the
+    /// trailing CRC would leak into event bodies.
+    checksum_forced: bool,
+    post_header_lengths: Vec<u8>,
+    table_maps: std::collections::HashMap<u64, TableMapEvent>,
+}
+
+impl EventParser {
+    pub fn new(flavor: Flavor) -> Self {
+        Self {
+            flavor,
+            checksum: false,
+            checksum_forced: false,
+            post_header_lengths: Vec::new(),
+            table_maps: std::collections::HashMap::new(),
+        }
+    }
+
+    pub fn enable_checksum(&mut self) {
+        self.checksum = true;
+        self.checksum_forced = true;
+    }
+
+    pub fn checksum_enabled(&self) -> bool {
+        self.checksum
+    }
+
+    pub fn parse(&mut self, header: EventHeader, body: &[u8]) -> Result<RawEvent, Error> {
+        let event_type = header.event_type.for_flavor(self.flavor);
+        let parsed_body = match event_type {
+            EventType::FormatDescription => {
+                let fde = FormatDescriptionEvent::parse(body)?;
+                // A manually-negotiated stream checksum (SET @master_binlog_checksum)
+                // must not be downgraded by the FDE's on-disk checksum_alg (often 0).
+                self.checksum = self.checksum_forced || fde.checksum_alg != 0;
+                self.post_header_lengths = fde.post_header_lengths.clone();
+                EventBody::FormatDescription(fde)
+            }
+            EventType::Rotate => EventBody::Rotate(RotateEvent::parse(body)?),
+            EventType::TableMap => {
+                let post_header_len = self.post_header_len(header.raw_type_code);
+                let tm = TableMapEvent::parse(body, post_header_len, self.flavor)?;
+                self.table_maps.insert(tm.table_id, tm.clone());
+                EventBody::TableMap(tm)
+            }
+            EventType::WriteRows => {
+                let post_header_len = self.post_header_len(header.raw_type_code);
+                let tm = self.table_map_for_body(body, header.raw_type_code)?;
+                EventBody::Rows(RowsEvent::parse_write(
+                    body,
+                    &tm.columns,
+                    self.flavor,
+                    rows_event_six_byte_table_id(header.raw_type_code, self.flavor),
+                    rows_event_v2_var_header(header.raw_type_code),
+                    post_header_len,
+                )?)
+            }
+            EventType::UpdateRows => {
+                let post_header_len = self.post_header_len(header.raw_type_code);
+                let tm = self.table_map_for_body(body, header.raw_type_code)?;
+                EventBody::Rows(RowsEvent::parse_update(
+                    body,
+                    &tm.columns,
+                    self.flavor,
+                    rows_event_six_byte_table_id(header.raw_type_code, self.flavor),
+                    rows_event_v2_var_header(header.raw_type_code),
+                    post_header_len,
+                )?)
+            }
+            EventType::DeleteRows => {
+                let post_header_len = self.post_header_len(header.raw_type_code);
+                let tm = self.table_map_for_body(body, header.raw_type_code)?;
+                EventBody::Rows(RowsEvent::parse_delete(
+                    body,
+                    &tm.columns,
+                    self.flavor,
+                    rows_event_six_byte_table_id(header.raw_type_code, self.flavor),
+                    rows_event_v2_var_header(header.raw_type_code),
+                    post_header_len,
+                )?)
+            }
+            EventType::Xid => EventBody::Xid(XidEvent::parse(body)?),
+            EventType::Query => EventBody::Query(QueryEvent::parse(body)?),
+            EventType::Heartbeat => EventBody::Heartbeat(HeartbeatEvent::parse(body)?),
+            EventType::MySqlGtid => EventBody::Gtid(
+                crate::binlog_protocol::flavor::mysql::gtid_event::parse(body)?,
+            ),
+            EventType::MariaDbGtid => EventBody::Gtid(
+                crate::binlog_protocol::flavor::mariadb::gtid_event::parse(body, header.server_id)?,
+            ),
+            EventType::TransactionPayload => {
+                let inner = crate::binlog_protocol::flavor::mysql::txn_payload::unwrap(body, self)?;
+                EventBody::TransactionPayload(inner)
+            }
+            EventType::StartEncryption => return Err(Error::EncryptedBinlog),
+            EventType::PartialUpdateRows => {
+                let post_header_len = self.post_header_len(header.raw_type_code);
+                let tm = self.table_map_for_body(body, header.raw_type_code)?;
+                EventBody::Rows(RowsEvent::parse_partial_update(
+                    body,
+                    &tm.columns,
+                    self.flavor,
+                    rows_event_six_byte_table_id(header.raw_type_code, self.flavor),
+                    rows_event_v2_var_header(header.raw_type_code),
+                    post_header_len,
+                )?)
+            }
+            EventType::GtidList
+            | EventType::AnonymousGtid
+            | EventType::PreviousGtids
+            | EventType::AnnotateRows
+            | EventType::BinlogCheckpoint
+            | EventType::Unknown(_) => EventBody::Ignored,
+        };
+
+        Ok(RawEvent {
+            header: EventHeader {
+                event_type,
+                ..header
+            },
+            body: parsed_body,
+        })
+    }
+
+    fn post_header_len(&self, raw_type_code: u8) -> usize {
+        let idx = raw_type_code as usize;
+        if idx != 0 && self.post_header_lengths.len() >= idx {
+            return self.post_header_lengths[idx - 1] as usize;
+        }
+        match raw_type_code {
+            30..=32 | 39 => ROWS_HEADER_LEN_V2,
+            23..=25 => 6,
+            19 => 8,
+            _ => 8,
+        }
+    }
+
+    fn table_map_for_body(&self, body: &[u8], raw_type_code: u8) -> Result<TableMapEvent, Error> {
+        let table_id = table_id_from_post_header(
+            body,
+            self.post_header_len(raw_type_code),
+            self.flavor,
+            raw_type_code,
+        )?;
+        self.table_maps
+            .get(&table_id)
+            .cloned()
+            .ok_or_else(|| Error::Protocol(format!("missing table map for table_id {table_id}")))
+    }
+}

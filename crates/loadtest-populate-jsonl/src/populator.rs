@@ -1,13 +1,13 @@
 //! JSONL populator for load testing.
 
 use crate::error::JsonlPopulatorError;
-use json_types::JsonValue;
 use loadtest_generator::DataGenerator;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use sync_core::{GeneratorTableDefinition, Row, Schema, TypedValue};
+use surreal_sync_core::{GeneratorTableDefinition, Row, Schema, TypedValue};
+use surreal_sync_json::types::JsonValue;
 use tracing::{debug, info};
 
 /// Default buffer size for JSONL writing.
@@ -303,7 +303,7 @@ fn internal_row_to_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::Value;
+    use surreal_sync_core::Value;
     use tempfile::TempDir;
 
     fn test_schema() -> Schema {

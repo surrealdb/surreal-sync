@@ -8,7 +8,7 @@ use crate::testing::surreal::{
     assert_synced_auto, cleanup_surrealdb_auto, connect_auto, SurrealConnection,
 };
 use crate::testing::{create_unified_full_dataset, SourceDatabase, TestConfig};
-use surreal_sync_mysql_binlog_source::{
+use surreal_sync_mysql::from_binlog::{
     BinlogCheckpoint, ReplicationTailOptions, SourceOpts, SyncOpts,
 };
 
@@ -50,9 +50,9 @@ pub async fn run_binlog_full_sync_e2e(
         tables: vec![],
         server_id: None,
         flavor: None,
-        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        ssl: surreal_sync_mysql::from_binlog::SslMode::Disabled,
         mariadb_gtid_strict_mode:
-            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+            surreal_sync_mysql::from_binlog::MariaDbGtidStrictMode::ServerDefault,
     };
 
     let sync_opts = SyncOpts {
@@ -62,8 +62,8 @@ pub async fn run_binlog_full_sync_e2e(
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_mysql_binlog_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_mysql::from_binlog::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -72,8 +72,8 @@ pub async fn run_binlog_full_sync_e2e(
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_mysql_binlog_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_mysql::from_binlog::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -156,9 +156,9 @@ async fn run_binlog_incremental_e2e_inner(
         tables: vec![],
         server_id: None,
         flavor: None,
-        ssl: surreal_sync_mysql_binlog_source::SslMode::Disabled,
+        ssl: surreal_sync_mysql::from_binlog::SslMode::Disabled,
         mariadb_gtid_strict_mode:
-            surreal_sync_mysql_binlog_source::MariaDbGtidStrictMode::ServerDefault,
+            surreal_sync_mysql::from_binlog::MariaDbGtidStrictMode::ServerDefault,
     };
 
     let sync_opts = SyncOpts {
@@ -166,13 +166,14 @@ async fn run_binlog_incremental_e2e_inner(
         dry_run: false,
     };
 
-    let checkpoint_store = checkpoint::FilesystemStore::new(&checkpoint_dir);
-    let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
+    let checkpoint_store =
+        surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(&checkpoint_dir);
+    let sync_manager = surreal_sync_core::SyncManager::new(checkpoint_store);
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_mysql_binlog_source::run_full_sync(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_mysql::from_binlog::run_full_sync(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -181,8 +182,8 @@ async fn run_binlog_incremental_e2e_inner(
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_mysql_binlog_source::run_full_sync(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_mysql::from_binlog::run_full_sync(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -196,17 +197,19 @@ async fn run_binlog_incremental_e2e_inner(
 
     crate::testing::mysql::insert_rows(&mut mysql_conn, &dataset).await?;
 
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
-            .await?;
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        surreal_sync_core::SyncPhase::FullSyncStart,
+    )
+    .await?;
     let sync_checkpoint: BinlogCheckpoint = checkpoint_file.parse()?;
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_mysql_binlog_source::run_replication_tail_with_checkpoints::<
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_mysql::from_binlog::run_replication_tail_with_checkpoints::<
                 _,
-                checkpoint::NullStore,
+                surreal_sync_core::NullStore,
             >(
                 &sink,
                 source_opts,
@@ -220,10 +223,10 @@ async fn run_binlog_incremental_e2e_inner(
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_mysql_binlog_source::run_replication_tail_with_checkpoints::<
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_mysql::from_binlog::run_replication_tail_with_checkpoints::<
                 _,
-                checkpoint::NullStore,
+                surreal_sync_core::NullStore,
             >(
                 &sink,
                 source_opts,

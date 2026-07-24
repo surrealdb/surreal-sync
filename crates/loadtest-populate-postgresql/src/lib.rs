@@ -7,7 +7,7 @@
 //!
 //! ```ignore
 //! use loadtest_postgresql::PostgreSQLPopulator;
-//! use sync_core::Schema;
+//! use surreal_sync_core::Schema;
 //!
 //! let schema = Schema::from_yaml("path/to/schema.yaml")?;
 //! let mut populator = PostgreSQLPopulator::new(

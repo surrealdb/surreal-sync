@@ -6,14 +6,14 @@ use std::sync::Mutex;
 
 use anyhow::Result;
 use neo4rs::Query;
-use surreal_sink::SurrealSink;
+use surreal_sync_core::SurrealSink;
+use surreal_sync_core::{Change, Relation, RelationChange, Row, Value};
 use surreal_sync_neo4j_source::testing::container::Neo4jContainer;
 use surreal_sync_neo4j_source::{
     run_full_sync_with_transforms, run_incremental_sync_with_transforms, Neo4jCheckpoint,
     ReplicationTailOptions, SourceOpts, SyncOpts,
 };
-use sync_core::{Change, Relation, RelationChange, Row, Value};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
+use surreal_sync_runtime::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 
 struct CaptureSink {
     changes: Mutex<Vec<Change>>,
@@ -119,7 +119,9 @@ fn ensure_fixture_worker() -> PathBuf {
             .args([
                 "build",
                 "-p",
-                "sync-transform",
+                "surreal-sync-runtime",
+                "--features",
+                "test-support",
                 "--bin",
                 "sync-transform-fixture-worker",
             ])
@@ -448,7 +450,7 @@ async fn external_mutate_full_sync_rows_and_relations() -> Result<()> {
         batch_size: 100,
         dry_run: false,
     };
-    run_full_sync_with_transforms::<_, checkpoint::NullStore>(
+    run_full_sync_with_transforms::<_, surreal_sync_core::NullStore>(
         &sink,
         opts,
         sync_opts,

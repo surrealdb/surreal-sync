@@ -1,7 +1,7 @@
 # Wiring sources into the shared apply path
 
 Implementer checklist for wiring each `from *` sync path through
-`sync-transform` (`SourceDriver` / `run_source_runtime` / `write_rows` /
+`surreal-sync-runtime` (`SourceDriver` / `run_source_runtime` / `write_rows` /
 `write_relations`) and the shared CLI helper in [`src/from/transforms.rs`](../src/from/transforms.rs).
 
 Operator-facing sync pipeline docs (including optional transforms) stay in [sync-pipeline.md](sync-pipeline.md).
@@ -23,7 +23,7 @@ but `ApplyOpts` differ (buffering cadence):
 
 Fail-fast on bad TOML / missing or unresolvable worker before sync starts
 (CLI loader wraps with `load --transforms-config` context; deeper worker
-spawn coverage is in `sync-transform` config tests).
+spawn coverage is in `surreal-sync-runtime` pipeline config tests).
 
 ## Per-source status
 

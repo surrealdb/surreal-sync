@@ -7,13 +7,13 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
-use surreal_sink::SurrealSink;
 use surreal_sync::testing::generate_test_id;
-use surreal_sync_kafka_producer::container::KafkaContainer;
-use surreal_sync_kafka_producer::{publish_test_users, KafkaTestProducer};
-use surreal_sync_kafka_source::Config as KafkaConfig;
-use sync_core::{Change, Relation, Row, Value};
-use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
+use surreal_sync_core::SurrealSink;
+use surreal_sync_core::{Change, Relation, Row, Value};
+use surreal_sync_kafka::from_kafka::Config as KafkaConfig;
+use surreal_sync_kafka::producer::container::KafkaContainer;
+use surreal_sync_kafka::producer::{publish_test_users, KafkaTestProducer};
+use surreal_sync_runtime::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 use tokio::time::sleep;
 
 struct CaptureSink {
@@ -55,7 +55,7 @@ impl SurrealSink for CaptureSink {
 
     async fn apply_relation_change(
         &self,
-        _change: &sync_core::RelationChange,
+        _change: &surreal_sync_core::RelationChange,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -74,7 +74,9 @@ fn ensure_fixture_worker() -> PathBuf {
             .args([
                 "build",
                 "-p",
-                "sync-transform",
+                "surreal-sync-runtime",
+                "--features",
+                "test-support",
                 "--bin",
                 "sync-transform-fixture-worker",
             ])
@@ -99,7 +101,7 @@ fn change_name(change: &Change) -> Option<String> {
 async fn kafka_external_mutate_rewrites_name_through_source_driver(
 ) -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
-        .with_env_filter("surreal_sync_kafka_source=info")
+        .with_env_filter("surreal_sync_kafka=info")
         .try_init()
         .ok();
 
@@ -123,7 +125,7 @@ async fn kafka_external_mutate_rewrites_name_through_source_driver(
     let user_proto_path = proto_dir.path().join("user.proto");
     std::fs::write(
         &user_proto_path,
-        include_str!("../../crates/kafka-producer/proto/user.proto"),
+        include_str!("../../crates/kafka/proto/user.proto"),
     )?;
 
     let config = KafkaConfig {
@@ -166,7 +168,7 @@ async fn kafka_external_mutate_rewrites_name_through_source_driver(
 
     let sink = Arc::new(CaptureSink::new());
     let deadline = Utc::now() + chrono::Duration::seconds(20);
-    surreal_sync_kafka_source::run_incremental_sync_with_transforms(
+    surreal_sync_kafka::from_kafka::run_incremental_sync_with_transforms(
         sink.clone(),
         config,
         deadline,

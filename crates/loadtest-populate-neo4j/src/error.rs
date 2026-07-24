@@ -30,8 +30,8 @@ pub enum Neo4jPopulatorError {
     Connection(String),
 }
 
-impl From<sync_core::SchemaError> for Neo4jPopulatorError {
-    fn from(err: sync_core::SchemaError) -> Self {
+impl From<surreal_sync_core::SchemaError> for Neo4jPopulatorError {
+    fn from(err: surreal_sync_core::SchemaError) -> Self {
         Neo4jPopulatorError::Schema(err.to_string())
     }
 }

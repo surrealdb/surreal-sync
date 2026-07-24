@@ -7,7 +7,7 @@
 //! and never silently falls back to default values.
 
 use crate::error::{Neo4jTypesError, Result};
-use sync_core::{Type, TypedValue, Value};
+use surreal_sync_core::{Type, TypedValue, Value};
 
 /// Convert a TypedValue to a Neo4j Cypher literal string.
 ///
@@ -21,7 +21,7 @@ use sync_core::{Type, TypedValue, Value};
 ///
 /// ```ignore
 /// use neo4j_types::forward::typed_to_cypher_literal;
-/// use sync_core::TypedValue;
+/// use surreal_sync_core::TypedValue;
 ///
 /// let tv = TypedValue::int(42);
 /// assert_eq!(typed_to_cypher_literal(&tv)?, "42");
@@ -154,7 +154,7 @@ pub fn universal_to_cypher_literal(value: &Value, parent_type: Option<&Type>) ->
 
         // Geometry type - store as GeoJSON string
         Value::Geometry { data, .. } => {
-            use sync_core::GeometryData;
+            use surreal_sync_core::GeometryData;
             let GeometryData(json) = data;
             let json_str =
                 serde_json::to_string(&json).map_err(|e| Neo4jTypesError::JsonParseError {
@@ -253,7 +253,7 @@ pub fn escape_neo4j_string(s: &str) -> String {
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
-    use sync_core::GeometryType;
+    use surreal_sync_core::GeometryType;
 
     #[test]
     fn test_null_conversion() {

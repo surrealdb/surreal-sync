@@ -1,1 +1,1 @@
-pub use surreal_version::testing::SurrealDbContainer;
+pub use surreal_sync_surreal::version::testing::SurrealDbContainer;

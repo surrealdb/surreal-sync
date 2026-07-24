@@ -1,6 +1,6 @@
 //! PostgreSQL trigger-based incremental sync Docker Compose service generators.
 //!
-//! Source crate: crates/postgresql-trigger-source/
+//! Source crate: crates/postgresql/ (from_trigger)
 //! SourceChoice: PostgresqlTriggerIncremental
 //! SourceType: PostgreSQLTriggerIncremental
 //! CLI commands:

@@ -1,6 +1,6 @@
 //! MySQL full sync Docker Compose service generator.
 //!
-//! Source crate: crates/mysql-trigger-source/
+//! Source crate: crates/mysql/ (from_trigger)
 //! SourceChoice: Mysql
 //! SourceType: MySQL
 //! CLI commands:

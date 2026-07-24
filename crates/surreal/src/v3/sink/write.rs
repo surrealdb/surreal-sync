@@ -1,0 +1,502 @@
+use super::Mutation;
+use crate::v3::types::{RecordWithSurrealValues as Record, Relation, SurrealValue};
+use std::collections::HashMap;
+use std::time::Duration;
+use surreal_sync_core::{Change, ChangeOp, RelationChange, ZeroTemporalPolicy};
+use surrealdb3::types::{Number, RecordId, RecordIdKey, Value};
+use surrealdb3::Surreal;
+use tokio::time::sleep;
+
+use super::rows::{relation_to_surreal_relation, value_to_surreal_id};
+
+/// Convert a `RecordIdKey` to a `Value` suitable for parameter binding.
+///
+/// SurrealDB v3 rejects `RecordId`-typed parameters in RELATE/DELETE positions,
+/// so we decompose the record ID and use `type::record($tb, $key)` server-side.
+fn record_id_key_to_value(key: &RecordIdKey) -> Value {
+    match key {
+        RecordIdKey::String(s) => Value::String(s.clone()),
+        RecordIdKey::Number(n) => Value::Number(Number::Int(*n)),
+        RecordIdKey::Uuid(u) => Value::Uuid(*u),
+        other => Value::String(format!("{other:?}")),
+    }
+}
+
+/// Replace `Value::RecordId` with `Value::String("table:key")` recursively.
+///
+/// SurrealDB v3 rejects RecordId-typed values inside bound Object parameters.
+/// Converting to strings preserves the reference for downstream verification.
+fn sanitize_value(value: Value) -> Value {
+    match value {
+        Value::RecordId(rid) => {
+            let key_str = match &rid.key {
+                RecordIdKey::String(s) => s.clone(),
+                RecordIdKey::Number(n) => n.to_string(),
+                RecordIdKey::Uuid(u) => {
+                    let inner: uuid::Uuid = (*u).into();
+                    inner.to_string()
+                }
+                other => format!("{other:?}"),
+            };
+            Value::String(format!("{}:{}", rid.table, key_str))
+        }
+        Value::Object(obj) => {
+            let sanitized: std::collections::BTreeMap<String, Value> = obj
+                .into_inner()
+                .into_iter()
+                .map(|(k, v)| (k, sanitize_value(v)))
+                .collect();
+            Value::Object(surrealdb3::types::Object::from(sanitized))
+        }
+        Value::Array(arr) => {
+            let sanitized: Vec<Value> = arr.into_inner().into_iter().map(sanitize_value).collect();
+            Value::Array(surrealdb3::types::Array::from(sanitized))
+        }
+        other => other,
+    }
+}
+
+/// Maximum number of retries for retriable transaction errors
+const MAX_RETRIES: u32 = 5;
+/// Base delay between retries (will be multiplied by retry attempt for backoff)
+const RETRY_BASE_DELAY_MS: u64 = 100;
+
+/// Check if an error is a retriable transaction conflict
+fn is_retriable_transaction_error(error: &surrealdb3::Error) -> bool {
+    let error_str = error.to_string();
+    error_str.contains("This transaction can be retried")
+        || error_str.contains("Failed to commit transaction due to a read or write conflict")
+}
+
+// Apply a single change event to SurrealDB
+pub async fn apply_mutation(
+    surreal: &Surreal<surrealdb3::engine::any::Any>,
+    change: &Mutation,
+) -> anyhow::Result<()> {
+    match change {
+        Mutation::UpsertRecord(record) => {
+            write_record(surreal, record).await?;
+
+            tracing::trace!("Successfully upserted record: {record:?}");
+        }
+        Mutation::DeleteRecord(record_id) => {
+            let query = "DELETE type::record($record_tb, $record_key)".to_string();
+            tracing::trace!("Executing SurrealDB query: {}", query);
+            log::info!("🔧 migrate_change executing: {query} for record: {record_id:?}");
+
+            let mut q = surreal.query(query);
+            q = q.bind(("record_tb", record_id.table.to_string()));
+            q = q.bind(("record_key", record_id_key_to_value(&record_id.key)));
+
+            q.await?;
+
+            tracing::trace!("Successfully deleted record: {:?}", record_id);
+        }
+        Mutation::UpsertRelation(relation) => {
+            write_relation(surreal, relation).await?;
+
+            tracing::trace!("Successfully upserted relation: {relation:?}");
+        }
+        Mutation::DeleteRelation(record_id) => {
+            let query = "DELETE type::record($relation_tb, $relation_key)".to_string();
+            tracing::trace!("Executing SurrealDB query: {}", query);
+            log::info!("🔧 migrate_change executing: {query} for relation: {record_id:?}");
+
+            let mut q = surreal.query(query);
+            q = q.bind(("relation_tb", record_id.table.to_string()));
+            q = q.bind(("relation_key", record_id_key_to_value(&record_id.key)));
+            q.await?;
+            tracing::trace!("Successfully deleted relation: {record_id:?}");
+        }
+    }
+
+    tracing::debug!("Successfully applied {change:?}");
+
+    Ok(())
+}
+
+/// Apply a Change event to SurrealDB.
+///
+/// Converts Change to the appropriate SurrealDB operation and executes it.
+pub async fn apply_change(
+    surreal: &Surreal<surrealdb3::engine::any::Any>,
+    change: &Change,
+    zero_temporal: ZeroTemporalPolicy,
+) -> anyhow::Result<()> {
+    // Convert ID from Value to SurrealDB ID
+    let surreal_id = value_to_surreal_id(&change.id)?;
+    let record_id = RecordId::new(change.table.as_str(), surreal_id);
+
+    match change.operation {
+        ChangeOp::Create | ChangeOp::Update => {
+            // Convert data from HashMap<String, Value> to HashMap<String, surrealdb3::types::Value>
+            let data = change.fields.as_ref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Create/Update change must have data, but found None for table '{}'",
+                    change.table
+                )
+            })?;
+
+            let surreal_data: HashMap<String, surrealdb3::types::Value> = data
+                .iter()
+                .map(|(k, v)| {
+                    let sv = SurrealValue::from_universal_with_policy(v.clone(), zero_temporal);
+                    (k.clone(), sv.into_inner())
+                })
+                .collect();
+
+            let record = Record::new(record_id.clone(), surreal_data);
+            write_record(surreal, &record).await?;
+
+            tracing::trace!("Successfully upserted record: {record_id:?}");
+        }
+        ChangeOp::Delete => {
+            let query = "DELETE type::record($record_tb, $record_key)".to_string();
+            tracing::trace!("Executing SurrealDB query: {}", query);
+
+            let mut q = surreal.query(query);
+            q = q.bind(("record_tb", record_id.table.to_string()));
+            q = q.bind(("record_key", record_id_key_to_value(&record_id.key)));
+            q.await?;
+
+            tracing::trace!("Successfully deleted record: {record_id:?}");
+        }
+    }
+
+    tracing::debug!("Successfully applied universal change for {}", change.table);
+
+    Ok(())
+}
+
+// Write a single record to SurrealDB using UPSERT with retry for transaction conflicts
+pub async fn write_record(
+    surreal: &Surreal<surrealdb3::engine::any::Any>,
+    document: &Record,
+) -> anyhow::Result<()> {
+    let record_id = &document.id;
+    let upsert_content = sanitize_value(document.get_upsert_content());
+
+    let query = "UPSERT $record_id CONTENT $content".to_string();
+
+    tracing::trace!("Executing SurrealDB query with flattened fields: {}", query);
+
+    log::info!("🔧 migrate_batch executing: {query}");
+
+    if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+        tracing::debug!("Binding document to SurrealDB query for record {document:?}",);
+    }
+
+    // Retry loop for handling transaction conflicts
+    let mut last_error: Option<surrealdb3::Error> = None;
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            let delay_ms = RETRY_BASE_DELAY_MS * (1 << (attempt - 1).min(4)); // Exponential backoff, max 1.6s
+            tracing::warn!(
+                "Retrying write_record for {:?} (attempt {}/{}), waiting {}ms",
+                record_id,
+                attempt,
+                MAX_RETRIES,
+                delay_ms
+            );
+            sleep(Duration::from_millis(delay_ms)).await;
+        }
+
+        let mut q = surreal.query(query.clone());
+        q = q.bind(("record_id", record_id.clone()));
+        q = q.bind(("content", upsert_content.clone()));
+
+        let response_result: Result<surrealdb3::IndexedResults, surrealdb3::Error> = q.await;
+
+        match response_result {
+            Ok(mut response) => {
+                let result: Result<Vec<surrealdb3::types::RecordId>, surrealdb3::Error> =
+                    response.take("id").map_err(|e| {
+                        tracing::error!(
+                            "SurrealDB response.take() failed for record {:?}: {}",
+                            record_id,
+                            e
+                        );
+                        e
+                    });
+
+                match result {
+                    Ok(res) => {
+                        if res.is_empty() {
+                            tracing::warn!("Failed to create record: {:?}", record_id);
+                        } else {
+                            tracing::trace!("Successfully created record: {:?}", record_id);
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        if is_retriable_transaction_error(&e) {
+                            tracing::warn!(
+                                "Retriable transaction error for record {:?}: {}",
+                                record_id,
+                                e
+                            );
+                            last_error = Some(e);
+                            continue;
+                        }
+                        tracing::error!("Error creating record {:?}: {}", record_id, e);
+                        if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                            tracing::error!("Problematic document: {:?}", document);
+                        }
+                        return Err(e.into());
+                    }
+                }
+            }
+            Err(e) => {
+                if is_retriable_transaction_error(&e) {
+                    tracing::warn!(
+                        "Retriable transaction error for record {:?}: {}",
+                        record_id,
+                        e
+                    );
+                    last_error = Some(e);
+                    continue;
+                }
+                tracing::error!(
+                    "SurrealDB query execution failed for record {:?}: {}",
+                    record_id,
+                    e
+                );
+                if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                    tracing::error!("Failed query content: {:?}", document.data);
+                }
+                return Err(e.into());
+            }
+        }
+    }
+
+    // All retries exhausted
+    let error_msg =
+        format!("Failed to write record {record_id:?} after {MAX_RETRIES} retries. Last error: {last_error:?}");
+    tracing::error!("{error_msg}");
+    Err(anyhow::anyhow!(error_msg))
+}
+
+// Write a batch of records to SurrealDB using UPSERT
+pub async fn write_records(
+    surreal: &Surreal<surrealdb3::engine::any::Any>,
+    table_name: &str,
+    batch: &[Record],
+) -> anyhow::Result<()> {
+    tracing::debug!(
+        "Starting migration batch for table '{}' with {} records",
+        table_name,
+        batch.len()
+    );
+
+    for (i, r) in batch.iter().enumerate() {
+        tracing::trace!("Processing record {}/{}", i + 1, batch.len());
+        write_record(surreal, r).await?;
+    }
+
+    tracing::debug!(
+        "Completed migration batch for table '{}' with {} records",
+        table_name,
+        batch.len()
+    );
+    Ok(())
+}
+
+/// Format a RecordIdKey as a SurrealQL literal for inline embedding.
+fn format_record_id_key(key: &RecordIdKey) -> String {
+    match key {
+        RecordIdKey::String(s) => format!("⟨{s}⟩"),
+        RecordIdKey::Number(n) => n.to_string(),
+        RecordIdKey::Uuid(u) => {
+            let inner: uuid::Uuid = (*u).into();
+            format!("u'{inner}'")
+        }
+        other => format!("⟨{other:?}⟩"),
+    }
+}
+
+pub async fn write_relation(
+    surreal: &Surreal<surrealdb3::engine::any::Any>,
+    r: &Relation,
+) -> anyhow::Result<()> {
+    // SurrealDB v3 rejects RecordId-typed params everywhere in bound values.
+    // Format the in/out record IDs directly as SurrealQL literals to avoid
+    // any RecordId in bound parameters, and sanitize the CONTENT object.
+    let relate_content = sanitize_value(r.get_relate_content());
+
+    let in_literal = format!("{}:{}", r.input.table, format_record_id_key(&r.input.key));
+    let out_literal = format!("{}:{}", r.output.table, format_record_id_key(&r.output.key));
+
+    let query = format!(
+        "RELATE {in_literal}->{}->{out_literal} CONTENT $content",
+        r.id.table
+    );
+
+    let record_id = &r.id;
+
+    tracing::trace!(
+        "Executing SurrealDB relation query for table '{}'",
+        record_id.table
+    );
+    log::info!(
+        "🔧 migrate_batch executing SurrealDB relation query for table '{}'",
+        record_id.table
+    );
+
+    if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+        tracing::debug!(
+            "Binding document to SurrealDB query for record table {:?}",
+            record_id.table
+        );
+    }
+
+    // Retry loop for handling transaction conflicts
+    let mut last_error: Option<surrealdb3::Error> = None;
+    for attempt in 0..=MAX_RETRIES {
+        if attempt > 0 {
+            let delay_ms = RETRY_BASE_DELAY_MS * (1 << (attempt - 1).min(4)); // Exponential backoff, max 1.6s
+            tracing::warn!(
+                "Retrying write_relation for {:?} (attempt {}/{}), waiting {}ms",
+                record_id,
+                attempt,
+                MAX_RETRIES,
+                delay_ms
+            );
+            sleep(Duration::from_millis(delay_ms)).await;
+        }
+
+        let mut q = surreal.query(query.clone());
+        q = q.bind(("content", relate_content.clone()));
+
+        let response_result: Result<surrealdb3::IndexedResults, surrealdb3::Error> = q.await;
+
+        match response_result {
+            Ok(mut response) => {
+                let result: Result<Vec<surrealdb3::types::RecordId>, surrealdb3::Error> =
+                    response.take("id").map_err(|e| {
+                        tracing::error!(
+                            "SurrealDB response.take() failed for record {:?}: {}",
+                            record_id,
+                            e
+                        );
+                        if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                            tracing::error!(
+                                "Response take error content: {:?}",
+                                r.get_relate_content()
+                            );
+                        }
+                        e
+                    });
+
+                match result {
+                    Ok(res) => {
+                        if res.is_empty() {
+                            tracing::warn!("Failed to create record: {:?}", record_id);
+                        } else {
+                            tracing::trace!("Successfully created record: {:?}", record_id);
+                        }
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        if is_retriable_transaction_error(&e) {
+                            tracing::warn!(
+                                "Retriable transaction error for relation {:?}: {}",
+                                record_id,
+                                e
+                            );
+                            last_error = Some(e);
+                            continue;
+                        }
+                        tracing::error!("Error creating record {:?}: {}", record_id, e);
+                        if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                            tracing::error!("Problematic document: {:?}", r);
+                        }
+                        return Err(e.into());
+                    }
+                }
+            }
+            Err(e) => {
+                if is_retriable_transaction_error(&e) {
+                    tracing::warn!(
+                        "Retriable transaction error for relation {:?}: {}",
+                        record_id,
+                        e
+                    );
+                    last_error = Some(e);
+                    continue;
+                }
+                tracing::error!(
+                    "SurrealDB query execution failed for record {:?}: {}",
+                    record_id,
+                    e
+                );
+                if std::env::var("SURREAL_SYNC_DEBUG").is_ok() {
+                    tracing::error!("Failed query content: {:?}", r.get_relate_content());
+                }
+                return Err(e.into());
+            }
+        }
+    }
+
+    // All retries exhausted
+    let error_msg = format!(
+        "Failed to write relation for table '{}' after {} retries. Last error: {:?}",
+        record_id.table, MAX_RETRIES, last_error
+    );
+    tracing::error!("{error_msg}");
+    Err(anyhow::anyhow!(error_msg))
+}
+
+pub async fn write_native_relations(
+    surreal: &Surreal<surrealdb3::engine::any::Any>,
+    table_name: &str,
+    batch: &[Relation],
+) -> anyhow::Result<()> {
+    tracing::debug!(
+        "Starting migration batch for table '{}' with {} records",
+        table_name,
+        batch.len()
+    );
+
+    for (i, r) in batch.iter().enumerate() {
+        tracing::trace!("Processing record {}/{}", i + 1, batch.len());
+        write_relation(surreal, r).await?;
+    }
+
+    tracing::debug!(
+        "Completed migrating relations for table '{}' with {} records",
+        table_name,
+        batch.len()
+    );
+    Ok(())
+}
+
+/// Apply a RelationChange event to SurrealDB.
+pub async fn apply_relation_change(
+    surreal: &Surreal<surrealdb3::engine::any::Any>,
+    change: &RelationChange,
+    zero_temporal: ZeroTemporalPolicy,
+) -> anyhow::Result<()> {
+    match change.operation {
+        ChangeOp::Create | ChangeOp::Update => {
+            let surreal_rel = relation_to_surreal_relation(&change.relation, zero_temporal)?;
+            write_relation(surreal, &surreal_rel).await?;
+            tracing::trace!(
+                "Successfully upserted relation: {:?}",
+                change.relation.relation_type
+            );
+        }
+        ChangeOp::Delete => {
+            let surreal_id = value_to_surreal_id(&change.relation.id)?;
+            let query = "DELETE type::record($relation_tb, $relation_key)".to_string();
+            let mut q = surreal.query(query);
+            q = q.bind(("relation_tb", change.relation.relation_type.clone()));
+            q = q.bind(("relation_key", record_id_key_to_value(&surreal_id)));
+            q.await?;
+            tracing::trace!(
+                "Successfully deleted relation for table: {:?}",
+                change.relation.relation_type
+            );
+        }
+    }
+    Ok(())
+}

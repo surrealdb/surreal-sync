@@ -27,8 +27,8 @@ pub enum KafkaPopulatorError {
     TopicCreation(String),
 }
 
-impl From<kafka_types::KafkaTypesError> for KafkaPopulatorError {
-    fn from(err: kafka_types::KafkaTypesError) -> Self {
+impl From<surreal_sync_kafka::types::KafkaTypesError> for KafkaPopulatorError {
+    fn from(err: surreal_sync_kafka::types::KafkaTypesError) -> Self {
         KafkaPopulatorError::ProtoEncoding(err.to_string())
     }
 }

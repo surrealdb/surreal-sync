@@ -1,9 +1,13 @@
 [package]
-name = "sync-core"
-version = "0.1.0"
+name = "surreal-sync-core"
+version = "0.6.0"
+publish = true
 edition = "2021"
-description = "Core types for surreal-sync load testing framework"
+description = "Core types, SurrealSink, transform/sink-connect traits, and checkpoint API for surreal-sync"
 authors = ["surreal-sync contributors"]
+repository = "https://github.com/surrealdb/surreal-sync"
+homepage = "https://github.com/surrealdb/surreal-sync"
+documentation = "https://docs.rs/surreal-sync-core"
 
 [dependencies]
 # Serialization
@@ -22,7 +26,18 @@ chrono = { version = "0.4", features = ["serde"] }
 
 # Error handling
 thiserror = "2.0"
+anyhow = "1.0"
+
+# Async traits (CheckpointStore / SyncManager)
+async-trait = "0.1"
+
+# Logging (checkpoint emit)
+tracing = "0.1"
 
 [dev-dependencies]
 # Testing
 tokio-test = "0.4"
+
+[lib]
+name = "surreal_sync_core"
+path = "src/lib.rs"

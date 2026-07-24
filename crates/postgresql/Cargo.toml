@@ -1,9 +1,32 @@
 [package]
 name = "surreal-sync-postgresql"
-version = "0.1.0"
+version = "0.6.0"
 edition = "2021"
-description = "Shared PostgreSQL utilities for surreal-sync"
+description = "PostgreSQL shared utilities, types, and CDC origins for surreal-sync"
 authors = ["surreal-sync contributors"]
+publish = false
+rust-version = "1.87"
+
+[features]
+default = ["types"]
+types = []
+pgoutput_protocol = ["dep:pg_walstream", "dep:tokio-util"]
+from_pgoutput = ["types", "pgoutput_protocol", "dep:async-trait"]
+from_wal2json = [
+    "types",
+    "dep:hex",
+    "dep:toml",
+    "dep:async-trait",
+    "dep:surreal-sync-surreal",
+    "dep:surrealdb",
+    "dep:tracing-subscriber",
+]
+from_trigger = [
+    "types",
+    "dep:surreal-sync-json",
+    "dep:async-trait",
+    "dep:toml",
+]
 
 [dependencies]
 anyhow = "1.0"
@@ -11,18 +34,62 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 geo-types = "0.7"
 log = "0.4"
-postgresql-types = { path = "../postgresql-types" }
+postgres-types = { version = "0.2", features = ["derive", "with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
 rust_decimal = { version = "^1.23", features = ["db-tokio-postgres"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-surreal-sink = { path = "../surreal-sink" }
-sync-core = { path = "../sync-core" }
-sync-transform = { path = "../sync-transform" }
+surreal-sync-core = { path = "../sync-core" }
+surreal-sync-runtime = { path = "../runtime" }
+thiserror = "2.0"
 tokio = { version = "1.49", features = ["full"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-uuid-1", "with-serde_json-1", "with-geo-types-0_7"] }
 tracing = "0.1"
-uuid = { version = "1.0", features = ["v4"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
+# Optional — feature-gated origins / protocol
+async-trait = { version = "0.1", optional = true }
+hex = { version = "0.4", optional = true }
+pg_walstream = { version = "0.7", default-features = false, features = ["rustls-tls"], optional = true }
+surreal-sync-json = { path = "../json", default-features = false, features = ["types"], optional = true }
+surreal-sync-surreal = { path = "../surreal", default-features = false, features = ["v2"], optional = true }
+surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"], optional = true }
+tokio-util = { version = "0.7", optional = true }
+toml = { version = "1.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+[dev-dependencies]
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+surreal-sync-json = { path = "../json", default-features = false, features = ["types"] }
+surreal-sync-surreal = { path = "../surreal", default-features = false, features = ["v2"] }
+surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
+tempfile = "3.27"
+tokio = { version = "1.49", features = ["full"] }
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [lib]
 name = "surreal_sync_postgresql"
 path = "src/lib.rs"
+
+[[bin]]
+name = "surreal-sync-postgresql-wal2json-demo"
+path = "src/bin/wal2json_demo.rs"
+required-features = ["from_wal2json"]
+
+[[test]]
+name = "from_pgoutput_suite"
+path = "tests/from_pgoutput_suite/main.rs"
+required-features = ["from_pgoutput"]
+
+[[test]]
+name = "from_wal2json_suite"
+path = "tests/from_wal2json_suite/main.rs"
+required-features = ["from_wal2json"]
+
+[[test]]
+name = "from_trigger_suite"
+path = "tests/from_trigger_suite/main.rs"
+required-features = ["from_trigger"]

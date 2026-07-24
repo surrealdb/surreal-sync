@@ -51,7 +51,7 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
     // Create the empty table in PostgreSQL
     surreal_sync::testing::postgresql::create_tables_and_indices(&pg_client, &dataset).await?;
 
-    let source_opts = surreal_sync_postgresql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_postgresql::from_trigger::SourceOpts {
         source_uri: test_conn_str.clone(),
         source_database: Some(format!("test_{test_id}")),
         tables: vec![],
@@ -64,14 +64,15 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
     };
 
     // Create sync manager with filesystem checkpoint store
-    let checkpoint_store = checkpoint::FilesystemStore::new(&checkpoint_dir);
-    let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
+    let checkpoint_store =
+        surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(&checkpoint_dir);
+    let sync_manager = surreal_sync_core::SyncManager::new(checkpoint_store);
 
     // Run full sync with appropriate sink based on detected version
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_postgresql_trigger_source::run_full_sync(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_postgresql::from_trigger::run_full_sync(
                 &sink,
                 source_opts.clone(),
                 sync_opts,
@@ -80,8 +81,8 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_postgresql_trigger_source::run_full_sync(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_postgresql::from_trigger::run_full_sync(
                 &sink,
                 source_opts.clone(),
                 sync_opts,
@@ -98,18 +99,20 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
 
     // Read the t1 (FullSyncStart) checkpoint file - this is needed
     // for incremental sync to pick up changes made after full sync started
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, checkpoint::SyncPhase::FullSyncStart)
-            .await?;
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        surreal_sync_core::SyncPhase::FullSyncStart,
+    )
+    .await?;
     // Parse the CheckpointFile into database-specific checkpoint type
-    let sync_checkpoint: surreal_sync_postgresql_trigger_source::PostgreSQLCheckpoint =
+    let sync_checkpoint: surreal_sync_postgresql::from_trigger::PostgreSQLCheckpoint =
         checkpoint_file.parse()?;
 
     // Run incremental sync using the checkpoint with appropriate sink
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_postgresql_trigger_source::run_incremental_sync(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_postgresql::from_trigger::run_incremental_sync(
                 &sink,
                 source_opts,
                 sync_checkpoint,
@@ -119,8 +122,8 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_postgresql_trigger_source::run_incremental_sync(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_postgresql::from_trigger::run_incremental_sync(
                 &sink,
                 source_opts,
                 sync_checkpoint,

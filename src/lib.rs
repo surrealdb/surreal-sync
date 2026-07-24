@@ -1,88 +1,32 @@
-//! SurrealSync Library
+//! This crate backs the surreal-sync CLI and shared tests. It is not the
+//! library you should depend on to embed sync in your app.
 //!
-//! A library for migrating data from Neo4j, MongoDB, PostgreSQL, and MySQL databases to SurrealDB.
+//! The stock `surreal-sync` binary links this crate. Embedders must **not**
+//! depend on `surreal-sync` as a library.
 //!
-//! # Features
+//! # Embed here instead
 //!
-//! - Full synchronization: Complete data migration from source to target
-//! - Incremental synchronization: Real-time change capture and replication
-//! - Multiple databases: Neo4j, MongoDB, PostgreSQL, MySQL support
-//! - Reliable checkpointing: Resume sync from any point after failures
-//! - Portability: Trigger-based approaches work in any environment
+//! | Source | Crate |
+//! |--------|-------|
+//! | Snowflake | `surreal-sync-snowflake` (`from_snowflake`) |
+//! | MySQL/MariaDB binlog | `surreal-sync-mysql` (`from_binlog`) |
+//! | SurrealDB sink | `surreal-sync-surreal` with feature `v2` or `v3` |
+//! | Checkpoint (CDC) | included in `surreal-sync-surreal`; or `surreal-sync-runtime::checkpoint_fs` |
 //!
-//! # Embedding
+//! See `docs/sync-pipeline.md` (“Advanced: embedding”) and
+//! `examples/from-mysql-binlog` / `examples/from-snowflake`.
 //!
-//! Depend on this crate and call a source entrypoint with in-process
-//! [`InPlaceTransform`] stages — same CLI flags as the stock binary, without the
-//! `from <source>` prefix:
+//! # What this crate exposes
 //!
-//! - [`mysql_binlog::run`] — `sync|snapshot …` (see `examples/mysql_binlog_custom_transform.rs`)
-//! - [`snowflake::run`] — flat Snowflake flags (see `examples/snowflake_custom_transform.rs`)
+//! - [`testing`] — shared helpers for workspace integration / load tests
+//! - Thin re-exports used by the stock binary’s `from *` handlers and tests
+//!   ([`csv`], [`jsonl`], [`orchestrate_snapshot_then_incremental`])
 //!
-//! Details: `docs/sync-pipeline.md`.
-//!
-//! # Database-Specific Sync Crates
-//!
-//! Each database has its own dedicated sync crate:
-//!
-//! - `surreal_sync_neo4j_source` - Neo4j timestamp-based tracking
-//! - `surreal_sync_mongodb_changestream_source` - MongoDB change streams
-//! - `surreal_sync_postgresql_trigger_source` - PostgreSQL trigger-based tracking
-//! - `surreal_sync_mysql_trigger_source` - MySQL audit table tracking
-//! - `surreal_sync_kafka_source` - Kafka consumer integration
-//!
-//! # CLI Usage
-//!
-//! ```bash
-//! # Full sync from MongoDB
-//! surreal-sync from mongodb full --connection-string mongodb://... --database mydb ...
-//!
-//! # Incremental sync from PostgreSQL (trigger-based)
-//! surreal-sync from postgresql-trigger incremental --connection-string postgresql://... ...
-//!
-//! # WAL-based PostgreSQL sync (continuous)
-//! surreal-sync from postgresql --connection-string postgresql://... --tables users,orders ...
-//!
-//! # Kafka consumer
-//! surreal-sync from kafka --bootstrap-servers localhost:9092 --topic events ...
-//! ```
-//!
-//! # Config File (PostgreSQL)
-//!
-//! PostgreSQL sources support a TOML config file via `-c` / `--config-file`:
-//!
-//! ```bash
-//! surreal-sync from postgresql-trigger full -c surreal-sync.toml
-//! ```
-//!
-//! See the `config::file` module (in the binary crate) for the config file format
-//! and struct definitions.
+//! The CLI picks SurrealDB v2 vs v3 automatically; that logic lives in the
+//! binary, not in this library.
 
-use clap::Parser;
-use rustls::crypto::CryptoProvider;
-use sync_core::ZeroTemporalPolicy;
-
-pub mod mysql_binlog;
-pub mod snowflake;
-pub(crate) mod sync_helpers;
+/// Integration / load-test helpers (for workspace tests only — not for embedding).
 pub mod testing;
-pub mod transforms;
-
-/// Install the TLS crypto provider and initialize tracing (same as the stock binary).
-///
-/// Called automatically by [`mysql_binlog::run`] and [`snowflake::run`]. Call this
-/// yourself if you use lower-level entrypoints such as [`mysql_binlog::run_sync`]
-/// or [`snowflake::run_sync`].
-pub fn init() {
-    if let Err(err) = CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
-    {
-        eprintln!("Error setting up crypto provider for TLS: {err:?}");
-    }
-
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-}
 
 /// Run a watermark snapshot+stream full sync and then continue with the
 /// source's existing incremental runner from the handed-off stream position,
@@ -113,46 +57,7 @@ where
     Ok(())
 }
 
-// Re-export CSV and JSONL crates for convenience
-pub use surreal_sync_csv_source as csv;
-pub use surreal_sync_jsonl_source as jsonl;
-
-// Transform + core types for embedders (one dependency: surreal-sync)
-pub use sync_core::{Change, ChangeOp, Row, Value};
-pub use sync_transform::{ApplyOpts, FlattenId, InPlaceTransform, Pipeline};
-
-#[derive(Parser, Clone)]
-pub struct SurrealOpts {
-    /// SurrealDB endpoint URL
-    #[arg(
-        long,
-        default_value = "http://localhost:8000",
-        env = "SURREAL_ENDPOINT"
-    )]
-    pub surreal_endpoint: String,
-
-    /// SurrealDB username
-    #[arg(long, default_value = "root", env = "SURREAL_USERNAME")]
-    pub surreal_username: String,
-
-    /// SurrealDB password
-    #[arg(long, default_value = "root", env = "SURREAL_PASSWORD")]
-    pub surreal_password: String,
-
-    /// Batch size for data migration
-    #[arg(long, default_value = "1000")]
-    pub batch_size: usize,
-
-    /// Dry run mode - don't actually write data
-    #[arg(long)]
-    pub dry_run: bool,
-
-    /// SurrealDB SDK version to use. Auto-detects from server if not specified.
-    #[arg(long, env = "SURREAL_SDK_VERSION", value_parser = ["v2", "v3"])]
-    pub surreal_sdk_version: Option<String>,
-
-    /// How zero temporal values (e.g. MySQL `0000-00-00`) are written to SurrealDB.
-    /// Set via config file `[sink.surrealdb] zero_temporal`; not a CLI flag.
-    #[arg(skip)]
-    pub zero_temporal: ZeroTemporalPolicy,
-}
+// Re-export CSV and JSONL crates for integration / load tests and the stock CLI
+// binary handlers. Prefer depending on these crates directly in new code.
+pub use surreal_sync_csv::from_csv as csv;
+pub use surreal_sync_json::from_jsonl as jsonl;

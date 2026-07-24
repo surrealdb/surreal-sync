@@ -643,7 +643,8 @@ See [MySQL Data Types](mysql-data-types.md); MariaDB uses the same mappings (inc
 
 ## References
 
-- Implementation: [crates/mysql-binlog-source/](../crates/mysql-binlog-source/) and [crates/binlog-protocol/](../crates/binlog-protocol/)
+- Implementation: [crates/mysql/src/from_binlog/](../crates/mysql/src/from_binlog/) and [`surreal_sync_mysql::binlog_protocol`](../crates/mysql/src/binlog_protocol/)
+- Embedder example: [`examples/from-mysql-binlog`](../examples/from-mysql-binlog) — call `run::<Surreal3Sink>([…])` and pass a checkpoint flag.
 - [How sync works](sync-pipeline.md) — optional enrichment / ETL on the path into SurrealDB (`--transforms-config`)
 - [Full Sync Strategies](design/full-sync-strategies.md)
 - [MySQL Replication Documentation](https://dev.mysql.com/doc/refman/8.0/en/replication.html)

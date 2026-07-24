@@ -4,10 +4,10 @@
 //! server flags passed as `docker run` command arguments (no custom Dockerfile).
 
 use anyhow::{Context, Result};
-use binlog_protocol::test_images::{mariadb_binlog_image, mysql_binlog_image};
-use binlog_protocol::Flavor;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
+use surreal_sync_mysql::binlog_protocol::test_images::{mariadb_binlog_image, mysql_binlog_image};
+use surreal_sync_mysql::binlog_protocol::Flavor;
 use tracing::{debug, info};
 
 /// A test MySQL/MariaDB container with binary logging enabled via server flags.

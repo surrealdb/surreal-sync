@@ -41,7 +41,7 @@
 //!
 //! ```rust,ignore
 //! use loadtest_populate_kafka::KafkaPopulator;
-//! use sync_core::Schema;
+//! use surreal_sync_core::Schema;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {

@@ -77,10 +77,13 @@ async fn test_mysql_incremental_sync_cli() -> Result<(), Box<dyn std::error::Err
 
     // Read the t1 (FullSyncStart) checkpoint from the file - this is the one we need
     // for incremental sync to pick up changes made after full sync started
-    use checkpoint::{Checkpoint, SyncPhase};
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, SyncPhase::FullSyncStart).await?;
-    let mysql_checkpoint: surreal_sync_mysql_trigger_source::MySQLCheckpoint =
+    use surreal_sync_core::{Checkpoint, SyncPhase};
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        SyncPhase::FullSyncStart,
+    )
+    .await?;
+    let mysql_checkpoint: surreal_sync_mysql::from_trigger::MySQLCheckpoint =
         checkpoint_file.parse()?;
     let checkpoint_string = mysql_checkpoint.to_cli_string();
 

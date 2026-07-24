@@ -12,7 +12,7 @@
 use loadtest_populate_mysql::MySQLPopulator;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use sync_core::Schema;
+use surreal_sync_core::Schema;
 
 const SEED: u64 = 42;
 const BATCH_SIZE: usize = 10;
@@ -95,7 +95,7 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
     // === PHASE 2: RUN FULL SYNC WITH CHECKPOINTS (sets up triggers) ===
     tracing::info!("Running full sync to set up triggers and emit checkpoints");
 
-    let source_opts = surreal_sync_mysql_trigger_source::SourceOpts {
+    let source_opts = surreal_sync_mysql::from_trigger::SourceOpts {
         source_uri: mysql_conn_string.clone(),
         source_database: Some(format!("test_{test_id}")),
         tables: vec![],
@@ -104,19 +104,20 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
         ssl: Default::default(),
     };
 
-    let sync_opts = surreal_sync_mysql_trigger_source::SyncOpts {
+    let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: BATCH_SIZE,
         dry_run: false,
     };
 
     // Create sync manager with filesystem checkpoint store
-    let checkpoint_store = checkpoint::FilesystemStore::new(CHECKPOINT_DIR);
-    let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
+    let checkpoint_store =
+        surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(CHECKPOINT_DIR);
+    let sync_manager = surreal_sync_core::SyncManager::new(checkpoint_store);
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_mysql_trigger_source::run_full_sync(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_mysql::from_trigger::run_full_sync(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -125,8 +126,8 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_mysql_trigger_source::run_full_sync(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_mysql::from_trigger::run_full_sync(
                 &sink,
                 &source_opts,
                 &sync_opts,
@@ -171,11 +172,13 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
 
     // Read the t1 (FullSyncStart) checkpoint file - this is needed
     // for incremental sync to pick up changes made after full sync started
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(CHECKPOINT_DIR, checkpoint::SyncPhase::FullSyncStart)
-            .await?;
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        CHECKPOINT_DIR,
+        surreal_sync_core::SyncPhase::FullSyncStart,
+    )
+    .await?;
     // Parse the CheckpointFile into database-specific checkpoint type
-    let sync_checkpoint: surreal_sync_mysql_trigger_source::MySQLCheckpoint =
+    let sync_checkpoint: surreal_sync_mysql::from_trigger::MySQLCheckpoint =
         checkpoint_file.parse()?;
 
     tracing::info!(
@@ -185,8 +188,8 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_mysql_trigger_source::run_incremental_sync(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_mysql::from_trigger::run_incremental_sync(
                 &sink,
                 source_opts,
                 sync_checkpoint,
@@ -196,8 +199,8 @@ async fn test_mysql_incremental_loadtest_small_scale() -> Result<(), Box<dyn std
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_mysql_trigger_source::run_incremental_sync(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_mysql::from_trigger::run_incremental_sync(
                 &sink,
                 source_opts,
                 sync_checkpoint,

@@ -94,8 +94,8 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // captured timestamp for incremental sync.
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_neo4j_source::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 source_opts.clone(),
                 sync_opts.clone(),
@@ -104,8 +104,8 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_neo4j_source::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 source_opts.clone(),
                 sync_opts.clone(),
@@ -123,7 +123,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
     // This ensures all newly created nodes (with updated_at > t1) are synced
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
             let neo4j_checkpoint = surreal_sync_neo4j_source::Neo4jCheckpoint::at(t1);
             surreal_sync_neo4j_source::run_incremental_sync(
                 &sink,
@@ -136,7 +136,7 @@ async fn test_neo4j_incremental_sync_lib() -> Result<(), Box<dyn std::error::Err
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
             let neo4j_checkpoint = surreal_sync_neo4j_source::Neo4jCheckpoint::at(t1);
             surreal_sync_neo4j_source::run_incremental_sync(
                 &sink,

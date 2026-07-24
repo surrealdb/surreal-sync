@@ -15,11 +15,11 @@
 //! - `kafka`: Kafka streaming sync
 //! - `csv`: CSV file import
 //! - `jsonl`: JSONL file import
-//! - `transforms`: Re-export of [`surreal_sync::transforms`] for binary handlers
+//! - `transforms`: Re-export of surreal-sync-runtime transform helpers
 //!
-//! Library entrypoints (not under `from/`):
-//! - [`surreal_sync::mysql_binlog`] — MySQL/MariaDB binlog CDC
-//! - [`surreal_sync::snowflake`] — Snowflake full snapshot ingestion
+//! Binary CLI auto-detect for binlog/snowflake lives in sibling modules
+//! `mysql_binlog` / `snowflake` (not under `from/`). Prefer
+//! `surreal_sync_mysql::from_binlog` / `surreal_sync_snowflake::from_snowflake` for embeds.
 
 pub mod common;
 pub mod csv;

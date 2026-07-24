@@ -112,8 +112,8 @@ async fn test_neo4j_composite_full_sync_lib() -> Result<(), Box<dyn std::error::
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
-            surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
+            surreal_sync_neo4j_source::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 source_opts,
                 sync_opts,
@@ -122,8 +122,8 @@ async fn test_neo4j_composite_full_sync_lib() -> Result<(), Box<dyn std::error::
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
-            surreal_sync_neo4j_source::run_full_sync::<_, checkpoint::NullStore>(
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
+            surreal_sync_neo4j_source::run_full_sync::<_, surreal_sync_core::NullStore>(
                 &sink,
                 source_opts,
                 sync_opts,

@@ -35,10 +35,10 @@ slow-timeout = { period = "90s", terminate-after = 5 }
 failure-output = "immediate-final"
 
 # Binlog e2e tests (tests/mysql_binlog/, tests/mariadb/*_binlog_*, and
-# crates/mysql-binlog-source/tests/suite/) spin stock MySQL/MariaDB binlog
+# crates/mysql/tests/from_binlog/suite/) spin stock MySQL/MariaDB binlog
 # images from scripts/test-images.env with replication enabled via docker run
 # server flags — no custom Dockerfile. They are container-bound like other e2e
-# tests (shared_containers.rs / mysql-binlog-source testing helpers): one
+# tests (shared_containers.rs / mysql from_binlog testing helpers): one
 # isolated stack per nextest process, keyed by PID. CI and `make test` pre-pull
 # both images via `make prepull-binlog-images` before nextest runs.
 # Partitions are by test count, not duration; slow binlog e2e may skew one shard's
@@ -49,9 +49,9 @@ archive.include = [
   { path = "ci/surreal-sync", relative-to = "target" },
 ]
 
-# Note: CI builds/archives with `--all-features` so crates like sync-transform
+# Note: CI builds/archives with `--all-features` so crates like surreal-sync-runtime
 # include feature-gated integration tests (e.g. external_stdio + test-support).
-# Local gate for that crate: `cargo test -p sync-transform --all-features`.
+# Local gate for that crate: `cargo test -p surreal-sync-runtime --all-features`.
 
 # Emit a JUnit report so CI can surface per-test results / upload it as an artifact.
 [profile.ci.junit]

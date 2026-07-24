@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::path::Path;
-use sync_core::ZeroTemporalPolicy;
+use surreal_sync_core::ZeroTemporalPolicy;
 
 /// Generic config file structure. `S` is the source-specific config type,
 /// determined by which subcommand is being run.

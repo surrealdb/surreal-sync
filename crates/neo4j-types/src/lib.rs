@@ -19,7 +19,7 @@
 //!
 //! ```ignore
 //! use neo4j_types::{forward::typed_to_cypher_literal, reverse::convert_bolt_to_typed_value};
-//! use sync_core::TypedValue;
+//! use surreal_sync_core::TypedValue;
 //!
 //! // Convert TypedValue to Cypher literal
 //! let tv = TypedValue::text("hello");

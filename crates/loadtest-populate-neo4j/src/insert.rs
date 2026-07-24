@@ -2,7 +2,7 @@
 
 use crate::error::Neo4jPopulatorError;
 use neo4rs::{query, Graph, Query};
-use sync_core::{GeneratorTableDefinition, Row, Type, TypedValue, Value};
+use surreal_sync_core::{GeneratorTableDefinition, Row, Type, TypedValue, Value};
 use tracing::debug;
 
 /// Default batch size for INSERT operations.
@@ -175,7 +175,7 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
 
         // Geometry type - store as GeoJSON string
         Value::Geometry { data, .. } => {
-            use sync_core::GeometryData;
+            use surreal_sync_core::GeometryData;
             let GeometryData(json) = data;
             let json_str = serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string());
             escape_neo4j_string(&json_str)
@@ -294,7 +294,7 @@ fn universal_to_json(value: &Value) -> serde_json::Value {
             serde_json::Value::Array(elements.iter().map(universal_to_json).collect())
         }
         Value::Geometry { data, .. } => {
-            use sync_core::GeometryData;
+            use surreal_sync_core::GeometryData;
             let GeometryData(json) = data;
             json.clone()
         }

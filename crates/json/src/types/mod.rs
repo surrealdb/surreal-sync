@@ -1,0 +1,35 @@
+//! JSON type conversions for sync-core types.
+//!
+//! This module provides bidirectional type conversions between sync-core's
+//! `TypedValue` and JSON formats.
+//!
+//! # Modules
+//!
+//! - [`forward`] - TypedValue → JSON value conversion
+//! - [`reverse`] - JSON value → TypedValue conversion
+//!
+//! # Example
+//!
+//! ```ignore
+//! use surreal_sync_json::types::{JsonValue, JsonValueWithSchema};
+//! use surreal_sync_core::{TypedValue, Type};
+//!
+//! // Forward: TypedValue → JSON value
+//! let tv = TypedValue::text("hello");
+//! let json_val: JsonValue = tv.into();
+//!
+//! // Reverse: JSON value → TypedValue
+//! let json = serde_json::json!(42);
+//! let json_with_schema = JsonValueWithSchema::new(json, Type::Int32);
+//! let tv = json_with_schema.to_typed_value();
+//! ```
+
+pub mod forward;
+pub mod reverse;
+
+pub use forward::JsonValue;
+pub use reverse::{
+    convert_id_to_value, convert_id_with_database_schema, json_to_generated_value_with_config,
+    json_to_typed_value_with_config, json_to_universal_with_table_schema, json_value_to_universal,
+    JsonConversionConfig, JsonValueWithSchema,
+};

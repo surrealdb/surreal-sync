@@ -1,6 +1,6 @@
 //! Kafka streaming sync Docker Compose service generator.
 //!
-//! Source crate: crates/kafka-source/
+//! Source crate: crates/kafka/ (from_kafka)
 //! SourceChoice: Kafka
 //! SourceType: Kafka
 //! CLI commands:

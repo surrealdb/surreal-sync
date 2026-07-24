@@ -69,10 +69,13 @@ async fn test_mysql_binlog_stream_only_cli() -> Result<(), Box<dyn std::error::E
 
     surreal_sync::testing::mysql::insert_rows(&mut mysql_conn, &dataset).await?;
 
-    use checkpoint::{Checkpoint, SyncPhase};
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, SyncPhase::FullSyncStart).await?;
-    let binlog_checkpoint: surreal_sync_mysql_binlog_source::BinlogCheckpoint =
+    use surreal_sync_core::{Checkpoint, SyncPhase};
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        SyncPhase::FullSyncStart,
+    )
+    .await?;
+    let binlog_checkpoint: surreal_sync_mysql::from_binlog::BinlogCheckpoint =
         checkpoint_file.parse()?;
     let checkpoint_string = binlog_checkpoint.to_cli_string();
 

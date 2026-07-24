@@ -11,7 +11,7 @@
 use loadtest_populate_mongodb::MongoDBPopulator;
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use sync_core::Schema;
+use surreal_sync_core::Schema;
 
 const SEED: u64 = 42;
 const BATCH_SIZE: usize = 10;
@@ -99,13 +99,14 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
     };
 
     // Create sync manager with filesystem checkpoint store
-    let checkpoint_store = checkpoint::FilesystemStore::new(CHECKPOINT_DIR);
-    let sync_manager = checkpoint::SyncManager::new(checkpoint_store);
+    let checkpoint_store =
+        surreal_sync_runtime::checkpoint_fs::FilesystemStore::new(CHECKPOINT_DIR);
+    let sync_manager = surreal_sync_core::SyncManager::new(checkpoint_store);
 
     // Run full sync with version-aware sink
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
             surreal_sync_mongodb_changestream_source::run_full_sync(
                 &sink,
                 source_opts.clone(),
@@ -115,7 +116,7 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
             surreal_sync_mongodb_changestream_source::run_full_sync(
                 &sink,
                 source_opts.clone(),
@@ -161,9 +162,11 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
 
     // Read the t1 (FullSyncStart) checkpoint file - this is needed
     // for incremental sync to pick up changes made after full sync started
-    let main_checkpoint =
-        checkpoint::get_checkpoint_for_phase(CHECKPOINT_DIR, checkpoint::SyncPhase::FullSyncStart)
-            .await?;
+    let main_checkpoint = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        CHECKPOINT_DIR,
+        surreal_sync_core::SyncPhase::FullSyncStart,
+    )
+    .await?;
     // Convert to mongodb crate's checkpoint type
     let sync_checkpoint: surreal_sync_mongodb_changestream_source::MongoDBCheckpoint =
         main_checkpoint.parse()?;
@@ -176,7 +179,7 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
     // Run incremental sync with version-aware sink
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
             surreal_sync_mongodb_changestream_source::run_incremental_sync(
                 &sink,
                 source_opts,
@@ -187,7 +190,7 @@ async fn test_mongodb_incremental_loadtest_small_scale() -> Result<(), Box<dyn s
             .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
             surreal_sync_mongodb_changestream_source::run_incremental_sync(
                 &sink,
                 source_opts,

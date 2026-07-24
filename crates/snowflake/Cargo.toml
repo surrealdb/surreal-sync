@@ -1,0 +1,56 @@
+[package]
+name = "surreal-sync-snowflake"
+version = "0.6.0"
+edition = "2021"
+description = "Snowflake type conversions and from_snowflake origin for surreal-sync"
+publish = true
+repository = "https://github.com/surrealdb/surreal-sync"
+homepage = "https://github.com/surrealdb/surreal-sync"
+documentation = "https://docs.rs/surreal-sync-snowflake"
+
+[features]
+default = ["types"]
+types = []
+from_snowflake = [
+    "types",
+    "dep:surreal-sync-runtime",
+    "dep:clap",
+    "dep:async-trait",
+    "dep:reqwest",
+    "dep:snowflake-jwt",
+    "dep:tokio",
+    "dep:tracing",
+]
+
+[dependencies]
+# Always needed for `types`
+surreal-sync-core = { path = "../sync-core", version = "0.6.0" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+
+# `from_snowflake` (optional)
+surreal-sync-runtime = { path = "../runtime", version = "0.6.0", features = ["cli"], optional = true }
+clap = { version = "4.5", features = ["derive", "env"], optional = true }
+async-trait = { version = "0.1", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+snowflake-jwt = { version = "0.3", optional = true }
+tokio = { version = "1.49", features = ["time"], optional = true }
+tracing = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time"] }
+async-trait = "0.1"
+serde_json = "1.0"
+surreal-sync-runtime = { path = "../runtime", version = "0.6.0" }
+surreal-sync-core = { path = "../sync-core", version = "0.6.0" }
+
+[lib]
+name = "surreal_sync_snowflake"
+path = "src/lib.rs"
+
+[[test]]
+name = "transforms"
+path = "tests/transforms.rs"
+required-features = ["from_snowflake"]

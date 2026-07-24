@@ -7,7 +7,7 @@
 //!
 //! ```ignore
 //! use loadtest_mysql::MySQLPopulator;
-//! use sync_core::Schema;
+//! use surreal_sync_core::Schema;
 //!
 //! let schema = Schema::from_yaml("path/to/schema.yaml")?;
 //! let mut populator = MySQLPopulator::new("mysql://root:root@localhost:3306/testdb", schema, 42).await?;

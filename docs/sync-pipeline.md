@@ -1,3 +1,5 @@
+<!-- For embedding: depend on surreal-sync-mysql / surreal-sync-snowflake / … plus surreal-sync-surreal (v2 or v3). Do not depend on the surreal-sync CLI package. -->
+
 # How sync works
 
 surreal-sync moves data from a source into SurrealDB through one shared apply path: **read → optional transform → ordered sink → watermark**. Transforms are optional; omit them and docs pass through unchanged.
@@ -167,7 +169,7 @@ A `type = "command"` worker may rewrite the `id` field on the NDJSON wire (same 
 
 ### Relations vs entities
 
-Join tables classified as **relations** (FK heuristic / overrides in sync-core) always flatten composite edge IDs with `:` — SurrealDB relation edge IDs must be a simple type, not an Array. **Entity** tables keep Array IDs unless you flatten them with `flatten_id` (or a custom worker).
+Join tables classified as **relations** (FK heuristic / overrides in surreal-sync-core) always flatten composite edge IDs with `:` — SurrealDB relation edge IDs must be a simple type, not an Array. **Entity** tables keep Array IDs unless you flatten them with `flatten_id` (or a custom worker).
 
 ### `--id-columns` (CSV, JSONL, Kafka, Snowflake)
 
@@ -176,7 +178,7 @@ Join tables classified as **relations** (FK heuristic / overrides in sync-core) 
 | `from csv` / `from jsonl` / `from kafka` | `--id-columns a,b` | Multi-column → Array record ID (takes precedence over `--id-field`) |
 | `from snowflake` | `--id-columns a,b` | Same; omit for a sequential per-table index |
 
-Library / embedders can also apply per-table overrides via sync-core (`parse_id_column_overrides` / `apply_id_column_overrides`) using `table=col1,col2` entries. That helper is not exposed as a SQL-source CLI flag today — SQL sources use discovered primary keys.
+Library / embedders can also apply per-table overrides via surreal-sync-core (`parse_id_column_overrides` / `apply_id_column_overrides`) using `table=col1,col2` entries. That helper is not exposed as a SQL-source CLI flag today — SQL sources use discovered primary keys.
 
 **Snowflake breaking change:** composite `--id-columns` previously produced colon-joined Text IDs; they now produce Array IDs. Restore the old shape with `type = "flatten_id"` (`separator = ":"`).
 
@@ -479,21 +481,20 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 - [MySQL/MariaDB Binlog Source](mysql-binlog.md) — snapshot, stream, checkpoints, resume
 - [PostgreSQL pgoutput](postgresql-pgoutput-source.md), [wal2json](postgresql-wal2json-source.md), [trigger](postgresql.md)
 - [MySQL trigger](mysql.md) / [MariaDB trigger](mariadb.md), [MongoDB](mongodb.md), [Neo4j](neo4j.md), [Kafka](kafka.md), [CSV](csv.md), [JSONL](jsonl.md)
-- [Source ports](source-ports.md) — implementer checklist for wiring sources through `sync-transform`
+- [Source ports](source-ports.md) — implementer checklist for wiring sources through `surreal-sync-runtime`
 - [Design overview](design.md) — full vs incremental sync model
 - [GitHub issue #118](https://github.com/surrealdb/surreal-sync/issues/118) — transform pipeline tracking
 
-### Advanced: embedding surreal-sync
+### Advanced: embedding (from-* crates)
 
-Use a library entrypoint when you want **in-process** Rust transforms (zero
-child-process / NDJSON overhead) while keeping the same CLI flags and behavior
-as the stock binary for that source.
+Depend on a source crate such as `surreal-sync-mysql` or `surreal-sync-snowflake`, plus `surreal-sync-surreal` (feature `v2` or `v3`). For ongoing sync (CDC), also configure checkpoints. Do not depend on the `surreal-sync` CLI package as a library.
+See the **Examples** below (`examples/from-mysql-binlog`, `examples/from-snowflake`).
 
 **When to use in-process vs `command` workers**
 
 | Approach | Use when |
 |----------|----------|
-| [`InPlaceTransform`](https://docs.rs/sync-transform) via [`mysql_binlog::run`](../src/mysql_binlog/mod.rs) or [`snowflake::run`](../src/snowflake/mod.rs) | Mutate-only / same-length stages in Rust (redact, rename, flatten IDs, FK → record links) |
+| `InPlaceTransform` via `run::<Surreal3Sink>([…])` (mysql-binlog / snowflake) | Mutate-only / same-length stages in Rust (redact, rename, flatten IDs, FK → record links) |
 | TOML `type = "command"` | External language workers, heavy enrichment, or filter/fan-out that needs a custom `BatchTransformer` |
 
 Filter-out or fan-out of events is out of scope for `InPlaceTransform` — use a
@@ -507,30 +508,27 @@ deletes). Re-exported embedder types are `Row`, `Change`, `Value`, and `ChangeOp
 **Composition rules**
 
 1. Optional `--transforms-config` TOML is loaded first (same rules as the stock CLI).
-2. Rust stages passed to `mysql_binlog::run([...])` / `snowflake::run([...])` are **appended** after TOML stages.
+2. Rust stages passed to `run::<Surreal3Sink>([...])` are **appended** after TOML stages.
 3. If the flag is omitted (identity `ApplyOpts`) but Rust stages are added, opts are upgraded to `ApplyOpts::default()` so batching is on.
 
 **Examples**
 
-MySQL/MariaDB binlog — [`examples/mysql_binlog_custom_transform.rs`](../examples/mysql_binlog_custom_transform.rs)
-(`FlattenId`, PII redaction, field rename, FK → record link). Argv is
-source-shaped (`sync|snapshot …`), not `from mysql-binlog …`. Mixed transform
-types are passed as `Box<dyn InPlaceTransform>` (Rust arrays are homogeneous):
+MySQL/MariaDB binlog — [`examples/from-mysql-binlog`](../examples/from-mysql-binlog) (`surreal-sync-example-from-mysql-binlog`):
 
 ```bash
-cargo run --example mysql_binlog_custom_transform -- sync \
+cargo run -p surreal-sync-example-from-mysql-binlog -- sync \
   --connection-string 'mysql://user:pass@127.0.0.1:3306/app' \
   --database app \
   --to-namespace prod --to-database app \
-  --checkpoint-dir ./checkpoints
+  --checkpoints-surreal-table sync_checkpoints
 ```
 
-Snowflake — [`examples/snowflake_custom_transform.rs`](../examples/snowflake_custom_transform.rs)
-(same transform chain). Argv is the same flat flags as `surreal-sync from snowflake`
-(no `from snowflake` prefix):
+`run::<Surreal3Sink>([…])` connects SurrealDB and, when you pass `--checkpoints-surreal-table` or `--checkpoint-dir`, picks where to store resume state. You do not wire that up yourself. Those checkpoint flags are for **MySQL binlog CDC** only.
+
+Snowflake — [`examples/from-snowflake`](../examples/from-snowflake) (`surreal-sync-example-from-snowflake`):
 
 ```bash
-cargo run --example snowflake_custom_transform -- \
+cargo run -p surreal-sync-example-from-snowflake -- \
   --account myorg-myaccount \
   --user sync_user \
   --private-key-path ./rsa_key.p8 \
@@ -540,10 +538,11 @@ cargo run --example snowflake_custom_transform -- \
   --to-namespace prod --to-database app
 ```
 
-Call `surreal_sync::init()` yourself only if you use lower-level APIs such as
-`mysql_binlog::run_sync` or `snowflake::run_sync`; `::run` initializes crypto +
-tracing for you.
+Snowflake is a one-shot full import — there are no `--checkpoint-dir` /
+`--checkpoints-surreal-table` flags.
 
-For apply-loop / driver details, see `sync-transform` rustdoc (`ApplyContext`,
-`SourceDriver`, `FlattenId`). Per-table ID overrides (`table=col1,col2`) live in
-sync-core (`parse_id_column_overrides` / `apply_id_column_overrides`).
+`run` sets up logging/TLS for you. Call `surreal_sync_runtime::init()` only if you call the lower-level `run_sync` APIs yourself.
+
+For apply-loop / driver details, see `surreal-sync-runtime` rustdoc (`pipeline` module:
+`ApplyContext`, `SourceDriver`, `FlattenId`). Per-table ID overrides (`table=col1,col2`)
+live in surreal-sync-core (`parse_id_column_overrides` / `apply_id_column_overrides`).

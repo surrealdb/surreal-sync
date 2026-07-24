@@ -2,8 +2,8 @@
 
 use crate::error::MySQLPopulatorError;
 use mysql_async::{prelude::*, Params, Pool, Value};
-use mysql_types::forward::MySQLValue;
-use sync_core::{GeneratorTableDefinition, Row, Schema, TypedValue};
+use surreal_sync_core::{GeneratorTableDefinition, Row, Schema, TypedValue};
+use surreal_sync_mysql::forward::MySQLValue;
 
 /// Default batch size for INSERT operations.
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -131,13 +131,13 @@ pub fn generate_create_table(schema: &Schema, table_name: &str) -> Option<String
     let table_schema = schema.get_table(table_name)?;
 
     // Build column definitions
-    let columns: Vec<(String, sync_core::Type, bool)> = table_schema
+    let columns: Vec<(String, surreal_sync_core::Type, bool)> = table_schema
         .fields
         .iter()
         .map(|f| (f.name.clone(), f.field_type.clone(), f.nullable))
         .collect();
 
-    let ddl = mysql_types::ddl::MySQLDdl;
+    let ddl = surreal_sync_mysql::ddl::MySQLDdl;
     Some(ddl.to_create_table_with_pk(table_name, "id", &table_schema.id.id_type, &columns))
 }
 

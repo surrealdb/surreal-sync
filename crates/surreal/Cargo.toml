@@ -1,0 +1,103 @@
+[package]
+name = "surreal-sync-surreal"
+version = "0.6.0"
+publish = true
+edition = "2021"
+description = "SurrealDB sinks and helpers for surreal-sync (v2 and/or v3)"
+repository = "https://github.com/surrealdb/surreal-sync"
+homepage = "https://github.com/surrealdb/surreal-sync"
+documentation = "https://docs.rs/surreal-sync-surreal"
+
+[features]
+# Default: SurrealDB v3 sink stack only (no dual-SDK, no HTTP version detection).
+default = ["v3"]
+# HTTP version detection, Docker test containers, and the agnostic test-client trait.
+# Named `reqwest` because it pulls the HTTP client (and related helpers).
+reqwest = ["dep:reqwest", "dep:semver", "dep:tracing", "dep:async-trait"]
+# SurrealDB v2 SDK: types, sink, checkpoint, SinkConnect impls.
+# Not in default — enable explicitly (or via CLI features) when targeting v2.
+# May be enabled together with `v3` (CLI dual-SDK); embedders should pick one.
+v2 = [
+    "dep:surrealdb2",
+    "dep:surreal-sync-core",
+    "dep:async-trait",
+    "dep:tracing",
+    "dep:log",
+    "dep:tokio",
+    "dep:chrono",
+    "dep:uuid",
+    "dep:ulid",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:thiserror",
+    "dep:rust_decimal",
+    "dep:geo-types",
+    "dep:base64",
+]
+# SurrealDB v3 SDK: types, sink, checkpoint, SinkConnect impls.
+# May be enabled together with `v2` (CLI dual-SDK); embedders should pick one.
+v3 = [
+    "dep:surrealdb3",
+    "dep:surreal-sync-core",
+    "dep:async-trait",
+    "dep:tracing",
+    "dep:log",
+    "dep:tokio",
+    "dep:chrono",
+    "dep:uuid",
+    "dep:ulid",
+    "dep:serde",
+    "dep:serde_json",
+    "dep:thiserror",
+    "dep:rust_decimal",
+    "dep:geo-types",
+    "dep:base64",
+]
+
+[dependencies]
+anyhow = "1.0.100"
+async-trait = { version = "0.1", optional = true }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false, optional = true }
+semver = { version = "1.0", optional = true }
+tracing = { version = "0.1", optional = true }
+
+# Shared by v2 / v3 sink features
+surreal-sync-core = { path = "../sync-core", version = "0.6.0", optional = true }
+log = { version = "0.4", optional = true }
+tokio = { version = "1", features = ["time"], optional = true }
+chrono = { version = "0.4", features = ["serde"], optional = true }
+uuid = { version = "1.10", features = ["v4", "serde"], optional = true }
+ulid = { version = "1.1", features = ["serde"], optional = true }
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+thiserror = { version = "2.0", optional = true }
+rust_decimal = { version = "^1.23", optional = true }
+geo-types = { version = "0.7", optional = true }
+base64 = { version = "0.22", optional = true }
+
+# Package-aliased SurrealDB majors so `v2` + `v3` can coexist.
+surrealdb2 = { version = "2.6.5", package = "surrealdb", features = ["protocol-ws", "kv-mem"], optional = true }
+surrealdb3 = { version = "3.1.5", package = "surrealdb", features = ["protocol-ws", "kv-mem"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.49", features = ["full", "test-util"] }
+serde = { version = "1.0", features = ["derive"] }
+
+[[test]]
+name = "surrealdb_v2_integration"
+path = "tests/surrealdb_v2_integration.rs"
+required-features = ["v2", "reqwest"]
+
+[[test]]
+name = "debug_surreal_v2"
+path = "tests/debug_surreal_v2.rs"
+required-features = ["v2", "reqwest"]
+
+[[test]]
+name = "surrealdb_v3_integration"
+path = "tests/surrealdb_v3_integration.rs"
+required-features = ["v3", "reqwest"]
+
+[lib]
+name = "surreal_sync_surreal"
+path = "src/lib.rs"

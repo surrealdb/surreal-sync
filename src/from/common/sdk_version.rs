@@ -23,10 +23,10 @@ pub async fn get_sdk_version(endpoint: &str, explicit: Option<&str>) -> anyhow::
         }
         None => {
             tracing::debug!("Auto-detecting SurrealDB server version...");
-            let detected = surreal_version::detect_server_version(endpoint).await?;
+            let detected = surreal_sync_surreal::version::detect_server_version(endpoint).await?;
             let version = match detected {
-                surreal_version::SurrealMajorVersion::V2 => SdkVersion::V2,
-                surreal_version::SurrealMajorVersion::V3 => SdkVersion::V3,
+                surreal_sync_surreal::version::SurrealMajorVersion::V2 => SdkVersion::V2,
+                surreal_sync_surreal::version::SurrealMajorVersion::V3 => SdkVersion::V3,
             };
             tracing::info!(
                 "Auto-detected SurrealDB server version: {detected}, using SDK {version:?}"

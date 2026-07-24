@@ -7,7 +7,7 @@
 //!
 //! ```ignore
 //! use loadtest_verify_surreal3::StreamingVerifier3;
-//! use sync_core::Schema;
+//! use surreal_sync_core::Schema;
 //!
 //! let schema = Schema::from_file("schema.yaml")?;
 //! let mut verifier = StreamingVerifier3::new(&surreal, schema, 42).await?;

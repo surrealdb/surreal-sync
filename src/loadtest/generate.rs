@@ -23,7 +23,7 @@ pub async fn run_loadtest_generate(args: GenerateArgs) -> anyhow::Result<()> {
     // Get tables from schema file
     let schema_content = std::fs::read_to_string(&args.schema)
         .with_context(|| format!("Failed to read schema file: {:?}", args.schema))?;
-    let schema: sync_core::GeneratorSchema =
+    let schema: surreal_sync_core::GeneratorSchema =
         serde_yaml::from_str(&schema_content).with_context(|| "Failed to parse schema YAML")?;
     let tables: Vec<String> = schema.tables.iter().map(|t| t.name.clone()).collect();
 

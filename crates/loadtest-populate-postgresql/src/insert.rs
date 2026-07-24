@@ -1,8 +1,8 @@
 //! Batched INSERT logic for PostgreSQL population.
 
 use crate::error::PostgreSQLPopulatorError;
-use postgresql_types::forward::PostgreSQLValue;
-use sync_core::{GeneratorTableDefinition, Row, Schema, TypedValue};
+use surreal_sync_core::{GeneratorTableDefinition, Row, Schema, TypedValue};
+use surreal_sync_postgresql::types::forward::PostgreSQLValue;
 use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
 
@@ -184,13 +184,13 @@ pub fn generate_create_table(schema: &Schema, table_name: &str) -> Option<String
     let table_schema = schema.get_table(table_name)?;
 
     // Build column definitions
-    let columns: Vec<(String, sync_core::Type, bool)> = table_schema
+    let columns: Vec<(String, surreal_sync_core::Type, bool)> = table_schema
         .fields
         .iter()
         .map(|f| (f.name.clone(), f.field_type.clone(), f.nullable))
         .collect();
 
-    let ddl = postgresql_types::ddl::PostgreSQLDdl;
+    let ddl = surreal_sync_postgresql::types::ddl::PostgreSQLDdl;
     Some(ddl.to_create_table_with_pk(table_name, "id", &table_schema.id.id_type, &columns))
 }
 

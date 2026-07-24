@@ -1,7 +1,7 @@
 //! Numeric value generators.
 
 use rand::RngExt;
-use sync_core::Value;
+use surreal_sync_core::Value;
 
 /// Generate a random integer in the given range (inclusive).
 pub fn generate_int_range<R: RngExt>(rng: &mut R, min: i64, max: i64) -> Value {

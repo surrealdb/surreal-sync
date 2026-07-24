@@ -3,7 +3,7 @@
 //! This module generates .proto file content from a Schema table definition,
 //! enabling dynamic protobuf schema generation for Kafka loadtesting.
 
-use sync_core::{GeneratorTableDefinition, Type};
+use surreal_sync_core::{GeneratorTableDefinition, Type};
 
 /// Information about a proto field type.
 struct ProtoTypeInfo {
@@ -205,7 +205,7 @@ fn to_pascal_case(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::Schema;
+    use surreal_sync_core::Schema;
 
     fn test_schema() -> Schema {
         let yaml = r#"

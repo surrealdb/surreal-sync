@@ -22,7 +22,9 @@ fn ensure_fixture_worker() -> PathBuf {
             .args([
                 "build",
                 "-p",
-                "sync-transform",
+                "surreal-sync-runtime",
+                "--features",
+                "test-support",
                 "--bin",
                 "sync-transform-fixture-worker",
             ])
@@ -110,10 +112,13 @@ async fn test_mysql_binlog_stream_cli_transforms_config_mutate(
     )
     .await?;
 
-    use checkpoint::{Checkpoint, SyncPhase};
-    let checkpoint_file =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, SyncPhase::FullSyncStart).await?;
-    let binlog_checkpoint: surreal_sync_mysql_binlog_source::BinlogCheckpoint =
+    use surreal_sync_core::{Checkpoint, SyncPhase};
+    let checkpoint_file = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        SyncPhase::FullSyncStart,
+    )
+    .await?;
+    let binlog_checkpoint: surreal_sync_mysql::from_binlog::BinlogCheckpoint =
         checkpoint_file.parse()?;
     let checkpoint_string = binlog_checkpoint.to_cli_string();
 
@@ -175,8 +180,11 @@ stdio.framer = "ndjson"
         "MySQL binlog stream CLI with --transforms-config mutate",
     );
 
-    let catch_up =
-        checkpoint::get_checkpoint_for_phase(&checkpoint_dir, SyncPhase::CatchUpProgress).await;
+    let catch_up = surreal_sync_runtime::checkpoint_fs::get_checkpoint_for_phase(
+        &checkpoint_dir,
+        SyncPhase::CatchUpProgress,
+    )
+    .await;
     assert!(
         catch_up.is_ok(),
         "stream phase with --checkpoint-dir should persist CatchUpProgress; err={catch_up:?}"

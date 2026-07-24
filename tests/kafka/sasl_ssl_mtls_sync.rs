@@ -8,20 +8,20 @@ use surreal_sync::testing::surreal::{
 use surreal_sync::testing::{
     generate_test_id, table::TestDataSet, users::create_users_table, SourceDatabase, TestConfig,
 };
-use surreal_sync_kafka_producer::secure_container::SecureKafkaContainer;
-use surreal_sync_kafka_producer::{
-    publish_test_users, KafkaConnectionOptions, KafkaTestProducer, SaslMechanism, SecurityProtocol,
-};
-use surreal_sync_kafka_source::{
+use surreal_sync_kafka::from_kafka::{
     Config as KafkaConfig, SaslMechanism as ConsumerSaslMechanism,
     SecurityProtocol as ConsumerSecurityProtocol,
+};
+use surreal_sync_kafka::producer::secure_container::SecureKafkaContainer;
+use surreal_sync_kafka::producer::{
+    publish_test_users, KafkaConnectionOptions, KafkaTestProducer, SaslMechanism, SecurityProtocol,
 };
 use tokio::time::sleep;
 
 #[tokio::test]
 async fn test_kafka_sasl_ssl_mtls_sync() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
-        .with_env_filter("surreal_sync=debug,surreal_sync_kafka_source=debug")
+        .with_env_filter("surreal_sync=debug,surreal_sync_kafka=debug")
         .try_init()
         .ok();
 
@@ -69,7 +69,7 @@ async fn test_kafka_sasl_ssl_mtls_sync() -> Result<(), Box<dyn std::error::Error
     let user_proto_path = proto_dir.path().join("user.proto");
     std::fs::write(
         &user_proto_path,
-        include_str!("../../crates/kafka-producer/proto/user.proto"),
+        include_str!("../../crates/kafka/proto/user.proto"),
     )?;
 
     let user_config = KafkaConfig {
@@ -102,10 +102,15 @@ async fn test_kafka_sasl_ssl_mtls_sync() -> Result<(), Box<dyn std::error::Error
     tracing::info!("Running secured Kafka incremental sync for users...");
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = Arc::new(surreal2_sink::Surreal2Sink::new(client.clone()));
+            let sink = Arc::new(surreal_sync_surreal::v2::Surreal2Sink::new(client.clone()));
             let sync_handle = tokio::spawn(async move {
-                surreal_sync_kafka_source::run_incremental_sync(sink, user_config, deadline, None)
-                    .await
+                surreal_sync_kafka::from_kafka::run_incremental_sync(
+                    sink,
+                    user_config,
+                    deadline,
+                    None,
+                )
+                .await
             });
 
             let sync_result = tokio::time::timeout(Duration::from_secs(10), sync_handle).await;
@@ -117,10 +122,15 @@ async fn test_kafka_sasl_ssl_mtls_sync() -> Result<(), Box<dyn std::error::Error
             }
         }
         SurrealConnection::V3(client) => {
-            let sink = Arc::new(surreal3_sink::Surreal3Sink::new(client.clone()));
+            let sink = Arc::new(surreal_sync_surreal::v3::Surreal3Sink::new(client.clone()));
             let sync_handle = tokio::spawn(async move {
-                surreal_sync_kafka_source::run_incremental_sync(sink, user_config, deadline, None)
-                    .await
+                surreal_sync_kafka::from_kafka::run_incremental_sync(
+                    sink,
+                    user_config,
+                    deadline,
+                    None,
+                )
+                .await
             });
 
             let sync_result = tokio::time::timeout(Duration::from_secs(10), sync_handle).await;

@@ -45,11 +45,10 @@ impl PostgresContainer {
         let context_path;
 
         loop {
-            let candidate = current_dir
-                .join("crates/postgresql-wal2json-source/Dockerfile.postgres16.wal2json");
+            let candidate = current_dir.join("crates/postgresql/Dockerfile.postgres16.wal2json");
             if candidate.exists() {
                 dockerfile_path = candidate;
-                context_path = current_dir.join("crates/postgresql-wal2json-source");
+                context_path = current_dir.join("crates/postgresql");
                 break;
             }
 

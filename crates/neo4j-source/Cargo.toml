@@ -1,6 +1,7 @@
 [package]
 name = "surreal-sync-neo4j-source"
-version = "0.1.0"
+version = "0.6.0"
+publish = false
 edition = "2021"
 description = "Neo4j sync utilities for surreal-sync"
 license = "MIT"
@@ -9,17 +10,11 @@ license = "MIT"
 # Neo4j client
 neo4rs = "0.9.0-rc.8"
 
-# SurrealDB sink trait
-surreal-sink = { path = "../surreal-sink" }
-
 # Sync core traits
-sync-core = { path = "../sync-core" }
+surreal-sync-core = { path = "../sync-core" }
 
-# Checkpoint management
-checkpoint = { path = "../checkpoint" }
-
-# Shared apply / transform pipeline
-sync-transform = { path = "../sync-transform" }
+# Shared apply / transform pipeline + filesystem checkpoints
+surreal-sync-runtime = { path = "../runtime" }
 
 # Type conversion
 neo4j-types = { path = "../neo4j-types" }
@@ -47,6 +42,4 @@ tokio-test = "0.4"
 tempfile = "3.27"
 surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
 async-trait = "0.1"
-sync-transform = { path = "../sync-transform" }
-checkpoint = { path = "../checkpoint" }
 neo4rs = "0.9.0-rc.8"

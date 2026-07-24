@@ -15,7 +15,7 @@
 //!
 //! ## Import Note
 //!
-//! This test imports directly from `surreal_sync_kafka_source` crate (not re-exported
+//! This test imports directly from `surreal_sync_kafka` crate (not re-exported
 //! through main crate). This follows the pattern established for other database-
 //! specific sync crates (mysql-trigger, postgresql-trigger, etc.).
 
@@ -24,9 +24,9 @@ use loadtest_populate_kafka::KafkaPopulator;
 use std::{sync::Arc, time::Duration};
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use surreal_sync_kafka_producer::container::KafkaContainer;
-use surreal_sync_kafka_source::Config as KafkaConfig;
-use sync_core::Schema;
+use surreal_sync_core::Schema;
+use surreal_sync_kafka::from_kafka::Config as KafkaConfig;
+use surreal_sync_kafka::producer::container::KafkaContainer;
 use tokio::time::sleep;
 
 const SEED: u64 = 42;
@@ -153,7 +153,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     match &conn {
         SurrealConnection::V2(client) => {
             // Create SurrealDB v2 sink
-            let sink = Arc::new(surreal2_sink::Surreal2Sink::new(client.clone()));
+            let sink = Arc::new(surreal_sync_surreal::v2::Surreal2Sink::new(client.clone()));
 
             tracing::info!("Running Kafka streaming sync to SurrealDB (v2)");
 
@@ -204,7 +204,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                 let sync_handle = tokio::spawn({
                     let sink_clone = sink.clone();
                     async move {
-                        surreal_sync_kafka_source::run_incremental_sync(
+                        surreal_sync_kafka::from_kafka::run_incremental_sync(
                             sink_clone,
                             config,
                             deadline,
@@ -287,7 +287,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
         }
         SurrealConnection::V3(client) => {
             // Create SurrealDB v3 sink
-            let sink = Arc::new(surreal3_sink::Surreal3Sink::new(client.clone()));
+            let sink = Arc::new(surreal_sync_surreal::v3::Surreal3Sink::new(client.clone()));
 
             tracing::info!("Running Kafka streaming sync to SurrealDB (v3)");
 
@@ -338,7 +338,7 @@ async fn test_kafka_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
                 let sync_handle = tokio::spawn({
                     let sink_clone = sink.clone();
                     async move {
-                        surreal_sync_kafka_source::run_incremental_sync(
+                        surreal_sync_kafka::from_kafka::run_incremental_sync(
                             sink_clone,
                             config,
                             deadline,

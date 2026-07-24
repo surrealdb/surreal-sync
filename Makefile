@@ -101,8 +101,8 @@ build-debug:
 prebuild-test-images: prepull-binlog-images
 	@echo "🐳 Pre-building PostgreSQL wal2json test image..."
 	docker build -t postgres-wal2json-test \
-		-f crates/postgresql-wal2json-source/Dockerfile.postgres16.wal2json \
-		crates/postgresql-wal2json-source
+		-f crates/postgresql/Dockerfile.postgres16.wal2json \
+		crates/postgresql
 	@echo "✅ Test images ready"
 
 # Run fmt, clippy, build the debug binary, then the full test suite via nextest.

@@ -4,7 +4,7 @@ use crate::error::MongoDBPopulatorError;
 use bson::{doc, Document};
 use mongodb::Collection;
 use mongodb_types::forward::BsonValue;
-use sync_core::{GeneratorTableDefinition, Row, TypedValue};
+use surreal_sync_core::{GeneratorTableDefinition, Row, TypedValue};
 
 /// Default batch size for INSERT operations.
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -89,7 +89,7 @@ pub async fn count_documents(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::{Schema, Value};
+    use surreal_sync_core::{Schema, Value};
 
     fn test_schema() -> Schema {
         let yaml = r#"

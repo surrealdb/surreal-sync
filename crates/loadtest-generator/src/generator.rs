@@ -4,7 +4,7 @@ use crate::generators::generate_value_typed;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::collections::HashMap;
-use sync_core::{Row, Schema, Value};
+use surreal_sync_core::{Row, Schema, Value};
 
 /// Error type for generator operations.
 #[derive(Debug, thiserror::Error)]
@@ -15,7 +15,7 @@ pub enum GeneratorError {
 
     /// Schema error
     #[error("Schema error: {0}")]
-    SchemaError(#[from] sync_core::SchemaError),
+    SchemaError(#[from] surreal_sync_core::SchemaError),
 }
 
 /// Data generator that produces deterministic test data rows.
@@ -172,7 +172,7 @@ impl ExactSizeIterator for RowIterator<'_> {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::Schema;
+    use surreal_sync_core::Schema;
 
     fn test_schema() -> Schema {
         let yaml = r#"

@@ -1,0 +1,67 @@
+[package]
+name = "surreal-sync-json"
+version = "0.6.0"
+edition = "2021"
+description = "JSON type conversions and from_jsonl origin for surreal-sync"
+publish = true
+repository = "https://github.com/surrealdb/surreal-sync"
+homepage = "https://github.com/surrealdb/surreal-sync"
+documentation = "https://docs.rs/surreal-sync-json"
+
+[features]
+default = ["types"]
+types = []
+from_jsonl = [
+    "types",
+    "dep:surreal-sync-file",
+    "dep:surreal-sync-runtime",
+    "dep:tracing",
+    "dep:tokio",
+    "dep:async-trait",
+]
+
+[dependencies]
+# types (always available; light consumers of surreal-sync-json)
+surreal-sync-core = { path = "../sync-core", version = "0.6.0" }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+base64 = "0.22"
+anyhow = "1.0"
+
+# from_jsonl (optional; heavy origin deps)
+surreal-sync-file = { path = "../file", version = "0.6.0", optional = true }
+surreal-sync-runtime = { path = "../runtime", version = "0.6.0", optional = true }
+tracing = { version = "0.1", optional = true }
+tokio = { version = "1.49", features = ["full"], optional = true }
+async-trait = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.49", features = ["full"] }
+tokio-test = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
+surrealdb3 = { version = "3.1.5", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
+surreal-sync-surreal = { path = "../surreal", version = "0.6.0", features = ["v2", "v3", "reqwest"], default-features = false }
+serde_json = "1.0"
+async-trait = "0.1"
+surreal-sync-core = { path = "../sync-core", version = "0.6.0" }
+surreal-sync-runtime = { path = "../runtime", version = "0.6.0" }
+tempfile = "3.27"
+
+[lib]
+name = "surreal_sync_json"
+path = "src/lib.rs"
+
+[[test]]
+name = "e2e_jsonl"
+path = "tests/e2e_jsonl.rs"
+required-features = ["from_jsonl"]
+
+[[test]]
+name = "transforms"
+path = "tests/transforms.rs"
+required-features = ["from_jsonl"]

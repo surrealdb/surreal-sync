@@ -11,7 +11,7 @@ pub mod timestamp;
 pub mod uuid;
 
 use rand::RngExt;
-use sync_core::{GeneratorConfig, Type, Value};
+use surreal_sync_core::{GeneratorConfig, Type, Value};
 
 /// Trait for generating values.
 pub trait ValueGenerator {

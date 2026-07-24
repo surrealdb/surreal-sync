@@ -11,7 +11,7 @@ use loadtest_populate_csv::CSVPopulator;
 use surreal_sync::csv::{sync, Config, FileSource};
 use surreal_sync::testing::surreal::{connect_auto, SurrealConnection};
 use surreal_sync::testing::{generate_test_id, TestConfig};
-use sync_core::Schema;
+use surreal_sync_core::Schema;
 use tempfile::TempDir;
 
 const SEED: u64 = 42;
@@ -107,11 +107,11 @@ async fn test_csv_loadtest_small_scale() -> Result<(), Box<dyn std::error::Error
 
         match &conn {
             SurrealConnection::V2(client) => {
-                let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+                let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
                 sync(&sink, config).await?;
             }
             SurrealConnection::V3(client) => {
-                let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+                let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
                 sync(&sink, config).await?;
             }
         }
@@ -318,7 +318,7 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
 
     match &conn {
         SurrealConnection::V2(client) => {
-            let sink = surreal2_sink::Surreal2Sink::new(client.clone());
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::new(client.clone());
             sync(&sink, config).await?;
 
             // Query the record directly using proper type extraction
@@ -350,7 +350,7 @@ async fn test_csv_debug_field_extraction() -> Result<(), Box<dyn std::error::Err
                 .await?;
         }
         SurrealConnection::V3(client) => {
-            let sink = surreal3_sink::Surreal3Sink::new(client.clone());
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::new(client.clone());
             sync(&sink, config).await?;
 
             // Query the record directly using proper type extraction

@@ -261,7 +261,7 @@ surreal-sync from kafka \
 
 If your use case requires additional type conversions (e.g., `int32` 0/1 → `bool`, timestamp strings → datetime, etc.), please file a feature request at: https://github.com/surrealdb/surreal-sync/issues
 
-If you are going to fork and/or contribute to this project for the addition, please refer to [the reverse conversion logic for the Kafka source](../crates/kafka-types/src/reverse.rs) for the current implementation.
+If you are going to fork and/or contribute to this project for the addition, please refer to [the reverse conversion logic for the Kafka source](../crates/kafka/src/types/reverse.rs) for the current implementation.
 
 ## Usage Examples
 

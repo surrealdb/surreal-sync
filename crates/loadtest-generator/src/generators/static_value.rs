@@ -1,7 +1,7 @@
 //! Static value generator and YAML to Value conversion.
 
 use serde_yaml::Value as YamlValue;
-use sync_core::Value;
+use surreal_sync_core::Value;
 
 /// Convert a YAML value to a serde_json::Value.
 fn yaml_to_json_value(yaml: &YamlValue) -> serde_json::Value {
@@ -61,7 +61,7 @@ pub fn yaml_to_generated_value(yaml: &YamlValue) -> Value {
             // Use Text as default element type for YAML arrays
             Value::Array {
                 elements: values,
-                element_type: Box::new(sync_core::Type::Text),
+                element_type: Box::new(surreal_sync_core::Type::Text),
             }
         }
         YamlValue::Mapping(map) => {
