@@ -1,4 +1,4 @@
-.PHONY: test check fmt clippy build build-debug compile-embedder-examples clean clean-logs help install-tools install-hooks system-deps prebuild-test-images prepull-binlog-images print-test-images services-info
+.PHONY: test check fmt clippy build build-debug compile-embedder-examples embed-dependency-tree-gates clean clean-logs help install-tools install-hooks system-deps prebuild-test-images prepull-binlog-images print-test-images services-info
 
 include scripts/test-images.mk
 
@@ -34,10 +34,11 @@ help:
 	@echo "Surreal-Sync Development Targets:"
 	@echo ""
 	@echo "Quality Assurance:"
-	@echo "  test          - Build (debug) + compile embedder examples + run all checks and tests via cargo-nextest"
+	@echo "  test          - Build (debug) + embed gates + run all checks and tests via cargo-nextest"
 	@echo "  clippy        - Run the clippy linter"
 	@echo "  fmt           - Format code"
 	@echo "  compile-embedder-examples - Compile examples/from-* embedder packages"
+	@echo "  embed-dependency-tree-gates - cargo-tree / ripgrep gates for embed graphs"
 	@echo ""
 	@echo "Development:"
 	@echo "  build         - Build the release binary"
@@ -59,14 +60,14 @@ install-tools:
 	@command -v cargo-nextest >/dev/null 2>&1 || cargo install cargo-nextest --locked
 	@echo "✅ Toolchain components and cargo-nextest installed"
 
-# Install the system build dependencies (OpenSSL, pkg-config, cmake, protobuf, ...)
+# Install the system build dependencies (OpenSSL, pkg-config, cmake, protobuf, ripgrep, ...)
 system-deps:
 ifeq ($(UNAME_S),Darwin)
-	brew install openssl@3 pkg-config cmake protobuf
+	brew install openssl@3 pkg-config cmake protobuf ripgrep
 else
 	@echo "On Debian/Ubuntu, run:"
 	@echo "  sudo apt-get update && sudo apt-get install -y \\"
-	@echo "    build-essential cmake libssl-dev libsasl2-dev pkg-config protobuf-compiler postgresql-client"
+	@echo "    build-essential cmake libssl-dev libsasl2-dev pkg-config protobuf-compiler postgresql-client ripgrep"
 endif
 
 # Install git hooks for pre-push checks (fmt + clippy)
@@ -112,6 +113,13 @@ compile-embedder-examples:
 	./scripts/compile-embedder-examples.sh $(COMPILE_EMBEDDER_PROFILE_ARGS)
 	@echo "✅ Embedder examples compiled"
 
+# cargo-tree / ripgrep gates for embed dependency graphs. Same as the CI
+# "Embed dependency tree gates" step. Requires ripgrep (rg) on PATH.
+embed-dependency-tree-gates:
+	@echo "🌳 Running embed dependency tree gates..."
+	./scripts/embed-dependency-tree-gates.sh
+	@echo "✅ Embed dependency tree gates passed"
+
 # Pre-pull binlog images and pre-build the custom PostgreSQL (wal2json) test image
 # so parallel test processes find them in Docker's layer cache instead of racing.
 prebuild-test-images: prepull-binlog-images
@@ -121,12 +129,11 @@ prebuild-test-images: prepull-binlog-images
 		crates/postgresql
 	@echo "✅ Test images ready"
 
-# Run fmt, clippy, build the debug binary, compile embedder examples, then the
-# full test suite via nextest. Integration tests spin up their own Docker
-# containers, so a Docker daemon must be running. nextest runs tests in parallel
-# across the whole workspace; doctests are run separately because nextest does
-# not execute them.
-test: fmt clippy build-debug compile-embedder-examples prebuild-test-images
+# Run fmt, clippy, build the debug binary, embed gates, then the full test suite
+# via nextest. Integration tests spin up their own Docker containers, so a Docker
+# daemon must be running. nextest runs tests in parallel across the whole
+# workspace; doctests are run separately because nextest does not execute them.
+test: fmt clippy build-debug compile-embedder-examples embed-dependency-tree-gates prebuild-test-images
 	@echo "Running unit + integration tests (cargo-nextest)..."
 	SURREAL_SYNC_BIN=$(SURREAL_SYNC_BIN) cargo nextest run --workspace --all-features
 	@echo "Running documentation tests..."
