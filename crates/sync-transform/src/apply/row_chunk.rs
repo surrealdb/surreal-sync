@@ -8,7 +8,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
+use sync_core::{Change, Relation, RelationChange, Row};
 
 use super::event::PositionedEvent;
 use super::source_driver::{CheckpointPolicy, SourceDriver};
@@ -18,7 +18,7 @@ use super::source_driver::{CheckpointPolicy, SourceDriver};
 /// Return `Ok(None)` (or an empty `Vec`) when there are no more rows.
 #[async_trait]
 pub trait RowChunkSource: Send {
-    async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRow>>>;
+    async fn next_chunk(&mut self) -> Result<Option<Vec<Row>>>;
 }
 
 /// Long-lived [`SourceDriver`] over a [`RowChunkSource`] (CSV-like full-sync pattern).
@@ -34,7 +34,7 @@ pub struct RowChunkDriver<C> {
 }
 
 impl<C> RowChunkDriver<C> {
-    /// Wrap a chunk source. `next_index` seeds [`UniversalRow::index`] / positions.
+    /// Wrap a chunk source. `next_index` seeds [`Row::index`] / positions.
     pub fn new(source: C) -> Self {
         Self {
             source,
@@ -78,7 +78,7 @@ where
                     row.index = self.next_index;
                     let pos = self.next_index;
                     self.next_index = self.next_index.saturating_add(1);
-                    let change = UniversalChange::update(row.table, row.id, row.fields);
+                    let change = Change::update(row.table, row.id, row.fields);
                     events.push(PositionedEvent::change(change, pos));
                 }
                 Ok(events)
@@ -107,7 +107,7 @@ where
 /// Produces successive relation chunks until the scan is exhausted.
 #[async_trait]
 pub trait RelationChunkSource: Send {
-    async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRelation>>>;
+    async fn next_chunk(&mut self) -> Result<Option<Vec<Relation>>>;
 }
 
 /// Long-lived [`SourceDriver`] over a [`RelationChunkSource`].
@@ -163,7 +163,7 @@ where
                 for relation in rels.drain(..) {
                     let pos = self.next_index;
                     self.next_index = self.next_index.saturating_add(1);
-                    let change = UniversalRelationChange::update(relation);
+                    let change = RelationChange::update(relation);
                     events.push(PositionedEvent::relation_change(change, pos));
                 }
                 Ok(events)

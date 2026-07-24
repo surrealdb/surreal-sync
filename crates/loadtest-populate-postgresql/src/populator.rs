@@ -5,7 +5,7 @@ use crate::insert::{generate_create_table, generate_drop_table, insert_batch, DE
 use loadtest_generator::DataGenerator;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use sync_core::{Schema, UniversalRow};
+use sync_core::{Row, Schema};
 use tokio::sync::Mutex;
 use tokio_postgres::{Client, NoTls};
 use tracing::{debug, info};
@@ -203,7 +203,7 @@ impl PostgreSQLPopulator {
 
             // Generate rows
             let gen_start = Instant::now();
-            let rows: Vec<UniversalRow> = self
+            let rows: Vec<Row> = self
                 .generator
                 .internal_rows(table_name, batch_count)
                 .map_err(|e| PostgreSQLPopulatorError::Generator(e.to_string()))?

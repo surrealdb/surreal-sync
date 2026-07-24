@@ -7,10 +7,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use checkpoint::Checkpoint;
 use checkpoint::{CheckpointStore, SyncManager, SyncPhase};
-use mysql_async::{prelude::*, Pool, Row};
+use mysql_async::{prelude::*, Pool, Row as MysqlRow};
 use mysql_types::{row_to_typed_values_with_config, RowConversionConfig};
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalRow, UniversalValue};
+use sync_core::{Row, Value};
 use sync_transform::{
     run_source_runtime_with, ApplyOpts, Pipeline, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
 };
@@ -197,7 +197,7 @@ async fn collect_schema_info(
 ) -> Result<HashMap<String, TableSchemaInfo>> {
     let mut schema_info: HashMap<String, TableSchemaInfo> = HashMap::new();
 
-    let boolean_rows: Vec<Row> = conn
+    let boolean_rows: Vec<MysqlRow> = conn
         .query(
             r#"
             SELECT TABLE_NAME, COLUMN_NAME
@@ -218,7 +218,7 @@ async fn collect_schema_info(
             .push(column_name);
     }
 
-    let set_rows: Vec<Row> = conn
+    let set_rows: Vec<MysqlRow> = conn
         .query(
             r#"
             SELECT TABLE_NAME, COLUMN_NAME
@@ -256,7 +256,7 @@ async fn get_user_tables(
     if !from_opts.tables.is_empty() {
         return Ok(from_opts.tables.clone());
     }
-    let rows: Vec<Row> = conn
+    let rows: Vec<MysqlRow> = conn
         .query(format!(
             "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES \
              WHERE TABLE_SCHEMA = '{database}' \
@@ -275,7 +275,7 @@ pub async fn get_primary_key_columns(
     database: &str,
     table: &str,
 ) -> Result<Vec<String>> {
-    let rows: Vec<Row> = conn
+    let rows: Vec<MysqlRow> = conn
         .query(format!(
             "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
              WHERE TABLE_SCHEMA = '{database}' AND TABLE_NAME = '{table}' \
@@ -330,7 +330,7 @@ async fn migrate_table<S: SurrealSink>(
     if !pk_columns.is_empty() {
         if sync_opts.dry_run {
             let mut total_processed = 0usize;
-            let mut after: Option<Vec<UniversalValue>> = None;
+            let mut after: Option<Vec<Value>> = None;
             loop {
                 if cancel.is_cancelled() {
                     return Ok(total_processed);
@@ -362,7 +362,7 @@ async fn migrate_table<S: SurrealSink>(
             conn: &'a mut mysql_async::Conn,
             table_name: &'a str,
             pk_columns: &'a [String],
-            after: Option<Vec<UniversalValue>>,
+            after: Option<Vec<Value>>,
             batch_size: usize,
             config: &'a RowConversionConfig,
             cancel: &'a tokio_util::sync::CancellationToken,
@@ -371,7 +371,7 @@ async fn migrate_table<S: SurrealSink>(
 
         #[async_trait]
         impl RowChunkSource for MysqlKeysetChunks<'_> {
-            async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRow>>> {
+            async fn next_chunk(&mut self) -> Result<Option<Vec<Row>>> {
                 if self.exhausted || self.cancel.is_cancelled() {
                     self.exhausted = true;
                     return Ok(None);
@@ -427,7 +427,7 @@ async fn migrate_table<S: SurrealSink>(
             if cancel.is_cancelled() {
                 return Ok(total_processed);
             }
-            let rows: Vec<Row> = conn
+            let rows: Vec<MysqlRow> = conn
                 .query(format!(
                     "SELECT * FROM `{table_name}` LIMIT {batch_size} OFFSET {offset}"
                 ))
@@ -458,12 +458,12 @@ async fn migrate_table<S: SurrealSink>(
 
     #[async_trait]
     impl RowChunkSource for MysqlOffsetChunks<'_> {
-        async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRow>>> {
+        async fn next_chunk(&mut self) -> Result<Option<Vec<Row>>> {
             if self.exhausted || self.cancel.is_cancelled() {
                 self.exhausted = true;
                 return Ok(None);
             }
-            let rows: Vec<Row> = self
+            let rows: Vec<MysqlRow> = self
                 .conn
                 .query(format!(
                     "SELECT * FROM `{}` LIMIT {} OFFSET {}",
@@ -479,18 +479,13 @@ async fn migrate_table<S: SurrealSink>(
             for (i, row) in rows.iter().enumerate() {
                 let row_index = (self.offset + i) as u64;
                 let typed_values = row_to_typed_values_with_config(row, self.config)?;
-                let values: HashMap<String, UniversalValue> = typed_values
+                let values: HashMap<String, Value> = typed_values
                     .into_iter()
                     .map(|(k, tv)| (k, tv.value))
                     .collect();
-                let id = UniversalValue::Int64(row_index as i64);
+                let id = Value::Int64(row_index as i64);
                 let fields = values;
-                batch.push(UniversalRow::new(
-                    self.table_name.to_string(),
-                    row_index,
-                    id,
-                    fields,
-                ));
+                batch.push(Row::new(self.table_name.to_string(), row_index, id, fields));
             }
             let n = batch.len();
             self.offset += n;
@@ -523,10 +518,10 @@ pub async fn read_table_chunk(
     conn: &mut mysql_async::Conn,
     table_name: &str,
     pk_columns: &[String],
-    after: Option<&[UniversalValue]>,
+    after: Option<&[Value]>,
     limit: usize,
     config: &RowConversionConfig,
-) -> Result<Vec<UniversalRow>> {
+) -> Result<Vec<Row>> {
     surreal_sync_mysql_trigger_source::read_table_chunk(
         conn, table_name, pk_columns, after, limit, config,
     )

@@ -8,9 +8,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use surreal_sink::SurrealSink;
 use surreal_sync_file::{FileSource, ResolvedSource, DEFAULT_BUFFER_SIZE};
-use sync_core::{
-    GeneratorTableDefinition, Schema, TypedValue, UniversalRow, UniversalType, UniversalValue,
-};
+use sync_core::{GeneratorTableDefinition, Row, Schema, Type, TypedValue, Value};
 use sync_transform::{
     run_source_runtime, ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver,
     SourceRuntimeOpts,
@@ -49,7 +47,7 @@ pub struct Config {
     pub id_field: Option<String>,
 
     /// Optional multi-column record ID fields (takes precedence over `id_field`).
-    /// When two or more are set, the ID is an [`UniversalValue::Array`].
+    /// When two or more are set, the ID is an [`Value::Array`].
     pub id_columns: Vec<String>,
 
     /// Optional column names when has_headers is false
@@ -93,7 +91,7 @@ impl Default for Config {
 ///
 /// When a schema is provided, this function parses values based on their declared type.
 /// Uses the unified json-types crate for type conversion.
-fn parse_value_with_schema(value: &str, schema_type: Option<&UniversalType>) -> TypedValue {
+fn parse_value_with_schema(value: &str, schema_type: Option<&Type>) -> TypedValue {
     if let Some(data_type) = schema_type {
         // Use json-types for schema-aware conversion
         match csv_string_to_typed_value(value, data_type) {
@@ -115,25 +113,19 @@ struct DryRunSink;
 
 #[async_trait::async_trait]
 impl SurrealSink for DryRunSink {
-    async fn write_universal_rows(&self, _rows: &[UniversalRow]) -> Result<()> {
+    async fn write_rows(&self, _rows: &[Row]) -> Result<()> {
         Ok(())
     }
 
-    async fn write_universal_relations(
-        &self,
-        _relations: &[sync_core::UniversalRelation],
-    ) -> Result<()> {
+    async fn write_relations(&self, _relations: &[sync_core::Relation]) -> Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, _change: &sync_core::UniversalChange) -> Result<()> {
+    async fn apply_change(&self, _change: &sync_core::Change) -> Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
-        &self,
-        _change: &sync_core::UniversalRelationChange,
-    ) -> Result<()> {
+    async fn apply_relation_change(&self, _change: &sync_core::RelationChange) -> Result<()> {
         Ok(())
     }
 }
@@ -194,29 +186,29 @@ impl CsvStreamDriver {
 
         let id_cols = self.effective_id_columns();
         let id_value = if id_cols.is_empty() {
-            UniversalValue::Ulid(ulid::Ulid::new())
+            Value::Ulid(ulid::Ulid::new())
         } else if id_cols.len() == 1 {
             data.get(&id_cols[0])
                 .map(|tv| tv.value.clone())
-                .unwrap_or_else(|| UniversalValue::Ulid(ulid::Ulid::new()))
+                .unwrap_or_else(|| Value::Ulid(ulid::Ulid::new()))
         } else {
             let mut parts = Vec::with_capacity(id_cols.len());
             for col in &id_cols {
                 let part = data
                     .get(col)
                     .map(|tv| tv.value.clone())
-                    .unwrap_or(UniversalValue::Null);
+                    .unwrap_or(Value::Null);
                 parts.push(part);
             }
             sync_core::build_composite_record_id(parts)
         };
 
-        let fields: HashMap<String, UniversalValue> =
+        let fields: HashMap<String, Value> =
             data.into_iter().map(|(k, tv)| (k, tv.value)).collect();
-        let row = UniversalRow::new(self.table.clone(), self.record_count, id_value, fields);
+        let row = Row::new(self.table.clone(), self.record_count, id_value, fields);
         let pos = self.record_count;
         self.record_count = self.record_count.saturating_add(1);
-        let change = sync_core::UniversalChange::update(row.table, row.id, row.fields);
+        let change = sync_core::Change::update(row.table, row.id, row.fields);
         Ok(PositionedEvent::change(change, pos))
     }
 }
@@ -523,7 +515,7 @@ mod tests {
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
-    use sync_core::{UniversalChange, UniversalRelation};
+    use sync_core::{Change, Relation};
     use tempfile::NamedTempFile;
 
     /// Mock SurrealDB sink for testing
@@ -545,26 +537,23 @@ mod tests {
 
     #[async_trait::async_trait]
     impl SurrealSink for MockSink {
-        async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
+        async fn write_rows(&self, rows: &[Row]) -> anyhow::Result<()> {
             self.rows_written.fetch_add(rows.len(), Ordering::SeqCst);
             Ok(())
         }
 
-        async fn write_universal_relations(
-            &self,
-            _relations: &[UniversalRelation],
-        ) -> anyhow::Result<()> {
+        async fn write_relations(&self, _relations: &[Relation]) -> anyhow::Result<()> {
             Ok(())
         }
 
-        async fn apply_universal_change(&self, _change: &UniversalChange) -> anyhow::Result<()> {
+        async fn apply_change(&self, _change: &Change) -> anyhow::Result<()> {
             self.rows_written.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
-        async fn apply_universal_relation_change(
+        async fn apply_relation_change(
             &self,
-            _change: &sync_core::UniversalRelationChange,
+            _change: &sync_core::RelationChange,
         ) -> anyhow::Result<()> {
             Ok(())
         }
@@ -605,19 +594,19 @@ mod tests {
 
     #[test]
     fn test_parse_value_with_schema_int() {
-        let result = parse_value_with_schema("42", Some(&UniversalType::Int32));
+        let result = parse_value_with_schema("42", Some(&Type::Int32));
         assert_eq!(result.value.as_i32(), Some(42));
     }
 
     #[test]
     fn test_parse_value_with_schema_bool() {
-        let result = parse_value_with_schema("true", Some(&UniversalType::Bool));
+        let result = parse_value_with_schema("true", Some(&Type::Bool));
         assert_eq!(result.value.as_bool(), Some(true));
     }
 
     #[test]
     fn test_parse_value_with_schema_text() {
-        let result = parse_value_with_schema("hello", Some(&UniversalType::Text));
+        let result = parse_value_with_schema("hello", Some(&Type::Text));
         assert_eq!(result.value.as_str(), Some("hello"));
     }
 

@@ -5,11 +5,11 @@
 
 use mysql_types::mysql_column_to_universal_type;
 use std::collections::HashMap;
-use sync_core::{ColumnDefinition, DatabaseSchema, TableDefinition, UniversalType};
+use sync_core::{ColumnDefinition, DatabaseSchema, TableDefinition, Type};
 
 /// Collect schema information for all tables in a MySQL database.
 ///
-/// Returns a `DatabaseSchema` with proper `UniversalType` mapping.
+/// Returns a `DatabaseSchema` with proper `Type` mapping.
 /// This function also queries primary key information for each table.
 #[allow(dead_code)]
 pub async fn collect_mysql_database_schema(
@@ -37,7 +37,7 @@ pub async fn collect_mysql_database_schema(
     let pk_rows: Vec<mysql_async::Row> = conn.query(pk_query).await?;
 
     // Detect JSON columns so MariaDB's `LONGTEXT`-backed JSON (reported as
-    // `longtext`, not `json`) is still mapped to `UniversalType::Json`, matching
+    // `longtext`, not `json`) is still mapped to `Type::Json`, matching
     // native MySQL JSON. This drives the incremental stream path in `source.rs`,
     // which keys conversion off the schema type.
     let json_columns = {
@@ -61,7 +61,7 @@ pub async fn collect_mysql_database_schema(
     }
 
     // Build tables with columns
-    let mut table_columns: HashMap<String, Vec<(String, UniversalType)>> = HashMap::new();
+    let mut table_columns: HashMap<String, Vec<(String, Type)>> = HashMap::new();
 
     for row in column_rows {
         let table_name: String = row
@@ -83,7 +83,7 @@ pub async fn collect_mysql_database_schema(
             .get(&table_name)
             .is_some_and(|cols| cols.contains(&column_name));
         let universal_type = if is_json {
-            UniversalType::Json
+            Type::Json
         } else {
             mysql_column_to_universal_type(&data_type, &column_type, precision, scale)
         };
@@ -120,7 +120,7 @@ pub async fn collect_mysql_database_schema(
         // Use the found PK or create a default one
         let pk = primary_key.unwrap_or_else(|| {
             // If no PK column found, create a synthetic one
-            ColumnDefinition::new(pk_col_name, UniversalType::Int64)
+            ColumnDefinition::new(pk_col_name, Type::Int64)
         });
 
         let mut table_def = TableDefinition::new(table_name, pk, other_columns);

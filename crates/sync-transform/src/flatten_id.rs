@@ -2,14 +2,13 @@
 
 use crate::inplace::InPlaceTransform;
 use anyhow::Result;
-use sync_core::{
-    flatten_composite_id, UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow,
-};
+use std::collections::HashMap;
+use sync_core::{flatten_composite_id, Relation, RelationChange, Value};
 
 /// Default separator matching relation FK flattening and historical Snowflake IDs.
 pub const DEFAULT_FLATTEN_ID_SEPARATOR: &str = ":";
 
-/// Rewrite `UniversalValue::Array` record IDs to Text joined with [`Self::separator`].
+/// Rewrite `Value::Array` record IDs to Text joined with [`Self::separator`].
 ///
 /// Scalar IDs are left unchanged. Relation **edge** IDs are also flattened when
 /// they are Arrays (endpoint Thing refs are flattened the same way so links stay
@@ -38,39 +37,33 @@ impl FlattenId {
 }
 
 impl InPlaceTransform for FlattenId {
-    fn transform_row(&self, row: &mut UniversalRow) -> Result<()> {
-        row.id = flatten_composite_id(
-            std::mem::replace(&mut row.id, sync_core::UniversalValue::Null),
-            &self.separator,
-        );
+    fn transform(
+        &self,
+        _table: &str,
+        id: &mut Value,
+        _fields: Option<&mut HashMap<String, Value>>,
+    ) -> Result<()> {
+        *id = flatten_composite_id(std::mem::replace(id, Value::Null), &self.separator);
         Ok(())
     }
 
-    fn transform_change(&self, change: &mut UniversalChange) -> Result<()> {
-        change.id = flatten_composite_id(
-            std::mem::replace(&mut change.id, sync_core::UniversalValue::Null),
-            &self.separator,
-        );
-        Ok(())
-    }
-
-    fn transform_relation(&self, relation: &mut UniversalRelation) -> Result<()> {
+    fn transform_relation(&self, relation: &mut Relation) -> Result<()> {
         relation.id = flatten_composite_id(
-            std::mem::replace(&mut relation.id, sync_core::UniversalValue::Null),
+            std::mem::replace(&mut relation.id, Value::Null),
             &self.separator,
         );
         relation.input.id = flatten_composite_id(
-            std::mem::replace(&mut relation.input.id, sync_core::UniversalValue::Null),
+            std::mem::replace(&mut relation.input.id, Value::Null),
             &self.separator,
         );
         relation.output.id = flatten_composite_id(
-            std::mem::replace(&mut relation.output.id, sync_core::UniversalValue::Null),
+            std::mem::replace(&mut relation.output.id, Value::Null),
             &self.separator,
         );
         Ok(())
     }
 
-    fn transform_relation_change(&self, change: &mut UniversalRelationChange) -> Result<()> {
+    fn transform_relation_change(&self, change: &mut RelationChange) -> Result<()> {
         self.transform_relation(&mut change.relation)?;
         Ok(())
     }
@@ -79,30 +72,30 @@ impl InPlaceTransform for FlattenId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::{UniversalType, UniversalValue};
+    use sync_core::{Row, Type, Value};
 
     #[test]
     fn flattens_array_row_id() {
         let t = FlattenId::default();
-        let mut row = UniversalRow::new(
+        let mut row = Row::new(
             "ledger",
             0,
-            UniversalValue::Array {
-                elements: vec![UniversalValue::Int32(1), UniversalValue::Int32(2)],
-                element_type: Box::new(UniversalType::Int32),
+            Value::Array {
+                elements: vec![Value::Int32(1), Value::Int32(2)],
+                element_type: Box::new(Type::Int32),
             },
             Default::default(),
         );
         t.transform_row(&mut row).unwrap();
-        assert_eq!(row.id, UniversalValue::Text("1:2".into()));
+        assert_eq!(row.id, Value::Text("1:2".into()));
     }
 
     #[test]
     fn leaves_scalar_unchanged() {
         let t = FlattenId::new("_");
-        let mut row = UniversalRow::new("t", 0, UniversalValue::Int64(9), Default::default());
+        let mut row = Row::new("t", 0, Value::Int64(9), Default::default());
         t.transform_row(&mut row).unwrap();
-        assert_eq!(row.id, UniversalValue::Int64(9));
+        assert_eq!(row.id, Value::Int64(9));
     }
 
     #[test]
@@ -119,19 +112,16 @@ separator = ":"
         .unwrap();
         let pipeline = Pipeline::from_config(&cfg).unwrap();
         let rows = pipeline
-            .apply_rows(vec![UniversalRow::new(
+            .apply_rows(vec![Row::new(
                 "ledger",
                 0,
-                UniversalValue::Array {
-                    elements: vec![
-                        UniversalValue::Text("a".into()),
-                        UniversalValue::Text("b".into()),
-                    ],
-                    element_type: Box::new(UniversalType::Text),
+                Value::Array {
+                    elements: vec![Value::Text("a".into()), Value::Text("b".into())],
+                    element_type: Box::new(Type::Text),
                 },
                 Default::default(),
             )])
             .unwrap();
-        assert_eq!(rows[0].id, UniversalValue::Text("a:b".into()));
+        assert_eq!(rows[0].id, Value::Text("a:b".into()));
     }
 }

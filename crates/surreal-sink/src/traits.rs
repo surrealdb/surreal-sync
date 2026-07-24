@@ -5,7 +5,7 @@
 //! with both v2 and v3 servers.
 
 use anyhow::Result;
-use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
+use sync_core::{Change, Relation, RelationChange, Row};
 
 /// Trait for writing data to SurrealDB.
 ///
@@ -23,7 +23,7 @@ use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, Uni
 ///     opts: &SourceOpts,
 /// ) -> Result<()> {
 ///     // All calls here are statically dispatched after monomorphization
-///     surreal.write_universal_rows(&batch).await?;
+///     surreal.write_rows(&batch).await?;
 /// }
 /// ```
 ///
@@ -33,28 +33,27 @@ use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, Uni
 pub trait SurrealSink: Send + Sync {
     /// Write a batch of universal rows to SurrealDB.
     ///
-    /// Converts each `UniversalRow` to the appropriate SurrealDB record
+    /// Converts each `Row` to the appropriate SurrealDB record
     /// format and writes it using UPSERT semantics.
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> Result<()>;
+    async fn write_rows(&self, rows: &[Row]) -> Result<()>;
 
     /// Write a batch of universal relations to SurrealDB.
     ///
-    /// Converts each `UniversalRelation` to a SurrealDB relation (graph edge)
+    /// Converts each `Relation` to a SurrealDB relation (graph edge)
     /// and writes it using RELATE semantics.
-    async fn write_universal_relations(&self, relations: &[UniversalRelation]) -> Result<()>;
+    async fn write_relations(&self, relations: &[Relation]) -> Result<()>;
 
     /// Apply a single universal change (create/update/delete) to SurrealDB.
     ///
-    /// Converts the `UniversalChange` to the appropriate SurrealDB operation:
+    /// Converts the `Change` to the appropriate SurrealDB operation:
     /// - Create/Update: UPSERT the record
     /// - Delete: DELETE the record
-    async fn apply_universal_change(&self, change: &UniversalChange) -> Result<()>;
+    async fn apply_change(&self, change: &Change) -> Result<()>;
 
     /// Apply a single relation change (create/update/delete) to SurrealDB.
     ///
-    /// Converts the `UniversalRelationChange` to the appropriate SurrealDB operation:
+    /// Converts the `RelationChange` to the appropriate SurrealDB operation:
     /// - Create/Update: RELATE the edge
     /// - Delete: DELETE the relation
-    async fn apply_universal_relation_change(&self, change: &UniversalRelationChange)
-        -> Result<()>;
+    async fn apply_relation_change(&self, change: &RelationChange) -> Result<()>;
 }

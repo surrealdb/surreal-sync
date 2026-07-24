@@ -11,13 +11,13 @@ use surreal_sync_mysql_trigger_source::{
     run_incremental_sync_with_transforms, setup_mysql_change_tracking, MySQLCheckpoint,
     ReplicationTailOptions, SourceOpts,
 };
-use sync_core::{UniversalChange, UniversalRow, UniversalValue};
+use sync_core::{Change, Row, Value};
 use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 
 mod common;
 
 struct CaptureSink {
-    changes: Mutex<Vec<UniversalChange>>,
+    changes: Mutex<Vec<Change>>,
 }
 
 impl CaptureSink {
@@ -30,11 +30,11 @@ impl CaptureSink {
 
 #[async_trait::async_trait]
 impl SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
+    async fn write_rows(&self, rows: &[Row]) -> anyhow::Result<()> {
         // Homogeneous Update upserts coalesce here; keep observations in `changes`.
         let mut changes = self.changes.lock().expect("lock");
         for row in rows {
-            changes.push(UniversalChange::update(
+            changes.push(Change::update(
                 row.table.clone(),
                 row.id.clone(),
                 row.fields.clone(),
@@ -43,21 +43,18 @@ impl SurrealSink for CaptureSink {
         Ok(())
     }
 
-    async fn write_universal_relations(
-        &self,
-        _relations: &[sync_core::UniversalRelation],
-    ) -> anyhow::Result<()> {
+    async fn write_relations(&self, _relations: &[sync_core::Relation]) -> anyhow::Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> anyhow::Result<()> {
+    async fn apply_change(&self, change: &Change) -> anyhow::Result<()> {
         self.changes.lock().expect("lock").push(change.clone());
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
+    async fn apply_relation_change(
         &self,
-        _change: &sync_core::UniversalRelationChange,
+        _change: &sync_core::RelationChange,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -95,10 +92,10 @@ fn ensure_fixture_worker() -> PathBuf {
     path
 }
 
-fn name_field(change: &UniversalChange) -> Option<String> {
-    let data = change.data.as_ref()?;
+fn name_field(change: &Change) -> Option<String> {
+    let data = change.fields.as_ref()?;
     match data.get("name")? {
-        UniversalValue::VarChar { value, .. } | UniversalValue::Text(value) => Some(value.clone()),
+        Value::VarChar { value, .. } | Value::Text(value) => Some(value.clone()),
         other => panic!("unexpected name: {other:?}"),
     }
 }
@@ -246,7 +243,7 @@ async fn composite_pk_entity_writes_surreal_array_record_ids() -> Result<()> {
     )
     .await?;
 
-    use surrealdb::sql::{Id, Thing, Value};
+    use surrealdb::sql::{Id, Thing, Value as SqlValue};
 
     #[derive(Debug, serde::Deserialize)]
     struct LedgerRow {
@@ -270,8 +267,8 @@ async fn composite_pk_entity_writes_surreal_array_record_ids() -> Result<()> {
                     .0
                     .into_iter()
                     .map(|v| match v {
-                        Value::Strand(s) => s.as_string(),
-                        Value::Number(n) => n.to_string(),
+                        SqlValue::Strand(s) => s.as_string(),
+                        SqlValue::Number(n) => n.to_string(),
                         other => panic!("unexpected array id element: {other:?}"),
                     })
                     .collect(),

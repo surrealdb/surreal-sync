@@ -5,65 +5,62 @@
 use rust_decimal::Decimal;
 use std::collections::BTreeMap;
 use std::str::FromStr;
-use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Thing, Value};
-use sync_core::{TypedValue, UniversalType, UniversalValue};
+use surrealdb::sql::{Array, Datetime, Number, Object, Strand, Thing, Value as SqlValue};
+use sync_core::{Type, TypedValue, Value};
 
 /// Wrapper for SurrealDB values.
 #[derive(Debug, Clone)]
-pub struct SurrealValue(pub Value);
+pub struct SurrealValue(pub SqlValue);
 
 impl SurrealValue {
     /// Get the inner SurrealDB value.
-    pub fn into_inner(self) -> Value {
+    pub fn into_inner(self) -> SqlValue {
         self.0
     }
 
     /// Get a reference to the inner SurrealDB value.
-    pub fn as_inner(&self) -> &Value {
+    pub fn as_inner(&self) -> &SqlValue {
         &self.0
     }
 
     /// Convert a zero-temporal sentinel using the given sink policy.
     pub fn from_zero_temporal(
-        intended_type: &UniversalType,
+        intended_type: &Type,
         source: Option<&str>,
         policy: sync_core::ZeroTemporalPolicy,
     ) -> Self {
         match policy {
-            sync_core::ZeroTemporalPolicy::None => SurrealValue(Value::None),
-            sync_core::ZeroTemporalPolicy::Null => SurrealValue(Value::Null),
+            sync_core::ZeroTemporalPolicy::None => SurrealValue(SqlValue::None),
+            sync_core::ZeroTemporalPolicy::Null => SurrealValue(SqlValue::Null),
             sync_core::ZeroTemporalPolicy::String => {
                 let s = source
-                    .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type))
+                    .unwrap_or_else(|| Value::canonical_zero_literal(intended_type))
                     .to_string();
-                SurrealValue(Value::Strand(Strand::from(s)))
+                SurrealValue(SqlValue::Strand(Strand::from(s)))
             }
         }
     }
 
-    /// Convert a [`UniversalValue`] with an explicit zero-temporal policy.
-    pub fn from_universal_with_policy(
-        value: UniversalValue,
-        policy: sync_core::ZeroTemporalPolicy,
-    ) -> Self {
+    /// Convert a [`Value`] with an explicit zero-temporal policy.
+    pub fn from_universal_with_policy(value: Value, policy: sync_core::ZeroTemporalPolicy) -> Self {
         match value {
-            UniversalValue::ZeroTemporal {
+            Value::ZeroTemporal {
                 intended_type,
                 source,
             } => Self::from_zero_temporal(&intended_type, source.as_deref(), policy),
-            UniversalValue::Array { elements, .. } => {
-                let surreal_arr: Vec<Value> = elements
+            Value::Array { elements, .. } => {
+                let surreal_arr: Vec<SqlValue> = elements
                     .into_iter()
                     .map(|v| Self::from_universal_with_policy(v, policy).into_inner())
                     .collect();
-                SurrealValue(Value::Array(Array::from(surreal_arr)))
+                SurrealValue(SqlValue::Array(Array::from(surreal_arr)))
             }
-            UniversalValue::Object(map) => {
+            Value::Object(map) => {
                 let mut obj = BTreeMap::new();
                 for (k, v) in map {
                     obj.insert(k, Self::from_universal_with_policy(v, policy).into_inner());
                 }
-                SurrealValue(Value::Object(Object::from(obj)))
+                SurrealValue(SqlValue::Object(Object::from(obj)))
             }
             other => SurrealValue::from(other),
         }
@@ -73,33 +70,29 @@ impl SurrealValue {
     pub fn from_typed_with_policy(tv: TypedValue, policy: sync_core::ZeroTemporalPolicy) -> Self {
         match (&tv.sync_type, &tv.value) {
             // JSON can be a string that needs parsing
-            (UniversalType::Json, UniversalValue::Text(s)) => {
-                match serde_json::from_str::<serde_json::Value>(s) {
-                    Ok(v) => SurrealValue(json_to_surreal(&v)),
-                    Err(_) => SurrealValue(Value::Strand(Strand::from(s.clone()))),
-                }
-            }
-            (UniversalType::Jsonb, UniversalValue::Text(s)) => {
-                match serde_json::from_str::<serde_json::Value>(s) {
-                    Ok(v) => SurrealValue(json_to_surreal(&v)),
-                    Err(_) => SurrealValue(Value::Strand(Strand::from(s.clone()))),
-                }
-            }
+            (Type::Json, Value::Text(s)) => match serde_json::from_str::<serde_json::Value>(s) {
+                Ok(v) => SurrealValue(json_to_surreal(&v)),
+                Err(_) => SurrealValue(SqlValue::Strand(Strand::from(s.clone()))),
+            },
+            (Type::Jsonb, Value::Text(s)) => match serde_json::from_str::<serde_json::Value>(s) {
+                Ok(v) => SurrealValue(json_to_surreal(&v)),
+                Err(_) => SurrealValue(SqlValue::Strand(Strand::from(s.clone()))),
+            },
             // JSON can also be an array (e.g., from MySQL SET columns or JSON arrays)
-            (UniversalType::Json, UniversalValue::Array { elements, .. }) => {
-                let surreal_arr: Vec<Value> =
+            (Type::Json, Value::Array { elements, .. }) => {
+                let surreal_arr: Vec<SqlValue> =
                     elements.iter().map(generated_value_to_surreal).collect();
-                SurrealValue(Value::Array(surrealdb::sql::Array::from(surreal_arr)))
+                SurrealValue(SqlValue::Array(surrealdb::sql::Array::from(surreal_arr)))
             }
-            (UniversalType::Jsonb, UniversalValue::Array { elements, .. }) => {
-                let surreal_arr: Vec<Value> =
+            (Type::Jsonb, Value::Array { elements, .. }) => {
+                let surreal_arr: Vec<SqlValue> =
                     elements.iter().map(generated_value_to_surreal).collect();
-                SurrealValue(Value::Array(surrealdb::sql::Array::from(surreal_arr)))
+                SurrealValue(SqlValue::Array(surrealdb::sql::Array::from(surreal_arr)))
             }
 
             // Array types need recursive conversion with element type info
-            (UniversalType::Array { element_type }, UniversalValue::Array { elements, .. }) => {
-                let surreal_arr: Vec<Value> = elements
+            (Type::Array { element_type }, Value::Array { elements, .. }) => {
+                let surreal_arr: Vec<SqlValue> = elements
                     .iter()
                     .map(|v| {
                         let tv = TypedValue {
@@ -109,10 +102,10 @@ impl SurrealValue {
                         Self::from_typed_with_policy(tv, policy).into_inner()
                     })
                     .collect();
-                SurrealValue(Value::Array(Array::from(surreal_arr)))
+                SurrealValue(SqlValue::Array(Array::from(surreal_arr)))
             }
 
-            // For all other cases, delegate to policy-aware UniversalValue conversion
+            // For all other cases, delegate to policy-aware Value conversion
             _ => Self::from_universal_with_policy(tv.value, policy),
         }
     }
@@ -124,162 +117,156 @@ impl From<TypedValue> for SurrealValue {
     }
 }
 
-impl From<UniversalValue> for SurrealValue {
-    fn from(value: UniversalValue) -> Self {
+impl From<Value> for SurrealValue {
+    fn from(value: Value) -> Self {
         match value {
             // Null
-            UniversalValue::Null => SurrealValue(Value::None),
+            Value::Null => SurrealValue(SqlValue::None),
 
             // Boolean
-            UniversalValue::Bool(b) => SurrealValue(Value::Bool(b)),
+            Value::Bool(b) => SurrealValue(SqlValue::Bool(b)),
 
             // Integer types
-            UniversalValue::Int8 { value, .. } => {
-                SurrealValue(Value::Number(Number::Int(value as i64)))
-            }
-            UniversalValue::Int16(i) => SurrealValue(Value::Number(Number::Int(i as i64))),
-            UniversalValue::Int32(i) => SurrealValue(Value::Number(Number::Int(i as i64))),
-            UniversalValue::Int64(i) => SurrealValue(Value::Number(Number::Int(i))),
+            Value::Int8 { value, .. } => SurrealValue(SqlValue::Number(Number::Int(value as i64))),
+            Value::Int16(i) => SurrealValue(SqlValue::Number(Number::Int(i as i64))),
+            Value::Int32(i) => SurrealValue(SqlValue::Number(Number::Int(i as i64))),
+            Value::Int64(i) => SurrealValue(SqlValue::Number(Number::Int(i))),
 
             // Floating point
-            UniversalValue::Float32(f) => SurrealValue(Value::Number(Number::Float(f as f64))),
-            UniversalValue::Float64(f) => SurrealValue(Value::Number(Number::Float(f))),
+            Value::Float32(f) => SurrealValue(SqlValue::Number(Number::Float(f as f64))),
+            Value::Float64(f) => SurrealValue(SqlValue::Number(Number::Float(f))),
 
             // Decimal - try to parse as rust_decimal, fallback to float
-            UniversalValue::Decimal { value, .. } => {
+            Value::Decimal { value, .. } => {
                 match Decimal::from_str(&value) {
-                    Ok(dec) => SurrealValue(Value::Number(Number::Decimal(dec))),
+                    Ok(dec) => SurrealValue(SqlValue::Number(Number::Decimal(dec))),
                     Err(_) => {
                         // Can't fit in rust_decimal - convert to f64
                         // TODO: Add option to store as String if user requests high precision preservation
                         let f: f64 = value.parse().unwrap_or(0.0);
-                        SurrealValue(Value::Number(Number::Float(f)))
+                        SurrealValue(SqlValue::Number(Number::Float(f)))
                     }
                 }
             }
 
             // String types - auto-detect ISO 8601 duration strings
-            UniversalValue::Char { value, .. } => {
+            Value::Char { value, .. } => {
                 if let Some(duration) = try_parse_iso8601_duration(&value) {
-                    SurrealValue(Value::Duration(surrealdb::sql::Duration::from(duration)))
+                    SurrealValue(SqlValue::Duration(surrealdb::sql::Duration::from(duration)))
                 } else {
-                    SurrealValue(Value::Strand(Strand::from(value)))
+                    SurrealValue(SqlValue::Strand(Strand::from(value)))
                 }
             }
-            UniversalValue::VarChar { value, .. } => {
+            Value::VarChar { value, .. } => {
                 if let Some(duration) = try_parse_iso8601_duration(&value) {
-                    SurrealValue(Value::Duration(surrealdb::sql::Duration::from(duration)))
+                    SurrealValue(SqlValue::Duration(surrealdb::sql::Duration::from(duration)))
                 } else {
-                    SurrealValue(Value::Strand(Strand::from(value)))
+                    SurrealValue(SqlValue::Strand(Strand::from(value)))
                 }
             }
-            UniversalValue::Text(s) => {
+            Value::Text(s) => {
                 // Auto-detect ISO 8601 duration strings (PTxxxS format) and convert to Duration
                 if let Some(duration) = try_parse_iso8601_duration(&s) {
-                    SurrealValue(Value::Duration(surrealdb::sql::Duration::from(duration)))
+                    SurrealValue(SqlValue::Duration(surrealdb::sql::Duration::from(duration)))
                 } else {
-                    SurrealValue(Value::Strand(Strand::from(s)))
+                    SurrealValue(SqlValue::Strand(Strand::from(s)))
                 }
             }
 
             // Binary types
-            UniversalValue::Blob(b) => SurrealValue(Value::Bytes(surrealdb::sql::Bytes::from(b))),
-            UniversalValue::Bytes(b) => SurrealValue(Value::Bytes(surrealdb::sql::Bytes::from(b))),
+            Value::Blob(b) => SurrealValue(SqlValue::Bytes(surrealdb::sql::Bytes::from(b))),
+            Value::Bytes(b) => SurrealValue(SqlValue::Bytes(surrealdb::sql::Bytes::from(b))),
 
             // Date/time types
-            UniversalValue::Date(dt) => SurrealValue(Value::Strand(Strand::from(
+            Value::Date(dt) => SurrealValue(SqlValue::Strand(Strand::from(
                 dt.format("%Y-%m-%d").to_string(),
             ))),
             // Note: Using "%H:%M:%S%.f" to preserve fractional seconds from PostgreSQL TIME type.
             // While SurrealDB doesn't have a native TIME type, storing as string with full precision
             // ensures no data loss during sync.
-            UniversalValue::Time(dt) => SurrealValue(Value::Strand(Strand::from(
+            Value::Time(dt) => SurrealValue(SqlValue::Strand(Strand::from(
                 dt.format("%H:%M:%S%.f").to_string(),
             ))),
-            UniversalValue::LocalDateTime(dt) => SurrealValue(Value::Datetime(Datetime::from(dt))),
-            UniversalValue::LocalDateTimeNano(dt) => {
-                SurrealValue(Value::Datetime(Datetime::from(dt)))
-            }
-            UniversalValue::ZonedDateTime(dt) => SurrealValue(Value::Datetime(Datetime::from(dt))),
+            Value::LocalDateTime(dt) => SurrealValue(SqlValue::Datetime(Datetime::from(dt))),
+            Value::LocalDateTimeNano(dt) => SurrealValue(SqlValue::Datetime(Datetime::from(dt))),
+            Value::ZonedDateTime(dt) => SurrealValue(SqlValue::Datetime(Datetime::from(dt))),
             // TIMETZ - stored as string to preserve timezone format.
             // Note: We intentionally do NOT use Datetime here because time and datetime
             // are fundamentally different types. Datetime implies a specific point in time,
             // while TIMETZ represents a daily recurring time in a specific timezone.
             // Misusing Datetime to represent time would lose semantic meaning.
-            UniversalValue::TimeTz(s) => SurrealValue(Value::Strand(Strand::from(s))),
+            Value::TimeTz(s) => SurrealValue(SqlValue::Strand(Strand::from(s))),
 
             // UUID
-            UniversalValue::Uuid(u) => SurrealValue(Value::Uuid(surrealdb::sql::Uuid::from(u))),
+            Value::Uuid(u) => SurrealValue(SqlValue::Uuid(surrealdb::sql::Uuid::from(u))),
 
             // ULID - convert to string since SurrealDB doesn't have native ULID ID type
-            UniversalValue::Ulid(u) => SurrealValue(Value::Strand(Strand::from(u.to_string()))),
+            Value::Ulid(u) => SurrealValue(SqlValue::Strand(Strand::from(u.to_string()))),
 
             // JSON types
-            UniversalValue::Json(json_val) => SurrealValue(json_to_surreal(&json_val)),
-            UniversalValue::Jsonb(json_val) => SurrealValue(json_to_surreal(&json_val)),
+            Value::Json(json_val) => SurrealValue(json_to_surreal(&json_val)),
+            Value::Jsonb(json_val) => SurrealValue(json_to_surreal(&json_val)),
 
             // Array
-            UniversalValue::Array { elements, .. } => {
-                let surreal_arr: Vec<Value> = elements
+            Value::Array { elements, .. } => {
+                let surreal_arr: Vec<SqlValue> = elements
                     .into_iter()
                     .map(|v| SurrealValue::from(v).into_inner())
                     .collect();
-                SurrealValue(Value::Array(Array::from(surreal_arr)))
+                SurrealValue(SqlValue::Array(Array::from(surreal_arr)))
             }
 
             // Set - stored as array of strings
-            UniversalValue::Set { elements, .. } => {
-                let surreal_arr: Vec<Value> = elements
+            Value::Set { elements, .. } => {
+                let surreal_arr: Vec<SqlValue> = elements
                     .into_iter()
-                    .map(|s| Value::Strand(Strand::from(s)))
+                    .map(|s| SqlValue::Strand(Strand::from(s)))
                     .collect();
-                SurrealValue(Value::Array(Array::from(surreal_arr)))
+                SurrealValue(SqlValue::Array(Array::from(surreal_arr)))
             }
 
             // Enum - stored as string
-            UniversalValue::Enum { value, .. } => SurrealValue(Value::Strand(Strand::from(value))),
+            Value::Enum { value, .. } => SurrealValue(SqlValue::Strand(Strand::from(value))),
 
             // Geometry - convert to JSON object
-            UniversalValue::Geometry { data, .. } => {
+            Value::Geometry { data, .. } => {
                 use sync_core::values::GeometryData;
                 let GeometryData(json_val) = data;
                 SurrealValue(json_to_surreal(&json_val))
             }
 
             // Duration - convert to SurrealDB Duration
-            UniversalValue::Duration(d) => {
-                SurrealValue(Value::Duration(surrealdb::sql::Duration::from(d)))
+            Value::Duration(d) => {
+                SurrealValue(SqlValue::Duration(surrealdb::sql::Duration::from(d)))
             }
 
             // Thing - record reference
-            UniversalValue::Thing { table, id } => {
+            Value::Thing { table, id } => {
                 // Convert the ID to a SurrealDB ID type
                 let surreal_id = match id.as_ref() {
-                    UniversalValue::Text(s) => surrealdb::sql::Id::String(s.clone()),
-                    UniversalValue::Int32(i) => surrealdb::sql::Id::Number(*i as i64),
-                    UniversalValue::Int64(i) => surrealdb::sql::Id::Number(*i),
-                    UniversalValue::Uuid(u) => {
-                        surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u))
-                    }
-                    UniversalValue::Ulid(u) => surrealdb::sql::Id::String(u.to_string()),
+                    Value::Text(s) => surrealdb::sql::Id::String(s.clone()),
+                    Value::Int32(i) => surrealdb::sql::Id::Number(*i as i64),
+                    Value::Int64(i) => surrealdb::sql::Id::Number(*i),
+                    Value::Uuid(u) => surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u)),
+                    Value::Ulid(u) => surrealdb::sql::Id::String(u.to_string()),
                     // For unsupported types, convert to string representation
                     other => surrealdb::sql::Id::String(format!("{other:?}")),
                 };
                 let thing = surrealdb::sql::Thing::from((table.as_str(), surreal_id));
-                SurrealValue(Value::Thing(thing))
+                SurrealValue(SqlValue::Thing(thing))
             }
 
             // Object - nested document
-            UniversalValue::Object(map) => {
+            Value::Object(map) => {
                 let mut obj = BTreeMap::new();
                 for (k, v) in map {
                     obj.insert(k.clone(), generated_value_to_surreal(&v));
                 }
-                SurrealValue(Value::Object(Object::from(obj)))
+                SurrealValue(SqlValue::Object(Object::from(obj)))
             }
 
             // Zero temporal — default sink policy is NONE (see ZeroTemporalPolicy)
-            UniversalValue::ZeroTemporal {
+            Value::ZeroTemporal {
                 intended_type,
                 source,
             } => SurrealValue::from_zero_temporal(
@@ -291,28 +278,28 @@ impl From<UniversalValue> for SurrealValue {
     }
 }
 
-/// Convert a UniversalValue to a SurrealDB Value (without type context).
-/// This is a helper for internal use - prefer using `From<UniversalValue>` trait.
-fn generated_value_to_surreal(value: &UniversalValue) -> Value {
+/// Convert a Value to a SurrealDB SqlValue (without type context).
+/// This is a helper for internal use - prefer using `From<Value>` trait.
+fn generated_value_to_surreal(value: &Value) -> SqlValue {
     SurrealValue::from(value.clone()).into_inner()
 }
 
-/// Convert a serde_json::Value to SurrealDB Value.
-fn json_to_surreal(value: &serde_json::Value) -> Value {
+/// Convert a serde_json::Value to SurrealDB SqlValue.
+fn json_to_surreal(value: &serde_json::Value) -> SqlValue {
     match value {
-        serde_json::Value::Null => Value::None,
-        serde_json::Value::Bool(b) => Value::Bool(*b),
+        serde_json::Value::Null => SqlValue::None,
+        serde_json::Value::Bool(b) => SqlValue::Bool(*b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Value::Number(Number::Int(i))
+                SqlValue::Number(Number::Int(i))
             } else if let Some(f) = n.as_f64() {
-                Value::Number(Number::Float(f))
+                SqlValue::Number(Number::Float(f))
             } else {
-                Value::None
+                SqlValue::None
             }
         }
-        serde_json::Value::String(s) => Value::Strand(Strand::from(s.clone())),
-        serde_json::Value::Array(arr) => Value::Array(Array::from(
+        serde_json::Value::String(s) => SqlValue::Strand(Strand::from(s.clone())),
+        serde_json::Value::Array(arr) => SqlValue::Array(Array::from(
             arr.iter().map(json_to_surreal).collect::<Vec<_>>(),
         )),
         serde_json::Value::Object(map) => {
@@ -320,7 +307,7 @@ fn json_to_surreal(value: &serde_json::Value) -> Value {
             for (k, v) in map {
                 obj.insert(k.clone(), json_to_surreal(v));
             }
-            Value::Object(Object::from(obj))
+            SqlValue::Object(Object::from(obj))
         }
     }
 }
@@ -349,15 +336,15 @@ fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
 /// Create a SurrealDB Thing (record ID).
 ///
 /// Returns an error for unsupported ID types.
-pub fn create_thing(table: &str, id: &UniversalValue) -> anyhow::Result<Thing> {
+pub fn create_thing(table: &str, id: &Value) -> anyhow::Result<Thing> {
     let id_part = match id {
-        UniversalValue::Text(s) => surrealdb::sql::Id::String(s.clone()),
-        UniversalValue::Int32(i) => surrealdb::sql::Id::Number(*i as i64),
-        UniversalValue::Int64(i) => surrealdb::sql::Id::Number(*i),
-        UniversalValue::Uuid(u) => surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u)),
-        UniversalValue::Ulid(u) => surrealdb::sql::Id::String(u.to_string()),
+        Value::Text(s) => surrealdb::sql::Id::String(s.clone()),
+        Value::Int32(i) => surrealdb::sql::Id::Number(*i as i64),
+        Value::Int64(i) => surrealdb::sql::Id::Number(*i),
+        Value::Uuid(u) => surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u)),
+        Value::Ulid(u) => surrealdb::sql::Id::String(u.to_string()),
         other => anyhow::bail!(
-            "Unsupported UniversalValue type for SurrealDB ID: {other:?}. \
+            "Unsupported Value type for SurrealDB ID: {other:?}. \
              Supported types: Text, Int32, Int64, Uuid, Ulid"
         ),
     };
@@ -382,7 +369,7 @@ where
 /// before creating SurrealDB records.
 pub fn typed_values_to_surreal_map(
     typed_values: std::collections::HashMap<String, TypedValue>,
-) -> std::collections::HashMap<String, Value> {
+) -> std::collections::HashMap<String, SqlValue> {
     typed_values
         .into_iter()
         .map(|(k, v)| (k, SurrealValue::from(v).into_inner()))
@@ -394,22 +381,22 @@ pub fn typed_values_to_surreal_map(
 #[derive(Debug, Clone)]
 pub struct RecordWithSurrealValues {
     pub id: Thing,
-    pub data: std::collections::HashMap<String, Value>,
+    pub data: std::collections::HashMap<String, SqlValue>,
 }
 
 impl RecordWithSurrealValues {
     /// Create a new record with the given ID and data.
-    pub fn new(id: Thing, data: std::collections::HashMap<String, Value>) -> Self {
+    pub fn new(id: Thing, data: std::collections::HashMap<String, SqlValue>) -> Self {
         Self { id, data }
     }
 
     /// Get the upsert content as a SurrealDB Object.
-    pub fn get_upsert_content(&self) -> Value {
+    pub fn get_upsert_content(&self) -> SqlValue {
         let mut m = BTreeMap::new();
         for (k, v) in &self.data {
             m.insert(k.clone(), v.clone());
         }
-        Value::Object(Object::from(m))
+        SqlValue::Object(Object::from(m))
     }
 }
 
@@ -420,31 +407,31 @@ mod tests {
 
     #[test]
     fn test_null_conversion() {
-        let tv = TypedValue::null(UniversalType::Text);
+        let tv = TypedValue::null(Type::Text);
         let surreal_val: SurrealValue = tv.into();
-        assert!(matches!(surreal_val.0, Value::None));
+        assert!(matches!(surreal_val.0, SqlValue::None));
     }
 
     #[test]
     fn test_zero_temporal_policies() {
-        let zero = UniversalValue::zero_temporal(UniversalType::Date, Some("0000-00-00".into()));
+        let zero = Value::zero_temporal(Type::Date, Some("0000-00-00".into()));
 
         let none = SurrealValue::from_universal_with_policy(
             zero.clone(),
             sync_core::ZeroTemporalPolicy::None,
         );
-        assert!(matches!(none.0, Value::None));
+        assert!(matches!(none.0, SqlValue::None));
 
         let null = SurrealValue::from_universal_with_policy(
             zero.clone(),
             sync_core::ZeroTemporalPolicy::Null,
         );
-        assert!(matches!(null.0, Value::Null));
+        assert!(matches!(null.0, SqlValue::Null));
 
         let strand =
             SurrealValue::from_universal_with_policy(zero, sync_core::ZeroTemporalPolicy::String);
         match strand.0 {
-            Value::Strand(s) => assert_eq!(s.as_str(), "0000-00-00"),
+            SqlValue::Strand(s) => assert_eq!(s.as_str(), "0000-00-00"),
             other => panic!("expected Strand, got {other:?}"),
         }
     }
@@ -453,32 +440,38 @@ mod tests {
     fn test_bool_conversion() {
         let tv = TypedValue::bool(true);
         let surreal_val: SurrealValue = tv.into();
-        assert!(matches!(surreal_val.0, Value::Bool(true)));
+        assert!(matches!(surreal_val.0, SqlValue::Bool(true)));
 
         let tv = TypedValue::bool(false);
         let surreal_val: SurrealValue = tv.into();
-        assert!(matches!(surreal_val.0, Value::Bool(false)));
+        assert!(matches!(surreal_val.0, SqlValue::Bool(false)));
     }
 
     #[test]
     fn test_tinyint_conversion() {
         let tv = TypedValue::int8(127, 4);
         let surreal_val: SurrealValue = tv.into();
-        assert!(matches!(surreal_val.0, Value::Number(Number::Int(127))));
+        assert!(matches!(surreal_val.0, SqlValue::Number(Number::Int(127))));
     }
 
     #[test]
     fn test_smallint_conversion() {
         let tv = TypedValue::int16(32000);
         let surreal_val: SurrealValue = tv.into();
-        assert!(matches!(surreal_val.0, Value::Number(Number::Int(32000))));
+        assert!(matches!(
+            surreal_val.0,
+            SqlValue::Number(Number::Int(32000))
+        ));
     }
 
     #[test]
     fn test_int_conversion() {
         let tv = TypedValue::int32(12345);
         let surreal_val: SurrealValue = tv.into();
-        assert!(matches!(surreal_val.0, Value::Number(Number::Int(12345))));
+        assert!(matches!(
+            surreal_val.0,
+            SqlValue::Number(Number::Int(12345))
+        ));
     }
 
     #[test]
@@ -487,7 +480,7 @@ mod tests {
         let surreal_val: SurrealValue = tv.into();
         assert!(matches!(
             surreal_val.0,
-            Value::Number(Number::Int(9876543210))
+            SqlValue::Number(Number::Int(9876543210))
         ));
     }
 
@@ -495,7 +488,7 @@ mod tests {
     fn test_float_conversion() {
         let tv = TypedValue::float32(1.234);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Number(Number::Float(f)) = surreal_val.0 {
+        if let SqlValue::Number(Number::Float(f)) = surreal_val.0 {
             assert!((f - 1.234).abs() < 0.0001);
         } else {
             panic!("Expected Float");
@@ -506,7 +499,7 @@ mod tests {
     fn test_double_conversion() {
         let tv = TypedValue::float64(1.23456);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Number(Number::Float(f)) = surreal_val.0 {
+        if let SqlValue::Number(Number::Float(f)) = surreal_val.0 {
             assert!((f - 1.23456).abs() < 0.00001);
         } else {
             panic!("Expected Float");
@@ -517,7 +510,7 @@ mod tests {
     fn test_decimal_conversion() {
         let tv = TypedValue::decimal("123.45", 10, 2);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Number(Number::Decimal(d)) = surreal_val.0 {
+        if let SqlValue::Number(Number::Decimal(d)) = surreal_val.0 {
             assert_eq!(d.to_string(), "123.45");
         } else {
             panic!("Expected Decimal");
@@ -526,10 +519,10 @@ mod tests {
 
     #[test]
     fn test_high_precision_decimal_conversion() {
-        // Value exceeding rust_decimal MAX should be stored as float
+        // SqlValue exceeding rust_decimal MAX should be stored as float
         let tv = TypedValue::decimal("12345678901234567890123456789012345678901234567890", 50, 0);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Number(Number::Float(f)) = surreal_val.0 {
+        if let SqlValue::Number(Number::Float(f)) = surreal_val.0 {
             // Large numbers get converted to f64 (with precision loss)
             assert!(f > 1e49);
         } else {
@@ -544,7 +537,7 @@ mod tests {
     fn test_char_conversion() {
         let tv = TypedValue::char_type("test", 10);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Strand(s) = surreal_val.0 {
+        if let SqlValue::Strand(s) = surreal_val.0 {
             assert_eq!(s.as_str(), "test");
         } else {
             panic!("Expected Strand");
@@ -555,7 +548,7 @@ mod tests {
     fn test_text_conversion() {
         let tv = TypedValue::text("hello world");
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Strand(s) = surreal_val.0 {
+        if let SqlValue::Strand(s) = surreal_val.0 {
             assert_eq!(s.as_str(), "hello world");
         } else {
             panic!("Expected Strand");
@@ -566,7 +559,7 @@ mod tests {
     fn test_bytes_conversion() {
         let tv = TypedValue::bytes(vec![0xDE, 0xAD, 0xBE, 0xEF]);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Bytes(b) = surreal_val.0 {
+        if let SqlValue::Bytes(b) = surreal_val.0 {
             assert_eq!(b.as_slice(), &[0xDE, 0xAD, 0xBE, 0xEF]);
         } else {
             panic!("Expected Bytes");
@@ -578,7 +571,7 @@ mod tests {
         let u = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let tv = TypedValue::uuid(u);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Uuid(uuid) = surreal_val.0 {
+        if let SqlValue::Uuid(uuid) = surreal_val.0 {
             assert_eq!(uuid.0.to_string(), "550e8400-e29b-41d4-a716-446655440000");
         } else {
             panic!("Expected Uuid");
@@ -590,7 +583,7 @@ mod tests {
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 10, 30, 0).unwrap();
         let tv = TypedValue::datetime(dt);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Datetime(sdt) = surreal_val.0 {
+        if let SqlValue::Datetime(sdt) = surreal_val.0 {
             assert_eq!(sdt.0.year(), 2024);
             assert_eq!(sdt.0.month(), 6);
             assert_eq!(sdt.0.day(), 15);
@@ -604,7 +597,7 @@ mod tests {
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 0, 0, 0).unwrap();
         let tv = TypedValue::date(dt);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Strand(s) = surreal_val.0 {
+        if let SqlValue::Strand(s) = surreal_val.0 {
             assert_eq!(s.as_str(), "2024-06-15");
         } else {
             panic!("Expected Strand");
@@ -616,7 +609,7 @@ mod tests {
         let dt = Utc.with_ymd_and_hms(2024, 6, 15, 14, 30, 45).unwrap();
         let tv = TypedValue::time(dt);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Strand(s) = surreal_val.0 {
+        if let SqlValue::Strand(s) = surreal_val.0 {
             assert_eq!(s.as_str(), "14:30:45");
         } else {
             panic!("Expected Strand");
@@ -631,11 +624,11 @@ mod tests {
         });
 
         let tv = TypedValue {
-            sync_type: UniversalType::Json,
-            value: UniversalValue::Json(Box::new(json)),
+            sync_type: Type::Json,
+            value: Value::Json(Box::new(json)),
         };
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Object(obj) = surreal_val.0 {
+        if let SqlValue::Object(obj) = surreal_val.0 {
             assert!(obj.get("name").is_some());
             assert!(obj.get("count").is_some());
         } else {
@@ -646,11 +639,11 @@ mod tests {
     #[test]
     fn test_json_string_conversion() {
         let tv = TypedValue {
-            sync_type: UniversalType::Json,
-            value: UniversalValue::Text(r#"{"key": "value"}"#.to_string()),
+            sync_type: Type::Json,
+            value: Value::Text(r#"{"key": "value"}"#.to_string()),
         };
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Object(obj) = surreal_val.0 {
+        if let SqlValue::Object(obj) = surreal_val.0 {
             assert!(obj.get("key").is_some());
         } else {
             panic!("Expected Object");
@@ -660,15 +653,11 @@ mod tests {
     #[test]
     fn test_array_int_conversion() {
         let tv = TypedValue::array(
-            vec![
-                UniversalValue::Int32(1),
-                UniversalValue::Int32(2),
-                UniversalValue::Int32(3),
-            ],
-            UniversalType::Int32,
+            vec![Value::Int32(1), Value::Int32(2), Value::Int32(3)],
+            Type::Int32,
         );
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Array(arr) = surreal_val.0 {
+        if let SqlValue::Array(arr) = surreal_val.0 {
             assert_eq!(arr.len(), 3);
         } else {
             panic!("Expected Array");
@@ -678,14 +667,11 @@ mod tests {
     #[test]
     fn test_array_text_conversion() {
         let tv = TypedValue::array(
-            vec![
-                UniversalValue::Text("a".to_string()),
-                UniversalValue::Text("b".to_string()),
-            ],
-            UniversalType::Text,
+            vec![Value::Text("a".to_string()), Value::Text("b".to_string())],
+            Type::Text,
         );
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Array(arr) = surreal_val.0 {
+        if let SqlValue::Array(arr) = surreal_val.0 {
             assert_eq!(arr.len(), 2);
         } else {
             panic!("Expected Array");
@@ -699,7 +685,7 @@ mod tests {
             vec!["a".to_string(), "b".to_string(), "c".to_string()],
         );
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Array(arr) = surreal_val.0 {
+        if let SqlValue::Array(arr) = surreal_val.0 {
             assert_eq!(arr.len(), 2);
         } else {
             panic!("Expected Array");
@@ -711,7 +697,7 @@ mod tests {
         let tv =
             TypedValue::enum_type("active", vec!["active".to_string(), "inactive".to_string()]);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Strand(s) = surreal_val.0 {
+        if let SqlValue::Strand(s) = surreal_val.0 {
             assert_eq!(s.as_str(), "active");
         } else {
             panic!("Expected Strand");
@@ -727,19 +713,19 @@ mod tests {
         let tv = TypedValue::geometry_geojson(json, sync_core::GeometryType::Point);
         let surreal_val: SurrealValue = tv.into();
         // With the simplified conversion, this will be a JSON object
-        assert!(matches!(surreal_val.0, Value::Object(_)));
+        assert!(matches!(surreal_val.0, SqlValue::Object(_)));
     }
 
     #[test]
     fn test_create_thing_string() {
-        let id = UniversalValue::Text("user123".to_string());
+        let id = Value::Text("user123".to_string());
         let thing = create_thing("users", &id).unwrap();
         assert_eq!(thing.tb, "users");
     }
 
     #[test]
     fn test_create_thing_int() {
-        let id = UniversalValue::Int64(42);
+        let id = Value::Int64(42);
         let thing = create_thing("users", &id).unwrap();
         assert_eq!(thing.tb, "users");
     }
@@ -747,7 +733,7 @@ mod tests {
     #[test]
     fn test_create_thing_uuid() {
         let u = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        let id = UniversalValue::Uuid(u);
+        let id = Value::Uuid(u);
         let thing = create_thing("users", &id).unwrap();
         assert_eq!(thing.tb, "users");
     }
@@ -755,14 +741,14 @@ mod tests {
     #[test]
     fn test_create_thing_ulid() {
         let u = ulid::Ulid::new();
-        let id = UniversalValue::Ulid(u);
+        let id = Value::Ulid(u);
         let thing = create_thing("users", &id).unwrap();
         assert_eq!(thing.tb, "users");
     }
 
     #[test]
     fn test_create_thing_unsupported_type() {
-        let id = UniversalValue::Float64(1.23);
+        let id = Value::Float64(1.23);
         let result = create_thing("users", &id);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("Unsupported"));
@@ -788,7 +774,7 @@ mod tests {
         // gets auto-detected and converted to a SurrealDB Duration
         let tv = TypedValue::text("PT181S");
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Duration(d) = surreal_val.0 {
+        if let SqlValue::Duration(d) = surreal_val.0 {
             let std_duration: std::time::Duration = d.into();
             assert_eq!(std_duration.as_secs(), 181);
         } else {
@@ -802,7 +788,7 @@ mod tests {
         // gets auto-detected and converted to a SurrealDB Duration
         let tv = TypedValue::varchar("PT181S", 64);
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Duration(d) = surreal_val.0 {
+        if let SqlValue::Duration(d) = surreal_val.0 {
             let std_duration: std::time::Duration = d.into();
             assert_eq!(std_duration.as_secs(), 181);
         } else {
@@ -815,7 +801,7 @@ mod tests {
         // Test duration with nanoseconds: PT60.123456789S
         let tv = TypedValue::text("PT60.123456789S");
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Duration(d) = surreal_val.0 {
+        if let SqlValue::Duration(d) = surreal_val.0 {
             let std_duration: std::time::Duration = d.into();
             assert_eq!(std_duration.as_secs(), 60);
             assert_eq!(std_duration.subsec_nanos(), 123456789);
@@ -829,7 +815,7 @@ mod tests {
         // Regular text should remain as a string
         let tv = TypedValue::text("hello world");
         let surreal_val: SurrealValue = tv.into();
-        if let Value::Strand(s) = surreal_val.0 {
+        if let SqlValue::Strand(s) = surreal_val.0 {
             assert_eq!(s.as_str(), "hello world");
         } else {
             panic!("Expected Strand, got {:?}", surreal_val.0);

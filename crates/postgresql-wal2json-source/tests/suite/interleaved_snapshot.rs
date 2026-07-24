@@ -99,7 +99,7 @@ async fn drain_to_catch_up(
             if event.table == signal_table {
                 continue;
             }
-            sink.apply_universal_change(&event.change).await?;
+            sink.apply_change(&event.change).await?;
         }
         let pos = source.current_position().await?;
         source.commit_reconciled(pos).await?;

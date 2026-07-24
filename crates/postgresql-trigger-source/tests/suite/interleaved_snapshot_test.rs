@@ -11,10 +11,7 @@ use std::sync::Mutex;
 use anyhow::Result;
 use async_trait::async_trait;
 use surreal_sink::SurrealSink;
-use sync_core::{
-    UniversalChange, UniversalChangeOp, UniversalRelation, UniversalRelationChange, UniversalRow,
-    UniversalValue,
-};
+use sync_core::{Change, ChangeOp, Relation, RelationChange, Row, Value};
 use tokio_postgres::{Client, NoTls};
 
 use surreal_sync_interleaved_snapshot::{
@@ -28,15 +25,15 @@ use surreal_sync_postgresql_trigger_source::{PostgresTriggerWatermarkSource, Sou
 
 #[derive(Default)]
 struct MockSink {
-    rows: Mutex<HashMap<String, HashMap<String, UniversalValue>>>,
+    rows: Mutex<HashMap<String, HashMap<String, Value>>>,
 }
 
-fn id_key(id: &UniversalValue) -> String {
+fn id_key(id: &Value) -> String {
     serde_json::to_string(id).unwrap()
 }
 
 impl MockSink {
-    fn state(&self) -> HashMap<String, HashMap<String, UniversalValue>> {
+    fn state(&self) -> HashMap<String, HashMap<String, Value>> {
         self.rows.lock().unwrap().clone()
     }
 
@@ -47,7 +44,7 @@ impl MockSink {
 
 #[async_trait]
 impl SurrealSink for MockSink {
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> Result<()> {
+    async fn write_rows(&self, rows: &[Row]) -> Result<()> {
         let mut state = self.rows.lock().unwrap();
         for row in rows {
             state.insert(id_key(&row.id), row.fields.clone());
@@ -55,27 +52,27 @@ impl SurrealSink for MockSink {
         Ok(())
     }
 
-    async fn write_universal_relations(&self, _relations: &[UniversalRelation]) -> Result<()> {
+    async fn write_relations(&self, _relations: &[Relation]) -> Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> Result<()> {
+    async fn apply_change(&self, change: &Change) -> Result<()> {
         let mut state = self.rows.lock().unwrap();
         match change.operation {
-            UniversalChangeOp::Delete => {
+            ChangeOp::Delete => {
                 state.remove(&id_key(&change.id));
             }
             _ => {
-                state.insert(id_key(&change.id), change.data.clone().unwrap_or_default());
+                state.insert(
+                    id_key(&change.id),
+                    change.fields.clone().unwrap_or_default(),
+                );
             }
         }
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
-        &self,
-        _change: &UniversalRelationChange,
-    ) -> Result<()> {
+    async fn apply_relation_change(&self, _change: &RelationChange) -> Result<()> {
         Ok(())
     }
 }
@@ -140,7 +137,7 @@ async fn drain_remaining(source: &mut PostgresTriggerWatermarkSource, sink: &Moc
         }
         for event in events {
             if event.pk.single_uuid().is_none() {
-                sink.apply_universal_change(&event.change).await.unwrap();
+                sink.apply_change(&event.change).await.unwrap();
             }
         }
     }
@@ -229,12 +226,12 @@ async fn interleaved_snapshot_parity_under_concurrent_writes() {
     );
 
     for (id, val) in expected {
-        let key = id_key(&UniversalValue::Int64(id));
+        let key = id_key(&Value::Int64(id));
         let fields = actual
             .get(&key)
             .unwrap_or_else(|| panic!("sink missing id {id}"));
         match fields.get("val") {
-            Some(UniversalValue::Text(s)) => {
+            Some(Value::Text(s)) => {
                 assert_eq!(s, &val, "value mismatch for id {id}")
             }
             other => panic!("unexpected val for id {id}: {other:?}"),

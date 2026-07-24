@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use sync_core::{UniversalChange, UniversalValue};
+use sync_core::{Change, Value};
 use sync_transform::test_support::{RecordingSink, ScriptedChangeFeed};
 use sync_transform::{
     run_change_feed, write_rows, ApplyOpts, ChildStdioMode, ConfiguredStage, ExternalTransform,
@@ -15,16 +15,16 @@ fn fixture_cmd(mode: &str) -> Vec<String> {
     vec![bin.to_string(), mode.to_string()]
 }
 
-fn change(id: i64, name: &str) -> UniversalChange {
+fn change(id: i64, name: &str) -> Change {
     let mut data = HashMap::new();
     data.insert(
         "name".to_string(),
-        UniversalValue::VarChar {
+        Value::VarChar {
             value: name.to_string(),
             length: 64,
         },
     );
-    UniversalChange::create("users", UniversalValue::Int64(id), data)
+    Change::create("users", Value::Int64(id), data)
 }
 
 fn positioned(id: i64, pos: u64) -> PositionedChange<u64> {
@@ -44,7 +44,7 @@ async fn persistent_echo_and_mutate() {
         .await
         .unwrap();
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0].id, UniversalValue::Int64(1));
+    assert_eq!(out[0].id, Value::Int64(1));
 
     let ext_m = ExternalTransform::child_stdio(
         ChildStdioMode::Persistent,
@@ -57,13 +57,13 @@ async fn persistent_echo_and_mutate() {
         .await
         .unwrap();
     let name = out[0]
-        .data
+        .fields
         .as_ref()
         .unwrap()
         .get("name")
         .expect("name field");
     match name {
-        UniversalValue::VarChar { value, .. } => assert_eq!(value, "mutated"),
+        Value::VarChar { value, .. } => assert_eq!(value, "mutated"),
         other => panic!("expected VarChar, got {other:?}"),
     }
 }
@@ -86,8 +86,8 @@ async fn persistent_multiplex_batch_ids() {
     };
     let out_a = a.await.unwrap().unwrap();
     let out_b = b.await.unwrap().unwrap();
-    assert_eq!(out_a[0].id, UniversalValue::Int64(1));
-    assert_eq!(out_b[0].id, UniversalValue::Int64(2));
+    assert_eq!(out_a[0].id, Value::Int64(1));
+    assert_eq!(out_b[0].id, Value::Int64(2));
 }
 
 #[tokio::test]
@@ -99,14 +99,14 @@ async fn transient_smoke() {
     )
     .expect("transient");
     let out = ext.exchange_changes(1, vec![change(9, "x")]).await.unwrap();
-    assert_eq!(out[0].id, UniversalValue::Int64(9));
+    assert_eq!(out[0].id, Value::Int64(9));
 
     // Second batch respawns.
     let out2 = ext
         .exchange_changes(2, vec![change(10, "y")])
         .await
         .unwrap();
-    assert_eq!(out2[0].id, UniversalValue::Int64(10));
+    assert_eq!(out2[0].id, Value::Int64(10));
 }
 
 #[tokio::test]
@@ -245,10 +245,10 @@ async fn write_rows_through_external_mutate() {
     );
     let sink = RecordingSink::new();
     let opts = ApplyOpts::default();
-    let row = sync_core::UniversalRow::builder("users", 0, UniversalValue::Int64(1))
+    let row = sync_core::Row::builder("users", 0, Value::Int64(1))
         .field(
             "name",
-            UniversalValue::VarChar {
+            Value::VarChar {
                 value: "alice".into(),
                 length: 64,
             },
@@ -257,13 +257,13 @@ async fn write_rows_through_external_mutate() {
     write_rows(&sink, &pipeline, vec![row], &opts)
         .await
         .unwrap();
-    // write_rows → Update upserts coalesce to write_universal_rows inside the window.
+    // write_rows → Update upserts coalesce to write_rows inside the window.
     let written = sink.rows_written();
     assert_eq!(written.len(), 1);
     assert_eq!(written[0].len(), 1);
     let name = written[0][0].fields.get("name").expect("name field");
     match name {
-        UniversalValue::VarChar { value, .. } => assert_eq!(value, "mutated"),
+        Value::VarChar { value, .. } => assert_eq!(value, "mutated"),
         other => panic!("unexpected: {other:?}"),
     }
 }
@@ -333,13 +333,13 @@ stdio.framer = "ndjson"
     assert_eq!(sink.applied().len(), 1);
     let applied = sink.applied();
     let name = applied[0]
-        .data
+        .fields
         .as_ref()
         .unwrap()
         .get("name")
         .expect("name field");
     match name {
-        UniversalValue::VarChar { value, .. } => assert_eq!(value, "mutated"),
+        Value::VarChar { value, .. } => assert_eq!(value, "mutated"),
         other => panic!("expected mutated name, got {other:?}"),
     }
     assert_eq!(feed.advances, vec![10]);

@@ -7,14 +7,14 @@
 //!
 //! - `forward`: Convert `TypedValue` → `MySQLValue` (for INSERT operations)
 //! - `reverse`: Convert MySQL values → `TypedValue` (for reading data)
-//! - `ddl`: Generate MySQL DDL from `UniversalType`
-//! - `schema`: MySQL column type to UniversalType conversion
+//! - `ddl`: Generate MySQL DDL from `Type`
+//! - `schema`: MySQL column type to Type conversion
 //!
 //! # Example
 //!
 //! ```rust,ignore
 //! use mysql_types::{MySQLValue, MySQLDdl, ToDdl, mysql_column_to_universal_type};
-//! use sync_core::{TypedValue, UniversalType, UniversalValue};
+//! use sync_core::{TypedValue, Type, Value};
 //!
 //! // Forward conversion
 //! let typed_value = TypedValue::bool(true);
@@ -22,11 +22,11 @@
 //!
 //! // DDL generation
 //! let ddl = MySQLDdl;
-//! assert_eq!(ddl.to_ddl(&UniversalType::Bool), "TINYINT(1)");
+//! assert_eq!(ddl.to_ddl(&Type::Bool), "TINYINT(1)");
 //!
 //! // Column type conversion
 //! let ut = mysql_column_to_universal_type("INT", "int(11)", None, None);
-//! assert_eq!(ut, UniversalType::Int32);
+//! assert_eq!(ut, Type::Int32);
 //! ```
 
 pub mod binlog;

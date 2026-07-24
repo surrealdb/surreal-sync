@@ -13,9 +13,7 @@ use surreal_sync_interleaved_snapshot::{
     SnapshotCheckpointer, SnapshotSignal, SnapshotTransforms, TableSpec, WatermarkKind,
     WatermarkSource,
 };
-use sync_core::{
-    DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,
-};
+use sync_core::{Change, ChangeOp, DatabaseSchema, Row, Type, Value};
 use tracing::info;
 use uuid::Uuid;
 
@@ -23,7 +21,7 @@ use crate::catch_up::{
     effective_sync_tables, emit_catch_up_progress, read_catch_up_progress, CatchUpProgress,
     CoverageKind,
 };
-use crate::change::cdc_change_to_universal;
+use crate::change::cdc_to_change;
 use crate::checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogReconciliationPos};
 use crate::client::{
     connect_binlog_client, get_pool_conn, new_mysql_pool_with_ssl, resolve_database,
@@ -311,7 +309,7 @@ impl BinlogWatermarkSource {
             .column_names_by_table
             .get(&change.table)
             .ok_or_else(|| anyhow!("missing column names for table '{}'", change.table))?;
-        let universal = cdc_change_to_universal(
+        let universal = cdc_to_change(
             change,
             table_map,
             column_names,
@@ -388,7 +386,7 @@ impl WatermarkSource for BinlogWatermarkSource {
         table: &TableSpec,
         after: Option<&PkTuple>,
         limit: usize,
-    ) -> Result<Vec<UniversalRow>> {
+    ) -> Result<Vec<Row>> {
         let mut conn = self.pool.get_conn().await?;
         use_database(&mut conn, &self.database).await?;
         let config = self.conversion_config(&table.table);
@@ -599,13 +597,8 @@ fn signal_insert_to_event(
     Ok(Some(ReconciliationEvent {
         position: BinlogReconciliationPos::new(change.position.clone()),
         table: SIGNAL_TABLE.to_string(),
-        pk: PkTuple::new(vec![UniversalValue::Uuid(id)]),
-        change: UniversalChange::new(
-            UniversalChangeOp::Create,
-            SIGNAL_TABLE,
-            UniversalValue::Uuid(id),
-            None,
-        ),
+        pk: PkTuple::new(vec![Value::Uuid(id)]),
+        change: Change::new(ChangeOp::Create, SIGNAL_TABLE, Value::Uuid(id), None),
     }))
 }
 
@@ -622,44 +615,44 @@ fn signal_uuid_from_row(values: &[binlog_protocol::CellValue]) -> Result<Uuid> {
     Uuid::parse_str(&id_str).map_err(|e| anyhow!("invalid signal UUID '{id_str}': {e}"))
 }
 
-fn pk_tuple_from_primary_key(pk: &UniversalValue) -> PkTuple {
+fn pk_tuple_from_primary_key(pk: &Value) -> PkTuple {
     match pk {
-        UniversalValue::Array { elements, .. } => {
+        Value::Array { elements, .. } => {
             PkTuple::new(elements.iter().map(normalize_pk_value).collect())
         }
         single => PkTuple::new(vec![normalize_pk_value(single)]),
     }
 }
 
-fn normalize_pk_value(value: &UniversalValue) -> UniversalValue {
+fn normalize_pk_value(value: &Value) -> Value {
     match value {
-        UniversalValue::Int8 { value, .. } => UniversalValue::Int64(*value as i64),
-        UniversalValue::Int16(v) => UniversalValue::Int64(*v as i64),
-        UniversalValue::Int32(v) => UniversalValue::Int64(*v as i64),
-        UniversalValue::Int64(v) => UniversalValue::Int64(*v),
-        UniversalValue::Uuid(u) => UniversalValue::Uuid(*u),
-        UniversalValue::Char { value, .. } => UniversalValue::Text(value.clone()),
-        UniversalValue::VarChar { value, .. } => UniversalValue::Text(value.clone()),
-        UniversalValue::Text(s) => UniversalValue::Text(s.clone()),
+        Value::Int8 { value, .. } => Value::Int64(*value as i64),
+        Value::Int16(v) => Value::Int64(*v as i64),
+        Value::Int32(v) => Value::Int64(*v as i64),
+        Value::Int64(v) => Value::Int64(*v),
+        Value::Uuid(u) => Value::Uuid(*u),
+        Value::Char { value, .. } => Value::Text(value.clone()),
+        Value::VarChar { value, .. } => Value::Text(value.clone()),
+        Value::Text(s) => Value::Text(s.clone()),
         other => other.clone(),
     }
 }
 
 /// Re-insert composite primary key columns into row fields so the interleaved
 /// snapshot loop can recover keys via `PkTuple::from_row`.
-fn normalize_row_pk(row: &mut UniversalRow, pk_columns: &[String]) {
+fn normalize_row_pk(row: &mut Row, pk_columns: &[String]) {
     if pk_columns.len() == 1 {
         row.id = normalize_pk_value(&row.id);
         return;
     }
-    if let UniversalValue::Array { elements, .. } = &row.id {
-        let canonical: Vec<UniversalValue> = elements.iter().map(normalize_pk_value).collect();
+    if let Value::Array { elements, .. } = &row.id {
+        let canonical: Vec<Value> = elements.iter().map(normalize_pk_value).collect();
         for (col, value) in pk_columns.iter().zip(canonical.iter()) {
             row.fields.insert(col.clone(), value.clone());
         }
-        row.id = UniversalValue::Array {
+        row.id = Value::Array {
             elements: canonical,
-            element_type: Box::new(UniversalType::Text),
+            element_type: Box::new(Type::Text),
         };
     }
 }
@@ -744,9 +737,9 @@ fn conversions_from_schema(
         };
         for column in table.column_names() {
             match table.get_column_type(column) {
-                Some(UniversalType::Bool) => conv.boolean_columns.push(column.to_string()),
-                Some(UniversalType::Set { .. }) => conv.set_columns.push(column.to_string()),
-                Some(UniversalType::Json) if !conv.json_columns.iter().any(|c| c == column) => {
+                Some(Type::Bool) => conv.boolean_columns.push(column.to_string()),
+                Some(Type::Set { .. }) => conv.set_columns.push(column.to_string()),
+                Some(Type::Json) if !conv.json_columns.iter().any(|c| c == column) => {
                     conv.json_columns.push(column.to_string());
                 }
                 _ => {}

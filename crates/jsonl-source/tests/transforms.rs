@@ -9,12 +9,12 @@ use std::sync::Mutex;
 
 use surreal_sink::SurrealSink;
 use surreal_sync_jsonl_source::{sync, sync_with_transforms, Config};
-use sync_core::{UniversalChange, UniversalRelation, UniversalRow, UniversalValue};
+use sync_core::{Change, Relation, Row, Value};
 use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 use tempfile::NamedTempFile;
 
 struct CaptureSink {
-    rows: Mutex<Vec<UniversalRow>>,
+    rows: Mutex<Vec<Row>>,
 }
 
 impl CaptureSink {
@@ -27,33 +27,30 @@ impl CaptureSink {
 
 #[async_trait::async_trait]
 impl SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
+    async fn write_rows(&self, rows: &[Row]) -> anyhow::Result<()> {
         self.rows.lock().expect("lock").extend(rows.iter().cloned());
         Ok(())
     }
 
-    async fn write_universal_relations(
-        &self,
-        _relations: &[UniversalRelation],
-    ) -> anyhow::Result<()> {
+    async fn write_relations(&self, _relations: &[Relation]) -> anyhow::Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> anyhow::Result<()> {
+    async fn apply_change(&self, change: &Change) -> anyhow::Result<()> {
         let mut rows = self.rows.lock().expect("lock");
         let index = rows.len() as u64;
-        rows.push(UniversalRow::new(
+        rows.push(Row::new(
             change.table.clone(),
             index,
             change.id.clone(),
-            change.data.clone().unwrap_or_default(),
+            change.fields.clone().unwrap_or_default(),
         ));
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
+    async fn apply_relation_change(
         &self,
-        _change: &sync_core::UniversalRelationChange,
+        _change: &sync_core::RelationChange,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -91,18 +88,18 @@ fn ensure_fixture_worker() -> PathBuf {
     path
 }
 
-fn row_name(row: &UniversalRow) -> Option<String> {
+fn row_name(row: &Row) -> Option<String> {
     match row.fields.get("name")? {
-        UniversalValue::Text(value) => Some(value.clone()),
+        Value::Text(value) => Some(value.clone()),
         other => panic!("unexpected name: {other:?}"),
     }
 }
 
-fn row_parent_thing(row: &UniversalRow) -> Option<(String, String)> {
+fn row_parent_thing(row: &Row) -> Option<(String, String)> {
     match row.fields.get("parent")? {
-        UniversalValue::Thing { table, id } => {
+        Value::Thing { table, id } => {
             let id_text = match id.as_ref() {
-                UniversalValue::Text(s) => s.clone(),
+                Value::Text(s) => s.clone(),
                 other => panic!("unexpected thing id: {other:?}"),
             };
             Some((table.clone(), id_text))
@@ -250,6 +247,6 @@ type = "flatten_id"
 
     let rows = sink.rows.lock().expect("lock").clone();
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].id, UniversalValue::Text("a:b".into()));
-    assert_eq!(rows[1].id, UniversalValue::Text("1:2".into()));
+    assert_eq!(rows[0].id, Value::Text("a:b".into()));
+    assert_eq!(rows[1].id, Value::Text("1:2".into()));
 }

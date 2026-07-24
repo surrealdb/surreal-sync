@@ -19,22 +19,20 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
 use surreal_sink::SurrealSink;
-use sync_core::{
-    UniversalChange, UniversalChangeOp, UniversalRelation, UniversalRelationChange, UniversalRow,
-};
+use sync_core::{Change, ChangeOp, Relation, RelationChange, Row};
 use tokio::task::JoinSet;
 use tracing::warn;
 
 /// Transform then sink rows via the same overlapping [`ApplyContext`] window as
 /// CDC. Shared by full sync and snapshot flushes.
 ///
-/// Rows become upsert [`UniversalChange`]s and honor `max_in_flight` /
+/// Rows become upsert [`Change`]s and honor `max_in_flight` /
 /// `batch_size`. Homogeneous upsert batches coalesce to
-/// [`SurrealSink::write_universal_rows`] inside the ordered sink step.
+/// [`SurrealSink::write_rows`] inside the ordered sink step.
 pub async fn write_rows<S: SurrealSink>(
     sink: &S,
     pipeline: &Pipeline,
-    rows: Vec<UniversalRow>,
+    rows: Vec<Row>,
     opts: &ApplyOpts,
 ) -> Result<()> {
     write_rows_with(sink, Arc::new(pipeline.clone()), rows, opts).await
@@ -45,28 +43,28 @@ pub async fn write_rows<S: SurrealSink>(
 pub async fn write_relations<S: SurrealSink>(
     sink: &S,
     pipeline: &Pipeline,
-    relations: Vec<UniversalRelation>,
+    relations: Vec<Relation>,
     opts: &ApplyOpts,
 ) -> Result<()> {
     write_relations_with(sink, Arc::new(pipeline.clone()), relations, opts).await
 }
 
-/// Transform then apply each change via [`SurrealSink::apply_universal_change`].
+/// Transform then apply each change via [`SurrealSink::apply_change`].
 pub async fn apply_changes<S: SurrealSink>(
     sink: &S,
     pipeline: &Pipeline,
-    changes: Vec<UniversalChange>,
+    changes: Vec<Change>,
     opts: &ApplyOpts,
 ) -> Result<()> {
     apply_changes_with(sink, Arc::new(pipeline.clone()), changes, opts).await
 }
 
 /// Transform then apply each relation change via
-/// [`SurrealSink::apply_universal_relation_change`].
+/// [`SurrealSink::apply_relation_change`].
 pub async fn apply_relation_changes<S: SurrealSink>(
     sink: &S,
     pipeline: &Pipeline,
-    changes: Vec<UniversalRelationChange>,
+    changes: Vec<RelationChange>,
     opts: &ApplyOpts,
 ) -> Result<()> {
     apply_relation_changes_with(sink, Arc::new(pipeline.clone()), changes, opts).await
@@ -78,7 +76,7 @@ pub async fn apply_relation_changes<S: SurrealSink>(
 pub async fn apply_changes_with<S, T>(
     sink: &S,
     transformer: Arc<T>,
-    changes: Vec<UniversalChange>,
+    changes: Vec<Change>,
     opts: &ApplyOpts,
 ) -> Result<()>
 where
@@ -100,7 +98,7 @@ where
 pub async fn apply_relation_changes_with<S, T>(
     sink: &S,
     transformer: Arc<T>,
-    changes: Vec<UniversalRelationChange>,
+    changes: Vec<RelationChange>,
     opts: &ApplyOpts,
 ) -> Result<()>
 where
@@ -122,7 +120,7 @@ where
 pub async fn write_rows_with<S, T>(
     sink: &S,
     transformer: Arc<T>,
-    rows: Vec<UniversalRow>,
+    rows: Vec<Row>,
     opts: &ApplyOpts,
 ) -> Result<()>
 where
@@ -136,7 +134,7 @@ where
     // so max_in_flight can absorb slow transforms within a chunk.
     let mut ctx = ApplyContext::new(sink, transformer, opts);
     for (i, row) in rows.into_iter().enumerate() {
-        let change = UniversalChange::update(row.table, row.id, row.fields);
+        let change = Change::update(row.table, row.id, row.fields);
         ctx.push_change(change, i as u64).await?;
     }
     ctx.flush().await?;
@@ -147,7 +145,7 @@ where
 pub async fn write_relations_with<S, T>(
     sink: &S,
     transformer: Arc<T>,
-    relations: Vec<UniversalRelation>,
+    relations: Vec<Relation>,
     opts: &ApplyOpts,
 ) -> Result<()>
 where
@@ -159,7 +157,7 @@ where
     }
     let mut ctx = ApplyContext::new(sink, transformer, opts);
     for (i, relation) in relations.into_iter().enumerate() {
-        let change = UniversalRelationChange::update(relation);
+        let change = RelationChange::update(relation);
         ctx.push_relation_change(change, i as u64).await?;
     }
     ctx.flush().await?;
@@ -169,8 +167,8 @@ where
 /// Ordered sink apply for a transformed batch.
 ///
 /// Homogeneous upsert (`Update`) batches coalesce to
-/// [`SurrealSink::write_universal_rows`] /
-/// [`SurrealSink::write_universal_relations`] so large `write_rows` /
+/// [`SurrealSink::write_rows`] /
+/// [`SurrealSink::write_relations`] so large `write_rows` /
 /// `write_relations` vecs keep a bulk trait call **inside** the window. CDC
 /// `Create` / `Delete` (and mixed batches) stay on per-event apply.
 pub(crate) async fn apply_transformed_sink_events<S: SurrealSink>(
@@ -181,46 +179,38 @@ pub(crate) async fn apply_transformed_sink_events<S: SurrealSink>(
         return Ok(());
     }
     if let Some(rows) = try_coalesce_row_upserts(events) {
-        return sink
-            .write_universal_rows(&rows)
-            .await
-            .context("sink write_universal_rows");
+        return sink.write_rows(&rows).await.context("sink write_rows");
     }
     if let Some(relations) = try_coalesce_relation_upserts(events) {
         return sink
-            .write_universal_relations(&relations)
+            .write_relations(&relations)
             .await
-            .context("sink write_universal_relations");
+            .context("sink write_relations");
     }
     for event in events {
         match event {
             ApplyEvent::Change(change) => {
-                sink.apply_universal_change(change)
+                sink.apply_change(change)
                     .await
-                    .context("sink apply_universal_change")?;
+                    .context("sink apply_change")?;
             }
             ApplyEvent::RelationChange(change) => {
-                sink.apply_universal_relation_change(change)
+                sink.apply_relation_change(change)
                     .await
-                    .context("sink apply_universal_relation_change")?;
+                    .context("sink apply_relation_change")?;
             }
         }
     }
     Ok(())
 }
 
-fn try_coalesce_row_upserts(events: &[ApplyEvent]) -> Option<Vec<UniversalRow>> {
+fn try_coalesce_row_upserts(events: &[ApplyEvent]) -> Option<Vec<Row>> {
     let mut rows = Vec::with_capacity(events.len());
     for event in events {
         match event {
-            ApplyEvent::Change(change) if change.operation == UniversalChangeOp::Update => {
-                let data = change.data.as_ref()?.clone();
-                rows.push(UniversalRow::new(
-                    change.table.clone(),
-                    0,
-                    change.id.clone(),
-                    data,
-                ));
+            ApplyEvent::Change(change) if change.operation == ChangeOp::Update => {
+                let data = change.fields.as_ref()?.clone();
+                rows.push(Row::new(change.table.clone(), 0, change.id.clone(), data));
             }
             _ => return None,
         }
@@ -228,11 +218,11 @@ fn try_coalesce_row_upserts(events: &[ApplyEvent]) -> Option<Vec<UniversalRow>> 
     Some(rows)
 }
 
-fn try_coalesce_relation_upserts(events: &[ApplyEvent]) -> Option<Vec<UniversalRelation>> {
+fn try_coalesce_relation_upserts(events: &[ApplyEvent]) -> Option<Vec<Relation>> {
     let mut relations = Vec::with_capacity(events.len());
     for event in events {
         match event {
-            ApplyEvent::RelationChange(change) if change.operation == UniversalChangeOp::Update => {
+            ApplyEvent::RelationChange(change) if change.operation == ChangeOp::Update => {
                 relations.push(change.relation.clone());
             }
             _ => return None,
@@ -314,7 +304,7 @@ pub(crate) struct PreparedSinkBatch<P> {
 /// Library / custom-loop driver sharing the same ordered apply path as
 /// [`crate::run_source_runtime`].
 ///
-/// Accepts row [`UniversalChange`] and [`UniversalRelationChange`] into one
+/// Accepts row [`Change`] and [`RelationChange`] into one
 /// buffer / window. Identity and non-identity pipelines share one path: every
 /// batch is spawned onto the transform [`JoinSet`] (identity is an async
 /// no-op). Sink apply is ordered and may overlap with polling / transforming
@@ -468,7 +458,7 @@ where
     /// Push one row change; may start transforms and drain ordered sink.
     ///
     /// Returns the last position successfully sunk (caller should `advance_watermark`).
-    pub async fn push_change(&mut self, change: UniversalChange, position: P) -> Result<Option<P>> {
+    pub async fn push_change(&mut self, change: Change, position: P) -> Result<Option<P>> {
         self.ensure_not_poisoned()?;
         self.push_buffered_event(PositionedEvent::change(change, position));
         while self.try_start_full_batch() {}
@@ -479,7 +469,7 @@ where
     /// Push one relation change into the same window as row changes.
     pub async fn push_relation_change(
         &mut self,
-        change: UniversalRelationChange,
+        change: RelationChange,
         position: P,
     ) -> Result<Option<P>> {
         self.ensure_not_poisoned()?;
@@ -551,13 +541,13 @@ where
     }
 
     /// Transform then sink rows (same as [`write_rows_with`]).
-    pub async fn write_rows(&self, rows: Vec<UniversalRow>) -> Result<()> {
+    pub async fn write_rows(&self, rows: Vec<Row>) -> Result<()> {
         self.ensure_not_poisoned()?;
         write_rows_with(self.sink, Arc::clone(&self.transformer), rows, self.opts).await
     }
 
     /// Transform then sink relations (same as [`write_relations_with`]).
-    pub async fn write_relations(&self, relations: Vec<UniversalRelation>) -> Result<()> {
+    pub async fn write_relations(&self, relations: Vec<Relation>) -> Result<()> {
         self.ensure_not_poisoned()?;
         write_relations_with(
             self.sink,

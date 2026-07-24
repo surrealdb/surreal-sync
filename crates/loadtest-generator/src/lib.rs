@@ -19,7 +19,7 @@
 //! └────────┬────────┘
 //!          │
 //!          ▼
-//!    UniversalRow { table, index, id, fields }
+//!    Row { table, index, id, fields }
 //! ```
 //!
 //! # Example
@@ -71,4 +71,4 @@ pub mod generator;
 pub mod generators;
 
 // Re-exports for convenience
-pub use generator::{DataGenerator, GeneratorError, UniversalRowIterator};
+pub use generator::{DataGenerator, GeneratorError, RowIterator};

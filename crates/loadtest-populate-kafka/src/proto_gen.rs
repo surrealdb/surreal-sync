@@ -3,7 +3,7 @@
 //! This module generates .proto file content from a Schema table definition,
 //! enabling dynamic protobuf schema generation for Kafka loadtesting.
 
-use sync_core::{GeneratorTableDefinition, UniversalType};
+use sync_core::{GeneratorTableDefinition, Type};
 
 /// Information about a proto field type.
 struct ProtoTypeInfo {
@@ -30,9 +30,7 @@ pub fn generate_proto_for_table(
     let needs_timestamp = table_schema.fields.iter().any(|f| {
         matches!(
             f.field_type,
-            UniversalType::LocalDateTime
-                | UniversalType::LocalDateTimeNano
-                | UniversalType::ZonedDateTime
+            Type::LocalDateTime | Type::LocalDateTimeNano | Type::ZonedDateTime
         )
     });
 
@@ -70,88 +68,81 @@ pub fn generate_proto_for_table(
     proto
 }
 
-/// Convert a UniversalType to protobuf type information.
-fn sync_type_to_proto_type(sync_type: &UniversalType) -> ProtoTypeInfo {
+/// Convert a Type to protobuf type information.
+fn sync_type_to_proto_type(sync_type: &Type) -> ProtoTypeInfo {
     match sync_type {
         // Boolean
-        UniversalType::Bool => ProtoTypeInfo {
+        Type::Bool => ProtoTypeInfo {
             type_name: "bool".to_string(),
             requires_timestamp_import: false,
         },
 
         // Integer types -> int64 (safest for all integer ranges)
-        UniversalType::Int8 { .. }
-        | UniversalType::Int16
-        | UniversalType::Int32
-        | UniversalType::Int64 => ProtoTypeInfo {
+        Type::Int8 { .. } | Type::Int16 | Type::Int32 | Type::Int64 => ProtoTypeInfo {
             type_name: "int64".to_string(),
             requires_timestamp_import: false,
         },
 
         // Floating point
-        UniversalType::Float32 => ProtoTypeInfo {
+        Type::Float32 => ProtoTypeInfo {
             type_name: "float".to_string(),
             requires_timestamp_import: false,
         },
-        UniversalType::Float64 => ProtoTypeInfo {
+        Type::Float64 => ProtoTypeInfo {
             type_name: "double".to_string(),
             requires_timestamp_import: false,
         },
 
         // Decimal -> string (preserve precision)
-        UniversalType::Decimal { .. } => ProtoTypeInfo {
+        Type::Decimal { .. } => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // String types
-        UniversalType::Char { .. } | UniversalType::VarChar { .. } | UniversalType::Text => {
-            ProtoTypeInfo {
-                type_name: "string".to_string(),
-                requires_timestamp_import: false,
-            }
-        }
+        Type::Char { .. } | Type::VarChar { .. } | Type::Text => ProtoTypeInfo {
+            type_name: "string".to_string(),
+            requires_timestamp_import: false,
+        },
 
         // Binary types
-        UniversalType::Blob | UniversalType::Bytes => ProtoTypeInfo {
+        Type::Blob | Type::Bytes => ProtoTypeInfo {
             type_name: "bytes".to_string(),
             requires_timestamp_import: false,
         },
 
         // Temporal types -> google.protobuf.Timestamp
-        UniversalType::LocalDateTime
-        | UniversalType::LocalDateTimeNano
-        | UniversalType::ZonedDateTime => ProtoTypeInfo {
+        Type::LocalDateTime | Type::LocalDateTimeNano | Type::ZonedDateTime => ProtoTypeInfo {
             type_name: "google.protobuf.Timestamp".to_string(),
             requires_timestamp_import: true,
         },
 
         // Date and Time -> string (ISO format)
-        UniversalType::Date | UniversalType::Time => ProtoTypeInfo {
+        Type::Date | Type::Time => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // UUID -> string
-        UniversalType::Uuid => ProtoTypeInfo {
+        Type::Uuid => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // ULID -> string
-        UniversalType::Ulid => ProtoTypeInfo {
+        Type::Ulid => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // JSON types -> string (serialized JSON)
-        UniversalType::Json | UniversalType::Jsonb => ProtoTypeInfo {
+        Type::Json | Type::Jsonb => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // Array -> repeated
-        UniversalType::Array { element_type } => {
+        Type::Array { element_type } => {
             let inner = sync_type_to_proto_type(element_type);
             ProtoTypeInfo {
                 type_name: format!("repeated {}", inner.type_name),
@@ -160,37 +151,37 @@ fn sync_type_to_proto_type(sync_type: &UniversalType) -> ProtoTypeInfo {
         }
 
         // Set and Enum -> string
-        UniversalType::Set { .. } | UniversalType::Enum { .. } => ProtoTypeInfo {
+        Type::Set { .. } | Type::Enum { .. } => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // Geometry -> string (GeoJSON or WKT)
-        UniversalType::Geometry { .. } => ProtoTypeInfo {
+        Type::Geometry { .. } => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // Duration -> string (ISO 8601 duration format)
-        UniversalType::Duration => ProtoTypeInfo {
+        Type::Duration => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // Thing -> string (table:id format)
-        UniversalType::Thing => ProtoTypeInfo {
+        Type::Thing => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // Object -> string (serialized JSON)
-        UniversalType::Object => ProtoTypeInfo {
+        Type::Object => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
 
         // TimeTz -> string (time with timezone preserved as string)
-        UniversalType::TimeTz => ProtoTypeInfo {
+        Type::TimeTz => ProtoTypeInfo {
             type_name: "string".to_string(),
             requires_timestamp_import: false,
         },
@@ -284,26 +275,26 @@ tables:
     #[test]
     fn test_proto_type_mapping() {
         // Boolean
-        let info = sync_type_to_proto_type(&UniversalType::Bool);
+        let info = sync_type_to_proto_type(&Type::Bool);
         assert_eq!(info.type_name, "bool");
         assert!(!info.requires_timestamp_import);
 
         // Integer types
-        let info = sync_type_to_proto_type(&UniversalType::Int64);
+        let info = sync_type_to_proto_type(&Type::Int64);
         assert_eq!(info.type_name, "int64");
 
         // Float
-        let info = sync_type_to_proto_type(&UniversalType::Float32);
+        let info = sync_type_to_proto_type(&Type::Float32);
         assert_eq!(info.type_name, "float");
 
         // DateTime
-        let info = sync_type_to_proto_type(&UniversalType::LocalDateTime);
+        let info = sync_type_to_proto_type(&Type::LocalDateTime);
         assert_eq!(info.type_name, "google.protobuf.Timestamp");
         assert!(info.requires_timestamp_import);
 
         // Array<Int>
-        let info = sync_type_to_proto_type(&UniversalType::Array {
-            element_type: Box::new(UniversalType::Int32),
+        let info = sync_type_to_proto_type(&Type::Array {
+            element_type: Box::new(Type::Int32),
         });
         assert_eq!(info.type_name, "repeated int64");
     }

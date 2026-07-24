@@ -19,7 +19,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
+use sync_core::{Change, Relation, RelationChange, Row};
 use tracing::debug;
 
 /// Signal from [`SourceDriver::between_events`] for side work between polls.
@@ -101,17 +101,17 @@ pub enum RuntimeExit {
 /// durability bypass of the pipeline.
 #[async_trait::async_trait]
 pub trait AdhocApply: Send + Sync {
-    /// Transform + `write_universal_rows` via the runtime’s pipeline and opts.
-    async fn write_rows(&self, rows: Vec<UniversalRow>) -> Result<()>;
+    /// Transform + `write_rows` via the runtime’s pipeline and opts.
+    async fn write_rows(&self, rows: Vec<Row>) -> Result<()>;
 
-    /// Transform + `write_universal_relations`.
-    async fn write_relations(&self, relations: Vec<UniversalRelation>) -> Result<()>;
+    /// Transform + `write_relations`.
+    async fn write_relations(&self, relations: Vec<Relation>) -> Result<()>;
 
     /// Transform + apply each row change.
-    async fn apply_changes(&self, changes: Vec<UniversalChange>) -> Result<()>;
+    async fn apply_changes(&self, changes: Vec<Change>) -> Result<()>;
 
     /// Transform + apply each relation change.
-    async fn apply_relation_changes(&self, changes: Vec<UniversalRelationChange>) -> Result<()>;
+    async fn apply_relation_changes(&self, changes: Vec<RelationChange>) -> Result<()>;
 
     /// Borrow the apply options used by the incremental loop.
     fn apply_opts(&self) -> &ApplyOpts;
@@ -129,7 +129,7 @@ where
     S: SurrealSink,
     T: BatchTransformer + 'static,
 {
-    async fn write_rows(&self, rows: Vec<UniversalRow>) -> Result<()> {
+    async fn write_rows(&self, rows: Vec<Row>) -> Result<()> {
         write_rows_with(
             self.sink,
             Arc::clone(&self.transformer),
@@ -139,7 +139,7 @@ where
         .await
     }
 
-    async fn write_relations(&self, relations: Vec<UniversalRelation>) -> Result<()> {
+    async fn write_relations(&self, relations: Vec<Relation>) -> Result<()> {
         write_relations_with(
             self.sink,
             Arc::clone(&self.transformer),
@@ -149,7 +149,7 @@ where
         .await
     }
 
-    async fn apply_changes(&self, changes: Vec<UniversalChange>) -> Result<()> {
+    async fn apply_changes(&self, changes: Vec<Change>) -> Result<()> {
         apply_changes_with(
             self.sink,
             Arc::clone(&self.transformer),
@@ -159,7 +159,7 @@ where
         .await
     }
 
-    async fn apply_relation_changes(&self, changes: Vec<UniversalRelationChange>) -> Result<()> {
+    async fn apply_relation_changes(&self, changes: Vec<RelationChange>) -> Result<()> {
         apply_relation_changes_with(
             self.sink,
             Arc::clone(&self.transformer),

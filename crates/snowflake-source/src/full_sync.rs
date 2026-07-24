@@ -22,7 +22,7 @@ use async_trait::async_trait;
 use serde_json::Value as JsonValue;
 use snowflake_types::{convert_cell, ColumnType};
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalRow, UniversalValue};
+use sync_core::{Row, Value};
 use sync_transform::{
     run_source_runtime_with, ApplyOpts, Pipeline, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
 };
@@ -182,7 +182,7 @@ pub async fn apply_query_stream_with_transforms<S: SurrealSink>(
 
     #[async_trait]
     impl RowChunkSource for SnowflakePartitionChunks<'_> {
-        async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+        async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<Row>>> {
             let Some(raw_batch) = self.stream.next_batch(self.batch_size).await? else {
                 return Ok(None);
             };
@@ -264,7 +264,7 @@ pub async fn apply_query_result_with_transforms<S: SurrealSink>(
 
     #[async_trait]
     impl RowChunkSource for InMemoryRowChunks<'_> {
-        async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+        async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<Row>>> {
             if self.next_index >= self.rows.len() {
                 return Ok(None);
             }
@@ -308,7 +308,7 @@ fn convert_row(
     columns: &[ColumnType],
     id_indices: &[usize],
     id_index_set: &HashSet<usize>,
-) -> Result<UniversalRow> {
+) -> Result<Row> {
     if row.len() != columns.len() {
         return Err(anyhow!(
             "row {row_index} of table '{table}' has {} cells but {} columns were declared",
@@ -317,7 +317,7 @@ fn convert_row(
         ));
     }
 
-    let mut fields: HashMap<String, UniversalValue> = HashMap::new();
+    let mut fields: HashMap<String, Value> = HashMap::new();
     for (i, col) in columns.iter().enumerate() {
         // When ID columns are explicit, keep them out of the field map so the
         // record ID is not duplicated as a field (matches the PostgreSQL PK behavior).
@@ -329,12 +329,7 @@ fn convert_row(
     }
 
     let id = build_record_id(row, row_index, id_indices);
-    Ok(UniversalRow::new(
-        table.to_string(),
-        row_index as u64,
-        id,
-        fields,
-    ))
+    Ok(Row::new(table.to_string(), row_index as u64, id, fields))
 }
 
 /// Map the configured ID column names to their positions in the result set.
@@ -357,28 +352,27 @@ fn resolve_id_columns(columns: &[ColumnType], id_columns: &[String]) -> Result<V
 /// - No ID columns: sequential per-table index (`Int64`). Deterministic within a
 ///   run, but not stable across re-runs.
 /// - Single ID column: the cell as `Int64` when it parses as an integer, else `Text`.
-/// - Composite ID columns: an [`UniversalValue::Array`] of scalar parts (Surreal
+/// - Composite ID columns: an [`Value::Array`] of scalar parts (Surreal
 ///   array record ID). Use the `flatten_id` transform to restore colon-joined Text.
-fn build_record_id(row: &[JsonValue], row_index: usize, id_indices: &[usize]) -> UniversalValue {
+fn build_record_id(row: &[JsonValue], row_index: usize, id_indices: &[usize]) -> Value {
     match id_indices {
-        [] => UniversalValue::Int64(row_index as i64),
+        [] => Value::Int64(row_index as i64),
         [only] => cell_to_id_scalar(&row[*only]),
         many => {
-            let parts: Vec<UniversalValue> =
-                many.iter().map(|&i| cell_to_id_scalar(&row[i])).collect();
-            UniversalValue::Array {
+            let parts: Vec<Value> = many.iter().map(|&i| cell_to_id_scalar(&row[i])).collect();
+            Value::Array {
                 elements: parts,
-                element_type: Box::new(sync_core::UniversalType::Text),
+                element_type: Box::new(sync_core::Type::Text),
             }
         }
     }
 }
 
-fn cell_to_id_scalar(cell: &JsonValue) -> UniversalValue {
+fn cell_to_id_scalar(cell: &JsonValue) -> Value {
     let s = cell_to_string(cell);
     match s.parse::<i64>() {
-        Ok(n) => UniversalValue::Int64(n),
-        Err(_) => UniversalValue::Text(s),
+        Ok(n) => Value::Int64(n),
+        Err(_) => Value::Text(s),
     }
 }
 
@@ -398,13 +392,13 @@ mod tests {
     #[test]
     fn auto_generated_id_is_row_index() {
         let row = vec![json!("x")];
-        assert_eq!(build_record_id(&row, 7, &[]), UniversalValue::Int64(7));
+        assert_eq!(build_record_id(&row, 7, &[]), Value::Int64(7));
     }
 
     #[test]
     fn single_integer_id_column_is_int64() {
         let row = vec![json!("42"), json!("name")];
-        assert_eq!(build_record_id(&row, 0, &[0]), UniversalValue::Int64(42));
+        assert_eq!(build_record_id(&row, 0, &[0]), Value::Int64(42));
     }
 
     #[test]
@@ -412,7 +406,7 @@ mod tests {
         let row = vec![json!("abc"), json!("name")];
         assert_eq!(
             build_record_id(&row, 0, &[0]),
-            UniversalValue::Text("abc".to_string())
+            Value::Text("abc".to_string())
         );
     }
 
@@ -421,12 +415,9 @@ mod tests {
         let row = vec![json!("a"), json!("b"), json!("c")];
         assert_eq!(
             build_record_id(&row, 0, &[0, 2]),
-            UniversalValue::Array {
-                elements: vec![
-                    UniversalValue::Text("a".to_string()),
-                    UniversalValue::Text("c".to_string()),
-                ],
-                element_type: Box::new(sync_core::UniversalType::Text),
+            Value::Array {
+                elements: vec![Value::Text("a".to_string()), Value::Text("c".to_string()),],
+                element_type: Box::new(sync_core::Type::Text),
             }
         );
     }

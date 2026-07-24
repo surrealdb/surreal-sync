@@ -1,4 +1,4 @@
-//! INSERT -> binlog -> `cdc_change_to_universal` over unified-dataset-style columns.
+//! INSERT -> binlog -> `cdc_to_change` over unified-dataset-style columns.
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -6,12 +6,9 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use binlog_protocol::{BinlogClient, CdcChange, EventBody, ReplicaOptions, SslMode};
 use mysql_async::prelude::*;
-use surreal_sync_mysql_binlog_source::cdc_change_to_universal;
+use surreal_sync_mysql_binlog_source::cdc_to_change;
 use surreal_sync_mysql_trigger_source::json_columns::get_json_columns;
-use sync_core::{
-    ColumnDefinition, DatabaseSchema, TableDefinition, UniversalChangeOp, UniversalType,
-    UniversalValue,
-};
+use sync_core::{ChangeOp, ColumnDefinition, DatabaseSchema, TableDefinition, Type, Value};
 
 async fn connect_client(
     conn_str: &str,
@@ -129,17 +126,17 @@ async fn wait_for_change(
 fn enum_set_schema() -> DatabaseSchema {
     DatabaseSchema::new(vec![TableDefinition::new(
         "enum_set_tbl",
-        ColumnDefinition::new("id", UniversalType::Int32),
+        ColumnDefinition::new("id", Type::Int32),
         vec![
             ColumnDefinition::new(
                 "status",
-                UniversalType::Enum {
+                Type::Enum {
                     values: vec!["active".into(), "inactive".into(), "pending".into()],
                 },
             ),
             ColumnDefinition::new(
                 "tags",
-                UniversalType::Set {
+                Type::Set {
                     values: vec!["read".into(), "write".into(), "execute".into()],
                 },
             ),
@@ -148,7 +145,7 @@ fn enum_set_schema() -> DatabaseSchema {
 }
 
 /// End-to-end check that ENUM labels (not the raw 1-based index) and SET labels
-/// (not the raw bitmask) survive the binlog -> `cdc_change_to_universal` path,
+/// (not the raw bitmask) survive the binlog -> `cdc_to_change` path,
 /// across both INSERT and UPDATE.
 #[tokio::test]
 async fn binlog_enum_and_set_convert_to_labels() -> Result<()> {
@@ -189,13 +186,12 @@ async fn binlog_enum_and_set_convert_to_labels() -> Result<()> {
     .await?;
 
     let (change, table_map) = wait_for_change(&mut client, "enum_set_tbl").await?;
-    let universal =
-        cdc_change_to_universal(&change, &table_map, &column_names, &schema, &json_columns)?;
-    assert_eq!(universal.operation, UniversalChangeOp::Create);
-    let data = universal.data.context("expected INSERT row data")?;
+    let universal = cdc_to_change(&change, &table_map, &column_names, &schema, &json_columns)?;
+    assert_eq!(universal.operation, ChangeOp::Create);
+    let data = universal.fields.context("expected INSERT row data")?;
 
     match data.get("status").context("missing status")? {
-        UniversalValue::Enum {
+        Value::Enum {
             value,
             allowed_values,
         } => {
@@ -205,7 +201,7 @@ async fn binlog_enum_and_set_convert_to_labels() -> Result<()> {
         other => panic!("expected Enum for status, got {other:?}"),
     }
     match data.get("tags").context("missing tags")? {
-        UniversalValue::Set {
+        Value::Set {
             elements,
             allowed_values,
         } => {
@@ -227,16 +223,15 @@ async fn binlog_enum_and_set_convert_to_labels() -> Result<()> {
     .await?;
 
     let (change, table_map) = wait_for_change(&mut client, "enum_set_tbl").await?;
-    let universal =
-        cdc_change_to_universal(&change, &table_map, &column_names, &schema, &json_columns)?;
-    assert_eq!(universal.operation, UniversalChangeOp::Update);
-    let data = universal.data.context("expected UPDATE row data")?;
+    let universal = cdc_to_change(&change, &table_map, &column_names, &schema, &json_columns)?;
+    assert_eq!(universal.operation, ChangeOp::Update);
+    let data = universal.fields.context("expected UPDATE row data")?;
     match data.get("status").context("missing status")? {
-        UniversalValue::Enum { value, .. } => assert_eq!(value, "pending"),
+        Value::Enum { value, .. } => assert_eq!(value, "pending"),
         other => panic!("expected Enum for status, got {other:?}"),
     }
     match data.get("tags").context("missing tags")? {
-        UniversalValue::Set { elements, .. } => {
+        Value::Set { elements, .. } => {
             assert_eq!(elements, &vec!["write".to_string()]);
         }
         other => panic!("expected Set for tags, got {other:?}"),
@@ -249,25 +244,25 @@ async fn binlog_enum_and_set_convert_to_labels() -> Result<()> {
 
 fn users_schema() -> DatabaseSchema {
     let columns = vec![
-        ColumnDefinition::new("name", UniversalType::VarChar { length: 255 }),
-        ColumnDefinition::nullable("email", UniversalType::VarChar { length: 255 }),
-        ColumnDefinition::nullable("age", UniversalType::Int32),
-        ColumnDefinition::new("active", UniversalType::Bool),
+        ColumnDefinition::new("name", Type::VarChar { length: 255 }),
+        ColumnDefinition::nullable("email", Type::VarChar { length: 255 }),
+        ColumnDefinition::nullable("age", Type::Int32),
+        ColumnDefinition::new("active", Type::Bool),
         ColumnDefinition::new(
             "account_balance",
-            UniversalType::Decimal {
+            Type::Decimal {
                 precision: 19,
                 scale: 5,
             },
         ),
-        ColumnDefinition::nullable("score", UniversalType::Float64),
-        ColumnDefinition::nullable("metadata", UniversalType::Json),
-        ColumnDefinition::nullable("created_at", UniversalType::LocalDateTime),
-        ColumnDefinition::nullable("reference_id", UniversalType::VarChar { length: 255 }),
+        ColumnDefinition::nullable("score", Type::Float64),
+        ColumnDefinition::nullable("metadata", Type::Json),
+        ColumnDefinition::nullable("created_at", Type::LocalDateTime),
+        ColumnDefinition::nullable("reference_id", Type::VarChar { length: 255 }),
     ];
     DatabaseSchema::new(vec![TableDefinition::new(
         "all_types_users",
-        ColumnDefinition::new("id", UniversalType::VarChar { length: 255 }),
+        ColumnDefinition::new("id", Type::VarChar { length: 255 }),
         columns,
     )])
 }
@@ -332,12 +327,11 @@ async fn binlog_insert_converts_unified_users_columns() -> Result<()> {
 
     let (change, table_map) = wait_for_users_insert(&mut client).await?;
 
-    let universal =
-        cdc_change_to_universal(&change, &table_map, &column_names, &schema, &json_columns)?;
+    let universal = cdc_to_change(&change, &table_map, &column_names, &schema, &json_columns)?;
 
     assert_eq!(universal.table, "all_types_users");
-    assert_eq!(universal.operation, UniversalChangeOp::Create);
-    let data = universal.data.context("expected row data")?;
+    assert_eq!(universal.operation, ChangeOp::Create);
+    let data = universal.fields.context("expected row data")?;
     assert_eq!(
         data.get("name").and_then(|v| v.as_str()),
         Some("Alice Example")
@@ -410,10 +404,9 @@ async fn mariadb_binlog_insert_converts_unified_users_columns() -> Result<()> {
 
     let (change, table_map) = wait_for_users_insert(&mut client).await?;
 
-    let universal =
-        cdc_change_to_universal(&change, &table_map, &column_names, &schema, &json_columns)?;
-    assert_eq!(universal.operation, UniversalChangeOp::Create);
-    assert!(universal.data.is_some());
+    let universal = cdc_to_change(&change, &table_map, &column_names, &schema, &json_columns)?;
+    assert_eq!(universal.operation, ChangeOp::Create);
+    assert!(universal.fields.is_some());
 
     drop(conn);
     pool.disconnect().await?;

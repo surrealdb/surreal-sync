@@ -1,7 +1,7 @@
 //! Field comparison logic.
 
 use surrealdb2::sql::Value as SurrealValue;
-use sync_core::{GeometryData, UniversalValue};
+use sync_core::{GeometryData, Value};
 
 /// Result of comparing two values.
 #[derive(Debug, Clone, PartialEq)]
@@ -15,14 +15,14 @@ pub enum CompareResult {
 }
 
 /// Compare a generated value with a SurrealDB value.
-pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> CompareResult {
+pub fn compare_values(expected: &Value, actual: &SurrealValue) -> CompareResult {
     match (expected, actual) {
         // Null comparison
-        (UniversalValue::Null, SurrealValue::None) => CompareResult::Match,
-        (UniversalValue::Null, SurrealValue::Null) => CompareResult::Match,
+        (Value::Null, SurrealValue::None) => CompareResult::Match,
+        (Value::Null, SurrealValue::Null) => CompareResult::Match,
 
         // Boolean comparison
-        (UniversalValue::Bool(e), SurrealValue::Bool(a)) => {
+        (Value::Bool(e), SurrealValue::Bool(a)) => {
             if e == a {
                 CompareResult::Match
             } else {
@@ -34,7 +34,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         }
 
         // Integer comparisons
-        (UniversalValue::Int8 { value: e, .. }, SurrealValue::Number(n)) => {
+        (Value::Int8 { value: e, .. }, SurrealValue::Number(n)) => {
             let a = n.as_int();
             if *e as i64 == a {
                 CompareResult::Match
@@ -45,7 +45,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
                 }
             }
         }
-        (UniversalValue::Int16(e), SurrealValue::Number(n)) => {
+        (Value::Int16(e), SurrealValue::Number(n)) => {
             let a = n.as_int();
             if *e as i64 == a {
                 CompareResult::Match
@@ -56,7 +56,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
                 }
             }
         }
-        (UniversalValue::Int32(e), SurrealValue::Number(n)) => {
+        (Value::Int32(e), SurrealValue::Number(n)) => {
             let a = n.as_int();
             if *e as i64 == a {
                 CompareResult::Match
@@ -67,7 +67,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
                 }
             }
         }
-        (UniversalValue::Int64(e), SurrealValue::Number(n)) => {
+        (Value::Int64(e), SurrealValue::Number(n)) => {
             let a = n.as_int();
             if *e == a {
                 CompareResult::Match
@@ -80,7 +80,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         }
 
         // Float comparison (with tolerance)
-        (UniversalValue::Float32(e), SurrealValue::Number(n)) => {
+        (Value::Float32(e), SurrealValue::Number(n)) => {
             let a = n.as_float();
             let tolerance = 1e-6_f64;
             if ((*e as f64) - a).abs() < tolerance {
@@ -92,7 +92,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
                 }
             }
         }
-        (UniversalValue::Float64(e), SurrealValue::Number(n)) => {
+        (Value::Float64(e), SurrealValue::Number(n)) => {
             let a = n.as_float();
             let tolerance = 1e-10;
             if (e - a).abs() < tolerance {
@@ -106,7 +106,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         }
 
         // String comparison
-        (UniversalValue::Text(e), SurrealValue::Strand(a)) => {
+        (Value::Text(e), SurrealValue::Strand(a)) => {
             if e == a.as_str() {
                 CompareResult::Match
             } else {
@@ -117,7 +117,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
             }
         }
         // Char comparison (strict 1:1)
-        (UniversalValue::Char { value: e, .. }, SurrealValue::Strand(a)) => {
+        (Value::Char { value: e, .. }, SurrealValue::Strand(a)) => {
             if e == a.as_str() {
                 CompareResult::Match
             } else {
@@ -128,7 +128,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
             }
         }
         // VarChar comparison (strict 1:1)
-        (UniversalValue::VarChar { value: e, .. }, SurrealValue::Strand(a)) => {
+        (Value::VarChar { value: e, .. }, SurrealValue::Strand(a)) => {
             if e == a.as_str() {
                 CompareResult::Match
             } else {
@@ -140,7 +140,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         }
 
         // Bytes comparison
-        (UniversalValue::Bytes(e), SurrealValue::Bytes(a)) => {
+        (Value::Bytes(e), SurrealValue::Bytes(a)) => {
             if e == a.as_slice() {
                 CompareResult::Match
             } else {
@@ -151,7 +151,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
             }
         }
         // Blob comparison (strict 1:1)
-        (UniversalValue::Blob(e), SurrealValue::Bytes(a)) => {
+        (Value::Blob(e), SurrealValue::Bytes(a)) => {
             if e == a.as_slice() {
                 CompareResult::Match
             } else {
@@ -163,7 +163,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         }
 
         // UUID comparison
-        (UniversalValue::Uuid(e), SurrealValue::Uuid(a)) => {
+        (Value::Uuid(e), SurrealValue::Uuid(a)) => {
             // Convert SurrealDB UUID to standard uuid for comparison
             let expected_uuid = *e;
             let actual_uuid: uuid::Uuid = (*a).into();
@@ -177,7 +177,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
             }
         }
         // UUID stored as string
-        (UniversalValue::Uuid(e), SurrealValue::Strand(a)) => {
+        (Value::Uuid(e), SurrealValue::Strand(a)) => {
             let expected_uuid = e.to_string();
             if expected_uuid == a.as_str() {
                 CompareResult::Match
@@ -190,7 +190,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         }
 
         // DateTime comparison
-        (UniversalValue::LocalDateTime(e), SurrealValue::Datetime(a)) => {
+        (Value::LocalDateTime(e), SurrealValue::Datetime(a)) => {
             // Compare timestamps (allowing for microsecond precision differences)
             let e_ts = e.timestamp_micros();
             let a_ts = a.timestamp_micros();
@@ -204,7 +204,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
             }
         }
         // Date comparison (strict 1:1) - stored as string in SurrealDB
-        (UniversalValue::Date(e), SurrealValue::Strand(a)) => {
+        (Value::Date(e), SurrealValue::Strand(a)) => {
             let expected = e.format("%Y-%m-%d").to_string();
             if expected == a.as_str() {
                 CompareResult::Match
@@ -216,7 +216,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
             }
         }
         // Time comparison (strict 1:1) - stored as string in SurrealDB
-        (UniversalValue::Time(e), SurrealValue::Strand(a)) => {
+        (Value::Time(e), SurrealValue::Strand(a)) => {
             let expected = e.format("%H:%M:%S").to_string();
             if expected == a.as_str() {
                 CompareResult::Match
@@ -228,7 +228,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
             }
         }
         // DateTimeNano comparison (strict 1:1)
-        (UniversalValue::LocalDateTimeNano(e), SurrealValue::Datetime(a)) => {
+        (Value::LocalDateTimeNano(e), SurrealValue::Datetime(a)) => {
             let e_ts = e.timestamp_micros();
             let a_ts = a.timestamp_micros();
             if e_ts == a_ts {
@@ -241,7 +241,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
             }
         }
         // TimestampTz comparison (strict 1:1)
-        (UniversalValue::ZonedDateTime(e), SurrealValue::Datetime(a)) => {
+        (Value::ZonedDateTime(e), SurrealValue::Datetime(a)) => {
             let e_ts = e.timestamp_micros();
             let a_ts = a.timestamp_micros();
             if e_ts == a_ts {
@@ -255,7 +255,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         }
 
         // Decimal comparison
-        (UniversalValue::Decimal { value: e, .. }, SurrealValue::Number(n)) => {
+        (Value::Decimal { value: e, .. }, SurrealValue::Number(n)) => {
             // Parse expected decimal string and compare as float with tolerance
             let expected_f64: f64 = match e.parse() {
                 Ok(v) => v,
@@ -281,15 +281,13 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         // Decimal stored as string is NOT valid - must be stored as Number (Decimal or Float)
         // TODO: could consider adding a verifier option to allow this, so that some sources without the schema files
         // that store decimals as strings can be verified using this verifier.
-        (UniversalValue::Decimal { value: e, .. }, SurrealValue::Strand(a)) => {
-            CompareResult::Mismatch {
-                expected: format!("{e} (as Decimal or Float, not String)"),
-                actual: format!("\"{}\" (String)", a.as_str()),
-            }
-        }
+        (Value::Decimal { value: e, .. }, SurrealValue::Strand(a)) => CompareResult::Mismatch {
+            expected: format!("{e} (as Decimal or Float, not String)"),
+            actual: format!("\"{}\" (String)", a.as_str()),
+        },
 
         // Array comparison
-        (UniversalValue::Array { elements: e, .. }, SurrealValue::Array(a)) => {
+        (Value::Array { elements: e, .. }, SurrealValue::Array(a)) => {
             if e.len() != a.len() {
                 return CompareResult::Mismatch {
                     expected: format!("array of length {}", e.len()),
@@ -314,11 +312,11 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         }
 
         // JSON/JSONB comparison - always stored as SurrealDB Object
-        (UniversalValue::Json(e), SurrealValue::Object(a)) => compare_json_to_surreal_object(e, a),
-        (UniversalValue::Jsonb(e), SurrealValue::Object(a)) => compare_json_to_surreal_object(e, a),
+        (Value::Json(e), SurrealValue::Object(a)) => compare_json_to_surreal_object(e, a),
+        (Value::Jsonb(e), SurrealValue::Object(a)) => compare_json_to_surreal_object(e, a),
 
         // Enum comparison (strict 1:1) - stored as string in SurrealDB
-        (UniversalValue::Enum { value: e, .. }, SurrealValue::Strand(a)) => {
+        (Value::Enum { value: e, .. }, SurrealValue::Strand(a)) => {
             if e == a.as_str() {
                 CompareResult::Match
             } else {
@@ -330,7 +328,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         }
 
         // Set comparison (strict 1:1) - stored as array in SurrealDB
-        (UniversalValue::Set { elements: e, .. }, SurrealValue::Array(a)) => {
+        (Value::Set { elements: e, .. }, SurrealValue::Array(a)) => {
             if e.len() != a.len() {
                 return CompareResult::Mismatch {
                     expected: format!("set of {} elements", e.len()),
@@ -357,7 +355,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         }
 
         // Geometry comparison - always stored as JSON object in SurrealDB
-        (UniversalValue::Geometry { data, .. }, SurrealValue::Object(a)) => {
+        (Value::Geometry { data, .. }, SurrealValue::Object(a)) => {
             let GeometryData(expected_json) = data;
             // Convert SurrealDB Object to JSON and compare
             let actual_json = surreal_object_to_json(a);
@@ -374,7 +372,7 @@ pub fn compare_values(expected: &UniversalValue, actual: &SurrealValue) -> Compa
         }
 
         // Duration comparison - compare as seconds
-        (UniversalValue::Duration(e), SurrealValue::Duration(a)) => {
+        (Value::Duration(e), SurrealValue::Duration(a)) => {
             // Convert both to std::time::Duration for comparison
             let expected_secs = e.as_secs();
             let expected_nanos = e.subsec_nanos();
@@ -503,7 +501,7 @@ mod tests {
     #[test]
     fn test_compare_null() {
         assert_eq!(
-            compare_values(&UniversalValue::Null, &SurrealValue::None),
+            compare_values(&Value::Null, &SurrealValue::None),
             CompareResult::Match
         );
     }
@@ -511,11 +509,11 @@ mod tests {
     #[test]
     fn test_compare_bool() {
         assert_eq!(
-            compare_values(&UniversalValue::Bool(true), &SurrealValue::Bool(true)),
+            compare_values(&Value::Bool(true), &SurrealValue::Bool(true)),
             CompareResult::Match
         );
         assert!(matches!(
-            compare_values(&UniversalValue::Bool(true), &SurrealValue::Bool(false)),
+            compare_values(&Value::Bool(true), &SurrealValue::Bool(false)),
             CompareResult::Mismatch { .. }
         ));
     }
@@ -523,10 +521,7 @@ mod tests {
     #[test]
     fn test_compare_int32() {
         assert_eq!(
-            compare_values(
-                &UniversalValue::Int32(42),
-                &SurrealValue::Number(Number::Int(42))
-            ),
+            compare_values(&Value::Int32(42), &SurrealValue::Number(Number::Int(42))),
             CompareResult::Match
         );
     }
@@ -535,7 +530,7 @@ mod tests {
     fn test_compare_int64() {
         assert_eq!(
             compare_values(
-                &UniversalValue::Int64(123456789),
+                &Value::Int64(123456789),
                 &SurrealValue::Number(Number::Int(123456789))
             ),
             CompareResult::Match
@@ -546,7 +541,7 @@ mod tests {
     fn test_compare_float() {
         assert_eq!(
             compare_values(
-                &UniversalValue::Float64(1.23456),
+                &Value::Float64(1.23456),
                 &SurrealValue::Number(Number::Float(1.23456))
             ),
             CompareResult::Match
@@ -557,14 +552,14 @@ mod tests {
     fn test_compare_string() {
         assert_eq!(
             compare_values(
-                &UniversalValue::Text("hello".to_string()),
+                &Value::Text("hello".to_string()),
                 &SurrealValue::Strand(Strand::from("hello"))
             ),
             CompareResult::Match
         );
         assert!(matches!(
             compare_values(
-                &UniversalValue::Text("hello".to_string()),
+                &Value::Text("hello".to_string()),
                 &SurrealValue::Strand(Strand::from("world"))
             ),
             CompareResult::Mismatch { .. }
@@ -576,7 +571,7 @@ mod tests {
         let u = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let surreal_uuid = surrealdb2::sql::Uuid::from(u);
         assert_eq!(
-            compare_values(&UniversalValue::Uuid(u), &SurrealValue::Uuid(surreal_uuid)),
+            compare_values(&Value::Uuid(u), &SurrealValue::Uuid(surreal_uuid)),
             CompareResult::Match
         );
     }
@@ -585,13 +580,9 @@ mod tests {
     fn test_compare_array() {
         use surrealdb2::sql::Array;
 
-        let expected = UniversalValue::Array {
-            elements: vec![
-                UniversalValue::Int32(1),
-                UniversalValue::Int32(2),
-                UniversalValue::Int32(3),
-            ],
-            element_type: Box::new(sync_core::UniversalType::Int32),
+        let expected = Value::Array {
+            elements: vec![Value::Int32(1), Value::Int32(2), Value::Int32(3)],
+            element_type: Box::new(sync_core::Type::Int32),
         };
         let actual = SurrealValue::Array(Array::from(vec![
             SurrealValue::Number(Number::Int(1)),
@@ -605,9 +596,9 @@ mod tests {
     fn test_compare_array_length_mismatch() {
         use surrealdb2::sql::Array;
 
-        let expected = UniversalValue::Array {
-            elements: vec![UniversalValue::Int32(1), UniversalValue::Int32(2)],
-            element_type: Box::new(sync_core::UniversalType::Int32),
+        let expected = Value::Array {
+            elements: vec![Value::Int32(1), Value::Int32(2)],
+            element_type: Box::new(sync_core::Type::Int32),
         };
         let actual = SurrealValue::Array(Array::from(vec![
             SurrealValue::Number(Number::Int(1)),
@@ -629,7 +620,7 @@ mod tests {
             "value": 42,
             "active": true
         });
-        let expected = UniversalValue::Json(Box::new(expected_json));
+        let expected = Value::Json(Box::new(expected_json));
 
         let mut actual_obj = Object::default();
         actual_obj.insert("name".to_string(), SurrealValue::Strand("test".into()));
@@ -648,7 +639,7 @@ mod tests {
             "name": "test",
             "value": 42
         });
-        let expected = UniversalValue::Json(Box::new(expected_json));
+        let expected = Value::Json(Box::new(expected_json));
 
         let mut actual_obj = Object::default();
         actual_obj.insert("name".to_string(), SurrealValue::Strand("different".into()));
@@ -671,7 +662,7 @@ mod tests {
                 "key": "value"
             }
         });
-        let expected = UniversalValue::Json(Box::new(expected_json));
+        let expected = Value::Json(Box::new(expected_json));
 
         let mut nested_obj = Object::default();
         nested_obj.insert("key".to_string(), SurrealValue::Strand("value".into()));
@@ -700,7 +691,7 @@ mod tests {
             "type": "Point",
             "coordinates": [-73.97, 40.77]
         });
-        let expected = UniversalValue::Geometry {
+        let expected = Value::Geometry {
             data: GeometryData(geojson),
             geometry_type: GeometryType::Point,
         };

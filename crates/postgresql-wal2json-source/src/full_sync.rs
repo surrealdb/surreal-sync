@@ -156,7 +156,7 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
         get_primary_key_columns, read_offset_relation_chunk, read_offset_table_chunk,
         read_relation_chunk, read_table_chunk,
     };
-    use sync_core::{classify_table, TableKind, UniversalRelation, UniversalRow, UniversalValue};
+    use sync_core::{classify_table, Relation, Row, TableKind, Value};
     use sync_transform::{
         run_source_runtime_with, RelationChunkDriver, RelationChunkSource, RowChunkDriver,
         RowChunkSource, SourceRuntimeOpts,
@@ -189,7 +189,7 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
                     }
                 }
             } else {
-                let mut after: Option<Vec<UniversalValue>> = None;
+                let mut after: Option<Vec<Value>> = None;
                 let mut base = 0u64;
                 loop {
                     let chunk = read_relation_chunk(
@@ -235,7 +235,7 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
             }
             #[async_trait]
             impl RelationChunkSource for OffsetRel<'_> {
-                async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRelation>>> {
+                async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<Relation>>> {
                     if self.exhausted {
                         return Ok(None);
                     }
@@ -284,7 +284,7 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
             client: &'a tokio_postgres::Client,
             table_name: &'a str,
             pk_columns: &'a [String],
-            after: Option<Vec<UniversalValue>>,
+            after: Option<Vec<Value>>,
             batch_size: usize,
             in_fk: &'a sync_core::ForeignKeyDefinition,
             out_fk: &'a sync_core::ForeignKeyDefinition,
@@ -293,7 +293,7 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
         }
         #[async_trait]
         impl RelationChunkSource for KeysetRel<'_> {
-            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRelation>>> {
+            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<Relation>>> {
                 if self.exhausted {
                     return Ok(None);
                 }
@@ -385,7 +385,7 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
         }
         #[async_trait]
         impl RowChunkSource for OffsetRows<'_> {
-            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<Row>>> {
                 if self.exhausted {
                     return Ok(None);
                 }
@@ -432,7 +432,7 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
 
     if sync_opts.dry_run {
         let mut total = 0usize;
-        let mut after: Option<Vec<sync_core::UniversalValue>> = None;
+        let mut after: Option<Vec<sync_core::Value>> = None;
         loop {
             let chunk = read_table_chunk(
                 client,
@@ -460,7 +460,7 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
         client: &'a tokio_postgres::Client,
         table_name: &'a str,
         pk_columns: &'a [String],
-        after: Option<Vec<sync_core::UniversalValue>>,
+        after: Option<Vec<sync_core::Value>>,
         batch_size: usize,
         schema: Option<&'a sync_core::DatabaseSchema>,
         exhausted: bool,
@@ -468,7 +468,7 @@ async fn migrate_one_table_keyset<S: surreal_sink::SurrealSink>(
 
     #[async_trait]
     impl RowChunkSource for PgKeysetChunks<'_> {
-        async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+        async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<Row>>> {
             if self.exhausted {
                 return Ok(None);
             }

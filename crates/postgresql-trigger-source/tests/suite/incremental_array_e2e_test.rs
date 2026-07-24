@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 use surreal_sync_postgresql_trigger_source::IncrementalSource;
-use sync_core::UniversalValue;
+use sync_core::Value;
 use tokio::sync::Mutex;
 
 /// Comprehensive E2E test that traces array data through the entire incremental sync flow
@@ -179,7 +179,7 @@ async fn test_incremental_sync_array_e2e() {
     println!("post_categories column type from schema: {col_type:?}");
 
     assert!(
-        matches!(col_type, Some(sync_core::UniversalType::Array { .. })),
+        matches!(col_type, Some(sync_core::Type::Array { .. })),
         "post_categories should be Array type in schema, got {col_type:?}"
     );
 
@@ -202,26 +202,25 @@ async fn test_incremental_sync_array_e2e() {
                 println!("  table: {}", change.table);
                 println!("  id: {:?}", change.id);
 
-                if let Some(ref data) = change.data {
+                if let Some(ref data) = change.fields {
                     println!("  data fields:");
                     for (key, value) in data {
                         println!("    {key}: {value:?}");
                     }
 
                     // Verify post_categories is an array
-                    if let Some(categories) = data.get("post_categories") as Option<&UniversalValue>
-                    {
+                    if let Some(categories) = data.get("post_categories") as Option<&Value> {
                         println!("\n  post_categories value: {categories:?}");
 
                         match categories {
-                            UniversalValue::Array { elements, .. } => {
+                            Value::Array { elements, .. } => {
                                 println!(
                                     "  ✓ post_categories is Array with {} elements",
                                     elements.len()
                                 );
                                 assert_eq!(elements.len(), 2);
                             }
-                            UniversalValue::Null => {
+                            Value::Null => {
                                 println!("  ✗ post_categories is Null - THIS IS THE BUG!");
                                 panic!("post_categories should not be Null");
                             }

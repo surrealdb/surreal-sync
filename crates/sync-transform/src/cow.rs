@@ -3,7 +3,7 @@
 use crate::inplace::InPlaceTransform;
 use anyhow::Result;
 use std::sync::Arc;
-use sync_core::{UniversalChange, UniversalRelation, UniversalRow};
+use sync_core::{Change, Relation, Row};
 
 /// Batch of `Arc`-shared items with copy-on-write mutation via [`Arc::make_mut`].
 ///
@@ -54,7 +54,7 @@ impl<T> CowBatch<T> {
     }
 }
 
-impl CowBatch<UniversalRow> {
+impl CowBatch<Row> {
     /// Apply an in-place transform with Arc COW semantics.
     ///
     /// Always calls [`Arc::make_mut`] per item. Clones when the arc is shared
@@ -68,7 +68,7 @@ impl CowBatch<UniversalRow> {
     }
 }
 
-impl CowBatch<UniversalChange> {
+impl CowBatch<Change> {
     /// Apply an in-place transform with Arc COW semantics.
     ///
     /// Always calls [`Arc::make_mut`] per item. Clones when the arc is shared
@@ -82,7 +82,7 @@ impl CowBatch<UniversalChange> {
     }
 }
 
-impl CowBatch<UniversalRelation> {
+impl CowBatch<Relation> {
     /// Apply an in-place transform with Arc COW semantics for relations.
     pub fn apply_inplace(&mut self, t: &impl InPlaceTransform) -> Result<()> {
         for item in &mut self.items {

@@ -2,7 +2,7 @@
 
 use chrono::{DateTime, Utc};
 use rand::RngExt;
-use sync_core::UniversalValue;
+use sync_core::Value;
 
 // Hardcoded increment range (can be made configurable later)
 const DEFAULT_MIN_INCREMENT_MS: i64 = 1;
@@ -13,7 +13,7 @@ const DEFAULT_MAX_INCREMENT_MS: i64 = 1000;
 /// Generates: seed_derived_base + cumulative_random_increments[0..index]
 /// - Base timestamp derived from seed (2024-01-01 + seed % 10 years)
 /// - Increments: hardcoded 1-1000ms per row (can be made configurable later)
-pub fn generate_timestamp_now<R: RngExt>(rng: &mut R, seed: u64, index: u64) -> UniversalValue {
+pub fn generate_timestamp_now<R: RngExt>(rng: &mut R, seed: u64, index: u64) -> Value {
     // Derive base timestamp from seed (deterministic)
     // Use a fixed epoch (2024-01-01) and add seed modulo ~10 years in seconds
     // This gives a range of timestamps around 2024-2034 depending on seed
@@ -37,7 +37,7 @@ pub fn generate_timestamp_now<R: RngExt>(rng: &mut R, seed: u64, index: u64) -> 
     }
 
     let timestamp = base_dt + chrono::Duration::milliseconds(total_ms);
-    UniversalValue::LocalDateTime(timestamp)
+    Value::LocalDateTime(timestamp)
 }
 
 /// Generate timestamp in a range (deterministic, monotonically increasing).
@@ -54,7 +54,7 @@ pub fn generate_timestamp_range<R: RngExt>(
     start: &str,
     _end: &str, // Ignored for now - kept for API compatibility
     index: u64,
-) -> UniversalValue {
+) -> Value {
     // Parse base timestamp from start parameter
     let start_dt = parse_timestamp(start).expect("Invalid start timestamp in schema");
 
@@ -75,7 +75,7 @@ pub fn generate_timestamp_range<R: RngExt>(
     }
 
     let timestamp = base_dt + chrono::Duration::milliseconds(total_ms);
-    UniversalValue::LocalDateTime(timestamp)
+    Value::LocalDateTime(timestamp)
 }
 
 /// Parse a timestamp string in various formats.
@@ -112,7 +112,7 @@ mod tests {
             5,
         );
 
-        if let UniversalValue::LocalDateTime(dt) = value {
+        if let Value::LocalDateTime(dt) = value {
             assert!(dt.year() >= 2020);
         } else {
             panic!("Expected DateTime value");
@@ -125,7 +125,7 @@ mod tests {
 
         let value = generate_timestamp_range(&mut rng, 42, "2020-01-01", "2024-12-31", 5);
 
-        if let UniversalValue::LocalDateTime(dt) = value {
+        if let Value::LocalDateTime(dt) = value {
             assert!(dt.year() >= 2020);
         } else {
             panic!("Expected DateTime value");
@@ -178,11 +178,8 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let ts2 = generate_timestamp_now(&mut rng, 42, 2);
 
-        if let (
-            UniversalValue::LocalDateTime(t0),
-            UniversalValue::LocalDateTime(t1),
-            UniversalValue::LocalDateTime(t2),
-        ) = (ts0, ts1, ts2)
+        if let (Value::LocalDateTime(t0), Value::LocalDateTime(t1), Value::LocalDateTime(t2)) =
+            (ts0, ts1, ts2)
         {
             assert!(t0 < t1, "Timestamps should increase");
             assert!(t1 < t2, "Timestamps should increase");
@@ -198,7 +195,7 @@ mod tests {
         for i in 0..100 {
             let mut rng = StdRng::seed_from_u64(42);
             let ts = generate_timestamp_now(&mut rng, 42, i);
-            if let UniversalValue::LocalDateTime(dt) = ts {
+            if let Value::LocalDateTime(dt) = ts {
                 timestamps.push(dt);
             }
         }

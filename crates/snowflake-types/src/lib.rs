@@ -3,7 +3,7 @@
 //! The Snowflake SQL REST API returns every result cell as a JSON string (or
 //! JSON `null`), together with per-column metadata (`resultSetMetaData.rowType`)
 //! describing the logical Snowflake type. This crate turns a `(cell, column)`
-//! pair into a [`sync_core::UniversalValue`], the intermediate representation the
+//! pair into a [`sync_core::Value`], the intermediate representation the
 //! rest of surreal-sync writes to SurrealDB.
 //!
 //! It is intentionally free of any network or HTTP concerns so the conversion
@@ -32,7 +32,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
-use sync_core::{UniversalType, UniversalValue};
+use sync_core::{Type, Value};
 
 /// Metadata for a single result column, deserialized directly from the Snowflake
 /// SQL API `resultSetMetaData.rowType[]` entries.
@@ -84,16 +84,16 @@ impl ColumnType {
     }
 }
 
-/// Convert a single SQL API result cell into a [`UniversalValue`], using the
+/// Convert a single SQL API result cell into a [`Value`], using the
 /// column's Snowflake type metadata to interpret the stringified value.
 ///
 /// `raw` is the JSON value straight out of the `data` array: a
 /// [`JsonValue::String`] for present scalars, [`JsonValue::Null`] for SQL NULL,
 /// and (defensively) a JSON number/bool if a future server ever emits one.
-pub fn convert_cell(raw: &JsonValue, col: &ColumnType) -> Result<UniversalValue> {
+pub fn convert_cell(raw: &JsonValue, col: &ColumnType) -> Result<Value> {
     // SQL NULL is a genuine JSON null (not the string "null").
     if raw.is_null() {
-        return Ok(UniversalValue::Null);
+        return Ok(Value::Null);
     }
 
     let text = cell_as_string(raw);
@@ -110,12 +110,12 @@ pub fn convert_cell(raw: &JsonValue, col: &ColumnType) -> Result<UniversalValue>
                 .trim()
                 .parse()
                 .with_context(|| format!("column '{}': invalid float '{text}'", col.name))?;
-            UniversalValue::Float64(f)
+            Value::Float64(f)
         }
 
-        "text" | "string" | "varchar" | "char" | "character" => UniversalValue::Text(text),
+        "text" | "string" | "varchar" | "char" | "character" => Value::Text(text),
 
-        "boolean" | "bool" => UniversalValue::Bool(parse_bool(&text)?),
+        "boolean" | "bool" => Value::Bool(parse_bool(&text)?),
 
         "date" => convert_date(&text).with_context(|| format!("column '{}' (date)", col.name))?,
 
@@ -124,13 +124,13 @@ pub fn convert_cell(raw: &JsonValue, col: &ColumnType) -> Result<UniversalValue>
         "timestamp_ntz" | "timestampntz" | "datetime" => {
             let dt = convert_epoch_timestamp(&text)
                 .with_context(|| format!("column '{}' (timestamp_ntz)", col.name))?;
-            UniversalValue::LocalDateTime(dt)
+            Value::LocalDateTime(dt)
         }
 
         "timestamp_ltz" | "timestampltz" | "timestamp_tz" | "timestamptz" | "timestamp" => {
             let dt = convert_epoch_timestamp(&text)
                 .with_context(|| format!("column '{}' (timestamp)", col.name))?;
-            UniversalValue::ZonedDateTime(dt)
+            Value::ZonedDateTime(dt)
         }
 
         "variant" | "object" => {
@@ -143,23 +143,23 @@ pub fn convert_cell(raw: &JsonValue, col: &ColumnType) -> Result<UniversalValue>
             let json: JsonValue = serde_json::from_str(&text)
                 .with_context(|| format!("column '{}': invalid ARRAY JSON", col.name))?;
             match json_to_universal_value(json) {
-                arr @ UniversalValue::Array { .. } => arr,
+                arr @ Value::Array { .. } => arr,
                 // A non-array VARIANT stored in an ARRAY column: wrap defensively.
-                other => UniversalValue::Array {
+                other => Value::Array {
                     elements: vec![other],
-                    element_type: Box::new(UniversalType::Json),
+                    element_type: Box::new(Type::Json),
                 },
             }
         }
 
-        "binary" | "varbinary" => UniversalValue::Bytes(
+        "binary" | "varbinary" => Value::Bytes(
             decode_hex(text.trim())
                 .with_context(|| format!("column '{}': invalid hex BINARY", col.name))?,
         ),
 
         // Unknown/unsupported logical type: preserve the raw text rather than
         // failing the whole sync.
-        _ => UniversalValue::Text(text),
+        _ => Value::Text(text),
     };
 
     Ok(value)
@@ -174,7 +174,7 @@ fn cell_as_string(raw: &JsonValue) -> String {
     }
 }
 
-fn convert_fixed(text: &str, col: &ColumnType) -> Result<UniversalValue> {
+fn convert_fixed(text: &str, col: &ColumnType) -> Result<Value> {
     let scale = col.scale.unwrap_or(0);
     let trimmed = text.trim();
 
@@ -182,14 +182,14 @@ fn convert_fixed(text: &str, col: &ColumnType) -> Result<UniversalValue> {
         // Integer NUMBER. Prefer i64; fall back to Decimal when it does not fit
         // (Snowflake NUMBER supports up to 38 digits of precision).
         if let Ok(n) = trimmed.parse::<i64>() {
-            return Ok(UniversalValue::Int64(n));
+            return Ok(Value::Int64(n));
         }
     }
 
     let precision = col.precision.unwrap_or(38).clamp(0, u8::MAX as i64) as u8;
     let scale_u8 = scale.clamp(0, u8::MAX as i64) as u8;
 
-    Ok(UniversalValue::Decimal {
+    Ok(Value::Decimal {
         value: trimmed.to_string(),
         precision,
         scale: scale_u8,
@@ -205,7 +205,7 @@ fn parse_bool(text: &str) -> Result<bool> {
 }
 
 /// DATE: integer number of days since the Unix epoch.
-fn convert_date(text: &str) -> Result<UniversalValue> {
+fn convert_date(text: &str) -> Result<Value> {
     let days: i64 = text
         .trim()
         .parse()
@@ -218,11 +218,11 @@ fn convert_date(text: &str) -> Result<UniversalValue> {
         Utc,
     );
     let dt = epoch + chrono::Duration::days(days);
-    Ok(UniversalValue::Date(dt))
+    Ok(Value::Date(dt))
 }
 
 /// TIME: seconds since midnight with a fractional part.
-fn convert_time(text: &str) -> Result<UniversalValue> {
+fn convert_time(text: &str) -> Result<Value> {
     let (secs, nanos) = parse_epoch_fraction(text)?;
     let epoch = DateTime::<Utc>::from_naive_utc_and_offset(
         NaiveDate::from_ymd_opt(1970, 1, 1)
@@ -232,7 +232,7 @@ fn convert_time(text: &str) -> Result<UniversalValue> {
         Utc,
     );
     let dt = epoch + chrono::Duration::seconds(secs) + chrono::Duration::nanoseconds(nanos as i64);
-    Ok(UniversalValue::Time(dt))
+    Ok(Value::Time(dt))
 }
 
 /// TIMESTAMP_*: seconds since the Unix epoch with a fractional part, optionally
@@ -288,35 +288,34 @@ fn parse_epoch_fraction(text: &str) -> Result<(i64, u32)> {
 }
 
 /// Recursively convert a decoded JSON document (VARIANT/OBJECT/ARRAY) into a
-/// [`UniversalValue`], mirroring the PostgreSQL source's JSON handling.
-fn json_to_universal_value(value: JsonValue) -> UniversalValue {
+/// [`Value`], mirroring the PostgreSQL source's JSON handling.
+fn json_to_universal_value(value: JsonValue) -> Value {
     match value {
-        JsonValue::Null => UniversalValue::Null,
-        JsonValue::Bool(b) => UniversalValue::Bool(b),
+        JsonValue::Null => Value::Null,
+        JsonValue::Bool(b) => Value::Bool(b),
         JsonValue::Number(n) => {
             if let Some(i) = n.as_i64() {
-                UniversalValue::Int64(i)
+                Value::Int64(i)
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Float64(f)
+                Value::Float64(f)
             } else {
-                UniversalValue::Text(n.to_string())
+                Value::Text(n.to_string())
             }
         }
-        JsonValue::String(s) => UniversalValue::Text(s),
+        JsonValue::String(s) => Value::Text(s),
         JsonValue::Array(arr) => {
-            let elements: Vec<UniversalValue> =
-                arr.into_iter().map(json_to_universal_value).collect();
-            UniversalValue::Array {
+            let elements: Vec<Value> = arr.into_iter().map(json_to_universal_value).collect();
+            Value::Array {
                 elements,
-                element_type: Box::new(UniversalType::Json),
+                element_type: Box::new(Type::Json),
             }
         }
         JsonValue::Object(map) => {
-            let obj: HashMap<String, UniversalValue> = map
+            let obj: HashMap<String, Value> = map
                 .into_iter()
                 .map(|(k, v)| (k, json_to_universal_value(v)))
                 .collect();
-            UniversalValue::Object(obj)
+            Value::Object(obj)
         }
     }
 }
@@ -358,11 +357,11 @@ mod tests {
     fn null_cell_maps_to_null_regardless_of_type() {
         assert_eq!(
             convert_cell(&JsonValue::Null, &col("fixed")).unwrap(),
-            UniversalValue::Null
+            Value::Null
         );
         assert_eq!(
             convert_cell(&JsonValue::Null, &col("text")).unwrap(),
-            UniversalValue::Null
+            Value::Null
         );
     }
 
@@ -371,21 +370,15 @@ mod tests {
         // The JSON string "null" is real data, not SQL NULL.
         assert_eq!(
             convert_cell(&json!("null"), &col("text")).unwrap(),
-            UniversalValue::Text("null".to_string())
+            Value::Text("null".to_string())
         );
     }
 
     #[test]
     fn fixed_scale_zero_is_int64() {
         let c = col("fixed").with_precision(10).with_scale(0);
-        assert_eq!(
-            convert_cell(&json!("42"), &c).unwrap(),
-            UniversalValue::Int64(42)
-        );
-        assert_eq!(
-            convert_cell(&json!("-7"), &c).unwrap(),
-            UniversalValue::Int64(-7)
-        );
+        assert_eq!(convert_cell(&json!("42"), &c).unwrap(), Value::Int64(42));
+        assert_eq!(convert_cell(&json!("-7"), &c).unwrap(), Value::Int64(-7));
     }
 
     #[test]
@@ -393,7 +386,7 @@ mod tests {
         let c = col("fixed").with_precision(10).with_scale(2);
         assert_eq!(
             convert_cell(&json!("3.14"), &c).unwrap(),
-            UniversalValue::Decimal {
+            Value::Decimal {
                 value: "3.14".to_string(),
                 precision: 10,
                 scale: 2,
@@ -408,7 +401,7 @@ mod tests {
         let big = "123456789012345678901234567890";
         assert_eq!(
             convert_cell(&json!(big), &c).unwrap(),
-            UniversalValue::Decimal {
+            Value::Decimal {
                 value: big.to_string(),
                 precision: 38,
                 scale: 0,
@@ -420,7 +413,7 @@ mod tests {
     fn real_is_float64() {
         assert_eq!(
             convert_cell(&json!("1.5"), &col("real")).unwrap(),
-            UniversalValue::Float64(1.5)
+            Value::Float64(1.5)
         );
     }
 
@@ -428,7 +421,7 @@ mod tests {
     fn text_passthrough() {
         assert_eq!(
             convert_cell(&json!("hello"), &col("text")).unwrap(),
-            UniversalValue::Text("hello".to_string())
+            Value::Text("hello".to_string())
         );
     }
 
@@ -436,31 +429,31 @@ mod tests {
     fn boolean_variants() {
         assert_eq!(
             convert_cell(&json!("true"), &col("boolean")).unwrap(),
-            UniversalValue::Bool(true)
+            Value::Bool(true)
         );
         assert_eq!(
             convert_cell(&json!("false"), &col("boolean")).unwrap(),
-            UniversalValue::Bool(false)
+            Value::Bool(false)
         );
         assert_eq!(
             convert_cell(&json!("1"), &col("boolean")).unwrap(),
-            UniversalValue::Bool(true)
+            Value::Bool(true)
         );
         assert_eq!(
             convert_cell(&json!("0"), &col("boolean")).unwrap(),
-            UniversalValue::Bool(false)
+            Value::Bool(false)
         );
     }
 
     #[test]
     fn date_days_since_epoch() {
         // 0 days => 1970-01-01, 1 day => 1970-01-02.
-        let UniversalValue::Date(dt) = convert_cell(&json!("0"), &col("date")).unwrap() else {
+        let Value::Date(dt) = convert_cell(&json!("0"), &col("date")).unwrap() else {
             panic!("expected Date");
         };
         assert_eq!(dt.format("%Y-%m-%d").to_string(), "1970-01-01");
 
-        let UniversalValue::Date(dt) = convert_cell(&json!("19024"), &col("date")).unwrap() else {
+        let Value::Date(dt) = convert_cell(&json!("19024"), &col("date")).unwrap() else {
             panic!("expected Date");
         };
         assert_eq!(dt.format("%Y-%m-%d").to_string(), "2022-02-01");
@@ -469,9 +462,7 @@ mod tests {
     #[test]
     fn time_seconds_since_midnight() {
         // 3661.5s => 01:01:01.5
-        let UniversalValue::Time(dt) =
-            convert_cell(&json!("3661.500000000"), &col("time")).unwrap()
-        else {
+        let Value::Time(dt) = convert_cell(&json!("3661.500000000"), &col("time")).unwrap() else {
             panic!("expected Time");
         };
         assert_eq!(dt.format("%H:%M:%S").to_string(), "01:01:01");
@@ -480,7 +471,7 @@ mod tests {
 
     #[test]
     fn timestamp_ntz_is_local_datetime() {
-        let UniversalValue::LocalDateTime(dt) =
+        let Value::LocalDateTime(dt) =
             convert_cell(&json!("1640995200.000000000"), &col("timestamp_ntz")).unwrap()
         else {
             panic!("expected LocalDateTime");
@@ -493,7 +484,7 @@ mod tests {
 
     #[test]
     fn timestamp_ltz_is_zoned_datetime() {
-        let UniversalValue::ZonedDateTime(dt) =
+        let Value::ZonedDateTime(dt) =
             convert_cell(&json!("1623456789.123456789"), &col("timestamp_ltz")).unwrap()
         else {
             panic!("expected ZonedDateTime");
@@ -505,7 +496,7 @@ mod tests {
     #[test]
     fn timestamp_tz_ignores_offset_token() {
         // "<epoch> <offset>" — the offset token must not break parsing.
-        let UniversalValue::ZonedDateTime(dt) =
+        let Value::ZonedDateTime(dt) =
             convert_cell(&json!("1623456789.000000000 1440"), &col("timestamp_tz")).unwrap()
         else {
             panic!("expected ZonedDateTime");
@@ -515,29 +506,24 @@ mod tests {
 
     #[test]
     fn variant_object_becomes_object() {
-        let UniversalValue::Object(map) =
+        let Value::Object(map) =
             convert_cell(&json!("{\"a\":1,\"b\":\"x\"}"), &col("object")).unwrap()
         else {
             panic!("expected Object");
         };
-        assert_eq!(map.get("a"), Some(&UniversalValue::Int64(1)));
-        assert_eq!(map.get("b"), Some(&UniversalValue::Text("x".to_string())));
+        assert_eq!(map.get("a"), Some(&Value::Int64(1)));
+        assert_eq!(map.get("b"), Some(&Value::Text("x".to_string())));
     }
 
     #[test]
     fn array_becomes_array() {
-        let UniversalValue::Array { elements, .. } =
-            convert_cell(&json!("[1,2,3]"), &col("array")).unwrap()
+        let Value::Array { elements, .. } = convert_cell(&json!("[1,2,3]"), &col("array")).unwrap()
         else {
             panic!("expected Array");
         };
         assert_eq!(
             elements,
-            vec![
-                UniversalValue::Int64(1),
-                UniversalValue::Int64(2),
-                UniversalValue::Int64(3),
-            ]
+            vec![Value::Int64(1), Value::Int64(2), Value::Int64(3),]
         );
     }
 
@@ -545,7 +531,7 @@ mod tests {
     fn binary_hex_decodes() {
         assert_eq!(
             convert_cell(&json!("DEADBEEF"), &col("binary")).unwrap(),
-            UniversalValue::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])
+            Value::Bytes(vec![0xDE, 0xAD, 0xBE, 0xEF])
         );
     }
 
@@ -553,7 +539,7 @@ mod tests {
     fn unknown_type_falls_back_to_text() {
         assert_eq!(
             convert_cell(&json!("geospatial-thing"), &col("geography")).unwrap(),
-            UniversalValue::Text("geospatial-thing".to_string())
+            Value::Text("geospatial-thing".to_string())
         );
     }
 

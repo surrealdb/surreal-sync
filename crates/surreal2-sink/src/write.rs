@@ -1,13 +1,13 @@
-use crate::Change;
+use crate::Mutation;
 use std::collections::HashMap;
 use std::time::Duration;
 use surreal2_types::{RecordWithSurrealValues as Record, Relation, SurrealValue};
 use surrealdb::sql;
 use surrealdb::Surreal;
-use sync_core::{UniversalChange, UniversalChangeOp, UniversalRelationChange, ZeroTemporalPolicy};
+use sync_core::{Change, ChangeOp, RelationChange, ZeroTemporalPolicy};
 use tokio::time::sleep;
 
-use crate::rows::{universal_relation_to_surreal_relation, universal_value_to_surreal_id};
+use crate::rows::{relation_to_surreal_relation, value_to_surreal_id};
 
 /// Convert a `surrealdb::sql::Id` to a `surrealdb::sql::Value` suitable for parameter binding.
 ///
@@ -35,17 +35,17 @@ fn is_retriable_transaction_error(error: &surrealdb::Error) -> bool {
 }
 
 // Apply a single change event to SurrealDB
-pub async fn apply_change(
+pub async fn apply_mutation(
     surreal: &Surreal<surrealdb::engine::any::Any>,
-    change: &Change,
+    change: &Mutation,
 ) -> anyhow::Result<()> {
     match change {
-        Change::UpsertRecord(record) => {
+        Mutation::UpsertRecord(record) => {
             write_record(surreal, record).await?;
 
             tracing::trace!("Successfully upserted record: {record:?}");
         }
-        Change::DeleteRecord(thing) => {
+        Mutation::DeleteRecord(thing) => {
             let query = "DELETE type::thing($record_tb, $record_id)".to_string();
             tracing::trace!("Executing SurrealDB query: {}", query);
             log::info!("🔧 migrate_change executing: {query} for record: {thing:?}");
@@ -58,12 +58,12 @@ pub async fn apply_change(
 
             tracing::trace!("Successfully deleted record: {:?}", thing);
         }
-        Change::UpsertRelation(relation) => {
+        Mutation::UpsertRelation(relation) => {
             write_relation(surreal, relation).await?;
 
             tracing::trace!("Successfully upserted relation: {relation:?}");
         }
-        Change::DeleteRelation(thing) => {
+        Mutation::DeleteRelation(thing) => {
             let query = "DELETE type::thing($relation_tb, $relation_id)".to_string();
             tracing::trace!("Executing SurrealDB query: {}", query);
             log::info!("🔧 migrate_change executing: {query} for relation: {thing:?}");
@@ -81,22 +81,22 @@ pub async fn apply_change(
     Ok(())
 }
 
-/// Apply a UniversalChange event to SurrealDB.
+/// Apply a Change event to SurrealDB.
 ///
-/// Converts UniversalChange to the appropriate SurrealDB operation and executes it.
-pub async fn apply_universal_change(
+/// Converts Change to the appropriate SurrealDB operation and executes it.
+pub async fn apply_change(
     surreal: &Surreal<surrealdb::engine::any::Any>,
-    change: &UniversalChange,
+    change: &Change,
     zero_temporal: ZeroTemporalPolicy,
 ) -> anyhow::Result<()> {
-    // Convert ID from UniversalValue to SurrealDB ID
-    let surreal_id = universal_value_to_surreal_id(&change.id)?;
+    // Convert ID from Value to SurrealDB ID
+    let surreal_id = value_to_surreal_id(&change.id)?;
     let thing = surrealdb::sql::Thing::from((change.table.as_str(), surreal_id));
 
     match change.operation {
-        UniversalChangeOp::Create | UniversalChangeOp::Update => {
-            // Convert data from HashMap<String, UniversalValue> to HashMap<String, surrealdb::sql::Value>
-            let data = change.data.as_ref().ok_or_else(|| {
+        ChangeOp::Create | ChangeOp::Update => {
+            // Convert data from HashMap<String, Value> to HashMap<String, surrealdb::sql::Value>
+            let data = change.fields.as_ref().ok_or_else(|| {
                 anyhow::anyhow!(
                     "Create/Update change must have data, but found None for table '{}'",
                     change.table
@@ -116,7 +116,7 @@ pub async fn apply_universal_change(
 
             tracing::trace!("Successfully upserted record: {thing:?}");
         }
-        UniversalChangeOp::Delete => {
+        ChangeOp::Delete => {
             let query = "DELETE type::thing($record_tb, $record_id)".to_string();
             tracing::trace!("Executing SurrealDB query: {}", query);
 
@@ -383,7 +383,7 @@ pub async fn write_relation(
     Err(anyhow::anyhow!(error_msg))
 }
 
-pub async fn write_relations(
+pub async fn write_native_relations(
     surreal: &Surreal<surrealdb::engine::any::Any>,
     table_name: &str,
     batch: &[Relation],
@@ -407,24 +407,23 @@ pub async fn write_relations(
     Ok(())
 }
 
-/// Apply a UniversalRelationChange event to SurrealDB.
-pub async fn apply_universal_relation_change(
+/// Apply a RelationChange event to SurrealDB.
+pub async fn apply_relation_change(
     surreal: &Surreal<surrealdb::engine::any::Any>,
-    change: &UniversalRelationChange,
+    change: &RelationChange,
     zero_temporal: ZeroTemporalPolicy,
 ) -> anyhow::Result<()> {
     match change.operation {
-        UniversalChangeOp::Create | UniversalChangeOp::Update => {
-            let surreal_rel =
-                universal_relation_to_surreal_relation(&change.relation, zero_temporal)?;
+        ChangeOp::Create | ChangeOp::Update => {
+            let surreal_rel = relation_to_surreal_relation(&change.relation, zero_temporal)?;
             write_relation(surreal, &surreal_rel).await?;
             tracing::trace!(
                 "Successfully upserted relation: {:?}",
                 change.relation.relation_type
             );
         }
-        UniversalChangeOp::Delete => {
-            let surreal_id = universal_value_to_surreal_id(&change.relation.id)?;
+        ChangeOp::Delete => {
+            let surreal_id = value_to_surreal_id(&change.relation.id)?;
             let query = "DELETE type::thing($relation_tb, $relation_id)".to_string();
             let mut q = surreal.query(query);
             q = q.bind(("relation_tb", change.relation.relation_type.clone()));

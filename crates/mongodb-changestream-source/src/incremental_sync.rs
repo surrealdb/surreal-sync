@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalChange, UniversalChangeOp, UniversalValue};
+use sync_core::{Change, ChangeOp, Value};
 use sync_transform::{
     ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver, SourceRuntimeOpts,
     StopReason,
@@ -57,14 +57,14 @@ impl ReplicationTailOptions {
 #[async_trait]
 pub trait ChangeStream: Send + Sync {
     /// Get the next change event from the stream
-    async fn next(&mut self) -> Option<Result<UniversalChange>>;
+    async fn next(&mut self) -> Option<Result<Change>>;
 
     /// Get the current checkpoint of the stream
     fn checkpoint(&self) -> Option<MongoDBCheckpoint>;
 }
 
-/// Convert a BSON document directly to a UniversalValue map
-fn bson_doc_to_universal_values(doc: Document) -> Result<HashMap<String, UniversalValue>> {
+/// Convert a BSON document directly to a Value map
+fn bson_doc_to_universal_values(doc: Document) -> Result<HashMap<String, Value>> {
     let mut map = HashMap::new();
 
     for (key, value) in doc {
@@ -189,8 +189,7 @@ impl MongodbIncrementalSource {
     async fn start_change_stream(
         &self,
         checkpoint: Option<MongoDBCheckpoint>,
-    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<UniversalChange>> + Send>>>
-    {
+    ) -> Result<std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>>> {
         let database = self.client.database(&self.database);
 
         // Build change stream options
@@ -245,19 +244,18 @@ impl MongodbIncrementalSource {
             .buffer_unordered(1);
 
         // Box the stream with Send bound
-        let boxed_stream: std::pin::Pin<
-            Box<dyn futures::Stream<Item = Result<UniversalChange>> + Send>,
-        > = Box::pin(stream);
+        let boxed_stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>> =
+            Box::pin(stream);
 
         Ok(boxed_stream)
     }
 
-    /// Convert MongoDB change event to our UniversalChange
+    /// Convert MongoDB change event to our Change
     async fn convert_change_event(
         event: ChangeStreamEvent<Document>,
         _database_name: &str,
         seen_token: Arc<Mutex<Vec<u8>>>,
-    ) -> Result<UniversalChange> {
+    ) -> Result<Change> {
         // Track the fetch-time resume token separately from the sink-safe bookmark.
         if let Ok(token_bytes) = bson::to_vec(&event.id) {
             *seen_token.lock().await = token_bytes;
@@ -265,10 +263,10 @@ impl MongodbIncrementalSource {
 
         // Determine operation type
         let operation = match event.operation_type {
-            mongodb::change_stream::event::OperationType::Insert => UniversalChangeOp::Create,
-            mongodb::change_stream::event::OperationType::Update => UniversalChangeOp::Update,
-            mongodb::change_stream::event::OperationType::Replace => UniversalChangeOp::Update,
-            mongodb::change_stream::event::OperationType::Delete => UniversalChangeOp::Delete,
+            mongodb::change_stream::event::OperationType::Insert => ChangeOp::Create,
+            mongodb::change_stream::event::OperationType::Update => ChangeOp::Update,
+            mongodb::change_stream::event::OperationType::Replace => ChangeOp::Update,
+            mongodb::change_stream::event::OperationType::Delete => ChangeOp::Delete,
             op => {
                 // Skip other operation types (like invalidate, drop, etc.)
                 return Err(anyhow!("Unsupported operation type: {op:?}"));
@@ -281,15 +279,15 @@ impl MongodbIncrementalSource {
             .and_then(|ns| ns.coll)
             .unwrap_or_else(|| "unknown".to_string());
 
-        // Get document ID as UniversalValue
+        // Get document ID as Value
         let id_value = if let Some(id) = event.document_key {
-            // Convert BSON document key to UniversalValue
+            // Convert BSON document key to Value
             if let Ok(oid) = id.get_object_id("_id") {
-                UniversalValue::Text(oid.to_hex())
+                Value::Text(oid.to_hex())
             } else if let Ok(s) = id.get_str("_id") {
-                UniversalValue::Text(s.to_string())
+                Value::Text(s.to_string())
             } else if let Ok(i) = id.get_i64("_id") {
-                UniversalValue::Int64(i)
+                Value::Int64(i)
             } else {
                 return Err(anyhow!(
                     "Unsupported _id type in document key: {:?}",
@@ -301,20 +299,20 @@ impl MongodbIncrementalSource {
         };
 
         let data = match operation {
-            UniversalChangeOp::Delete => None,
+            ChangeOp::Delete => None,
             _ => {
                 let d = event.full_document.unwrap();
                 Some(bson_doc_to_universal_values(d)?)
             }
         };
 
-        Ok(UniversalChange::new(operation, collection, id_value, data))
+        Ok(Change::new(operation, collection, id_value, data))
     }
 }
 
 // Type alias for complex MongoDB change stream type
 type MongoStreamType =
-    Arc<Mutex<std::pin::Pin<Box<dyn futures::Stream<Item = Result<UniversalChange>> + Send>>>>;
+    Arc<Mutex<std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>>>>;
 
 /// A change stream wrapper for MongoDB incremental sync.
 ///
@@ -330,7 +328,7 @@ pub struct MongoChangeStream {
 
 impl MongoChangeStream {
     pub fn new(
-        stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<UniversalChange>> + Send>>,
+        stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<Change>> + Send>>,
         _initial_resume_token: Vec<u8>,
     ) -> Self {
         Self {
@@ -341,7 +339,7 @@ impl MongoChangeStream {
 
 #[async_trait]
 impl ChangeStream for MongoChangeStream {
-    async fn next(&mut self) -> Option<Result<UniversalChange>> {
+    async fn next(&mut self) -> Option<Result<Change>> {
         let mut stream = self.stream.lock().await;
         stream.next().await
     }

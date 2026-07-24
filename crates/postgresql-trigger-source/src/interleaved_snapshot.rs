@@ -16,7 +16,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use async_trait::async_trait;
 use surreal_sink::SurrealSink;
-use sync_core::{DatabaseSchema, UniversalChange, UniversalRow, UniversalValue};
+use sync_core::{Change, DatabaseSchema, Row, Value};
 use tokio::sync::Mutex;
 use tokio_postgres::Client;
 use uuid::Uuid;
@@ -187,13 +187,13 @@ impl PostgresTriggerWatermarkSource {
 
 /// Build a primary key tuple from a change's record id.
 ///
-/// Composite keys arrive as an [`UniversalValue::Array`]; single keys (and the
+/// Composite keys arrive as an [`Value::Array`]; single keys (and the
 /// UUID-keyed watermark rows) arrive as a scalar. Either way the resulting
 /// [`PkTuple`] matches the buffer keys produced from snapshot rows, and a
 /// single-UUID tuple is recognized by the framework as a watermark.
-fn pk_from_change(change: &UniversalChange) -> PkTuple {
+fn pk_from_change(change: &Change) -> PkTuple {
     match &change.id {
-        UniversalValue::Array { elements, .. } => PkTuple::new(elements.clone()),
+        Value::Array { elements, .. } => PkTuple::new(elements.clone()),
         other => PkTuple::new(vec![other.clone()]),
     }
 }
@@ -211,8 +211,8 @@ impl WatermarkSource for PostgresTriggerWatermarkSource {
         table: &TableSpec,
         after: Option<&PkTuple>,
         limit: usize,
-    ) -> Result<Vec<UniversalRow>> {
-        let after_values: Option<Vec<UniversalValue>> = after.map(|pk| pk.0.clone());
+    ) -> Result<Vec<Row>> {
+        let after_values: Option<Vec<Value>> = after.map(|pk| pk.0.clone());
         let client = self.client.lock().await;
         let chunk = surreal_sync_postgresql::read_table_chunk(
             &client,

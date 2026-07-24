@@ -18,12 +18,12 @@ pub fn load_schema_if_provided(schema_file: &Option<PathBuf>) -> anyhow::Result<
 /// Extract JSON field paths from a schema (e.g., ["users.profile_data", "products.metadata"]).
 /// This is used to auto-populate Neo4j JSON properties from the schema file.
 pub fn extract_json_fields_from_schema(schema: &Schema) -> Vec<String> {
-    use sync_core::UniversalType;
+    use sync_core::Type;
 
     let mut json_fields = Vec::new();
     for table in &schema.tables {
         for field in &table.fields {
-            if matches!(field.field_type, UniversalType::Json | UniversalType::Jsonb) {
+            if matches!(field.field_type, Type::Json | Type::Jsonb) {
                 json_fields.push(format!("{}.{}", table.name, field.name));
             }
         }

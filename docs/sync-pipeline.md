@@ -427,7 +427,7 @@ if __name__ == "__main__":
     main()
 ```
 
-Make it executable and point `command` at it. Item JSON is the serde shape of surreal-sync’s universal row/change documents (typed values under `fields` / `data`, etc.). Start by echoing; then mutate fields your enrichment needs — including rewriting `id` when you need a custom composite-key shape (see [Record IDs and composite primary keys](#record-ids-and-composite-primary-keys)).
+Make it executable and point `command` at it. Item JSON is the serde shape of surreal-sync’s row/change documents (typed values under `fields`, etc.). Start by echoing; then mutate fields your enrichment needs — including rewriting `id` when you need a custom composite-key shape (see [Record IDs and composite primary keys](#record-ids-and-composite-primary-keys)).
 
 #### Tips for enrichment tools
 
@@ -498,6 +498,11 @@ as the stock binary for that source.
 
 Filter-out or fan-out of events is out of scope for `InPlaceTransform` — use a
 `command` worker or a custom `BatchTransformer` for those.
+
+Implement one `transform(table, id, fields)` method; the trait defaults
+`transform_row` / `transform_change` by calling it (`fields` is `None` on
+deletes). Re-exported embedder types are `Row`, `Change`, `Value`, and `ChangeOp`
+(no `Universal*` prefix).
 
 **Composition rules**
 

@@ -7,14 +7,14 @@
 //!
 //! - [`forward`] - TypedValue → PostgreSQL value conversion
 //! - [`reverse`] - PostgreSQL value → TypedValue conversion
-//! - [`ddl`] - PostgreSQL DDL generation from UniversalType
-//! - [`schema`] - PostgreSQL column type to UniversalType conversion
+//! - [`ddl`] - PostgreSQL DDL generation from Type
+//! - [`schema`] - PostgreSQL column type to Type conversion
 //!
 //! # Example
 //!
 //! ```ignore
 //! use postgresql_types::{PostgreSQLValue, PostgreSQLDdl, ToDdl, postgresql_column_to_universal_type};
-//! use sync_core::{TypedValue, UniversalType};
+//! use sync_core::{TypedValue, Type};
 //!
 //! // Convert TypedValue to PostgreSQL value
 //! let tv = TypedValue::text("hello");
@@ -22,12 +22,12 @@
 //!
 //! // Generate DDL
 //! let ddl = PostgreSQLDdl;
-//! let type_str = ddl.to_ddl(&UniversalType::Text);
+//! let type_str = ddl.to_ddl(&Type::Text);
 //! assert_eq!(type_str, "TEXT");
 //!
-//! // Convert PostgreSQL column type to UniversalType
+//! // Convert PostgreSQL column type to Type
 //! let ut = postgresql_column_to_universal_type("integer", None, None);
-//! assert_eq!(ut, UniversalType::Int32);
+//! assert_eq!(ut, Type::Int32);
 //! ```
 
 pub mod ddl;

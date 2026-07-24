@@ -13,7 +13,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
+use sync_core::{Change, Relation, RelationChange, Row};
 use tokio::sync::Notify;
 
 /// Per-batch script for [`ScriptedTransformer`].
@@ -126,11 +126,7 @@ impl BatchTransformer for ScriptedTransformer {
         false
     }
 
-    async fn transform_changes(
-        &self,
-        batch_id: u64,
-        changes: Vec<UniversalChange>,
-    ) -> Result<Vec<UniversalChange>> {
+    async fn transform_changes(&self, batch_id: u64, changes: Vec<Change>) -> Result<Vec<Change>> {
         let script = {
             let mut st = self.state.lock().expect("scripted transformer lock");
             st.transform_calls += 1;
@@ -157,11 +153,7 @@ impl BatchTransformer for ScriptedTransformer {
         Ok(out)
     }
 
-    async fn transform_rows(
-        &self,
-        batch_id: u64,
-        rows: Vec<UniversalRow>,
-    ) -> Result<Vec<UniversalRow>> {
+    async fn transform_rows(&self, batch_id: u64, rows: Vec<Row>) -> Result<Vec<Row>> {
         let script = {
             let mut st = self.state.lock().expect("scripted transformer lock");
             st.transform_calls += 1;
@@ -191,8 +183,8 @@ impl BatchTransformer for ScriptedTransformer {
     async fn transform_relation_changes(
         &self,
         batch_id: u64,
-        changes: Vec<UniversalRelationChange>,
-    ) -> Result<Vec<UniversalRelationChange>> {
+        changes: Vec<RelationChange>,
+    ) -> Result<Vec<RelationChange>> {
         // Prefer transform_events for scripted delay/fail; this path is for
         // homogeneous relation-only helpers.
         let script = {
@@ -224,8 +216,8 @@ impl BatchTransformer for ScriptedTransformer {
     async fn transform_relations(
         &self,
         batch_id: u64,
-        relations: Vec<UniversalRelation>,
-    ) -> Result<Vec<UniversalRelation>> {
+        relations: Vec<Relation>,
+    ) -> Result<Vec<Relation>> {
         let script = {
             let mut st = self.state.lock().expect("scripted transformer lock");
             st.transform_calls += 1;
@@ -505,17 +497,12 @@ impl ScriptedInPlace {
 }
 
 impl crate::InPlaceTransform for ScriptedInPlace {
-    fn transform_row(&self, _row: &mut UniversalRow) -> Result<()> {
-        let mut c = self.calls.lock().expect("scripted inplace lock");
-        let idx = *c;
-        *c += 1;
-        if self.fail_on_calls.contains(&idx) {
-            return Err(anyhow!("ScriptedInPlace fail on call {idx}"));
-        }
-        Ok(())
-    }
-
-    fn transform_change(&self, _change: &mut UniversalChange) -> Result<()> {
+    fn transform(
+        &self,
+        _table: &str,
+        _id: &mut sync_core::Value,
+        _fields: Option<&mut std::collections::HashMap<String, sync_core::Value>>,
+    ) -> Result<()> {
         let mut c = self.calls.lock().expect("scripted inplace lock");
         let idx = *c;
         *c += 1;
@@ -589,7 +576,7 @@ where
 /// Sink failure script.
 #[derive(Debug, Clone)]
 pub enum SinkFailWhen {
-    /// Fail on the Nth `apply_universal_change` call (0-based).
+    /// Fail on the Nth `apply_change` call (0-based).
     ApplyIndex(usize),
     /// Fail when the change id (as display) matches.
     ChangeId(String),
@@ -597,10 +584,10 @@ pub enum SinkFailWhen {
 
 #[derive(Default)]
 struct RecordingSinkState {
-    applied: Vec<UniversalChange>,
-    relations_applied: Vec<UniversalRelationChange>,
-    rows_written: Vec<Vec<UniversalRow>>,
-    relations_written: Vec<Vec<UniversalRelation>>,
+    applied: Vec<Change>,
+    relations_applied: Vec<RelationChange>,
+    rows_written: Vec<Vec<Row>>,
+    relations_written: Vec<Vec<Relation>>,
     /// Sink apply order tags: `change:{id}` or `relation:{id}`.
     event_order: Vec<String>,
     apply_count: usize,
@@ -609,7 +596,7 @@ struct RecordingSinkState {
     /// If true, fail only once per scripted condition then succeed on retry.
     fail_once: bool,
     fired: Vec<bool>,
-    /// Artificial delay before each successful `apply_universal_change`.
+    /// Artificial delay before each successful `apply_change`.
     apply_delay: Duration,
     /// Notified when an apply begins (before delay/gate).
     apply_started: Option<Arc<Notify>>,
@@ -661,7 +648,7 @@ impl RecordingSink {
     }
 
     /// Applied changes in sink order.
-    pub fn applied(&self) -> Vec<UniversalChange> {
+    pub fn applied(&self) -> Vec<Change> {
         self.state
             .lock()
             .expect("recording sink lock")
@@ -669,7 +656,7 @@ impl RecordingSink {
             .clone()
     }
 
-    /// Ids of applied changes (Debug of `UniversalValue`).
+    /// Ids of applied changes (Debug of `Value`).
     pub fn applied_ids(&self) -> Vec<String> {
         self.applied()
             .iter()
@@ -677,8 +664,8 @@ impl RecordingSink {
             .collect()
     }
 
-    /// Row batches passed to `write_universal_rows`.
-    pub fn rows_written(&self) -> Vec<Vec<UniversalRow>> {
+    /// Row batches passed to `write_rows`.
+    pub fn rows_written(&self) -> Vec<Vec<Row>> {
         self.state
             .lock()
             .expect("recording sink lock")
@@ -686,13 +673,13 @@ impl RecordingSink {
             .clone()
     }
 
-    /// Number of `apply_universal_change` attempts (including failures).
+    /// Number of `apply_change` attempts (including failures).
     pub fn apply_attempts(&self) -> usize {
         self.state.lock().expect("recording sink lock").apply_count
     }
 
     /// Applied relation changes in sink order.
-    pub fn relations_applied(&self) -> Vec<UniversalRelationChange> {
+    pub fn relations_applied(&self) -> Vec<RelationChange> {
         self.state
             .lock()
             .expect("recording sink lock")
@@ -700,8 +687,8 @@ impl RecordingSink {
             .clone()
     }
 
-    /// Relation batches passed to `write_universal_relations`.
-    pub fn relations_written(&self) -> Vec<Vec<UniversalRelation>> {
+    /// Relation batches passed to `write_relations`.
+    pub fn relations_written(&self) -> Vec<Vec<Relation>> {
         self.state
             .lock()
             .expect("recording sink lock")
@@ -719,21 +706,21 @@ impl RecordingSink {
     }
 }
 
-fn id_matches(change: &UniversalChange, want: &str) -> bool {
+fn id_matches(change: &Change, want: &str) -> bool {
     format!("{:?}", change.id) == want || change_id_display(change) == want
 }
 
-fn change_id_display(change: &UniversalChange) -> String {
+fn change_id_display(change: &Change) -> String {
     match &change.id {
-        sync_core::UniversalValue::Int64(n) => n.to_string(),
-        sync_core::UniversalValue::Int32(n) => n.to_string(),
+        sync_core::Value::Int64(n) => n.to_string(),
+        sync_core::Value::Int32(n) => n.to_string(),
         other => format!("{other:?}"),
     }
 }
 
 #[async_trait]
 impl SurrealSink for RecordingSink {
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> Result<()> {
+    async fn write_rows(&self, rows: &[Row]) -> Result<()> {
         self.state
             .lock()
             .expect("recording sink lock")
@@ -742,7 +729,7 @@ impl SurrealSink for RecordingSink {
         Ok(())
     }
 
-    async fn write_universal_relations(&self, relations: &[UniversalRelation]) -> Result<()> {
+    async fn write_relations(&self, relations: &[Relation]) -> Result<()> {
         self.state
             .lock()
             .expect("recording sink lock")
@@ -751,7 +738,7 @@ impl SurrealSink for RecordingSink {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> Result<()> {
+    async fn apply_change(&self, change: &Change) -> Result<()> {
         let (delay, started, gate, should_fail) = {
             let mut st = self.state.lock().expect("recording sink lock");
             let idx = st.apply_count;
@@ -805,10 +792,7 @@ impl SurrealSink for RecordingSink {
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
-        &self,
-        change: &UniversalRelationChange,
-    ) -> Result<()> {
+    async fn apply_relation_change(&self, change: &RelationChange) -> Result<()> {
         let mut st = self.state.lock().expect("recording sink lock");
         st.relation_apply_count += 1;
         st.event_order.push(format!(
@@ -820,10 +804,10 @@ impl SurrealSink for RecordingSink {
     }
 }
 
-fn relation_id_display(id: &sync_core::UniversalValue) -> String {
+fn relation_id_display(id: &sync_core::Value) -> String {
     match id {
-        sync_core::UniversalValue::Int64(n) => n.to_string(),
-        sync_core::UniversalValue::Int32(n) => n.to_string(),
+        sync_core::Value::Int64(n) => n.to_string(),
+        sync_core::Value::Int32(n) => n.to_string(),
         other => format!("{other:?}"),
     }
 }

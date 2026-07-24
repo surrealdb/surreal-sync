@@ -4,8 +4,8 @@
 //! - [`flatten_composite_id`] — Array IDs → Text joined with a separator (for transforms / relations)
 
 use crate::schema::{ColumnDefinition, DatabaseSchema, TableDefinition};
-use crate::types::UniversalType;
-use crate::values::UniversalValue;
+use crate::types::Type;
+use crate::values::Value;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -76,7 +76,7 @@ pub fn parse_id_column_overrides(
 ///
 /// For each overridden table:
 /// - Sets `primary_key` to the first column (type looked up from existing columns,
-///   or [`UniversalType::Text`] if missing).
+///   or [`Type::Text`] if missing).
 /// - Moves former PK / other columns so all non-first PK columns remain in `columns`.
 /// - Sets `composite_primary_key` when `cols.len() > 1`, otherwise clears it.
 pub fn apply_id_column_overrides(
@@ -116,7 +116,7 @@ fn apply_override_to_table(
     for name in cols {
         let def = by_name
             .remove(name)
-            .unwrap_or_else(|| ColumnDefinition::new(name.clone(), UniversalType::Text));
+            .unwrap_or_else(|| ColumnDefinition::new(name.clone(), Type::Text));
         pk_defs.push(def);
     }
 
@@ -140,41 +140,41 @@ fn apply_override_to_table(
 ///
 /// Scalar IDs are returned unchanged. Used by the `flatten_id` transform and
 /// by relation-edge ID flattening.
-pub fn flatten_composite_id(id: UniversalValue, separator: &str) -> UniversalValue {
+pub fn flatten_composite_id(id: Value, separator: &str) -> Value {
     match id {
-        UniversalValue::Array { elements, .. } => {
+        Value::Array { elements, .. } => {
             let parts: Vec<String> = elements.into_iter().map(stringify_id_part).collect();
-            UniversalValue::Text(parts.join(separator))
+            Value::Text(parts.join(separator))
         }
         other => other,
     }
 }
 
 /// Stringify one composite-key part for colon/separator joining.
-pub fn stringify_id_part(v: UniversalValue) -> String {
+pub fn stringify_id_part(v: Value) -> String {
     match v {
-        UniversalValue::Int8 { value, .. } => value.to_string(),
-        UniversalValue::Int16(n) => n.to_string(),
-        UniversalValue::Int32(n) => n.to_string(),
-        UniversalValue::Int64(n) => n.to_string(),
-        UniversalValue::Text(s) => s,
-        UniversalValue::VarChar { value, .. } | UniversalValue::Char { value, .. } => value,
-        UniversalValue::Uuid(u) => u.to_string(),
-        UniversalValue::Ulid(u) => u.to_string(),
-        UniversalValue::Bool(b) => b.to_string(),
-        UniversalValue::Null => String::new(),
+        Value::Int8 { value, .. } => value.to_string(),
+        Value::Int16(n) => n.to_string(),
+        Value::Int32(n) => n.to_string(),
+        Value::Int64(n) => n.to_string(),
+        Value::Text(s) => s,
+        Value::VarChar { value, .. } | Value::Char { value, .. } => value,
+        Value::Uuid(u) => u.to_string(),
+        Value::Ulid(u) => u.to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Null => String::new(),
         other => format!("{other:?}"),
     }
 }
 
 /// Build a record ID from ordered field values (single → scalar, multi → Array).
-pub fn build_composite_record_id(parts: Vec<UniversalValue>) -> UniversalValue {
+pub fn build_composite_record_id(parts: Vec<Value>) -> Value {
     match parts.len() {
-        0 => UniversalValue::Null,
+        0 => Value::Null,
         1 => parts.into_iter().next().unwrap(),
-        _ => UniversalValue::Array {
+        _ => Value::Array {
             elements: parts,
-            element_type: Box::new(UniversalType::Text),
+            element_type: Box::new(Type::Text),
         },
     }
 }
@@ -186,10 +186,10 @@ mod tests {
     fn sample_schema() -> DatabaseSchema {
         DatabaseSchema::new(vec![TableDefinition::new(
             "ledger",
-            ColumnDefinition::new("a", UniversalType::Int32),
+            ColumnDefinition::new("a", Type::Int32),
             vec![
-                ColumnDefinition::new("b", UniversalType::Int32),
-                ColumnDefinition::new("amount", UniversalType::Int64),
+                ColumnDefinition::new("b", Type::Int32),
+                ColumnDefinition::new("amount", Type::Int64),
             ],
         )])
     }
@@ -224,20 +224,16 @@ mod tests {
 
     #[test]
     fn flatten_joins_with_separator() {
-        let id = UniversalValue::Array {
-            elements: vec![UniversalValue::Int32(4), UniversalValue::Text("x".into())],
-            element_type: Box::new(UniversalType::Text),
+        let id = Value::Array {
+            elements: vec![Value::Int32(4), Value::Text("x".into())],
+            element_type: Box::new(Type::Text),
         };
-        assert_eq!(
-            flatten_composite_id(id, ":"),
-            UniversalValue::Text("4:x".into())
-        );
+        assert_eq!(flatten_composite_id(id, ":"), Value::Text("4:x".into()));
     }
 
     #[test]
     fn build_composite_array() {
-        let id =
-            build_composite_record_id(vec![UniversalValue::Int32(1), UniversalValue::Int32(2)]);
-        assert!(matches!(id, UniversalValue::Array { elements, .. } if elements.len() == 2));
+        let id = build_composite_record_id(vec![Value::Int32(1), Value::Int32(2)]);
+        assert!(matches!(id, Value::Array { elements, .. } if elements.len() == 2));
     }
 }

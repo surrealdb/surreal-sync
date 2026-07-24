@@ -12,12 +12,12 @@ use surreal_sync::testing::generate_test_id;
 use surreal_sync_kafka_producer::container::KafkaContainer;
 use surreal_sync_kafka_producer::{publish_test_users, KafkaTestProducer};
 use surreal_sync_kafka_source::Config as KafkaConfig;
-use sync_core::{UniversalChange, UniversalRelation, UniversalRow, UniversalValue};
+use sync_core::{Change, Relation, Row, Value};
 use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 use tokio::time::sleep;
 
 struct CaptureSink {
-    changes: Mutex<Vec<UniversalChange>>,
+    changes: Mutex<Vec<Change>>,
 }
 
 impl CaptureSink {
@@ -30,12 +30,12 @@ impl CaptureSink {
 
 #[async_trait::async_trait]
 impl SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
-        // Homogeneous Update upserts coalesce to write_universal_rows; record the
-        // same observations tests assert via apply_universal_change.
+    async fn write_rows(&self, rows: &[Row]) -> anyhow::Result<()> {
+        // Homogeneous Update upserts coalesce to write_rows; record the
+        // same observations tests assert via apply_change.
         let mut changes = self.changes.lock().expect("lock");
         for row in rows {
-            changes.push(UniversalChange::update(
+            changes.push(Change::update(
                 row.table.clone(),
                 row.id.clone(),
                 row.fields.clone(),
@@ -44,21 +44,18 @@ impl SurrealSink for CaptureSink {
         Ok(())
     }
 
-    async fn write_universal_relations(
-        &self,
-        _relations: &[UniversalRelation],
-    ) -> anyhow::Result<()> {
+    async fn write_relations(&self, _relations: &[Relation]) -> anyhow::Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> anyhow::Result<()> {
+    async fn apply_change(&self, change: &Change) -> anyhow::Result<()> {
         self.changes.lock().expect("lock").push(change.clone());
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
+    async fn apply_relation_change(
         &self,
-        _change: &sync_core::UniversalRelationChange,
+        _change: &sync_core::RelationChange,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -89,11 +86,11 @@ fn ensure_fixture_worker() -> PathBuf {
     path
 }
 
-fn change_name(change: &UniversalChange) -> Option<String> {
-    let data = change.data.as_ref()?;
+fn change_name(change: &Change) -> Option<String> {
+    let data = change.fields.as_ref()?;
     match data.get("name")? {
-        UniversalValue::Text(value) => Some(value.clone()),
-        UniversalValue::VarChar { value, .. } => Some(value.clone()),
+        Value::Text(value) => Some(value.clone()),
+        Value::VarChar { value, .. } => Some(value.clone()),
         other => panic!("unexpected name: {other:?}"),
     }
 }

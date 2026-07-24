@@ -3,10 +3,10 @@
 //! This crate provides the foundational types used across the sync
 //! framework, including:
 //!
-//! - [`UniversalType`] - Universal type representation for all supported databases
-//! - [`UniversalValue`] - Raw generated values before type conversion
+//! - [`Type`] - Universal type representation for all supported databases
+//! - [`Value`] - Raw generated values before type conversion
 //! - [`TypedValue`] - Values with type information for conversion
-//! - [`UniversalRow`] - Intermediate row representation
+//! - [`Row`] - Intermediate row representation
 //! - [`Schema`] - Schema definitions loaded from YAML
 //!
 //! # Architecture
@@ -28,16 +28,16 @@
 //! # Example
 //!
 //! ```rust
-//! use sync_core::types::UniversalType;
-//! use sync_core::values::{UniversalValue, TypedValue};
+//! use sync_core::types::Type;
+//! use sync_core::values::{Value, TypedValue};
 //!
 //! // Create a typed value using factory methods
 //! let value = TypedValue::int32(42);
 //!
 //! // For dynamic types (e.g., from schema), use try_with_type for validation:
 //! let dynamic_value = TypedValue::try_with_type(
-//!     UniversalType::Int32,
-//!     UniversalValue::Int32(42)
+//!     Type::Int32,
+//!     Value::Int32(42)
 //! ).expect("valid type-value combination");
 //!
 //! // Type-specific crates implement From<TypedValue> for their native types:
@@ -74,10 +74,9 @@ pub use schema::{
 // Legacy alias for backwards compatibility
 #[deprecated(since = "1.0.0", note = "Use GeneratorSchema instead")]
 pub type LoadTestSchema = Schema;
-pub use relation_change::UniversalRelationChange;
-pub use types::{GeometryType, ToDdl, UniversalType};
+pub use relation_change::RelationChange;
+pub use types::{GeometryType, ToDdl, Type};
 pub use values::{
-    GeometryData, RowConverter, TypedValue, TypedValueError, UniversalChange, UniversalChangeOp,
-    UniversalRelation, UniversalRow, UniversalRowBuilder, UniversalThingRef, UniversalValue,
-    ZeroTemporalPolicy,
+    Change, ChangeOp, GeometryData, Relation, Row, RowBuilder, RowConverter, ThingRef, TypedValue,
+    TypedValueError, Value, ZeroTemporalPolicy,
 };

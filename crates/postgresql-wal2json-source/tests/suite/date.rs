@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use surreal_sync_postgresql_wal2json_source::{Action, Client};
-use sync_core::UniversalValue;
+use sync_core::Value;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -160,13 +160,13 @@ async fn test_date_replication_formats() -> Result<()> {
 
                 // Verify it's a Date value (date values are converted to DateTime<Utc> at midnight)
                 match event_date {
-                    UniversalValue::Date(dt) => {
+                    Value::Date(dt) => {
                         let date_str = dt.format("%Y-%m-%d").to_string();
                         info!("Date value: {} (DateTime: {})", date_str, dt);
 
                         // Get the ID to verify specific expected values
                         let id = match row.primary_key {
-                            UniversalValue::Int32(i) => i,
+                            Value::Int32(i) => i,
                             _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
                         };
 
@@ -237,7 +237,7 @@ async fn test_date_replication_formats() -> Result<()> {
                 .context("Should have event_date column in UPDATE")?;
 
             match event_date {
-                UniversalValue::Date(dt) => {
+                Value::Date(dt) => {
                     let date_str = dt.format("%Y-%m-%d").to_string();
                     info!("UPDATE date value: {} (DateTime: {})", date_str, dt);
                     assert_eq!(date_str, "2025-12-25", "Updated date should be 2025-12-25");

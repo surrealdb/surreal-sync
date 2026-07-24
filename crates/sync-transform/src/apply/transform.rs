@@ -4,7 +4,7 @@ use crate::apply::ApplyEvent;
 use crate::pipeline::Pipeline;
 use anyhow::{bail, Result};
 use async_trait::async_trait;
-use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
+use sync_core::{Change, Relation, RelationChange, Row};
 
 /// Executes a transform for one numbered batch.
 ///
@@ -37,18 +37,10 @@ pub trait BatchTransformer: Send + Sync {
     fn is_identity(&self) -> bool;
 
     /// Transform an owned change batch. `batch_id` is monotonic per apply run.
-    async fn transform_changes(
-        &self,
-        batch_id: u64,
-        changes: Vec<UniversalChange>,
-    ) -> Result<Vec<UniversalChange>>;
+    async fn transform_changes(&self, batch_id: u64, changes: Vec<Change>) -> Result<Vec<Change>>;
 
     /// Transform an owned row batch.
-    async fn transform_rows(
-        &self,
-        batch_id: u64,
-        rows: Vec<UniversalRow>,
-    ) -> Result<Vec<UniversalRow>>;
+    async fn transform_rows(&self, batch_id: u64, rows: Vec<Row>) -> Result<Vec<Row>>;
 
     /// Transform an owned relation-change batch.
     ///
@@ -59,8 +51,8 @@ pub trait BatchTransformer: Send + Sync {
     async fn transform_relation_changes(
         &self,
         _batch_id: u64,
-        _changes: Vec<UniversalRelationChange>,
-    ) -> Result<Vec<UniversalRelationChange>> {
+        _changes: Vec<RelationChange>,
+    ) -> Result<Vec<RelationChange>> {
         bail!(
             "BatchTransformer::transform_relation_changes is not implemented; \
              override it (or return Ok(changes) for explicit passthrough), or use Pipeline"
@@ -73,8 +65,8 @@ pub trait BatchTransformer: Send + Sync {
     async fn transform_relations(
         &self,
         _batch_id: u64,
-        _relations: Vec<UniversalRelation>,
-    ) -> Result<Vec<UniversalRelation>> {
+        _relations: Vec<Relation>,
+    ) -> Result<Vec<Relation>> {
         bail!(
             "BatchTransformer::transform_relations is not implemented; \
              override it (or return Ok(relations) for explicit passthrough), or use Pipeline"
@@ -156,35 +148,27 @@ impl BatchTransformer for Pipeline {
         Pipeline::is_identity(self)
     }
 
-    async fn transform_changes(
-        &self,
-        batch_id: u64,
-        changes: Vec<UniversalChange>,
-    ) -> Result<Vec<UniversalChange>> {
+    async fn transform_changes(&self, batch_id: u64, changes: Vec<Change>) -> Result<Vec<Change>> {
         self.apply_changes_async(batch_id, changes).await
     }
 
-    async fn transform_rows(
-        &self,
-        batch_id: u64,
-        rows: Vec<UniversalRow>,
-    ) -> Result<Vec<UniversalRow>> {
+    async fn transform_rows(&self, batch_id: u64, rows: Vec<Row>) -> Result<Vec<Row>> {
         self.apply_rows_async(batch_id, rows).await
     }
 
     async fn transform_relation_changes(
         &self,
         batch_id: u64,
-        changes: Vec<UniversalRelationChange>,
-    ) -> Result<Vec<UniversalRelationChange>> {
+        changes: Vec<RelationChange>,
+    ) -> Result<Vec<RelationChange>> {
         self.apply_relation_changes_async(batch_id, changes).await
     }
 
     async fn transform_relations(
         &self,
         batch_id: u64,
-        relations: Vec<UniversalRelation>,
-    ) -> Result<Vec<UniversalRelation>> {
+        relations: Vec<Relation>,
+    ) -> Result<Vec<Relation>> {
         self.apply_relations_async(batch_id, relations).await
     }
 

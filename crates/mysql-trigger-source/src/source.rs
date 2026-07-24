@@ -7,7 +7,7 @@
 //!
 //! This implementation uses the unified TypedValue conversion path:
 //! ```text
-//! JSON (from audit table) → TypedValue (json-types) → surrealdb::sql::Value (surrealdb-types)
+//! JSON (from audit table) → TypedValue (json-types) → SurrealDB values
 //! ```
 //!
 //! ## Implementation Approach
@@ -25,15 +25,10 @@ use super::checkpoint::MySQLCheckpoint;
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use chrono::Utc;
-use json_types::{
-    convert_id_to_universal_value, convert_id_to_universal_with_database_schema,
-    JsonValueWithSchema,
-};
+use json_types::{convert_id_to_value, convert_id_with_database_schema, JsonValueWithSchema};
 use log::info;
-use mysql_async::{prelude::*, Conn, Pool, Row, Value};
-use sync_core::{
-    DatabaseSchema, TypedValue, UniversalChange, UniversalChangeOp, UniversalType, UniversalValue,
-};
+use mysql_async::{prelude::*, Conn, Pool, Row as MysqlRow, Value as MysqlValue};
+use sync_core::{Change, ChangeOp, DatabaseSchema, Type, TypedValue, Value};
 
 // ============================================================================
 // Traits for MySQL incremental sync
@@ -71,13 +66,13 @@ pub trait IncrementalSource: Send + Sync {
 pub trait ChangeStream: Send + Sync {
     /// Get the next change event from the stream
     /// Returns None when no more changes are available
-    async fn next(&mut self) -> Option<Result<UniversalChange>>;
+    async fn next(&mut self) -> Option<Result<Change>>;
 
     /// Like [`ChangeStream::next`], but also yields the source `sequence_id`
     /// (stream position) of the change, so callers can track per-change
     /// positions for watermark-based reconciliation.
     /// Returns None when no more changes are available.
-    async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>>;
+    async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, Change)>>;
 
     /// Get the current sink-safe checkpoint of the stream.
     ///
@@ -182,7 +177,7 @@ pub struct MySQLChangeStream {
     #[allow(dead_code)]
     server_id: u32,
     /// Buffered changes, each paired with its source `sequence_id`.
-    buffer: Vec<(i64, UniversalChange)>,
+    buffer: Vec<(i64, Change)>,
     /// Highest sequence_id fetched into the buffer (audit pagination cursor).
     read_sequence_id: i64,
     /// Highest sequence_id successfully sunk (authoritative resume watermark).
@@ -217,7 +212,7 @@ impl MySQLChangeStream {
         field_name: &str,
         table_name: &str,
     ) -> Result<TypedValue> {
-        // Get the UniversalType from schema to check for SET columns
+        // Get the Type from schema to check for SET columns
         let column_type = self
             .database_schema
             .as_ref()
@@ -225,7 +220,7 @@ impl MySQLChangeStream {
             .and_then(|ts| ts.get_column_type(field_name));
 
         // Handle SET columns specially - MySQL JSON_OBJECT stores SET as comma-separated string
-        if let Some(UniversalType::Set { .. }) = column_type {
+        if let Some(Type::Set { .. }) = column_type {
             if let serde_json::Value::String(s) = &value {
                 let values: Vec<String> = if s.is_empty() {
                     Vec::new()
@@ -237,7 +232,7 @@ impl MySQLChangeStream {
         }
 
         // Get the sync type from schema for standard conversion
-        let sync_type = column_type.cloned().unwrap_or(UniversalType::Text); // Default to text if not found
+        let sync_type = column_type.cloned().unwrap_or(Type::Text); // Default to text if not found
 
         // Use json-types for conversion
         let jvs = JsonValueWithSchema::new(value, sync_type);
@@ -294,22 +289,20 @@ impl MySQLChangeStream {
             .unwrap_or_else(|| vec!["id".to_string()])
     }
 
-    /// Convert audit `row_id` (scalar string or JSON array) to a UniversalValue ID.
+    /// Convert audit `row_id` (scalar string or JSON array) to a Value ID.
     fn row_id_to_universal(
         &self,
         row_id: &str,
         table_name: &str,
         pk_columns: &[String],
-    ) -> Result<UniversalValue> {
+    ) -> Result<Value> {
         let schema = self.database_schema.as_ref();
         if pk_columns.len() <= 1 {
             let col = pk_columns.first().map(|s| s.as_str()).unwrap_or("id");
             if let Some(schema) = schema {
-                return convert_id_to_universal_with_database_schema(
-                    row_id, table_name, col, schema,
-                );
+                return convert_id_with_database_schema(row_id, table_name, col, schema);
             }
-            return Ok(UniversalValue::Text(row_id.to_string()));
+            return Ok(Value::Text(row_id.to_string()));
         }
 
         // Composite: triggers store JSON_ARRAY(...) in row_id.
@@ -334,27 +327,27 @@ impl MySQLChangeStream {
                 other => other.to_string(),
             };
             let part = if let Some(schema) = schema {
-                convert_id_to_universal_with_database_schema(&id_str, table_name, col, schema)?
+                convert_id_with_database_schema(&id_str, table_name, col, schema)?
             } else {
-                let ty = UniversalType::Text;
-                convert_id_to_universal_value(&id_str, table_name, &ty)?
+                let ty = Type::Text;
+                convert_id_to_value(&id_str, table_name, &ty)?
             };
             values.push(part);
         }
-        Ok(UniversalValue::Array {
+        Ok(Value::Array {
             elements: values,
-            element_type: Box::new(UniversalType::Text),
+            element_type: Box::new(Type::Text),
         })
     }
 
-    async fn fetch_changes(&mut self) -> Result<Vec<(i64, UniversalChange)>> {
+    async fn fetch_changes(&mut self) -> Result<Vec<(i64, Change)>> {
         let conn = self
             .connection
             .as_mut()
             .ok_or_else(|| anyhow!("No connection available"))?;
 
         // Check if audit table exists before querying
-        let table_exists: Vec<Row> = conn
+        let table_exists: Vec<MysqlRow> = conn
             .query("SELECT 1 FROM information_schema.tables WHERE table_name = 'surreal_sync_changes' AND table_schema = DATABASE()")
             .await?;
 
@@ -373,7 +366,7 @@ impl MySQLChangeStream {
              LIMIT 100"
                 .to_string();
 
-        let rows: Vec<Row> = conn.exec(query, (self.read_sequence_id,)).await?;
+        let rows: Vec<MysqlRow> = conn.exec(query, (self.read_sequence_id,)).await?;
         let mut changes = Vec::new();
 
         for row in rows {
@@ -381,23 +374,23 @@ impl MySQLChangeStream {
             let table_name: String = row.get(1).ok_or_else(|| anyhow!("Missing table_name"))?;
             let operation: String = row.get(2).ok_or_else(|| anyhow!("Missing operation"))?;
             let row_id: String = row.get(3).ok_or_else(|| anyhow!("Missing row_id"))?;
-            let _old_data: Option<Value> = row.get(4);
-            let new_data: Option<Value> = row.get(5);
+            let _old_data: Option<MysqlValue> = row.get(4);
+            let new_data: Option<MysqlValue> = row.get(5);
 
             let op = match operation.as_str() {
-                "INSERT" => UniversalChangeOp::Create,
-                "UPDATE" => UniversalChangeOp::Update,
-                "DELETE" => UniversalChangeOp::Delete,
+                "INSERT" => ChangeOp::Create,
+                "UPDATE" => ChangeOp::Update,
+                "DELETE" => ChangeOp::Delete,
                 _ => {
                     return Err(anyhow!("Unknown operation type: {operation}"));
                 }
             };
 
-            // Convert JSON data to UniversalValue map using TypedValue conversion flow
+            // Convert JSON data to Value map using TypedValue conversion flow
             let pk_columns = self.pk_columns_for(&table_name);
-            let universal_data: Option<HashMap<String, UniversalValue>> = match operation.as_str() {
+            let universal_data: Option<HashMap<String, Value>> = match operation.as_str() {
                 "INSERT" | "UPDATE" => {
-                    if let Some(Value::Bytes(json_data)) = new_data {
+                    if let Some(MysqlValue::Bytes(json_data)) = new_data {
                         if let Ok(json_value) =
                             serde_json::from_slice::<serde_json::Value>(&json_data)
                         {
@@ -424,12 +417,11 @@ impl MySQLChangeStream {
                                         &row_id,
                                     )?;
 
-                                    // Step 2: HashMap<String, TypedValue> → HashMap<String, UniversalValue>
-                                    let universal_map: HashMap<String, UniversalValue> =
-                                        typed_values
-                                            .into_iter()
-                                            .map(|(k, tv)| (k, tv.value))
-                                            .collect();
+                                    // Step 2: HashMap<String, TypedValue> → HashMap<String, Value>
+                                    let universal_map: HashMap<String, Value> = typed_values
+                                        .into_iter()
+                                        .map(|(k, tv)| (k, tv.value))
+                                        .collect();
                                     Some(universal_map)
                                 }
                                 _ => {
@@ -449,15 +441,14 @@ impl MySQLChangeStream {
                 _ => anyhow::bail!("Unknown operation type: {operation}"),
             };
 
-            // Convert the string row_id to UniversalValue using schema information
+            // Convert the string row_id to Value using schema information
             // (scalar or JSON-array composite keys).
-            let record_id: UniversalValue =
-                self.row_id_to_universal(&row_id, &table_name, &pk_columns)?;
+            let record_id: Value = self.row_id_to_universal(&row_id, &table_name, &pk_columns)?;
 
             // Create change record using universal types
             changes.push((
                 sequence_id,
-                UniversalChange::new(op, table_name.clone(), record_id, universal_data),
+                Change::new(op, table_name.clone(), record_id, universal_data),
             ));
 
             // Advance read-head only; sunk watermark waits for commit_sunk.
@@ -470,7 +461,7 @@ impl MySQLChangeStream {
 
 #[async_trait]
 impl ChangeStream for MySQLChangeStream {
-    async fn next(&mut self) -> Option<Result<UniversalChange>> {
+    async fn next(&mut self) -> Option<Result<Change>> {
         match self.next_with_sequence_id().await {
             Some(Ok((_seq, change))) => Some(Ok(change)),
             Some(Err(e)) => Some(Err(e)),
@@ -478,7 +469,7 @@ impl ChangeStream for MySQLChangeStream {
         }
     }
 
-    async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>> {
+    async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, Change)>> {
         // Return buffered changes first
         if !self.buffer.is_empty() {
             return Some(Ok(self.buffer.remove(0)));

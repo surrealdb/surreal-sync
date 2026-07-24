@@ -4,17 +4,14 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use checkpoint::Checkpoint;
 use chrono::{DateTime, Utc};
-use json_types::{
-    convert_id_to_universal_with_database_schema, json_to_universal_with_table_schema,
-};
+use json_types::{convert_id_with_database_schema, json_to_universal_with_table_schema};
 use log::{error, info, warn};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::Arc;
 use surreal_sink::SurrealSink;
 use sync_core::{
-    classify_table, DatabaseSchema, TableKind, UniversalChange, UniversalChangeOp,
-    UniversalRelationChange, UniversalValue,
+    classify_table, Change, ChangeOp, DatabaseSchema, RelationChange, TableKind, Value,
 };
 use sync_transform::{
     ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver, SourceRuntimeOpts,
@@ -59,13 +56,13 @@ pub trait IncrementalSource: Send + Sync {
 pub trait ChangeStream: Send + Sync {
     /// Get the next change event from the stream
     /// Returns None when no more changes are available
-    async fn next(&mut self) -> Option<Result<UniversalChange>>;
+    async fn next(&mut self) -> Option<Result<Change>>;
 
     /// Like [`ChangeStream::next`], but also yields the source `sequence_id`
     /// (stream position) of the change, so callers can track per-change
     /// positions for watermark-based reconciliation.
     /// Returns None when no more changes are available.
-    async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>>;
+    async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, Change)>>;
 
     /// Sink-safe checkpoint: advances only via [`ChangeStream::commit_sunk`].
     fn checkpoint(&self) -> Option<PostgreSQLCheckpoint>;
@@ -236,7 +233,7 @@ struct PostgresTriggerSourceDriver<'a> {
 }
 
 impl PostgresTriggerSourceDriver<'_> {
-    fn enrich_at(&self, sequence_id: i64, mut change: UniversalChange) -> PositionedEvent<i64> {
+    fn enrich_at(&self, sequence_id: i64, mut change: Change) -> PositionedEvent<i64> {
         let table_def = self.db_schema.get_table(&change.table);
         let table_kind = table_def.map(|td| classify_table(td, &self.relation_table_overrides));
 
@@ -246,7 +243,7 @@ impl PostgresTriggerSourceDriver<'_> {
                 ref out_fk,
             }) => {
                 let op = change.operation;
-                let data = change.data.take().unwrap_or_default();
+                let data = change.fields.take().unwrap_or_default();
                 let relation = surreal_sync_postgresql::fk_transform::build_relation_from_change(
                     &change.table,
                     change.id,
@@ -254,11 +251,11 @@ impl PostgresTriggerSourceDriver<'_> {
                     in_fk,
                     out_fk,
                 );
-                let rel_change = UniversalRelationChange::new(op, relation);
+                let rel_change = RelationChange::new(op, relation);
                 PositionedEvent::relation_change(rel_change, sequence_id)
             }
             _ => {
-                if let (Some(td), Some(ref mut data)) = (table_def, change.data.as_mut()) {
+                if let (Some(td), Some(ref mut data)) = (table_def, change.fields.as_mut()) {
                     surreal_sync_postgresql::fk_transform::transform_fk_values(data, td);
                 }
                 PositionedEvent::change(change, sequence_id)
@@ -709,7 +706,7 @@ pub struct PostgresChangeStream {
     /// Highest sequence_id successfully sunk (authoritative resume watermark).
     sunk_sequence: i64,
     /// Buffered changes, each paired with its source `sequence_id`.
-    buffer: Vec<(i64, UniversalChange)>,
+    buffer: Vec<(i64, Change)>,
     empty_poll_count: usize,
     database_schema: Option<DatabaseSchema>,
     /// Mapping of table names to their primary key column names
@@ -736,7 +733,7 @@ impl PostgresChangeStream {
         })
     }
 
-    async fn fetch_changes(&mut self) -> Result<Vec<(i64, UniversalChange)>> {
+    async fn fetch_changes(&mut self) -> Result<Vec<(i64, Change)>> {
         log::debug!(
             "PostgresChangeStream::fetch_changes() called, read_sequence: {}",
             self.read_sequence
@@ -788,9 +785,9 @@ impl PostgresChangeStream {
             };
 
             let op = match operation.as_str() {
-                "INSERT" => UniversalChangeOp::Create,
-                "UPDATE" => UniversalChangeOp::Update,
-                "DELETE" => UniversalChangeOp::Delete,
+                "INSERT" => ChangeOp::Create,
+                "UPDATE" => ChangeOp::Update,
+                "DELETE" => ChangeOp::Delete,
                 _ => {
                     warn!("Unknown operation type in audit table: {operation:?}");
                     continue;
@@ -805,9 +802,7 @@ impl PostgresChangeStream {
                 )
             })?;
 
-            let universal_data: HashMap<String, UniversalValue> = if let Some(json_value) =
-                json_data
-            {
+            let universal_data: HashMap<String, Value> = if let Some(json_value) = json_data {
                 // Use schema-aware conversion if schema is available
                 if let Some(table_schema) = self
                     .database_schema
@@ -873,14 +868,14 @@ impl PostgresChangeStream {
                 HashMap::new()
             };
 
-            // Convert row_id to UniversalValue using schema information
+            // Convert row_id to Value using schema information
             // The row_id is a JSONB array (supports composite PKs) where each element
             // is extracted via row_json->>'column', which always returns text in PostgreSQL.
             //
             // We use the pk_columns mapping (populated during setup_tracking) to know which
             // column names correspond to each position in the row_id array, then use the
             // database_schema to look up the proper type for conversion.
-            let record_id: UniversalValue = match row_id {
+            let record_id: Value = match row_id {
                 Some(serde_json::Value::Array(arr)) => {
                     // pk_cols was already retrieved above for filtering content data
                     if arr.len() != pk_cols.len() {
@@ -903,7 +898,7 @@ impl PostgresChangeStream {
 
                         // Use schema-aware conversion if schema is available
                         if let Some(schema) = &self.database_schema {
-                            convert_id_to_universal_with_database_schema(
+                            convert_id_with_database_schema(
                                 &id_str,
                                 &table_name,
                                 pk_column,
@@ -912,11 +907,11 @@ impl PostgresChangeStream {
                         } else {
                             // Fallback to value-based inference if no schema
                             if let Ok(n) = id_str.parse::<i64>() {
-                                UniversalValue::Int64(n)
+                                Value::Int64(n)
                             } else if let Ok(uuid) = uuid::Uuid::parse_str(&id_str) {
-                                UniversalValue::Uuid(uuid)
+                                Value::Uuid(uuid)
                             } else {
-                                UniversalValue::Text(id_str)
+                                Value::Text(id_str)
                             }
                         }
                     } else {
@@ -933,7 +928,7 @@ impl PostgresChangeStream {
 
                             // Use schema-aware conversion if schema is available
                             let universal_id = if let Some(schema) = &self.database_schema {
-                                convert_id_to_universal_with_database_schema(
+                                convert_id_with_database_schema(
                                     &id_str,
                                     &table_name,
                                     pk_column,
@@ -941,14 +936,14 @@ impl PostgresChangeStream {
                                 )?
                             } else {
                                 // Fallback to string if no schema
-                                UniversalValue::Text(id_str)
+                                Value::Text(id_str)
                             };
                             universal_values_array.push(universal_id);
                         }
                         // For composite keys, we store as an array of values
-                        UniversalValue::Array {
+                        Value::Array {
                             elements: universal_values_array,
-                            element_type: Box::new(sync_core::UniversalType::Text),
+                            element_type: Box::new(sync_core::Type::Text),
                         }
                     }
                 }
@@ -957,16 +952,13 @@ impl PostgresChangeStream {
 
             info!("Change event: record_id: {record_id:?}");
 
-            // Create UniversalChange with the converted data
-            let data = if op == UniversalChangeOp::Delete {
+            // Create Change with the converted data
+            let data = if op == ChangeOp::Delete {
                 None
             } else {
                 Some(universal_data)
             };
-            changes.push((
-                sequence_id,
-                UniversalChange::new(op, table_name, record_id, data),
-            ));
+            changes.push((sequence_id, Change::new(op, table_name, record_id, data)));
 
             // Advance read-head only; sunk watermark waits for commit_sunk.
             self.read_sequence = sequence_id;
@@ -978,7 +970,7 @@ impl PostgresChangeStream {
 
 #[async_trait]
 impl ChangeStream for PostgresChangeStream {
-    async fn next(&mut self) -> Option<Result<UniversalChange>> {
+    async fn next(&mut self) -> Option<Result<Change>> {
         match self.next_with_sequence_id().await {
             Some(Ok((_seq, change))) => Some(Ok(change)),
             Some(Err(e)) => Some(Err(e)),
@@ -986,7 +978,7 @@ impl ChangeStream for PostgresChangeStream {
         }
     }
 
-    async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, UniversalChange)>> {
+    async fn next_with_sequence_id(&mut self) -> Option<Result<(i64, Change)>> {
         log::debug!(
             "🔄 PostgresChangeStream::next_with_sequence_id() called, empty_poll_count: {}, read_sequence: {}",
             self.empty_poll_count,

@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use surreal_sync_postgresql_wal2json_source::{Action, Client};
-use sync_core::UniversalValue;
+use sync_core::Value;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -107,25 +107,25 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
 
             // Check primary key (integer 123 becomes Int32)
             assert!(
-                matches!(row.primary_key, UniversalValue::Int32(123)),
+                matches!(row.primary_key, Value::Int32(123)),
                 "Expected Int32(123), got {:?}",
                 row.primary_key
             );
 
             // Check columns
             assert!(
-                matches!(row.columns.get("name"), Some(UniversalValue::Text(s)) if s == "Test Name"),
+                matches!(row.columns.get("name"), Some(Value::Text(s)) if s == "Test Name"),
                 "Expected Text('Test Name'), got {:?}",
                 row.columns.get("name")
             );
             assert!(
-                matches!(row.columns.get("active"), Some(UniversalValue::Bool(true))),
+                matches!(row.columns.get("active"), Some(Value::Bool(true))),
                 "Expected Bool(true), got {:?}",
                 row.columns.get("active")
             );
 
             // Check float (PostgreSQL REAL maps to Float32)
-            if let Some(UniversalValue::Float32(score)) = row.columns.get("score") {
+            if let Some(Value::Float32(score)) = row.columns.get("score") {
                 assert!((score - std::f32::consts::PI).abs() < 0.001);
             } else {
                 panic!(
@@ -135,7 +135,7 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
             }
 
             // Check JSON
-            if let Some(UniversalValue::Json(json_val)) = row.columns.get("data") {
+            if let Some(Value::Json(json_val)) = row.columns.get("data") {
                 assert_eq!(json_val.get("key").and_then(|v| v.as_str()), Some("value"));
                 assert_eq!(
                     json_val
@@ -152,20 +152,20 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
             }
 
             // Check array
-            if let Some(UniversalValue::Array { elements, .. }) = row.columns.get("tags") {
+            if let Some(Value::Array { elements, .. }) = row.columns.get("tags") {
                 assert_eq!(elements.len(), 3);
                 assert!(
-                    matches!(&elements[0], UniversalValue::Text(s) if s == "tag1"),
+                    matches!(&elements[0], Value::Text(s) if s == "tag1"),
                     "Expected Text('tag1'), got {:?}",
                     elements[0]
                 );
                 assert!(
-                    matches!(&elements[1], UniversalValue::Text(s) if s == "tag2"),
+                    matches!(&elements[1], Value::Text(s) if s == "tag2"),
                     "Expected Text('tag2'), got {:?}",
                     elements[1]
                 );
                 assert!(
-                    matches!(&elements[2], UniversalValue::Text(s) if s == "tag3"),
+                    matches!(&elements[2], Value::Text(s) if s == "tag3"),
                     "Expected Text('tag3'), got {:?}",
                     elements[2]
                 );
@@ -201,17 +201,17 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
         Action::Update(row) => {
             info!("Converted to Update action");
             assert!(
-                matches!(row.primary_key, UniversalValue::Int32(123)),
+                matches!(row.primary_key, Value::Int32(123)),
                 "Expected Int32(123), got {:?}",
                 row.primary_key
             );
             assert!(
-                matches!(row.columns.get("name"), Some(UniversalValue::Text(s)) if s == "Updated Name"),
+                matches!(row.columns.get("name"), Some(Value::Text(s)) if s == "Updated Name"),
                 "Expected Text('Updated Name'), got {:?}",
                 row.columns.get("name")
             );
             assert!(
-                matches!(row.columns.get("active"), Some(UniversalValue::Bool(false))),
+                matches!(row.columns.get("active"), Some(Value::Bool(false))),
                 "Expected Bool(false), got {:?}",
                 row.columns.get("active")
             );
@@ -237,7 +237,7 @@ async fn test_wal2json_to_psql_conversion() -> Result<()> {
         Action::Delete(row) => {
             info!("Converted to Delete action");
             assert!(
-                matches!(row.primary_key, UniversalValue::Int32(123)),
+                matches!(row.primary_key, Value::Int32(123)),
                 "Expected Int32(123), got {:?}",
                 row.primary_key
             );

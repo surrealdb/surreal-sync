@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use surreal_sync_postgresql_wal2json_source::{Action, Client};
-use sync_core::UniversalValue;
+use sync_core::Value;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -142,13 +142,13 @@ async fn test_time_replication_formats() -> Result<()> {
 
                 // Verify it's a Time value (time values are converted to DateTime<Utc> with epoch date)
                 match event_time {
-                    UniversalValue::Time(dt) => {
+                    Value::Time(dt) => {
                         let time_str = dt.format("%H:%M:%S%.f").to_string();
                         info!("Time value: {} (DateTime: {})", time_str, dt);
 
                         // Get the ID to verify specific expected values
                         let id = match row.primary_key {
-                            UniversalValue::Int32(i) => i,
+                            Value::Int32(i) => i,
                             _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
                         };
 
@@ -238,7 +238,7 @@ async fn test_time_replication_formats() -> Result<()> {
                 .context("Should have event_time column in UPDATE")?;
 
             match event_time {
-                UniversalValue::Time(dt) => {
+                Value::Time(dt) => {
                     // Use %.f format to show fractional seconds if present
                     let time_str = dt.format("%H:%M:%S%.f").to_string();
                     info!("UPDATE time value: {} (DateTime: {})", time_str, dt);

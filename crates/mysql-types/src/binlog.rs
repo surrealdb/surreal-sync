@@ -1,9 +1,9 @@
-//! Binlog cell → `UniversalValue` conversion.
+//! Binlog cell → `Value` conversion.
 
 use binlog_protocol::column_types::*;
 use binlog_protocol::{CellValue, ColumnMetadata, JsonDiff, JsonDiffOperation};
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
-use sync_core::{TypedValue, UniversalType, UniversalValue};
+use sync_core::{Type, TypedValue, Value};
 
 use crate::reverse::{
     json_to_typed_value_with_config, ConversionError, JsonConversionConfig, RowConversionConfig,
@@ -68,12 +68,12 @@ impl BinlogColumnMeta {
     }
 }
 
-/// Convert a decoded binlog cell into a [`UniversalValue`].
+/// Convert a decoded binlog cell into a [`Value`].
 pub fn binlog_cell_to_universal_value(
     cell: &CellValue,
     column: &BinlogColumnMeta,
     config: &RowConversionConfig,
-) -> Result<UniversalValue, ConversionError> {
+) -> Result<Value, ConversionError> {
     Ok(binlog_cell_to_typed_value(cell, column, config)?.value)
 }
 
@@ -157,10 +157,10 @@ fn binlog_cell_to_typed_value(
         }
         MYSQL_TYPE_DATE => {
             let (year, month, day) = extract_date_parts(cell)?;
-            if UniversalValue::is_mysql_zero_date_ymd(year, month, day) {
+            if Value::is_mysql_zero_date_ymd(year, month, day) {
                 return Ok(TypedValue::zero_temporal(
-                    UniversalType::Date,
-                    Some(UniversalValue::canonical_zero_literal(&UniversalType::Date).to_string()),
+                    Type::Date,
+                    Some(Value::canonical_zero_literal(&Type::Date).to_string()),
                 ));
             }
             let date = NaiveDate::from_ymd_opt(year as i32, month as u32, day as u32).ok_or_else(
@@ -197,13 +197,10 @@ fn binlog_cell_to_typed_value(
                 year, month, day, ..
             } = cell
             {
-                if UniversalValue::is_mysql_zero_date_ymd(*year, *month, *day) {
+                if Value::is_mysql_zero_date_ymd(*year, *month, *day) {
                     return Ok(TypedValue::zero_temporal(
-                        UniversalType::LocalDateTime,
-                        Some(
-                            UniversalValue::canonical_zero_literal(&UniversalType::LocalDateTime)
-                                .to_string(),
-                        ),
+                        Type::LocalDateTime,
+                        Some(Value::canonical_zero_literal(&Type::LocalDateTime).to_string()),
                     ));
                 }
             }
@@ -261,47 +258,47 @@ fn binlog_cell_to_typed_value(
     }
 }
 
-fn column_type_to_sync_type(column: &BinlogColumnMeta) -> UniversalType {
+fn column_type_to_sync_type(column: &BinlogColumnMeta) -> Type {
     if column.is_boolean_column() {
-        return UniversalType::Bool;
+        return Type::Bool;
     }
     match column.column_type {
-        MYSQL_TYPE_TINY => UniversalType::Int8 { width: 4 },
-        MYSQL_TYPE_SHORT => UniversalType::Int16,
-        MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => UniversalType::Int32,
-        MYSQL_TYPE_LONGLONG => UniversalType::Int64,
-        MYSQL_TYPE_FLOAT => UniversalType::Float32,
-        MYSQL_TYPE_DOUBLE => UniversalType::Float64,
+        MYSQL_TYPE_TINY => Type::Int8 { width: 4 },
+        MYSQL_TYPE_SHORT => Type::Int16,
+        MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => Type::Int32,
+        MYSQL_TYPE_LONGLONG => Type::Int64,
+        MYSQL_TYPE_FLOAT => Type::Float32,
+        MYSQL_TYPE_DOUBLE => Type::Float64,
         MYSQL_TYPE_DECIMAL | MYSQL_TYPE_NEWDECIMAL => {
             let (precision, scale) = column.decimal_precision_scale();
-            UniversalType::Decimal { precision, scale }
+            Type::Decimal { precision, scale }
         }
-        MYSQL_TYPE_STRING => UniversalType::Char {
+        MYSQL_TYPE_STRING => Type::Char {
             length: column.max_string_length(),
         },
-        MYSQL_TYPE_VAR_STRING | MYSQL_TYPE_VARCHAR => UniversalType::VarChar {
+        MYSQL_TYPE_VAR_STRING | MYSQL_TYPE_VARCHAR => Type::VarChar {
             length: column.max_string_length(),
         },
         MYSQL_TYPE_TINY_BLOB | MYSQL_TYPE_MEDIUM_BLOB | MYSQL_TYPE_BLOB | MYSQL_TYPE_LONG_BLOB => {
             if column.is_binary {
-                UniversalType::Blob
+                Type::Blob
             } else {
-                UniversalType::Text
+                Type::Text
             }
         }
-        MYSQL_TYPE_DATE => UniversalType::Date,
-        MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => UniversalType::Time,
-        MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => UniversalType::LocalDateTime,
-        MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => UniversalType::ZonedDateTime,
-        MYSQL_TYPE_YEAR => UniversalType::Int16,
-        MYSQL_TYPE_JSON => UniversalType::Json,
-        MYSQL_TYPE_ENUM => UniversalType::Enum { values: vec![] },
-        MYSQL_TYPE_SET => UniversalType::Set { values: vec![] },
-        MYSQL_TYPE_GEOMETRY => UniversalType::Geometry {
+        MYSQL_TYPE_DATE => Type::Date,
+        MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => Type::Time,
+        MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => Type::LocalDateTime,
+        MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => Type::ZonedDateTime,
+        MYSQL_TYPE_YEAR => Type::Int16,
+        MYSQL_TYPE_JSON => Type::Json,
+        MYSQL_TYPE_ENUM => Type::Enum { values: vec![] },
+        MYSQL_TYPE_SET => Type::Set { values: vec![] },
+        MYSQL_TYPE_GEOMETRY => Type::Geometry {
             geometry_type: sync_core::GeometryType::Point,
         },
-        MYSQL_TYPE_BIT => UniversalType::Bytes,
-        _ => UniversalType::Text,
+        MYSQL_TYPE_BIT => Type::Bytes,
+        _ => Type::Text,
     }
 }
 
@@ -1009,13 +1006,13 @@ mod tests {
     use chrono::Datelike;
     use rust_decimal::Decimal;
     use std::str::FromStr;
-    use sync_core::UniversalValue;
+    use sync_core::Value;
 
     fn col(name: &str, column_type: u8, metadata: ColumnMetadata) -> BinlogColumnMeta {
         BinlogColumnMeta::new(name, column_type, metadata)
     }
 
-    fn convert(cell: &CellValue, column: &BinlogColumnMeta) -> UniversalValue {
+    fn convert(cell: &CellValue, column: &BinlogColumnMeta) -> Value {
         binlog_cell_to_universal_value(cell, column, &RowConversionConfig::default()).unwrap()
     }
 
@@ -1039,7 +1036,7 @@ mod tests {
         let column = col("n", MYSQL_TYPE_LONG, ColumnMetadata::None);
         assert!(matches!(
             convert(&CellValue::Int(42), &column),
-            UniversalValue::Int32(42)
+            Value::Int32(42)
         ));
     }
 
@@ -1048,7 +1045,7 @@ mod tests {
         let column = col("n", MYSQL_TYPE_LONGLONG, ColumnMetadata::None);
         assert!(matches!(
             convert(&CellValue::Int(9_223_372_036_854_775_807), &column),
-            UniversalValue::Int64(9_223_372_036_854_775_807)
+            Value::Int64(9_223_372_036_854_775_807)
         ));
     }
 
@@ -1060,7 +1057,7 @@ mod tests {
             ColumnMetadata::String { max_length: 255 },
         );
         let value = convert(&CellValue::String("hello world".into()), &column);
-        if let UniversalValue::VarChar { value, .. } = value {
+        if let Value::VarChar { value, .. } = value {
             assert_eq!(value, "hello world");
         } else {
             panic!("expected VarChar");
@@ -1078,7 +1075,7 @@ mod tests {
             &CellValue::String("550e8400-e29b-41d4-a716-446655440000".into()),
             &column,
         );
-        if let UniversalValue::Uuid(u) = value {
+        if let Value::Uuid(u) = value {
             assert_eq!(u.to_string(), "550e8400-e29b-41d4-a716-446655440000");
         } else {
             panic!("expected Uuid");
@@ -1100,7 +1097,7 @@ mod tests {
             },
             &column,
         );
-        if let UniversalValue::LocalDateTime(dt) = value {
+        if let Value::LocalDateTime(dt) = value {
             assert_eq!(dt.year(), 2024);
             assert_eq!(dt.month(), 6);
             assert_eq!(dt.day(), 15);
@@ -1112,10 +1109,7 @@ mod tests {
     #[test]
     fn test_null_conversion() {
         let column = col("n", MYSQL_TYPE_LONG, ColumnMetadata::None);
-        assert!(matches!(
-            convert(&CellValue::Null, &column),
-            UniversalValue::Null
-        ));
+        assert!(matches!(convert(&CellValue::Null, &column), Value::Null));
     }
 
     #[test]
@@ -1129,7 +1123,7 @@ mod tests {
             &CellValue::JsonText(r#"{"name":"Alice","age":30}"#.into()),
             &column,
         );
-        if let UniversalValue::Json(obj) = value {
+        if let Value::Json(obj) = value {
             assert!(obj.get("name").is_some());
             assert!(obj.get("age").is_some());
         } else {
@@ -1145,10 +1139,7 @@ mod tests {
             ColumnMetadata::Blob { length_bytes: 1 },
         );
         let value = convert(&CellValue::JsonBytes(vec![0x04, 0x01]), &column);
-        assert_eq!(
-            value,
-            UniversalValue::Json(Box::new(serde_json::Value::Bool(true)))
-        );
+        assert_eq!(value, Value::Json(Box::new(serde_json::Value::Bool(true))));
     }
 
     #[test]
@@ -1182,7 +1173,7 @@ mod tests {
             &CellValue::Decimal(Decimal::from_str("123.456").unwrap()),
             &column,
         );
-        if let UniversalValue::Decimal { value, .. } = value {
+        if let Value::Decimal { value, .. } = value {
             assert_eq!(value, "123.456");
         } else {
             panic!("expected Decimal");
@@ -1198,7 +1189,7 @@ mod tests {
         )
         .with_binary(true);
         let data = vec![0x00, 0x01, 0x02, 0xFF];
-        if let UniversalValue::Blob(b) = convert(&CellValue::Bytes(data.clone()), &column) {
+        if let Value::Blob(b) = convert(&CellValue::Bytes(data.clone()), &column) {
             assert_eq!(b, data);
         } else {
             panic!("expected Blob");
@@ -1212,9 +1203,7 @@ mod tests {
             MYSQL_TYPE_BLOB,
             ColumnMetadata::Blob { length_bytes: 2 },
         );
-        if let UniversalValue::Text(s) =
-            convert(&CellValue::String("long text content".into()), &column)
-        {
+        if let Value::Text(s) = convert(&CellValue::String("long text content".into()), &column) {
             assert_eq!(s, "long text content");
         } else {
             panic!("expected Text");
@@ -1226,7 +1215,7 @@ mod tests {
         let column = col("flag", MYSQL_TYPE_TINY, ColumnMetadata::None).with_boolean_hint(true);
         assert!(matches!(
             convert(&CellValue::Int(1), &column),
-            UniversalValue::Bool(true)
+            Value::Bool(true)
         ));
     }
 
@@ -1235,7 +1224,7 @@ mod tests {
         let column = col("flag", MYSQL_TYPE_TINY, ColumnMetadata::None).with_boolean_hint(true);
         assert!(matches!(
             convert(&CellValue::Int(0), &column),
-            UniversalValue::Bool(false)
+            Value::Bool(false)
         ));
     }
 
@@ -1244,7 +1233,7 @@ mod tests {
         let column = col("n", MYSQL_TYPE_TINY, ColumnMetadata::None);
         assert!(matches!(
             convert(&CellValue::Int(1), &column),
-            UniversalValue::Int8 { value: 1, .. }
+            Value::Int8 { value: 1, .. }
         ));
     }
 
@@ -1253,7 +1242,7 @@ mod tests {
         let column = col("flag", MYSQL_TYPE_TINY, ColumnMetadata::None).with_boolean_hint(true);
         assert!(matches!(
             convert(&CellValue::Int(1), &column),
-            UniversalValue::Bool(true)
+            Value::Bool(true)
         ));
     }
 
@@ -1262,7 +1251,7 @@ mod tests {
         let column = col("flag", MYSQL_TYPE_TINY, ColumnMetadata::None).with_boolean_hint(true);
         assert!(matches!(
             convert(&CellValue::Int(0), &column),
-            UniversalValue::Bool(false)
+            Value::Bool(false)
         ));
     }
 
@@ -1271,17 +1260,14 @@ mod tests {
         let column = col("flag", MYSQL_TYPE_TINY, ColumnMetadata::None).with_boolean_hint(true);
         assert!(matches!(
             convert(&CellValue::Int(5), &column),
-            UniversalValue::Int8 { value: 5, .. }
+            Value::Int8 { value: 5, .. }
         ));
     }
 
     #[test]
     fn test_null_boolean_column() {
         let column = col("flag", MYSQL_TYPE_TINY, ColumnMetadata::None).with_boolean_hint(true);
-        assert!(matches!(
-            convert(&CellValue::Null, &column),
-            UniversalValue::Null
-        ));
+        assert!(matches!(convert(&CellValue::Null, &column), Value::Null));
     }
 
     #[test]
@@ -1307,7 +1293,7 @@ mod tests {
             &config,
         )
         .unwrap();
-        if let UniversalValue::Json(root) = value {
+        if let Value::Json(root) = value {
             let settings = root.get("settings").unwrap();
             assert_eq!(
                 settings.get("enabled"),
@@ -1340,7 +1326,7 @@ mod tests {
             &config,
         )
         .unwrap();
-        if let UniversalValue::Json(root) = value {
+        if let Value::Json(root) = value {
             let perms = root.get("permissions").unwrap().as_array().unwrap();
             assert_eq!(perms.len(), 3);
         } else {
@@ -1355,7 +1341,7 @@ mod tests {
             MYSQL_TYPE_JSON,
             ColumnMetadata::Blob { length_bytes: 2 },
         );
-        if let UniversalValue::Json(root) = convert(
+        if let Value::Json(root) = convert(
             &CellValue::JsonText(r#"{"enabled":1,"disabled":0}"#.into()),
             &column,
         ) {
@@ -1431,8 +1417,8 @@ mod tests {
         );
         assert!(matches!(
             value,
-            UniversalValue::ZeroTemporal {
-                intended_type: UniversalType::Date,
+            Value::ZeroTemporal {
+                intended_type: Type::Date,
                 ..
             }
         ));
@@ -1455,8 +1441,8 @@ mod tests {
         );
         assert!(matches!(
             value,
-            UniversalValue::ZeroTemporal {
-                intended_type: UniversalType::LocalDateTime,
+            Value::ZeroTemporal {
+                intended_type: Type::LocalDateTime,
                 ..
             }
         ));
@@ -1507,7 +1493,7 @@ mod tests {
             MYSQL_TYPE_SET,
             ColumnMetadata::EnumSet { max_length: 0 },
         );
-        if let UniversalValue::Set { elements, .. } =
+        if let Value::Set { elements, .. } =
             binlog_cell_to_universal_value(&CellValue::String(String::new()), &column, &config)
                 .unwrap()
         {
@@ -1524,7 +1510,7 @@ mod tests {
             MYSQL_TYPE_SET,
             ColumnMetadata::EnumSet { max_length: 0 },
         );
-        if let UniversalValue::Set { elements, .. } =
+        if let Value::Set { elements, .. } =
             convert(&CellValue::String("read,write,execute".into()), &column)
         {
             assert_eq!(elements, vec!["read", "write", "execute"]);
@@ -1540,9 +1526,7 @@ mod tests {
             MYSQL_TYPE_ENUM,
             ColumnMetadata::EnumSet { max_length: 0 },
         );
-        if let UniversalValue::Enum { value, .. } =
-            convert(&CellValue::String("active".into()), &column)
-        {
+        if let Value::Enum { value, .. } = convert(&CellValue::String("active".into()), &column) {
             assert_eq!(value, "active");
         } else {
             panic!("expected Enum");
@@ -1558,11 +1542,11 @@ mod tests {
         );
         assert!(matches!(
             convert(&CellValue::Bit(vec![0]), &column),
-            UniversalValue::Bool(false)
+            Value::Bool(false)
         ));
         assert!(matches!(
             convert(&CellValue::Bit(vec![1]), &column),
-            UniversalValue::Bool(true)
+            Value::Bool(true)
         ));
     }
 
@@ -1573,7 +1557,7 @@ mod tests {
             MYSQL_TYPE_BIT,
             ColumnMetadata::Bit { length_bits: 8 },
         );
-        if let UniversalValue::Bytes(b) = convert(&CellValue::Bit(vec![0xff]), &column) {
+        if let Value::Bytes(b) = convert(&CellValue::Bit(vec![0xff]), &column) {
             assert_eq!(b, vec![0xff]);
         } else {
             panic!("expected Bytes");
@@ -1590,8 +1574,7 @@ mod tests {
             MYSQL_TYPE_GEOMETRY,
             ColumnMetadata::Blob { length_bytes: 4 },
         );
-        if let UniversalValue::Geometry { data, .. } =
-            convert(&CellValue::Bytes(wkb_point.clone()), &column)
+        if let Value::Geometry { data, .. } = convert(&CellValue::Bytes(wkb_point.clone()), &column)
         {
             let GeometryData(json) = data;
             let expected_b64 = base64::engine::general_purpose::STANDARD.encode(&wkb_point);
@@ -1607,7 +1590,7 @@ mod tests {
         let column = col("y", MYSQL_TYPE_YEAR, ColumnMetadata::None);
         assert!(matches!(
             convert(&CellValue::Year(2024), &column),
-            UniversalValue::Int16(2024)
+            Value::Int16(2024)
         ));
     }
 }

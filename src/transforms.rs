@@ -115,7 +115,6 @@ pub fn merge_inplace_boxed(
 mod tests {
     use super::*;
     use std::io::Write;
-    use sync_core::{UniversalChange, UniversalRow};
     use sync_transform::FlattenId;
 
     #[test]
@@ -199,15 +198,14 @@ command = ["/nonexistent/surreal-sync-transform-worker-cli-xyz"]
     struct Tag;
 
     impl InPlaceTransform for Tag {
-        fn transform_row(&self, row: &mut UniversalRow) -> anyhow::Result<()> {
-            row.fields
-                .insert("tagged".into(), sync_core::UniversalValue::Bool(true));
-            Ok(())
-        }
-
-        fn transform_change(&self, change: &mut UniversalChange) -> anyhow::Result<()> {
-            if let Some(data) = change.data.as_mut() {
-                data.insert("tagged".into(), sync_core::UniversalValue::Bool(true));
+        fn transform(
+            &self,
+            _table: &str,
+            _id: &mut sync_core::Value,
+            fields: Option<&mut std::collections::HashMap<String, sync_core::Value>>,
+        ) -> anyhow::Result<()> {
+            if let Some(fields) = fields {
+                fields.insert("tagged".into(), sync_core::Value::Bool(true));
             }
             Ok(())
         }

@@ -23,10 +23,7 @@ use neo4rs::{Graph, Query};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use surreal_sink::SurrealSink;
-use sync_core::{
-    UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow, UniversalType,
-    UniversalValue,
-};
+use sync_core::{Change, Relation, RelationChange, Row, Type, Value};
 use sync_transform::{
     ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver, SourceRuntimeOpts,
     StopReason,
@@ -36,9 +33,9 @@ use sync_transform::{
 #[derive(Debug, Clone)]
 pub enum IncrementalChange {
     /// A node upsert
-    Node(UniversalRow),
+    Node(Row),
     /// A relationship upsert (boxed to reduce enum size variance)
-    Relation(Box<UniversalRelation>),
+    Relation(Box<Relation>),
 }
 
 /// Sink-ordered apply position: timestamp plus keyset tie-breaks.
@@ -234,7 +231,7 @@ impl Neo4jChangeStream {
         let mut max_checkpoint = self.read_checkpoint;
         let mut last_node_id_at_max = i64::MIN;
         let mut last_rel_id_at_max = i64::MIN;
-        let mut record_id: UniversalValue;
+        let mut record_id: Value;
 
         while let Some(row) = result.next().await? {
             let node: neo4rs::Node = row.get("n")?;
@@ -265,19 +262,17 @@ impl Neo4jChangeStream {
             }
 
             // Convert node to universal data
-            let mut fields: HashMap<String, UniversalValue> = HashMap::new();
-            fields.insert("neo4j_id".to_string(), UniversalValue::Int64(node_id));
-            record_id = UniversalValue::Int64(node_id);
+            let mut fields: HashMap<String, Value> = HashMap::new();
+            fields.insert("neo4j_id".to_string(), Value::Int64(node_id));
+            record_id = Value::Int64(node_id);
 
-            let universal_labels: Vec<UniversalValue> = labels
-                .iter()
-                .map(|s| UniversalValue::Text(s.clone()))
-                .collect();
+            let universal_labels: Vec<Value> =
+                labels.iter().map(|s| Value::Text(s.clone())).collect();
             fields.insert(
                 "labels".to_string(),
-                UniversalValue::Array {
+                Value::Array {
                     elements: universal_labels,
-                    element_type: Box::new(UniversalType::Text),
+                    element_type: Box::new(Type::Text),
                 },
             );
 
@@ -294,18 +289,18 @@ impl Neo4jChangeStream {
                     ) {
                         // Rename id property field to avoid conflict with SurrealDB record ID
                         let field_name = if key == self.id_property {
-                            // Extract ID from the UniversalValue
+                            // Extract ID from the Value
                             record_id = match &v {
-                                UniversalValue::Int64(n) => UniversalValue::Int64(*n),
-                                UniversalValue::Text(s) => {
+                                Value::Int64(n) => Value::Int64(*n),
+                                Value::Text(s) => {
                                     // Try to parse as integer first (common case: numeric strings)
                                     if let Ok(n) = s.parse::<i64>() {
-                                        UniversalValue::Int64(n)
+                                        Value::Int64(n)
                                     } else {
-                                        UniversalValue::Text(s.clone())
+                                        Value::Text(s.clone())
                                     }
                                 }
-                                _ => UniversalValue::Int64(node_id),
+                                _ => Value::Int64(node_id),
                             };
                             "neo4j_original_id".to_string()
                         } else {
@@ -321,7 +316,7 @@ impl Neo4jChangeStream {
                 .map(|s| s.to_lowercase())
                 .unwrap_or_else(|| "node".to_string());
 
-            batch_changes.push(IncrementalChange::Node(UniversalRow::new(
+            batch_changes.push(IncrementalChange::Node(Row::new(
                 table,
                 node_id as u64,
                 record_id,
@@ -505,7 +500,7 @@ fn incremental_change_to_positioned(
             let ts = tracking_millis_from_fields(&row.fields, tracking_property)
                 .unwrap_or(prev.timestamp_millis);
             let node_id = match row.fields.get("neo4j_id") {
-                Some(UniversalValue::Int64(id)) => *id,
+                Some(Value::Int64(id)) => *id,
                 _ => row.index as i64,
             };
             let position = if ts > prev.timestamp_millis {
@@ -521,14 +516,14 @@ fn incremental_change_to_positioned(
                     after_rel_id: prev.after_rel_id,
                 }
             };
-            let uc = UniversalChange::update(row.table, row.id, row.fields);
+            let uc = Change::update(row.table, row.id, row.fields);
             (PositionedEvent::change(uc, position), position)
         }
         IncrementalChange::Relation(rel) => {
             let ts = tracking_millis_from_fields(&rel.data, tracking_property)
                 .unwrap_or(prev.timestamp_millis);
             let rel_id = match &rel.id {
-                UniversalValue::Int64(id) => *id,
+                Value::Int64(id) => *id,
                 _ => prev.after_rel_id,
             };
             let position = if ts > prev.timestamp_millis {
@@ -544,7 +539,7 @@ fn incremental_change_to_positioned(
                     after_rel_id: rel_id,
                 }
             };
-            let rc = UniversalRelationChange::update(*rel);
+            let rc = RelationChange::update(*rel);
             (PositionedEvent::relation_change(rc, position), position)
         }
     }
@@ -647,7 +642,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
                 IncrementalChange::Node(row) => {
                     let ts = tracking_millis_from_fields(&row.fields, &tracking).unwrap_or(0);
                     let node_id = match row.fields.get("neo4j_id") {
-                        Some(UniversalValue::Int64(id)) => *id,
+                        Some(Value::Int64(id)) => *id,
                         _ => row.index as i64,
                     };
                     Neo4jApplyPos {
@@ -659,7 +654,7 @@ pub async fn run_incremental_sync_with_transforms<S: SurrealSink>(
                 IncrementalChange::Relation(rel) => {
                     let ts = tracking_millis_from_fields(&rel.data, &tracking).unwrap_or(0);
                     let rel_id = match &rel.id {
-                        UniversalValue::Int64(id) => *id,
+                        Value::Int64(id) => *id,
                         _ => i64::MIN,
                     };
                     Neo4jApplyPos {
@@ -830,14 +825,14 @@ impl SourceDriver for Neo4jSourceDriver<'_> {
 }
 
 fn tracking_millis_from_fields(
-    fields: &HashMap<String, UniversalValue>,
+    fields: &HashMap<String, Value>,
     tracking_property: &str,
 ) -> Option<i64> {
     match fields.get(tracking_property) {
-        Some(UniversalValue::LocalDateTime(ts)) | Some(UniversalValue::ZonedDateTime(ts)) => {
+        Some(Value::LocalDateTime(ts)) | Some(Value::ZonedDateTime(ts)) => {
             Some(ts.timestamp_millis())
         }
-        Some(UniversalValue::Int64(ms)) => Some(*ms),
+        Some(Value::Int64(ms)) => Some(*ms),
         _ => None,
     }
 }

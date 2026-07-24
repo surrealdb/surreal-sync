@@ -5,11 +5,11 @@
 
 use postgresql_types::postgresql_column_to_universal_type;
 use std::collections::HashMap;
-use sync_core::{ColumnDefinition, DatabaseSchema, TableDefinition, UniversalType};
+use sync_core::{ColumnDefinition, DatabaseSchema, TableDefinition, Type};
 
 /// Collect schema information for all tables in a PostgreSQL database.
 ///
-/// Returns a `DatabaseSchema` with proper `UniversalType` mapping.
+/// Returns a `DatabaseSchema` with proper `Type` mapping.
 /// This function also queries primary key information for each table.
 pub async fn collect_postgresql_database_schema(
     client: &tokio_postgres::Client,
@@ -47,7 +47,7 @@ pub async fn collect_postgresql_database_schema(
     }
 
     // Build tables with columns
-    let mut table_columns: HashMap<String, Vec<(String, UniversalType)>> = HashMap::new();
+    let mut table_columns: HashMap<String, Vec<(String, Type)>> = HashMap::new();
 
     for row in column_rows {
         let table_name: String = row.get(0);
@@ -103,7 +103,7 @@ pub async fn collect_postgresql_database_schema(
         // Use the found PK or create a default one
         let pk = primary_key.unwrap_or_else(|| {
             // If no PK column found, create a synthetic one
-            ColumnDefinition::new(pk_col_name, UniversalType::Int64)
+            ColumnDefinition::new(pk_col_name, Type::Int64)
         });
 
         let mut table_def = TableDefinition::new(table_name, pk, other_columns);
@@ -150,13 +150,13 @@ mod tests {
 
     #[test]
     fn test_array_type_maps_to_universal_array() {
-        // Verify the full flow: ARRAY + _text -> UniversalType::Array<Text>
+        // Verify the full flow: ARRAY + _text -> Type::Array<Text>
         let effective_type = get_effective_type("ARRAY", "_text");
         let universal_type = postgresql_column_to_universal_type(effective_type, None, None);
 
         match universal_type {
-            UniversalType::Array { element_type } => {
-                assert_eq!(*element_type, UniversalType::Text);
+            Type::Array { element_type } => {
+                assert_eq!(*element_type, Type::Text);
             }
             other => panic!("Expected Array<Text>, got {other:?}"),
         }

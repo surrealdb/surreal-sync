@@ -22,7 +22,7 @@ use crate::catch_up::{
     effective_sync_tables, emit_catch_up_progress, read_catch_up_progress, CatchUpProgress,
     CoverageKind,
 };
-use crate::change::cdc_change_to_universal;
+use crate::change::cdc_to_change;
 use crate::checkpoint::{get_current_checkpoint, PgoutputCheckpoint};
 use crate::client::{
     connect_wal_client, ensure_publication_for_source, new_sql_client, resolve_schema,
@@ -456,12 +456,8 @@ where
                             names
                         };
 
-                    let universal = cdc_change_to_universal(
-                        &change,
-                        &relation,
-                        &column_names,
-                        &self.db_schema,
-                    )?;
+                    let universal =
+                        cdc_to_change(&change, &relation, &column_names, &self.db_schema)?;
                     out.push(PositionedEvent::change(universal, position));
                 }
                 StreamEvent::Control => {}

@@ -11,7 +11,7 @@
 //! 1. **Column width detection**: When `column_length` is set to 1 for TINYINT,
 //!    values 0 and 1 are converted to boolean.
 //!
-//! 2. **Value-based detection**: Even without column metadata, `TINYINT` values
+//! 2. **MysqlAsyncValue-based detection**: Even without column metadata, `TINYINT` values
 //!    of exactly 0 or 1 can be converted to boolean using `with_boolean_hint(true)`.
 //!
 //! # Schema-Aware Conversion
@@ -21,8 +21,8 @@
 
 use chrono::{NaiveDate, NaiveTime, TimeZone, Utc};
 use mysql_async::consts::{ColumnFlags, ColumnType};
-use mysql_async::Value;
-use sync_core::{TypedValue, UniversalType, UniversalValue};
+use mysql_async::Value as MysqlAsyncValue;
+use sync_core::{Type, TypedValue, Value};
 use thiserror::Error;
 
 // Re-export from json-types for convenience
@@ -34,7 +34,7 @@ pub use json_types::{
 #[derive(Debug, Clone)]
 pub struct MySQLValueWithSchema {
     /// The raw MySQL value.
-    pub value: Value,
+    pub value: MysqlAsyncValue,
     /// The MySQL column type.
     pub column_type: ColumnType,
     /// Column flags (e.g., UNSIGNED, BINARY).
@@ -58,7 +58,10 @@ pub enum ConversionError {
     #[error("Unsupported MySQL type: {0:?}")]
     UnsupportedType(ColumnType),
     #[error("Type mismatch: expected {expected}, got {actual:?}")]
-    TypeMismatch { expected: String, actual: Value },
+    TypeMismatch {
+        expected: String,
+        actual: MysqlAsyncValue,
+    },
     #[error("Invalid UTF-8 in string: {0}")]
     InvalidUtf8(#[from] std::string::FromUtf8Error),
     #[error("Invalid date/time value: {0}")]
@@ -75,7 +78,7 @@ pub enum ConversionError {
 
 impl MySQLValueWithSchema {
     /// Create a new MySQLValueWithSchema.
-    pub fn new(value: Value, column_type: ColumnType, column_flags: ColumnFlags) -> Self {
+    pub fn new(value: MysqlAsyncValue, column_type: ColumnType, column_flags: ColumnFlags) -> Self {
         Self {
             value,
             column_type,
@@ -134,7 +137,7 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
         use ColumnType::*;
 
         // Handle NULL first
-        if matches!(mv.value, Value::NULL) {
+        if matches!(mv.value, MysqlAsyncValue::NULL) {
             let ext_type = column_type_to_sync_type(mv.column_type, &mv);
             return Ok(TypedValue::null(ext_type));
         }
@@ -234,11 +237,8 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             MYSQL_TYPE_DATE => {
                 if is_zero_mysql_value(&mv.value) {
                     return Ok(TypedValue::zero_temporal(
-                        UniversalType::Date,
-                        Some(
-                            UniversalValue::canonical_zero_literal(&UniversalType::Date)
-                                .to_string(),
-                        ),
+                        Type::Date,
+                        Some(Value::canonical_zero_literal(&Type::Date).to_string()),
                     ));
                 }
                 let dt = extract_date(&mv.value)?;
@@ -256,11 +256,8 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => {
                 if is_zero_mysql_value(&mv.value) {
                     return Ok(TypedValue::zero_temporal(
-                        UniversalType::LocalDateTime,
-                        Some(
-                            UniversalValue::canonical_zero_literal(&UniversalType::LocalDateTime)
-                                .to_string(),
-                        ),
+                        Type::LocalDateTime,
+                        Some(Value::canonical_zero_literal(&Type::LocalDateTime).to_string()),
                     ));
                 }
                 let dt = extract_datetime(&mv.value)?;
@@ -270,11 +267,8 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
             MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => {
                 if is_zero_mysql_value(&mv.value) {
                     return Ok(TypedValue::zero_temporal(
-                        UniversalType::ZonedDateTime,
-                        Some(
-                            UniversalValue::canonical_zero_literal(&UniversalType::ZonedDateTime)
-                                .to_string(),
-                        ),
+                        Type::ZonedDateTime,
+                        Some(Value::canonical_zero_literal(&Type::ZonedDateTime).to_string()),
                     ));
                 }
                 let dt = extract_datetime(&mv.value)?;
@@ -343,64 +337,64 @@ impl TryFrom<MySQLValueWithSchema> for TypedValue {
     }
 }
 
-/// Convert MySQL column type to UniversalType.
-fn column_type_to_sync_type(col_type: ColumnType, mv: &MySQLValueWithSchema) -> UniversalType {
+/// Convert MySQL column type to Type.
+fn column_type_to_sync_type(col_type: ColumnType, mv: &MySQLValueWithSchema) -> Type {
     use ColumnType::*;
     match col_type {
         MYSQL_TYPE_TINY => {
             // Check if this is a boolean column
             if mv.is_boolean_column() {
-                UniversalType::Bool
+                Type::Bool
             } else {
-                UniversalType::Int8 {
+                Type::Int8 {
                     width: mv.column_length.unwrap_or(4) as u8,
                 }
             }
         }
-        MYSQL_TYPE_SHORT => UniversalType::Int16,
-        MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => UniversalType::Int32,
-        MYSQL_TYPE_LONGLONG => UniversalType::Int64,
-        MYSQL_TYPE_FLOAT => UniversalType::Float32,
-        MYSQL_TYPE_DOUBLE => UniversalType::Float64,
-        MYSQL_TYPE_DECIMAL | MYSQL_TYPE_NEWDECIMAL => UniversalType::Decimal {
+        MYSQL_TYPE_SHORT => Type::Int16,
+        MYSQL_TYPE_INT24 | MYSQL_TYPE_LONG => Type::Int32,
+        MYSQL_TYPE_LONGLONG => Type::Int64,
+        MYSQL_TYPE_FLOAT => Type::Float32,
+        MYSQL_TYPE_DOUBLE => Type::Float64,
+        MYSQL_TYPE_DECIMAL | MYSQL_TYPE_NEWDECIMAL => Type::Decimal {
             precision: mv.precision.unwrap_or(10),
             scale: mv.scale.unwrap_or(0),
         },
-        MYSQL_TYPE_STRING => UniversalType::Char {
+        MYSQL_TYPE_STRING => Type::Char {
             length: mv.column_length.unwrap_or(255) as u16,
         },
-        MYSQL_TYPE_VAR_STRING | MYSQL_TYPE_VARCHAR => UniversalType::VarChar {
+        MYSQL_TYPE_VAR_STRING | MYSQL_TYPE_VARCHAR => Type::VarChar {
             length: mv.column_length.unwrap_or(255) as u16,
         },
         MYSQL_TYPE_TINY_BLOB | MYSQL_TYPE_MEDIUM_BLOB | MYSQL_TYPE_BLOB | MYSQL_TYPE_LONG_BLOB => {
             if mv.column_flags.contains(ColumnFlags::BINARY_FLAG) {
-                UniversalType::Blob
+                Type::Blob
             } else {
-                UniversalType::Text
+                Type::Text
             }
         }
-        MYSQL_TYPE_DATE => UniversalType::Date,
-        MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => UniversalType::Time,
-        MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => UniversalType::LocalDateTime,
-        MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => UniversalType::ZonedDateTime,
-        MYSQL_TYPE_YEAR => UniversalType::Int16,
-        MYSQL_TYPE_JSON => UniversalType::Json,
-        MYSQL_TYPE_ENUM => UniversalType::Enum { values: vec![] },
-        MYSQL_TYPE_SET => UniversalType::Set { values: vec![] },
-        MYSQL_TYPE_GEOMETRY => UniversalType::Geometry {
+        MYSQL_TYPE_DATE => Type::Date,
+        MYSQL_TYPE_TIME | MYSQL_TYPE_TIME2 => Type::Time,
+        MYSQL_TYPE_DATETIME | MYSQL_TYPE_DATETIME2 => Type::LocalDateTime,
+        MYSQL_TYPE_TIMESTAMP | MYSQL_TYPE_TIMESTAMP2 => Type::ZonedDateTime,
+        MYSQL_TYPE_YEAR => Type::Int16,
+        MYSQL_TYPE_JSON => Type::Json,
+        MYSQL_TYPE_ENUM => Type::Enum { values: vec![] },
+        MYSQL_TYPE_SET => Type::Set { values: vec![] },
+        MYSQL_TYPE_GEOMETRY => Type::Geometry {
             geometry_type: sync_core::GeometryType::Point,
         },
-        MYSQL_TYPE_BIT => UniversalType::Bytes,
-        _ => UniversalType::Text,
+        MYSQL_TYPE_BIT => Type::Bytes,
+        _ => Type::Text,
     }
 }
 
-/// Extract integer from MySQL Value.
-fn extract_int(value: &Value) -> Result<i64, ConversionError> {
+/// Extract integer from MySQL MysqlAsyncValue.
+fn extract_int(value: &MysqlAsyncValue) -> Result<i64, ConversionError> {
     match value {
-        Value::Int(i) => Ok(*i),
-        Value::UInt(u) => Ok(*u as i64),
-        Value::Bytes(b) => {
+        MysqlAsyncValue::Int(i) => Ok(*i),
+        MysqlAsyncValue::UInt(u) => Ok(*u as i64),
+        MysqlAsyncValue::Bytes(b) => {
             let s = String::from_utf8(b.clone())?;
             s.parse().map_err(|_| ConversionError::TypeMismatch {
                 expected: "integer".to_string(),
@@ -414,14 +408,14 @@ fn extract_int(value: &Value) -> Result<i64, ConversionError> {
     }
 }
 
-/// Extract float from MySQL Value.
-fn extract_float(value: &Value) -> Result<f64, ConversionError> {
+/// Extract float from MySQL MysqlAsyncValue.
+fn extract_float(value: &MysqlAsyncValue) -> Result<f64, ConversionError> {
     match value {
-        Value::Float(f) => Ok(*f as f64),
-        Value::Double(d) => Ok(*d),
-        Value::Int(i) => Ok(*i as f64),
-        Value::UInt(u) => Ok(*u as f64),
-        Value::Bytes(b) => {
+        MysqlAsyncValue::Float(f) => Ok(*f as f64),
+        MysqlAsyncValue::Double(d) => Ok(*d),
+        MysqlAsyncValue::Int(i) => Ok(*i as f64),
+        MysqlAsyncValue::UInt(u) => Ok(*u as f64),
+        MysqlAsyncValue::Bytes(b) => {
             let s = String::from_utf8(b.clone())?;
             s.parse().map_err(|_| ConversionError::TypeMismatch {
                 expected: "float".to_string(),
@@ -435,14 +429,14 @@ fn extract_float(value: &Value) -> Result<f64, ConversionError> {
     }
 }
 
-/// Extract string from MySQL Value.
-fn extract_string(value: &Value) -> Result<String, ConversionError> {
+/// Extract string from MySQL MysqlAsyncValue.
+fn extract_string(value: &MysqlAsyncValue) -> Result<String, ConversionError> {
     match value {
-        Value::Bytes(b) => Ok(String::from_utf8(b.clone())?),
-        Value::Int(i) => Ok(i.to_string()),
-        Value::UInt(u) => Ok(u.to_string()),
-        Value::Float(f) => Ok(f.to_string()),
-        Value::Double(d) => Ok(d.to_string()),
+        MysqlAsyncValue::Bytes(b) => Ok(String::from_utf8(b.clone())?),
+        MysqlAsyncValue::Int(i) => Ok(i.to_string()),
+        MysqlAsyncValue::UInt(u) => Ok(u.to_string()),
+        MysqlAsyncValue::Float(f) => Ok(f.to_string()),
+        MysqlAsyncValue::Double(d) => Ok(d.to_string()),
         _ => Err(ConversionError::TypeMismatch {
             expected: "string".to_string(),
             actual: value.clone(),
@@ -450,10 +444,10 @@ fn extract_string(value: &Value) -> Result<String, ConversionError> {
     }
 }
 
-/// Extract bytes from MySQL Value.
-fn extract_bytes(value: &Value) -> Result<Vec<u8>, ConversionError> {
+/// Extract bytes from MySQL MysqlAsyncValue.
+fn extract_bytes(value: &MysqlAsyncValue) -> Result<Vec<u8>, ConversionError> {
     match value {
-        Value::Bytes(b) => Ok(b.clone()),
+        MysqlAsyncValue::Bytes(b) => Ok(b.clone()),
         _ => Err(ConversionError::TypeMismatch {
             expected: "bytes".to_string(),
             actual: value.clone(),
@@ -461,17 +455,17 @@ fn extract_bytes(value: &Value) -> Result<Vec<u8>, ConversionError> {
     }
 }
 
-/// Extract date from MySQL Value.
-fn extract_date(value: &Value) -> Result<NaiveDate, ConversionError> {
+/// Extract date from MySQL MysqlAsyncValue.
+fn extract_date(value: &MysqlAsyncValue) -> Result<NaiveDate, ConversionError> {
     match value {
-        Value::Date(year, month, day, _, _, _, _) => {
+        MysqlAsyncValue::Date(year, month, day, _, _, _, _) => {
             NaiveDate::from_ymd_opt(*year as i32, *month as u32, *day as u32).ok_or_else(|| {
                 ConversionError::InvalidDateTime(format!(
                     "invalid date components: year={year}, month={month}, day={day}"
                 ))
             })
         }
-        Value::Bytes(b) => {
+        MysqlAsyncValue::Bytes(b) => {
             let s = String::from_utf8(b.clone())?;
             NaiveDate::parse_from_str(&s, "%Y-%m-%d").map_err(|e| {
                 ConversionError::InvalidDateTime(format!(
@@ -487,22 +481,22 @@ fn extract_date(value: &Value) -> Result<NaiveDate, ConversionError> {
 }
 
 /// True when MySQL emits a zero date/datetime (`0000-00-00` / `0000-00-00 00:00:00`).
-fn is_zero_mysql_value(value: &Value) -> bool {
+fn is_zero_mysql_value(value: &MysqlAsyncValue) -> bool {
     match value {
-        Value::Date(year, month, day, _, _, _, _) => {
-            UniversalValue::is_mysql_zero_date_ymd(*year, *month, *day)
+        MysqlAsyncValue::Date(year, month, day, _, _, _, _) => {
+            Value::is_mysql_zero_date_ymd(*year, *month, *day)
         }
-        Value::Bytes(b) => std::str::from_utf8(b)
-            .map(UniversalValue::is_mysql_zero_temporal_literal)
+        MysqlAsyncValue::Bytes(b) => std::str::from_utf8(b)
+            .map(Value::is_mysql_zero_temporal_literal)
             .unwrap_or(false),
         _ => false,
     }
 }
 
-/// Extract time from MySQL Value.
-fn extract_time(value: &Value) -> Result<NaiveTime, ConversionError> {
+/// Extract time from MySQL MysqlAsyncValue.
+fn extract_time(value: &MysqlAsyncValue) -> Result<NaiveTime, ConversionError> {
     match value {
-        Value::Time(_, _, hour, min, sec, micro) => {
+        MysqlAsyncValue::Time(_, _, hour, min, sec, micro) => {
             NaiveTime::from_hms_micro_opt(*hour as u32, *min as u32, *sec as u32, *micro)
                 .ok_or_else(|| {
                     ConversionError::InvalidDateTime(format!(
@@ -510,7 +504,7 @@ fn extract_time(value: &Value) -> Result<NaiveTime, ConversionError> {
                     ))
                 })
         }
-        Value::Bytes(b) => {
+        MysqlAsyncValue::Bytes(b) => {
             let s = String::from_utf8(b.clone())?;
             NaiveTime::parse_from_str(&s, "%H:%M:%S").map_err(|e| {
                 ConversionError::InvalidDateTime(format!(
@@ -525,10 +519,10 @@ fn extract_time(value: &Value) -> Result<NaiveTime, ConversionError> {
     }
 }
 
-/// Extract datetime from MySQL Value.
-fn extract_datetime(value: &Value) -> Result<chrono::DateTime<Utc>, ConversionError> {
+/// Extract datetime from MySQL MysqlAsyncValue.
+fn extract_datetime(value: &MysqlAsyncValue) -> Result<chrono::DateTime<Utc>, ConversionError> {
     match value {
-        Value::Date(year, month, day, hour, min, sec, micro) => {
+        MysqlAsyncValue::Date(year, month, day, hour, min, sec, micro) => {
             let date = NaiveDate::from_ymd_opt(*year as i32, *month as u32, *day as u32)
                 .ok_or_else(|| {
                     ConversionError::InvalidDateTime(format!(
@@ -545,7 +539,7 @@ fn extract_datetime(value: &Value) -> Result<chrono::DateTime<Utc>, ConversionEr
             let naive = chrono::NaiveDateTime::new(date, time);
             Ok(Utc.from_utc_datetime(&naive))
         }
-        Value::Bytes(b) => {
+        MysqlAsyncValue::Bytes(b) => {
             let s = String::from_utf8(b.clone())?;
             // Try various formats
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&s) {
@@ -598,11 +592,11 @@ pub struct RowConversionConfig {
 /// UTF-8 bytes or does not parse as JSON, so callers can fall back to their
 /// standard conversion path.
 fn convert_json_column(
-    raw_value: &Value,
+    raw_value: &MysqlAsyncValue,
     json_config: Option<&JsonConversionConfig>,
 ) -> Option<TypedValue> {
     let bytes = match raw_value {
-        Value::Bytes(bytes) => bytes,
+        MysqlAsyncValue::Bytes(bytes) => bytes,
         _ => return None,
     };
     let s = String::from_utf8(bytes.clone()).ok()?;
@@ -729,45 +723,42 @@ pub fn row_to_typed_values_with_config(
 mod tests {
     use super::*;
     use chrono::Datelike;
-    use sync_core::UniversalValue;
+    use sync_core::Value;
 
     #[test]
     fn test_int_conversion() {
         let mv = MySQLValueWithSchema::new(
-            Value::Int(42),
+            MysqlAsyncValue::Int(42),
             ColumnType::MYSQL_TYPE_LONG,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Int32));
-        assert!(matches!(tv.value, UniversalValue::Int32(42)));
+        assert!(matches!(tv.sync_type, Type::Int32));
+        assert!(matches!(tv.value, Value::Int32(42)));
     }
 
     #[test]
     fn test_bigint_conversion() {
         let mv = MySQLValueWithSchema::new(
-            Value::Int(9_223_372_036_854_775_807),
+            MysqlAsyncValue::Int(9_223_372_036_854_775_807),
             ColumnType::MYSQL_TYPE_LONGLONG,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Int64));
-        assert!(matches!(
-            tv.value,
-            UniversalValue::Int64(9_223_372_036_854_775_807)
-        ));
+        assert!(matches!(tv.sync_type, Type::Int64));
+        assert!(matches!(tv.value, Value::Int64(9_223_372_036_854_775_807)));
     }
 
     #[test]
     fn test_string_conversion() {
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(b"hello world".to_vec()),
+            MysqlAsyncValue::Bytes(b"hello world".to_vec()),
             ColumnType::MYSQL_TYPE_VAR_STRING,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::VarChar { .. }));
-        if let UniversalValue::VarChar { value, .. } = tv.value {
+        assert!(matches!(tv.sync_type, Type::VarChar { .. }));
+        if let Value::VarChar { value, .. } = tv.value {
             assert_eq!(value, "hello world");
         } else {
             panic!("Expected VarChar value, got {:?}", tv.value);
@@ -777,14 +768,14 @@ mod tests {
     #[test]
     fn test_uuid_detection() {
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(b"550e8400-e29b-41d4-a716-446655440000".to_vec()),
+            MysqlAsyncValue::Bytes(b"550e8400-e29b-41d4-a716-446655440000".to_vec()),
             ColumnType::MYSQL_TYPE_VAR_STRING,
             ColumnFlags::empty(),
         )
         .with_length(36);
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Uuid));
-        if let UniversalValue::Uuid(u) = tv.value {
+        assert!(matches!(tv.sync_type, Type::Uuid));
+        if let Value::Uuid(u) = tv.value {
             assert_eq!(u.to_string(), "550e8400-e29b-41d4-a716-446655440000");
         } else {
             panic!("Expected Uuid value");
@@ -794,13 +785,13 @@ mod tests {
     #[test]
     fn test_datetime_conversion() {
         let mv = MySQLValueWithSchema::new(
-            Value::Date(2024, 6, 15, 10, 30, 45, 0),
+            MysqlAsyncValue::Date(2024, 6, 15, 10, 30, 45, 0),
             ColumnType::MYSQL_TYPE_DATETIME,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::LocalDateTime));
-        if let UniversalValue::LocalDateTime(dt) = tv.value {
+        assert!(matches!(tv.sync_type, Type::LocalDateTime));
+        if let Value::LocalDateTime(dt) = tv.value {
             assert_eq!(dt.year(), 2024);
             assert_eq!(dt.month(), 6);
             assert_eq!(dt.day(), 15);
@@ -812,26 +803,26 @@ mod tests {
     #[test]
     fn test_null_conversion() {
         let mv = MySQLValueWithSchema::new(
-            Value::NULL,
+            MysqlAsyncValue::NULL,
             ColumnType::MYSQL_TYPE_LONG,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Int32));
-        assert!(matches!(tv.value, UniversalValue::Null));
+        assert!(matches!(tv.sync_type, Type::Int32));
+        assert!(matches!(tv.value, Value::Null));
     }
 
     #[test]
     fn test_json_conversion() {
         let json_str = r#"{"name":"Alice","age":30}"#;
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(json_str.as_bytes().to_vec()),
+            MysqlAsyncValue::Bytes(json_str.as_bytes().to_vec()),
             ColumnType::MYSQL_TYPE_JSON,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Json));
-        if let UniversalValue::Json(obj) = tv.value {
+        assert!(matches!(tv.sync_type, Type::Json));
+        if let Value::Json(obj) = tv.value {
             if let serde_json::Value::Object(map) = obj.as_ref() {
                 assert!(map.contains_key("name"));
                 assert!(map.contains_key("age"));
@@ -846,19 +837,19 @@ mod tests {
     #[test]
     fn test_decimal_conversion() {
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(b"123.456".to_vec()),
+            MysqlAsyncValue::Bytes(b"123.456".to_vec()),
             ColumnType::MYSQL_TYPE_NEWDECIMAL,
             ColumnFlags::empty(),
         )
         .with_precision(10, 3);
         let tv = mv.to_typed_value().unwrap();
-        if let UniversalType::Decimal { precision, scale } = tv.sync_type {
+        if let Type::Decimal { precision, scale } = tv.sync_type {
             assert_eq!(precision, 10);
             assert_eq!(scale, 3);
         } else {
             panic!("Expected Decimal type");
         }
-        if let UniversalValue::Decimal { value, .. } = tv.value {
+        if let Value::Decimal { value, .. } = tv.value {
             assert_eq!(value, "123.456");
         } else {
             panic!("Expected Decimal value");
@@ -869,13 +860,13 @@ mod tests {
     fn test_blob_conversion() {
         let binary_data = vec![0x00, 0x01, 0x02, 0xFF];
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(binary_data.clone()),
+            MysqlAsyncValue::Bytes(binary_data.clone()),
             ColumnType::MYSQL_TYPE_BLOB,
             ColumnFlags::BINARY_FLAG,
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Blob));
-        if let UniversalValue::Blob(b) = tv.value {
+        assert!(matches!(tv.sync_type, Type::Blob));
+        if let Value::Blob(b) = tv.value {
             assert_eq!(b, binary_data);
         } else {
             panic!("Expected Blob value, got {:?}", tv.value);
@@ -885,13 +876,13 @@ mod tests {
     #[test]
     fn test_text_conversion() {
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(b"long text content".to_vec()),
+            MysqlAsyncValue::Bytes(b"long text content".to_vec()),
             ColumnType::MYSQL_TYPE_BLOB,
             ColumnFlags::empty(), // No BINARY flag = TEXT
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Text));
-        if let UniversalValue::Text(s) = tv.value {
+        assert!(matches!(tv.sync_type, Type::Text));
+        if let Value::Text(s) = tv.value {
             assert_eq!(s, "long text content");
         } else {
             panic!("Expected String value");
@@ -902,98 +893,98 @@ mod tests {
     fn test_tinyint1_boolean_true() {
         // TINYINT(1) with value 1 should be boolean true
         let mv = MySQLValueWithSchema::new(
-            Value::Int(1),
+            MysqlAsyncValue::Int(1),
             ColumnType::MYSQL_TYPE_TINY,
             ColumnFlags::empty(),
         )
         .with_length(1);
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Bool));
-        assert!(matches!(tv.value, UniversalValue::Bool(true)));
+        assert!(matches!(tv.sync_type, Type::Bool));
+        assert!(matches!(tv.value, Value::Bool(true)));
     }
 
     #[test]
     fn test_tinyint1_boolean_false() {
         // TINYINT(1) with value 0 should be boolean false
         let mv = MySQLValueWithSchema::new(
-            Value::Int(0),
+            MysqlAsyncValue::Int(0),
             ColumnType::MYSQL_TYPE_TINY,
             ColumnFlags::empty(),
         )
         .with_length(1);
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Bool));
-        assert!(matches!(tv.value, UniversalValue::Bool(false)));
+        assert!(matches!(tv.sync_type, Type::Bool));
+        assert!(matches!(tv.value, Value::Bool(false)));
     }
 
     #[test]
     fn test_tinyint_without_boolean_hint() {
         // TINYINT without length=1 or hint should stay as integer
         let mv = MySQLValueWithSchema::new(
-            Value::Int(1),
+            MysqlAsyncValue::Int(1),
             ColumnType::MYSQL_TYPE_TINY,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Int8 { .. }));
-        assert!(matches!(tv.value, UniversalValue::Int8 { value: 1, .. }));
+        assert!(matches!(tv.sync_type, Type::Int8 { .. }));
+        assert!(matches!(tv.value, Value::Int8 { value: 1, .. }));
     }
 
     #[test]
     fn test_tinyint_with_boolean_hint_true() {
         // TINYINT with boolean_hint=true should convert 0/1 to boolean
         let mv = MySQLValueWithSchema::new(
-            Value::Int(1),
+            MysqlAsyncValue::Int(1),
             ColumnType::MYSQL_TYPE_TINY,
             ColumnFlags::empty(),
         )
         .with_boolean_hint(true);
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Bool));
-        assert!(matches!(tv.value, UniversalValue::Bool(true)));
+        assert!(matches!(tv.sync_type, Type::Bool));
+        assert!(matches!(tv.value, Value::Bool(true)));
     }
 
     #[test]
     fn test_tinyint_with_boolean_hint_false() {
         // TINYINT with boolean_hint=true should convert 0/1 to boolean
         let mv = MySQLValueWithSchema::new(
-            Value::Int(0),
+            MysqlAsyncValue::Int(0),
             ColumnType::MYSQL_TYPE_TINY,
             ColumnFlags::empty(),
         )
         .with_boolean_hint(true);
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Bool));
-        assert!(matches!(tv.value, UniversalValue::Bool(false)));
+        assert!(matches!(tv.sync_type, Type::Bool));
+        assert!(matches!(tv.value, Value::Bool(false)));
     }
 
     #[test]
     fn test_tinyint_non_boolean_value() {
         // Even with TINYINT(1), values other than 0/1 should stay as int
         let mv = MySQLValueWithSchema::new(
-            Value::Int(5),
+            MysqlAsyncValue::Int(5),
             ColumnType::MYSQL_TYPE_TINY,
             ColumnFlags::empty(),
         )
         .with_length(1);
         let tv = mv.to_typed_value().unwrap();
         // The type still says TinyInt, but value is 5
-        assert!(matches!(tv.sync_type, UniversalType::Int8 { .. }));
-        assert!(matches!(tv.value, UniversalValue::Int8 { value: 5, .. }));
+        assert!(matches!(tv.sync_type, Type::Int8 { .. }));
+        assert!(matches!(tv.value, Value::Int8 { value: 5, .. }));
     }
 
     #[test]
     fn test_null_boolean_column() {
         // NULL in a boolean column should preserve the Bool type
         let mv = MySQLValueWithSchema::new(
-            Value::NULL,
+            MysqlAsyncValue::NULL,
             ColumnType::MYSQL_TYPE_TINY,
             ColumnFlags::empty(),
         )
         .with_length(1);
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Bool));
-        assert!(matches!(tv.value, UniversalValue::Null));
+        assert!(matches!(tv.sync_type, Type::Bool));
+        assert!(matches!(tv.value, Value::Null));
     }
 
     #[test]
@@ -1015,7 +1006,7 @@ mod tests {
 
         let tv = json_to_typed_value_with_config(json, "", &config);
 
-        if let UniversalValue::Json(root) = tv.value {
+        if let Value::Json(root) = tv.value {
             if let serde_json::Value::Object(root_obj) = root.as_ref() {
                 // Check settings.enabled is now boolean true
                 if let Some(serde_json::Value::Object(settings)) = root_obj.get("settings") {
@@ -1061,7 +1052,7 @@ mod tests {
 
         let tv = json_to_typed_value_with_config(json, "", &config);
 
-        if let UniversalValue::Json(root) = tv.value {
+        if let Value::Json(root) = tv.value {
             if let serde_json::Value::Object(root_obj) = root.as_ref() {
                 // Check permissions is now an array
                 if let Some(serde_json::Value::Array(perms)) = root_obj.get("permissions") {
@@ -1097,7 +1088,7 @@ mod tests {
 
         let tv = json_to_typed_value_with_config(json, "", &config);
 
-        if let UniversalValue::Json(root) = tv.value {
+        if let Value::Json(root) = tv.value {
             if let serde_json::Value::Object(root_obj) = root.as_ref() {
                 assert!(matches!(
                     root_obj.get("enabled"),
@@ -1121,7 +1112,7 @@ mod tests {
     fn test_unsupported_type_error() {
         // MYSQL_TYPE_NULL is an internal MySQL type that shouldn't be used for columns
         let mv = MySQLValueWithSchema::new(
-            Value::Int(42),
+            MysqlAsyncValue::Int(42),
             ColumnType::MYSQL_TYPE_NULL,
             ColumnFlags::empty(),
         );
@@ -1136,7 +1127,7 @@ mod tests {
     fn test_type_mismatch_int_expects_int() {
         // Pass a string value when an integer is expected
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(b"not a number".to_vec()),
+            MysqlAsyncValue::Bytes(b"not a number".to_vec()),
             ColumnType::MYSQL_TYPE_LONG,
             ColumnFlags::empty(),
         );
@@ -1153,7 +1144,7 @@ mod tests {
     fn test_type_mismatch_float_expects_float() {
         // Pass an invalid float string
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(b"not_a_float".to_vec()),
+            MysqlAsyncValue::Bytes(b"not_a_float".to_vec()),
             ColumnType::MYSQL_TYPE_DOUBLE,
             ColumnFlags::empty(),
         );
@@ -1168,7 +1159,7 @@ mod tests {
     fn test_invalid_date_error() {
         // Invalid date components (month 13)
         let mv = MySQLValueWithSchema::new(
-            Value::Date(2024, 13, 1, 0, 0, 0, 0),
+            MysqlAsyncValue::Date(2024, 13, 1, 0, 0, 0, 0),
             ColumnType::MYSQL_TYPE_DATE,
             ColumnFlags::empty(),
         );
@@ -1182,15 +1173,15 @@ mod tests {
     #[test]
     fn test_zero_date_emits_zero_temporal() {
         let mv = MySQLValueWithSchema::new(
-            Value::Date(0, 0, 0, 0, 0, 0, 0),
+            MysqlAsyncValue::Date(0, 0, 0, 0, 0, 0, 0),
             ColumnType::MYSQL_TYPE_DATE,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(
             tv.value,
-            UniversalValue::ZeroTemporal {
-                intended_type: UniversalType::Date,
+            Value::ZeroTemporal {
+                intended_type: Type::Date,
                 ..
             }
         ));
@@ -1199,15 +1190,15 @@ mod tests {
     #[test]
     fn test_zero_datetime_emits_zero_temporal() {
         let mv = MySQLValueWithSchema::new(
-            Value::Date(0, 0, 0, 0, 0, 0, 0),
+            MysqlAsyncValue::Date(0, 0, 0, 0, 0, 0, 0),
             ColumnType::MYSQL_TYPE_DATETIME,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(
             tv.value,
-            UniversalValue::ZeroTemporal {
-                intended_type: UniversalType::LocalDateTime,
+            Value::ZeroTemporal {
+                intended_type: Type::LocalDateTime,
                 ..
             }
         ));
@@ -1216,15 +1207,15 @@ mod tests {
     #[test]
     fn test_zero_timestamp_emits_zero_temporal() {
         let mv = MySQLValueWithSchema::new(
-            Value::Date(0, 0, 0, 0, 0, 0, 0),
+            MysqlAsyncValue::Date(0, 0, 0, 0, 0, 0, 0),
             ColumnType::MYSQL_TYPE_TIMESTAMP,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
         assert!(matches!(
             tv.value,
-            UniversalValue::ZeroTemporal {
-                intended_type: UniversalType::ZonedDateTime,
+            Value::ZeroTemporal {
+                intended_type: Type::ZonedDateTime,
                 ..
             }
         ));
@@ -1233,19 +1224,19 @@ mod tests {
     #[test]
     fn test_zero_date_string_emits_zero_temporal() {
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(b"0000-00-00".to_vec()),
+            MysqlAsyncValue::Bytes(b"0000-00-00".to_vec()),
             ColumnType::MYSQL_TYPE_DATE,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.value, UniversalValue::ZeroTemporal { .. }));
+        assert!(matches!(tv.value, Value::ZeroTemporal { .. }));
     }
 
     #[test]
     fn test_invalid_date_string_error() {
         // Invalid date string format
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(b"not-a-date".to_vec()),
+            MysqlAsyncValue::Bytes(b"not-a-date".to_vec()),
             ColumnType::MYSQL_TYPE_DATE,
             ColumnFlags::empty(),
         );
@@ -1260,7 +1251,7 @@ mod tests {
     fn test_invalid_time_error() {
         // Invalid time components (hour 25)
         let mv = MySQLValueWithSchema::new(
-            Value::Time(false, 0, 25, 0, 0, 0),
+            MysqlAsyncValue::Time(false, 0, 25, 0, 0, 0),
             ColumnType::MYSQL_TYPE_TIME,
             ColumnFlags::empty(),
         );
@@ -1275,7 +1266,7 @@ mod tests {
     fn test_invalid_datetime_string_error() {
         // Invalid datetime string format
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(b"invalid-datetime".to_vec()),
+            MysqlAsyncValue::Bytes(b"invalid-datetime".to_vec()),
             ColumnType::MYSQL_TYPE_DATETIME,
             ColumnFlags::empty(),
         );
@@ -1291,7 +1282,7 @@ mod tests {
         // Invalid UTF-8 bytes for a string column
         let invalid_utf8 = vec![0xff, 0xfe, 0xfd];
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(invalid_utf8),
+            MysqlAsyncValue::Bytes(invalid_utf8),
             ColumnType::MYSQL_TYPE_VAR_STRING,
             ColumnFlags::empty(),
         );
@@ -1305,7 +1296,7 @@ mod tests {
     fn test_bytes_type_mismatch() {
         // Pass an Int value when bytes are expected (for BLOB)
         let mv = MySQLValueWithSchema::new(
-            Value::Int(42),
+            MysqlAsyncValue::Int(42),
             ColumnType::MYSQL_TYPE_BLOB,
             ColumnFlags::BINARY_FLAG,
         );
@@ -1320,7 +1311,7 @@ mod tests {
     fn test_date_type_mismatch() {
         // Pass a Time value when a Date is expected
         let mv = MySQLValueWithSchema::new(
-            Value::Time(false, 0, 10, 30, 0, 0),
+            MysqlAsyncValue::Time(false, 0, 10, 30, 0, 0),
             ColumnType::MYSQL_TYPE_DATE,
             ColumnFlags::empty(),
         );
@@ -1336,7 +1327,7 @@ mod tests {
         // Test that error messages are descriptive enough
         let err = ConversionError::TypeMismatch {
             expected: "integer".to_string(),
-            actual: Value::Bytes(b"hello".to_vec()),
+            actual: MysqlAsyncValue::Bytes(b"hello".to_vec()),
         };
         let msg = err.to_string();
         assert!(msg.contains("expected integer"));
@@ -1358,13 +1349,13 @@ mod tests {
     fn test_set_column_empty_string() {
         // SET column with empty string should produce empty array
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(b"".to_vec()),
+            MysqlAsyncValue::Bytes(b"".to_vec()),
             ColumnType::MYSQL_TYPE_SET,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Set { .. }));
-        if let UniversalValue::Set { elements, .. } = tv.value {
+        assert!(matches!(tv.sync_type, Type::Set { .. }));
+        if let Value::Set { elements, .. } = tv.value {
             // Empty string produces one empty element after split
             // This is expected MySQL behavior
             assert_eq!(elements.len(), 1);
@@ -1377,13 +1368,13 @@ mod tests {
     #[test]
     fn test_set_column_multiple_values() {
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(b"read,write,execute".to_vec()),
+            MysqlAsyncValue::Bytes(b"read,write,execute".to_vec()),
             ColumnType::MYSQL_TYPE_SET,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Set { .. }));
-        if let UniversalValue::Set { elements, .. } = tv.value {
+        assert!(matches!(tv.sync_type, Type::Set { .. }));
+        if let Value::Set { elements, .. } = tv.value {
             assert_eq!(elements.len(), 3);
             assert_eq!(elements[0], "read");
             assert_eq!(elements[1], "write");
@@ -1396,13 +1387,13 @@ mod tests {
     #[test]
     fn test_enum_column() {
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(b"active".to_vec()),
+            MysqlAsyncValue::Bytes(b"active".to_vec()),
             ColumnType::MYSQL_TYPE_ENUM,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Enum { .. }));
-        if let UniversalValue::Enum { value, .. } = tv.value {
+        assert!(matches!(tv.sync_type, Type::Enum { .. }));
+        if let Value::Enum { value, .. } = tv.value {
             assert_eq!(value, "active");
         } else {
             panic!("Expected Enum value, got {:?}", tv.value);
@@ -1413,36 +1404,36 @@ mod tests {
     fn test_bit_as_boolean() {
         // BIT(1) with value 0 should be boolean false
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(vec![0]),
+            MysqlAsyncValue::Bytes(vec![0]),
             ColumnType::MYSQL_TYPE_BIT,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Bool));
-        assert!(matches!(tv.value, UniversalValue::Bool(false)));
+        assert!(matches!(tv.sync_type, Type::Bool));
+        assert!(matches!(tv.value, Value::Bool(false)));
 
         // BIT(1) with value 1 should be boolean true
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(vec![1]),
+            MysqlAsyncValue::Bytes(vec![1]),
             ColumnType::MYSQL_TYPE_BIT,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Bool));
-        assert!(matches!(tv.value, UniversalValue::Bool(true)));
+        assert!(matches!(tv.sync_type, Type::Bool));
+        assert!(matches!(tv.value, Value::Bool(true)));
     }
 
     #[test]
     fn test_bit_as_bytes() {
         // BIT(8) should be bytes
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(vec![0xff]),
+            MysqlAsyncValue::Bytes(vec![0xff]),
             ColumnType::MYSQL_TYPE_BIT,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Bytes));
-        if let UniversalValue::Bytes(b) = tv.value {
+        assert!(matches!(tv.sync_type, Type::Bytes));
+        if let Value::Bytes(b) = tv.value {
             assert_eq!(b, vec![0xff]);
         } else {
             panic!("Expected Bytes value");
@@ -1455,13 +1446,13 @@ mod tests {
         use sync_core::values::GeometryData;
         let wkb_point = vec![0x01, 0x01, 0x00, 0x00, 0x00]; // Minimal WKB point prefix
         let mv = MySQLValueWithSchema::new(
-            Value::Bytes(wkb_point.clone()),
+            MysqlAsyncValue::Bytes(wkb_point.clone()),
             ColumnType::MYSQL_TYPE_GEOMETRY,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Geometry { .. }));
-        if let UniversalValue::Geometry { data, .. } = tv.value {
+        assert!(matches!(tv.sync_type, Type::Geometry { .. }));
+        if let Value::Geometry { data, .. } = tv.value {
             let GeometryData(json) = data;
             // Verify the GeoJSON contains the base64-encoded WKB
             let expected_b64 = base64::engine::general_purpose::STANDARD.encode(&wkb_point);
@@ -1475,12 +1466,12 @@ mod tests {
     #[test]
     fn test_year_column() {
         let mv = MySQLValueWithSchema::new(
-            Value::Int(2024),
+            MysqlAsyncValue::Int(2024),
             ColumnType::MYSQL_TYPE_YEAR,
             ColumnFlags::empty(),
         );
         let tv = mv.to_typed_value().unwrap();
-        assert!(matches!(tv.sync_type, UniversalType::Int16));
-        assert!(matches!(tv.value, UniversalValue::Int16(2024)));
+        assert!(matches!(tv.sync_type, Type::Int16));
+        assert!(matches!(tv.value, Value::Int16(2024)));
     }
 }

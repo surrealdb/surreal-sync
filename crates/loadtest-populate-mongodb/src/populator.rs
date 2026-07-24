@@ -6,7 +6,7 @@ use bson::Document;
 use loadtest_generator::DataGenerator;
 use mongodb::{Client, Collection, Database};
 use std::time::{Duration, Instant};
-use sync_core::{Schema, UniversalRow};
+use sync_core::{Row, Schema};
 use tracing::{debug, info};
 
 /// Metrics from a populate operation.
@@ -204,7 +204,7 @@ impl MongoDBPopulator {
 
             // Generate rows
             let gen_start = Instant::now();
-            let rows: Vec<UniversalRow> = self
+            let rows: Vec<Row> = self
                 .generator
                 .internal_rows(collection_name, batch_count)
                 .map_err(|e| MongoDBPopulatorError::Generator(e.to_string()))?

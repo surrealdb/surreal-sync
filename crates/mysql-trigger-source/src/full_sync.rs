@@ -1,18 +1,18 @@
 //! MySQL full sync implementation using TypedValue conversion path.
 //!
 //! This module uses the unified type conversion flow:
-//! MySQL Row → TypedValue (mysql-types) → UniversalRow (sync-core) → SurrealDB (surreal sink)
+//! MySQL MysqlRow → TypedValue (mysql-types) → Row (sync-core) → SurrealDB (surreal sink)
 
 use crate::{SourceOpts, SyncOpts};
 use anyhow::Result;
 use async_trait::async_trait;
 use checkpoint::{Checkpoint, CheckpointStore, SyncManager, SyncPhase};
-use mysql_async::{prelude::*, Params, Row, Value};
+use mysql_async::{prelude::*, Params, Row as MysqlRow, Value as MysqlValue};
 use mysql_types::{row_to_typed_values_with_config, RowConversionConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalRow, UniversalType, UniversalValue};
+use sync_core::{Row, Type, Value};
 use sync_transform::{
     run_source_runtime_with, ApplyOpts, Pipeline, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
 };
@@ -202,7 +202,7 @@ async fn collect_schema_info(
     let mut schema_info: HashMap<String, TableSchemaInfo> = HashMap::new();
 
     // Query to find TINYINT(1) columns which are typically boolean
-    let boolean_rows: Vec<Row> = conn
+    let boolean_rows: Vec<MysqlRow> = conn
         .query(
             r#"
             SELECT TABLE_NAME, COLUMN_NAME
@@ -226,7 +226,7 @@ async fn collect_schema_info(
     }
 
     // Query to find SET columns
-    let set_rows: Vec<Row> = conn
+    let set_rows: Vec<MysqlRow> = conn
         .query(
             r#"
             SELECT TABLE_NAME, COLUMN_NAME
@@ -261,7 +261,7 @@ async fn collect_schema_info(
 
 /// Get list of user tables (excluding system tables and our audit table)
 async fn get_user_tables(conn: &mut mysql_async::Conn, database: &str) -> Result<Vec<String>> {
-    let rows: Vec<Row> = conn
+    let rows: Vec<MysqlRow> = conn
         .query(format!(
             "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES \
              WHERE TABLE_SCHEMA = '{database}' \
@@ -285,7 +285,7 @@ pub async fn get_primary_key_columns(
     database: &str,
     table: &str,
 ) -> Result<Vec<String>> {
-    let rows: Vec<Row> = conn
+    let rows: Vec<MysqlRow> = conn
         .query(format!(
             "SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE \
              WHERE TABLE_SCHEMA = '{database}' AND TABLE_NAME = '{table}' \
@@ -359,7 +359,7 @@ async fn migrate_table<S: SurrealSink>(
     if !pk_columns.is_empty() {
         if opts.sync_opts.dry_run {
             let mut total_processed = 0usize;
-            let mut after: Option<Vec<UniversalValue>> = None;
+            let mut after: Option<Vec<Value>> = None;
             loop {
                 let chunk = read_table_chunk(
                     conn,
@@ -388,7 +388,7 @@ async fn migrate_table<S: SurrealSink>(
             conn: &'a mut mysql_async::Conn,
             table_name: &'a str,
             pk_columns: &'a [String],
-            after: Option<Vec<UniversalValue>>,
+            after: Option<Vec<Value>>,
             batch_size: usize,
             config: &'a RowConversionConfig,
             exhausted: bool,
@@ -396,7 +396,7 @@ async fn migrate_table<S: SurrealSink>(
 
         #[async_trait]
         impl RowChunkSource for MysqlKeysetChunks<'_> {
-            async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRow>>> {
+            async fn next_chunk(&mut self) -> Result<Option<Vec<Row>>> {
                 if self.exhausted {
                     return Ok(None);
                 }
@@ -451,7 +451,7 @@ async fn migrate_table<S: SurrealSink>(
         let mut total_processed = 0usize;
         let mut offset = 0usize;
         loop {
-            let rows: Vec<Row> = conn
+            let rows: Vec<MysqlRow> = conn
                 .query(format!(
                     "SELECT * FROM `{table_name}` LIMIT {batch_size} OFFSET {offset}"
                 ))
@@ -482,11 +482,11 @@ async fn migrate_table<S: SurrealSink>(
 
     #[async_trait]
     impl RowChunkSource for MysqlOffsetChunks<'_> {
-        async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRow>>> {
+        async fn next_chunk(&mut self) -> Result<Option<Vec<Row>>> {
             if self.exhausted {
                 return Ok(None);
             }
-            let rows: Vec<Row> = self
+            let rows: Vec<MysqlRow> = self
                 .conn
                 .query(format!(
                     "SELECT * FROM `{}` LIMIT {} OFFSET {}",
@@ -502,14 +502,14 @@ async fn migrate_table<S: SurrealSink>(
             for (i, row) in rows.iter().enumerate() {
                 let row_index = (self.offset + i) as u64;
                 let typed_values = row_to_typed_values_with_config(row, self.config)?;
-                let values: HashMap<String, UniversalValue> = typed_values
+                let values: HashMap<String, Value> = typed_values
                     .into_iter()
                     .map(|(k, tv)| (k, tv.value))
                     .collect();
-                batch.push(UniversalRow::new(
+                batch.push(Row::new(
                     self.table_name.to_string(),
                     row_index,
-                    UniversalValue::Int64(row_index as i64),
+                    Value::Int64(row_index as i64),
                     values,
                 ));
             }
@@ -549,11 +549,11 @@ async fn migrate_table<S: SurrealSink>(
 #[derive(Debug, Clone)]
 pub struct TableChunk {
     /// The converted rows, in primary-key order.
-    pub rows: Vec<UniversalRow>,
+    pub rows: Vec<Row>,
     /// Primary-key values of the last row in `rows`, in primary-key column
     /// order. `None` when no rows were returned. Pass this back as `after` to
     /// read the following chunk.
-    pub last_pk: Option<Vec<UniversalValue>>,
+    pub last_pk: Option<Vec<Value>>,
 }
 
 /// Read a single primary-key-ordered chunk of a table using keyset pagination.
@@ -572,7 +572,7 @@ pub async fn read_table_chunk(
     conn: &mut mysql_async::Conn,
     table_name: &str,
     pk_columns: &[String],
-    after: Option<&[UniversalValue]>,
+    after: Option<&[Value]>,
     limit: usize,
     config: &RowConversionConfig,
 ) -> Result<TableChunk> {
@@ -584,7 +584,7 @@ pub async fn read_table_chunk(
 
     let order_by = pk_columns.join(", ");
 
-    let (where_clause, bind_values): (String, Vec<Value>) = match after {
+    let (where_clause, bind_values): (String, Vec<MysqlValue>) = match after {
         Some(cursor) => {
             if cursor.len() != pk_columns.len() {
                 return Err(anyhow::anyhow!(
@@ -616,17 +616,17 @@ pub async fn read_table_chunk(
         format!("SELECT * FROM {table_name} {where_clause} ORDER BY {order_by} LIMIT {limit}");
     debug!("Chunk-reading table {table_name} with: {query}");
 
-    let rows: Vec<Row> = conn
+    let rows: Vec<MysqlRow> = conn
         .exec(query, Params::Positional(bind_values))
         .await
         .map_err(|e| anyhow::anyhow!("Failed to read chunk from table {table_name}: {e}"))?;
 
     let mut out = Vec::with_capacity(rows.len());
-    let mut last_pk: Option<Vec<UniversalValue>> = None;
+    let mut last_pk: Option<Vec<Value>> = None;
 
     for (row_index, row) in rows.iter().enumerate() {
         let typed_values = row_to_typed_values_with_config(row, config)?;
-        let values: HashMap<String, UniversalValue> = typed_values
+        let values: HashMap<String, Value> = typed_values
             .into_iter()
             .map(|(k, tv)| (k, tv.value))
             .collect();
@@ -644,12 +644,12 @@ pub async fn read_table_chunk(
         }
         last_pk = Some(cursor_values);
 
-        let fields: HashMap<String, UniversalValue> = values
+        let fields: HashMap<String, Value> = values
             .into_iter()
             .filter(|(k, _)| !pk_columns.contains(k))
             .collect();
 
-        out.push(UniversalRow::new(
+        out.push(Row::new(
             table_name.to_string(),
             row_index as u64,
             id,
@@ -660,18 +660,18 @@ pub async fn read_table_chunk(
     Ok(TableChunk { rows: out, last_pk })
 }
 
-/// Convert a primary-key `UniversalValue` into a MySQL bind value for keyset
+/// Convert a primary-key `Value` into a MySQL bind value for keyset
 /// pagination.
-fn pk_value_to_mysql_value(value: &UniversalValue) -> Result<Value> {
+fn pk_value_to_mysql_value(value: &Value) -> Result<MysqlValue> {
     Ok(match value {
-        UniversalValue::Int8 { value, .. } => Value::Int(*value as i64),
-        UniversalValue::Int16(v) => Value::Int(*v as i64),
-        UniversalValue::Int32(v) => Value::Int(*v as i64),
-        UniversalValue::Int64(v) => Value::Int(*v),
-        UniversalValue::Text(v) => Value::Bytes(v.clone().into_bytes()),
-        UniversalValue::VarChar { value, .. } => Value::Bytes(value.clone().into_bytes()),
-        UniversalValue::Char { value, .. } => Value::Bytes(value.clone().into_bytes()),
-        UniversalValue::Uuid(v) => Value::Bytes(v.to_string().into_bytes()),
+        Value::Int8 { value, .. } => MysqlValue::Int(*value as i64),
+        Value::Int16(v) => MysqlValue::Int(*v as i64),
+        Value::Int32(v) => MysqlValue::Int(*v as i64),
+        Value::Int64(v) => MysqlValue::Int(*v),
+        Value::Text(v) => MysqlValue::Bytes(v.clone().into_bytes()),
+        Value::VarChar { value, .. } => MysqlValue::Bytes(value.clone().into_bytes()),
+        Value::Char { value, .. } => MysqlValue::Bytes(value.clone().into_bytes()),
+        Value::Uuid(v) => MysqlValue::Bytes(v.to_string().into_bytes()),
         other => {
             return Err(anyhow::anyhow!(
                 "Unsupported primary key value type for keyset pagination: {other:?}"
@@ -682,9 +682,9 @@ fn pk_value_to_mysql_value(value: &UniversalValue) -> Result<Value> {
 
 /// Extract primary key value from values map
 fn extract_primary_key_value(
-    values: &HashMap<String, UniversalValue>,
+    values: &HashMap<String, Value>,
     pk_columns: &[String],
-) -> Result<UniversalValue> {
+) -> Result<Value> {
     if pk_columns.is_empty() {
         return Err(anyhow::anyhow!(
             "Table has no primary key defined - primary key is required for sync"
@@ -708,9 +708,9 @@ fn extract_primary_key_value(
                 .ok_or_else(|| anyhow::anyhow!("Primary key column '{col}' not found in row"))?;
             pk_values.push(v);
         }
-        Ok(UniversalValue::Array {
+        Ok(Value::Array {
             elements: pk_values,
-            element_type: Box::new(UniversalType::Text),
+            element_type: Box::new(Type::Text),
         })
     }
 }

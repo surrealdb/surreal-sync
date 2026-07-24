@@ -190,7 +190,7 @@ async fn migrate_table_with_transforms<S: SurrealSink>(
     apply_opts: &ApplyOpts,
 ) -> Result<usize> {
     use surreal_sync_postgresql::{get_primary_key_columns, read_table_chunk};
-    use sync_core::{classify_table, TableKind, UniversalValue};
+    use sync_core::{classify_table, TableKind, Value};
 
     let pk_columns = get_primary_key_columns(client, table_name).await?;
     let table_kind = schema
@@ -238,7 +238,7 @@ async fn migrate_table_with_transforms<S: SurrealSink>(
     }
 
     let mut total_processed = 0usize;
-    let mut after: Option<Vec<UniversalValue>> = None;
+    let mut after: Option<Vec<Value>> = None;
     if sync_opts.dry_run {
         loop {
             if cancel.is_cancelled() {
@@ -268,7 +268,7 @@ async fn migrate_table_with_transforms<S: SurrealSink>(
 
     use async_trait::async_trait;
     use std::sync::Arc;
-    use sync_core::UniversalRow;
+    use sync_core::Row;
     use sync_transform::{
         run_source_runtime_with, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
     };
@@ -277,7 +277,7 @@ async fn migrate_table_with_transforms<S: SurrealSink>(
         client: &'a Client,
         table_name: &'a str,
         pk_columns: &'a [String],
-        after: Option<Vec<UniversalValue>>,
+        after: Option<Vec<Value>>,
         batch_size: usize,
         schema: Option<&'a sync_core::DatabaseSchema>,
         cancel: &'a tokio_util::sync::CancellationToken,
@@ -286,7 +286,7 @@ async fn migrate_table_with_transforms<S: SurrealSink>(
 
     #[async_trait]
     impl RowChunkSource for PgKeysetChunks<'_> {
-        async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRow>>> {
+        async fn next_chunk(&mut self) -> Result<Option<Vec<Row>>> {
             if self.exhausted || self.cancel.is_cancelled() {
                 self.exhausted = true;
                 return Ok(None);
@@ -347,7 +347,7 @@ async fn migrate_relation_streaming<S: SurrealSink>(
     use async_trait::async_trait;
     use std::sync::Arc;
     use surreal_sync_postgresql::{read_offset_relation_chunk, read_relation_chunk};
-    use sync_core::{UniversalRelation, UniversalValue};
+    use sync_core::{Relation, Value};
     use sync_transform::{
         run_source_runtime_with, RelationChunkDriver, RelationChunkSource, SourceRuntimeOpts,
     };
@@ -375,7 +375,7 @@ async fn migrate_relation_streaming<S: SurrealSink>(
                 }
             }
         } else {
-            let mut after: Option<Vec<UniversalValue>> = None;
+            let mut after: Option<Vec<Value>> = None;
             let mut row_index_base = 0u64;
             loop {
                 if cancel.is_cancelled() {
@@ -425,7 +425,7 @@ async fn migrate_relation_streaming<S: SurrealSink>(
         }
         #[async_trait]
         impl RelationChunkSource for OffsetRelChunks<'_> {
-            async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRelation>>> {
+            async fn next_chunk(&mut self) -> Result<Option<Vec<Relation>>> {
                 if self.exhausted || self.cancel.is_cancelled() {
                     self.exhausted = true;
                     return Ok(None);
@@ -477,7 +477,7 @@ async fn migrate_relation_streaming<S: SurrealSink>(
         client: &'a Client,
         table_name: &'a str,
         pk_columns: &'a [String],
-        after: Option<Vec<UniversalValue>>,
+        after: Option<Vec<Value>>,
         batch_size: usize,
         in_fk: &'a sync_core::ForeignKeyDefinition,
         out_fk: &'a sync_core::ForeignKeyDefinition,
@@ -487,7 +487,7 @@ async fn migrate_relation_streaming<S: SurrealSink>(
     }
     #[async_trait]
     impl RelationChunkSource for KeysetRelChunks<'_> {
-        async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRelation>>> {
+        async fn next_chunk(&mut self) -> Result<Option<Vec<Relation>>> {
             if self.exhausted || self.cancel.is_cancelled() {
                 self.exhausted = true;
                 return Ok(None);
@@ -555,7 +555,7 @@ async fn migrate_offset_rows_streaming<S: SurrealSink>(
     use async_trait::async_trait;
     use std::sync::Arc;
     use surreal_sync_postgresql::read_offset_table_chunk;
-    use sync_core::UniversalRow;
+    use sync_core::Row;
     use sync_transform::{
         run_source_runtime_with, RowChunkDriver, RowChunkSource, SourceRuntimeOpts,
     };
@@ -594,7 +594,7 @@ async fn migrate_offset_rows_streaming<S: SurrealSink>(
     }
     #[async_trait]
     impl RowChunkSource for OffsetRowChunks<'_> {
-        async fn next_chunk(&mut self) -> Result<Option<Vec<UniversalRow>>> {
+        async fn next_chunk(&mut self) -> Result<Option<Vec<Row>>> {
             if self.exhausted || self.cancel.is_cancelled() {
                 self.exhausted = true;
                 return Ok(None);

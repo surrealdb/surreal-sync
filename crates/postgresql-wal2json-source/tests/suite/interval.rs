@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use std::time::Duration;
 use surreal_sync_postgresql_wal2json_source::{Action, Client};
-use sync_core::UniversalValue;
+use sync_core::Value;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -179,13 +179,13 @@ async fn test_interval_replication_formats() -> Result<()> {
 
                 // Get the ID to verify specific expected values
                 let id = match row.primary_key {
-                    UniversalValue::Int32(i) => i,
+                    Value::Int32(i) => i,
                     _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
                 };
 
-                // Verify it's a Duration value (intervals are converted to Duration in UniversalValue)
+                // Verify it's a Duration value (intervals are converted to Duration in Value)
                 let duration = match duration_field {
-                    UniversalValue::Duration(d) => d,
+                    Value::Duration(d) => d,
                     _ => panic!(
                         "Expected Duration value for interval, got {:?}",
                         duration_field
@@ -272,7 +272,7 @@ async fn test_interval_replication_formats() -> Result<()> {
                 .context("Should have duration column in UPDATE")?;
 
             let duration = match duration_field {
-                UniversalValue::Duration(d) => d,
+                Value::Duration(d) => d,
                 _ => panic!(
                     "Expected Duration value in UPDATE, got {:?}",
                     duration_field

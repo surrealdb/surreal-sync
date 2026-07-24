@@ -12,16 +12,14 @@ use surreal_sync_neo4j_source::{
     run_full_sync_with_transforms, run_incremental_sync_with_transforms, Neo4jCheckpoint,
     ReplicationTailOptions, SourceOpts, SyncOpts,
 };
-use sync_core::{
-    UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow, UniversalValue,
-};
+use sync_core::{Change, Relation, RelationChange, Row, Value};
 use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 
 struct CaptureSink {
-    changes: Mutex<Vec<UniversalChange>>,
-    rows: Mutex<Vec<UniversalRow>>,
-    relation_changes: Mutex<Vec<UniversalRelationChange>>,
-    relations: Mutex<Vec<UniversalRelation>>,
+    changes: Mutex<Vec<Change>>,
+    rows: Mutex<Vec<Row>>,
+    relation_changes: Mutex<Vec<RelationChange>>,
+    relations: Mutex<Vec<Relation>>,
     /// Combined apply order: `change:{id}` or `relation:{id}`.
     apply_order: Mutex<Vec<String>>,
 }
@@ -42,17 +40,17 @@ impl CaptureSink {
     }
 }
 
-fn id_display(id: &UniversalValue) -> String {
+fn id_display(id: &Value) -> String {
     match id {
-        UniversalValue::Int64(n) => n.to_string(),
-        UniversalValue::Int32(n) => n.to_string(),
+        Value::Int64(n) => n.to_string(),
+        Value::Int32(n) => n.to_string(),
         other => format!("{other:?}"),
     }
 }
 
 #[async_trait::async_trait]
 impl SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
+    async fn write_rows(&self, rows: &[Row]) -> anyhow::Result<()> {
         // Homogeneous Update upserts coalesce here. Mirror into `changes` /
         // `apply_order` so incremental tests that assert apply observations still
         // see coalesced writes (full sync keeps asserting on `rows`).
@@ -61,7 +59,7 @@ impl SurrealSink for CaptureSink {
         let mut changes = self.changes.lock().expect("lock");
         for row in rows {
             apply_order.push(format!("change:{}", id_display(&row.id)));
-            changes.push(UniversalChange::update(
+            changes.push(Change::update(
                 row.table.clone(),
                 row.id.clone(),
                 row.fields.clone(),
@@ -70,10 +68,7 @@ impl SurrealSink for CaptureSink {
         Ok(())
     }
 
-    async fn write_universal_relations(
-        &self,
-        relations: &[UniversalRelation],
-    ) -> anyhow::Result<()> {
+    async fn write_relations(&self, relations: &[Relation]) -> anyhow::Result<()> {
         self.relations
             .lock()
             .expect("lock")
@@ -82,12 +77,12 @@ impl SurrealSink for CaptureSink {
         let mut relation_changes = self.relation_changes.lock().expect("lock");
         for relation in relations {
             apply_order.push(format!("relation:{}", id_display(&relation.id)));
-            relation_changes.push(UniversalRelationChange::update(relation.clone()));
+            relation_changes.push(RelationChange::update(relation.clone()));
         }
         Ok(())
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> anyhow::Result<()> {
+    async fn apply_change(&self, change: &Change) -> anyhow::Result<()> {
         self.apply_order
             .lock()
             .expect("lock")
@@ -96,10 +91,7 @@ impl SurrealSink for CaptureSink {
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
-        &self,
-        change: &UniversalRelationChange,
-    ) -> anyhow::Result<()> {
+    async fn apply_relation_change(&self, change: &RelationChange) -> anyhow::Result<()> {
         self.apply_order
             .lock()
             .expect("lock")
@@ -144,29 +136,29 @@ fn ensure_fixture_worker() -> PathBuf {
     path
 }
 
-fn name_field(change: &UniversalChange) -> Option<String> {
-    let data = change.data.as_ref()?;
+fn name_field(change: &Change) -> Option<String> {
+    let data = change.fields.as_ref()?;
     match data.get("name")? {
-        UniversalValue::Text(value) => Some(value.clone()),
+        Value::Text(value) => Some(value.clone()),
         other => panic!("unexpected name: {other:?}"),
     }
 }
 
-fn row_name_field(row: &UniversalRow) -> Option<String> {
+fn row_name_field(row: &Row) -> Option<String> {
     match row.fields.get("name")? {
-        UniversalValue::Text(value) => Some(value.clone()),
+        Value::Text(value) => Some(value.clone()),
         other => panic!("unexpected name: {other:?}"),
     }
 }
 
-fn relation_name_field(rel: &UniversalRelation) -> Option<String> {
+fn relation_name_field(rel: &Relation) -> Option<String> {
     match rel.data.get("name")? {
-        UniversalValue::Text(value) => Some(value.clone()),
+        Value::Text(value) => Some(value.clone()),
         other => panic!("unexpected relation name: {other:?}"),
     }
 }
 
-fn relation_change_name(change: &UniversalRelationChange) -> Option<String> {
+fn relation_change_name(change: &RelationChange) -> Option<String> {
     relation_name_field(&change.relation)
 }
 

@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
+use sync_core::{Change, Relation, RelationChange, Row};
 use tokio::sync::Mutex;
 
 use crate::framer::FramerKind;
@@ -197,41 +197,33 @@ impl ExternalTransform {
     pub async fn exchange_changes(
         &self,
         batch_id: u64,
-        changes: Vec<UniversalChange>,
-    ) -> Result<Vec<UniversalChange>> {
+        changes: Vec<Change>,
+    ) -> Result<Vec<Change>> {
         let items: Vec<Vec<u8>> = changes
             .iter()
-            .map(|c| serde_json::to_vec(c).context("serialize UniversalChange"))
+            .map(|c| serde_json::to_vec(c).context("serialize Change"))
             .collect::<Result<Vec<_>>>()?;
         let resp = self
             .exchange_raw(batch_id, &items, WireItemKind::Change)
             .await?;
         resp.items
             .into_iter()
-            .map(|bytes| {
-                serde_json::from_slice(&bytes).context("deserialize UniversalChange from worker")
-            })
+            .map(|bytes| serde_json::from_slice(&bytes).context("deserialize Change from worker"))
             .collect()
     }
 
     /// Exchange a row batch with the worker.
-    pub async fn exchange_rows(
-        &self,
-        batch_id: u64,
-        rows: Vec<UniversalRow>,
-    ) -> Result<Vec<UniversalRow>> {
+    pub async fn exchange_rows(&self, batch_id: u64, rows: Vec<Row>) -> Result<Vec<Row>> {
         let items: Vec<Vec<u8>> = rows
             .iter()
-            .map(|r| serde_json::to_vec(r).context("serialize UniversalRow"))
+            .map(|r| serde_json::to_vec(r).context("serialize Row"))
             .collect::<Result<Vec<_>>>()?;
         let resp = self
             .exchange_raw(batch_id, &items, WireItemKind::Row)
             .await?;
         resp.items
             .into_iter()
-            .map(|bytes| {
-                serde_json::from_slice(&bytes).context("deserialize UniversalRow from worker")
-            })
+            .map(|bytes| serde_json::from_slice(&bytes).context("deserialize Row from worker"))
             .collect()
     }
 
@@ -239,11 +231,11 @@ impl ExternalTransform {
     pub async fn exchange_relation_changes(
         &self,
         batch_id: u64,
-        changes: Vec<UniversalRelationChange>,
-    ) -> Result<Vec<UniversalRelationChange>> {
+        changes: Vec<RelationChange>,
+    ) -> Result<Vec<RelationChange>> {
         let items: Vec<Vec<u8>> = changes
             .iter()
-            .map(|c| serde_json::to_vec(c).context("serialize UniversalRelationChange"))
+            .map(|c| serde_json::to_vec(c).context("serialize RelationChange"))
             .collect::<Result<Vec<_>>>()?;
         let resp = self
             .exchange_raw(batch_id, &items, WireItemKind::RelationChange)
@@ -251,8 +243,7 @@ impl ExternalTransform {
         resp.items
             .into_iter()
             .map(|bytes| {
-                serde_json::from_slice(&bytes)
-                    .context("deserialize UniversalRelationChange from worker")
+                serde_json::from_slice(&bytes).context("deserialize RelationChange from worker")
             })
             .collect()
     }
@@ -261,20 +252,18 @@ impl ExternalTransform {
     pub async fn exchange_relations(
         &self,
         batch_id: u64,
-        relations: Vec<UniversalRelation>,
-    ) -> Result<Vec<UniversalRelation>> {
+        relations: Vec<Relation>,
+    ) -> Result<Vec<Relation>> {
         let items: Vec<Vec<u8>> = relations
             .iter()
-            .map(|r| serde_json::to_vec(r).context("serialize UniversalRelation"))
+            .map(|r| serde_json::to_vec(r).context("serialize Relation"))
             .collect::<Result<Vec<_>>>()?;
         let resp = self
             .exchange_raw(batch_id, &items, WireItemKind::Relation)
             .await?;
         resp.items
             .into_iter()
-            .map(|bytes| {
-                serde_json::from_slice(&bytes).context("deserialize UniversalRelation from worker")
-            })
+            .map(|bytes| serde_json::from_slice(&bytes).context("deserialize Relation from worker"))
             .collect()
     }
 

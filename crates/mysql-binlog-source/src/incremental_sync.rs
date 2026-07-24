@@ -22,7 +22,7 @@ use crate::catch_up::{
     effective_sync_tables, emit_catch_up_progress, read_catch_up_progress, CatchUpProgress,
     CoverageKind,
 };
-use crate::change::cdc_change_to_universal;
+use crate::change::cdc_to_change;
 use crate::checkpoint::BinlogCheckpoint;
 use crate::client::{
     connect_binlog_client_with_poll, get_pool_conn, new_mysql_pool_with_ssl, resolve_database,
@@ -429,7 +429,7 @@ where
                                 names
                             };
 
-                        let universal = cdc_change_to_universal(
+                        let universal = cdc_to_change(
                             &change,
                             &table_map,
                             &column_names,

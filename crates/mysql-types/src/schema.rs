@@ -1,14 +1,14 @@
 //! MySQL schema column type conversion.
 //!
 //! This module provides conversion from MySQL INFORMATION_SCHEMA column types
-//! to `UniversalType` for schema introspection during incremental sync.
+//! to `Type` for schema introspection during incremental sync.
 
-use sync_core::UniversalType;
+use sync_core::Type;
 
-/// Convert MySQL INFORMATION_SCHEMA column type to UniversalType.
+/// Convert MySQL INFORMATION_SCHEMA column type to Type.
 ///
 /// This function maps MySQL data types (as returned by `information_schema.columns`)
-/// to the appropriate `UniversalType` for use in schema-aware type conversion.
+/// to the appropriate `Type` for use in schema-aware type conversion.
 ///
 /// # Arguments
 ///
@@ -19,86 +19,84 @@ use sync_core::UniversalType;
 ///
 /// # Returns
 ///
-/// The corresponding `UniversalType` for the MySQL column type.
+/// The corresponding `Type` for the MySQL column type.
 ///
 /// # Example
 ///
 /// ```
 /// use mysql_types::mysql_column_to_universal_type;
-/// use sync_core::UniversalType;
+/// use sync_core::Type;
 ///
 /// let ut = mysql_column_to_universal_type("INT", "int(11)", None, None);
-/// assert_eq!(ut, UniversalType::Int32);
+/// assert_eq!(ut, Type::Int32);
 ///
 /// // TINYINT(1) is treated as boolean in MySQL
 /// let ut = mysql_column_to_universal_type("TINYINT", "tinyint(1)", None, None);
-/// assert_eq!(ut, UniversalType::Bool);
+/// assert_eq!(ut, Type::Bool);
 /// ```
 pub fn mysql_column_to_universal_type(
     data_type: &str,
     column_type: &str,
     precision: Option<u32>,
     scale: Option<u32>,
-) -> UniversalType {
+) -> Type {
     match data_type.to_uppercase().as_str() {
         // Numeric types
         "TINYINT" => {
             // TINYINT(1) is commonly used for boolean in MySQL
             if column_type.to_lowercase().starts_with("tinyint(1)") {
-                UniversalType::Bool
+                Type::Bool
             } else {
                 // Extract width from column_type (e.g., "tinyint(4)" -> 4)
                 let width = extract_length_from_column_type(column_type)
                     .map(|l| l as u8)
                     .unwrap_or(4);
-                UniversalType::Int8 { width }
+                Type::Int8 { width }
             }
         }
-        "SMALLINT" => UniversalType::Int16,
-        "MEDIUMINT" | "INT" | "INTEGER" => UniversalType::Int32,
-        "BIGINT" => UniversalType::Int64,
-        "FLOAT" => UniversalType::Float32,
-        "DOUBLE" | "REAL" => UniversalType::Float64,
-        "DECIMAL" | "NUMERIC" => UniversalType::Decimal {
-            // precision/scale are u32 but UniversalType expects u8, cap at 38
+        "SMALLINT" => Type::Int16,
+        "MEDIUMINT" | "INT" | "INTEGER" => Type::Int32,
+        "BIGINT" => Type::Int64,
+        "FLOAT" => Type::Float32,
+        "DOUBLE" | "REAL" => Type::Float64,
+        "DECIMAL" | "NUMERIC" => Type::Decimal {
+            // precision/scale are u32 but Type expects u8, cap at 38
             precision: precision.map(|p| p.min(38) as u8).unwrap_or(10),
             scale: scale.map(|s| s.min(38) as u8).unwrap_or(0),
         },
 
         // Boolean
-        "BOOLEAN" | "BOOL" => UniversalType::Bool,
+        "BOOLEAN" | "BOOL" => Type::Bool,
 
         // String types
         "VARCHAR" => {
             // Try to extract length from column_type
             let length = extract_length_from_column_type(column_type);
             match length {
-                Some(len) => UniversalType::VarChar { length: len },
-                None => UniversalType::Text,
+                Some(len) => Type::VarChar { length: len },
+                None => Type::Text,
             }
         }
         "CHAR" => {
             let length = extract_length_from_column_type(column_type).unwrap_or(1);
-            UniversalType::Char { length }
+            Type::Char { length }
         }
-        "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => UniversalType::Text,
+        "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" => Type::Text,
 
         // Binary types
-        "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => {
-            UniversalType::Bytes
-        }
+        "BINARY" | "VARBINARY" | "BLOB" | "TINYBLOB" | "MEDIUMBLOB" | "LONGBLOB" => Type::Bytes,
 
         // Date/Time types
-        "DATE" => UniversalType::Date,
-        "TIME" => UniversalType::Time,
-        "TIMESTAMP" | "DATETIME" => UniversalType::LocalDateTime,
+        "DATE" => Type::Date,
+        "TIME" => Type::Time,
+        "TIMESTAMP" | "DATETIME" => Type::LocalDateTime,
 
         // JSON
-        "JSON" => UniversalType::Json,
+        "JSON" => Type::Json,
 
         // Geometry types
         "GEOMETRY" | "POINT" | "LINESTRING" | "POLYGON" | "MULTIPOINT" | "MULTILINESTRING"
-        | "MULTIPOLYGON" | "GEOMETRYCOLLECTION" => UniversalType::Geometry {
+        | "MULTIPOLYGON" | "GEOMETRYCOLLECTION" => Type::Geometry {
             geometry_type: sync_core::GeometryType::Point, // Generic fallback
         },
 
@@ -106,21 +104,21 @@ pub fn mysql_column_to_universal_type(
         "SET" => {
             // Extract values from column_type (e.g., "set('a','b','c')")
             let values = extract_set_or_enum_values(column_type);
-            UniversalType::Set { values }
+            Type::Set { values }
         }
 
         // ENUM type - stores list of allowed values
         "ENUM" => {
             // Extract values from column_type (e.g., "enum('small','medium','large')")
             let values = extract_set_or_enum_values(column_type);
-            UniversalType::Enum { values }
+            Type::Enum { values }
         }
 
         // UUID if using a UUID column type (MySQL 8.0+)
-        "UUID" => UniversalType::Uuid,
+        "UUID" => Type::Uuid,
 
         // Fallback to Text for unknown types
-        _ => UniversalType::Text,
+        _ => Type::Text,
     }
 }
 
@@ -175,23 +173,23 @@ mod tests {
     fn test_mysql_int_types() {
         assert!(matches!(
             mysql_column_to_universal_type("TINYINT", "tinyint(4)", None, None),
-            UniversalType::Int8 { width: 4 }
+            Type::Int8 { width: 4 }
         ));
         assert_eq!(
             mysql_column_to_universal_type("SMALLINT", "smallint(6)", None, None),
-            UniversalType::Int16
+            Type::Int16
         );
         assert_eq!(
             mysql_column_to_universal_type("INT", "int(11)", None, None),
-            UniversalType::Int32
+            Type::Int32
         );
         assert_eq!(
             mysql_column_to_universal_type("INTEGER", "int(11)", None, None),
-            UniversalType::Int32
+            Type::Int32
         );
         assert_eq!(
             mysql_column_to_universal_type("BIGINT", "bigint(20)", None, None),
-            UniversalType::Int64
+            Type::Int64
         );
     }
 
@@ -200,12 +198,12 @@ mod tests {
         // TINYINT(1) is treated as boolean in MySQL
         assert_eq!(
             mysql_column_to_universal_type("TINYINT", "tinyint(1)", None, None),
-            UniversalType::Bool
+            Type::Bool
         );
         // But TINYINT(4) is a regular integer
         assert!(matches!(
             mysql_column_to_universal_type("TINYINT", "tinyint(4)", None, None),
-            UniversalType::Int8 { width: 4 }
+            Type::Int8 { width: 4 }
         ));
     }
 
@@ -214,7 +212,7 @@ mod tests {
         let ut = mysql_column_to_universal_type("DECIMAL", "decimal(10,2)", Some(10), Some(2));
         assert!(matches!(
             ut,
-            UniversalType::Decimal {
+            Type::Decimal {
                 precision: 10,
                 scale: 2
             }
@@ -223,7 +221,7 @@ mod tests {
         let ut = mysql_column_to_universal_type("NUMERIC", "numeric(18,4)", Some(18), Some(4));
         assert!(matches!(
             ut,
-            UniversalType::Decimal {
+            Type::Decimal {
                 precision: 18,
                 scale: 4
             }
@@ -234,19 +232,19 @@ mod tests {
     fn test_mysql_string_types() {
         assert_eq!(
             mysql_column_to_universal_type("VARCHAR", "varchar(255)", None, None),
-            UniversalType::VarChar { length: 255 }
+            Type::VarChar { length: 255 }
         );
         assert_eq!(
             mysql_column_to_universal_type("CHAR", "char(10)", None, None),
-            UniversalType::Char { length: 10 }
+            Type::Char { length: 10 }
         );
         assert_eq!(
             mysql_column_to_universal_type("TEXT", "text", None, None),
-            UniversalType::Text
+            Type::Text
         );
         assert_eq!(
             mysql_column_to_universal_type("LONGTEXT", "longtext", None, None),
-            UniversalType::Text
+            Type::Text
         );
     }
 
@@ -254,19 +252,19 @@ mod tests {
     fn test_mysql_datetime_types() {
         assert_eq!(
             mysql_column_to_universal_type("TIMESTAMP", "timestamp", None, None),
-            UniversalType::LocalDateTime
+            Type::LocalDateTime
         );
         assert_eq!(
             mysql_column_to_universal_type("DATETIME", "datetime", None, None),
-            UniversalType::LocalDateTime
+            Type::LocalDateTime
         );
         assert_eq!(
             mysql_column_to_universal_type("DATE", "date", None, None),
-            UniversalType::Date
+            Type::Date
         );
         assert_eq!(
             mysql_column_to_universal_type("TIME", "time", None, None),
-            UniversalType::Time
+            Type::Time
         );
     }
 
@@ -274,25 +272,25 @@ mod tests {
     fn test_mysql_json_type() {
         assert_eq!(
             mysql_column_to_universal_type("JSON", "json", None, None),
-            UniversalType::Json
+            Type::Json
         );
     }
 
     #[test]
     fn test_mysql_set_type() {
         let ut = mysql_column_to_universal_type("SET", "set('a','b','c')", None, None);
-        assert!(matches!(ut, UniversalType::Set { .. }));
+        assert!(matches!(ut, Type::Set { .. }));
     }
 
     #[test]
     fn test_mysql_bool_types() {
         assert_eq!(
             mysql_column_to_universal_type("BOOLEAN", "boolean", None, None),
-            UniversalType::Bool
+            Type::Bool
         );
         assert_eq!(
             mysql_column_to_universal_type("BOOL", "bool", None, None),
-            UniversalType::Bool
+            Type::Bool
         );
     }
 
@@ -300,15 +298,15 @@ mod tests {
     fn test_mysql_bytes_types() {
         assert_eq!(
             mysql_column_to_universal_type("BLOB", "blob", None, None),
-            UniversalType::Bytes
+            Type::Bytes
         );
         assert_eq!(
             mysql_column_to_universal_type("BINARY", "binary(16)", None, None),
-            UniversalType::Bytes
+            Type::Bytes
         );
         assert_eq!(
             mysql_column_to_universal_type("VARBINARY", "varbinary(255)", None, None),
-            UniversalType::Bytes
+            Type::Bytes
         );
     }
 
@@ -321,7 +319,7 @@ mod tests {
                 None,
                 None,
             );
-            assert!(matches!(ut, UniversalType::Geometry { .. }));
+            assert!(matches!(ut, Type::Geometry { .. }));
         }
     }
 

@@ -9,12 +9,12 @@ use std::sync::Mutex;
 
 use surreal_sink::SurrealSink;
 use surreal_sync_csv_source::{sync, sync_with_transforms, Config};
-use sync_core::{UniversalChange, UniversalRelation, UniversalRow, UniversalValue};
+use sync_core::{Change, Relation, Row, Value};
 use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 use tempfile::NamedTempFile;
 
 struct CaptureSink {
-    rows: Mutex<Vec<UniversalRow>>,
+    rows: Mutex<Vec<Row>>,
     rows_written: Arc<AtomicUsize>,
 }
 
@@ -27,31 +27,28 @@ impl CaptureSink {
     }
 }
 
-fn change_to_row(change: &UniversalChange, index: u64) -> UniversalRow {
-    UniversalRow::new(
+fn change_to_row(change: &Change, index: u64) -> Row {
+    Row::new(
         change.table.clone(),
         index,
         change.id.clone(),
-        change.data.clone().unwrap_or_default(),
+        change.fields.clone().unwrap_or_default(),
     )
 }
 
 #[async_trait::async_trait]
 impl SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
+    async fn write_rows(&self, rows: &[Row]) -> anyhow::Result<()> {
         self.rows_written.fetch_add(rows.len(), Ordering::SeqCst);
         self.rows.lock().expect("lock").extend(rows.iter().cloned());
         Ok(())
     }
 
-    async fn write_universal_relations(
-        &self,
-        _relations: &[UniversalRelation],
-    ) -> anyhow::Result<()> {
+    async fn write_relations(&self, _relations: &[Relation]) -> anyhow::Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> anyhow::Result<()> {
+    async fn apply_change(&self, change: &Change) -> anyhow::Result<()> {
         let mut rows = self.rows.lock().expect("lock");
         let index = rows.len() as u64;
         rows.push(change_to_row(change, index));
@@ -59,9 +56,9 @@ impl SurrealSink for CaptureSink {
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
+    async fn apply_relation_change(
         &self,
-        _change: &sync_core::UniversalRelationChange,
+        _change: &sync_core::RelationChange,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -99,9 +96,9 @@ fn ensure_fixture_worker() -> PathBuf {
     path
 }
 
-fn row_name(row: &UniversalRow) -> Option<String> {
+fn row_name(row: &Row) -> Option<String> {
     match row.fields.get("name")? {
-        UniversalValue::Text(value) => Some(value.clone()),
+        Value::Text(value) => Some(value.clone()),
         other => panic!("unexpected name: {other:?}"),
     }
 }
@@ -200,7 +197,7 @@ async fn composite_id_columns_emit_array_ids() {
     assert_eq!(rows.len(), 2);
     for row in &rows {
         match &row.id {
-            UniversalValue::Array { elements, .. } => {
+            Value::Array { elements, .. } => {
                 assert_eq!(elements.len(), 2);
             }
             other => panic!("expected Array id, got {other:?}"),
@@ -210,12 +207,12 @@ async fn composite_id_columns_emit_array_ids() {
     let keys: Vec<Vec<String>> = rows
         .iter()
         .map(|r| match &r.id {
-            UniversalValue::Array { elements, .. } => elements
+            Value::Array { elements, .. } => elements
                 .iter()
                 .map(|e| match e {
-                    UniversalValue::Text(s)
-                    | UniversalValue::VarChar { value: s, .. }
-                    | UniversalValue::Char { value: s, .. } => s.clone(),
+                    Value::Text(s)
+                    | Value::VarChar { value: s, .. }
+                    | Value::Char { value: s, .. } => s.clone(),
                     other => panic!("unexpected id part: {other:?}"),
                 })
                 .collect(),
@@ -260,5 +257,5 @@ type = "flatten_id"
 
     let rows = sink.rows.lock().expect("lock").clone();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].id, UniversalValue::Text("a:b".into()));
+    assert_eq!(rows[0].id, Value::Text("a:b".into()));
 }

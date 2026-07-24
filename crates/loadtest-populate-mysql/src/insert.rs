@@ -3,7 +3,7 @@
 use crate::error::MySQLPopulatorError;
 use mysql_async::{prelude::*, Params, Pool, Value};
 use mysql_types::forward::MySQLValue;
-use sync_core::{GeneratorTableDefinition, Schema, TypedValue, UniversalRow};
+use sync_core::{GeneratorTableDefinition, Row, Schema, TypedValue};
 
 /// Default batch size for INSERT operations.
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -12,7 +12,7 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 pub async fn insert_batch(
     pool: &Pool,
     table_schema: &GeneratorTableDefinition,
-    rows: &[UniversalRow],
+    rows: &[Row],
 ) -> Result<u64, MySQLPopulatorError> {
     if rows.is_empty() {
         return Ok(0);
@@ -76,7 +76,7 @@ pub async fn insert_batch(
 pub async fn insert_single(
     pool: &Pool,
     table_schema: &GeneratorTableDefinition,
-    row: &UniversalRow,
+    row: &Row,
 ) -> Result<u64, MySQLPopulatorError> {
     let mut conn = pool.get_conn().await?;
 
@@ -131,7 +131,7 @@ pub fn generate_create_table(schema: &Schema, table_name: &str) -> Option<String
     let table_schema = schema.get_table(table_name)?;
 
     // Build column definitions
-    let columns: Vec<(String, sync_core::UniversalType, bool)> = table_schema
+    let columns: Vec<(String, sync_core::Type, bool)> = table_schema
         .fields
         .iter()
         .map(|f| (f.name.clone(), f.field_type.clone(), f.nullable))
