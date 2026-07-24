@@ -7,7 +7,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use checkpoint::{InterleavedSnapshotCheckpoint, SnapshotTableProgress};
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalChange, UniversalRow};
+use sync_core::{Change, Row};
 use sync_transform::{
     run_source_runtime_with, ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver,
     SourceRuntimeOpts,
@@ -473,7 +473,7 @@ where
     low_id: Uuid,
     high_id: Uuid,
     in_window: bool,
-    buffer: HashMap<String, UniversalRow>,
+    buffer: HashMap<String, Row>,
     last_pk: Option<PkTuple>,
     chunk_len: usize,
     pending: VecDeque<PositionedEvent<u64>>,
@@ -489,7 +489,7 @@ where
     S: WatermarkSource,
     C: SnapshotCheckpointer,
 {
-    fn push_change(&mut self, change: UniversalChange) {
+    fn push_change(&mut self, change: Change) {
         let pos = self.next_pos;
         self.next_pos = self.next_pos.saturating_add(1);
         self.events_emitted = self.events_emitted.saturating_add(1);
@@ -549,9 +549,9 @@ where
     }
 
     fn queue_buffer_rows(&mut self) {
-        let rows: Vec<UniversalRow> = self.buffer.drain().map(|(_, row)| row).collect();
+        let rows: Vec<Row> = self.buffer.drain().map(|(_, row)| row).collect();
         for row in rows {
-            let change = UniversalChange::update(row.table, row.id, row.fields);
+            let change = Change::update(row.table, row.id, row.fields);
             self.push_change(change);
         }
         self.chunk_poll_complete = true;

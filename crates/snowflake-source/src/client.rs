@@ -1,7 +1,7 @@
 //! Snowflake SQL REST API v2 client (key-pair JWT auth).
 //!
 //! Handles JWT generation, statement submission, asynchronous (`202`) polling,
-//! and result-partition pagination. Result decoding into `UniversalValue`s is
+//! and result-partition pagination. Result decoding into `Value`s is
 //! the job of the `snowflake-types` crate; this module only produces the raw
 //! `(rowType, data)` pair.
 //!

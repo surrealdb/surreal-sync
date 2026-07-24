@@ -6,7 +6,7 @@ use neo4rs::{ConfigBuilder, Graph, Query};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use surreal_sink::SurrealSink;
-use sync_core::{UniversalRelation, UniversalRow, UniversalThingRef, UniversalValue};
+use sync_core::{Relation, Row, ThingRef, Value};
 use sync_transform::{ApplyOpts, Pipeline};
 
 use crate::neo4j_checkpoint::Neo4jCheckpoint;
@@ -381,7 +381,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
             while let Some(row) = node_result.next().await? {
                 let universal_row =
                     convert_neo4j_row_to_universal_row(&row, &label, ctx, &from_opts.id_property)?;
-                if let Some(UniversalValue::LocalDateTime(ts)) =
+                if let Some(Value::LocalDateTime(ts)) =
                     universal_row.get_field(&from_opts.change_tracking_property)
                 {
                     min_timestamp = Some(min_timestamp.map_or(*ts, |min| min.min(*ts)));
@@ -414,7 +414,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
 
         #[async_trait]
         impl RowChunkSource for Neo4jNodeChunks<'_> {
-            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<Row>>> {
                 if self.exhausted {
                     return Ok(None);
                 }
@@ -432,7 +432,7 @@ async fn migrate_neo4j_nodes<S: SurrealSink>(
                                 self.ctx,
                                 self.id_property,
                             )?;
-                            if let Some(UniversalValue::LocalDateTime(ts)) =
+                            if let Some(Value::LocalDateTime(ts)) =
                                 universal_row.get_field(self.tracking_property)
                             {
                                 *self.min_timestamp =
@@ -551,7 +551,7 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
             while let Some(row) = rel_result.next().await? {
                 let r = row_to_relation(&row, Some(rel_type.clone()), None)?;
                 let universal_relation = r.to_universal_relation(ctx)?;
-                if let Some(UniversalValue::LocalDateTime(ts)) = universal_relation
+                if let Some(Value::LocalDateTime(ts)) = universal_relation
                     .data
                     .get(&from_opts.change_tracking_property)
                 {
@@ -586,7 +586,7 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
 
         #[async_trait]
         impl RelationChunkSource for Neo4jRelChunks<'_> {
-            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRelation>>> {
+            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<Relation>>> {
                 if self.exhausted {
                     return Ok(None);
                 }
@@ -600,7 +600,7 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
                         Some(row) => {
                             let r = row_to_relation(&row, Some(self.rel_type.clone()), None)?;
                             let universal_relation = r.to_universal_relation(self.ctx)?;
-                            if let Some(UniversalValue::LocalDateTime(ts)) =
+                            if let Some(Value::LocalDateTime(ts)) =
                                 universal_relation.data.get(self.tracking_property)
                             {
                                 *self.min_timestamp =
@@ -659,7 +659,7 @@ async fn migrate_neo4j_relationships<S: SurrealSink>(
     Ok((total_migrated, min_timestamp, max_timestamp))
 }
 
-// Convert Neo4j node row to UniversalRow
+// Convert Neo4j node row to Row
 /// Resolve a Neo4j node's SurrealDB record ID from its `id` property, falling back to the
 /// internal Neo4j node ID. This ensures that both node records and relationship endpoints
 /// use the same ID, so that RELATE statements reference existing records.
@@ -667,24 +667,24 @@ pub(crate) fn resolve_node_id(
     prop_id: Option<&neo4rs::BoltType>,
     internal_id: i64,
     ctx: &Neo4jConversionContext,
-) -> anyhow::Result<UniversalValue> {
+) -> anyhow::Result<Value> {
     match prop_id {
         Some(bolt_value) => {
             let universal =
                 convert_neo4j_type_to_universal_value(bolt_value.clone(), &ctx.timezone, false)?;
             match universal {
-                UniversalValue::Text(s) => {
+                Value::Text(s) => {
                     // String ID - try to parse as integer first (common case: numeric strings)
                     if let Ok(n) = s.parse::<i64>() {
-                        Ok(UniversalValue::Int64(n))
+                        Ok(Value::Int64(n))
                     } else {
-                        Ok(UniversalValue::Text(s))
+                        Ok(Value::Text(s))
                     }
                 }
-                UniversalValue::Int64(n) => Ok(UniversalValue::Int64(n)),
-                UniversalValue::Null => {
+                Value::Int64(n) => Ok(Value::Int64(n)),
+                Value::Null => {
                     // Node has no 'id' property (Neo4j returned null) - use internal node_id
-                    Ok(UniversalValue::Int64(internal_id))
+                    Ok(Value::Int64(internal_id))
                 }
                 other => Err(anyhow::anyhow!(
                     "Node with internal id '{internal_id}' has unsupported 'id' property type: {other:?}. \
@@ -694,7 +694,7 @@ pub(crate) fn resolve_node_id(
         }
         None => {
             // No 'id' property in query results - use Neo4j's internal node_id
-            Ok(UniversalValue::Int64(internal_id))
+            Ok(Value::Int64(internal_id))
         }
     }
 }
@@ -704,7 +704,7 @@ fn convert_neo4j_row_to_universal_row(
     label: &str,
     ctx: &Neo4jConversionContext,
     id_property: &str,
-) -> anyhow::Result<UniversalRow> {
+) -> anyhow::Result<Row> {
     let node: neo4rs::Node = row.get("n")?;
     let node_id: i64 = row.get("node_id")?;
 
@@ -715,14 +715,14 @@ fn convert_neo4j_row_to_universal_row(
     // strings as String, etc. We convert each type to the appropriate ID type.
     let id = match data.remove(id_property) {
         Some(universal) => match universal {
-            UniversalValue::Text(s) => {
+            Value::Text(s) => {
                 if let Ok(n) = s.parse::<i64>() {
-                    UniversalValue::Int64(n)
+                    Value::Int64(n)
                 } else {
-                    UniversalValue::Text(s)
+                    Value::Text(s)
                 }
             }
-            UniversalValue::Int64(n) => UniversalValue::Int64(n),
+            Value::Int64(n) => Value::Int64(n),
             other => {
                 return Err(anyhow::anyhow!(
                         "Node with label '{label}' and id '{node_id}' has unsupported 'id' property type: {other:?}. \
@@ -732,16 +732,11 @@ fn convert_neo4j_row_to_universal_row(
         },
         None => {
             // No 'id' property - use Neo4j's internal node_id
-            UniversalValue::Int64(node_id)
+            Value::Int64(node_id)
         }
     };
 
-    Ok(UniversalRow::new(
-        label.to_lowercase(),
-        node_id as u64,
-        id,
-        data,
-    ))
+    Ok(Row::new(label.to_lowercase(), node_id as u64, id, data))
 }
 
 /// Convert Neo4j node to keys and universal values
@@ -750,21 +745,20 @@ fn convert_neo4j_node_to_universal_kvs(
     node_id: i64,
     label: &str,
     ctx: &Neo4jConversionContext,
-) -> anyhow::Result<HashMap<String, UniversalValue>> {
+) -> anyhow::Result<HashMap<String, Value>> {
     let mut kvs = HashMap::new();
 
     // Add neo4j_id as a field (preserve original Neo4j ID)
-    kvs.insert("neo4j_id".to_string(), UniversalValue::Int64(node_id));
+    kvs.insert("neo4j_id".to_string(), Value::Int64(node_id));
 
     // Add labels as an array
     let labels: Vec<String> = node.labels().into_iter().map(|s| s.to_string()).collect();
-    let labels_universal_values: Vec<UniversalValue> =
-        labels.into_iter().map(UniversalValue::Text).collect();
+    let labels_universal_values: Vec<Value> = labels.into_iter().map(Value::Text).collect();
     kvs.insert(
         "labels".to_string(),
-        UniversalValue::Array {
+        Value::Array {
             elements: labels_universal_values,
-            element_type: Box::new(sync_core::UniversalType::Text),
+            element_type: Box::new(sync_core::Type::Text),
         },
     );
 
@@ -788,7 +782,8 @@ fn convert_neo4j_node_to_universal_kvs(
     Ok(kvs)
 }
 
-pub struct Relation {
+#[derive(Debug, Clone)]
+pub struct Neo4jRelation {
     pub rel_type: String,
     pub id: i64,
     pub start_labels: Vec<String>,
@@ -801,14 +796,11 @@ pub struct Relation {
     pub updated_at: i64,
 }
 
-impl Relation {
-    pub fn to_universal_relation(
-        &self,
-        ctx: &Neo4jConversionContext,
-    ) -> anyhow::Result<UniversalRelation> {
-        let id = UniversalValue::Int64(self.id);
+impl Neo4jRelation {
+    pub fn to_universal_relation(&self, ctx: &Neo4jConversionContext) -> anyhow::Result<Relation> {
+        let id = Value::Int64(self.id);
 
-        let input = UniversalThingRef::new(
+        let input = ThingRef::new(
             self.start_labels
                 .first()
                 .map(|s| s.to_lowercase())
@@ -816,7 +808,7 @@ impl Relation {
             resolve_node_id(self.start_prop_id.as_ref(), self.start_node_id, ctx)?,
         );
 
-        let output = UniversalThingRef::new(
+        let output = ThingRef::new(
             self.end_labels
                 .first()
                 .map(|s| s.to_lowercase())
@@ -832,7 +824,7 @@ impl Relation {
             data.insert(k.to_string(), v);
         }
 
-        Ok(UniversalRelation::new(
+        Ok(Relation::new(
             self.rel_type.to_lowercase(),
             id,
             input,
@@ -847,7 +839,7 @@ pub fn row_to_relation(
     row: &neo4rs::Row,
     rel_type: Option<String>,
     change_tracking_property: Option<String>,
-) -> anyhow::Result<Relation> {
+) -> anyhow::Result<Neo4jRelation> {
     let relationship: neo4rs::Relation = row.get("r")?;
     let rel_id: i64 = row.get("rel_id")?;
     let rel_type: String = if let Some(t) = rel_type {
@@ -883,7 +875,7 @@ pub fn row_to_relation(
         None
     };
 
-    anyhow::Ok(Relation {
+    anyhow::Ok(Neo4jRelation {
         rel_type,
         id: rel_id,
         start_labels,
@@ -897,7 +889,7 @@ pub fn row_to_relation(
     })
 }
 
-/// Convert Neo4j BoltType to UniversalValue
+/// Convert Neo4j BoltType to Value
 ///
 /// The timezone parameter specifies which timezone to use when converting Neo4j local datetime and time values.
 /// This should be an IANA timezone name (e.g., "America/New_York", "Europe/London", "UTC").
@@ -907,7 +899,7 @@ pub fn convert_neo4j_type_to_universal_value(
     value: neo4rs::BoltType,
     timezone: &str,
     should_parse_json: bool,
-) -> anyhow::Result<UniversalValue> {
+) -> anyhow::Result<Value> {
     use neo4j_types::reverse::ConversionConfig;
 
     // Create conversion config
@@ -916,7 +908,7 @@ pub fn convert_neo4j_type_to_universal_value(
         parse_json_strings: should_parse_json,
     };
 
-    // Convert BoltType → UniversalValue using neo4j-types
+    // Convert BoltType → Value using neo4j-types
     neo4j_types::convert_bolt_to_universal_value(value, &config).map_err(|e| anyhow::anyhow!("{e}"))
 }
 
@@ -937,7 +929,7 @@ mod tests {
 
         // Neo4j Date converts to LocalDateTime (midnight in the configured timezone)
         match result {
-            UniversalValue::LocalDateTime(dt) => {
+            Value::LocalDateTime(dt) => {
                 // Date should be at midnight UTC on 2024-01-15
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -962,7 +954,7 @@ mod tests {
 
         // Neo4j Date converts to LocalDateTime (midnight in the configured timezone, then converted to UTC)
         match result {
-            UniversalValue::LocalDateTime(dt) => {
+            Value::LocalDateTime(dt) => {
                 // Date at midnight in New York (EST = UTC-5) should be 5 AM UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -989,7 +981,7 @@ mod tests {
         let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            UniversalValue::LocalDateTime(dt) => {
+            Value::LocalDateTime(dt) => {
                 // Should be same time in UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -1016,7 +1008,7 @@ mod tests {
         let result = convert_neo4j_type_to_universal_value(bolt_type, "Asia/Tokyo", false).unwrap();
 
         match result {
-            UniversalValue::LocalDateTime(dt) => {
+            Value::LocalDateTime(dt) => {
                 // 14:30 in Tokyo (JST = UTC+9) should be 05:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -1058,7 +1050,7 @@ mod tests {
         // The conversion should either succeed with an adjusted time or fail gracefully
         // depending on how chrono-tz handles DST gaps
         match result {
-            Ok(UniversalValue::LocalDateTime(_)) => {
+            Ok(Value::LocalDateTime(_)) => {
                 // If it succeeds, that's fine - chrono-tz adjusted the time
             }
             Err(e) => {
@@ -1084,7 +1076,7 @@ mod tests {
         let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            UniversalValue::ZonedDateTime(dt) => {
+            Value::ZonedDateTime(dt) => {
                 // Should be same time in UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -1112,7 +1104,7 @@ mod tests {
         let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            UniversalValue::ZonedDateTime(dt) => {
+            Value::ZonedDateTime(dt) => {
                 // 14:30 EST (UTC-5) should be 19:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -1140,7 +1132,7 @@ mod tests {
         let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            UniversalValue::ZonedDateTime(dt) => {
+            Value::ZonedDateTime(dt) => {
                 // 14:30 JST (UTC+9) should be 05:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 1);
@@ -1168,7 +1160,7 @@ mod tests {
         let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            UniversalValue::ZonedDateTime(dt) => {
+            Value::ZonedDateTime(dt) => {
                 // 14:30 BST (UTC+1) should be 13:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 7);
@@ -1196,7 +1188,7 @@ mod tests {
         let result = convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
 
         match result {
-            UniversalValue::ZonedDateTime(dt) => {
+            Value::ZonedDateTime(dt) => {
                 // 08:15:30 HST (UTC-10) should be 18:15:30 UTC
                 assert_eq!(dt.year(), 2024);
                 assert_eq!(dt.month(), 6);
@@ -1218,9 +1210,9 @@ mod tests {
         // Convert with JSON parsing enabled
         let result = convert_neo4j_type_to_universal_value(bolt_type.clone(), "UTC", true).unwrap();
 
-        // neo4j-types returns UniversalValue::Json when JSON parsing is enabled
+        // neo4j-types returns Value::Json when JSON parsing is enabled
         match result {
-            UniversalValue::Json(json_val) => {
+            Value::Json(json_val) => {
                 // Verify the JSON was parsed correctly
                 let obj = json_val.as_object().expect("Expected JSON object");
                 assert!(obj.contains_key("preferences"));
@@ -1247,7 +1239,7 @@ mod tests {
         let result_no_parse =
             convert_neo4j_type_to_universal_value(bolt_type, "UTC", false).unwrap();
         match result_no_parse {
-            UniversalValue::Text(s) => {
+            Value::Text(s) => {
                 assert_eq!(s, json_string);
             }
             _ => panic!("Expected Text, got {result_no_parse:?}"),
@@ -1304,7 +1296,7 @@ mod tests {
         let bolt = neo4rs::BoltType::String(neo4rs::BoltString::new("user_001"));
         let result = resolve_node_id(Some(&bolt), 99, &ctx).unwrap();
         assert!(
-            matches!(result, UniversalValue::Text(ref s) if s == "user_001"),
+            matches!(result, Value::Text(ref s) if s == "user_001"),
             "Expected Text(\"user_001\"), got {result:?}"
         );
     }
@@ -1315,7 +1307,7 @@ mod tests {
         let bolt = neo4rs::BoltType::String(neo4rs::BoltString::new("123"));
         let result = resolve_node_id(Some(&bolt), 99, &ctx).unwrap();
         assert!(
-            matches!(result, UniversalValue::Int64(123)),
+            matches!(result, Value::Int64(123)),
             "Expected Int64(123), got {result:?}"
         );
     }
@@ -1326,7 +1318,7 @@ mod tests {
         let bolt = neo4rs::BoltType::Integer(neo4rs::BoltInteger::new(42));
         let result = resolve_node_id(Some(&bolt), 99, &ctx).unwrap();
         assert!(
-            matches!(result, UniversalValue::Int64(42)),
+            matches!(result, Value::Int64(42)),
             "Expected Int64(42), got {result:?}"
         );
     }
@@ -1337,7 +1329,7 @@ mod tests {
         let bolt = neo4rs::BoltType::Null(neo4rs::BoltNull);
         let result = resolve_node_id(Some(&bolt), 77, &ctx).unwrap();
         assert!(
-            matches!(result, UniversalValue::Int64(77)),
+            matches!(result, Value::Int64(77)),
             "Expected Int64(77) fallback, got {result:?}"
         );
     }
@@ -1347,7 +1339,7 @@ mod tests {
         let ctx = test_ctx();
         let result = resolve_node_id(None, 55, &ctx).unwrap();
         assert!(
-            matches!(result, UniversalValue::Int64(55)),
+            matches!(result, Value::Int64(55)),
             "Expected Int64(55) fallback, got {result:?}"
         );
     }

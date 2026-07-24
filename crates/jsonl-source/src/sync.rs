@@ -3,15 +3,13 @@
 use crate::conversion::ConversionRule;
 use anyhow::{anyhow, Context, Result};
 use json_types::JsonValueWithSchema;
-use serde_json::Value;
+use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use surreal_sink::SurrealSink;
 use surreal_sync_file::{FileSource, DEFAULT_BUFFER_SIZE};
-use sync_core::{
-    DatabaseSchema, TableDefinition, TypedValue, UniversalRow, UniversalType, UniversalValue,
-};
+use sync_core::{DatabaseSchema, Row, TableDefinition, Type, TypedValue, Value};
 use sync_transform::{
     run_source_runtime, ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver,
     SourceRuntimeOpts,
@@ -43,7 +41,7 @@ pub struct Config {
     pub id_field: String,
 
     /// Multi-column record ID fields (takes precedence over `id_field` when non-empty).
-    /// When two or more are set, the ID is an [`UniversalValue::Array`].
+    /// When two or more are set, the ID is an [`Value::Array`].
     pub id_columns: Vec<String>,
 
     /// Conversion rules for transforming JSON objects to Thing references
@@ -81,25 +79,19 @@ struct DryRunSink;
 
 #[async_trait::async_trait]
 impl SurrealSink for DryRunSink {
-    async fn write_universal_rows(&self, _rows: &[UniversalRow]) -> Result<()> {
+    async fn write_rows(&self, _rows: &[Row]) -> Result<()> {
         Ok(())
     }
 
-    async fn write_universal_relations(
-        &self,
-        _relations: &[sync_core::UniversalRelation],
-    ) -> Result<()> {
+    async fn write_relations(&self, _relations: &[sync_core::Relation]) -> Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, _change: &sync_core::UniversalChange) -> Result<()> {
+    async fn apply_change(&self, _change: &sync_core::Change) -> Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
-        &self,
-        _change: &sync_core::UniversalRelationChange,
-    ) -> Result<()> {
+    async fn apply_relation_change(&self, _change: &sync_core::RelationChange) -> Result<()> {
         Ok(())
     }
 }
@@ -142,7 +134,7 @@ impl SourceDriver for JsonlStreamDriver {
                 continue;
             }
 
-            let json_value: Value = serde_json::from_str(&line)
+            let json_value: JsonValue = serde_json::from_str(&line)
                 .map_err(|e| anyhow!("Error parsing JSON at line {}: {e}", self.line_count))?;
 
             let row = convert_json_to_universal_row(
@@ -155,7 +147,7 @@ impl SourceDriver for JsonlStreamDriver {
                 self.line_count,
             )?;
             let pos = self.line_count;
-            let change = sync_core::UniversalChange::update(row.table, row.id, row.fields);
+            let change = sync_core::Change::update(row.table, row.id, row.fields);
             events.push(PositionedEvent::change(change, pos));
         }
         Ok(events)
@@ -183,7 +175,7 @@ impl SourceDriver for JsonlStreamDriver {
 /// This function handles all JSONL parsing, data conversion, and SurrealDB insertion
 /// for a single JSONL source (file, S3, or HTTP).
 ///
-/// [`ConversionRule`]s are applied while building each [`UniversalRow`], before
+/// [`ConversionRule`]s are applied while building each [`Row`], before
 /// the batch is passed through the transform [`Pipeline`].
 async fn process_jsonl_reader<S: SurrealSink>(
     surreal: &S,
@@ -296,7 +288,7 @@ pub async fn sync<S: SurrealSink>(surreal: &S, config: Config) -> Result<()> {
 ///
 /// The driver streams line reads into the apply window (`Config::batch_size`
 /// rows per poll). [`Config::conversion_rules`] still run while decoding each
-/// line into a [`UniversalRow`], before any Pipeline stages. **Multi-file
+/// line into a [`Row`], before any Pipeline stages. **Multi-file
 /// imports start a fresh runtime per file** (intentional — no cross-file
 /// pipelining).
 pub async fn sync_with_transforms<S: SurrealSink>(
@@ -451,33 +443,33 @@ pub async fn sync_with_transforms<S: SurrealSink>(
 }
 
 fn convert_json_to_universal_row(
-    value: &Value,
+    value: &JsonValue,
     table_name: &str,
     id_field: &str,
     id_columns: &[String],
     rules: &[ConversionRule],
     table_schema: Option<&TableDefinition>,
     record_index: u64,
-) -> Result<UniversalRow> {
+) -> Result<Row> {
     let effective_id_cols: Vec<&str> = if id_columns.is_empty() {
         vec![id_field]
     } else {
         id_columns.iter().map(|s| s.as_str()).collect()
     };
 
-    if let Value::Object(obj) = value {
-        let mut fields: HashMap<String, UniversalValue> = HashMap::new();
-        let mut id_parts: Vec<Option<UniversalValue>> = vec![None; effective_id_cols.len()];
+    if let JsonValue::Object(obj) = value {
+        let mut fields: HashMap<String, Value> = HashMap::new();
+        let mut id_parts: Vec<Option<Value>> = vec![None; effective_id_cols.len()];
 
         for (key, val) in obj {
             if let Some(idx) = effective_id_cols.iter().position(|c| *c == key) {
-                let part = if let Value::String(s) = val {
-                    UniversalValue::Text(s.clone())
-                } else if let Value::Number(n) = val {
+                let part = if let JsonValue::String(s) = val {
+                    Value::Text(s.clone())
+                } else if let JsonValue::Number(n) = val {
                     if let Some(i) = n.as_i64() {
-                        UniversalValue::Int64(i)
+                        Value::Int64(i)
                     } else if let Some(u) = n.as_u64() {
-                        UniversalValue::Int64(u as i64)
+                        Value::Int64(u as i64)
                     } else {
                         anyhow::bail!("ID field number must be an integer: {n}");
                     }
@@ -501,34 +493,29 @@ fn convert_json_to_universal_row(
         }
         let id = sync_core::build_composite_record_id(parts);
 
-        Ok(UniversalRow::new(
-            table_name.to_string(),
-            record_index,
-            id,
-            fields,
-        ))
+        Ok(Row::new(table_name.to_string(), record_index, id, fields))
     } else {
         Err(anyhow!("JSONL line must be a JSON object"))
     }
 }
 
-/// Convert a JSON value to UniversalValue with optional schema type hint
+/// Convert a JSON value to Value with optional schema type hint
 fn convert_value_to_universal(
-    value: &Value,
+    value: &JsonValue,
     rules: &[ConversionRule],
-    data_type: Option<&UniversalType>,
-) -> UniversalValue {
+    data_type: Option<&Type>,
+) -> Value {
     // First check if this is an object that matches a conversion rule (Thing reference)
     // Convert Thing references to Text format "table:id"
-    if let Value::Object(obj) = value {
+    if let JsonValue::Object(obj) = value {
         if let Some(type_value) = obj.get("type").and_then(|v| v.as_str()) {
             for rule in rules {
                 if rule.type_value == type_value {
                     // This object matches the rule, convert to Thing reference as text
                     if let Some(id_value) = obj.get(&rule.id_field).and_then(|v| v.as_str()) {
-                        return UniversalValue::Thing {
+                        return Value::Thing {
                             table: rule.target_table.clone(),
-                            id: Box::new(UniversalValue::Text(id_value.to_string())),
+                            id: Box::new(Value::Text(id_value.to_string())),
                         };
                     }
                 }
@@ -550,20 +537,20 @@ fn convert_value_to_universal(
 ///
 /// Note: This function does NOT handle Thing conversion rules.
 /// Thing conversion is handled in convert_value_with_schema before calling this.
-fn convert_value_inferred(value: &Value) -> TypedValue {
+fn convert_value_inferred(value: &JsonValue) -> TypedValue {
     match value {
-        Value::Null => TypedValue::null(UniversalType::Text),
-        Value::Bool(b) => TypedValue::bool(*b),
-        Value::Number(n) => {
+        JsonValue::Null => TypedValue::null(Type::Text),
+        JsonValue::Bool(b) => TypedValue::bool(*b),
+        JsonValue::Number(n) => {
             if let Some(i) = n.as_i64() {
                 TypedValue::int64(i)
             } else if let Some(f) = n.as_f64() {
                 TypedValue::float64(f)
             } else {
-                TypedValue::null(UniversalType::Int64)
+                TypedValue::null(Type::Int64)
             }
         }
-        Value::String(s) => {
+        JsonValue::String(s) => {
             // Try to parse as UUID
             if let Ok(uuid) = uuid::Uuid::parse_str(s) {
                 return TypedValue::uuid(uuid);
@@ -574,18 +561,18 @@ fn convert_value_inferred(value: &Value) -> TypedValue {
             }
             TypedValue::text(s)
         }
-        Value::Array(arr) => {
-            let values: Vec<UniversalValue> = arr
+        JsonValue::Array(arr) => {
+            let values: Vec<Value> = arr
                 .iter()
                 .map(|item| convert_value_inferred(item).value)
                 .collect();
-            TypedValue::array(values, UniversalType::Text)
+            TypedValue::array(values, Type::Text)
         }
-        Value::Object(obj) => {
+        JsonValue::Object(obj) => {
             // Convert as regular object (Thing rules already checked in convert_value_with_schema)
             TypedValue {
-                sync_type: UniversalType::Json,
-                value: UniversalValue::Json(Box::new(serde_json::Value::Object(obj.clone()))),
+                sync_type: Type::Json,
+                value: Value::Json(Box::new(serde_json::Value::Object(obj.clone()))),
             }
         }
     }

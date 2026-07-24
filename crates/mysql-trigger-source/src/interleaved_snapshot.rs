@@ -18,17 +18,15 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
 
 use anyhow::{anyhow, Result};
-use json_types::{convert_id_to_universal_value, JsonValueWithSchema};
-use mysql_async::{prelude::*, Pool, Row, Value};
+use json_types::{convert_id_to_value, JsonValueWithSchema};
+use mysql_async::{prelude::*, Pool, Row as MysqlRow, Value as MysqlValue};
 use surreal_sink::SurrealSink;
 use surreal_sync_interleaved_snapshot::{
     run_interleaved_snapshot_with_transforms, InterleavedSnapshotConfig, InterleavedSnapshotResult,
     PkTuple, ReconciliationEvent, SnapshotCheckpointer, SnapshotSignal, SnapshotTransforms,
     TableSpec, WatermarkKind, WatermarkSource,
 };
-use sync_core::{
-    DatabaseSchema, UniversalChange, UniversalChangeOp, UniversalRow, UniversalType, UniversalValue,
-};
+use sync_core::{Change, ChangeOp, DatabaseSchema, Row, Type, Value};
 use uuid::Uuid;
 
 use crate::change_tracking::setup_mysql_change_tracking;
@@ -199,14 +197,14 @@ impl MySqlWatermarkSource {
         table: &str,
         pk_columns: &[String],
         row_id: &str,
-    ) -> Result<(PkTuple, UniversalValue)> {
+    ) -> Result<(PkTuple, Value)> {
         let table_def = self.schema.get_table(table);
         if pk_columns.len() == 1 {
             let ty = table_def
                 .and_then(|d| d.get_column_type(&pk_columns[0]))
                 .cloned()
-                .unwrap_or(UniversalType::Text);
-            let value = convert_id_to_universal_value(row_id, table, &ty)?;
+                .unwrap_or(Type::Text);
+            let value = convert_id_to_value(row_id, table, &ty)?;
             Ok((PkTuple::new(vec![value.clone()]), value))
         } else {
             let parsed: serde_json::Value = serde_json::from_str(row_id).map_err(|e| {
@@ -227,13 +225,13 @@ impl MySqlWatermarkSource {
                 let ty = table_def
                     .and_then(|d| d.get_column_type(col))
                     .cloned()
-                    .unwrap_or(UniversalType::Text);
-                let part = convert_id_to_universal_value(&json_scalar_to_string(elem), table, &ty)?;
+                    .unwrap_or(Type::Text);
+                let part = convert_id_to_value(&json_scalar_to_string(elem), table, &ty)?;
                 values.push(part);
             }
-            let id = UniversalValue::Array {
+            let id = Value::Array {
                 elements: values.clone(),
-                element_type: Box::new(UniversalType::Text),
+                element_type: Box::new(Type::Text),
             };
             Ok((PkTuple::new(values), id))
         }
@@ -246,7 +244,7 @@ impl MySqlWatermarkSource {
         table: &str,
         pk_columns: &[String],
         json: serde_json::Map<String, serde_json::Value>,
-    ) -> HashMap<String, UniversalValue> {
+    ) -> HashMap<String, Value> {
         let table_def = self.schema.get_table(table);
         let mut fields = HashMap::new();
         for (key, value) in json {
@@ -256,8 +254,8 @@ impl MySqlWatermarkSource {
             let col_type = table_def
                 .and_then(|d| d.get_column_type(&key))
                 .cloned()
-                .unwrap_or(UniversalType::Text);
-            let universal = if let UniversalType::Set { .. } = col_type {
+                .unwrap_or(Type::Text);
+            let universal = if let Type::Set { .. } = col_type {
                 match &value {
                     serde_json::Value::String(s) => {
                         let elements = if s.is_empty() {
@@ -265,7 +263,7 @@ impl MySqlWatermarkSource {
                         } else {
                             s.split(',').map(|v| v.to_string()).collect()
                         };
-                        UniversalValue::set(elements, Vec::new())
+                        Value::set(elements, Vec::new())
                     }
                     _ => {
                         JsonValueWithSchema::new(value, col_type)
@@ -297,7 +295,7 @@ impl WatermarkSource for MySqlWatermarkSource {
         table: &TableSpec,
         after: Option<&PkTuple>,
         limit: usize,
-    ) -> Result<Vec<UniversalRow>> {
+    ) -> Result<Vec<Row>> {
         let mut conn = self.pool.get_conn().await?;
         let config = self.conversion_config(&table.table);
         let after_values = after.map(|pk| pk.0.as_slice());
@@ -345,7 +343,7 @@ impl WatermarkSource for MySqlWatermarkSource {
         let mut conn = self.pool.get_conn().await?;
         let last = self.last_sequence_id.load(Ordering::SeqCst);
 
-        let rows: Vec<Row> = conn
+        let rows: Vec<MysqlRow> = conn
             .exec(
                 format!(
                     "SELECT sequence_id, table_name, operation, row_id, new_data \
@@ -368,7 +366,7 @@ impl WatermarkSource for MySqlWatermarkSource {
             let table_name: String = row.get(1).ok_or_else(|| anyhow!("missing table_name"))?;
             let operation: String = row.get(2).ok_or_else(|| anyhow!("missing operation"))?;
             let row_id: String = row.get(3).ok_or_else(|| anyhow!("missing row_id"))?;
-            let new_data: Option<Value> = row.get(4);
+            let new_data: Option<MysqlValue> = row.get(4);
 
             if sequence_id > max_seq {
                 max_seq = sequence_id;
@@ -384,13 +382,8 @@ impl WatermarkSource for MySqlWatermarkSource {
                     events.push(ReconciliationEvent {
                         position: sequence_id,
                         table: SIGNAL_TABLE.to_string(),
-                        pk: PkTuple::new(vec![UniversalValue::Uuid(id)]),
-                        change: UniversalChange::new(
-                            UniversalChangeOp::Create,
-                            SIGNAL_TABLE,
-                            UniversalValue::Uuid(id),
-                            None,
-                        ),
+                        pk: PkTuple::new(vec![Value::Uuid(id)]),
+                        change: Change::new(ChangeOp::Create, SIGNAL_TABLE, Value::Uuid(id), None),
                     });
                 }
                 continue;
@@ -409,15 +402,15 @@ impl WatermarkSource for MySqlWatermarkSource {
             let (pk, id) = self.pk_and_id(&table_name, &pk_columns, &row_id)?;
 
             let (op, data) = match operation.as_str() {
-                "INSERT" => (UniversalChangeOp::Create, parse_new_data(new_data)?),
-                "UPDATE" => (UniversalChangeOp::Update, parse_new_data(new_data)?),
-                "DELETE" => (UniversalChangeOp::Delete, None),
+                "INSERT" => (ChangeOp::Create, parse_new_data(new_data)?),
+                "UPDATE" => (ChangeOp::Update, parse_new_data(new_data)?),
+                "DELETE" => (ChangeOp::Delete, None),
                 other => return Err(anyhow!("unknown audit operation '{other}'")),
             };
 
             let data = data.map(|obj| self.fields_from_new_data(&table_name, &pk_columns, obj));
 
-            let change = UniversalChange::new(op, table_name.clone(), id, data);
+            let change = Change::new(op, table_name.clone(), id, data);
             events.push(ReconciliationEvent {
                 position: sequence_id,
                 table: table_name,
@@ -446,7 +439,7 @@ impl WatermarkSource for MySqlWatermarkSource {
 
     async fn read_signals(&mut self) -> Result<Vec<SnapshotSignal>> {
         let mut conn = self.pool.get_conn().await?;
-        let rows: Vec<Row> = conn
+        let rows: Vec<MysqlRow> = conn
             .exec(
                 format!(
                     "SELECT id, tables FROM {SIGNAL_TABLE} \
@@ -648,7 +641,7 @@ where
 /// Enumerate the user tables to snapshot, excluding the audit and signal tables
 /// and the usual MySQL system schemas.
 async fn get_snapshot_tables(conn: &mut mysql_async::Conn, database: &str) -> Result<Vec<String>> {
-    let rows: Vec<Row> = conn
+    let rows: Vec<MysqlRow> = conn
         .exec(
             "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES \
              WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE' \
@@ -677,9 +670,9 @@ fn conversions_from_schema(schema: &DatabaseSchema) -> HashMap<String, TableConv
         let mut conv = TableConversion::default();
         for column in table.column_names() {
             match table.get_column_type(column) {
-                Some(UniversalType::Bool) => conv.boolean_columns.push(column.to_string()),
-                Some(UniversalType::Set { .. }) => conv.set_columns.push(column.to_string()),
-                Some(UniversalType::Json) => conv.json_columns.push(column.to_string()),
+                Some(Type::Bool) => conv.boolean_columns.push(column.to_string()),
+                Some(Type::Set { .. }) => conv.set_columns.push(column.to_string()),
+                Some(Type::Json) => conv.json_columns.push(column.to_string()),
                 _ => {}
             }
         }
@@ -690,10 +683,10 @@ fn conversions_from_schema(schema: &DatabaseSchema) -> HashMap<String, TableConv
 
 /// Parse the audit `new_data` column (JSON stored as bytes) into a JSON object.
 fn parse_new_data(
-    new_data: Option<Value>,
+    new_data: Option<MysqlValue>,
 ) -> Result<Option<serde_json::Map<String, serde_json::Value>>> {
     match new_data {
-        Some(Value::Bytes(bytes)) => {
+        Some(MysqlValue::Bytes(bytes)) => {
             let json: serde_json::Value = serde_json::from_slice(&bytes)
                 .map_err(|e| anyhow!("invalid JSON in audit new_data: {e}"))?;
             match json {
@@ -711,42 +704,42 @@ fn parse_new_data(
 /// keys derived here match the ones derived from audit `row_id` strings. For a
 /// composite key the canonical parts are also re-inserted into the row's fields
 /// so the generic loop can recover the key via `PkTuple::from_row`.
-fn normalize_row_pk(row: &mut UniversalRow, pk_columns: &[String]) {
+fn normalize_row_pk(row: &mut Row, pk_columns: &[String]) {
     if pk_columns.len() == 1 {
         row.id = canonicalize_pk_value(&row.id);
         return;
     }
-    if let UniversalValue::Array { elements, .. } = &row.id {
-        let canonical: Vec<UniversalValue> = elements.iter().map(canonicalize_pk_value).collect();
+    if let Value::Array { elements, .. } = &row.id {
+        let canonical: Vec<Value> = elements.iter().map(canonicalize_pk_value).collect();
         for (col, value) in pk_columns.iter().zip(canonical.iter()) {
             row.fields.insert(col.clone(), value.clone());
         }
-        row.id = UniversalValue::Array {
+        row.id = Value::Array {
             elements: canonical,
-            element_type: Box::new(UniversalType::Text),
+            element_type: Box::new(Type::Text),
         };
     }
 }
 
 /// Reduce a primary-key value to the canonical kinds produced by
-/// [`convert_id_to_universal_value`] (`Int64` / `Uuid` / `Text`), so snapshot
+/// [`convert_id_to_value`] (`Int64` / `Uuid` / `Text`), so snapshot
 /// reads and stream events compare equal for the same logical key.
-fn canonicalize_pk_value(value: &UniversalValue) -> UniversalValue {
+fn canonicalize_pk_value(value: &Value) -> Value {
     match value {
-        UniversalValue::Int8 { value, .. } => UniversalValue::Int64(*value as i64),
-        UniversalValue::Int16(v) => UniversalValue::Int64(*v as i64),
-        UniversalValue::Int32(v) => UniversalValue::Int64(*v as i64),
-        UniversalValue::Int64(v) => UniversalValue::Int64(*v),
-        UniversalValue::Uuid(u) => UniversalValue::Uuid(*u),
-        UniversalValue::Char { value, .. } => UniversalValue::Text(value.clone()),
-        UniversalValue::VarChar { value, .. } => UniversalValue::Text(value.clone()),
-        UniversalValue::Text(s) => UniversalValue::Text(s.clone()),
+        Value::Int8 { value, .. } => Value::Int64(*value as i64),
+        Value::Int16(v) => Value::Int64(*v as i64),
+        Value::Int32(v) => Value::Int64(*v as i64),
+        Value::Int64(v) => Value::Int64(*v),
+        Value::Uuid(u) => Value::Uuid(*u),
+        Value::Char { value, .. } => Value::Text(value.clone()),
+        Value::VarChar { value, .. } => Value::Text(value.clone()),
+        Value::Text(s) => Value::Text(s.clone()),
         other => other.clone(),
     }
 }
 
 /// Render a JSON scalar (from a composite `row_id` array) as the string form
-/// expected by [`convert_id_to_universal_value`].
+/// expected by [`convert_id_to_value`].
 fn json_scalar_to_string(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(s) => s.clone(),

@@ -10,8 +10,8 @@ pub mod testing;
 
 pub use full_sync::{
     convert_neo4j_type_to_universal_value, row_to_relation, run_full_sync,
-    run_full_sync_with_transforms, Neo4jConversionContext, Neo4jJsonProperty, Relation, SourceOpts,
-    SyncOpts,
+    run_full_sync_with_transforms, Neo4jConversionContext, Neo4jJsonProperty, Neo4jRelation,
+    SourceOpts, SyncOpts,
 };
 pub use incremental_sync::{
     apply_incremental_changes, run_incremental_sync, run_incremental_sync_with_transforms,

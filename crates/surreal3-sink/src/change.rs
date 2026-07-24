@@ -4,51 +4,53 @@ use surreal3_types::{RecordWithSurrealValues as Record, Relation};
 use surrealdb::types::RecordId;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ChangeOp {
+pub enum MutationOp {
     Create,
     Update,
     Delete,
 }
 
 #[derive(Debug, Clone)]
-pub enum Change {
+pub enum Mutation {
     UpsertRecord(Record),
     DeleteRecord(RecordId),
     UpsertRelation(Relation),
     DeleteRelation(RecordId),
 }
 
-impl Change {
+impl Mutation {
     /// Create a record change using native surrealdb::types::Value types.
     pub fn record(
-        operation: ChangeOp,
+        operation: MutationOp,
         id: RecordId,
         data: HashMap<String, surrealdb::types::Value>,
     ) -> Self {
         match operation {
-            ChangeOp::Create | ChangeOp::Update => Change::UpsertRecord(Record::new(id, data)),
-            ChangeOp::Delete => Change::DeleteRecord(id),
+            MutationOp::Create | MutationOp::Update => {
+                Mutation::UpsertRecord(Record::new(id, data))
+            }
+            MutationOp::Delete => Mutation::DeleteRecord(id),
         }
     }
 
     pub fn relation(
-        operation: ChangeOp,
+        operation: MutationOp,
         id: RecordId,
         input: RecordId,
         output: RecordId,
         data: Option<HashMap<String, SurrealValue>>,
     ) -> Self {
         match operation {
-            ChangeOp::Create | ChangeOp::Update => {
+            MutationOp::Create | MutationOp::Update => {
                 let data = data.expect("Data must be provided for create/update relation");
-                Change::UpsertRelation(Relation {
+                Mutation::UpsertRelation(Relation {
                     id,
                     input,
                     output,
                     data,
                 })
             }
-            ChangeOp::Delete => Change::DeleteRelation(id.clone()),
+            MutationOp::Delete => Mutation::DeleteRelation(id.clone()),
         }
     }
 }

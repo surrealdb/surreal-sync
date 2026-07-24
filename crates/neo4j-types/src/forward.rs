@@ -1,13 +1,13 @@
-//! Forward conversion: TypedValue/UniversalValue → Neo4j Cypher literals.
+//! Forward conversion: TypedValue/Value → Neo4j Cypher literals.
 //!
-//! This module converts sync-core's `TypedValue` and `UniversalValue` to Neo4j Cypher
+//! This module converts sync-core's `TypedValue` and `Value` to Neo4j Cypher
 //! literal strings for use in CREATE/SET queries.
 //!
 //! Unlike other type conversion modules, this module returns `Result` for all conversions
 //! and never silently falls back to default values.
 
 use crate::error::{Neo4jTypesError, Result};
-use sync_core::{TypedValue, UniversalType, UniversalValue};
+use sync_core::{Type, TypedValue, Value};
 
 /// Convert a TypedValue to a Neo4j Cypher literal string.
 ///
@@ -33,7 +33,7 @@ pub fn typed_to_cypher_literal(typed: &TypedValue) -> Result<String> {
     universal_to_cypher_literal(&typed.value, Some(&typed.sync_type))
 }
 
-/// Convert a UniversalValue to a Neo4j Cypher literal string.
+/// Convert a Value to a Neo4j Cypher literal string.
 ///
 /// The `parent_type` is used for array element type resolution. Pass `None` for
 /// top-level values.
@@ -43,22 +43,19 @@ pub fn typed_to_cypher_literal(typed: &TypedValue) -> Result<String> {
 /// Returns an error if:
 /// - Float value is NaN or infinite
 /// - JSON serialization fails
-pub fn universal_to_cypher_literal(
-    value: &UniversalValue,
-    parent_type: Option<&UniversalType>,
-) -> Result<String> {
+pub fn universal_to_cypher_literal(value: &Value, parent_type: Option<&Type>) -> Result<String> {
     match value {
-        UniversalValue::Null => Ok("null".to_string()),
-        UniversalValue::Bool(b) => Ok(b.to_string()),
+        Value::Null => Ok("null".to_string()),
+        Value::Bool(b) => Ok(b.to_string()),
 
         // Integer types
-        UniversalValue::Int8 { value, .. } => Ok(value.to_string()),
-        UniversalValue::Int16(i) => Ok(i.to_string()),
-        UniversalValue::Int32(i) => Ok(i.to_string()),
-        UniversalValue::Int64(i) => Ok(i.to_string()),
+        Value::Int8 { value, .. } => Ok(value.to_string()),
+        Value::Int16(i) => Ok(i.to_string()),
+        Value::Int32(i) => Ok(i.to_string()),
+        Value::Int64(i) => Ok(i.to_string()),
 
         // Float types - error on NaN/Infinity instead of silent fallback
-        UniversalValue::Float32(f) => {
+        Value::Float32(f) => {
             if f.is_nan() {
                 Err(Neo4jTypesError::NanFloat)
             } else if f.is_infinite() {
@@ -67,7 +64,7 @@ pub fn universal_to_cypher_literal(
                 Ok(f.to_string())
             }
         }
-        UniversalValue::Float64(f) => {
+        Value::Float64(f) => {
             if f.is_nan() {
                 Err(Neo4jTypesError::NanFloat)
             } else if f.is_infinite() {
@@ -78,57 +75,57 @@ pub fn universal_to_cypher_literal(
         }
 
         // Decimal - store as numeric string
-        UniversalValue::Decimal { value, .. } => Ok(value.to_string()),
+        Value::Decimal { value, .. } => Ok(value.to_string()),
 
         // String types
-        UniversalValue::Text(s) => Ok(escape_neo4j_string(s)),
-        UniversalValue::Char { value, .. } => Ok(escape_neo4j_string(value)),
-        UniversalValue::VarChar { value, .. } => Ok(escape_neo4j_string(value)),
+        Value::Text(s) => Ok(escape_neo4j_string(s)),
+        Value::Char { value, .. } => Ok(escape_neo4j_string(value)),
+        Value::VarChar { value, .. } => Ok(escape_neo4j_string(value)),
 
         // UUID
-        UniversalValue::Uuid(u) => Ok(escape_neo4j_string(&u.to_string())),
+        Value::Uuid(u) => Ok(escape_neo4j_string(&u.to_string())),
 
         // ULID
-        UniversalValue::Ulid(u) => Ok(escape_neo4j_string(&u.to_string())),
+        Value::Ulid(u) => Ok(escape_neo4j_string(&u.to_string())),
 
         // DateTime types - use Neo4j datetime() function
-        UniversalValue::LocalDateTime(dt) => Ok(format!(
+        Value::LocalDateTime(dt) => Ok(format!(
             "datetime('{}')",
             dt.format("%Y-%m-%dT%H:%M:%S%.fZ")
         )),
-        UniversalValue::LocalDateTimeNano(dt) => Ok(format!(
+        Value::LocalDateTimeNano(dt) => Ok(format!(
             "datetime('{}')",
             dt.format("%Y-%m-%dT%H:%M:%S%.fZ")
         )),
-        UniversalValue::ZonedDateTime(dt) => Ok(format!(
+        Value::ZonedDateTime(dt) => Ok(format!(
             "datetime('{}')",
             dt.format("%Y-%m-%dT%H:%M:%S%.fZ")
         )),
 
         // Date - use Neo4j date() function
-        UniversalValue::Date(dt) => Ok(format!("date('{}')", dt.format("%Y-%m-%d"))),
+        Value::Date(dt) => Ok(format!("date('{}')", dt.format("%Y-%m-%d"))),
 
         // Time - use Neo4j time() function with fractional seconds
-        UniversalValue::Time(dt) => Ok(format!("time('{}')", dt.format("%H:%M:%S%.f"))),
+        Value::Time(dt) => Ok(format!("time('{}')", dt.format("%H:%M:%S%.f"))),
 
         // TimeTz - store as string to preserve timezone format
         // Note: We intentionally do NOT use datetime here because time and datetime
         // are fundamentally different types. Datetime implies a specific point in time,
         // while TIMETZ represents a daily recurring time in a specific timezone.
-        UniversalValue::TimeTz(s) => Ok(escape_neo4j_string(s)),
+        Value::TimeTz(s) => Ok(escape_neo4j_string(s)),
 
         // Binary types - store as hex string (Neo4j doesn't have native bytes)
-        UniversalValue::Bytes(b) => {
+        Value::Bytes(b) => {
             let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
             Ok(escape_neo4j_string(&hex))
         }
-        UniversalValue::Blob(b) => {
+        Value::Blob(b) => {
             let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
             Ok(escape_neo4j_string(&hex))
         }
 
         // JSON types - serialize and store as escaped string
-        UniversalValue::Json(json_val) => {
+        Value::Json(json_val) => {
             let json_str =
                 serde_json::to_string(&json_val).map_err(|e| Neo4jTypesError::JsonParseError {
                     property: "json".to_string(),
@@ -136,7 +133,7 @@ pub fn universal_to_cypher_literal(
                 })?;
             Ok(escape_neo4j_string(&json_str))
         }
-        UniversalValue::Jsonb(json_val) => {
+        Value::Jsonb(json_val) => {
             let json_str =
                 serde_json::to_string(&json_val).map_err(|e| Neo4jTypesError::JsonParseError {
                     property: "jsonb".to_string(),
@@ -146,17 +143,17 @@ pub fn universal_to_cypher_literal(
         }
 
         // Enum type
-        UniversalValue::Enum { value, .. } => Ok(escape_neo4j_string(value)),
+        Value::Enum { value, .. } => Ok(escape_neo4j_string(value)),
 
         // Set type - Neo4j list of strings
-        UniversalValue::Set { elements, .. } => {
+        Value::Set { elements, .. } => {
             let element_strs: Vec<String> =
                 elements.iter().map(|s| escape_neo4j_string(s)).collect();
             Ok(format!("[{}]", element_strs.join(", ")))
         }
 
         // Geometry type - store as GeoJSON string
-        UniversalValue::Geometry { data, .. } => {
+        Value::Geometry { data, .. } => {
             use sync_core::GeometryData;
             let GeometryData(json) = data;
             let json_str =
@@ -168,10 +165,10 @@ pub fn universal_to_cypher_literal(
         }
 
         // Array type - Neo4j list with recursive element conversion
-        UniversalValue::Array { elements, .. } => {
+        Value::Array { elements, .. } => {
             // Get element type from parent_type if available
             let element_type = match parent_type {
-                Some(UniversalType::Array { element_type }) => Some(element_type.as_ref()),
+                Some(Type::Array { element_type }) => Some(element_type.as_ref()),
                 _ => None,
             };
 
@@ -184,7 +181,7 @@ pub fn universal_to_cypher_literal(
         }
 
         // Duration type - use Neo4j duration() function
-        UniversalValue::Duration(d) => {
+        Value::Duration(d) => {
             // Neo4j duration format: PT<seconds>S or PT<seconds>.<nanos>S
             let secs = d.as_secs();
             let nanos = d.subsec_nanos();
@@ -197,12 +194,12 @@ pub fn universal_to_cypher_literal(
         }
 
         // Thing - record reference as string in "table:id" format
-        UniversalValue::Thing { table, id } => {
+        Value::Thing { table, id } => {
             let id_str = match id.as_ref() {
-                UniversalValue::Text(s) => s.clone(),
-                UniversalValue::Int32(i) => i.to_string(),
-                UniversalValue::Int64(i) => i.to_string(),
-                UniversalValue::Uuid(u) => u.to_string(),
+                Value::Text(s) => s.clone(),
+                Value::Int32(i) => i.to_string(),
+                Value::Int64(i) => i.to_string(),
+                Value::Uuid(u) => u.to_string(),
                 other => panic!(
                     "Unsupported Thing ID type for Neo4j: {other:?}. \
                      Supported types: Text, Int32, Int64, Uuid"
@@ -212,7 +209,7 @@ pub fn universal_to_cypher_literal(
         }
 
         // Object - nested document, convert to JSON-like map syntax for Neo4j
-        UniversalValue::Object(map) => {
+        Value::Object(map) => {
             let entries: Vec<String> = map
                 .iter()
                 .map(|(k, v)| {
@@ -226,13 +223,13 @@ pub fn universal_to_cypher_literal(
         }
 
         // Zero temporal - preserve as escaped MySQL-style literal string
-        UniversalValue::ZeroTemporal {
+        Value::ZeroTemporal {
             intended_type,
             source,
         } => {
             let s = source
                 .as_deref()
-                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+                .unwrap_or_else(|| Value::canonical_zero_literal(intended_type));
             Ok(escape_neo4j_string(s))
         }
     }
@@ -260,7 +257,7 @@ mod tests {
 
     #[test]
     fn test_null_conversion() {
-        let tv = TypedValue::null(UniversalType::Text);
+        let tv = TypedValue::null(Type::Text);
         assert_eq!(typed_to_cypher_literal(&tv).unwrap(), "null");
     }
 
@@ -466,12 +463,8 @@ mod tests {
     #[test]
     fn test_array_int_conversion() {
         let tv = TypedValue::array(
-            vec![
-                UniversalValue::Int32(1),
-                UniversalValue::Int32(2),
-                UniversalValue::Int32(3),
-            ],
-            UniversalType::Int32,
+            vec![Value::Int32(1), Value::Int32(2), Value::Int32(3)],
+            Type::Int32,
         );
         assert_eq!(typed_to_cypher_literal(&tv).unwrap(), "[1, 2, 3]");
     }
@@ -479,11 +472,8 @@ mod tests {
     #[test]
     fn test_array_text_conversion() {
         let tv = TypedValue::array(
-            vec![
-                UniversalValue::Text("a".to_string()),
-                UniversalValue::Text("b".to_string()),
-            ],
-            UniversalType::Text,
+            vec![Value::Text("a".to_string()), Value::Text("b".to_string())],
+            Type::Text,
         );
         assert_eq!(typed_to_cypher_literal(&tv).unwrap(), "['a', 'b']");
     }
@@ -492,10 +482,10 @@ mod tests {
     fn test_array_with_special_chars() {
         let tv = TypedValue::array(
             vec![
-                UniversalValue::Text("it's".to_string()),
-                UniversalValue::Text("a \"test\"".to_string()),
+                Value::Text("it's".to_string()),
+                Value::Text("a \"test\"".to_string()),
             ],
-            UniversalType::Text,
+            Type::Text,
         );
         assert_eq!(
             typed_to_cypher_literal(&tv).unwrap(),

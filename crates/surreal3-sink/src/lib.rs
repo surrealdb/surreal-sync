@@ -8,17 +8,17 @@ mod rows;
 mod sink_impl;
 mod write;
 
-pub use change::{Change, ChangeOp};
+pub use change::{Mutation, MutationOp};
 pub use connect::{surreal_connect, surreal_connect_with_retries, SurrealOpts};
 pub use rows::{
-    universal_relation_to_surreal_relation, universal_row_to_surreal_record,
-    universal_value_to_surreal_id, write_universal_relations, write_universal_rows,
+    relation_to_surreal_relation, row_to_surreal_record, value_to_surreal_id, write_relations,
+    write_rows,
 };
 pub use sink_impl::Surreal3Sink;
 pub use sync_core::ZeroTemporalPolicy;
 pub use write::{
-    apply_change, apply_universal_change, write_record, write_records, write_relation,
-    write_relations,
+    apply_change, apply_mutation, write_native_relations, write_record, write_records,
+    write_relation,
 };
 
 // Re-export SurrealDB types for use by source crates

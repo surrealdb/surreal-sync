@@ -3,7 +3,7 @@
 //! This module provides conversion from sync-core's `TypedValue` to CSV string values.
 
 use base64::Engine;
-use sync_core::{TypedValue, UniversalValue};
+use sync_core::{TypedValue, Value};
 
 /// Wrapper for CSV string values.
 #[derive(Debug, Clone)]
@@ -27,93 +27,89 @@ impl From<TypedValue> for CsvValue {
     }
 }
 
-impl From<UniversalValue> for CsvValue {
-    fn from(value: UniversalValue) -> Self {
+impl From<Value> for CsvValue {
+    fn from(value: Value) -> Self {
         match value {
             // Null - empty string
-            UniversalValue::Null => CsvValue(String::new()),
+            Value::Null => CsvValue(String::new()),
 
             // Boolean
-            UniversalValue::Bool(b) => CsvValue(if b {
+            Value::Bool(b) => CsvValue(if b {
                 "true".to_string()
             } else {
                 "false".to_string()
             }),
 
             // Integer types
-            UniversalValue::Int8 { value, .. } => CsvValue(value.to_string()),
-            UniversalValue::Int16(i) => CsvValue(i.to_string()),
-            UniversalValue::Int32(i) => CsvValue(i.to_string()),
-            UniversalValue::Int64(i) => CsvValue(i.to_string()),
+            Value::Int8 { value, .. } => CsvValue(value.to_string()),
+            Value::Int16(i) => CsvValue(i.to_string()),
+            Value::Int32(i) => CsvValue(i.to_string()),
+            Value::Int64(i) => CsvValue(i.to_string()),
 
             // Floating point
-            UniversalValue::Float32(f) => CsvValue(f.to_string()),
-            UniversalValue::Float64(f) => CsvValue(f.to_string()),
+            Value::Float32(f) => CsvValue(f.to_string()),
+            Value::Float64(f) => CsvValue(f.to_string()),
 
             // Decimal - preserve as-is (no precision check needed for CSV)
-            UniversalValue::Decimal { value, .. } => CsvValue(value),
+            Value::Decimal { value, .. } => CsvValue(value),
 
             // String types
-            UniversalValue::Char { value, .. } => CsvValue(value),
-            UniversalValue::VarChar { value, .. } => CsvValue(value),
-            UniversalValue::Text(s) => CsvValue(s),
+            Value::Char { value, .. } => CsvValue(value),
+            Value::VarChar { value, .. } => CsvValue(value),
+            Value::Text(s) => CsvValue(s),
 
             // Binary types - base64 encode
-            UniversalValue::Blob(b) => {
+            Value::Blob(b) => {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(b);
                 CsvValue(encoded)
             }
-            UniversalValue::Bytes(b) => {
+            Value::Bytes(b) => {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(b);
                 CsvValue(encoded)
             }
 
             // Date/time types - ISO 8601 format
-            UniversalValue::Date(dt) => CsvValue(dt.format("%Y-%m-%d").to_string()),
+            Value::Date(dt) => CsvValue(dt.format("%Y-%m-%d").to_string()),
             // Note: Using "%H:%M:%S%.f" to preserve fractional seconds from PostgreSQL TIME type.
-            UniversalValue::Time(dt) => CsvValue(dt.format("%H:%M:%S%.f").to_string()),
-            UniversalValue::LocalDateTime(dt) => CsvValue(dt.to_rfc3339()),
-            UniversalValue::LocalDateTimeNano(dt) => CsvValue(dt.to_rfc3339()),
-            UniversalValue::ZonedDateTime(dt) => CsvValue(dt.to_rfc3339()),
+            Value::Time(dt) => CsvValue(dt.format("%H:%M:%S%.f").to_string()),
+            Value::LocalDateTime(dt) => CsvValue(dt.to_rfc3339()),
+            Value::LocalDateTimeNano(dt) => CsvValue(dt.to_rfc3339()),
+            Value::ZonedDateTime(dt) => CsvValue(dt.to_rfc3339()),
             // TIMETZ - stored as string to preserve timezone format
-            UniversalValue::TimeTz(s) => CsvValue(s),
+            Value::TimeTz(s) => CsvValue(s),
 
             // UUID
-            UniversalValue::Uuid(u) => CsvValue(u.to_string()),
+            Value::Uuid(u) => CsvValue(u.to_string()),
 
             // ULID
-            UniversalValue::Ulid(u) => CsvValue(u.to_string()),
+            Value::Ulid(u) => CsvValue(u.to_string()),
 
             // JSON types - serialize as JSON string
-            UniversalValue::Json(payload) => {
-                CsvValue(serde_json::to_string(&*payload).unwrap_or_default())
-            }
-            UniversalValue::Jsonb(payload) => {
-                CsvValue(serde_json::to_string(&*payload).unwrap_or_default())
-            }
+            Value::Json(payload) => CsvValue(serde_json::to_string(&*payload).unwrap_or_default()),
+            Value::Jsonb(payload) => CsvValue(serde_json::to_string(&*payload).unwrap_or_default()),
 
             // Array types - serialize as JSON array
-            UniversalValue::Array { elements, .. } => {
+            Value::Array { elements, .. } => {
                 let json_arr: Vec<serde_json::Value> =
                     elements.iter().map(generated_value_to_json).collect();
                 CsvValue(serde_json::to_string(&json_arr).unwrap_or_default())
             }
 
             // Set - comma-separated values
-            UniversalValue::Set { elements, .. } => CsvValue(elements.join(",")),
+            Value::Set { elements, .. } => CsvValue(elements.join(",")),
 
             // Enum - string value
-            UniversalValue::Enum { value, .. } => CsvValue(value),
+            Value::Enum { value, .. } => CsvValue(value),
 
-            // Geometry types - serialize as GeoJSON (includes geometry_type from UniversalValue)
-            UniversalValue::Geometry { data, .. } => {
+            // Geometry types - serialize as GeoJSON (includes geometry_type from Value)
+            Value::Geometry { data, .. } => {
                 use sync_core::values::GeometryData;
                 let GeometryData(value) = data;
                 CsvValue(serde_json::to_string(&value).unwrap_or_default())
             }
 
             // Duration - format as ISO 8601 duration string
-            UniversalValue::Duration(d) => {
+            Value::Duration(d) => {
                 let secs = d.as_secs();
                 let nanos = d.subsec_nanos();
                 if nanos == 0 {
@@ -124,12 +120,12 @@ impl From<UniversalValue> for CsvValue {
             }
 
             // Thing - record reference as "table:id" format
-            UniversalValue::Thing { table, id } => {
+            Value::Thing { table, id } => {
                 let id_str = match id.as_ref() {
-                    UniversalValue::Text(s) => s.clone(),
-                    UniversalValue::Int32(i) => i.to_string(),
-                    UniversalValue::Int64(i) => i.to_string(),
-                    UniversalValue::Uuid(u) => u.to_string(),
+                    Value::Text(s) => s.clone(),
+                    Value::Int32(i) => i.to_string(),
+                    Value::Int64(i) => i.to_string(),
+                    Value::Uuid(u) => u.to_string(),
                     other => panic!(
                         "Unsupported Thing ID type: {other:?}. \
                          Supported types: Text, Int32, Int64, Uuid"
@@ -139,7 +135,7 @@ impl From<UniversalValue> for CsvValue {
             }
 
             // Object - nested document, serialize as JSON
-            UniversalValue::Object(map) => {
+            Value::Object(map) => {
                 let obj: serde_json::Map<String, serde_json::Value> = map
                     .into_iter()
                     .map(|(k, v)| (k, generated_value_to_json(&v)))
@@ -147,61 +143,60 @@ impl From<UniversalValue> for CsvValue {
                 CsvValue(serde_json::to_string(&serde_json::Value::Object(obj)).unwrap_or_default())
             }
 
-            UniversalValue::ZeroTemporal {
+            Value::ZeroTemporal {
                 intended_type,
                 source,
             } => {
-                let s = source.unwrap_or_else(|| {
-                    UniversalValue::canonical_zero_literal(&intended_type).to_string()
-                });
+                let s = source
+                    .unwrap_or_else(|| Value::canonical_zero_literal(&intended_type).to_string());
                 CsvValue(s)
             }
         }
     }
 }
 
-/// Convert a UniversalValue to JSON.
-fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
+/// Convert a Value to JSON.
+fn generated_value_to_json(value: &Value) -> serde_json::Value {
     match value {
-        UniversalValue::Null => serde_json::Value::Null,
-        UniversalValue::Bool(b) => serde_json::json!(*b),
-        UniversalValue::Int8 { value, .. } => serde_json::json!(*value),
-        UniversalValue::Int16(i) => serde_json::json!(*i),
-        UniversalValue::Int32(i) => serde_json::json!(*i),
-        UniversalValue::Int64(i) => serde_json::json!(*i),
-        UniversalValue::Float32(f) => serde_json::json!(*f),
-        UniversalValue::Float64(f) => serde_json::json!(*f),
-        UniversalValue::Char { value, .. } => serde_json::json!(value),
-        UniversalValue::VarChar { value, .. } => serde_json::json!(value),
-        UniversalValue::Text(s) => serde_json::json!(s),
-        UniversalValue::Blob(b) | UniversalValue::Bytes(b) => {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::json!(*b),
+        Value::Int8 { value, .. } => serde_json::json!(*value),
+        Value::Int16(i) => serde_json::json!(*i),
+        Value::Int32(i) => serde_json::json!(*i),
+        Value::Int64(i) => serde_json::json!(*i),
+        Value::Float32(f) => serde_json::json!(*f),
+        Value::Float64(f) => serde_json::json!(*f),
+        Value::Char { value, .. } => serde_json::json!(value),
+        Value::VarChar { value, .. } => serde_json::json!(value),
+        Value::Text(s) => serde_json::json!(s),
+        Value::Blob(b) | Value::Bytes(b) => {
             let encoded = base64::engine::general_purpose::STANDARD.encode(b);
             serde_json::json!(encoded)
         }
-        UniversalValue::Uuid(u) => serde_json::json!(u.to_string()),
-        UniversalValue::Ulid(u) => serde_json::json!(u.to_string()),
-        UniversalValue::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
-        UniversalValue::Time(dt) => serde_json::json!(dt.format("%H:%M:%S%.f").to_string()),
-        UniversalValue::LocalDateTime(dt)
-        | UniversalValue::LocalDateTimeNano(dt)
-        | UniversalValue::ZonedDateTime(dt) => serde_json::json!(dt.to_rfc3339()),
-        UniversalValue::TimeTz(s) => serde_json::json!(s),
-        UniversalValue::Decimal { value, .. } => serde_json::json!(value),
-        UniversalValue::Array { elements, .. } => {
+        Value::Uuid(u) => serde_json::json!(u.to_string()),
+        Value::Ulid(u) => serde_json::json!(u.to_string()),
+        Value::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
+        Value::Time(dt) => serde_json::json!(dt.format("%H:%M:%S%.f").to_string()),
+        Value::LocalDateTime(dt) | Value::LocalDateTimeNano(dt) | Value::ZonedDateTime(dt) => {
+            serde_json::json!(dt.to_rfc3339())
+        }
+        Value::TimeTz(s) => serde_json::json!(s),
+        Value::Decimal { value, .. } => serde_json::json!(value),
+        Value::Array { elements, .. } => {
             serde_json::json!(elements
                 .iter()
                 .map(generated_value_to_json)
                 .collect::<Vec<_>>())
         }
-        UniversalValue::Set { elements, .. } => serde_json::json!(elements),
-        UniversalValue::Enum { value, .. } => serde_json::json!(value),
-        UniversalValue::Json(payload) | UniversalValue::Jsonb(payload) => (**payload).clone(),
-        UniversalValue::Geometry { data, .. } => {
+        Value::Set { elements, .. } => serde_json::json!(elements),
+        Value::Enum { value, .. } => serde_json::json!(value),
+        Value::Json(payload) | Value::Jsonb(payload) => (**payload).clone(),
+        Value::Geometry { data, .. } => {
             use sync_core::values::GeometryData;
             let GeometryData(value) = data;
             value.clone()
         }
-        UniversalValue::Duration(d) => {
+        Value::Duration(d) => {
             let secs = d.as_secs();
             let nanos = d.subsec_nanos();
             if nanos == 0 {
@@ -210,12 +205,12 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
                 serde_json::json!(format!("PT{secs}.{nanos:09}S"))
             }
         }
-        UniversalValue::Thing { table, id } => {
+        Value::Thing { table, id } => {
             let id_str = match id.as_ref() {
-                UniversalValue::Text(s) => s.clone(),
-                UniversalValue::Int32(i) => i.to_string(),
-                UniversalValue::Int64(i) => i.to_string(),
-                UniversalValue::Uuid(u) => u.to_string(),
+                Value::Text(s) => s.clone(),
+                Value::Int32(i) => i.to_string(),
+                Value::Int64(i) => i.to_string(),
+                Value::Uuid(u) => u.to_string(),
                 other => panic!(
                     "Unsupported Thing ID type: {other:?}. \
                      Supported types: Text, Int32, Int64, Uuid"
@@ -223,20 +218,20 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
             };
             serde_json::json!(format!("{table}:{id_str}"))
         }
-        UniversalValue::Object(map) => {
+        Value::Object(map) => {
             let obj: serde_json::Map<String, serde_json::Value> = map
                 .iter()
                 .map(|(k, v)| (k.clone(), generated_value_to_json(v)))
                 .collect();
             serde_json::Value::Object(obj)
         }
-        UniversalValue::ZeroTemporal {
+        Value::ZeroTemporal {
             intended_type,
             source,
         } => {
             let s = source
                 .as_deref()
-                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+                .unwrap_or_else(|| Value::canonical_zero_literal(intended_type));
             serde_json::Value::String(s.to_string())
         }
     }
@@ -289,11 +284,11 @@ where
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
-    use sync_core::UniversalType;
+    use sync_core::Type;
 
     #[test]
     fn test_null_conversion() {
-        let tv = TypedValue::null(UniversalType::Text);
+        let tv = TypedValue::null(Type::Text);
         let csv_val: CsvValue = tv.into();
         assert_eq!(csv_val.0, "");
     }

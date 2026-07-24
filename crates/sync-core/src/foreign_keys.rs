@@ -124,7 +124,7 @@ fn pk_is_composed_of_fk_columns(
 mod tests {
     use super::*;
     use crate::schema::ColumnDefinition;
-    use crate::types::UniversalType;
+    use crate::types::Type;
 
     fn make_table(
         name: &str,
@@ -132,17 +132,17 @@ mod tests {
         column_names: Vec<&str>,
         fks: Vec<ForeignKeyDefinition>,
     ) -> TableDefinition {
-        let primary_key = ColumnDefinition::new(pk_names[0], UniversalType::Int64);
+        let primary_key = ColumnDefinition::new(pk_names[0], Type::Int64);
 
         let mut columns: Vec<ColumnDefinition> = column_names
             .iter()
-            .map(|n| ColumnDefinition::new(*n, UniversalType::Int64))
+            .map(|n| ColumnDefinition::new(*n, Type::Int64))
             .collect();
 
         // For composite PK, add the extra PK columns to columns list
         for pk in &pk_names[1..] {
             if !column_names.contains(pk) {
-                columns.push(ColumnDefinition::new(*pk, UniversalType::Int64));
+                columns.push(ColumnDefinition::new(*pk, Type::Int64));
             }
         }
 

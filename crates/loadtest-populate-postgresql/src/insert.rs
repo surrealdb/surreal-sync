@@ -2,7 +2,7 @@
 
 use crate::error::PostgreSQLPopulatorError;
 use postgresql_types::forward::PostgreSQLValue;
-use sync_core::{GeneratorTableDefinition, Schema, TypedValue, UniversalRow};
+use sync_core::{GeneratorTableDefinition, Row, Schema, TypedValue};
 use tokio_postgres::types::ToSql;
 use tokio_postgres::Client;
 
@@ -13,7 +13,7 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 pub async fn insert_batch(
     client: &Client,
     table_schema: &GeneratorTableDefinition,
-    rows: &[UniversalRow],
+    rows: &[Row],
 ) -> Result<u64, PostgreSQLPopulatorError> {
     if rows.is_empty() {
         return Ok(0);
@@ -124,7 +124,7 @@ fn pg_value_to_boxed(value: PostgreSQLValue) -> Box<dyn ToSql + Sync + Send> {
 pub async fn insert_single(
     client: &Client,
     table_schema: &GeneratorTableDefinition,
-    row: &UniversalRow,
+    row: &Row,
 ) -> Result<u64, PostgreSQLPopulatorError> {
     // Build column list: id + all fields
     let mut columns: Vec<String> = vec!["id".to_string()];
@@ -184,7 +184,7 @@ pub fn generate_create_table(schema: &Schema, table_name: &str) -> Option<String
     let table_schema = schema.get_table(table_name)?;
 
     // Build column definitions
-    let columns: Vec<(String, sync_core::UniversalType, bool)> = table_schema
+    let columns: Vec<(String, sync_core::Type, bool)> = table_schema
         .fields
         .iter()
         .map(|f| (f.name.clone(), f.field_type.clone(), f.nullable))

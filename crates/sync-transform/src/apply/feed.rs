@@ -6,7 +6,7 @@
 
 use crate::apply::event::{ApplyEvent, PositionedEvent};
 use anyhow::Result;
-use sync_core::UniversalChange;
+use sync_core::Change;
 
 /// A CDC / incremental row event plus the source position to advance after sink success.
 ///
@@ -14,14 +14,14 @@ use sync_core::UniversalChange;
 #[derive(Debug, Clone)]
 pub struct PositionedChange<P> {
     /// Universal change to transform and apply.
-    pub change: UniversalChange,
+    pub change: Change,
     /// Source position associated with this change (checkpoint candidate).
     pub position: P,
 }
 
 impl<P> PositionedChange<P> {
     /// Construct a positioned change.
-    pub fn new(change: UniversalChange, position: P) -> Self {
+    pub fn new(change: Change, position: P) -> Self {
         Self { change, position }
     }
 

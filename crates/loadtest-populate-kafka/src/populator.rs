@@ -13,7 +13,7 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::ClientConfig;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
-use sync_core::{Schema, UniversalRow};
+use sync_core::{Row, Schema};
 use tempfile::TempDir;
 use tracing::{debug, info};
 
@@ -292,7 +292,7 @@ impl KafkaPopulator {
 
             // Generate rows
             let gen_start = Instant::now();
-            let rows: Vec<UniversalRow> = self
+            let rows: Vec<Row> = self
                 .generator
                 .internal_rows(table_name, batch_count)
                 .map_err(|e| KafkaPopulatorError::Generator(e.to_string()))?
@@ -333,7 +333,7 @@ impl KafkaPopulator {
         &self,
         topic: &str,
         table_schema: &sync_core::GeneratorTableDefinition,
-        rows: &[UniversalRow],
+        rows: &[Row],
     ) -> Result<u64, KafkaPopulatorError> {
         // First, encode all messages (key + payload pairs)
         let encoded_messages: Vec<(Vec<u8>, Vec<u8>)> = rows

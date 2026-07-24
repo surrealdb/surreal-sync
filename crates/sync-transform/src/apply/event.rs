@@ -1,6 +1,6 @@
 //! Unified apply events: row changes and relation (graph edge) changes.
 
-use sync_core::{UniversalChange, UniversalRelationChange};
+use sync_core::{Change, RelationChange};
 
 /// One item in the apply buffer / transform window / ordered sink queue.
 ///
@@ -8,23 +8,23 @@ use sync_core::{UniversalChange, UniversalRelationChange};
 /// source order across both kinds through the same max_in_flight window.
 ///
 /// [`RelationChange`](Self::RelationChange) is boxed to keep the enum compact
-/// (`UniversalRelationChange` is substantially larger than [`UniversalChange`]).
+/// (`RelationChange` is substantially larger than [`Change`]).
 #[derive(Debug, Clone)]
 pub enum ApplyEvent {
     /// Row create / update / delete.
-    Change(UniversalChange),
-    /// Graph-edge create / update / delete ([`UniversalRelationChange`]).
-    RelationChange(Box<UniversalRelationChange>),
+    Change(Change),
+    /// Graph-edge create / update / delete ([`RelationChange`]).
+    RelationChange(Box<RelationChange>),
 }
 
 impl ApplyEvent {
     /// Wrap a row change.
-    pub fn change(change: UniversalChange) -> Self {
+    pub fn change(change: Change) -> Self {
         Self::Change(change)
     }
 
     /// Wrap a relation change.
-    pub fn relation_change(change: UniversalRelationChange) -> Self {
+    pub fn relation_change(change: RelationChange) -> Self {
         Self::RelationChange(Box::new(change))
     }
 
@@ -55,12 +55,12 @@ impl<P> PositionedEvent<P> {
     }
 
     /// Positioned row change.
-    pub fn change(change: UniversalChange, position: P) -> Self {
+    pub fn change(change: Change, position: P) -> Self {
         Self::new(ApplyEvent::Change(change), position)
     }
 
     /// Positioned relation change.
-    pub fn relation_change(change: UniversalRelationChange, position: P) -> Self {
+    pub fn relation_change(change: RelationChange, position: P) -> Self {
         Self::new(ApplyEvent::relation_change(change), position)
     }
 }

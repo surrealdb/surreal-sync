@@ -8,7 +8,7 @@ use mongodb_types::BsonValueWithSchema;
 use std::collections::HashMap;
 use std::time::Duration;
 use surreal_sink::SurrealSink;
-use sync_core::{DatabaseSchema, UniversalRow, UniversalType, UniversalValue};
+use sync_core::{DatabaseSchema, Row, Type, Value};
 use sync_transform::{ApplyOpts, Pipeline};
 
 /// Source database connection options (MongoDB-specific, library type without clap)
@@ -239,7 +239,7 @@ pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
 
         #[async_trait]
         impl RowChunkSource for MongoCursorChunks<'_> {
-            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+            async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<Row>>> {
                 if self.exhausted {
                     return Ok(None);
                 }
@@ -338,18 +338,16 @@ pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
     Ok(())
 }
 
-/// Convert BSON values directly to UniversalValue (without schema)
-pub fn convert_bson_to_universal_value(
-    bson_value: mongodb::bson::Bson,
-) -> anyhow::Result<UniversalValue> {
+/// Convert BSON values directly to Value (without schema)
+pub fn convert_bson_to_universal_value(bson_value: mongodb::bson::Bson) -> anyhow::Result<Value> {
     convert_bson_to_universal_value_with_schema(bson_value, None)
 }
 
-/// Convert BSON values to UniversalValue with optional schema type hint
+/// Convert BSON values to Value with optional schema type hint
 pub fn convert_bson_to_universal_value_with_schema(
     bson_value: mongodb::bson::Bson,
-    field_type: Option<&UniversalType>,
-) -> anyhow::Result<UniversalValue> {
+    field_type: Option<&Type>,
+) -> anyhow::Result<Value> {
     use mongodb::bson::Bson;
 
     // If we have schema information, use the schema-aware converter from mongodb-types
@@ -360,13 +358,13 @@ pub fn convert_bson_to_universal_value_with_schema(
 
     // Fall back to schema-less conversion
     match bson_value {
-        Bson::Double(f) => Ok(UniversalValue::Float64(f)),
+        Bson::Double(f) => Ok(Value::Float64(f)),
         Bson::String(s) => {
             // Auto-detect ISO 8601 duration strings (PTxxxS format) and convert to Duration
             if let Some(duration) = try_parse_iso8601_duration(&s) {
-                Ok(UniversalValue::Duration(duration))
+                Ok(Value::Duration(duration))
             } else {
-                Ok(UniversalValue::Text(s))
+                Ok(Value::Text(s))
             }
         }
         Bson::Array(arr) => {
@@ -376,9 +374,9 @@ pub fn convert_bson_to_universal_value_with_schema(
                 vs.push(v);
             }
             // Use Json as element type since BSON arrays can contain mixed types
-            Ok(UniversalValue::Array {
+            Ok(Value::Array {
                 elements: vs,
-                element_type: Box::new(UniversalType::Json),
+                element_type: Box::new(Type::Json),
             })
         }
         Bson::Document(doc) => {
@@ -400,9 +398,9 @@ pub fn convert_bson_to_universal_value_with_schema(
                     }
                     _ => ref_id.to_string(),
                 };
-                Ok(UniversalValue::Thing {
+                Ok(Value::Thing {
                     table: ref_collection.clone(),
-                    id: Box::new(UniversalValue::Text(id_string)),
+                    id: Box::new(Value::Text(id_string)),
                 })
             } else {
                 // Regular document - convert recursively
@@ -411,37 +409,37 @@ pub fn convert_bson_to_universal_value_with_schema(
                     let v = convert_bson_to_universal_value(val)?;
                     obj.insert(key, v);
                 }
-                Ok(UniversalValue::Object(obj))
+                Ok(Value::Object(obj))
             }
         }
-        Bson::Boolean(b) => Ok(UniversalValue::Bool(b)),
-        Bson::Null => Ok(UniversalValue::Null),
+        Bson::Boolean(b) => Ok(Value::Bool(b)),
+        Bson::Null => Ok(Value::Null),
         Bson::RegularExpression(regex) => {
             // We assume SurrealDB's regex always use Rust's regex crate under the hood,
             // so we can say (?OPTIONS)PATTERN in SurrealDB whereas it is /PATTERN/OPTIONS in MongoDB.
             // Note that the regex crate does not support the /PATTERN/OPTIONS style.
             // See https://docs.rs/regex/latest/regex/#grouping-and-flags
-            Ok(UniversalValue::Text(format!(
+            Ok(Value::Text(format!(
                 "(?{}){}",
                 regex.options, regex.pattern
             )))
         }
-        Bson::JavaScriptCode(code) => Ok(UniversalValue::Text(code)),
+        Bson::JavaScriptCode(code) => Ok(Value::Text(code)),
         Bson::JavaScriptCodeWithScope(code_with_scope) => {
             let mut scope_obj = HashMap::new();
             for (key, val) in code_with_scope.scope {
                 let v = convert_bson_to_universal_value(val)?;
                 scope_obj.insert(key, v);
             }
-            let scope = UniversalValue::Object(scope_obj);
-            let code = UniversalValue::Text(code_with_scope.code);
+            let scope = Value::Object(scope_obj);
+            let code = Value::Text(code_with_scope.code);
             let mut result_obj = HashMap::new();
             result_obj.insert("$code".to_string(), code);
             result_obj.insert("$scope".to_string(), scope);
-            Ok(UniversalValue::Object(result_obj))
+            Ok(Value::Object(result_obj))
         }
-        Bson::Int32(i) => Ok(UniversalValue::Int64(i as i64)),
-        Bson::Int64(i) => Ok(UniversalValue::Int64(i)),
+        Bson::Int32(i) => Ok(Value::Int64(i as i64)),
+        Bson::Int64(i) => Ok(Value::Int64(i)),
         Bson::Timestamp(ts) => {
             // MongoDB Timestamp.time is seconds since Unix epoch
             let seconds = ts.time as i64;
@@ -449,64 +447,64 @@ pub fn convert_bson_to_universal_value_with_schema(
             let assumed_ns = ts.increment;
             if let Some(datetime) = chrono::DateTime::from_timestamp(seconds, assumed_ns) {
                 // MongoDB timestamps are in UTC, so use ZonedDateTime
-                Ok(UniversalValue::ZonedDateTime(datetime))
+                Ok(Value::ZonedDateTime(datetime))
             } else {
                 Err(anyhow::anyhow!(
                     "Failed to convert MongoDB timestamp to datetime"
                 ))
             }
         }
-        Bson::Binary(binary) => Ok(UniversalValue::Bytes(binary.bytes)),
-        Bson::ObjectId(oid) => Ok(UniversalValue::Text(oid.to_string())),
-        Bson::DateTime(dt) => Ok(UniversalValue::ZonedDateTime(dt.to_chrono())),
-        Bson::Symbol(s) => Ok(UniversalValue::Text(s)),
+        Bson::Binary(binary) => Ok(Value::Bytes(binary.bytes)),
+        Bson::ObjectId(oid) => Ok(Value::Text(oid.to_string())),
+        Bson::DateTime(dt) => Ok(Value::ZonedDateTime(dt.to_chrono())),
+        Bson::Symbol(s) => Ok(Value::Text(s)),
         Bson::Decimal128(d) => {
             let decimal_str = d.to_string();
             // Try to parse as float64
             match decimal_str.parse::<f64>() {
-                Ok(f) => Ok(UniversalValue::Float64(f)),
+                Ok(f) => Ok(Value::Float64(f)),
                 Err(e) => {
                     tracing::warn!("Failed to parse BSON Decimal128 '{}': {:?}", decimal_str, e);
                     Err(anyhow::anyhow!("Failed to parse BSON Decimal128"))
                 }
             }
         }
-        Bson::Undefined => Ok(UniversalValue::Null), // Map undefined to null
+        Bson::Undefined => Ok(Value::Null), // Map undefined to null
         Bson::MaxKey => {
             let mut mk = HashMap::new();
-            mk.insert("$maxKey".to_string(), UniversalValue::Int64(1));
-            Ok(UniversalValue::Object(mk))
+            mk.insert("$maxKey".to_string(), Value::Int64(1));
+            Ok(Value::Object(mk))
         }
         Bson::MinKey => {
             let mut mk = HashMap::new();
-            mk.insert("$minKey".to_string(), UniversalValue::Int64(1));
-            Ok(UniversalValue::Object(mk))
+            mk.insert("$minKey".to_string(), Value::Int64(1));
+            Ok(Value::Object(mk))
         }
         Bson::DbPointer(_db_pointer) => {
             // DBPointer is deprecated and fields are private
             // Store as a special string to preserve the information
-            Ok(UniversalValue::Text("$dbPointer".to_string()))
+            Ok(Value::Text("$dbPointer".to_string()))
         }
     }
 }
 
-/// Converts a BSON document containing _id to a UniversalRow with optional schema
+/// Converts a BSON document containing _id to a Row with optional schema
 pub fn convert_bson_document_to_record_with_schema(
     doc: mongodb::bson::Document,
     collection_name: &str,
     row_index: u64,
     schema: Option<&DatabaseSchema>,
-) -> anyhow::Result<UniversalRow> {
+) -> anyhow::Result<Row> {
     // Get table schema for field type lookup
     let table_def = schema.and_then(|s| s.get_table(collection_name));
 
-    // Extract MongoDB _id and convert to UniversalValue
+    // Extract MongoDB _id and convert to Value
     let id_value = if let Some(id_bson) = doc.get("_id") {
         match id_bson {
-            mongodb::bson::Bson::ObjectId(oid) => UniversalValue::Text(oid.to_string()),
-            mongodb::bson::Bson::String(s) => UniversalValue::Text(s.clone()),
-            mongodb::bson::Bson::Int32(i) => UniversalValue::Int64(*i as i64),
-            mongodb::bson::Bson::Int64(i) => UniversalValue::Int64(*i),
+            mongodb::bson::Bson::ObjectId(oid) => Value::Text(oid.to_string()),
+            mongodb::bson::Bson::String(s) => Value::Text(s.clone()),
+            mongodb::bson::Bson::Int32(i) => Value::Int64(*i as i64),
+            mongodb::bson::Bson::Int64(i) => Value::Int64(*i),
             _ => anyhow::bail!("Unsupported _id type in MongoDB document: {id_bson:?}"),
         }
     } else {
@@ -524,7 +522,7 @@ pub fn convert_bson_document_to_record_with_schema(
         }
     }
 
-    Ok(UniversalRow::new(
+    Ok(Row::new(
         collection_name.to_string(),
         row_index,
         id_value,

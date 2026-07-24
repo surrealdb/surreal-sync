@@ -6,11 +6,11 @@
 //! - `{rand:N}` - random N-digit number
 
 use rand::RngExt;
-use sync_core::UniversalValue;
+use sync_core::Value;
 use uuid::Uuid;
 
 /// Generate a string based on a pattern with placeholders.
-pub fn generate_pattern<R: RngExt>(pattern: &str, rng: &mut R, index: u64) -> UniversalValue {
+pub fn generate_pattern<R: RngExt>(pattern: &str, rng: &mut R, index: u64) -> Value {
     let mut result = pattern.to_string();
 
     // Replace {index}
@@ -38,7 +38,7 @@ pub fn generate_pattern<R: RngExt>(pattern: &str, rng: &mut R, index: u64) -> Un
         }
     }
 
-    UniversalValue::Text(result)
+    Value::Text(result)
 }
 
 /// Generate a random number with exactly N digits.
@@ -71,10 +71,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let value = generate_pattern("user_{index}@example.com", &mut rng, 123);
 
-        assert_eq!(
-            value,
-            UniversalValue::Text("user_123@example.com".to_string())
-        );
+        assert_eq!(value, Value::Text("user_123@example.com".to_string()));
     }
 
     #[test]
@@ -82,7 +79,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let value = generate_pattern("id-{uuid}", &mut rng, 0);
 
-        if let UniversalValue::Text(s) = value {
+        if let Value::Text(s) = value {
             assert!(s.starts_with("id-"));
             assert_eq!(s.len(), 3 + 36); // "id-" + UUID
         } else {
@@ -95,7 +92,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let value = generate_pattern("code-{rand:6}", &mut rng, 0);
 
-        if let UniversalValue::Text(s) = value {
+        if let Value::Text(s) = value {
             assert!(s.starts_with("code-"));
             assert_eq!(s.len(), 5 + 6); // "code-" + 6 digits
                                         // Check that the random part is all digits
@@ -111,7 +108,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
         let value = generate_pattern("user_{index}_code_{rand:4}", &mut rng, 42);
 
-        if let UniversalValue::Text(s) = value {
+        if let Value::Text(s) = value {
             assert!(s.starts_with("user_42_code_"));
             // Total length: "user_42_code_" (13) + 4 digits
             assert_eq!(s.len(), 13 + 4);

@@ -5,7 +5,7 @@ use crate::insert::{generate_create_table, generate_drop_table, insert_batch, DE
 use loadtest_generator::DataGenerator;
 use mysql_async::{prelude::*, Pool};
 use std::time::{Duration, Instant};
-use sync_core::{Schema, UniversalRow};
+use sync_core::{Row, Schema};
 use tracing::{debug, info, warn};
 
 /// Default number of connection retry attempts
@@ -261,7 +261,7 @@ impl MySQLPopulator {
 
             // Generate rows
             let gen_start = Instant::now();
-            let rows: Vec<UniversalRow> = self
+            let rows: Vec<Row> = self
                 .generator
                 .internal_rows(table_name, batch_count)
                 .map_err(|e| MySQLPopulatorError::Generator(e.to_string()))?

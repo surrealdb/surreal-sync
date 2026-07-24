@@ -4,7 +4,7 @@
 //! and type conversion between different database systems.
 
 use crate::schema::Schema;
-use crate::types::UniversalType;
+use crate::types::Type;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -17,34 +17,34 @@ use uuid::Uuid;
     "Type-value mismatch: expected {expected_value} for type {sync_type:?}, got {actual_value}"
 )]
 pub struct TypedValueError {
-    /// The UniversalType that was specified
-    pub sync_type: UniversalType,
+    /// The Type that was specified
+    pub sync_type: Type,
     /// Description of the expected value kind
     pub expected_value: String,
     /// Description of the actual value kind
     pub actual_value: String,
 }
 
-/// Universal value representation with 1:1 correspondence to `UniversalType`.
+/// Universal value representation with 1:1 correspondence to `Type`.
 ///
-/// Each variant of `UniversalValue` corresponds exactly to one variant of `UniversalType`,
+/// Each variant of `Value` corresponds exactly to one variant of `Type`,
 /// enabling deterministic conversion via `to_typed_value()` without inference or fallback.
 ///
 /// # Design Principles
 ///
-/// 1. **Exact correspondence**: Every `UniversalType` variant has exactly one matching `UniversalValue` variant
+/// 1. **Exact correspondence**: Every `Type` variant has exactly one matching `Value` variant
 /// 2. **No inference**: `to_typed_value()` is deterministic - no guessing or fallback
 /// 3. **Type metadata included**: Variants like `Char`, `VarChar`, `Decimal` include their type parameters
 /// 4. **Self-describing**: Each value knows its exact type without external context
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
-pub enum UniversalValue {
+pub enum Value {
     // === Boolean ===
-    /// Boolean value → `UniversalType::Bool`
+    /// Boolean value → `Type::Bool`
     Bool(bool),
 
     // === Integer types ===
-    /// Tiny integer with display width → `UniversalType::Int8 { width }`
+    /// Tiny integer with display width → `Type::Int8 { width }`
     Int8 {
         /// The integer value
         value: i8,
@@ -52,24 +52,24 @@ pub enum UniversalValue {
         width: u8,
     },
 
-    /// 16-bit signed integer → `UniversalType::Int16`
+    /// 16-bit signed integer → `Type::Int16`
     Int16(i16),
 
-    /// 32-bit signed integer → `UniversalType::Int32`
+    /// 32-bit signed integer → `Type::Int32`
     Int32(i32),
 
-    /// 64-bit signed integer → `UniversalType::Int64`
+    /// 64-bit signed integer → `Type::Int64`
     Int64(i64),
 
     // === Floating point types ===
-    /// 32-bit IEEE 754 floating point → `UniversalType::Float32`
+    /// 32-bit IEEE 754 floating point → `Type::Float32`
     Float32(f32),
 
-    /// 64-bit IEEE 754 floating point → `UniversalType::Float64`
+    /// 64-bit IEEE 754 floating point → `Type::Float64`
     Float64(f64),
 
     // === Exact numeric ===
-    /// Decimal value with precision/scale → `UniversalType::Decimal { precision, scale }`
+    /// Decimal value with precision/scale → `Type::Decimal { precision, scale }`
     Decimal {
         /// String representation of the decimal value
         value: String,
@@ -80,7 +80,7 @@ pub enum UniversalValue {
     },
 
     // === String types ===
-    /// Fixed-length character string → `UniversalType::Char { length }`
+    /// Fixed-length character string → `Type::Char { length }`
     Char {
         /// The string value
         value: String,
@@ -88,7 +88,7 @@ pub enum UniversalValue {
         length: u16,
     },
 
-    /// Variable-length character string → `UniversalType::VarChar { length }`
+    /// Variable-length character string → `Type::VarChar { length }`
     VarChar {
         /// The string value
         value: String,
@@ -96,34 +96,34 @@ pub enum UniversalValue {
         length: u16,
     },
 
-    /// Unlimited text → `UniversalType::Text`
+    /// Unlimited text → `Type::Text`
     Text(String),
 
     // === Binary types ===
-    /// Binary large object → `UniversalType::Blob`
+    /// Binary large object → `Type::Blob`
     Blob(Vec<u8>),
 
-    /// Binary data → `UniversalType::Bytes`
+    /// Binary data → `Type::Bytes`
     Bytes(Vec<u8>),
 
     // === Temporal types ===
-    /// Date only (YYYY-MM-DD) → `UniversalType::Date`
+    /// Date only (YYYY-MM-DD) → `Type::Date`
     Date(DateTime<Utc>),
 
-    /// Time only (HH:MM:SS) → `UniversalType::Time`
+    /// Time only (HH:MM:SS) → `Type::Time`
     Time(DateTime<Utc>),
 
-    /// Timestamp without timezone (microsecond precision) → `UniversalType::LocalDateTime`
+    /// Timestamp without timezone (microsecond precision) → `Type::LocalDateTime`
     LocalDateTime(DateTime<Utc>),
 
-    /// Timestamp with nanosecond precision → `UniversalType::LocalDateTimeNano`
+    /// Timestamp with nanosecond precision → `Type::LocalDateTimeNano`
     LocalDateTimeNano(DateTime<Utc>),
 
-    /// Timestamp with timezone → `UniversalType::ZonedDateTime`
+    /// Timestamp with timezone → `Type::ZonedDateTime`
     ZonedDateTime(DateTime<Utc>),
 
     /// Time with timezone (stored as string to preserve original format)
-    /// → `UniversalType::TimeTz`
+    /// → `Type::TimeTz`
     ///
     /// Note: We intentionally use String instead of DateTime because time and datetime
     /// are fundamentally different types. DateTime implies a specific point in time,
@@ -132,28 +132,28 @@ pub enum UniversalValue {
     TimeTz(String),
 
     // === Special types ===
-    /// UUID (128-bit) → `UniversalType::Uuid`
+    /// UUID (128-bit) → `Type::Uuid`
     Uuid(Uuid),
 
-    /// ULID (128-bit sortable identifier) → `UniversalType::Ulid`
+    /// ULID (128-bit sortable identifier) → `Type::Ulid`
     Ulid(ulid::Ulid),
 
-    /// JSON document → `UniversalType::Json`
+    /// JSON document → `Type::Json`
     Json(Box<serde_json::Value>),
 
-    /// Binary JSON (PostgreSQL JSONB) → `UniversalType::Jsonb`
+    /// Binary JSON (PostgreSQL JSONB) → `Type::Jsonb`
     Jsonb(Box<serde_json::Value>),
 
     // === Collection types ===
-    /// Array of a specific type → `UniversalType::Array { element_type }`
+    /// Array of a specific type → `Type::Array { element_type }`
     Array {
         /// The array elements
-        elements: Vec<UniversalValue>,
+        elements: Vec<Value>,
         /// Element type
-        element_type: Box<UniversalType>,
+        element_type: Box<Type>,
     },
 
-    /// MySQL SET type → `UniversalType::Set { values }`
+    /// MySQL SET type → `Type::Set { values }`
     Set {
         /// Selected values from the set
         elements: Vec<String>,
@@ -162,7 +162,7 @@ pub enum UniversalValue {
     },
 
     // === Enumeration ===
-    /// Enumeration type → `UniversalType::Enum { values }`
+    /// Enumeration type → `Type::Enum { values }`
     Enum {
         /// The selected enum value
         value: String,
@@ -171,7 +171,7 @@ pub enum UniversalValue {
     },
 
     // === Spatial ===
-    /// Spatial/geometry type → `UniversalType::Geometry { geometry_type }`
+    /// Spatial/geometry type → `Type::Geometry { geometry_type }`
     Geometry {
         /// Geometry data (WKB bytes or GeoJSON object)
         data: GeometryData,
@@ -179,23 +179,23 @@ pub enum UniversalValue {
         geometry_type: crate::types::GeometryType,
     },
 
-    /// Duration type → `UniversalType::Duration`
+    /// Duration type → `Type::Duration`
     Duration(std::time::Duration),
 
-    /// Record reference/link (e.g., SurrealDB Thing) → `UniversalType::Thing`
+    /// Record reference/link (e.g., SurrealDB Thing) → `Type::Thing`
     Thing {
         /// The target table/collection name
         table: String,
         /// The record ID (can be string, int, uuid, etc.)
-        id: Box<UniversalValue>,
+        id: Box<Value>,
     },
 
     /// Nested object/document (e.g., MongoDB embedded documents, SurrealDB objects)
-    /// → `UniversalType::Object`
+    /// → `Type::Object`
     ///
     /// This differs from Json/Jsonb which are serialized JSON storage types.
     /// Object represents a structured nested document with typed fields.
-    Object(HashMap<String, UniversalValue>),
+    Object(HashMap<String, Value>),
 
     /// Null value (can be any nullable type)
     Null,
@@ -203,18 +203,18 @@ pub enum UniversalValue {
     /// Source emitted a temporal that is not a valid calendar/chrono value
     /// (e.g. MySQL/MariaDB zero date `0000-00-00`).
     ///
-    /// Distinct from [`UniversalValue::Null`]: SQL NULL stays `Null`; MySQL-style
+    /// Distinct from [`Value::Null`]: SQL NULL stays `Null`; MySQL-style
     /// zero dates/timestamps use this sentinel so transforms retain the intended
     /// column type before the SurrealDB sink maps it.
     ZeroTemporal {
         /// Intended column type (`Date`, `Time`, `LocalDateTime`, `ZonedDateTime`, …)
-        intended_type: UniversalType,
+        intended_type: Type,
         /// Optional source literal for transforms/debugging, e.g. `"0000-00-00 00:00:00"`
         source: Option<String>,
     },
 }
 
-/// How the SurrealDB sink represents [`UniversalValue::ZeroTemporal`].
+/// How the SurrealDB sink represents [`Value::ZeroTemporal`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ZeroTemporalPolicy {
@@ -234,7 +234,7 @@ pub enum ZeroTemporalPolicy {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GeometryData(pub serde_json::Value);
 
-impl UniversalValue {
+impl Value {
     // === Factory methods ===
 
     /// Create a TinyInt value.
@@ -268,7 +268,7 @@ impl UniversalValue {
     }
 
     /// Create an Array value.
-    pub fn array(elements: Vec<UniversalValue>, element_type: UniversalType) -> Self {
+    pub fn array(elements: Vec<Value>, element_type: Type) -> Self {
         Self::Array {
             elements,
             element_type: Box::new(element_type),
@@ -313,7 +313,7 @@ impl UniversalValue {
     }
 
     /// Create a zero-temporal sentinel with the intended column type.
-    pub fn zero_temporal(intended_type: UniversalType, source: Option<String>) -> Self {
+    pub fn zero_temporal(intended_type: Type, source: Option<String>) -> Self {
         Self::ZeroTemporal {
             intended_type,
             source,
@@ -321,13 +321,13 @@ impl UniversalValue {
     }
 
     /// Canonical MySQL-style zero literal for an intended temporal type.
-    pub fn canonical_zero_literal(intended_type: &UniversalType) -> &'static str {
+    pub fn canonical_zero_literal(intended_type: &Type) -> &'static str {
         match intended_type {
-            UniversalType::Date => "0000-00-00",
-            UniversalType::Time | UniversalType::TimeTz => "00:00:00",
-            UniversalType::LocalDateTime
-            | UniversalType::LocalDateTimeNano
-            | UniversalType::ZonedDateTime => "0000-00-00 00:00:00",
+            Type::Date => "0000-00-00",
+            Type::Time | Type::TimeTz => "00:00:00",
+            Type::LocalDateTime | Type::LocalDateTimeNano | Type::ZonedDateTime => {
+                "0000-00-00 00:00:00"
+            }
             _ => "0000-00-00 00:00:00",
         }
     }
@@ -348,16 +348,16 @@ impl UniversalValue {
         year == 0 && month == 0 && day == 0
     }
 
-    /// Whether `intended_type` may be used with [`UniversalValue::ZeroTemporal`].
-    pub fn is_zero_temporal_type(intended_type: &UniversalType) -> bool {
+    /// Whether `intended_type` may be used with [`Value::ZeroTemporal`].
+    pub fn is_zero_temporal_type(intended_type: &Type) -> bool {
         matches!(
             intended_type,
-            UniversalType::Date
-                | UniversalType::Time
-                | UniversalType::LocalDateTime
-                | UniversalType::LocalDateTimeNano
-                | UniversalType::ZonedDateTime
-                | UniversalType::TimeTz
+            Type::Date
+                | Type::Time
+                | Type::LocalDateTime
+                | Type::LocalDateTimeNano
+                | Type::ZonedDateTime
+                | Type::TimeTz
         )
     }
 
@@ -462,7 +462,7 @@ impl UniversalValue {
     }
 
     /// Try to get this value as an array of elements.
-    pub fn as_array(&self) -> Option<&Vec<UniversalValue>> {
+    pub fn as_array(&self) -> Option<&Vec<Value>> {
         match self {
             Self::Array { elements, .. } => Some(elements),
             _ => None,
@@ -509,21 +509,21 @@ impl UniversalValue {
 
     /// Convert this value to a TypedValue deterministically.
     ///
-    /// Each `UniversalValue` variant maps to exactly one `UniversalType` variant,
+    /// Each `Value` variant maps to exactly one `Type` variant,
     /// so there is no inference or fallback - the mapping is deterministic.
     ///
     /// # Example
     ///
     /// ```rust
-    /// use sync_core::{UniversalValue, UniversalType};
+    /// use sync_core::{Value, Type};
     ///
-    /// let value = UniversalValue::Int32(42);
+    /// let value = Value::Int32(42);
     /// let typed = value.to_typed_value();
-    /// assert!(matches!(typed.sync_type, UniversalType::Int32));
+    /// assert!(matches!(typed.sync_type, Type::Int32));
     ///
-    /// let value = UniversalValue::Text("hello".to_string());
+    /// let value = Value::Text("hello".to_string());
     /// let typed = value.to_typed_value();
-    /// assert!(matches!(typed.sync_type, UniversalType::Text));
+    /// assert!(matches!(typed.sync_type, Type::Text));
     /// ```
     pub fn to_typed_value(self) -> TypedValue {
         let sync_type = self.to_type();
@@ -531,79 +531,79 @@ impl UniversalValue {
         TypedValue::new(sync_type, self)
     }
 
-    /// Get the corresponding UniversalType for this value.
+    /// Get the corresponding Type for this value.
     ///
     /// This is a deterministic 1:1 mapping - no inference or fallback.
-    pub fn to_type(&self) -> UniversalType {
+    pub fn to_type(&self) -> Type {
         match self {
-            Self::Bool(_) => UniversalType::Bool,
-            Self::Int8 { width, .. } => UniversalType::Int8 { width: *width },
-            Self::Int16(_) => UniversalType::Int16,
-            Self::Int32(_) => UniversalType::Int32,
-            Self::Int64(_) => UniversalType::Int64,
-            Self::Float32(_) => UniversalType::Float32,
-            Self::Float64(_) => UniversalType::Float64,
+            Self::Bool(_) => Type::Bool,
+            Self::Int8 { width, .. } => Type::Int8 { width: *width },
+            Self::Int16(_) => Type::Int16,
+            Self::Int32(_) => Type::Int32,
+            Self::Int64(_) => Type::Int64,
+            Self::Float32(_) => Type::Float32,
+            Self::Float64(_) => Type::Float64,
             Self::Decimal {
                 precision, scale, ..
-            } => UniversalType::Decimal {
+            } => Type::Decimal {
                 precision: *precision,
                 scale: *scale,
             },
-            Self::Char { length, .. } => UniversalType::Char { length: *length },
-            Self::VarChar { length, .. } => UniversalType::VarChar { length: *length },
-            Self::Text(_) => UniversalType::Text,
-            Self::Blob(_) => UniversalType::Blob,
-            Self::Bytes(_) => UniversalType::Bytes,
-            Self::Date(_) => UniversalType::Date,
-            Self::Time(_) => UniversalType::Time,
-            Self::LocalDateTime(_) => UniversalType::LocalDateTime,
-            Self::LocalDateTimeNano(_) => UniversalType::LocalDateTimeNano,
-            Self::ZonedDateTime(_) => UniversalType::ZonedDateTime,
-            Self::TimeTz(_) => UniversalType::TimeTz,
-            Self::Uuid(_) => UniversalType::Uuid,
-            Self::Ulid(_) => UniversalType::Ulid,
-            Self::Json(_) => UniversalType::Json,
-            Self::Jsonb(_) => UniversalType::Jsonb,
-            Self::Array { element_type, .. } => UniversalType::Array {
+            Self::Char { length, .. } => Type::Char { length: *length },
+            Self::VarChar { length, .. } => Type::VarChar { length: *length },
+            Self::Text(_) => Type::Text,
+            Self::Blob(_) => Type::Blob,
+            Self::Bytes(_) => Type::Bytes,
+            Self::Date(_) => Type::Date,
+            Self::Time(_) => Type::Time,
+            Self::LocalDateTime(_) => Type::LocalDateTime,
+            Self::LocalDateTimeNano(_) => Type::LocalDateTimeNano,
+            Self::ZonedDateTime(_) => Type::ZonedDateTime,
+            Self::TimeTz(_) => Type::TimeTz,
+            Self::Uuid(_) => Type::Uuid,
+            Self::Ulid(_) => Type::Ulid,
+            Self::Json(_) => Type::Json,
+            Self::Jsonb(_) => Type::Jsonb,
+            Self::Array { element_type, .. } => Type::Array {
                 element_type: element_type.clone(),
             },
-            Self::Set { allowed_values, .. } => UniversalType::Set {
+            Self::Set { allowed_values, .. } => Type::Set {
                 values: allowed_values.clone(),
             },
-            Self::Enum { allowed_values, .. } => UniversalType::Enum {
+            Self::Enum { allowed_values, .. } => Type::Enum {
                 values: allowed_values.clone(),
             },
-            Self::Geometry { geometry_type, .. } => UniversalType::Geometry {
+            Self::Geometry { geometry_type, .. } => Type::Geometry {
                 geometry_type: geometry_type.clone(),
             },
-            Self::Duration(_) => UniversalType::Duration,
-            Self::Thing { .. } => UniversalType::Thing,
-            Self::Object(_) => UniversalType::Object,
+            Self::Duration(_) => Type::Duration,
+            Self::Thing { .. } => Type::Thing,
+            Self::Object(_) => Type::Object,
             // Null doesn't have a single type - this is a special case
             // We use Text as a placeholder, but callers should handle Null explicitly
-            Self::Null => UniversalType::Text,
+            Self::Null => Type::Text,
             Self::ZeroTemporal { intended_type, .. } => intended_type.clone(),
         }
     }
 }
 
-/// Typed value with its UniversalType for conversion.
+/// Typed value with its Type for conversion.
 ///
-/// `TypedValue` combines a `UniversalValue` with its corresponding `UniversalType`,
+/// `TypedValue` combines a `Value` with its corresponding `Type`,
 /// providing the type context needed for `From`/`Into` trait implementations
 /// in the database-specific type crates.
 #[derive(Debug, Clone)]
 pub struct TypedValue {
     /// The extended type information
-    pub sync_type: UniversalType,
+    pub sync_type: Type,
 
     /// The raw generated value
-    pub value: UniversalValue,
+    pub value: Value,
 }
 
 impl TypedValue {
     /// Create a new typed value (internal use - prefer factory methods).
-    fn new(sync_type: UniversalType, value: UniversalValue) -> Self {
+    fn new(sync_type: Type, value: Value) -> Self {
         Self { sync_type, value }
     }
 
@@ -644,18 +644,15 @@ impl TypedValue {
     /// - `Set` type requires `Set` value
     /// - `Enum` type requires `Enum` value
     /// - `Geometry` type requires `Geometry` value
-    pub fn try_with_type(
-        sync_type: UniversalType,
-        value: UniversalValue,
-    ) -> Result<Self, TypedValueError> {
+    pub fn try_with_type(sync_type: Type, value: Value) -> Result<Self, TypedValueError> {
         // Null is always valid for any type
-        if matches!(value, UniversalValue::Null) {
+        if matches!(value, Value::Null) {
             return Ok(Self::new(sync_type, value));
         }
 
         // ZeroTemporal is valid when sync_type matches intended_type and is temporal
-        if let UniversalValue::ZeroTemporal { intended_type, .. } = &value {
-            if sync_type == *intended_type && UniversalValue::is_zero_temporal_type(&sync_type) {
+        if let Value::ZeroTemporal { intended_type, .. } = &value {
+            if sync_type == *intended_type && Value::is_zero_temporal_type(&sync_type) {
                 return Ok(Self::new(sync_type, value));
             }
             return Err(TypedValueError {
@@ -668,60 +665,60 @@ impl TypedValue {
         // Strict 1:1 validation - each type requires its exact corresponding value variant
         let is_valid = match (&sync_type, &value) {
             // Boolean
-            (UniversalType::Bool, UniversalValue::Bool(_)) => true,
+            (Type::Bool, Value::Bool(_)) => true,
 
             // Integer types - strict matching
-            (UniversalType::Int8 { .. }, UniversalValue::Int8 { .. }) => true,
-            (UniversalType::Int16, UniversalValue::Int16(_)) => true,
-            (UniversalType::Int32, UniversalValue::Int32(_)) => true,
-            (UniversalType::Int64, UniversalValue::Int64(_)) => true,
+            (Type::Int8 { .. }, Value::Int8 { .. }) => true,
+            (Type::Int16, Value::Int16(_)) => true,
+            (Type::Int32, Value::Int32(_)) => true,
+            (Type::Int64, Value::Int64(_)) => true,
 
             // Floating point types - strict matching
-            (UniversalType::Float32, UniversalValue::Float32(_)) => true,
-            (UniversalType::Float64, UniversalValue::Float64(_)) => true,
+            (Type::Float32, Value::Float32(_)) => true,
+            (Type::Float64, Value::Float64(_)) => true,
 
             // Decimal
-            (UniversalType::Decimal { .. }, UniversalValue::Decimal { .. }) => true,
+            (Type::Decimal { .. }, Value::Decimal { .. }) => true,
 
             // String types - strict matching
-            (UniversalType::Char { .. }, UniversalValue::Char { .. }) => true,
-            (UniversalType::VarChar { .. }, UniversalValue::VarChar { .. }) => true,
-            (UniversalType::Text, UniversalValue::Text(_)) => true,
+            (Type::Char { .. }, Value::Char { .. }) => true,
+            (Type::VarChar { .. }, Value::VarChar { .. }) => true,
+            (Type::Text, Value::Text(_)) => true,
 
             // Binary types - strict matching
-            (UniversalType::Blob, UniversalValue::Blob(_)) => true,
-            (UniversalType::Bytes, UniversalValue::Bytes(_)) => true,
+            (Type::Blob, Value::Blob(_)) => true,
+            (Type::Bytes, Value::Bytes(_)) => true,
 
             // Temporal types - strict matching
-            (UniversalType::Date, UniversalValue::Date(_)) => true,
-            (UniversalType::Time, UniversalValue::Time(_)) => true,
-            (UniversalType::LocalDateTime, UniversalValue::LocalDateTime(_)) => true,
-            (UniversalType::LocalDateTimeNano, UniversalValue::LocalDateTimeNano(_)) => true,
-            (UniversalType::ZonedDateTime, UniversalValue::ZonedDateTime(_)) => true,
-            (UniversalType::TimeTz, UniversalValue::TimeTz(_)) => true,
+            (Type::Date, Value::Date(_)) => true,
+            (Type::Time, Value::Time(_)) => true,
+            (Type::LocalDateTime, Value::LocalDateTime(_)) => true,
+            (Type::LocalDateTimeNano, Value::LocalDateTimeNano(_)) => true,
+            (Type::ZonedDateTime, Value::ZonedDateTime(_)) => true,
+            (Type::TimeTz, Value::TimeTz(_)) => true,
 
             // UUID
-            (UniversalType::Uuid, UniversalValue::Uuid(_)) => true,
+            (Type::Uuid, Value::Uuid(_)) => true,
 
             // JSON types - strict matching
-            (UniversalType::Json, UniversalValue::Json(_)) => true,
-            (UniversalType::Jsonb, UniversalValue::Jsonb(_)) => true,
+            (Type::Json, Value::Json(_)) => true,
+            (Type::Jsonb, Value::Jsonb(_)) => true,
 
             // Collection types - strict matching
-            (UniversalType::Array { .. }, UniversalValue::Array { .. }) => true,
-            (UniversalType::Set { .. }, UniversalValue::Set { .. }) => true,
+            (Type::Array { .. }, Value::Array { .. }) => true,
+            (Type::Set { .. }, Value::Set { .. }) => true,
 
             // Enumeration
-            (UniversalType::Enum { .. }, UniversalValue::Enum { .. }) => true,
+            (Type::Enum { .. }, Value::Enum { .. }) => true,
 
             // Geometry
-            (UniversalType::Geometry { .. }, UniversalValue::Geometry { .. }) => true,
+            (Type::Geometry { .. }, Value::Geometry { .. }) => true,
 
             // Duration
-            (UniversalType::Duration, UniversalValue::Duration(_)) => true,
+            (Type::Duration, Value::Duration(_)) => true,
 
             // Object
-            (UniversalType::Object, UniversalValue::Object(_)) => true,
+            (Type::Object, Value::Object(_)) => true,
 
             // All other combinations are invalid
             _ => false,
@@ -739,38 +736,38 @@ impl TypedValue {
     }
 
     /// Get the expected value description for a given type.
-    fn expected_value_description(sync_type: &UniversalType) -> String {
+    fn expected_value_description(sync_type: &Type) -> String {
         match sync_type {
-            UniversalType::Bool => "Bool".to_string(),
-            UniversalType::Int8 { .. } => "Int8".to_string(),
-            UniversalType::Int16 => "Int16".to_string(),
-            UniversalType::Int32 => "Int32".to_string(),
-            UniversalType::Int64 => "Int64".to_string(),
-            UniversalType::Float32 => "Float32".to_string(),
-            UniversalType::Float64 => "Float64".to_string(),
-            UniversalType::Decimal { .. } => "Decimal".to_string(),
-            UniversalType::Char { .. } => "Char".to_string(),
-            UniversalType::VarChar { .. } => "VarChar".to_string(),
-            UniversalType::Text => "Text".to_string(),
-            UniversalType::Blob => "Blob".to_string(),
-            UniversalType::Bytes => "Bytes".to_string(),
-            UniversalType::Date => "Date".to_string(),
-            UniversalType::Time => "Time".to_string(),
-            UniversalType::LocalDateTime => "LocalDateTime".to_string(),
-            UniversalType::LocalDateTimeNano => "LocalDateTimeNano".to_string(),
-            UniversalType::ZonedDateTime => "ZonedDateTime".to_string(),
-            UniversalType::TimeTz => "TimeTz".to_string(),
-            UniversalType::Uuid => "Uuid".to_string(),
-            UniversalType::Ulid => "Ulid".to_string(),
-            UniversalType::Json => "Json".to_string(),
-            UniversalType::Jsonb => "Jsonb".to_string(),
-            UniversalType::Array { .. } => "Array".to_string(),
-            UniversalType::Set { .. } => "Set".to_string(),
-            UniversalType::Enum { .. } => "Enum".to_string(),
-            UniversalType::Geometry { .. } => "Geometry".to_string(),
-            UniversalType::Duration => "Duration".to_string(),
-            UniversalType::Thing => "Thing".to_string(),
-            UniversalType::Object => "Object".to_string(),
+            Type::Bool => "Bool".to_string(),
+            Type::Int8 { .. } => "Int8".to_string(),
+            Type::Int16 => "Int16".to_string(),
+            Type::Int32 => "Int32".to_string(),
+            Type::Int64 => "Int64".to_string(),
+            Type::Float32 => "Float32".to_string(),
+            Type::Float64 => "Float64".to_string(),
+            Type::Decimal { .. } => "Decimal".to_string(),
+            Type::Char { .. } => "Char".to_string(),
+            Type::VarChar { .. } => "VarChar".to_string(),
+            Type::Text => "Text".to_string(),
+            Type::Blob => "Blob".to_string(),
+            Type::Bytes => "Bytes".to_string(),
+            Type::Date => "Date".to_string(),
+            Type::Time => "Time".to_string(),
+            Type::LocalDateTime => "LocalDateTime".to_string(),
+            Type::LocalDateTimeNano => "LocalDateTimeNano".to_string(),
+            Type::ZonedDateTime => "ZonedDateTime".to_string(),
+            Type::TimeTz => "TimeTz".to_string(),
+            Type::Uuid => "Uuid".to_string(),
+            Type::Ulid => "Ulid".to_string(),
+            Type::Json => "Json".to_string(),
+            Type::Jsonb => "Jsonb".to_string(),
+            Type::Array { .. } => "Array".to_string(),
+            Type::Set { .. } => "Set".to_string(),
+            Type::Enum { .. } => "Enum".to_string(),
+            Type::Geometry { .. } => "Geometry".to_string(),
+            Type::Duration => "Duration".to_string(),
+            Type::Thing => "Thing".to_string(),
+            Type::Object => "Object".to_string(),
         }
     }
 
@@ -782,71 +779,68 @@ impl TypedValue {
     /// This is useful when you're certain the combination is valid or when
     /// performance is critical and validation overhead is unacceptable.
     #[inline]
-    pub fn with_type_unchecked(sync_type: UniversalType, value: UniversalValue) -> Self {
+    pub fn with_type_unchecked(sync_type: Type, value: Value) -> Self {
         Self::new(sync_type, value)
     }
 
     /// Create a boolean typed value.
     pub fn bool(value: bool) -> Self {
-        Self::new(UniversalType::Bool, UniversalValue::Bool(value))
+        Self::new(Type::Bool, Value::Bool(value))
     }
 
     /// Create a smallint typed value.
     pub fn int16(value: i16) -> Self {
-        Self::new(UniversalType::Int16, UniversalValue::Int16(value))
+        Self::new(Type::Int16, Value::Int16(value))
     }
 
     /// Create an integer typed value.
     pub fn int32(value: i32) -> Self {
-        Self::new(UniversalType::Int32, UniversalValue::Int32(value))
+        Self::new(Type::Int32, Value::Int32(value))
     }
 
     /// Create a bigint typed value.
     pub fn int64(value: i64) -> Self {
-        Self::new(UniversalType::Int64, UniversalValue::Int64(value))
+        Self::new(Type::Int64, Value::Int64(value))
     }
 
     /// Create a double typed value.
     pub fn float64(value: f64) -> Self {
-        Self::new(UniversalType::Float64, UniversalValue::Float64(value))
+        Self::new(Type::Float64, Value::Float64(value))
     }
 
     /// Create a text typed value.
     pub fn text(value: impl Into<String>) -> Self {
-        Self::new(UniversalType::Text, UniversalValue::Text(value.into()))
+        Self::new(Type::Text, Value::Text(value.into()))
     }
 
     /// Create a bytes typed value.
     pub fn bytes(value: Vec<u8>) -> Self {
-        Self::new(UniversalType::Bytes, UniversalValue::Bytes(value))
+        Self::new(Type::Bytes, Value::Bytes(value))
     }
 
     /// Create a UUID typed value.
     pub fn uuid(value: Uuid) -> Self {
-        Self::new(UniversalType::Uuid, UniversalValue::Uuid(value))
+        Self::new(Type::Uuid, Value::Uuid(value))
     }
 
     /// Create a ULID typed value.
     pub fn ulid(value: ulid::Ulid) -> Self {
-        Self::new(UniversalType::Ulid, UniversalValue::Ulid(value))
+        Self::new(Type::Ulid, Value::Ulid(value))
     }
 
     /// Create a datetime typed value.
     pub fn datetime(value: DateTime<Utc>) -> Self {
-        Self::new(
-            UniversalType::LocalDateTime,
-            UniversalValue::LocalDateTime(value),
-        )
+        Self::new(Type::LocalDateTime, Value::LocalDateTime(value))
     }
 
     /// Create a float typed value.
     pub fn float32(value: f32) -> Self {
-        Self::new(UniversalType::Float32, UniversalValue::Float32(value))
+        Self::new(Type::Float32, Value::Float32(value))
     }
 
     /// Create a null typed value with a specified type.
-    pub fn null(sync_type: UniversalType) -> Self {
-        Self::new(sync_type, UniversalValue::Null)
+    pub fn null(sync_type: Type) -> Self {
+        Self::new(sync_type, Value::Null)
     }
 
     /// Create a zero-temporal typed value with the intended column type.
@@ -854,14 +848,14 @@ impl TypedValue {
     /// # Panics
     ///
     /// Panics if `intended_type` is not a temporal type allowed for zero temporals.
-    pub fn zero_temporal(intended_type: UniversalType, source: Option<String>) -> Self {
+    pub fn zero_temporal(intended_type: Type, source: Option<String>) -> Self {
         assert!(
-            UniversalValue::is_zero_temporal_type(&intended_type),
-            "zero_temporal requires a temporal UniversalType, got {intended_type:?}"
+            Value::is_zero_temporal_type(&intended_type),
+            "zero_temporal requires a temporal Type, got {intended_type:?}"
         );
         Self::new(
             intended_type.clone(),
-            UniversalValue::ZeroTemporal {
+            Value::ZeroTemporal {
                 intended_type,
                 source,
             },
@@ -871,8 +865,8 @@ impl TypedValue {
     /// Create a decimal typed value.
     pub fn decimal(value: impl Into<String>, precision: u8, scale: u8) -> Self {
         Self::new(
-            UniversalType::Decimal { precision, scale },
-            UniversalValue::Decimal {
+            Type::Decimal { precision, scale },
+            Value::Decimal {
                 value: value.into(),
                 precision,
                 scale,
@@ -881,12 +875,12 @@ impl TypedValue {
     }
 
     /// Create an array typed value.
-    pub fn array(elements: Vec<UniversalValue>, element_type: UniversalType) -> Self {
+    pub fn array(elements: Vec<Value>, element_type: Type) -> Self {
         Self::new(
-            UniversalType::Array {
+            Type::Array {
                 element_type: Box::new(element_type.clone()),
             },
-            UniversalValue::Array {
+            Value::Array {
                 elements,
                 element_type: Box::new(element_type),
             },
@@ -895,27 +889,24 @@ impl TypedValue {
 
     /// Create a JSON typed value from a serde_json::Value.
     pub fn json(value: serde_json::Value) -> Self {
-        Self::new(UniversalType::Json, UniversalValue::Json(Box::new(value)))
+        Self::new(Type::Json, Value::Json(Box::new(value)))
     }
 
     /// Create a JSONB typed value from a serde_json::Value.
     pub fn jsonb(value: serde_json::Value) -> Self {
-        Self::new(UniversalType::Jsonb, UniversalValue::Jsonb(Box::new(value)))
+        Self::new(Type::Jsonb, Value::Jsonb(Box::new(value)))
     }
 
     /// Create a TINYINT typed value with optional width.
     pub fn int8(value: i8, width: u8) -> Self {
-        Self::new(
-            UniversalType::Int8 { width },
-            UniversalValue::Int8 { value, width },
-        )
+        Self::new(Type::Int8 { width }, Value::Int8 { value, width })
     }
 
     /// Create a CHAR typed value with specified length.
     pub fn char_type(value: impl Into<String>, length: u16) -> Self {
         Self::new(
-            UniversalType::Char { length },
-            UniversalValue::Char {
+            Type::Char { length },
+            Value::Char {
                 value: value.into(),
                 length,
             },
@@ -925,8 +916,8 @@ impl TypedValue {
     /// Create a VARCHAR typed value with specified length.
     pub fn varchar(value: impl Into<String>, length: u16) -> Self {
         Self::new(
-            UniversalType::VarChar { length },
-            UniversalValue::VarChar {
+            Type::VarChar { length },
+            Value::VarChar {
                 value: value.into(),
                 length,
             },
@@ -935,42 +926,36 @@ impl TypedValue {
 
     /// Create a BLOB typed value.
     pub fn blob(value: Vec<u8>) -> Self {
-        Self::new(UniversalType::Blob, UniversalValue::Blob(value))
+        Self::new(Type::Blob, Value::Blob(value))
     }
 
     /// Create a DATE typed value from a DateTime.
     pub fn date(value: DateTime<Utc>) -> Self {
-        Self::new(UniversalType::Date, UniversalValue::Date(value))
+        Self::new(Type::Date, Value::Date(value))
     }
 
     /// Create a TIME typed value from a DateTime.
     pub fn time(value: DateTime<Utc>) -> Self {
-        Self::new(UniversalType::Time, UniversalValue::Time(value))
+        Self::new(Type::Time, Value::Time(value))
     }
 
     /// Create a TIMESTAMPTZ typed value.
     pub fn timestamptz(value: DateTime<Utc>) -> Self {
-        Self::new(
-            UniversalType::ZonedDateTime,
-            UniversalValue::ZonedDateTime(value),
-        )
+        Self::new(Type::ZonedDateTime, Value::ZonedDateTime(value))
     }
 
     /// Create a DATETIME with nanosecond precision typed value.
     pub fn datetime_nano(value: DateTime<Utc>) -> Self {
-        Self::new(
-            UniversalType::LocalDateTimeNano,
-            UniversalValue::LocalDateTimeNano(value),
-        )
+        Self::new(Type::LocalDateTimeNano, Value::LocalDateTimeNano(value))
     }
 
     /// Create an ENUM typed value.
     pub fn enum_type(value: impl Into<String>, variants: Vec<String>) -> Self {
         Self::new(
-            UniversalType::Enum {
+            Type::Enum {
                 values: variants.clone(),
             },
-            UniversalValue::Enum {
+            Value::Enum {
                 value: value.into(),
                 allowed_values: variants,
             },
@@ -980,10 +965,10 @@ impl TypedValue {
     /// Create a SET typed value.
     pub fn set(elements: Vec<String>, variants: Vec<String>) -> Self {
         Self::new(
-            UniversalType::Set {
+            Type::Set {
                 values: variants.clone(),
             },
-            UniversalValue::Set {
+            Value::Set {
                 elements,
                 allowed_values: variants,
             },
@@ -996,10 +981,10 @@ impl TypedValue {
         geometry_type: crate::types::GeometryType,
     ) -> Self {
         Self::new(
-            UniversalType::Geometry {
+            Type::Geometry {
                 geometry_type: geometry_type.clone(),
             },
-            UniversalValue::Geometry {
+            Value::Geometry {
                 data: GeometryData(value),
                 geometry_type,
             },
@@ -1013,17 +998,17 @@ impl TypedValue {
 
     /// Create a DURATION typed value.
     pub fn duration(value: std::time::Duration) -> Self {
-        Self::new(UniversalType::Duration, UniversalValue::Duration(value))
+        Self::new(Type::Duration, Value::Duration(value))
     }
 }
 
 /// Internal row representation - the intermediate format.
 ///
-/// `UniversalRow` represents a single row of data in the intermediate format,
+/// `Row` represents a single row of data in the intermediate format,
 /// produced by the data generator and consumed by both source populators
 /// and the streaming verifier.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UniversalRow {
+pub struct Row {
     /// Table name
     pub table: String,
 
@@ -1031,19 +1016,19 @@ pub struct UniversalRow {
     pub index: u64,
 
     /// Primary key value
-    pub id: UniversalValue,
+    pub id: Value,
 
     /// Field values (column name -> value)
-    pub fields: HashMap<String, UniversalValue>,
+    pub fields: HashMap<String, Value>,
 }
 
-impl UniversalRow {
+impl Row {
     /// Create a new internal row.
     pub fn new(
         table: impl Into<String>,
         index: u64,
-        id: UniversalValue,
-        fields: HashMap<String, UniversalValue>,
+        id: Value,
+        fields: HashMap<String, Value>,
     ) -> Self {
         Self {
             table: table.into(),
@@ -1054,12 +1039,8 @@ impl UniversalRow {
     }
 
     /// Create a new internal row with a builder pattern.
-    pub fn builder(
-        table: impl Into<String>,
-        index: u64,
-        id: UniversalValue,
-    ) -> UniversalRowBuilder {
-        UniversalRowBuilder {
+    pub fn builder(table: impl Into<String>, index: u64, id: Value) -> RowBuilder {
+        RowBuilder {
             table: table.into(),
             index,
             id,
@@ -1068,7 +1049,7 @@ impl UniversalRow {
     }
 
     /// Get a field value by name.
-    pub fn get_field(&self, name: &str) -> Option<&UniversalValue> {
+    pub fn get_field(&self, name: &str) -> Option<&Value> {
         self.fields.get(name)
     }
 
@@ -1078,24 +1059,24 @@ impl UniversalRow {
     }
 }
 
-/// Builder for `UniversalRow`.
-pub struct UniversalRowBuilder {
+/// Builder for `Row`.
+pub struct RowBuilder {
     table: String,
     index: u64,
-    id: UniversalValue,
-    fields: HashMap<String, UniversalValue>,
+    id: Value,
+    fields: HashMap<String, Value>,
 }
 
-impl UniversalRowBuilder {
+impl RowBuilder {
     /// Add a field to the row.
-    pub fn field(mut self, name: impl Into<String>, value: UniversalValue) -> Self {
+    pub fn field(mut self, name: impl Into<String>, value: Value) -> Self {
         self.fields.insert(name.into(), value);
         self
     }
 
     /// Build the internal row.
-    pub fn build(self) -> UniversalRow {
-        UniversalRow {
+    pub fn build(self) -> Row {
+        Row {
             table: self.table,
             index: self.index,
             id: self.id,
@@ -1106,12 +1087,12 @@ impl UniversalRowBuilder {
 
 /// Converter that holds schema context for From implementations.
 ///
-/// `RowConverter` wraps an `UniversalRow` along with the schema context,
+/// `RowConverter` wraps an `Row` along with the schema context,
 /// enabling database-specific `From` implementations to look up type
 /// information for each field.
 pub struct RowConverter<'a> {
     /// The internal row to convert
-    pub row: UniversalRow,
+    pub row: Row,
 
     /// Schema providing type information for fields
     pub schema: &'a Schema,
@@ -1119,7 +1100,7 @@ pub struct RowConverter<'a> {
 
 impl<'a> RowConverter<'a> {
     /// Create a new row converter.
-    pub fn new(row: UniversalRow, schema: &'a Schema) -> Self {
+    pub fn new(row: Row, schema: &'a Schema) -> Self {
         Self { row, schema }
     }
 }
@@ -1130,7 +1111,7 @@ impl<'a> RowConverter<'a> {
 
 /// Operation type for incremental sync changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum UniversalChangeOp {
+pub enum ChangeOp {
     /// Create a new record
     Create,
     /// Update an existing record
@@ -1142,56 +1123,48 @@ pub enum UniversalChangeOp {
 /// A database-agnostic change event for incremental sync.
 ///
 /// This type represents a change (INSERT/UPDATE/DELETE) from a source database
-/// in a universal format that can be converted to any target database format.
+/// in a shared IR that can be converted to any target database format.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct UniversalChange {
+pub struct Change {
     /// The operation type (Create/Update/Delete)
-    pub operation: UniversalChangeOp,
+    pub operation: ChangeOp,
     /// The table name
     pub table: String,
     /// The record ID
-    pub id: UniversalValue,
-    /// The record data (None for Delete operations)
-    pub data: Option<HashMap<String, UniversalValue>>,
+    pub id: Value,
+    /// Field values (None for Delete operations)
+    pub fields: Option<HashMap<String, Value>>,
 }
 
-impl UniversalChange {
+impl Change {
     /// Create a new change.
     pub fn new(
-        operation: UniversalChangeOp,
+        operation: ChangeOp,
         table: impl Into<String>,
-        id: UniversalValue,
-        data: Option<HashMap<String, UniversalValue>>,
+        id: Value,
+        fields: Option<HashMap<String, Value>>,
     ) -> Self {
         Self {
             operation,
             table: table.into(),
             id,
-            data,
+            fields,
         }
     }
 
     /// Create a CREATE change.
-    pub fn create(
-        table: impl Into<String>,
-        id: UniversalValue,
-        data: HashMap<String, UniversalValue>,
-    ) -> Self {
-        Self::new(UniversalChangeOp::Create, table, id, Some(data))
+    pub fn create(table: impl Into<String>, id: Value, fields: HashMap<String, Value>) -> Self {
+        Self::new(ChangeOp::Create, table, id, Some(fields))
     }
 
     /// Create an UPDATE change.
-    pub fn update(
-        table: impl Into<String>,
-        id: UniversalValue,
-        data: HashMap<String, UniversalValue>,
-    ) -> Self {
-        Self::new(UniversalChangeOp::Update, table, id, Some(data))
+    pub fn update(table: impl Into<String>, id: Value, fields: HashMap<String, Value>) -> Self {
+        Self::new(ChangeOp::Update, table, id, Some(fields))
     }
 
     /// Create a DELETE change.
-    pub fn delete(table: impl Into<String>, id: UniversalValue) -> Self {
-        Self::new(UniversalChangeOp::Delete, table, id, None)
+    pub fn delete(table: impl Into<String>, id: Value) -> Self {
+        Self::new(ChangeOp::Delete, table, id, None)
     }
 }
 
@@ -1205,33 +1178,33 @@ impl UniversalChange {
 /// like Neo4j and SurrealDB. It contains the relation type, IDs for both endpoints,
 /// and optional properties on the relation itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UniversalRelation {
+pub struct Relation {
     /// The relation type (table name in SurrealDB terms)
     pub relation_type: String,
     /// The relation's own ID
-    pub id: UniversalValue,
+    pub id: Value,
     /// The source node reference (table name + id)
-    pub input: UniversalThingRef,
+    pub input: ThingRef,
     /// The target node reference (table name + id)
-    pub output: UniversalThingRef,
+    pub output: ThingRef,
     /// Properties on the relation itself
-    pub data: HashMap<String, UniversalValue>,
+    pub data: HashMap<String, Value>,
 }
 
 /// A reference to a record/node in a specific table.
 ///
 /// This is used to identify the endpoints of a relation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UniversalThingRef {
+pub struct ThingRef {
     /// The table/collection name
     pub table: String,
     /// The record ID
-    pub id: UniversalValue,
+    pub id: Value,
 }
 
-impl UniversalThingRef {
+impl ThingRef {
     /// Create a new thing reference.
-    pub fn new(table: impl Into<String>, id: UniversalValue) -> Self {
+    pub fn new(table: impl Into<String>, id: Value) -> Self {
         Self {
             table: table.into(),
             id,
@@ -1239,14 +1212,14 @@ impl UniversalThingRef {
     }
 }
 
-impl UniversalRelation {
+impl Relation {
     /// Create a new relation.
     pub fn new(
         relation_type: impl Into<String>,
-        id: UniversalValue,
-        input: UniversalThingRef,
-        output: UniversalThingRef,
-        data: HashMap<String, UniversalValue>,
+        id: Value,
+        input: ThingRef,
+        output: ThingRef,
+        data: HashMap<String, Value>,
     ) -> Self {
         Self {
             relation_type: relation_type.into(),
@@ -1264,119 +1237,101 @@ mod tests {
 
     #[test]
     fn test_generated_value_accessors() {
-        assert_eq!(UniversalValue::Bool(true).as_bool(), Some(true));
-        assert_eq!(UniversalValue::Int32(42).as_i32(), Some(42));
-        assert_eq!(UniversalValue::Int64(100).as_i64(), Some(100));
-        assert_eq!(UniversalValue::Float64(3.15).as_f64(), Some(3.15));
-        assert_eq!(
-            UniversalValue::Text("test".to_string()).as_str(),
-            Some("test")
-        );
+        assert_eq!(Value::Bool(true).as_bool(), Some(true));
+        assert_eq!(Value::Int32(42).as_i32(), Some(42));
+        assert_eq!(Value::Int64(100).as_i64(), Some(100));
+        assert_eq!(Value::Float64(3.15).as_f64(), Some(3.15));
+        assert_eq!(Value::Text("test".to_string()).as_str(), Some("test"));
 
         // Cross-type conversions
-        assert_eq!(UniversalValue::Int32(42).as_i64(), Some(42));
-        assert_eq!(UniversalValue::Bool(true).as_i32(), None);
+        assert_eq!(Value::Int32(42).as_i64(), Some(42));
+        assert_eq!(Value::Bool(true).as_i32(), None);
     }
 
     #[test]
     fn test_typed_value_constructors() {
         let tv = TypedValue::bool(true);
-        assert_eq!(tv.sync_type, UniversalType::Bool);
-        assert_eq!(tv.value, UniversalValue::Bool(true));
+        assert_eq!(tv.sync_type, Type::Bool);
+        assert_eq!(tv.value, Value::Bool(true));
 
         let tv = TypedValue::int32(42);
-        assert_eq!(tv.sync_type, UniversalType::Int32);
-        assert_eq!(tv.value, UniversalValue::Int32(42));
+        assert_eq!(tv.sync_type, Type::Int32);
+        assert_eq!(tv.value, Value::Int32(42));
     }
 
     #[test]
     fn test_internal_row_builder() {
-        let row = UniversalRow::builder("users", 0, UniversalValue::Int64(1))
-            .field("name", UniversalValue::Text("Alice".to_string()))
-            .field("age", UniversalValue::Int32(30))
+        let row = Row::builder("users", 0, Value::Int64(1))
+            .field("name", Value::Text("Alice".to_string()))
+            .field("age", Value::Int32(30))
             .build();
 
         assert_eq!(row.table, "users");
         assert_eq!(row.index, 0);
-        assert_eq!(row.id, UniversalValue::Int64(1));
+        assert_eq!(row.id, Value::Int64(1));
         assert_eq!(row.field_count(), 2);
         assert_eq!(
             row.get_field("name"),
-            Some(&UniversalValue::Text("Alice".to_string()))
+            Some(&Value::Text("Alice".to_string()))
         );
-        assert_eq!(row.get_field("age"), Some(&UniversalValue::Int32(30)));
+        assert_eq!(row.get_field("age"), Some(&Value::Int32(30)));
     }
 
     #[test]
     fn test_try_with_type_valid_combinations() {
         // Bool type with Bool value
-        assert!(TypedValue::try_with_type(UniversalType::Bool, UniversalValue::Bool(true)).is_ok());
+        assert!(TypedValue::try_with_type(Type::Bool, Value::Bool(true)).is_ok());
 
         // Int type with Int value (strict 1:1)
-        assert!(TypedValue::try_with_type(UniversalType::Int32, UniversalValue::Int32(42)).is_ok());
+        assert!(TypedValue::try_with_type(Type::Int32, Value::Int32(42)).is_ok());
 
         // BigInt type with BigInt value (strict 1:1)
-        assert!(
-            TypedValue::try_with_type(UniversalType::Int64, UniversalValue::Int64(100)).is_ok()
-        );
+        assert!(TypedValue::try_with_type(Type::Int64, Value::Int64(100)).is_ok());
 
         // Text type with Text value (strict 1:1)
-        assert!(TypedValue::try_with_type(
-            UniversalType::Text,
-            UniversalValue::Text("hello".to_string())
-        )
-        .is_ok());
+        assert!(TypedValue::try_with_type(Type::Text, Value::Text("hello".to_string())).is_ok());
 
         // DateTime type with DateTime value
         assert!(TypedValue::try_with_type(
-            UniversalType::LocalDateTime,
-            UniversalValue::LocalDateTime(chrono::Utc::now())
+            Type::LocalDateTime,
+            Value::LocalDateTime(chrono::Utc::now())
         )
         .is_ok());
 
         // Date type with Date value (strict 1:1)
-        assert!(TypedValue::try_with_type(
-            UniversalType::Date,
-            UniversalValue::Date(chrono::Utc::now())
-        )
-        .is_ok());
+        assert!(TypedValue::try_with_type(Type::Date, Value::Date(chrono::Utc::now())).is_ok());
 
         // Null is always valid
-        assert!(TypedValue::try_with_type(UniversalType::Bool, UniversalValue::Null).is_ok());
-        assert!(TypedValue::try_with_type(UniversalType::Int32, UniversalValue::Null).is_ok());
-        assert!(TypedValue::try_with_type(UniversalType::Text, UniversalValue::Null).is_ok());
+        assert!(TypedValue::try_with_type(Type::Bool, Value::Null).is_ok());
+        assert!(TypedValue::try_with_type(Type::Int32, Value::Null).is_ok());
+        assert!(TypedValue::try_with_type(Type::Text, Value::Null).is_ok());
 
         // ZeroTemporal is valid when sync_type matches intended_type
         assert!(TypedValue::try_with_type(
-            UniversalType::Date,
-            UniversalValue::zero_temporal(UniversalType::Date, Some("0000-00-00".into()))
+            Type::Date,
+            Value::zero_temporal(Type::Date, Some("0000-00-00".into()))
         )
         .is_ok());
         assert!(TypedValue::try_with_type(
-            UniversalType::LocalDateTime,
-            UniversalValue::zero_temporal(
-                UniversalType::LocalDateTime,
-                Some("0000-00-00 00:00:00".into())
-            )
+            Type::LocalDateTime,
+            Value::zero_temporal(Type::LocalDateTime, Some("0000-00-00 00:00:00".into()))
         )
         .is_ok());
         // Mismatched intended_type is invalid
         assert!(TypedValue::try_with_type(
-            UniversalType::Date,
-            UniversalValue::zero_temporal(UniversalType::LocalDateTime, None)
+            Type::Date,
+            Value::zero_temporal(Type::LocalDateTime, None)
         )
         .is_err());
         // Non-temporal intended_type is invalid
-        assert!(TypedValue::try_with_type(
-            UniversalType::Text,
-            UniversalValue::zero_temporal(UniversalType::Text, None)
-        )
-        .is_err());
+        assert!(
+            TypedValue::try_with_type(Type::Text, Value::zero_temporal(Type::Text, None)).is_err()
+        );
 
         // JSON type with Json value (strict 1:1)
         assert!(TypedValue::try_with_type(
-            UniversalType::Json,
-            UniversalValue::Json(Box::new(serde_json::Value::Bool(true)))
+            Type::Json,
+            Value::Json(Box::new(serde_json::Value::Bool(true)))
         )
         .is_ok());
     }
@@ -1384,53 +1339,42 @@ mod tests {
     #[test]
     fn test_try_with_type_invalid_combinations() {
         // Bool type with wrong value types
-        let err =
-            TypedValue::try_with_type(UniversalType::Bool, UniversalValue::Int32(1)).unwrap_err();
+        let err = TypedValue::try_with_type(Type::Bool, Value::Int32(1)).unwrap_err();
         assert_eq!(err.expected_value, "Bool");
         assert_eq!(err.actual_value, "Int32");
 
         // Int type with wrong value types (strict 1:1 now)
         let err =
-            TypedValue::try_with_type(UniversalType::Int32, UniversalValue::Text("42".to_string()))
-                .unwrap_err();
+            TypedValue::try_with_type(Type::Int32, Value::Text("42".to_string())).unwrap_err();
         assert_eq!(err.expected_value, "Int32");
         assert_eq!(err.actual_value, "Text");
 
         // Int type no longer accepts BigInt (strict 1:1)
-        let err =
-            TypedValue::try_with_type(UniversalType::Int32, UniversalValue::Int64(42)).unwrap_err();
+        let err = TypedValue::try_with_type(Type::Int32, Value::Int64(42)).unwrap_err();
         assert_eq!(err.expected_value, "Int32");
         assert_eq!(err.actual_value, "Int64");
 
         // BigInt type no longer accepts Int (strict 1:1)
-        let err =
-            TypedValue::try_with_type(UniversalType::Int64, UniversalValue::Int32(42)).unwrap_err();
+        let err = TypedValue::try_with_type(Type::Int64, Value::Int32(42)).unwrap_err();
         assert_eq!(err.expected_value, "Int64");
         assert_eq!(err.actual_value, "Int32");
 
         // Text type with wrong value types
-        let err =
-            TypedValue::try_with_type(UniversalType::Text, UniversalValue::Int32(42)).unwrap_err();
+        let err = TypedValue::try_with_type(Type::Text, Value::Int32(42)).unwrap_err();
         assert_eq!(err.expected_value, "Text");
         assert_eq!(err.actual_value, "Int32");
 
         // Uuid type with Text value (strict 1:1)
-        let err = TypedValue::try_with_type(
-            UniversalType::Uuid,
-            UniversalValue::Text("not-a-uuid".to_string()),
-        )
-        .unwrap_err();
+        let err = TypedValue::try_with_type(Type::Uuid, Value::Text("not-a-uuid".to_string()))
+            .unwrap_err();
         assert_eq!(err.expected_value, "Uuid");
         assert_eq!(err.actual_value, "Text");
     }
 
     #[test]
     fn test_try_with_type_error_message() {
-        let err = TypedValue::try_with_type(
-            UniversalType::Bool,
-            UniversalValue::Text("true".to_string()),
-        )
-        .unwrap_err();
+        let err =
+            TypedValue::try_with_type(Type::Bool, Value::Text("true".to_string())).unwrap_err();
 
         let msg = err.to_string();
         assert!(msg.contains("Type-value mismatch"));
@@ -1440,81 +1384,77 @@ mod tests {
 
     #[test]
     fn test_variant_name() {
-        assert_eq!(UniversalValue::Bool(true).variant_name(), "Bool");
-        assert_eq!(UniversalValue::Int32(42).variant_name(), "Int32");
-        assert_eq!(UniversalValue::Int64(100).variant_name(), "Int64");
-        assert_eq!(UniversalValue::Float64(1.5).variant_name(), "Float64");
-        assert_eq!(
-            UniversalValue::Text("test".to_string()).variant_name(),
-            "Text"
-        );
-        assert_eq!(UniversalValue::Bytes(vec![1, 2, 3]).variant_name(), "Bytes");
-        assert_eq!(UniversalValue::Null.variant_name(), "Null");
+        assert_eq!(Value::Bool(true).variant_name(), "Bool");
+        assert_eq!(Value::Int32(42).variant_name(), "Int32");
+        assert_eq!(Value::Int64(100).variant_name(), "Int64");
+        assert_eq!(Value::Float64(1.5).variant_name(), "Float64");
+        assert_eq!(Value::Text("test".to_string()).variant_name(), "Text");
+        assert_eq!(Value::Bytes(vec![1, 2, 3]).variant_name(), "Bytes");
+        assert_eq!(Value::Null.variant_name(), "Null");
     }
 
     #[test]
     fn test_to_typed_value_deterministic() {
-        // Each UniversalValue variant should map to exactly one UniversalType
-        let value = UniversalValue::Int32(42);
+        // Each Value variant should map to exactly one Type
+        let value = Value::Int32(42);
         let typed = value.to_typed_value();
-        assert_eq!(typed.sync_type, UniversalType::Int32);
+        assert_eq!(typed.sync_type, Type::Int32);
 
-        let value = UniversalValue::Text("hello".to_string());
+        let value = Value::Text("hello".to_string());
         let typed = value.to_typed_value();
-        assert_eq!(typed.sync_type, UniversalType::Text);
+        assert_eq!(typed.sync_type, Type::Text);
 
-        let value = UniversalValue::Int64(100);
+        let value = Value::Int64(100);
         let typed = value.to_typed_value();
-        assert_eq!(typed.sync_type, UniversalType::Int64);
+        assert_eq!(typed.sync_type, Type::Int64);
 
-        let value = UniversalValue::Float64(3.15);
+        let value = Value::Float64(3.15);
         let typed = value.to_typed_value();
-        assert_eq!(typed.sync_type, UniversalType::Float64);
+        assert_eq!(typed.sync_type, Type::Float64);
 
-        let value = UniversalValue::Float32(1.5);
+        let value = Value::Float32(1.5);
         let typed = value.to_typed_value();
-        assert_eq!(typed.sync_type, UniversalType::Float32);
+        assert_eq!(typed.sync_type, Type::Float32);
 
-        let value = UniversalValue::Int16(100);
+        let value = Value::Int16(100);
         let typed = value.to_typed_value();
-        assert_eq!(typed.sync_type, UniversalType::Int16);
+        assert_eq!(typed.sync_type, Type::Int16);
 
-        let value = UniversalValue::Int8 { value: 1, width: 1 };
+        let value = Value::Int8 { value: 1, width: 1 };
         let typed = value.to_typed_value();
-        assert!(matches!(typed.sync_type, UniversalType::Int8 { width: 1 }));
+        assert!(matches!(typed.sync_type, Type::Int8 { width: 1 }));
     }
 
     #[test]
     fn universal_row_serde_roundtrip() {
-        let row = UniversalRow::builder("users", 7, UniversalValue::Int64(42))
-            .field("name", UniversalValue::Text("Alice".to_string()))
-            .field("active", UniversalValue::Bool(true))
+        let row = Row::builder("users", 7, Value::Int64(42))
+            .field("name", Value::Text("Alice".to_string()))
+            .field("active", Value::Bool(true))
             .build();
         let json = serde_json::to_string(&row).expect("serialize row");
-        let back: UniversalRow = serde_json::from_str(&json).expect("deserialize row");
+        let back: Row = serde_json::from_str(&json).expect("deserialize row");
         assert_eq!(back, row);
     }
 
     #[test]
     fn universal_change_serde_roundtrip_and_golden() {
         let mut data = HashMap::new();
-        data.insert("name".to_string(), UniversalValue::Text("Bob".to_string()));
-        let change = UniversalChange::create("users", UniversalValue::Int64(9), data);
+        data.insert("name".to_string(), Value::Text("Bob".to_string()));
+        let change = Change::create("users", Value::Int64(9), data);
 
         let json = serde_json::to_string(&change).expect("serialize change");
-        let back: UniversalChange = serde_json::from_str(&json).expect("deserialize change");
+        let back: Change = serde_json::from_str(&json).expect("deserialize change");
         assert_eq!(back, change);
 
         // Golden: fixed JSON (single field so HashMap order is irrelevant).
-        let golden = r#"{"operation":"Create","table":"users","id":{"type":"Int64","value":9},"data":{"name":{"type":"Text","value":"Bob"}}}"#;
-        let from_golden: UniversalChange =
-            serde_json::from_str(golden).expect("deserialize golden");
+        let golden = r#"{"operation":"Create","table":"users","id":{"type":"Int64","value":9},"fields":{"name":{"type":"Text","value":"Bob"}}}"#;
+        let from_golden: Change = serde_json::from_str(golden).expect("deserialize golden");
         assert_eq!(from_golden, change);
 
-        let delete = UniversalChange::delete("users", UniversalValue::Int64(9));
+        let delete = Change::delete("users", Value::Int64(9));
         let delete_json = serde_json::to_string(&delete).unwrap();
-        let delete_back: UniversalChange = serde_json::from_str(&delete_json).unwrap();
+        let delete_back: Change = serde_json::from_str(&delete_json).unwrap();
         assert_eq!(delete_back, delete);
-        assert!(delete_back.data.is_none());
+        assert!(delete_back.fields.is_none());
     }
 }

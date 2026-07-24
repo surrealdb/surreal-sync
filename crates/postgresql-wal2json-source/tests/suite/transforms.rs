@@ -10,13 +10,13 @@ use surreal_sync_postgresql_wal2json_source::{
     run_full_sync_with_transforms, run_incremental_sync_with_transforms, Client,
     PostgreSQLLogicalCheckpoint, ReplicationTailOptions, SourceOpts,
 };
-use sync_core::{UniversalChange, UniversalRow, UniversalValue};
+use sync_core::{Change, Row, Value};
 use sync_transform::{ApplyOpts, ChildStdioMode, ExternalTransform, FramerKind, Pipeline};
 
 struct CaptureSink {
-    changes: Mutex<Vec<UniversalChange>>,
-    rows: Mutex<Vec<UniversalRow>>,
-    relation_changes: Mutex<Vec<sync_core::UniversalRelationChange>>,
+    changes: Mutex<Vec<Change>>,
+    rows: Mutex<Vec<Row>>,
+    relation_changes: Mutex<Vec<sync_core::RelationChange>>,
 }
 
 impl CaptureSink {
@@ -31,13 +31,13 @@ impl CaptureSink {
 
 #[async_trait::async_trait]
 impl SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> anyhow::Result<()> {
+    async fn write_rows(&self, rows: &[Row]) -> anyhow::Result<()> {
         // Homogeneous Update upserts coalesce here; mirror into `changes` for
         // incremental assertions (full sync still reads `rows`).
         self.rows.lock().expect("lock").extend(rows.iter().cloned());
         let mut changes = self.changes.lock().expect("lock");
         for row in rows {
-            changes.push(UniversalChange::update(
+            changes.push(Change::update(
                 row.table.clone(),
                 row.id.clone(),
                 row.fields.clone(),
@@ -46,25 +46,22 @@ impl SurrealSink for CaptureSink {
         Ok(())
     }
 
-    async fn write_universal_relations(
-        &self,
-        relations: &[sync_core::UniversalRelation],
-    ) -> anyhow::Result<()> {
+    async fn write_relations(&self, relations: &[sync_core::Relation]) -> anyhow::Result<()> {
         let mut relation_changes = self.relation_changes.lock().expect("lock");
         for relation in relations {
-            relation_changes.push(sync_core::UniversalRelationChange::update(relation.clone()));
+            relation_changes.push(sync_core::RelationChange::update(relation.clone()));
         }
         Ok(())
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> anyhow::Result<()> {
+    async fn apply_change(&self, change: &Change) -> anyhow::Result<()> {
         self.changes.lock().expect("lock").push(change.clone());
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
+    async fn apply_relation_change(
         &self,
-        change: &sync_core::UniversalRelationChange,
+        change: &sync_core::RelationChange,
     ) -> anyhow::Result<()> {
         self.relation_changes
             .lock()
@@ -116,17 +113,17 @@ fn ensure_fixture_worker() -> PathBuf {
     path
 }
 
-fn name_field(change: &UniversalChange) -> Option<String> {
-    let data = change.data.as_ref()?;
+fn name_field(change: &Change) -> Option<String> {
+    let data = change.fields.as_ref()?;
     match data.get("name")? {
-        UniversalValue::VarChar { value, .. } | UniversalValue::Text(value) => Some(value.clone()),
+        Value::VarChar { value, .. } | Value::Text(value) => Some(value.clone()),
         other => panic!("unexpected name value: {other:?}"),
     }
 }
 
-fn row_name_field(row: &UniversalRow) -> Option<String> {
+fn row_name_field(row: &Row) -> Option<String> {
     match row.fields.get("name")? {
-        UniversalValue::VarChar { value, .. } | UniversalValue::Text(value) => Some(value.clone()),
+        Value::VarChar { value, .. } | Value::Text(value) => Some(value.clone()),
         other => panic!("unexpected name value: {other:?}"),
     }
 }

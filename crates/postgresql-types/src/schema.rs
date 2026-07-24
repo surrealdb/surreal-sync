@@ -1,14 +1,14 @@
 //! PostgreSQL schema column type conversion.
 //!
 //! This module provides conversion from PostgreSQL INFORMATION_SCHEMA column types
-//! to `UniversalType` for schema introspection during incremental sync.
+//! to `Type` for schema introspection during incremental sync.
 
-use sync_core::UniversalType;
+use sync_core::Type;
 
-/// Convert PostgreSQL INFORMATION_SCHEMA column type to UniversalType.
+/// Convert PostgreSQL INFORMATION_SCHEMA column type to Type.
 ///
 /// This function maps PostgreSQL data types (as returned by `information_schema.columns`)
-/// to the appropriate `UniversalType` for use in schema-aware type conversion.
+/// to the appropriate `Type` for use in schema-aware type conversion.
 ///
 /// # Arguments
 ///
@@ -18,74 +18,74 @@ use sync_core::UniversalType;
 ///
 /// # Returns
 ///
-/// The corresponding `UniversalType` for the PostgreSQL column type.
+/// The corresponding `Type` for the PostgreSQL column type.
 ///
 /// # Example
 ///
 /// ```
 /// use postgresql_types::postgresql_column_to_universal_type;
-/// use sync_core::UniversalType;
+/// use sync_core::Type;
 ///
 /// let ut = postgresql_column_to_universal_type("integer", None, None);
-/// assert_eq!(ut, UniversalType::Int32);
+/// assert_eq!(ut, Type::Int32);
 ///
 /// let ut = postgresql_column_to_universal_type("numeric", Some(10), Some(2));
-/// assert!(matches!(ut, UniversalType::Decimal { precision: 10, scale: 2 }));
+/// assert!(matches!(ut, Type::Decimal { precision: 10, scale: 2 }));
 /// ```
 pub fn postgresql_column_to_universal_type(
     data_type: &str,
     precision: Option<u32>,
     scale: Option<u32>,
-) -> UniversalType {
+) -> Type {
     match data_type.to_lowercase().as_str() {
         // Numeric types
-        "smallint" | "int2" => UniversalType::Int16,
-        "integer" | "int" | "int4" => UniversalType::Int32,
-        "bigint" | "int8" => UniversalType::Int64,
-        "real" | "float4" => UniversalType::Float32,
-        "double precision" | "float8" => UniversalType::Float64,
-        "numeric" | "decimal" => UniversalType::Decimal {
-            // precision/scale are u32 but UniversalType expects u8, cap at 38
+        "smallint" | "int2" => Type::Int16,
+        "integer" | "int" | "int4" => Type::Int32,
+        "bigint" | "int8" => Type::Int64,
+        "real" | "float4" => Type::Float32,
+        "double precision" | "float8" => Type::Float64,
+        "numeric" | "decimal" => Type::Decimal {
+            // precision/scale are u32 but Type expects u8, cap at 38
             precision: precision.map(|p| p.min(38) as u8).unwrap_or(38),
             scale: scale.map(|s| s.min(38) as u8).unwrap_or(10),
         },
 
         // Boolean
-        "boolean" | "bool" => UniversalType::Bool,
+        "boolean" | "bool" => Type::Bool,
 
         // String types
-        "text" => UniversalType::Text,
+        "text" => Type::Text,
         "varchar" | "character varying" => {
             // If no length specified, treat as unlimited (use Text)
             match precision {
-                Some(p) => UniversalType::VarChar { length: p as u16 },
-                None => UniversalType::Text,
+                Some(p) => Type::VarChar { length: p as u16 },
+                None => Type::Text,
             }
         }
-        "char" | "character" => UniversalType::Char {
+        "char" | "character" => Type::Char {
             length: precision.map(|p| p as u16).unwrap_or(1),
         },
 
         // Binary
-        "bytea" => UniversalType::Bytes,
+        "bytea" => Type::Bytes,
 
         // Date/Time types
-        "date" => UniversalType::Date,
-        "time" | "time without time zone" => UniversalType::Time,
-        "timestamp" | "timestamp without time zone" => UniversalType::LocalDateTime,
-        "timestamptz" | "timestamp with time zone" => UniversalType::ZonedDateTime,
-        "interval" => UniversalType::Duration,
+        "date" => Type::Date,
+        "time" | "time without time zone" => Type::Time,
+        "timestamp" | "timestamp without time zone" => Type::LocalDateTime,
+        "timestamptz" | "timestamp with time zone" => Type::ZonedDateTime,
+        "interval" => Type::Duration,
 
         // UUID
-        "uuid" => UniversalType::Uuid,
+        "uuid" => Type::Uuid,
 
         // JSON types
-        "json" => UniversalType::Json,
-        "jsonb" => UniversalType::Jsonb,
+        "json" => Type::Json,
+        "jsonb" => Type::Jsonb,
 
         // Geometry types
         "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" => {
-            UniversalType::Geometry {
+            Type::Geometry {
                 geometry_type: sync_core::GeometryType::Point, // Generic fallback
             }
         }
@@ -93,13 +93,13 @@ pub fn postgresql_column_to_universal_type(
         // Array types - PostgreSQL reports arrays as "_type" (e.g., "_int4" for int[])
         s if s.starts_with('_') => {
             let element_type = postgresql_column_to_universal_type(&s[1..], None, None);
-            UniversalType::Array {
+            Type::Array {
                 element_type: Box::new(element_type),
             }
         }
 
         // Fallback to Text for unknown types
-        _ => UniversalType::Text,
+        _ => Type::Text,
     }
 }
 
@@ -111,23 +111,23 @@ mod tests {
     fn test_postgresql_int_types() {
         assert_eq!(
             postgresql_column_to_universal_type("smallint", None, None),
-            UniversalType::Int16
+            Type::Int16
         );
         assert_eq!(
             postgresql_column_to_universal_type("integer", None, None),
-            UniversalType::Int32
+            Type::Int32
         );
         assert_eq!(
             postgresql_column_to_universal_type("int4", None, None),
-            UniversalType::Int32
+            Type::Int32
         );
         assert_eq!(
             postgresql_column_to_universal_type("bigint", None, None),
-            UniversalType::Int64
+            Type::Int64
         );
         assert_eq!(
             postgresql_column_to_universal_type("int8", None, None),
-            UniversalType::Int64
+            Type::Int64
         );
     }
 
@@ -136,7 +136,7 @@ mod tests {
         let ut = postgresql_column_to_universal_type("numeric", Some(10), Some(2));
         assert!(matches!(
             ut,
-            UniversalType::Decimal {
+            Type::Decimal {
                 precision: 10,
                 scale: 2
             }
@@ -145,7 +145,7 @@ mod tests {
         let ut = postgresql_column_to_universal_type("decimal", Some(18), Some(4));
         assert!(matches!(
             ut,
-            UniversalType::Decimal {
+            Type::Decimal {
                 precision: 18,
                 scale: 4
             }
@@ -155,7 +155,7 @@ mod tests {
         let ut = postgresql_column_to_universal_type("numeric", Some(50), Some(10));
         assert!(matches!(
             ut,
-            UniversalType::Decimal {
+            Type::Decimal {
                 precision: 38,
                 scale: 10
             }
@@ -166,20 +166,20 @@ mod tests {
     fn test_postgresql_string_types() {
         assert_eq!(
             postgresql_column_to_universal_type("text", None, None),
-            UniversalType::Text
+            Type::Text
         );
         // VARCHAR without length is treated as Text
         assert_eq!(
             postgresql_column_to_universal_type("varchar", None, None),
-            UniversalType::Text
+            Type::Text
         );
         assert_eq!(
             postgresql_column_to_universal_type("character varying", Some(255), None),
-            UniversalType::VarChar { length: 255 }
+            Type::VarChar { length: 255 }
         );
         assert_eq!(
             postgresql_column_to_universal_type("char", Some(10), None),
-            UniversalType::Char { length: 10 }
+            Type::Char { length: 10 }
         );
     }
 
@@ -187,27 +187,27 @@ mod tests {
     fn test_postgresql_datetime_types() {
         assert_eq!(
             postgresql_column_to_universal_type("timestamp", None, None),
-            UniversalType::LocalDateTime
+            Type::LocalDateTime
         );
         assert_eq!(
             postgresql_column_to_universal_type("timestamp without time zone", None, None),
-            UniversalType::LocalDateTime
+            Type::LocalDateTime
         );
         assert_eq!(
             postgresql_column_to_universal_type("timestamptz", None, None),
-            UniversalType::ZonedDateTime
+            Type::ZonedDateTime
         );
         assert_eq!(
             postgresql_column_to_universal_type("timestamp with time zone", None, None),
-            UniversalType::ZonedDateTime
+            Type::ZonedDateTime
         );
         assert_eq!(
             postgresql_column_to_universal_type("date", None, None),
-            UniversalType::Date
+            Type::Date
         );
         assert_eq!(
             postgresql_column_to_universal_type("time", None, None),
-            UniversalType::Time
+            Type::Time
         );
     }
 
@@ -215,7 +215,7 @@ mod tests {
     fn test_postgresql_uuid_type() {
         assert_eq!(
             postgresql_column_to_universal_type("uuid", None, None),
-            UniversalType::Uuid
+            Type::Uuid
         );
     }
 
@@ -223,11 +223,11 @@ mod tests {
     fn test_postgresql_json_types() {
         assert_eq!(
             postgresql_column_to_universal_type("json", None, None),
-            UniversalType::Json
+            Type::Json
         );
         assert_eq!(
             postgresql_column_to_universal_type("jsonb", None, None),
-            UniversalType::Jsonb
+            Type::Jsonb
         );
     }
 
@@ -235,7 +235,7 @@ mod tests {
     fn test_postgresql_geometry_types() {
         for geom_type in ["point", "line", "polygon", "box", "circle"] {
             let ut = postgresql_column_to_universal_type(geom_type, None, None);
-            assert!(matches!(ut, UniversalType::Geometry { .. }));
+            assert!(matches!(ut, Type::Geometry { .. }));
         }
     }
 
@@ -243,11 +243,11 @@ mod tests {
     fn test_postgresql_bool_type() {
         assert_eq!(
             postgresql_column_to_universal_type("boolean", None, None),
-            UniversalType::Bool
+            Type::Bool
         );
         assert_eq!(
             postgresql_column_to_universal_type("bool", None, None),
-            UniversalType::Bool
+            Type::Bool
         );
     }
 
@@ -255,7 +255,7 @@ mod tests {
     fn test_postgresql_bytes_type() {
         assert_eq!(
             postgresql_column_to_universal_type("bytea", None, None),
-            UniversalType::Bytes
+            Type::Bytes
         );
     }
 
@@ -264,13 +264,13 @@ mod tests {
         let ut = postgresql_column_to_universal_type("_int4", None, None);
         assert!(matches!(
             ut,
-            UniversalType::Array { element_type } if *element_type == UniversalType::Int32
+            Type::Array { element_type } if *element_type == Type::Int32
         ));
 
         let ut = postgresql_column_to_universal_type("_text", None, None);
         assert!(matches!(
             ut,
-            UniversalType::Array { element_type } if *element_type == UniversalType::Text
+            Type::Array { element_type } if *element_type == Type::Text
         ));
     }
 
@@ -278,7 +278,7 @@ mod tests {
     fn test_postgresql_interval_type() {
         assert_eq!(
             postgresql_column_to_universal_type("interval", None, None),
-            UniversalType::Duration
+            Type::Duration
         );
     }
 }

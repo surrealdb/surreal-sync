@@ -5,7 +5,7 @@ use crate::external::ExternalTransform;
 use crate::inplace::InPlaceTransform;
 use anyhow::{bail, Result};
 use std::sync::Arc;
-use sync_core::{UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow};
+use sync_core::{Change, Relation, RelationChange, Row};
 
 /// A single pipeline stage.
 #[derive(Clone)]
@@ -128,7 +128,7 @@ impl Pipeline {
     ///
     /// Empty pipeline: no-op with no stage dispatch. External stages are not
     /// supported here; use [`crate::BatchTransformer::transform_rows`] (async).
-    pub fn transform_rows_inplace(&self, rows: &mut [UniversalRow]) -> Result<()> {
+    pub fn transform_rows_inplace(&self, rows: &mut [Row]) -> Result<()> {
         if self.is_identity() {
             return Ok(());
         }
@@ -150,7 +150,7 @@ impl Pipeline {
     ///
     /// Empty pipeline: no-op with no stage dispatch. External stages are not
     /// supported here; use [`crate::BatchTransformer::transform_changes`] (async).
-    pub fn transform_changes_inplace(&self, changes: &mut [UniversalChange]) -> Result<()> {
+    pub fn transform_changes_inplace(&self, changes: &mut [Change]) -> Result<()> {
         if self.is_identity() {
             return Ok(());
         }
@@ -172,13 +172,13 @@ impl Pipeline {
     ///
     /// Preferred path for **in-place-only** pipelines: empty
     /// pipeline is a pure move with no transform dispatch.
-    pub fn apply_rows(&self, mut rows: Vec<UniversalRow>) -> Result<Vec<UniversalRow>> {
+    pub fn apply_rows(&self, mut rows: Vec<Row>) -> Result<Vec<Row>> {
         self.transform_rows_inplace(&mut rows)?;
         Ok(rows)
     }
 
     /// Consume an owned change batch, transform in place, and return it.
-    pub fn apply_changes(&self, mut changes: Vec<UniversalChange>) -> Result<Vec<UniversalChange>> {
+    pub fn apply_changes(&self, mut changes: Vec<Change>) -> Result<Vec<Change>> {
         self.transform_changes_inplace(&mut changes)?;
         Ok(changes)
     }
@@ -188,8 +188,8 @@ impl Pipeline {
     pub(crate) async fn apply_changes_async(
         &self,
         batch_id: u64,
-        mut changes: Vec<UniversalChange>,
-    ) -> Result<Vec<UniversalChange>> {
+        mut changes: Vec<Change>,
+    ) -> Result<Vec<Change>> {
         if self.is_identity() {
             return Ok(changes);
         }
@@ -208,8 +208,8 @@ impl Pipeline {
     pub(crate) async fn apply_rows_async(
         &self,
         batch_id: u64,
-        mut rows: Vec<UniversalRow>,
-    ) -> Result<Vec<UniversalRow>> {
+        mut rows: Vec<Row>,
+    ) -> Result<Vec<Row>> {
         if self.is_identity() {
             return Ok(rows);
         }
@@ -225,10 +225,7 @@ impl Pipeline {
     }
 
     /// Transform owned relation changes in place (sync — **in-place stages only**).
-    pub fn transform_relation_changes_inplace(
-        &self,
-        changes: &mut [UniversalRelationChange],
-    ) -> Result<()> {
+    pub fn transform_relation_changes_inplace(&self, changes: &mut [RelationChange]) -> Result<()> {
         if self.is_identity() {
             return Ok(());
         }
@@ -247,7 +244,7 @@ impl Pipeline {
     }
 
     /// Transform owned relations in place (sync — **in-place stages only**).
-    pub fn transform_relations_inplace(&self, relations: &mut [UniversalRelation]) -> Result<()> {
+    pub fn transform_relations_inplace(&self, relations: &mut [Relation]) -> Result<()> {
         if self.is_identity() {
             return Ok(());
         }
@@ -268,17 +265,14 @@ impl Pipeline {
     /// Consume owned relation changes, transform in place, return them.
     pub fn apply_relation_changes(
         &self,
-        mut changes: Vec<UniversalRelationChange>,
-    ) -> Result<Vec<UniversalRelationChange>> {
+        mut changes: Vec<RelationChange>,
+    ) -> Result<Vec<RelationChange>> {
         self.transform_relation_changes_inplace(&mut changes)?;
         Ok(changes)
     }
 
     /// Consume owned relations, transform in place, return them.
-    pub fn apply_relations(
-        &self,
-        mut relations: Vec<UniversalRelation>,
-    ) -> Result<Vec<UniversalRelation>> {
+    pub fn apply_relations(&self, mut relations: Vec<Relation>) -> Result<Vec<Relation>> {
         self.transform_relations_inplace(&mut relations)?;
         Ok(relations)
     }
@@ -286,8 +280,8 @@ impl Pipeline {
     pub(crate) async fn apply_relation_changes_async(
         &self,
         batch_id: u64,
-        mut changes: Vec<UniversalRelationChange>,
-    ) -> Result<Vec<UniversalRelationChange>> {
+        mut changes: Vec<RelationChange>,
+    ) -> Result<Vec<RelationChange>> {
         if self.is_identity() {
             return Ok(changes);
         }
@@ -305,8 +299,8 @@ impl Pipeline {
     pub(crate) async fn apply_relations_async(
         &self,
         batch_id: u64,
-        mut relations: Vec<UniversalRelation>,
-    ) -> Result<Vec<UniversalRelation>> {
+        mut relations: Vec<Relation>,
+    ) -> Result<Vec<Relation>> {
         if self.is_identity() {
             return Ok(relations);
         }
@@ -352,7 +346,7 @@ impl Pipeline {
                     let all_changes = events.iter().all(|e| e.is_change());
                     let all_rels = events.iter().all(|e| e.is_relation_change());
                     if all_changes {
-                        let changes: Vec<UniversalChange> = events
+                        let changes: Vec<Change> = events
                             .into_iter()
                             .map(|e| match e {
                                 ApplyEvent::Change(c) => c,
@@ -362,7 +356,7 @@ impl Pipeline {
                         let transformed = ext.exchange_changes(batch_id, changes).await?;
                         events = transformed.into_iter().map(ApplyEvent::Change).collect();
                     } else if all_rels {
-                        let rels: Vec<UniversalRelationChange> = events
+                        let rels: Vec<RelationChange> = events
                             .into_iter()
                             .map(|e| match e {
                                 ApplyEvent::RelationChange(r) => *r,

@@ -21,7 +21,7 @@
 //! - Use generator types for test data generation (YAML schema files)
 
 use crate::foreign_keys::ForeignKeyDefinition;
-use crate::types::UniversalType;
+use crate::types::Type;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -70,7 +70,7 @@ pub struct ColumnDefinition {
 
     /// Column type
     #[serde(rename = "type")]
-    pub column_type: UniversalType,
+    pub column_type: Type,
 
     /// Whether this column is nullable
     #[serde(default)]
@@ -79,7 +79,7 @@ pub struct ColumnDefinition {
 
 impl ColumnDefinition {
     /// Create a new column definition.
-    pub fn new(name: impl Into<String>, column_type: UniversalType) -> Self {
+    pub fn new(name: impl Into<String>, column_type: Type) -> Self {
         Self {
             name: name.into(),
             column_type,
@@ -88,7 +88,7 @@ impl ColumnDefinition {
     }
 
     /// Create a new nullable column definition.
-    pub fn nullable(name: impl Into<String>, column_type: UniversalType) -> Self {
+    pub fn nullable(name: impl Into<String>, column_type: Type) -> Self {
         Self {
             name: name.into(),
             column_type,
@@ -147,7 +147,7 @@ impl TableDefinition {
     }
 
     /// Get the type of a column by name.
-    pub fn get_column_type(&self, name: &str) -> Option<&UniversalType> {
+    pub fn get_column_type(&self, name: &str) -> Option<&Type> {
         self.get_column(name).map(|c| &c.column_type)
     }
 
@@ -217,11 +217,7 @@ impl DatabaseSchema {
     }
 
     /// Get the type of a column in a specific table.
-    pub fn get_column_type(
-        &self,
-        table: &str,
-        column: &str,
-    ) -> Result<&UniversalType, SchemaError> {
+    pub fn get_column_type(&self, table: &str, column: &str) -> Result<&Type, SchemaError> {
         let table_schema = self
             .get_table(table)
             .ok_or_else(|| SchemaError::TableNotFound(table.to_string()))?;
@@ -364,7 +360,7 @@ pub struct GeneratorFieldDefinition {
 
     /// Field type (flattened from ColumnDefinition-like structure)
     #[serde(rename = "type")]
-    pub field_type: UniversalType,
+    pub field_type: Type,
 
     /// Generator configuration for this field
     pub generator: GeneratorConfig,
@@ -390,7 +386,7 @@ impl GeneratorFieldDefinition {
 pub struct GeneratorIDDefinition {
     /// Type of the primary key
     #[serde(rename = "type")]
-    pub id_type: UniversalType,
+    pub id_type: Type,
 
     /// Generator configuration for the primary key
     pub generator: GeneratorConfig,
@@ -428,7 +424,7 @@ impl GeneratorTableDefinition {
     }
 
     /// Get the type of a field by name.
-    pub fn get_field_type(&self, name: &str) -> Option<&UniversalType> {
+    pub fn get_field_type(&self, name: &str) -> Option<&Type> {
         self.get_field(name).map(|f| &f.field_type)
     }
 
@@ -508,7 +504,7 @@ impl GeneratorSchema {
     }
 
     /// Get the type of a field in a specific table.
-    pub fn get_field_type(&self, table: &str, field: &str) -> Result<&UniversalType, SchemaError> {
+    pub fn get_field_type(&self, table: &str, field: &str) -> Result<&Type, SchemaError> {
         let table_schema = self
             .get_table(table)
             .ok_or_else(|| SchemaError::TableNotFound(table.to_string()))?;
@@ -572,7 +568,7 @@ mod tests {
 
     #[test]
     fn test_column_definition_serde() {
-        let col = ColumnDefinition::new("email", UniversalType::VarChar { length: 255 });
+        let col = ColumnDefinition::new("email", Type::VarChar { length: 255 });
 
         let yaml = serde_yaml::to_string(&col).unwrap();
         let parsed: ColumnDefinition = serde_yaml::from_str(&yaml).unwrap();
@@ -586,23 +582,20 @@ mod tests {
     fn test_table_definition_get_column() {
         let table = TableDefinition::new(
             "users",
-            ColumnDefinition::new("id", UniversalType::Int64),
+            ColumnDefinition::new("id", Type::Int64),
             vec![
-                ColumnDefinition::new("email", UniversalType::VarChar { length: 255 }),
-                ColumnDefinition::nullable("bio", UniversalType::Text),
+                ColumnDefinition::new("email", Type::VarChar { length: 255 }),
+                ColumnDefinition::nullable("bio", Type::Text),
             ],
         );
 
         // Can find primary key
         let id_col = table.get_column("id").expect("id should exist");
-        assert_eq!(id_col.column_type, UniversalType::Int64);
+        assert_eq!(id_col.column_type, Type::Int64);
 
         // Can find regular column
         let email_col = table.get_column("email").expect("email should exist");
-        assert_eq!(
-            email_col.column_type,
-            UniversalType::VarChar { length: 255 }
-        );
+        assert_eq!(email_col.column_type, Type::VarChar { length: 255 });
 
         // Returns None for missing column
         assert!(table.get_column("nonexistent").is_none());
@@ -619,29 +612,29 @@ mod tests {
         let schema = DatabaseSchema::new(vec![
             TableDefinition::new(
                 "users",
-                ColumnDefinition::new("id", UniversalType::Uuid),
-                vec![ColumnDefinition::new("name", UniversalType::Text)],
+                ColumnDefinition::new("id", Type::Uuid),
+                vec![ColumnDefinition::new("name", Type::Text)],
             ),
             TableDefinition::new(
                 "posts",
-                ColumnDefinition::new("id", UniversalType::Int64),
-                vec![ColumnDefinition::new("title", UniversalType::Text)],
+                ColumnDefinition::new("id", Type::Int64),
+                vec![ColumnDefinition::new("title", Type::Text)],
             ),
         ]);
 
         // Can find tables
         let users = schema.get_table("users").expect("users should exist");
-        assert_eq!(users.primary_key.column_type, UniversalType::Uuid);
+        assert_eq!(users.primary_key.column_type, Type::Uuid);
 
         let posts = schema.get_table("posts").expect("posts should exist");
-        assert_eq!(posts.primary_key.column_type, UniversalType::Int64);
+        assert_eq!(posts.primary_key.column_type, Type::Int64);
 
         // Returns None for missing table
         assert!(schema.get_table("nonexistent").is_none());
 
         // Can get column type
         let col_type = schema.get_column_type("users", "name").unwrap();
-        assert_eq!(col_type, &UniversalType::Text);
+        assert_eq!(col_type, &Type::Text);
     }
 
     // ========================================================================
@@ -692,7 +685,7 @@ tables:
 
         let users = schema.get_table("users").unwrap();
         assert_eq!(users.name, "users");
-        assert_eq!(users.id.id_type, UniversalType::Uuid);
+        assert_eq!(users.id.id_type, Type::Uuid);
         assert_eq!(users.fields.len(), 3);
     }
 
@@ -701,10 +694,10 @@ tables:
         let schema = GeneratorSchema::from_yaml(SAMPLE_SCHEMA).unwrap();
 
         let email_type = schema.get_field_type("users", "email").unwrap();
-        assert_eq!(email_type, &UniversalType::VarChar { length: 255 });
+        assert_eq!(email_type, &Type::VarChar { length: 255 });
 
         let age_type = schema.get_field_type("users", "age").unwrap();
-        assert_eq!(age_type, &UniversalType::Int32);
+        assert_eq!(age_type, &Type::Int32);
     }
 
     #[test]
@@ -778,7 +771,7 @@ tables:
         // Test that GeneratorFieldDefinition serializes correctly
         let field = GeneratorFieldDefinition {
             name: "email".to_string(),
-            field_type: UniversalType::VarChar { length: 255 },
+            field_type: Type::VarChar { length: 255 },
             generator: GeneratorConfig::Pattern {
                 pattern: "user_{index}@test.com".to_string(),
             },
@@ -795,7 +788,7 @@ tables:
         // Test conversion to base ColumnDefinition
         let col = field.to_column_definition();
         assert_eq!(col.name, "email");
-        assert_eq!(col.column_type, UniversalType::VarChar { length: 255 });
+        assert_eq!(col.column_type, Type::VarChar { length: 255 });
         assert!(!col.nullable);
     }
 
@@ -809,12 +802,12 @@ tables:
 
         assert_eq!(db_schema.tables.len(), 1);
         let users = db_schema.get_table("users").expect("users should exist");
-        assert_eq!(users.primary_key.column_type, UniversalType::Uuid);
+        assert_eq!(users.primary_key.column_type, Type::Uuid);
         assert_eq!(users.columns.len(), 3);
 
         // Verify column lookup works
         let email_type = db_schema.get_column_type("users", "email").unwrap();
-        assert_eq!(email_type, &UniversalType::VarChar { length: 255 });
+        assert_eq!(email_type, &Type::VarChar { length: 255 });
     }
 
     #[test]

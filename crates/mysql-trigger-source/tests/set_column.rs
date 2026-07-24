@@ -1,6 +1,6 @@
 //! Integration tests for MySQL SET column type conversion
 //!
-//! This test verifies how MySQL SET columns are converted to UniversalValue types.
+//! This test verifies how MySQL SET columns are converted to Value types.
 //! SET columns store comma-separated values and should be converted to arrays.
 #![allow(clippy::uninlined_format_args)]
 
@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use mysql_async::prelude::*;
 use mysql_types::{row_to_typed_values, row_to_typed_values_with_config, RowConversionConfig};
 use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
-use sync_core::UniversalValue;
+use sync_core::Value;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -92,7 +92,7 @@ async fn test_set_column_without_schema_returns_string() -> Result<()> {
 
     // Verify it comes back as a string (Char), NOT as a Set
     match &tags.value {
-        UniversalValue::Char { value, .. } => {
+        Value::Char { value, .. } => {
             assert_eq!(value, "technology,tutorial");
             info!("✓ Confirmed: SET column returns as Char without schema detection");
         }
@@ -110,7 +110,7 @@ async fn test_set_column_without_schema_returns_string() -> Result<()> {
         .get("tags")
         .context("Should have tags field")?;
     assert!(
-        matches!(tags_null.value, UniversalValue::Null),
+        matches!(tags_null.value, Value::Null),
         "NULL SET should be Null, got {:?}",
         tags_null.value
     );
@@ -189,7 +189,7 @@ async fn test_set_column_with_schema_detection() -> Result<()> {
 
     // Verify it's now a proper Set
     match &tags.value {
-        UniversalValue::Set { elements, .. } => {
+        Value::Set { elements, .. } => {
             assert_eq!(elements, &vec!["tech".to_string(), "news".to_string()]);
             info!("✓ SET column correctly converted to Set type with schema detection");
         }

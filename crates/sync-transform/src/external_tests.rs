@@ -7,19 +7,19 @@ use crate::{run_change_feed, ApplyOpts, ExternalTransform, Pipeline, PositionedC
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use sync_core::{UniversalChange, UniversalValue};
+use sync_core::{Change, Value};
 use tokio::time::timeout;
 
-fn change(id: i64) -> UniversalChange {
+fn change(id: i64) -> Change {
     let mut data = HashMap::new();
     data.insert(
         "name".to_string(),
-        UniversalValue::VarChar {
+        Value::VarChar {
             value: format!("row-{id}"),
             length: 64,
         },
     );
-    UniversalChange::create("users", UniversalValue::Int64(id), data)
+    Change::create("users", Value::Int64(id), data)
 }
 
 fn positioned(id: i64, pos: u64) -> PositionedChange<u64> {
@@ -48,8 +48,8 @@ async fn scripted_external_echo_and_out_of_order() {
 
     let out_b = b.await.unwrap().unwrap();
     let out_a = a.await.unwrap().unwrap();
-    assert_eq!(out_a[0].id, UniversalValue::Int64(1));
-    assert_eq!(out_b[0].id, UniversalValue::Int64(2));
+    assert_eq!(out_a[0].id, Value::Int64(1));
+    assert_eq!(out_b[0].id, Value::Int64(2));
     assert_eq!(transport.write_order(), vec![1, 2]);
 }
 
@@ -179,7 +179,7 @@ async fn colliding_mismatched_batch_id_exchange_fails_closed() {
     );
     // Batch 2 keeps its own request-keyed response (correct echo), proving we
     // did not deliver batch 1's payload under id 2.
-    assert_eq!(out_b[0].id, UniversalValue::Int64(2));
+    assert_eq!(out_b[0].id, Value::Int64(2));
 }
 
 #[tokio::test]
@@ -235,23 +235,23 @@ async fn scripted_external_happy_path_sinks_and_advances() {
 
 #[tokio::test]
 async fn external_exchanges_relation_changes_over_wire() {
-    use sync_core::{UniversalRelation, UniversalRelationChange, UniversalThingRef};
+    use sync_core::{Relation, RelationChange, ThingRef};
 
     let transport = ScriptedExternalTransport::new();
     let ext = ExternalTransform::with_transport(Arc::new(transport.clone()));
-    let rel = UniversalRelation::new(
+    let rel = Relation::new(
         "follows",
-        UniversalValue::Int64(7),
-        UniversalThingRef::new("users", UniversalValue::Int64(1)),
-        UniversalThingRef::new("users", UniversalValue::Int64(2)),
+        Value::Int64(7),
+        ThingRef::new("users", Value::Int64(1)),
+        ThingRef::new("users", Value::Int64(2)),
         HashMap::new(),
     );
     let out = ext
-        .exchange_relation_changes(1, vec![UniversalRelationChange::create(rel)])
+        .exchange_relation_changes(1, vec![RelationChange::create(rel)])
         .await
         .unwrap();
     assert_eq!(out.len(), 1);
-    assert_eq!(out[0].relation.id, UniversalValue::Int64(7));
+    assert_eq!(out[0].relation.id, Value::Int64(7));
     assert_eq!(
         transport.write_kinds(),
         vec![(1, crate::WireItemKind::RelationChange)],
@@ -262,22 +262,22 @@ async fn external_exchanges_relation_changes_over_wire() {
 #[tokio::test]
 async fn external_pipeline_transforms_mixed_relation_and_change() {
     use crate::{run_source_runtime, PositionedEvent, SourceRuntimeOpts};
-    use sync_core::{UniversalRelation, UniversalRelationChange, UniversalThingRef};
+    use sync_core::{Relation, RelationChange, ThingRef};
 
     let transport = ScriptedExternalTransport::new();
     let mut pipeline = Pipeline::new();
     pipeline.push_external(ExternalTransform::with_transport(Arc::new(transport)));
 
-    let rel = UniversalRelation::new(
+    let rel = Relation::new(
         "follows",
-        UniversalValue::Int64(5),
-        UniversalThingRef::new("users", UniversalValue::Int64(5)),
-        UniversalThingRef::new("users", UniversalValue::Int64(6)),
+        Value::Int64(5),
+        ThingRef::new("users", Value::Int64(5)),
+        ThingRef::new("users", Value::Int64(6)),
         HashMap::new(),
     );
     let mut driver = crate::test_support::ScriptedSourceDriver::new(vec![
         PositionedEvent::change(change(1), 10u64),
-        PositionedEvent::relation_change(UniversalRelationChange::create(rel), 20u64),
+        PositionedEvent::relation_change(RelationChange::create(rel), 20u64),
     ]);
     let sink = RecordingSink::new();
     let opts = ApplyOpts::default()
@@ -307,7 +307,7 @@ async fn external_pipeline_transforms_mixed_relation_and_change() {
 #[tokio::test]
 async fn mixed_external_batch_uses_distinct_wire_batch_ids_and_kinds() {
     use crate::{relation_wire_batch_id, ApplyEvent, WireItemKind};
-    use sync_core::{UniversalRelation, UniversalRelationChange, UniversalThingRef};
+    use sync_core::{Relation, RelationChange, ThingRef};
 
     let transport = ScriptedExternalTransport::new();
     let mut pipeline = Pipeline::new();
@@ -315,16 +315,16 @@ async fn mixed_external_batch_uses_distinct_wire_batch_ids_and_kinds() {
         transport.clone(),
     )));
 
-    let rel = UniversalRelation::new(
+    let rel = Relation::new(
         "follows",
-        UniversalValue::Int64(9),
-        UniversalThingRef::new("users", UniversalValue::Int64(1)),
-        UniversalThingRef::new("users", UniversalValue::Int64(2)),
+        Value::Int64(9),
+        ThingRef::new("users", Value::Int64(1)),
+        ThingRef::new("users", Value::Int64(2)),
         HashMap::new(),
     );
     let events = vec![
         ApplyEvent::Change(change(1)),
-        ApplyEvent::relation_change(UniversalRelationChange::create(rel)),
+        ApplyEvent::relation_change(RelationChange::create(rel)),
     ];
     let out = pipeline.apply_events_async(42, events).await.unwrap();
     assert_eq!(out.len(), 2);

@@ -7,10 +7,7 @@ use anyhow::Result;
 use checkpoint::{CheckpointID, CheckpointStore, Surreal2Store};
 use chrono::{DateTime, Utc};
 use surreal_sink::SurrealSink;
-use sync_core::{
-    classify_table, DatabaseSchema, TableKind, UniversalChange, UniversalChangeOp,
-    UniversalRelationChange,
-};
+use sync_core::{classify_table, Change, ChangeOp, DatabaseSchema, RelationChange, TableKind};
 use sync_transform::{
     ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver, SourceRuntimeOpts,
     StopReason,
@@ -244,21 +241,21 @@ impl Wal2JsonSourceDriver<'_> {
                         "INSERT: table={}, primary_key={:?}",
                         row.table, row.primary_key
                     );
-                    (row, UniversalChangeOp::Create)
+                    (row, ChangeOp::Create)
                 }
                 crate::Action::Update(row) => {
                     debug!(
                         "UPDATE: table={}, primary_key={:?}",
                         row.table, row.primary_key
                     );
-                    (row, UniversalChangeOp::Update)
+                    (row, ChangeOp::Update)
                 }
                 crate::Action::Delete(row) => {
                     debug!(
                         "DELETE: table={}, primary_key={:?}",
                         row.table, row.primary_key
                     );
-                    (row, UniversalChangeOp::Delete)
+                    (row, ChangeOp::Delete)
                 }
                 crate::Action::Begin { .. } | crate::Action::Commit { .. } => continue,
             };
@@ -441,20 +438,20 @@ impl SourceDriver for Wal2JsonSourceDriver<'_> {
     }
 }
 
-/// Convert a Row to UniversalChange
-fn row_to_universal_change(row: &crate::Row, op: UniversalChangeOp) -> UniversalChange {
-    let data = if op == UniversalChangeOp::Delete {
+/// Convert a Row to Change
+fn row_to_change(row: &crate::Row, op: ChangeOp) -> Change {
+    let data = if op == ChangeOp::Delete {
         None
     } else {
         Some(row.columns.clone())
     };
-    UniversalChange::new(op, row.table.clone(), row.primary_key.clone(), data)
+    Change::new(op, row.table.clone(), row.primary_key.clone(), data)
 }
 
 /// FK enrichment and relation routing before the event enters the apply window.
 fn action_to_positioned_event(
     row: &crate::Row,
-    op: UniversalChangeOp,
+    op: ChangeOp,
     position: Lsn,
     db_schema: &DatabaseSchema,
     relation_table_overrides: &[String],
@@ -467,7 +464,7 @@ fn action_to_positioned_event(
             ref in_fk,
             ref out_fk,
         }) => {
-            let data = if op == UniversalChangeOp::Delete {
+            let data = if op == ChangeOp::Delete {
                 std::collections::HashMap::new()
             } else {
                 row.columns.clone()
@@ -479,12 +476,12 @@ fn action_to_positioned_event(
                 in_fk,
                 out_fk,
             );
-            let rel_change = UniversalRelationChange::new(op, relation);
+            let rel_change = RelationChange::new(op, relation);
             Ok(PositionedEvent::relation_change(rel_change, position))
         }
         _ => {
-            let mut change = row_to_universal_change(row, op);
-            if let (Some(td), Some(ref mut data)) = (table_def, change.data.as_mut()) {
+            let mut change = row_to_change(row, op);
+            if let (Some(td), Some(ref mut data)) = (table_def, change.fields.as_mut()) {
                 surreal_sync_postgresql::fk_transform::transform_fk_values(data, td);
             }
             Ok(PositionedEvent::change(change, position))

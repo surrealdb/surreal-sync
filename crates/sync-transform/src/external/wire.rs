@@ -10,14 +10,14 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WireItemKind {
-    /// Incremental row [`sync_core::UniversalChange`] items.
+    /// Incremental row [`sync_core::Change`] items.
     #[default]
     Change,
-    /// Full-sync / snapshot [`sync_core::UniversalRow`] items.
+    /// Full-sync / snapshot [`sync_core::Row`] items.
     Row,
-    /// Incremental relation [`sync_core::UniversalRelationChange`] items.
+    /// Incremental relation [`sync_core::RelationChange`] items.
     RelationChange,
-    /// Full-sync [`sync_core::UniversalRelation`] items.
+    /// Full-sync [`sync_core::Relation`] items.
     Relation,
 }
 

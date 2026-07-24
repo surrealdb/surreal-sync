@@ -1,5 +1,5 @@
 use anyhow::Result;
-use sync_core::{TypedValue, UniversalValue};
+use sync_core::{TypedValue, Value};
 
 /// Convert typed values to a SurrealDB record using a specified field as the ID.
 /// The field is removed from the typed values map and used as a part of the record ID.
@@ -10,7 +10,7 @@ pub fn typed_values_to_record_using_field_as_id(
 ) -> anyhow::Result<crate::RecordWithSurrealValues> {
     // Extract ID from typed values
     let surreal_id = if let Some(id_value) = typed_values.remove(id_field) {
-        universal_value_to_surreal_id(&id_value.value)?
+        value_to_surreal_id(&id_value.value)?
     } else {
         anyhow::bail!(format!("Message has no '{id_field}' field"));
     };
@@ -48,13 +48,13 @@ fn typed_values_to_record_with_id(
     Ok(r)
 }
 
-/// Convert a UniversalValue to a SurrealDB ID.
-fn universal_value_to_surreal_id(value: &UniversalValue) -> Result<surrealdb::sql::Id> {
+/// Convert a Value to a SurrealDB ID.
+fn value_to_surreal_id(value: &Value) -> Result<surrealdb::sql::Id> {
     match value {
-        UniversalValue::Int32(i) => Ok(surrealdb::sql::Id::Number(*i as i64)),
-        UniversalValue::Int64(i) => Ok(surrealdb::sql::Id::Number(*i)),
-        UniversalValue::Text(s) => Ok(surrealdb::sql::Id::String(s.clone())),
-        UniversalValue::Uuid(u) => Ok(surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u))),
+        Value::Int32(i) => Ok(surrealdb::sql::Id::Number(*i as i64)),
+        Value::Int64(i) => Ok(surrealdb::sql::Id::Number(*i)),
+        Value::Text(s) => Ok(surrealdb::sql::Id::String(s.clone())),
+        Value::Uuid(u) => Ok(surrealdb::sql::Id::Uuid(surrealdb::sql::Uuid::from(*u))),
         other => anyhow::bail!("Cannot convert {other:?} to SurrealDB ID"),
     }
 }

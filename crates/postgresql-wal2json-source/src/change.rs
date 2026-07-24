@@ -5,15 +5,15 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use std::collections::HashMap;
 use std::fmt;
 use std::time::Duration;
-use sync_core::{UniversalType, UniversalValue};
+use sync_core::{Type, Value};
 
 /// Represents a database row with primary key and column data
 #[derive(Debug, Clone)]
 pub struct Row {
     /// Primary key value(s) - can be composite
-    pub primary_key: UniversalValue,
+    pub primary_key: Value,
     /// Map of column names to their values
-    pub columns: HashMap<String, UniversalValue>,
+    pub columns: HashMap<String, Value>,
     /// Schema name
     pub schema: String,
     /// Table name
@@ -124,7 +124,7 @@ pub fn wal2json_to_psql(wal2json_value: &serde_json::Value) -> Result<Action> {
                 .to_string();
 
             let mut columns = HashMap::new();
-            let mut primary_key_value = UniversalValue::Null;
+            let mut primary_key_value = Value::Null;
 
             // DELETE actions might have different structure
             // They may have "identity" instead of "columns" or just minimal columns
@@ -185,15 +185,15 @@ pub fn wal2json_to_psql(wal2json_value: &serde_json::Value) -> Result<Action> {
                     pk_values.into_iter().next().unwrap()
                 } else if pk_values.len() > 1 {
                     // Composite primary key - store as array
-                    UniversalValue::Array {
+                    Value::Array {
                         elements: pk_values,
-                        element_type: Box::new(UniversalType::Text),
+                        element_type: Box::new(Type::Text),
                     }
                 } else if let Some(id_value) = columns.get("id") {
                     // Fallback to 'id' column if no PK info
                     id_value.clone()
                 } else {
-                    UniversalValue::Null
+                    Value::Null
                 };
             } else if action_str == "D" {
                 // For DELETE with no columns, extract the full PK (including composites).
@@ -214,12 +214,12 @@ pub fn wal2json_to_psql(wal2json_value: &serde_json::Value) -> Result<Action> {
                     primary_key_value = if pk_values.len() == 1 {
                         pk_values.into_iter().next().unwrap()
                     } else if pk_values.len() > 1 {
-                        UniversalValue::Array {
+                        Value::Array {
                             elements: pk_values,
-                            element_type: Box::new(UniversalType::Text),
+                            element_type: Box::new(Type::Text),
                         }
                     } else {
-                        UniversalValue::Null
+                        Value::Null
                     };
                 }
             }
@@ -242,15 +242,15 @@ pub fn wal2json_to_psql(wal2json_value: &serde_json::Value) -> Result<Action> {
     }
 }
 
-/// Converts a PostgreSQL value from wal2json format to UniversalValue
+/// Converts a PostgreSQL value from wal2json format to Value
 fn convert_postgres_wal2json_value(
     value: Option<&serde_json::Value>,
     pg_type: &str,
-) -> Result<UniversalValue> {
+) -> Result<Value> {
     // Handle NULL values
     let value = match value {
         Some(v) if !v.is_null() => v,
-        _ => return Ok(UniversalValue::Null),
+        _ => return Ok(Value::Null),
     };
 
     // Convert based on PostgreSQL type
@@ -258,23 +258,23 @@ fn convert_postgres_wal2json_value(
         // Numeric types
         "smallint" | "int2" => {
             let val = value.as_i64().context("Failed to parse smallint")?;
-            Ok(UniversalValue::Int16(val as i16))
+            Ok(Value::Int16(val as i16))
         }
         "integer" | "int" | "int4" => {
             let val = value.as_i64().context("Failed to parse integer")?;
-            Ok(UniversalValue::Int32(val as i32))
+            Ok(Value::Int32(val as i32))
         }
         "bigint" | "int8" => {
             let val = value.as_i64().context("Failed to parse bigint")?;
-            Ok(UniversalValue::Int64(val))
+            Ok(Value::Int64(val))
         }
         "real" | "float4" => {
             let val = value.as_f64().context("Failed to parse real")?;
-            Ok(UniversalValue::Float32(val as f32))
+            Ok(Value::Float32(val as f32))
         }
         "double precision" | "float8" => {
             let val = value.as_f64().context("Failed to parse double")?;
-            Ok(UniversalValue::Float64(val))
+            Ok(Value::Float64(val))
         }
         "numeric" | "decimal" => {
             // Store as string to preserve precision
@@ -285,7 +285,7 @@ fn convert_postgres_wal2json_value(
             } else {
                 bail!("Failed to parse numeric value")
             };
-            Ok(UniversalValue::Decimal {
+            Ok(Value::Decimal {
                 value: val,
                 precision: 38,
                 scale: 10,
@@ -295,14 +295,14 @@ fn convert_postgres_wal2json_value(
         // String types
         "text" => {
             let val = value.as_str().context("Failed to parse text")?.to_string();
-            Ok(UniversalValue::Text(val))
+            Ok(Value::Text(val))
         }
         s if s.starts_with("character varying") || s.starts_with("varchar") => {
             let val = value
                 .as_str()
                 .context("Failed to parse varchar")?
                 .to_string();
-            Ok(UniversalValue::VarChar {
+            Ok(Value::VarChar {
                 value: val,
                 length: 255,
             })
@@ -310,7 +310,7 @@ fn convert_postgres_wal2json_value(
         s if s.starts_with("character") || s.starts_with("char") => {
             let val = value.as_str().context("Failed to parse char")?.to_string();
             let len = val.len() as u16;
-            Ok(UniversalValue::Char {
+            Ok(Value::Char {
                 value: val,
                 length: len.max(1),
             })
@@ -319,7 +319,7 @@ fn convert_postgres_wal2json_value(
         // Boolean
         "boolean" | "bool" => {
             let val = value.as_bool().context("Failed to parse boolean")?;
-            Ok(UniversalValue::Bool(val))
+            Ok(Value::Bool(val))
         }
 
         // Binary
@@ -327,7 +327,7 @@ fn convert_postgres_wal2json_value(
             let hex_str = value.as_str().context("Failed to parse bytea")?;
             // wal2json returns bytea as hex string without \x prefix
             let bytes = hex::decode(hex_str).context("Failed to decode bytea hex string")?;
-            Ok(UniversalValue::Bytes(bytes))
+            Ok(Value::Bytes(bytes))
         }
 
         // UUID
@@ -335,7 +335,7 @@ fn convert_postgres_wal2json_value(
             let val = value.as_str().context("Failed to parse uuid")?;
             let parsed_uuid = uuid::Uuid::parse_str(val)
                 .map_err(|e| anyhow::anyhow!("Failed to parse UUID '{val}': {e}"))?;
-            Ok(UniversalValue::Uuid(parsed_uuid))
+            Ok(Value::Uuid(parsed_uuid))
         }
 
         // JSON types
@@ -344,14 +344,14 @@ fn convert_postgres_wal2json_value(
             let json_str = value.as_str().context("Failed to get JSON string")?;
             let parsed: serde_json::Value =
                 serde_json::from_str(json_str).context("Failed to parse JSON")?;
-            Ok(UniversalValue::Json(Box::new(parsed)))
+            Ok(Value::Json(Box::new(parsed)))
         }
         "jsonb" => {
             // wal2json returns JSONB as a string, we need to parse it
             let json_str = value.as_str().context("Failed to get JSONB string")?;
             let parsed: serde_json::Value =
                 serde_json::from_str(json_str).context("Failed to parse JSONB")?;
-            Ok(UniversalValue::Jsonb(Box::new(parsed)))
+            Ok(Value::Jsonb(Box::new(parsed)))
         }
 
         // Date/Time types
@@ -359,25 +359,25 @@ fn convert_postgres_wal2json_value(
             let val = value.as_str().context("Failed to parse timestamp")?;
             let dt = parse_timestamp(val)
                 .map_err(|e| anyhow::anyhow!("Failed to parse timestamp '{val}': {e}"))?;
-            Ok(UniversalValue::LocalDateTime(dt))
+            Ok(Value::LocalDateTime(dt))
         }
         "timestamptz" | "timestamp with time zone" => {
             let val = value.as_str().context("Failed to parse timestamptz")?;
             let dt = parse_timestamptz(val)
                 .map_err(|e| anyhow::anyhow!("Failed to parse timestamptz '{val}': {e}"))?;
-            Ok(UniversalValue::ZonedDateTime(dt))
+            Ok(Value::ZonedDateTime(dt))
         }
         "date" => {
             let val = value.as_str().context("Failed to parse date")?;
             let dt = parse_date(val)
                 .map_err(|e| anyhow::anyhow!("Failed to parse date '{val}': {e}"))?;
-            Ok(UniversalValue::Date(dt))
+            Ok(Value::Date(dt))
         }
         "time" | "time without time zone" => {
             let val = value.as_str().context("Failed to parse time")?;
             let dt = parse_time(val)
                 .map_err(|e| anyhow::anyhow!("Failed to parse time '{val}': {e}"))?;
-            Ok(UniversalValue::Time(dt))
+            Ok(Value::Time(dt))
         }
         "timetz" | "time with time zone" => {
             let val = value.as_str().context("Failed to parse timetz")?;
@@ -385,13 +385,13 @@ fn convert_postgres_wal2json_value(
             // Time and datetime are fundamentally different types - datetime implies
             // a specific point in time, while TIMETZ represents a daily recurring time
             // in a specific timezone. Using ZonedDateTime would misrepresent the semantics.
-            Ok(UniversalValue::TimeTz(val.to_string()))
+            Ok(Value::TimeTz(val.to_string()))
         }
         "interval" => {
             let val = value.as_str().context("Failed to parse interval")?;
             let dur = parse_interval(val)
                 .map_err(|e| anyhow::anyhow!("Failed to parse interval '{val}': {e}"))?;
-            Ok(UniversalValue::Duration(dur))
+            Ok(Value::Duration(dur))
         }
 
         // Array types
@@ -401,7 +401,7 @@ fn convert_postgres_wal2json_value(
 
             // Parse PostgreSQL array format
             let (parsed_array, element_type) = parse_postgres_array(array_str, s)?;
-            Ok(UniversalValue::Array {
+            Ok(Value::Array {
                 elements: parsed_array,
                 element_type: Box::new(element_type),
             })
@@ -410,16 +410,13 @@ fn convert_postgres_wal2json_value(
         // Default fallback to text
         _ => {
             let val = value.to_string();
-            Ok(UniversalValue::Text(val))
+            Ok(Value::Text(val))
         }
     }
 }
 
 /// Parses PostgreSQL array format like "{1,2,3}" or "{apple,banana,cherry}"
-fn parse_postgres_array(
-    array_str: &str,
-    array_type: &str,
-) -> Result<(Vec<UniversalValue>, UniversalType)> {
+fn parse_postgres_array(array_str: &str, array_type: &str) -> Result<(Vec<Value>, Type)> {
     // Remove the curly braces
     let trimmed = array_str.trim_start_matches('{').trim_end_matches('}');
 
@@ -446,38 +443,38 @@ fn parse_postgres_array(
                 let val = elem
                     .parse::<i32>()
                     .context("Failed to parse integer array element")?;
-                UniversalValue::Int32(val)
+                Value::Int32(val)
             }
             "bigint" | "int8" => {
                 let val = elem
                     .parse::<i64>()
                     .context("Failed to parse bigint array element")?;
-                UniversalValue::Int64(val)
+                Value::Int64(val)
             }
             "smallint" | "int2" => {
                 let val = elem
                     .parse::<i16>()
                     .context("Failed to parse smallint array element")?;
-                UniversalValue::Int16(val)
+                Value::Int16(val)
             }
             "real" | "float4" => {
                 let val = elem
                     .parse::<f32>()
                     .context("Failed to parse real array element")?;
-                UniversalValue::Float32(val)
+                Value::Float32(val)
             }
             "double precision" | "float8" => {
                 let val = elem
                     .parse::<f64>()
                     .context("Failed to parse double array element")?;
-                UniversalValue::Float64(val)
+                Value::Float64(val)
             }
-            "text" | "varchar" => UniversalValue::Text(elem.to_string()),
+            "text" | "varchar" => Value::Text(elem.to_string()),
             "boolean" | "bool" => {
                 let val = elem
                     .parse::<bool>()
                     .context("Failed to parse boolean array element")?;
-                UniversalValue::Bool(val)
+                Value::Bool(val)
             }
             _ => {
                 return Err(anyhow::anyhow!(
@@ -492,17 +489,17 @@ fn parse_postgres_array(
     Ok((result, element_type))
 }
 
-/// Helper to determine UniversalType from PostgreSQL array type string
-fn array_type_to_universal_type(array_type: &str) -> Result<UniversalType> {
+/// Helper to determine Type from PostgreSQL array type string
+fn array_type_to_universal_type(array_type: &str) -> Result<Type> {
     let element_type_str = array_type.trim_end_matches("[]");
     match element_type_str {
-        "integer" | "int" | "int4" => Ok(UniversalType::Int32),
-        "bigint" | "int8" => Ok(UniversalType::Int64),
-        "smallint" | "int2" => Ok(UniversalType::Int16),
-        "real" | "float4" => Ok(UniversalType::Float32),
-        "double precision" | "float8" => Ok(UniversalType::Float64),
-        "boolean" | "bool" => Ok(UniversalType::Bool),
-        "text" | "varchar" => Ok(UniversalType::Text),
+        "integer" | "int" | "int4" => Ok(Type::Int32),
+        "bigint" | "int8" => Ok(Type::Int64),
+        "smallint" | "int2" => Ok(Type::Int16),
+        "real" | "float4" => Ok(Type::Float32),
+        "double precision" | "float8" => Ok(Type::Float64),
+        "boolean" | "bool" => Ok(Type::Bool),
+        "text" | "varchar" => Ok(Type::Text),
         _ => Err(anyhow::anyhow!(
             "Unsupported array element type: '{element_type_str}'"
         )),
@@ -912,12 +909,12 @@ mod tests {
             Action::Insert(row) => {
                 assert_eq!(row.table, "users");
                 assert_eq!(row.schema, "public");
-                assert_eq!(row.primary_key, UniversalValue::Int32(1));
+                assert_eq!(row.primary_key, Value::Int32(1));
                 assert_eq!(
                     row.columns.get("name"),
-                    Some(&UniversalValue::Text("Alice".to_string()))
+                    Some(&Value::Text("Alice".to_string()))
                 );
-                assert_eq!(row.columns.get("active"), Some(&UniversalValue::Bool(true)));
+                assert_eq!(row.columns.get("active"), Some(&Value::Bool(true)));
             }
             _ => panic!("Expected Insert action"),
         }
@@ -941,19 +938,19 @@ mod tests {
         match action {
             Action::Insert(row) => {
                 // Check integer array
-                if let Some(UniversalValue::Array { elements, .. }) = row.columns.get("numbers") {
+                if let Some(Value::Array { elements, .. }) = row.columns.get("numbers") {
                     assert_eq!(elements.len(), 5);
-                    assert_eq!(elements[0], UniversalValue::Int32(1));
-                    assert_eq!(elements[4], UniversalValue::Int32(5));
+                    assert_eq!(elements[0], Value::Int32(1));
+                    assert_eq!(elements[4], Value::Int32(5));
                 } else {
                     panic!("Expected integer array");
                 }
 
                 // Check text array
-                if let Some(UniversalValue::Array { elements, .. }) = row.columns.get("fruits") {
+                if let Some(Value::Array { elements, .. }) = row.columns.get("fruits") {
                     assert_eq!(elements.len(), 3);
-                    assert_eq!(elements[0], UniversalValue::Text("apple".to_string()));
-                    assert_eq!(elements[2], UniversalValue::Text("cherry".to_string()));
+                    assert_eq!(elements[0], Value::Text("apple".to_string()));
+                    assert_eq!(elements[2], Value::Text("cherry".to_string()));
                 } else {
                     panic!("Expected text array");
                 }
@@ -982,28 +979,25 @@ mod tests {
 
         match action {
             Action::Insert(row) => {
-                assert_eq!(row.columns.get("small"), Some(&UniversalValue::Int16(123)));
-                assert_eq!(
-                    row.columns.get("normal"),
-                    Some(&UniversalValue::Int32(456789))
-                );
+                assert_eq!(row.columns.get("small"), Some(&Value::Int16(123)));
+                assert_eq!(row.columns.get("normal"), Some(&Value::Int32(456789)));
                 assert_eq!(
                     row.columns.get("big"),
-                    Some(&UniversalValue::Int64(9223372036854775807))
+                    Some(&Value::Int64(9223372036854775807))
                 );
-                if let Some(UniversalValue::Float32(v)) = row.columns.get("real_num") {
+                if let Some(Value::Float32(v)) = row.columns.get("real_num") {
                     assert!((v - 3.25).abs() < 0.01);
                 } else {
                     panic!("Expected Float32");
                 }
-                if let Some(UniversalValue::Float64(v)) = row.columns.get("double_num") {
+                if let Some(Value::Float64(v)) = row.columns.get("double_num") {
                     assert!((v - 2.567891234).abs() < 0.0001);
                 } else {
                     panic!("Expected Float64");
                 }
                 assert_eq!(
                     row.columns.get("decimal_num"),
-                    Some(&UniversalValue::Decimal {
+                    Some(&Value::Decimal {
                         value: "123.456".to_string(),
                         precision: 38,
                         scale: 10
@@ -1031,12 +1025,12 @@ mod tests {
 
         match action {
             Action::Insert(row) => {
-                if let Some(UniversalValue::Json(json_val)) = row.columns.get("json_col") {
+                if let Some(Value::Json(json_val)) = row.columns.get("json_col") {
                     assert_eq!(json_val.get("key").and_then(|v| v.as_str()), Some("value"));
                 } else {
                     panic!("Expected Json value");
                 }
-                if let Some(UniversalValue::Jsonb(jsonb_val)) = row.columns.get("jsonb_col") {
+                if let Some(Value::Jsonb(jsonb_val)) = row.columns.get("jsonb_col") {
                     assert_eq!(
                         jsonb_val
                             .get("nested")
@@ -1069,12 +1063,12 @@ mod tests {
 
         match action {
             Action::Insert(row) => {
-                if let Some(UniversalValue::Uuid(uuid_val)) = row.columns.get("uuid_col") {
+                if let Some(Value::Uuid(uuid_val)) = row.columns.get("uuid_col") {
                     assert_eq!(uuid_val.to_string(), "550e8400-e29b-41d4-a716-446655440000");
                 } else {
                     panic!("Expected Uuid value");
                 }
-                if let Some(UniversalValue::Bytes(bytes_val)) = row.columns.get("bytea_col") {
+                if let Some(Value::Bytes(bytes_val)) = row.columns.get("bytea_col") {
                     assert_eq!(bytes_val, &vec![72, 101, 108, 108, 111]); // "Hello" in ASCII
                 } else {
                     panic!("Expected Bytes value");

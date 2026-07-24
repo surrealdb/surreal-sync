@@ -93,8 +93,8 @@ Note: Complex spatial operations specific to MySQL are not preserved.
 
 ### Data Integrity Notes
 
-- **NULL handling**: MySQL NULL values become SurrealDB `NONE` (via `UniversalValue::Null`)
-- **Zero dates**: MySQL/MariaDB zero dates (`0000-00-00`, `0000-00-00 00:00:00`) become `UniversalValue::ZeroTemporal` with the intended column type preserved for transforms. The SurrealDB sink maps them according to `[sink.surrealdb] zero_temporal`:
+- **NULL handling**: MySQL NULL values become SurrealDB `NONE` (via `Value::Null`)
+- **Zero dates**: MySQL/MariaDB zero dates (`0000-00-00`, `0000-00-00 00:00:00`) become `Value::ZeroTemporal` with the intended column type preserved for transforms. The SurrealDB sink maps them according to `[sink.surrealdb] zero_temporal`:
   - `none` (default) → SurrealDB `NONE`
   - `null` → SurrealDB `NULL`
   - `string` → literal string such as `"0000-00-00"` / `"0000-00-00 00:00:00"`

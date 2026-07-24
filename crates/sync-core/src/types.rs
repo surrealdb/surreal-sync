@@ -1,6 +1,6 @@
 //! Core data types for the surreal-sync load testing framework.
 //!
-//! This module defines `UniversalType`, the universal type universe that represents
+//! This module defines `Type`, the universal type universe that represents
 //! all supported data types across different database sources and SurrealDB.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -8,8 +8,8 @@ use std::collections::HashMap;
 
 /// Universal data type representation for surreal-sync.
 ///
-/// `UniversalType` represents the complete type universe across ALL supported data sources.
-/// Each database (including SurrealDB) defines its own mapping FROM UniversalType TO its
+/// `Type` represents the complete type universe across ALL supported data sources.
+/// Each database (including SurrealDB) defines its own mapping FROM Type TO its
 /// native type via `From`/`Into` trait implementations in the respective type crates.
 ///
 /// # Design Principles
@@ -17,7 +17,7 @@ use std::collections::HashMap;
 /// 1. **Source-agnostic**: Represents the conceptual type, not any database's specific type
 /// 2. **Type-safe conversions**: All databases implement mapping via `From`/`Into` traits
 /// 3. **Precision preservation**: High-precision decimals exceeding SurrealDB's 128-bit are stored as strings
-/// 4. **DDL derivation**: Each database derives its DDL from UniversalType via the `ToDdl` trait
+/// 4. **DDL derivation**: Each database derives its DDL from Type via the `ToDdl` trait
 ///
 /// # YAML Format
 ///
@@ -39,7 +39,7 @@ use std::collections::HashMap;
 ///   scale: 2
 /// ```
 #[derive(Debug, Clone, PartialEq)]
-pub enum UniversalType {
+pub enum Type {
     // Boolean
     /// Boolean value
     Bool,
@@ -140,7 +140,7 @@ pub enum UniversalType {
     /// Array of a specific type
     Array {
         /// Element type
-        element_type: Box<UniversalType>,
+        element_type: Box<Type>,
     },
 
     /// MySQL SET type
@@ -199,10 +199,10 @@ pub enum GeometryType {
     GeometryCollection,
 }
 
-// Custom serialization/deserialization for UniversalType
+// Custom serialization/deserialization for Type
 // Supports both simple string format ("uuid", "int") and object format ({"type": "var_char", "length": 255})
 
-impl Serialize for UniversalType {
+impl Serialize for Type {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
@@ -288,20 +288,20 @@ impl Serialize for UniversalType {
     }
 }
 
-impl<'de> Deserialize<'de> for UniversalType {
+impl<'de> Deserialize<'de> for Type {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
         use serde::de::{Error, MapAccess, Visitor};
 
-        struct UniversalTypeVisitor;
+        struct TypeVisitor;
 
-        impl<'de> Visitor<'de> for UniversalTypeVisitor {
-            type Value = UniversalType;
+        impl<'de> Visitor<'de> for TypeVisitor {
+            type Value = Type;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-                formatter.write_str("a string or map representing a UniversalType")
+                formatter.write_str("a string or map representing a Type")
             }
 
             // Handle string format: "uuid", "int", etc.
@@ -310,28 +310,28 @@ impl<'de> Deserialize<'de> for UniversalType {
                 E: Error,
             {
                 match value {
-                    "bool" => Ok(UniversalType::Bool),
-                    "small_int" | "smallint" => Ok(UniversalType::Int16),
-                    "int" => Ok(UniversalType::Int32),
-                    "big_int" | "bigint" => Ok(UniversalType::Int64),
-                    "float" => Ok(UniversalType::Float32),
-                    "double" => Ok(UniversalType::Float64),
-                    "text" => Ok(UniversalType::Text),
-                    "blob" => Ok(UniversalType::Blob),
-                    "bytes" => Ok(UniversalType::Bytes),
-                    "date" => Ok(UniversalType::Date),
-                    "time" => Ok(UniversalType::Time),
-                    "date_time" | "datetime" => Ok(UniversalType::LocalDateTime),
-                    "date_time_nano" | "datetime_nano" => Ok(UniversalType::LocalDateTimeNano),
-                    "timestamp_tz" | "timestamptz" => Ok(UniversalType::ZonedDateTime),
-                    "time_tz" | "timetz" => Ok(UniversalType::TimeTz),
-                    "uuid" => Ok(UniversalType::Uuid),
-                    "ulid" => Ok(UniversalType::Ulid),
-                    "json" => Ok(UniversalType::Json),
-                    "jsonb" => Ok(UniversalType::Jsonb),
-                    "duration" => Ok(UniversalType::Duration),
-                    "thing" => Ok(UniversalType::Thing),
-                    "object" => Ok(UniversalType::Object),
+                    "bool" => Ok(Type::Bool),
+                    "small_int" | "smallint" => Ok(Type::Int16),
+                    "int" => Ok(Type::Int32),
+                    "big_int" | "bigint" => Ok(Type::Int64),
+                    "float" => Ok(Type::Float32),
+                    "double" => Ok(Type::Float64),
+                    "text" => Ok(Type::Text),
+                    "blob" => Ok(Type::Blob),
+                    "bytes" => Ok(Type::Bytes),
+                    "date" => Ok(Type::Date),
+                    "time" => Ok(Type::Time),
+                    "date_time" | "datetime" => Ok(Type::LocalDateTime),
+                    "date_time_nano" | "datetime_nano" => Ok(Type::LocalDateTimeNano),
+                    "timestamp_tz" | "timestamptz" => Ok(Type::ZonedDateTime),
+                    "time_tz" | "timetz" => Ok(Type::TimeTz),
+                    "uuid" => Ok(Type::Uuid),
+                    "ulid" => Ok(Type::Ulid),
+                    "json" => Ok(Type::Json),
+                    "jsonb" => Ok(Type::Jsonb),
+                    "duration" => Ok(Type::Duration),
+                    "thing" => Ok(Type::Thing),
+                    "object" => Ok(Type::Object),
                     _ => Err(E::custom(format!("unknown simple type: {value}"))),
                 }
             }
@@ -356,72 +356,71 @@ impl<'de> Deserialize<'de> for UniversalType {
 
                 match type_name.as_str() {
                     // Simple types that might appear in map format
-                    "bool" => Ok(UniversalType::Bool),
-                    "small_int" | "smallint" => Ok(UniversalType::Int16),
-                    "int" => Ok(UniversalType::Int32),
-                    "big_int" | "bigint" => Ok(UniversalType::Int64),
-                    "float" => Ok(UniversalType::Float32),
-                    "double" => Ok(UniversalType::Float64),
-                    "text" => Ok(UniversalType::Text),
-                    "blob" => Ok(UniversalType::Blob),
-                    "bytes" => Ok(UniversalType::Bytes),
-                    "date" => Ok(UniversalType::Date),
-                    "time" => Ok(UniversalType::Time),
-                    "date_time" | "datetime" => Ok(UniversalType::LocalDateTime),
-                    "date_time_nano" | "datetime_nano" => Ok(UniversalType::LocalDateTimeNano),
-                    "timestamp_tz" | "timestamptz" => Ok(UniversalType::ZonedDateTime),
-                    "time_tz" | "timetz" => Ok(UniversalType::TimeTz),
-                    "uuid" => Ok(UniversalType::Uuid),
-                    "ulid" => Ok(UniversalType::Ulid),
-                    "json" => Ok(UniversalType::Json),
-                    "jsonb" => Ok(UniversalType::Jsonb),
-                    "duration" => Ok(UniversalType::Duration),
-                    "thing" => Ok(UniversalType::Thing),
-                    "object" => Ok(UniversalType::Object),
+                    "bool" => Ok(Type::Bool),
+                    "small_int" | "smallint" => Ok(Type::Int16),
+                    "int" => Ok(Type::Int32),
+                    "big_int" | "bigint" => Ok(Type::Int64),
+                    "float" => Ok(Type::Float32),
+                    "double" => Ok(Type::Float64),
+                    "text" => Ok(Type::Text),
+                    "blob" => Ok(Type::Blob),
+                    "bytes" => Ok(Type::Bytes),
+                    "date" => Ok(Type::Date),
+                    "time" => Ok(Type::Time),
+                    "date_time" | "datetime" => Ok(Type::LocalDateTime),
+                    "date_time_nano" | "datetime_nano" => Ok(Type::LocalDateTimeNano),
+                    "timestamp_tz" | "timestamptz" => Ok(Type::ZonedDateTime),
+                    "time_tz" | "timetz" => Ok(Type::TimeTz),
+                    "uuid" => Ok(Type::Uuid),
+                    "ulid" => Ok(Type::Ulid),
+                    "json" => Ok(Type::Json),
+                    "jsonb" => Ok(Type::Jsonb),
+                    "duration" => Ok(Type::Duration),
+                    "thing" => Ok(Type::Thing),
+                    "object" => Ok(Type::Object),
 
                     // Complex types
                     "tiny_int" | "tinyint" => {
                         let width = get_field(&fields, "width").unwrap_or(1);
-                        Ok(UniversalType::Int8 { width })
+                        Ok(Type::Int8 { width })
                     }
                     "decimal" => {
                         let precision = get_field_required(&fields, "precision")?;
                         let scale = get_field_required(&fields, "scale")?;
-                        Ok(UniversalType::Decimal { precision, scale })
+                        Ok(Type::Decimal { precision, scale })
                     }
                     "char" => {
                         let length = get_field_required(&fields, "length")?;
-                        Ok(UniversalType::Char { length })
+                        Ok(Type::Char { length })
                     }
                     "var_char" | "varchar" => {
                         let length = get_field_required(&fields, "length")?;
-                        Ok(UniversalType::VarChar { length })
+                        Ok(Type::VarChar { length })
                     }
                     "array" => {
-                        let element_type: UniversalType =
-                            get_field_required(&fields, "element_type")?;
-                        Ok(UniversalType::Array {
+                        let element_type: Type = get_field_required(&fields, "element_type")?;
+                        Ok(Type::Array {
                             element_type: Box::new(element_type),
                         })
                     }
                     "set" => {
                         let values = get_field_required(&fields, "values")?;
-                        Ok(UniversalType::Set { values })
+                        Ok(Type::Set { values })
                     }
                     "enum" => {
                         let values = get_field_required(&fields, "values")?;
-                        Ok(UniversalType::Enum { values })
+                        Ok(Type::Enum { values })
                     }
                     "geometry" => {
                         let geometry_type = get_field_required(&fields, "geometry_type")?;
-                        Ok(UniversalType::Geometry { geometry_type })
+                        Ok(Type::Geometry { geometry_type })
                     }
                     _ => Err(M::Error::custom(format!("unknown type: {type_name}"))),
                 }
             }
         }
 
-        deserializer.deserialize_any(UniversalTypeVisitor)
+        deserializer.deserialize_any(TypeVisitor)
     }
 }
 
@@ -444,16 +443,16 @@ fn get_field_required<T: for<'de> Deserialize<'de>, E: serde::de::Error>(
         .map_err(|e| E::custom(format!("invalid field '{key}': {e}")))
 }
 
-/// Trait for generating DDL statements from `UniversalType`.
+/// Trait for generating DDL statements from `Type`.
 ///
 /// Each database-specific type crate implements this trait to generate
 /// appropriate DDL for creating tables with the correct column types.
 pub trait ToDdl {
-    /// Generate DDL type definition for the given `UniversalType`.
-    fn to_ddl(&self, sync_type: &UniversalType) -> String;
+    /// Generate DDL type definition for the given `Type`.
+    fn to_ddl(&self, sync_type: &Type) -> String;
 }
 
-impl UniversalType {
+impl Type {
     /// Create a new TinyInt type with the given display width.
     pub fn tiny_int(width: u8) -> Self {
         Self::Int8 { width }
@@ -475,7 +474,7 @@ impl UniversalType {
     }
 
     /// Create a new Array type with the given element type.
-    pub fn array(element_type: UniversalType) -> Self {
+    pub fn array(element_type: Type) -> Self {
         Self::Array {
             element_type: Box::new(element_type),
         }
@@ -539,52 +538,49 @@ mod tests {
 
     #[test]
     fn test_sync_data_type_constructors() {
-        assert_eq!(UniversalType::tiny_int(1), UniversalType::Int8 { width: 1 });
+        assert_eq!(Type::tiny_int(1), Type::Int8 { width: 1 });
         assert_eq!(
-            UniversalType::decimal(10, 2),
-            UniversalType::Decimal {
+            Type::decimal(10, 2),
+            Type::Decimal {
                 precision: 10,
                 scale: 2
             }
         );
-        assert_eq!(
-            UniversalType::varchar(255),
-            UniversalType::VarChar { length: 255 }
-        );
+        assert_eq!(Type::varchar(255), Type::VarChar { length: 255 });
     }
 
     #[test]
     fn test_type_categories() {
-        assert!(UniversalType::Int32.is_numeric());
-        assert!(UniversalType::decimal(10, 2).is_numeric());
-        assert!(!UniversalType::Text.is_numeric());
+        assert!(Type::Int32.is_numeric());
+        assert!(Type::decimal(10, 2).is_numeric());
+        assert!(!Type::Text.is_numeric());
 
-        assert!(UniversalType::Text.is_string());
-        assert!(UniversalType::varchar(255).is_string());
-        assert!(!UniversalType::Int32.is_string());
+        assert!(Type::Text.is_string());
+        assert!(Type::varchar(255).is_string());
+        assert!(!Type::Int32.is_string());
 
-        assert!(UniversalType::LocalDateTime.is_temporal());
-        assert!(UniversalType::Date.is_temporal());
-        assert!(!UniversalType::Int32.is_temporal());
+        assert!(Type::LocalDateTime.is_temporal());
+        assert!(Type::Date.is_temporal());
+        assert!(!Type::Int32.is_temporal());
 
-        assert!(UniversalType::Blob.is_binary());
-        assert!(UniversalType::Bytes.is_binary());
-        assert!(!UniversalType::Text.is_binary());
+        assert!(Type::Blob.is_binary());
+        assert!(Type::Bytes.is_binary());
+        assert!(!Type::Text.is_binary());
     }
 
     #[test]
     fn test_deserialize_simple_string() {
         let yaml = "uuid";
-        let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, UniversalType::Uuid);
+        let parsed: Type = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed, Type::Uuid);
 
         let yaml = "int";
-        let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, UniversalType::Int32);
+        let parsed: Type = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed, Type::Int32);
 
         let yaml = "text";
-        let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, UniversalType::Text);
+        let parsed: Type = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed, Type::Text);
     }
 
     #[test]
@@ -593,18 +589,18 @@ mod tests {
 type: var_char
 length: 255
 "#;
-        let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, UniversalType::VarChar { length: 255 });
+        let parsed: Type = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed, Type::VarChar { length: 255 });
 
         let yaml = r#"
 type: decimal
 precision: 10
 scale: 2
 "#;
-        let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
+        let parsed: Type = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(
             parsed,
-            UniversalType::Decimal {
+            Type::Decimal {
                 precision: 10,
                 scale: 2
             }
@@ -614,25 +610,25 @@ scale: 2
 type: tiny_int
 width: 1
 "#;
-        let parsed: UniversalType = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(parsed, UniversalType::Int8 { width: 1 });
+        let parsed: Type = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(parsed, Type::Int8 { width: 1 });
     }
 
     #[test]
     fn test_serialize_deserialize_roundtrip() {
         let types = vec![
-            UniversalType::Bool,
-            UniversalType::tiny_int(1),
-            UniversalType::Int32,
-            UniversalType::decimal(10, 2),
-            UniversalType::varchar(255),
-            UniversalType::array(UniversalType::Int32),
-            UniversalType::enumeration(vec!["a".to_string(), "b".to_string()]),
+            Type::Bool,
+            Type::tiny_int(1),
+            Type::Int32,
+            Type::decimal(10, 2),
+            Type::varchar(255),
+            Type::array(Type::Int32),
+            Type::enumeration(vec!["a".to_string(), "b".to_string()]),
         ];
 
         for ty in types {
             let yaml = serde_yaml::to_string(&ty).unwrap();
-            let parsed: UniversalType = serde_yaml::from_str(&yaml).unwrap();
+            let parsed: Type = serde_yaml::from_str(&yaml).unwrap();
             assert_eq!(ty, parsed);
         }
     }

@@ -3,7 +3,7 @@
 use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use sync_core::{UniversalChange, UniversalRow, UniversalValue};
+use sync_core::{Change, Row, Value};
 use uuid::Uuid;
 
 /// A position in a source's change stream.
@@ -50,11 +50,11 @@ impl TableSpec {
 /// The values are ordered to match the corresponding [`TableSpec::pk_columns`]
 /// so single and composite primary keys are handled uniformly.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PkTuple(pub Vec<UniversalValue>);
+pub struct PkTuple(pub Vec<Value>);
 
 impl PkTuple {
     /// Create a primary key tuple from ordered values.
-    pub fn new(values: Vec<UniversalValue>) -> Self {
+    pub fn new(values: Vec<Value>) -> Self {
         Self(values)
     }
 
@@ -66,7 +66,7 @@ impl PkTuple {
     /// events that differ only by integer width (`Int32` vs `Int64`) or string
     /// kind (`VarChar` vs `Text`) still collide for window dedup.
     pub fn key(&self) -> String {
-        let canonical: Vec<UniversalValue> = self.0.iter().map(canonicalize_pk_value).collect();
+        let canonical: Vec<Value> = self.0.iter().map(canonicalize_pk_value).collect();
         serde_json::to_string(&canonical).unwrap_or_default()
     }
 
@@ -76,7 +76,7 @@ impl PkTuple {
     /// UUID and recognizes those rows in the change stream via this helper.
     pub fn single_uuid(&self) -> Option<Uuid> {
         match self.0.as_slice() {
-            [UniversalValue::Uuid(u)] => Some(*u),
+            [Value::Uuid(u)] => Some(*u),
             _ => None,
         }
     }
@@ -88,7 +88,7 @@ impl PkTuple {
     /// single-column primary keys, a missing field falls back to the row's
     /// dedicated `id` value. Extracted values are canonicalized so they match
     /// [`Self::key`] used for window dedup.
-    pub fn from_row(row: &UniversalRow, pk_columns: &[String]) -> Result<Self> {
+    pub fn from_row(row: &Row, pk_columns: &[String]) -> Result<Self> {
         let mut values = Vec::with_capacity(pk_columns.len());
         for col in pk_columns {
             if let Some(v) = row.fields.get(col) {
@@ -109,16 +109,16 @@ impl PkTuple {
 /// Reduce a primary-key scalar to the canonical kinds used for buffer dedup
 /// (`Int64` / `Uuid` / `Text`), matching how most CDC backends normalize
 /// stream keys relative to snapshot reads.
-fn canonicalize_pk_value(value: &UniversalValue) -> UniversalValue {
+fn canonicalize_pk_value(value: &Value) -> Value {
     match value {
-        UniversalValue::Int8 { value, .. } => UniversalValue::Int64(*value as i64),
-        UniversalValue::Int16(v) => UniversalValue::Int64(*v as i64),
-        UniversalValue::Int32(v) => UniversalValue::Int64(*v as i64),
-        UniversalValue::Int64(v) => UniversalValue::Int64(*v),
-        UniversalValue::Uuid(u) => UniversalValue::Uuid(*u),
-        UniversalValue::Char { value, .. } => UniversalValue::Text(value.clone()),
-        UniversalValue::VarChar { value, .. } => UniversalValue::Text(value.clone()),
-        UniversalValue::Text(s) => UniversalValue::Text(s.clone()),
+        Value::Int8 { value, .. } => Value::Int64(*value as i64),
+        Value::Int16(v) => Value::Int64(*v as i64),
+        Value::Int32(v) => Value::Int64(*v as i64),
+        Value::Int64(v) => Value::Int64(*v),
+        Value::Uuid(u) => Value::Uuid(*u),
+        Value::Char { value, .. } => Value::Text(value.clone()),
+        Value::VarChar { value, .. } => Value::Text(value.clone()),
+        Value::Text(s) => Value::Text(s.clone()),
         other => other.clone(),
     }
 }
@@ -129,19 +129,19 @@ mod pk_key_tests {
 
     #[test]
     fn key_equates_int_widths() {
-        let i32 = PkTuple::new(vec![UniversalValue::Int32(42)]);
-        let i64 = PkTuple::new(vec![UniversalValue::Int64(42)]);
+        let i32 = PkTuple::new(vec![Value::Int32(42)]);
+        let i64 = PkTuple::new(vec![Value::Int64(42)]);
         assert_eq!(i32.key(), i64.key());
     }
 
     #[test]
     fn key_equates_string_kinds() {
-        let text = PkTuple::new(vec![UniversalValue::Text("acct-001".into())]);
-        let varchar = PkTuple::new(vec![UniversalValue::VarChar {
+        let text = PkTuple::new(vec![Value::Text("acct-001".into())]);
+        let varchar = PkTuple::new(vec![Value::VarChar {
             value: "acct-001".into(),
             length: 32,
         }]);
-        let char_v = PkTuple::new(vec![UniversalValue::Char {
+        let char_v = PkTuple::new(vec![Value::Char {
             value: "acct-001".into(),
             length: 32,
         }]);
@@ -152,11 +152,11 @@ mod pk_key_tests {
     #[test]
     fn from_row_canonicalizes_field_pk() {
         let mut fields = std::collections::HashMap::new();
-        fields.insert("id".to_string(), UniversalValue::Int32(7));
-        let row = UniversalRow::new("users", 0, UniversalValue::Int32(7), fields);
+        fields.insert("id".to_string(), Value::Int32(7));
+        let row = Row::new("users", 0, Value::Int32(7), fields);
         let pk = PkTuple::from_row(&row, &["id".to_string()]).unwrap();
-        assert_eq!(pk.0, vec![UniversalValue::Int64(7)]);
-        assert_eq!(pk.key(), PkTuple::new(vec![UniversalValue::Int64(7)]).key());
+        assert_eq!(pk.0, vec![Value::Int64(7)]);
+        assert_eq!(pk.key(), PkTuple::new(vec![Value::Int64(7)]).key());
     }
 }
 
@@ -184,7 +184,7 @@ pub struct ReconciliationEvent<P: ReconciliationPos> {
     /// Primary key of the affected row.
     pub pk: PkTuple,
     /// The change to apply to the sink.
-    pub change: UniversalChange,
+    pub change: Change,
 }
 
 /// An inbound ad-hoc snapshot signal (e.g. a Debezium-style `execute-snapshot`

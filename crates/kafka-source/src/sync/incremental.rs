@@ -23,7 +23,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use surreal_sink::SurrealSink;
-use sync_core::{TableDefinition, TypedValue, UniversalChange, UniversalRow, UniversalValue};
+use sync_core::{Change, Row, TableDefinition, TypedValue, Value};
 use sync_transform::{
     run_source_runtime, ApplyOpts, CheckpointPolicy, Pipeline, PositionedEvent, SourceDriver,
     SourceRuntimeOpts, StopReason,
@@ -305,7 +305,7 @@ struct KafkaSourceDriver {
     ready_to_commit: Vec<Message>,
     /// Message count watermark (advanced only after sink via `note_sunk_events`).
     processed_count: Arc<AtomicU64>,
-    /// Poll-time `UniversalRow.index` allocator (advances on receive, not commit).
+    /// Poll-time `Row.index` allocator (advances on receive, not commit).
     /// Separated from `processed_count` so overlapping polls never reuse indices.
     next_row_index: Arc<AtomicU64>,
     max_messages: Option<u64>,
@@ -430,11 +430,11 @@ impl SourceDriver for KafkaSourceDriver {
     }
 }
 
-fn row_to_upsert_change(row: UniversalRow) -> UniversalChange {
-    UniversalChange::update(row.table, row.id, row.fields)
+fn row_to_upsert_change(row: Row) -> Change {
+    Change::update(row.table, row.id, row.fields)
 }
 
-/// Convert typed values to UniversalRow.
+/// Convert typed values to Row.
 ///
 /// Either uses the message key (base64 encoded) as ID, or extracts the ID from
 /// one or more payload fields (`id_columns` when non-empty, else `id_field`).
@@ -446,13 +446,13 @@ fn typed_values_to_universal_row(
     id_field: &str,
     id_columns: &[String],
     record_index: u64,
-) -> Result<UniversalRow> {
+) -> Result<Row> {
     let id_value = if use_message_key_as_id {
         let key_bytes = message_key.ok_or_else(|| {
             anyhow::anyhow!("use_message_key_as_id is enabled but message has no key")
         })?;
         let base64_str = base64::engine::general_purpose::STANDARD.encode(key_bytes);
-        UniversalValue::Text(base64_str)
+        Value::Text(base64_str)
     } else {
         let cols: Vec<&str> = if id_columns.is_empty() {
             vec![id_field]
@@ -469,12 +469,12 @@ fn typed_values_to_universal_row(
         sync_core::build_composite_record_id(parts)
     };
 
-    let fields: HashMap<String, UniversalValue> = typed_values
+    let fields: HashMap<String, Value> = typed_values
         .into_iter()
         .map(|(k, tv)| (k, tv.value))
         .collect();
 
-    Ok(UniversalRow::new(
+    Ok(Row::new(
         table_name.to_string(),
         record_index,
         id_value,
@@ -482,7 +482,7 @@ fn typed_values_to_universal_row(
     ))
 }
 
-/// Per-message `UniversalRow.index` within one Kafka decode batch.
+/// Per-message `Row.index` within one Kafka decode batch.
 ///
 /// `base` is the poll-time index allocator value at the start of the batch;
 /// `offset` is the message's position in that batch.

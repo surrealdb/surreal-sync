@@ -8,7 +8,7 @@ use crate::proto::{ProtoFieldValue, ProtoType};
 use crate::{Message, Payload};
 use json_types::JsonValueWithSchema;
 use std::collections::HashMap;
-use sync_core::{ColumnDefinition, TableDefinition, TypedValue, UniversalType, UniversalValue};
+use sync_core::{ColumnDefinition, TableDefinition, Type, TypedValue, Value};
 use tracing::debug;
 
 /// Convert a Kafka message to TypedValue key-value pairs.
@@ -84,7 +84,7 @@ pub fn message_to_typed_values(
                                 // For repeated fields without TableDefinition, default to Text element type
                                 kvs.insert(
                                     field_name.clone(),
-                                    TypedValue::array(Vec::new(), UniversalType::Text),
+                                    TypedValue::array(Vec::new(), Type::Text),
                                 );
                             }
                             // Note: Other scalar types (int, string, etc.) default to 0/""
@@ -100,7 +100,7 @@ pub fn message_to_typed_values(
                 for column in &schema.columns {
                     if !kvs.contains_key(&column.name) {
                         match &column.column_type {
-                            UniversalType::Array { element_type } => {
+                            Type::Array { element_type } => {
                                 // Override with more precise element type from TableDefinition
                                 debug!(
                                     "Adding empty array for missing field '{}' based on TableDefinition schema",
@@ -111,7 +111,7 @@ pub fn message_to_typed_values(
                                     TypedValue::array(Vec::new(), (**element_type).clone()),
                                 );
                             }
-                            UniversalType::Bool => {
+                            Type::Bool => {
                                 // Proto3 default: false
                                 debug!(
                                     "Adding default 'false' for missing bool field '{}' (Proto3 default via TableDefinition)",
@@ -139,7 +139,7 @@ pub fn proto_to_typed_value_with_schema(
         ProtoFieldValue::String(s) => {
             // Check if this is actually a JSON/Object field encoded as string
             if let Some(col) = column_schema {
-                if matches!(col.column_type, UniversalType::Json | UniversalType::Jsonb) {
+                if matches!(col.column_type, Type::Json | Type::Jsonb) {
                     debug!(
                         "Parsing string field '{}' as JSON based on schema",
                         col.name
@@ -157,7 +157,7 @@ pub fn proto_to_typed_value_with_schema(
                 }
 
                 // Check if this is a Decimal field encoded as string (protobuf doesn't have native decimal)
-                if let UniversalType::Decimal { precision, scale } = &col.column_type {
+                if let Type::Decimal { precision, scale } = &col.column_type {
                     debug!(
                         "Parsing string field '{}' as Decimal based on schema (precision={}, scale={})",
                         col.name, precision, scale
@@ -251,60 +251,60 @@ pub fn proto_to_typed_value(value: ProtoFieldValue) -> Result<TypedValue> {
             let element_type = typed_values
                 .first()
                 .map(|tv| tv.sync_type.clone())
-                .unwrap_or(UniversalType::Text);
+                .unwrap_or(Type::Text);
 
-            // Extract just the UniversalValues for the array
-            let arr: Vec<UniversalValue> = typed_values.into_iter().map(|tv| tv.value).collect();
+            // Extract just the Values for the array
+            let arr: Vec<Value> = typed_values.into_iter().map(|tv| tv.value).collect();
 
             Ok(TypedValue::array(arr, element_type))
         }
-        ProtoFieldValue::Null => Ok(TypedValue::null(UniversalType::Text)),
+        ProtoFieldValue::Null => Ok(TypedValue::null(Type::Text)),
     }
 }
 
-/// Convert a UniversalValue to serde_json::Value.
-fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
+/// Convert a Value to serde_json::Value.
+fn universal_value_to_json(value: &Value) -> serde_json::Value {
     use base64::Engine;
     match value {
-        UniversalValue::Null => serde_json::Value::Null,
-        UniversalValue::Bool(b) => serde_json::json!(*b),
-        UniversalValue::Int8 { value, .. } => serde_json::json!(*value),
-        UniversalValue::Int16(i) => serde_json::json!(*i),
-        UniversalValue::Int32(i) => serde_json::json!(*i),
-        UniversalValue::Int64(i) => serde_json::json!(*i),
-        UniversalValue::Float32(f) => serde_json::json!(*f),
-        UniversalValue::Float64(f) => serde_json::json!(*f),
-        UniversalValue::Char { value, .. } => serde_json::json!(value),
-        UniversalValue::VarChar { value, .. } => serde_json::json!(value),
-        UniversalValue::Text(s) => serde_json::json!(s),
-        UniversalValue::Blob(b) | UniversalValue::Bytes(b) => {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::json!(*b),
+        Value::Int8 { value, .. } => serde_json::json!(*value),
+        Value::Int16(i) => serde_json::json!(*i),
+        Value::Int32(i) => serde_json::json!(*i),
+        Value::Int64(i) => serde_json::json!(*i),
+        Value::Float32(f) => serde_json::json!(*f),
+        Value::Float64(f) => serde_json::json!(*f),
+        Value::Char { value, .. } => serde_json::json!(value),
+        Value::VarChar { value, .. } => serde_json::json!(value),
+        Value::Text(s) => serde_json::json!(s),
+        Value::Blob(b) | Value::Bytes(b) => {
             let encoded = base64::engine::general_purpose::STANDARD.encode(b);
             serde_json::json!(encoded)
         }
-        UniversalValue::Uuid(u) => serde_json::json!(u.to_string()),
-        UniversalValue::Ulid(u) => serde_json::json!(u.to_string()),
-        UniversalValue::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
-        UniversalValue::Time(dt) => serde_json::json!(dt.format("%H:%M:%S%.f").to_string()),
-        UniversalValue::LocalDateTime(dt)
-        | UniversalValue::LocalDateTimeNano(dt)
-        | UniversalValue::ZonedDateTime(dt) => serde_json::json!(dt.to_rfc3339()),
-        UniversalValue::TimeTz(s) => serde_json::json!(s),
-        UniversalValue::Decimal { value, .. } => serde_json::json!(value),
-        UniversalValue::Array { elements, .. } => {
+        Value::Uuid(u) => serde_json::json!(u.to_string()),
+        Value::Ulid(u) => serde_json::json!(u.to_string()),
+        Value::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
+        Value::Time(dt) => serde_json::json!(dt.format("%H:%M:%S%.f").to_string()),
+        Value::LocalDateTime(dt) | Value::LocalDateTimeNano(dt) | Value::ZonedDateTime(dt) => {
+            serde_json::json!(dt.to_rfc3339())
+        }
+        Value::TimeTz(s) => serde_json::json!(s),
+        Value::Decimal { value, .. } => serde_json::json!(value),
+        Value::Array { elements, .. } => {
             serde_json::json!(elements
                 .iter()
                 .map(universal_value_to_json)
                 .collect::<Vec<_>>())
         }
-        UniversalValue::Set { elements, .. } => serde_json::json!(elements),
-        UniversalValue::Enum { value, .. } => serde_json::json!(value),
-        UniversalValue::Json(payload) | UniversalValue::Jsonb(payload) => (**payload).clone(),
-        UniversalValue::Geometry { data, .. } => {
+        Value::Set { elements, .. } => serde_json::json!(elements),
+        Value::Enum { value, .. } => serde_json::json!(value),
+        Value::Json(payload) | Value::Jsonb(payload) => (**payload).clone(),
+        Value::Geometry { data, .. } => {
             use sync_core::values::GeometryData;
             let GeometryData(json) = data;
             json.clone()
         }
-        UniversalValue::Duration(d) => {
+        Value::Duration(d) => {
             let secs = d.as_secs();
             let nanos = d.subsec_nanos();
             if nanos == 0 {
@@ -313,12 +313,12 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
                 serde_json::json!(format!("PT{secs}.{nanos:09}S"))
             }
         }
-        UniversalValue::Thing { table, id } => {
+        Value::Thing { table, id } => {
             let id_str = match id.as_ref() {
-                UniversalValue::Text(s) => s.clone(),
-                UniversalValue::Int32(i) => i.to_string(),
-                UniversalValue::Int64(i) => i.to_string(),
-                UniversalValue::Uuid(u) => u.to_string(),
+                Value::Text(s) => s.clone(),
+                Value::Int32(i) => i.to_string(),
+                Value::Int64(i) => i.to_string(),
+                Value::Uuid(u) => u.to_string(),
                 other => panic!(
                     "Unsupported Thing ID type for Kafka: {other:?}. \
                      Supported types: Text, Int32, Int64, Uuid"
@@ -326,20 +326,20 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
             };
             serde_json::json!(format!("{table}:{id_str}"))
         }
-        UniversalValue::Object(map) => {
+        Value::Object(map) => {
             let obj: serde_json::Map<String, serde_json::Value> = map
                 .iter()
                 .map(|(k, v)| (k.clone(), universal_value_to_json(v)))
                 .collect();
             serde_json::Value::Object(obj)
         }
-        UniversalValue::ZeroTemporal {
+        Value::ZeroTemporal {
             intended_type,
             source,
         } => {
             let s = source
                 .as_deref()
-                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+                .unwrap_or_else(|| Value::canonical_zero_literal(intended_type));
             serde_json::Value::String(s.to_string())
         }
     }
@@ -362,32 +362,32 @@ mod tests {
     fn test_proto_to_typed_value_int32() {
         let value = ProtoFieldValue::Int32(42);
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, UniversalType::Int32);
-        assert!(matches!(result.value, UniversalValue::Int32(42)));
+        assert_eq!(result.sync_type, Type::Int32);
+        assert!(matches!(result.value, Value::Int32(42)));
     }
 
     #[test]
     fn test_proto_to_typed_value_int64() {
         let value = ProtoFieldValue::Int64(123456789);
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, UniversalType::Int64);
-        assert!(matches!(result.value, UniversalValue::Int64(123456789)));
+        assert_eq!(result.sync_type, Type::Int64);
+        assert!(matches!(result.value, Value::Int64(123456789)));
     }
 
     #[test]
     fn test_proto_to_typed_value_string() {
         let value = ProtoFieldValue::String("hello".to_string());
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, UniversalType::Text);
-        assert!(matches!(result.value, UniversalValue::Text(s) if s == "hello"));
+        assert_eq!(result.sync_type, Type::Text);
+        assert!(matches!(result.value, Value::Text(s) if s == "hello"));
     }
 
     #[test]
     fn test_proto_to_typed_value_bool() {
         let value = ProtoFieldValue::Bool(true);
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, UniversalType::Bool);
-        assert!(matches!(result.value, UniversalValue::Bool(true)));
+        assert_eq!(result.sync_type, Type::Bool);
+        assert!(matches!(result.value, Value::Bool(true)));
     }
 
     #[test]
@@ -404,8 +404,8 @@ mod tests {
 
         let value = ProtoFieldValue::Message(Box::new(msg));
         let result = proto_to_typed_value(value).unwrap();
-        assert_eq!(result.sync_type, UniversalType::LocalDateTime);
-        assert!(matches!(result.value, UniversalValue::LocalDateTime(_)));
+        assert_eq!(result.sync_type, Type::LocalDateTime);
+        assert!(matches!(result.value, Value::LocalDateTime(_)));
     }
 
     #[test]
@@ -415,26 +415,24 @@ mod tests {
             ProtoFieldValue::String("b".to_string()),
         ]);
         let result = proto_to_typed_value(value).unwrap();
-        assert!(matches!(result.sync_type, UniversalType::Array { .. }));
-        assert!(
-            matches!(result.value, UniversalValue::Array { ref elements, .. } if elements.len() == 2)
-        );
+        assert!(matches!(result.sync_type, Type::Array { .. }));
+        assert!(matches!(result.value, Value::Array { ref elements, .. } if elements.len() == 2));
     }
 
     #[test]
     fn test_proto_to_typed_value_null() {
         let value = ProtoFieldValue::Null;
         let result = proto_to_typed_value(value).unwrap();
-        assert!(matches!(result.value, UniversalValue::Null));
+        assert!(matches!(result.value, Value::Null));
     }
 
     #[test]
     fn test_proto_to_typed_value_with_schema_json() {
-        let column_schema = sync_core::ColumnDefinition::nullable("metadata", UniversalType::Json);
+        let column_schema = sync_core::ColumnDefinition::nullable("metadata", Type::Json);
 
         let value = ProtoFieldValue::String(r#"{"key": "value"}"#.to_string());
         let result = proto_to_typed_value_with_schema(value, Some(&column_schema)).unwrap();
-        assert_eq!(result.sync_type, UniversalType::Json);
-        assert!(matches!(result.value, UniversalValue::Json(_)));
+        assert_eq!(result.sync_type, Type::Json);
+        assert!(matches!(result.value, Value::Json(_)));
     }
 }

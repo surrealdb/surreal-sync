@@ -1,7 +1,7 @@
-//! Reverse conversion: Neo4j BoltType → TypedValue/UniversalValue
+//! Reverse conversion: Neo4j BoltType → TypedValue/Value
 //!
 //! This module implements conversion from Neo4j's BoltType to sync-core's TypedValue
-//! and UniversalValue types. This is used when reading data from Neo4j.
+//! and Value types. This is used when reading data from Neo4j.
 //!
 //! ## Timezone Handling
 //!
@@ -20,7 +20,7 @@ use chrono_tz::Tz;
 use neo4rs::BoltType;
 use std::str::FromStr;
 use sync_core::types::GeometryType;
-use sync_core::{TypedValue, UniversalType, UniversalValue};
+use sync_core::{Type, TypedValue, Value};
 
 /// Configuration options for reverse conversion.
 #[derive(Debug, Clone)]
@@ -90,13 +90,10 @@ pub fn convert_bolt_to_typed_value(
     Ok(TypedValue { value, sync_type })
 }
 
-/// Convert a Neo4j BoltType to an UniversalValue.
+/// Convert a Neo4j BoltType to an Value.
 ///
 /// This is a convenience wrapper that discards type information.
-pub fn convert_bolt_to_universal_value(
-    bolt: BoltType,
-    config: &ConversionConfig,
-) -> Result<UniversalValue> {
+pub fn convert_bolt_to_universal_value(bolt: BoltType, config: &ConversionConfig) -> Result<Value> {
     let (value, _) = convert_bolt_to_universal_value_with_type(bolt, config, true)?;
     Ok(value)
 }
@@ -109,15 +106,15 @@ fn convert_bolt_to_universal_value_with_type(
     bolt: BoltType,
     config: &ConversionConfig,
     is_top_level: bool,
-) -> Result<(UniversalValue, UniversalType)> {
+) -> Result<(Value, Type)> {
     match bolt {
-        BoltType::Null(_) => Ok((UniversalValue::Null, UniversalType::Text)),
+        BoltType::Null(_) => Ok((Value::Null, Type::Text)),
 
-        BoltType::Boolean(b) => Ok((UniversalValue::Bool(b.value), UniversalType::Bool)),
+        BoltType::Boolean(b) => Ok((Value::Bool(b.value), Type::Bool)),
 
         BoltType::Integer(i) => {
             // Neo4j integers are i64
-            Ok((UniversalValue::Int64(i.value), UniversalType::Int64))
+            Ok((Value::Int64(i.value), Type::Int64))
         }
 
         BoltType::Float(f) => {
@@ -129,7 +126,7 @@ fn convert_bolt_to_universal_value_with_type(
             if f_val.is_infinite() {
                 return Err(Neo4jTypesError::InfinityFloat);
             }
-            Ok((UniversalValue::Float64(f_val), UniversalType::Float64))
+            Ok((Value::Float64(f_val), Type::Float64))
         }
 
         BoltType::String(s) => {
@@ -139,23 +136,20 @@ fn convert_bolt_to_universal_value_with_type(
                 if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&s_val) {
                     // Only convert if it's actually JSON (object or array)
                     if json_val.is_object() || json_val.is_array() {
-                        return Ok((
-                            UniversalValue::Json(Box::new(json_val)),
-                            UniversalType::Json,
-                        ));
+                        return Ok((Value::Json(Box::new(json_val)), Type::Json));
                     }
                 }
             }
-            Ok((UniversalValue::Text(s_val), UniversalType::Text))
+            Ok((Value::Text(s_val), Type::Text))
         }
 
         BoltType::Bytes(b) => {
             let bytes = b.value.to_vec();
-            Ok((UniversalValue::Bytes(bytes), UniversalType::Bytes))
+            Ok((Value::Bytes(bytes), Type::Bytes))
         }
 
         BoltType::List(list) => {
-            let elements: Result<Vec<UniversalValue>> = list
+            let elements: Result<Vec<Value>> = list
                 .value
                 .into_iter()
                 .map(|elem| {
@@ -167,17 +161,17 @@ fn convert_bolt_to_universal_value_with_type(
 
             // Determine element type from first element, default to Text
             let element_type = if elements.is_empty() {
-                UniversalType::Text
+                Type::Text
             } else {
                 infer_element_type(&elements[0])
             };
 
             Ok((
-                UniversalValue::Array {
+                Value::Array {
                     elements,
                     element_type: Box::new(element_type.clone()),
                 },
-                UniversalType::Array {
+                Type::Array {
                     element_type: Box::new(element_type),
                 },
             ))
@@ -191,8 +185,8 @@ fn convert_bolt_to_universal_value_with_type(
                 json_obj.insert(key.to_string(), universal_value_to_json(&uval));
             }
             Ok((
-                UniversalValue::Json(Box::new(serde_json::Value::Object(json_obj))),
-                UniversalType::Json,
+                Value::Json(Box::new(serde_json::Value::Object(json_obj))),
+                Type::Json,
             ))
         }
 
@@ -217,8 +211,8 @@ fn convert_bolt_to_universal_value_with_type(
                 })?;
 
             Ok((
-                UniversalValue::LocalDateTime(datetime.with_timezone(&Utc)),
-                UniversalType::LocalDateTime,
+                Value::LocalDateTime(datetime.with_timezone(&Utc)),
+                Type::LocalDateTime,
             ))
         }
 
@@ -238,10 +232,7 @@ fn convert_bolt_to_universal_value_with_type(
                 "offset_seconds": offset.local_minus_utc()
             });
 
-            Ok((
-                UniversalValue::Json(Box::new(json_obj)),
-                UniversalType::Json,
-            ))
+            Ok((Value::Json(Box::new(json_obj)), Type::Json))
         }
 
         BoltType::LocalTime(local_time) => {
@@ -257,10 +248,7 @@ fn convert_bolt_to_universal_value_with_type(
                 "nanosecond": naive_time.nanosecond()
             });
 
-            Ok((
-                UniversalValue::Json(Box::new(json_obj)),
-                UniversalType::Json,
-            ))
+            Ok((Value::Json(Box::new(json_obj)), Type::Json))
         }
 
         BoltType::DateTime(dt) => {
@@ -272,8 +260,8 @@ fn convert_bolt_to_universal_value_with_type(
                     })?;
 
             Ok((
-                UniversalValue::ZonedDateTime(dt_with_offset.with_timezone(&Utc)),
-                UniversalType::ZonedDateTime,
+                Value::ZonedDateTime(dt_with_offset.with_timezone(&Utc)),
+                Type::ZonedDateTime,
             ))
         }
 
@@ -296,8 +284,8 @@ fn convert_bolt_to_universal_value_with_type(
             })?;
 
             Ok((
-                UniversalValue::LocalDateTime(datetime.with_timezone(&Utc)),
-                UniversalType::LocalDateTime,
+                Value::LocalDateTime(datetime.with_timezone(&Utc)),
+                Type::LocalDateTime,
             ))
         }
 
@@ -312,8 +300,8 @@ fn convert_bolt_to_universal_value_with_type(
                     })?;
 
             Ok((
-                UniversalValue::ZonedDateTime(dt_with_offset.with_timezone(&Utc)),
-                UniversalType::ZonedDateTime,
+                Value::ZonedDateTime(dt_with_offset.with_timezone(&Utc)),
+                Type::ZonedDateTime,
             ))
         }
 
@@ -321,10 +309,7 @@ fn convert_bolt_to_universal_value_with_type(
             // Neo4j Duration converts to std::time::Duration via Into
             let std_duration: std::time::Duration = duration.into();
 
-            Ok((
-                UniversalValue::Duration(std_duration),
-                UniversalType::Duration,
-            ))
+            Ok((Value::Duration(std_duration), Type::Duration))
         }
 
         BoltType::Point2D(point) => {
@@ -336,11 +321,11 @@ fn convert_bolt_to_universal_value_with_type(
             });
 
             Ok((
-                UniversalValue::Geometry {
+                Value::Geometry {
                     geometry_type: GeometryType::Point,
                     data: sync_core::values::GeometryData(geojson),
                 },
-                UniversalType::Geometry {
+                Type::Geometry {
                     geometry_type: GeometryType::Point,
                 },
             ))
@@ -355,11 +340,11 @@ fn convert_bolt_to_universal_value_with_type(
             });
 
             Ok((
-                UniversalValue::Geometry {
+                Value::Geometry {
                     geometry_type: GeometryType::Point,
                     data: sync_core::values::GeometryData(geojson),
                 },
-                UniversalType::Geometry {
+                Type::Geometry {
                     geometry_type: GeometryType::Point,
                 },
             ))
@@ -384,111 +369,109 @@ fn convert_bolt_to_universal_value_with_type(
     }
 }
 
-/// Infer the UniversalType from an UniversalValue.
-fn infer_element_type(value: &UniversalValue) -> UniversalType {
+/// Infer the Type from an Value.
+fn infer_element_type(value: &Value) -> Type {
     match value {
-        UniversalValue::Null => UniversalType::Text,
-        UniversalValue::Bool(_) => UniversalType::Bool,
-        UniversalValue::Int8 { width, .. } => UniversalType::Int8 { width: *width },
-        UniversalValue::Int16(_) => UniversalType::Int16,
-        UniversalValue::Int32(_) => UniversalType::Int32,
-        UniversalValue::Int64(_) => UniversalType::Int64,
-        UniversalValue::Float32(_) => UniversalType::Float32,
-        UniversalValue::Float64(_) => UniversalType::Float64,
-        UniversalValue::Decimal {
+        Value::Null => Type::Text,
+        Value::Bool(_) => Type::Bool,
+        Value::Int8 { width, .. } => Type::Int8 { width: *width },
+        Value::Int16(_) => Type::Int16,
+        Value::Int32(_) => Type::Int32,
+        Value::Int64(_) => Type::Int64,
+        Value::Float32(_) => Type::Float32,
+        Value::Float64(_) => Type::Float64,
+        Value::Decimal {
             precision, scale, ..
-        } => UniversalType::Decimal {
+        } => Type::Decimal {
             precision: *precision,
             scale: *scale,
         },
-        UniversalValue::Char { length, .. } => UniversalType::Char { length: *length },
-        UniversalValue::VarChar { length, .. } => UniversalType::VarChar { length: *length },
-        UniversalValue::Text(_) => UniversalType::Text,
-        UniversalValue::Blob(_) => UniversalType::Blob,
-        UniversalValue::Bytes(_) => UniversalType::Bytes,
-        UniversalValue::Uuid(_) => UniversalType::Uuid,
-        UniversalValue::Ulid(_) => UniversalType::Ulid,
-        UniversalValue::Date(_) => UniversalType::Date,
-        UniversalValue::Time(_) => UniversalType::Time,
-        UniversalValue::LocalDateTime(_) => UniversalType::LocalDateTime,
-        UniversalValue::LocalDateTimeNano(_) => UniversalType::LocalDateTimeNano,
-        UniversalValue::ZonedDateTime(_) => UniversalType::ZonedDateTime,
-        UniversalValue::Json(_) => UniversalType::Json,
-        UniversalValue::Jsonb(_) => UniversalType::Jsonb,
-        UniversalValue::Array { element_type, .. } => UniversalType::Array {
+        Value::Char { length, .. } => Type::Char { length: *length },
+        Value::VarChar { length, .. } => Type::VarChar { length: *length },
+        Value::Text(_) => Type::Text,
+        Value::Blob(_) => Type::Blob,
+        Value::Bytes(_) => Type::Bytes,
+        Value::Uuid(_) => Type::Uuid,
+        Value::Ulid(_) => Type::Ulid,
+        Value::Date(_) => Type::Date,
+        Value::Time(_) => Type::Time,
+        Value::LocalDateTime(_) => Type::LocalDateTime,
+        Value::LocalDateTimeNano(_) => Type::LocalDateTimeNano,
+        Value::ZonedDateTime(_) => Type::ZonedDateTime,
+        Value::Json(_) => Type::Json,
+        Value::Jsonb(_) => Type::Jsonb,
+        Value::Array { element_type, .. } => Type::Array {
             element_type: element_type.clone(),
         },
-        UniversalValue::Set { allowed_values, .. } => UniversalType::Set {
+        Value::Set { allowed_values, .. } => Type::Set {
             values: allowed_values.clone(),
         },
-        UniversalValue::Enum { allowed_values, .. } => UniversalType::Enum {
+        Value::Enum { allowed_values, .. } => Type::Enum {
             values: allowed_values.clone(),
         },
-        UniversalValue::Geometry { geometry_type, .. } => UniversalType::Geometry {
+        Value::Geometry { geometry_type, .. } => Type::Geometry {
             geometry_type: geometry_type.clone(),
         },
-        UniversalValue::Duration(_) => UniversalType::Duration,
-        UniversalValue::Thing { .. } => UniversalType::Thing,
-        UniversalValue::Object(_) => UniversalType::Object,
-        UniversalValue::TimeTz(_) => UniversalType::TimeTz,
-        UniversalValue::ZeroTemporal { intended_type, .. } => intended_type.clone(),
+        Value::Duration(_) => Type::Duration,
+        Value::Thing { .. } => Type::Thing,
+        Value::Object(_) => Type::Object,
+        Value::TimeTz(_) => Type::TimeTz,
+        Value::ZeroTemporal { intended_type, .. } => intended_type.clone(),
     }
 }
 
-/// Convert an UniversalValue to serde_json::Value.
-fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
+/// Convert an Value to serde_json::Value.
+fn universal_value_to_json(value: &Value) -> serde_json::Value {
     match value {
-        UniversalValue::Null => serde_json::Value::Null,
-        UniversalValue::Bool(b) => serde_json::Value::Bool(*b),
-        UniversalValue::Int8 { value, .. } => serde_json::json!(*value),
-        UniversalValue::Int16(i) => serde_json::json!(*i),
-        UniversalValue::Int32(i) => serde_json::json!(*i),
-        UniversalValue::Int64(i) => serde_json::json!(*i),
-        UniversalValue::Float32(f) => serde_json::Number::from_f64(*f as f64)
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Int8 { value, .. } => serde_json::json!(*value),
+        Value::Int16(i) => serde_json::json!(*i),
+        Value::Int32(i) => serde_json::json!(*i),
+        Value::Int64(i) => serde_json::json!(*i),
+        Value::Float32(f) => serde_json::Number::from_f64(*f as f64)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        UniversalValue::Float64(f) => serde_json::Number::from_f64(*f)
+        Value::Float64(f) => serde_json::Number::from_f64(*f)
             .map(serde_json::Value::Number)
             .unwrap_or(serde_json::Value::Null),
-        UniversalValue::Decimal { value, .. } => serde_json::Value::String(value.clone()),
-        UniversalValue::Char { value, .. } => serde_json::Value::String(value.clone()),
-        UniversalValue::VarChar { value, .. } => serde_json::Value::String(value.clone()),
-        UniversalValue::Text(s) => serde_json::Value::String(s.clone()),
-        UniversalValue::Blob(b) | UniversalValue::Bytes(b) => {
-            serde_json::Value::String(hex::encode(b))
-        }
-        UniversalValue::Uuid(u) => serde_json::Value::String(u.to_string()),
-        UniversalValue::Ulid(u) => serde_json::Value::String(u.to_string()),
-        UniversalValue::Date(dt)
-        | UniversalValue::Time(dt)
-        | UniversalValue::LocalDateTime(dt)
-        | UniversalValue::LocalDateTimeNano(dt)
-        | UniversalValue::ZonedDateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
-        UniversalValue::Json(j) | UniversalValue::Jsonb(j) => (**j).clone(),
-        UniversalValue::Array { elements, .. } => {
+        Value::Decimal { value, .. } => serde_json::Value::String(value.clone()),
+        Value::Char { value, .. } => serde_json::Value::String(value.clone()),
+        Value::VarChar { value, .. } => serde_json::Value::String(value.clone()),
+        Value::Text(s) => serde_json::Value::String(s.clone()),
+        Value::Blob(b) | Value::Bytes(b) => serde_json::Value::String(hex::encode(b)),
+        Value::Uuid(u) => serde_json::Value::String(u.to_string()),
+        Value::Ulid(u) => serde_json::Value::String(u.to_string()),
+        Value::Date(dt)
+        | Value::Time(dt)
+        | Value::LocalDateTime(dt)
+        | Value::LocalDateTimeNano(dt)
+        | Value::ZonedDateTime(dt) => serde_json::Value::String(dt.to_rfc3339()),
+        Value::Json(j) | Value::Jsonb(j) => (**j).clone(),
+        Value::Array { elements, .. } => {
             serde_json::Value::Array(elements.iter().map(universal_value_to_json).collect())
         }
-        UniversalValue::Set { elements, .. } => serde_json::Value::Array(
+        Value::Set { elements, .. } => serde_json::Value::Array(
             elements
                 .iter()
                 .map(|s| serde_json::Value::String(s.clone()))
                 .collect(),
         ),
-        UniversalValue::Enum { value, .. } => serde_json::Value::String(value.clone()),
-        UniversalValue::Geometry { data, .. } => {
+        Value::Enum { value, .. } => serde_json::Value::String(value.clone()),
+        Value::Geometry { data, .. } => {
             let sync_core::values::GeometryData(json) = data;
             json.clone()
         }
-        UniversalValue::Duration(d) => serde_json::json!({
+        Value::Duration(d) => serde_json::json!({
             "secs": d.as_secs(),
             "nanos": d.subsec_nanos()
         }),
-        UniversalValue::Thing { table, id } => {
+        Value::Thing { table, id } => {
             let id_str = match id.as_ref() {
-                UniversalValue::Text(s) => s.clone(),
-                UniversalValue::Int32(i) => i.to_string(),
-                UniversalValue::Int64(i) => i.to_string(),
-                UniversalValue::Uuid(u) => u.to_string(),
+                Value::Text(s) => s.clone(),
+                Value::Int32(i) => i.to_string(),
+                Value::Int64(i) => i.to_string(),
+                Value::Uuid(u) => u.to_string(),
                 other => panic!(
                     "Unsupported Thing ID type for Neo4j: {other:?}. \
                      Supported types: Text, Int32, Int64, Uuid"
@@ -496,7 +479,7 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
             };
             serde_json::json!(format!("{table}:{id_str}"))
         }
-        UniversalValue::Object(map) => {
+        Value::Object(map) => {
             let obj: serde_json::Map<String, serde_json::Value> = map
                 .iter()
                 .map(|(k, v)| (k.clone(), universal_value_to_json(v)))
@@ -504,14 +487,14 @@ fn universal_value_to_json(value: &UniversalValue) -> serde_json::Value {
             serde_json::Value::Object(obj)
         }
         // TimeTz - stored as string to preserve timezone format
-        UniversalValue::TimeTz(s) => serde_json::Value::String(s.clone()),
-        UniversalValue::ZeroTemporal {
+        Value::TimeTz(s) => serde_json::Value::String(s.clone()),
+        Value::ZeroTemporal {
             intended_type,
             source,
         } => {
             let s = source
                 .as_deref()
-                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+                .unwrap_or_else(|| Value::canonical_zero_literal(intended_type));
             serde_json::Value::String(s.to_string())
         }
     }
@@ -526,7 +509,7 @@ mod tests {
     fn test_null_conversion() {
         let config = ConversionConfig::default();
         let result = convert_bolt_to_typed_value(BoltType::Null(BoltNull), &config).unwrap();
-        assert!(matches!(result.value, UniversalValue::Null));
+        assert!(matches!(result.value, Value::Null));
     }
 
     #[test]
@@ -535,11 +518,11 @@ mod tests {
 
         let bolt_true = BoltType::Boolean(BoltBoolean::new(true));
         let result = convert_bolt_to_typed_value(bolt_true, &config).unwrap();
-        assert!(matches!(result.value, UniversalValue::Bool(true)));
+        assert!(matches!(result.value, Value::Bool(true)));
 
         let bolt_false = BoltType::Boolean(BoltBoolean::new(false));
         let result = convert_bolt_to_typed_value(bolt_false, &config).unwrap();
-        assert!(matches!(result.value, UniversalValue::Bool(false)));
+        assert!(matches!(result.value, Value::Bool(false)));
     }
 
     #[test]
@@ -548,15 +531,15 @@ mod tests {
 
         let bolt_int = BoltType::Integer(BoltInteger::new(42));
         let result = convert_bolt_to_typed_value(bolt_int, &config).unwrap();
-        assert!(matches!(result.value, UniversalValue::Int64(42)));
+        assert!(matches!(result.value, Value::Int64(42)));
 
         let bolt_big = BoltType::Integer(BoltInteger::new(i64::MAX));
         let result = convert_bolt_to_typed_value(bolt_big, &config).unwrap();
-        assert!(matches!(result.value, UniversalValue::Int64(i64::MAX)));
+        assert!(matches!(result.value, Value::Int64(i64::MAX)));
 
         let bolt_neg = BoltType::Integer(BoltInteger::new(-100));
         let result = convert_bolt_to_typed_value(bolt_neg, &config).unwrap();
-        assert!(matches!(result.value, UniversalValue::Int64(-100)));
+        assert!(matches!(result.value, Value::Int64(-100)));
     }
 
     #[test]
@@ -565,7 +548,7 @@ mod tests {
 
         let bolt_float = BoltType::Float(BoltFloat::new(1.23456789));
         let result = convert_bolt_to_typed_value(bolt_float, &config).unwrap();
-        if let UniversalValue::Float64(f) = result.value {
+        if let Value::Float64(f) = result.value {
             assert!((f - 1.23456789).abs() < 0.0001);
         } else {
             panic!("Expected Double value");
@@ -600,7 +583,7 @@ mod tests {
 
         let bolt_str = BoltType::String(BoltString::new("hello world"));
         let result = convert_bolt_to_typed_value(bolt_str, &config).unwrap();
-        if let UniversalValue::Text(s) = result.value {
+        if let Value::Text(s) = result.value {
             assert_eq!(s, "hello world");
         } else {
             panic!("Expected Text value");
@@ -614,7 +597,7 @@ mod tests {
         let bolt_str = BoltType::String(BoltString::new("{\"key\": \"value\"}"));
         let result = convert_bolt_to_typed_value(bolt_str, &config).unwrap();
         // Should remain as text, not parsed as JSON
-        if let UniversalValue::Text(s) = result.value {
+        if let Value::Text(s) = result.value {
             assert_eq!(s, "{\"key\": \"value\"}");
         } else {
             panic!("Expected Text value");
@@ -628,7 +611,7 @@ mod tests {
         let bolt_str = BoltType::String(BoltString::new("{\"key\": \"value\"}"));
         let result = convert_bolt_to_typed_value(bolt_str, &config).unwrap();
         // Should be parsed as JSON
-        if let UniversalValue::Json(json) = result.value {
+        if let Value::Json(json) = result.value {
             assert_eq!(json["key"], "value");
         } else {
             panic!("Expected Json value");
@@ -642,7 +625,7 @@ mod tests {
         let bytes = vec![0xDE, 0xAD, 0xBE, 0xEF];
         let bolt_bytes = BoltType::Bytes(BoltBytes::new(bytes.clone().into()));
         let result = convert_bolt_to_typed_value(bolt_bytes, &config).unwrap();
-        if let UniversalValue::Bytes(b) = result.value {
+        if let Value::Bytes(b) = result.value {
             assert_eq!(b, bytes);
         } else {
             panic!("Expected Bytes value");
@@ -669,7 +652,7 @@ mod tests {
         let bolt_date = BoltType::Date(BoltDate::from(naive_date));
         let result = convert_bolt_to_typed_value(bolt_date, &config).unwrap();
 
-        if let UniversalValue::LocalDateTime(dt) = result.value {
+        if let Value::LocalDateTime(dt) = result.value {
             assert_eq!(dt.year(), 2024);
             assert_eq!(dt.month(), 6);
             assert_eq!(dt.day(), 15);
@@ -689,7 +672,7 @@ mod tests {
         let bolt_date = BoltType::Date(BoltDate::from(naive_date));
         let result = convert_bolt_to_typed_value(bolt_date, &config).unwrap();
 
-        if let UniversalValue::LocalDateTime(dt) = result.value {
+        if let Value::LocalDateTime(dt) = result.value {
             // Midnight in EST (UTC-5) is 05:00 UTC
             assert_eq!(dt.year(), 2024);
             assert_eq!(dt.month(), 1);
@@ -712,11 +695,11 @@ mod tests {
 
         let result = convert_bolt_to_typed_value(BoltType::List(bolt_list), &config).unwrap();
 
-        if let UniversalValue::Array { elements, .. } = result.value {
+        if let Value::Array { elements, .. } = result.value {
             assert_eq!(elements.len(), 3);
-            assert!(matches!(elements[0], UniversalValue::Int64(1)));
-            assert!(matches!(elements[1], UniversalValue::Int64(2)));
-            assert!(matches!(elements[2], UniversalValue::Int64(3)));
+            assert!(matches!(elements[0], Value::Int64(1)));
+            assert!(matches!(elements[1], Value::Int64(2)));
+            assert!(matches!(elements[2], Value::Int64(3)));
         } else {
             panic!("Expected Array value");
         }
@@ -733,9 +716,9 @@ mod tests {
 
         let result = convert_bolt_to_typed_value(BoltType::List(bolt_list), &config).unwrap();
 
-        if let UniversalValue::Array { elements, .. } = result.value {
+        if let Value::Array { elements, .. } = result.value {
             assert_eq!(elements.len(), 2);
-            if let UniversalValue::Text(s) = &elements[0] {
+            if let Value::Text(s) = &elements[0] {
                 assert_eq!(s, "a");
             } else {
                 panic!("Expected Text value");
@@ -754,7 +737,7 @@ mod tests {
 
         let result = convert_bolt_to_typed_value(BoltType::List(bolt_list), &config).unwrap();
 
-        if let UniversalValue::Array { elements, .. } = result.value {
+        if let Value::Array { elements, .. } = result.value {
             assert!(elements.is_empty());
         } else {
             panic!("Expected Array value");
@@ -772,7 +755,7 @@ mod tests {
 
         let result = convert_bolt_to_typed_value(BoltType::Map(bolt_map), &config).unwrap();
 
-        if let UniversalValue::Json(json) = result.value {
+        if let Value::Json(json) = result.value {
             assert_eq!(json["name"], "Alice");
             assert_eq!(json["age"], 30);
         } else {
@@ -791,9 +774,9 @@ mod tests {
 
         let result = convert_bolt_to_typed_value(BoltType::List(bolt_list), &config).unwrap();
 
-        if let UniversalValue::Array { elements, .. } = result.value {
+        if let Value::Array { elements, .. } = result.value {
             // The nested string should NOT be parsed as JSON
-            if let UniversalValue::Text(s) = &elements[0] {
+            if let Value::Text(s) = &elements[0] {
                 assert_eq!(s, "{\"nested\": true}");
             } else {
                 panic!("Expected nested string to remain as Text");
@@ -816,7 +799,7 @@ mod tests {
         let bolt_local_dt = BoltType::LocalDateTime(BoltLocalDateTime::from(naive_dt));
         let result = convert_bolt_to_typed_value(bolt_local_dt, &config).unwrap();
 
-        if let UniversalValue::LocalDateTime(dt) = result.value {
+        if let Value::LocalDateTime(dt) = result.value {
             assert_eq!(dt.year(), 2024);
             assert_eq!(dt.month(), 6);
             assert_eq!(dt.day(), 15);

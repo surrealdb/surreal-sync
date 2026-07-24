@@ -5,7 +5,7 @@ use crate::insert::{count_nodes, delete_all_nodes, insert_batch, DEFAULT_BATCH_S
 use loadtest_generator::DataGenerator;
 use neo4rs::{ConfigBuilder, Graph};
 use std::time::{Duration, Instant};
-use sync_core::{Schema, UniversalRow};
+use sync_core::{Row, Schema};
 use tracing::{debug, info};
 
 /// Metrics from a populate operation.
@@ -189,7 +189,7 @@ impl Neo4jPopulator {
 
             // Generate rows
             let gen_start = Instant::now();
-            let rows: Vec<UniversalRow> = self
+            let rows: Vec<Row> = self
                 .generator
                 .internal_rows(label, batch_count)
                 .map_err(|e| Neo4jPopulatorError::Generator(e.to_string()))?

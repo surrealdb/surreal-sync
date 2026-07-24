@@ -4,7 +4,7 @@ use crate::error::MongoDBPopulatorError;
 use bson::{doc, Document};
 use mongodb::Collection;
 use mongodb_types::forward::BsonValue;
-use sync_core::{GeneratorTableDefinition, TypedValue, UniversalRow};
+use sync_core::{GeneratorTableDefinition, Row, TypedValue};
 
 /// Default batch size for INSERT operations.
 pub const DEFAULT_BATCH_SIZE: usize = 100;
@@ -13,13 +13,13 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 pub async fn insert_batch(
     collection: &Collection<Document>,
     table_schema: &GeneratorTableDefinition,
-    rows: &[UniversalRow],
+    rows: &[Row],
 ) -> Result<u64, MongoDBPopulatorError> {
     if rows.is_empty() {
         return Ok(0);
     }
 
-    // Convert UniversalRows to BSON documents
+    // Convert Rows to BSON documents
     let documents: Vec<Document> = rows
         .iter()
         .map(|row| internal_row_to_document(row, table_schema))
@@ -31,11 +31,8 @@ pub async fn insert_batch(
     Ok(result.inserted_ids.len() as u64)
 }
 
-/// Convert an UniversalRow to a BSON Document.
-fn internal_row_to_document(
-    row: &UniversalRow,
-    table_schema: &GeneratorTableDefinition,
-) -> Document {
+/// Convert an Row to a BSON Document.
+fn internal_row_to_document(row: &Row, table_schema: &GeneratorTableDefinition) -> Document {
     let mut doc = Document::new();
 
     // Add the _id field
@@ -66,7 +63,7 @@ fn internal_row_to_document(
 pub async fn insert_single(
     collection: &Collection<Document>,
     table_schema: &GeneratorTableDefinition,
-    row: &UniversalRow,
+    row: &Row,
 ) -> Result<u64, MongoDBPopulatorError> {
     let doc = internal_row_to_document(row, table_schema);
     collection.insert_one(doc).await?;
@@ -92,7 +89,7 @@ pub async fn count_documents(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::{Schema, UniversalValue};
+    use sync_core::{Schema, Value};
 
     fn test_schema() -> Schema {
         let yaml = r#"
@@ -127,20 +124,20 @@ tables:
         let schema = test_schema();
         let table_schema = schema.get_table("users").unwrap();
 
-        let row = UniversalRow::new(
+        let row = Row::new(
             "users".to_string(),
             0,
-            UniversalValue::Uuid(uuid::Uuid::new_v4()),
+            Value::Uuid(uuid::Uuid::new_v4()),
             [
                 (
                     "email".to_string(),
                     // Use VarChar to match schema (strict 1:1 type-value matching)
-                    UniversalValue::VarChar {
+                    Value::VarChar {
                         value: "test@example.com".to_string(),
                         length: 255,
                     },
                 ),
-                ("age".to_string(), UniversalValue::Int32(25)),
+                ("age".to_string(), Value::Int32(25)),
             ]
             .into_iter()
             .collect(),

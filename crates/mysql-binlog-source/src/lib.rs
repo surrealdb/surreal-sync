@@ -22,7 +22,7 @@ pub use catch_up::{
     effective_sync_tables, emit_catch_up_progress, max_binlog_checkpoint, read_catch_up_progress,
     tables_pending_snapshot, CatchUpProgress, CoverageKind, TableCoverageEntry,
 };
-pub use change::cdc_change_to_universal;
+pub use change::cdc_to_change;
 pub use checkpoint::{get_current_checkpoint, BinlogCheckpoint, BinlogReconciliationPos};
 pub use client::{connect_binlog_client, new_mysql_pool_with_ssl, parse_mysql_uri};
 pub use flavor::Flavor;

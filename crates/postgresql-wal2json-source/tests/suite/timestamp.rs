@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use surreal_sync_postgresql_wal2json_source::{Action, Client};
-use sync_core::UniversalValue;
+use sync_core::Value;
 use tokio_postgres::NoTls;
 use tracing::info;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -144,7 +144,7 @@ async fn test_timestamp_replication_formats() -> Result<()> {
 
                 // Verify it's a LocalDateTime value (TIMESTAMP without timezone)
                 match event_time {
-                    UniversalValue::LocalDateTime(dt) => {
+                    Value::LocalDateTime(dt) => {
                         info!("Successfully got LocalDateTime: {}", dt.to_rfc3339());
 
                         // Verify the timestamp makes sense (not in the future, not before 1990)
@@ -167,7 +167,7 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                         // Note: TIMESTAMP without timezone doesn't preserve timezone info,
                         // so we just verify that parsing succeeded
                         let id = match row.primary_key {
-                            UniversalValue::Int32(i) => i,
+                            Value::Int32(i) => i,
                             _ => panic!("Expected Int32 primary key, got {:?}", row.primary_key),
                         };
 
@@ -216,7 +216,7 @@ async fn test_timestamp_replication_formats() -> Result<()> {
                 .context("Should have event_time column in UPDATE")?;
 
             match event_time {
-                UniversalValue::LocalDateTime(dt) => {
+                Value::LocalDateTime(dt) => {
                     info!(
                         "UPDATE timestamp successfully converted: {}",
                         dt.to_rfc3339()

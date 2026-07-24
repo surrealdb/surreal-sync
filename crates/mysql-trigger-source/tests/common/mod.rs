@@ -23,9 +23,7 @@ use surreal_sync_interleaved_snapshot::{
 };
 use surreal_sync_mysql_trigger_source::testing::MySQLContainer;
 use surreal_sync_mysql_trigger_source::{read_table_chunk, MySqlWatermarkSource};
-use sync_core::{
-    UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow, UniversalValue,
-};
+use sync_core::{Change, Relation, RelationChange, Row, Value};
 use tokio::sync::Mutex;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -58,7 +56,7 @@ pub fn init_logging() {
 /// In-memory [`SurrealSink`] that records the latest state per record, keyed by
 /// the serialized record id, so tests can assert parity against the source.
 /// table -> (serialized id -> non-key field map)
-type SinkState = BTreeMap<String, BTreeMap<String, HashMap<String, UniversalValue>>>;
+type SinkState = BTreeMap<String, BTreeMap<String, HashMap<String, Value>>>;
 
 #[derive(Default)]
 pub struct MemSink {
@@ -82,13 +80,13 @@ impl MemSink {
     }
 }
 
-pub fn id_key(id: &UniversalValue) -> String {
+pub fn id_key(id: &Value) -> String {
     serde_json::to_string(id).expect("serialize id")
 }
 
 #[async_trait::async_trait]
 impl SurrealSink for MemSink {
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> Result<()> {
+    async fn write_rows(&self, rows: &[Row]) -> Result<()> {
         let mut state = self.state.lock().await;
         for row in rows {
             state
@@ -99,21 +97,21 @@ impl SurrealSink for MemSink {
         Ok(())
     }
 
-    async fn write_universal_relations(&self, _relations: &[UniversalRelation]) -> Result<()> {
+    async fn write_relations(&self, _relations: &[Relation]) -> Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> Result<()> {
+    async fn apply_change(&self, change: &Change) -> Result<()> {
         let mut state = self.state.lock().await;
         let key = id_key(&change.id);
         match change.operation {
-            sync_core::UniversalChangeOp::Create | sync_core::UniversalChangeOp::Update => {
+            sync_core::ChangeOp::Create | sync_core::ChangeOp::Update => {
                 state
                     .entry(change.table.clone())
                     .or_default()
-                    .insert(key, change.data.clone().unwrap_or_default());
+                    .insert(key, change.fields.clone().unwrap_or_default());
             }
-            sync_core::UniversalChangeOp::Delete => {
+            sync_core::ChangeOp::Delete => {
                 if let Some(rows) = state.get_mut(&change.table) {
                     rows.remove(&key);
                 }
@@ -122,39 +120,36 @@ impl SurrealSink for MemSink {
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
-        &self,
-        _change: &UniversalRelationChange,
-    ) -> Result<()> {
+    async fn apply_relation_change(&self, _change: &RelationChange) -> Result<()> {
         Ok(())
     }
 }
 
 /// Canonicalize a primary-key scalar to the kinds the backend keys records by
 /// (`Int64` / `Uuid` / `Text`), matching the source's internal normalization.
-fn canon_scalar(value: &UniversalValue) -> UniversalValue {
+fn canon_scalar(value: &Value) -> Value {
     match value {
-        UniversalValue::Int8 { value, .. } => UniversalValue::Int64(*value as i64),
-        UniversalValue::Int16(v) => UniversalValue::Int64(*v as i64),
-        UniversalValue::Int32(v) => UniversalValue::Int64(*v as i64),
-        UniversalValue::Int64(v) => UniversalValue::Int64(*v),
-        UniversalValue::Uuid(u) => UniversalValue::Uuid(*u),
-        UniversalValue::Char { value, .. } => UniversalValue::Text(value.clone()),
-        UniversalValue::VarChar { value, .. } => UniversalValue::Text(value.clone()),
-        UniversalValue::Text(s) => UniversalValue::Text(s.clone()),
+        Value::Int8 { value, .. } => Value::Int64(*value as i64),
+        Value::Int16(v) => Value::Int64(*v as i64),
+        Value::Int32(v) => Value::Int64(*v as i64),
+        Value::Int64(v) => Value::Int64(*v),
+        Value::Uuid(u) => Value::Uuid(*u),
+        Value::Char { value, .. } => Value::Text(value.clone()),
+        Value::VarChar { value, .. } => Value::Text(value.clone()),
+        Value::Text(s) => Value::Text(s.clone()),
         other => other.clone(),
     }
 }
 
-fn canon_id_key(row: &UniversalRow, pk_len: usize) -> String {
+fn canon_id_key(row: &Row, pk_len: usize) -> String {
     if pk_len == 1 {
         return id_key(&canon_scalar(&row.id));
     }
     match &row.id {
-        UniversalValue::Array { elements, .. } => {
-            let canon = UniversalValue::Array {
+        Value::Array { elements, .. } => {
+            let canon = Value::Array {
                 elements: elements.iter().map(canon_scalar).collect(),
-                element_type: Box::new(sync_core::UniversalType::Text),
+                element_type: Box::new(sync_core::Type::Text),
             };
             id_key(&canon)
         }
@@ -173,7 +168,7 @@ async fn source_value_map(
     let mut conn = pool.get_conn().await?;
     let config = RowConversionConfig::default();
     let mut out = BTreeMap::new();
-    let mut after: Option<Vec<UniversalValue>> = None;
+    let mut after: Option<Vec<Value>> = None;
     loop {
         let chunk =
             read_table_chunk(&mut conn, table, pk_columns, after.as_deref(), 64, &config).await?;
@@ -210,7 +205,7 @@ async fn drain_stream(source: &mut MySqlWatermarkSource, sink: &MemSink) -> Resu
             if event.pk.single_uuid().is_some() {
                 continue;
             }
-            sink.apply_universal_change(&event.change).await?;
+            sink.apply_change(&event.change).await?;
         }
     }
     Ok(())

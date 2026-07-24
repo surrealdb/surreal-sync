@@ -11,33 +11,30 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use sync_core::{
-    UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow, UniversalThingRef,
-    UniversalValue,
-};
+use sync_core::{Change, Relation, RelationChange, Row, ThingRef, Value};
 use tokio::time::timeout;
 
-fn change(id: i64) -> UniversalChange {
+fn change(id: i64) -> Change {
     let mut data = HashMap::new();
     data.insert(
         "name".to_string(),
-        UniversalValue::VarChar {
+        Value::VarChar {
             value: format!("row-{id}"),
             length: 64,
         },
     );
-    UniversalChange::create("users", UniversalValue::Int64(id), data)
+    Change::create("users", Value::Int64(id), data)
 }
 
 fn positioned(id: i64, pos: u64) -> PositionedChange<u64> {
     PositionedChange::new(change(id), pos)
 }
 
-fn row(id: i64) -> UniversalRow {
-    UniversalRow::builder("users", id as u64, UniversalValue::Int64(id))
+fn row(id: i64) -> Row {
+    Row::builder("users", id as u64, Value::Int64(id))
         .field(
             "name",
-            UniversalValue::VarChar {
+            Value::VarChar {
                 value: format!("row-{id}"),
                 length: 64,
             },
@@ -48,22 +45,16 @@ fn row(id: i64) -> UniversalRow {
 struct TagName;
 
 impl InPlaceTransform for TagName {
-    fn transform_row(&self, row: &mut UniversalRow) -> Result<()> {
-        row.fields.insert(
-            "name".to_string(),
-            UniversalValue::VarChar {
-                value: "tagged".to_string(),
-                length: 64,
-            },
-        );
-        Ok(())
-    }
-
-    fn transform_change(&self, change: &mut UniversalChange) -> Result<()> {
-        if let Some(data) = change.data.as_mut() {
-            data.insert(
+    fn transform(
+        &self,
+        _table: &str,
+        _id: &mut Value,
+        fields: Option<&mut HashMap<String, Value>>,
+    ) -> Result<()> {
+        if let Some(fields) = fields {
+            fields.insert(
                 "name".to_string(),
-                UniversalValue::VarChar {
+                Value::VarChar {
                     value: "tagged".to_string(),
                     length: 64,
                 },
@@ -106,11 +97,7 @@ async fn identity_pipeline_advances_track_sink() {
             .iter()
             .map(|c| c.id.clone())
             .collect::<Vec<_>>(),
-        vec![
-            UniversalValue::Int64(1),
-            UniversalValue::Int64(2),
-            UniversalValue::Int64(3),
-        ]
+        vec![Value::Int64(1), Value::Int64(2), Value::Int64(3),]
     );
 }
 
@@ -118,7 +105,7 @@ async fn identity_pipeline_advances_track_sink() {
 async fn write_rows_identity_uses_apply_context() {
     // Omit `--transforms-config` → ApplyOpts::identity() (W=1, batch_size=1).
     // Every path goes through ApplyContext; identity upserts coalesce to
-    // write_universal_rows inside the ordered sink step (not a oneshot bypass).
+    // write_rows inside the ordered sink step (not a oneshot bypass).
     let pipeline = Pipeline::new();
     assert!(pipeline.is_identity());
     let sink = RecordingSink::new();
@@ -133,11 +120,11 @@ async fn write_rows_identity_uses_apply_context() {
     assert_eq!(written.len(), 2);
     assert_eq!(written[0].len(), 1);
     assert_eq!(written[1].len(), 1);
-    assert_eq!(written[0][0].id, UniversalValue::Int64(1));
-    assert_eq!(written[1][0].id, UniversalValue::Int64(2));
+    assert_eq!(written[0][0].id, Value::Int64(1));
+    assert_eq!(written[1][0].id, Value::Int64(2));
     assert!(
         sink.applied().is_empty(),
-        "identity upserts coalesce to write_universal_rows inside the window"
+        "identity upserts coalesce to write_rows inside the window"
     );
 }
 
@@ -156,13 +143,13 @@ async fn write_rows_identity_windowed_when_max_in_flight_gt_1() {
     assert_eq!(sink.rows_written().len(), 2);
     assert!(
         sink.applied().is_empty(),
-        "identity upserts coalesce to write_universal_rows, not per-change apply"
+        "identity upserts coalesce to write_rows, not per-change apply"
     );
 }
 
 #[tokio::test]
 async fn write_rows_coalesces_homogeneous_upsert_batch() {
-    // Larger batch_size keeps a single bulk write_universal_rows inside the window.
+    // Larger batch_size keeps a single bulk write_rows inside the window.
     let pipeline = Pipeline::new();
     let sink = RecordingSink::new();
     let opts = ApplyOpts::default()
@@ -180,7 +167,7 @@ async fn write_rows_coalesces_homogeneous_upsert_batch() {
 #[tokio::test]
 async fn write_rows_honors_max_in_flight_window() {
     // Non-identity + W>1 must use ApplyContext; upserts coalesce to
-    // write_universal_rows inside the ordered sink (still windowed).
+    // write_rows inside the ordered sink (still windowed).
     let mut pipeline = Pipeline::new();
     pipeline.push_inplace(TagName);
     let sink = RecordingSink::new();
@@ -194,7 +181,7 @@ async fn write_rows_honors_max_in_flight_window() {
         assert_eq!(batch.len(), 1);
         assert_eq!(
             batch[0].fields.get("name"),
-            Some(&UniversalValue::VarChar {
+            Some(&Value::VarChar {
                 value: "tagged".to_string(),
                 length: 64,
             })
@@ -202,13 +189,13 @@ async fn write_rows_honors_max_in_flight_window() {
     }
     assert!(
         sink.applied().is_empty(),
-        "windowed write_rows upserts coalesce to write_universal_rows"
+        "windowed write_rows upserts coalesce to write_rows"
     );
 }
 
 #[tokio::test]
 async fn delete_and_mixed_batches_use_per_event_apply() {
-    // Delete (and mixed Update+Delete) must not coalesce to write_universal_rows.
+    // Delete (and mixed Update+Delete) must not coalesce to write_rows.
     let pipeline = Pipeline::new();
     let opts = ApplyOpts::default()
         .with_batch_size(10)
@@ -219,8 +206,8 @@ async fn delete_and_mixed_batches_use_per_event_apply() {
         &sink,
         &pipeline,
         vec![
-            UniversalChange::delete("users", UniversalValue::Int64(1)),
-            UniversalChange::delete("users", UniversalValue::Int64(2)),
+            Change::delete("users", Value::Int64(1)),
+            Change::delete("users", Value::Int64(2)),
         ],
         &opts,
     )
@@ -229,14 +216,14 @@ async fn delete_and_mixed_batches_use_per_event_apply() {
     assert_eq!(sink.applied().len(), 2);
     assert!(
         sink.rows_written().is_empty(),
-        "Delete batches stay on apply_universal_change, not write_universal_rows"
+        "Delete batches stay on apply_change, not write_rows"
     );
 
     let sink = RecordingSink::new();
     let mut update_data = HashMap::new();
     update_data.insert(
         "name".to_string(),
-        UniversalValue::VarChar {
+        Value::VarChar {
             value: "alice".to_string(),
             length: 64,
         },
@@ -245,8 +232,8 @@ async fn delete_and_mixed_batches_use_per_event_apply() {
         &sink,
         &pipeline,
         vec![
-            UniversalChange::update("users", UniversalValue::Int64(1), update_data),
-            UniversalChange::delete("users", UniversalValue::Int64(2)),
+            Change::update("users", Value::Int64(1), update_data),
+            Change::delete("users", Value::Int64(2)),
         ],
         &opts,
     )
@@ -255,7 +242,7 @@ async fn delete_and_mixed_batches_use_per_event_apply() {
     assert_eq!(sink.applied().len(), 2);
     assert!(
         sink.rows_written().is_empty(),
-        "mixed Update+Delete must not coalesce to write_universal_rows"
+        "mixed Update+Delete must not coalesce to write_rows"
     );
 }
 
@@ -275,8 +262,8 @@ async fn inplace_stages_mutate_before_sink() {
     let applied = sink.applied();
     assert_eq!(applied.len(), 1);
     assert_eq!(
-        applied[0].data.as_ref().unwrap().get("name"),
-        Some(&UniversalValue::VarChar {
+        applied[0].fields.as_ref().unwrap().get("name"),
+        Some(&Value::VarChar {
             value: "tagged".to_string(),
             length: 64,
         })
@@ -344,7 +331,7 @@ async fn window_former_fails_after_later_transform_succeeds() {
             .iter()
             .map(|c| c.id.clone())
             .collect::<Vec<_>>(),
-        vec![UniversalValue::Int64(1), UniversalValue::Int64(2)]
+        vec![Value::Int64(1), Value::Int64(2)]
     );
     assert_eq!(feed2.advances, vec![100, 200]);
 }
@@ -517,7 +504,7 @@ async fn failure_policy_skip_advances_past_failed_batch() {
 
     // Failed batch not written; still advanced past it; successor applied.
     assert_eq!(sink.applied().len(), 1);
-    assert_eq!(sink.applied()[0].id, UniversalValue::Int64(2));
+    assert_eq!(sink.applied()[0].id, Value::Int64(2));
     assert_eq!(feed.advances, vec![10, 20]);
 }
 
@@ -542,7 +529,7 @@ async fn crash_replay_from_last_advance() {
     );
     assert_eq!(feed.advances, vec![100]);
     assert_eq!(sink.applied().len(), 1);
-    assert_eq!(sink.applied()[0].id, UniversalValue::Int64(1));
+    assert_eq!(sink.applied()[0].id, Value::Int64(1));
 
     // Replay from last watermark advance: only unadvanced B remains.
     let mut feed2 = ScriptedChangeFeed::from_remaining(vec![positioned(2, 200)]);
@@ -555,7 +542,7 @@ async fn crash_replay_from_last_advance() {
 
     assert_eq!(feed2.advances, vec![200]);
     assert_eq!(sink2.applied().len(), 1);
-    assert_eq!(sink2.applied()[0].id, UniversalValue::Int64(2));
+    assert_eq!(sink2.applied()[0].id, Value::Int64(2));
 }
 
 #[tokio::test]
@@ -584,7 +571,7 @@ async fn ordered_sink_despite_out_of_order_transform_completion() {
             .iter()
             .map(|c| c.id.clone())
             .collect::<Vec<_>>(),
-        vec![UniversalValue::Int64(1), UniversalValue::Int64(2)]
+        vec![Value::Int64(1), Value::Int64(2)]
     );
     assert_eq!(feed.advances, vec![100, 200]);
 }
@@ -610,7 +597,7 @@ async fn apply_context_push_change_flush_watermarks() {
             .iter()
             .map(|c| c.id.clone())
             .collect::<Vec<_>>(),
-        vec![UniversalValue::Int64(1), UniversalValue::Int64(2)]
+        vec![Value::Int64(1), Value::Int64(2)]
     );
 
     // Nothing buffered → flush returns None.
@@ -663,7 +650,7 @@ async fn apply_context_flush_partial_buffer_w2() {
             .iter()
             .map(|c| c.id.clone())
             .collect::<Vec<_>>(),
-        vec![UniversalValue::Int64(1), UniversalValue::Int64(2)],
+        vec![Value::Int64(1), Value::Int64(2)],
         "sink must stay ordered A then B"
     );
 }
@@ -697,7 +684,7 @@ async fn flush_fully_drains_w1_queued_buffer() {
             .iter()
             .map(|c| c.id.clone())
             .collect::<Vec<_>>(),
-        vec![UniversalValue::Int64(1), UniversalValue::Int64(2)]
+        vec![Value::Int64(1), Value::Int64(2)]
     );
 }
 
@@ -746,17 +733,17 @@ async fn apply_context_skip_returns_watermark_without_sinking_failed() {
     // flush clears any residual in-flight; watermark already advanced on push.
     assert_eq!(ctx.flush().await.unwrap(), None);
     assert_eq!(sink.applied().len(), 1);
-    assert_eq!(sink.applied()[0].id, UniversalValue::Int64(2));
+    assert_eq!(sink.applied()[0].id, Value::Int64(2));
 }
 
 // --- Relations (first-class apply) ---
 
-fn relation(id: i64) -> UniversalRelation {
-    UniversalRelation::new(
+fn relation(id: i64) -> Relation {
+    Relation::new(
         "follows",
-        UniversalValue::Int64(id),
-        UniversalThingRef::new("users", UniversalValue::Int64(id)),
-        UniversalThingRef::new("users", UniversalValue::Int64(id + 1)),
+        Value::Int64(id),
+        ThingRef::new("users", Value::Int64(id)),
+        ThingRef::new("users", Value::Int64(id + 1)),
         HashMap::new(),
     )
 }
@@ -772,7 +759,7 @@ async fn apply_context_push_flush_relations_ordered_with_changes() {
     assert_eq!(wm, Some(10));
 
     let wm = ctx
-        .push_relation_change(UniversalRelationChange::create(relation(5)), 20u64)
+        .push_relation_change(RelationChange::create(relation(5)), 20u64)
         .await
         .unwrap();
     assert_eq!(wm, Some(20));
@@ -801,7 +788,7 @@ async fn apply_context_relation_fail_poisons_like_changes() {
     let mut ctx = ApplyContext::new(&sink, Arc::new(transformer), &opts);
 
     let err = ctx
-        .push_relation_change(UniversalRelationChange::create(relation(1)), 10u64)
+        .push_relation_change(RelationChange::create(relation(1)), 10u64)
         .await
         .unwrap_err();
     assert!(format!("{err:#}").contains("rel-fail"));
@@ -810,7 +797,7 @@ async fn apply_context_relation_fail_poisons_like_changes() {
     assert!(sink.applied().is_empty());
 
     let reuse = ctx
-        .push_relation_change(UniversalRelationChange::create(relation(2)), 20u64)
+        .push_relation_change(RelationChange::create(relation(2)), 20u64)
         .await
         .unwrap_err();
     assert!(format!("{reuse:#}").contains("poisoned"));
@@ -824,7 +811,7 @@ async fn write_relations_via_apply_context() {
     let ctx: ApplyContext<'_, _, _, ()> = ApplyContext::new(&sink, Arc::new(pipeline), &opts);
     ctx.write_relations(vec![relation(1)]).await.unwrap();
     assert_eq!(sink.relations_written().len(), 1);
-    assert_eq!(sink.relations_written()[0][0].id, UniversalValue::Int64(1));
+    assert_eq!(sink.relations_written()[0][0].id, Value::Int64(1));
 }
 
 #[tokio::test]
@@ -835,16 +822,13 @@ async fn apply_relation_changes_helper() {
     apply_relation_changes(
         &sink,
         &pipeline,
-        vec![UniversalRelationChange::create(relation(9))],
+        vec![RelationChange::create(relation(9))],
         &opts,
     )
     .await
     .unwrap();
     assert_eq!(sink.relations_applied().len(), 1);
-    assert_eq!(
-        sink.relations_applied()[0].relation.id,
-        UniversalValue::Int64(9)
-    );
+    assert_eq!(sink.relations_applied()[0].relation.id, Value::Int64(9));
 }
 
 /// W≥2 discard with a mixed relation+change batch window: A (change) fails after
@@ -864,7 +848,7 @@ async fn discard_on_failure_mixed_relation_and_change_w2() {
 
     assert!(ctx.push_change(change(1), 100u64).await.unwrap().is_none());
     assert!(ctx
-        .push_relation_change(UniversalRelationChange::create(relation(2)), 200u64)
+        .push_relation_change(RelationChange::create(relation(2)), 200u64)
         .await
         .unwrap()
         .is_none());

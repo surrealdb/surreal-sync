@@ -9,11 +9,10 @@ use rust_decimal::Decimal;
 use std::collections::HashMap;
 use surreal_sink::SurrealSink;
 use sync_core::{
-    classify_table, DatabaseSchema, GeometryType, TableKind, UniversalRelation, UniversalRow,
-    UniversalType, UniversalValue,
+    classify_table, DatabaseSchema, GeometryType, Relation, Row, TableKind, Type, Value,
 };
 use tokio_postgres::types::ToSql;
-use tokio_postgres::{Client, Row};
+use tokio_postgres::{Client, Row as PgRow};
 use tracing::{debug, info, warn};
 
 use crate::fk_transform;
@@ -38,7 +37,7 @@ pub async fn convert_table(
     table_name: &str,
     schema: Option<&DatabaseSchema>,
     relation_table_overrides: &[String],
-) -> Result<(Vec<UniversalRow>, Vec<UniversalRelation>)> {
+) -> Result<(Vec<Row>, Vec<Relation>)> {
     let pk_columns = get_primary_key_columns(client, table_name).await?;
 
     let table_kind = schema
@@ -72,7 +71,7 @@ pub async fn convert_table(
             Some(TableKind::Relation { in_fk, out_fk }) => {
                 // Include ALL columns (including PK) so FK extraction can find them.
                 let all_fields = convert_all_columns_to_universal_values(row)?;
-                let rel_id = UniversalValue::Int64(row_index as i64);
+                let rel_id = Value::Int64(row_index as i64);
                 let relation = fk_transform::build_relation_from_row(
                     table_name, rel_id, all_fields, in_fk, out_fk,
                 );
@@ -148,11 +147,11 @@ pub async fn migrate_table<S: SurrealSink>(
 #[derive(Debug, Clone)]
 pub struct TableChunk {
     /// The converted rows, in primary-key order.
-    pub rows: Vec<UniversalRow>,
+    pub rows: Vec<Row>,
     /// Primary-key values of the last row in `rows`, in primary-key column
     /// order. `None` when no rows were returned. Pass this back as `after` to
     /// read the following chunk.
-    pub last_pk: Option<Vec<UniversalValue>>,
+    pub last_pk: Option<Vec<Value>>,
 }
 
 /// Read a single primary-key-ordered chunk of a table using keyset pagination.
@@ -174,7 +173,7 @@ pub async fn read_table_chunk(
     client: &Client,
     table_name: &str,
     pk_columns: &[String],
-    after: Option<&[UniversalValue]>,
+    after: Option<&[Value]>,
     limit: usize,
     schema: Option<&DatabaseSchema>,
 ) -> Result<TableChunk> {
@@ -231,7 +230,7 @@ pub async fn read_table_chunk(
     let table_def = schema.and_then(|s| s.get_table(table_name));
 
     let mut out = Vec::with_capacity(rows.len());
-    let mut last_pk: Option<Vec<UniversalValue>> = None;
+    let mut last_pk: Option<Vec<Value>> = None;
     for (row_index, row) in rows.iter().enumerate() {
         let mut record =
             convert_row_to_universal_row(table_name, row, pk_columns, row_index as u64)?;
@@ -249,9 +248,9 @@ pub async fn read_table_chunk(
 #[derive(Debug, Clone)]
 pub struct RelationChunk {
     /// Converted relations in read order.
-    pub relations: Vec<UniversalRelation>,
+    pub relations: Vec<Relation>,
     /// Primary-key cursor of the last row (for keyset continuation).
-    pub last_pk: Option<Vec<UniversalValue>>,
+    pub last_pk: Option<Vec<Value>>,
 }
 
 /// Keyset-paginated read of a relation (join) table as SurrealDB edges.
@@ -260,7 +259,7 @@ pub async fn read_relation_chunk(
     client: &Client,
     table_name: &str,
     pk_columns: &[String],
-    after: Option<&[UniversalValue]>,
+    after: Option<&[Value]>,
     limit: usize,
     in_fk: &sync_core::ForeignKeyDefinition,
     out_fk: &sync_core::ForeignKeyDefinition,
@@ -312,10 +311,10 @@ pub async fn read_relation_chunk(
 
     let rows = client.query(&query, &params).await?;
     let mut out = Vec::with_capacity(rows.len());
-    let mut last_pk: Option<Vec<UniversalValue>> = None;
+    let mut last_pk: Option<Vec<Value>> = None;
     for (i, row) in rows.iter().enumerate() {
         let all_fields = convert_all_columns_to_universal_values(row)?;
-        let rel_id = UniversalValue::Int64((row_index_base + i as u64) as i64);
+        let rel_id = Value::Int64((row_index_base + i as u64) as i64);
         out.push(fk_transform::build_relation_from_row(
             table_name, rel_id, all_fields, in_fk, out_fk,
         ));
@@ -346,7 +345,7 @@ pub async fn read_offset_table_chunk(
     limit: usize,
     schema: Option<&DatabaseSchema>,
     relation_table_overrides: &[String],
-) -> Result<(Vec<UniversalRow>, Vec<UniversalRelation>)> {
+) -> Result<(Vec<Row>, Vec<Relation>)> {
     let pk_columns = get_primary_key_columns(client, table_name).await?;
     let table_kind = schema
         .and_then(|s| s.get_table(table_name))
@@ -367,7 +366,7 @@ pub async fn read_offset_table_chunk(
         match &table_kind {
             Some(TableKind::Relation { in_fk, out_fk }) => {
                 let all_fields = convert_all_columns_to_universal_values(row)?;
-                let rel_id = UniversalValue::Int64(row_index as i64);
+                let rel_id = Value::Int64(row_index as i64);
                 rel_batch.push(fk_transform::build_relation_from_row(
                     table_name, rel_id, all_fields, in_fk, out_fk,
                 ));
@@ -396,14 +395,14 @@ pub async fn read_offset_relation_chunk(
     limit: usize,
     in_fk: &sync_core::ForeignKeyDefinition,
     out_fk: &sync_core::ForeignKeyDefinition,
-) -> Result<Vec<UniversalRelation>> {
+) -> Result<Vec<Relation>> {
     let query = format!("SELECT * FROM {table_name} ORDER BY ctid OFFSET {offset} LIMIT {limit}");
     debug!("Offset-reading relation table {table_name} with: {query}");
     let rows = client.query(&query, &[]).await?;
     let mut out = Vec::with_capacity(rows.len());
     for (i, row) in rows.iter().enumerate() {
         let all_fields = convert_all_columns_to_universal_values(row)?;
-        let rel_id = UniversalValue::Int64((offset + i) as i64);
+        let rel_id = Value::Int64((offset + i) as i64);
         out.push(fk_transform::build_relation_from_row(
             table_name, rel_id, all_fields, in_fk, out_fk,
         ));
@@ -413,19 +412,19 @@ pub async fn read_offset_relation_chunk(
 
 /// Extract the raw primary-key column values from a row, in primary-key column
 /// order, for use as a keyset-pagination cursor.
-fn extract_pk_cursor_values(row: &Row, pk_columns: &[String]) -> Result<Vec<UniversalValue>> {
+fn extract_pk_cursor_values(row: &PgRow, pk_columns: &[String]) -> Result<Vec<Value>> {
     let mut values = Vec::with_capacity(pk_columns.len());
     for col in pk_columns {
         let value = if let Ok(v) = row.try_get::<_, i32>(col.as_str()) {
-            UniversalValue::Int32(v)
+            Value::Int32(v)
         } else if let Ok(v) = row.try_get::<_, i64>(col.as_str()) {
-            UniversalValue::Int64(v)
+            Value::Int64(v)
         } else if let Ok(v) = row.try_get::<_, i16>(col.as_str()) {
-            UniversalValue::Int16(v)
+            Value::Int16(v)
         } else if let Ok(v) = row.try_get::<_, String>(col.as_str()) {
-            UniversalValue::Text(v)
+            Value::Text(v)
         } else if let Ok(v) = row.try_get::<_, uuid::Uuid>(col.as_str()) {
-            UniversalValue::Uuid(v)
+            Value::Uuid(v)
         } else {
             return Err(anyhow::anyhow!(
                 "Failed to extract primary key value from column '{col}' for keyset pagination - unsupported data type"
@@ -436,18 +435,18 @@ fn extract_pk_cursor_values(row: &Row, pk_columns: &[String]) -> Result<Vec<Univ
     Ok(values)
 }
 
-/// Convert a primary-key `UniversalValue` into a boxed `ToSql` for binding into
+/// Convert a primary-key `Value` into a boxed `ToSql` for binding into
 /// a keyset-pagination query. The bound SQL type mirrors the way the cursor
 /// values were read back out of the row.
-fn pk_value_to_sql(value: &UniversalValue) -> Result<Box<dyn ToSql + Sync + Send>> {
+fn pk_value_to_sql(value: &Value) -> Result<Box<dyn ToSql + Sync + Send>> {
     match value {
-        UniversalValue::Int16(v) => Ok(Box::new(*v)),
-        UniversalValue::Int32(v) => Ok(Box::new(*v)),
-        UniversalValue::Int64(v) => Ok(Box::new(*v)),
-        UniversalValue::Text(v) => Ok(Box::new(v.clone())),
-        UniversalValue::VarChar { value, .. } => Ok(Box::new(value.clone())),
-        UniversalValue::Char { value, .. } => Ok(Box::new(value.clone())),
-        UniversalValue::Uuid(v) => Ok(Box::new(*v)),
+        Value::Int16(v) => Ok(Box::new(*v)),
+        Value::Int32(v) => Ok(Box::new(*v)),
+        Value::Int64(v) => Ok(Box::new(*v)),
+        Value::Text(v) => Ok(Box::new(v.clone())),
+        Value::VarChar { value, .. } => Ok(Box::new(value.clone())),
+        Value::Char { value, .. } => Ok(Box::new(value.clone())),
+        Value::Uuid(v) => Ok(Box::new(*v)),
         other => Err(anyhow::anyhow!(
             "Unsupported primary key value type for keyset pagination: {other:?}"
         )),
@@ -476,12 +475,12 @@ pub async fn get_primary_key_columns(client: &Client, table_name: &str) -> Resul
 
 fn convert_row_to_universal_row(
     table: &str,
-    row: &Row,
+    row: &PgRow,
     pk_columns: &[String],
     row_index: u64,
-) -> anyhow::Result<UniversalRow> {
+) -> anyhow::Result<Row> {
     let (id, data) = convert_row_to_keys_and_universal_values(row, pk_columns, row_index)?;
-    Ok(UniversalRow::new(table.to_string(), row_index, id, data))
+    Ok(Row::new(table.to_string(), row_index, id, data))
 }
 
 /// Convert a PostgreSQL row to a map of universal values.
@@ -489,26 +488,26 @@ fn convert_row_to_universal_row(
 /// When `pk_columns` is empty, the id is a synthetic `Int64(row_index)` (same
 /// convention as MySQL LIMIT/OFFSET full sync).
 fn convert_row_to_keys_and_universal_values(
-    row: &Row,
+    row: &PgRow,
     pk_columns: &[String],
     row_index: u64,
-) -> Result<(UniversalValue, HashMap<String, UniversalValue>)> {
+) -> Result<(Value, HashMap<String, Value>)> {
     let mut record = HashMap::new();
 
     // Generate ID from primary key columns, or a stable synthetic index.
     let id = if pk_columns.is_empty() {
-        UniversalValue::Int64(row_index as i64)
+        Value::Int64(row_index as i64)
     } else if pk_columns.len() == 1 {
         // Single primary key column - extract its value
         let pk_col = &pk_columns[0];
         let id = if let Ok(id) = row.try_get::<_, i32>(pk_col.as_str()) {
-            UniversalValue::Int32(id)
+            Value::Int32(id)
         } else if let Ok(id) = row.try_get::<_, i64>(pk_col.as_str()) {
-            UniversalValue::Int64(id)
+            Value::Int64(id)
         } else if let Ok(id) = row.try_get::<_, String>(pk_col.as_str()) {
-            UniversalValue::Text(id)
+            Value::Text(id)
         } else if let Ok(id) = row.try_get::<_, uuid::Uuid>(pk_col.as_str()) {
-            UniversalValue::Uuid(id)
+            Value::Uuid(id)
         } else {
             return Err(anyhow::anyhow!(
                 "Failed to extract primary key value from column '{pk_col}' - unsupported data type",
@@ -519,13 +518,13 @@ fn convert_row_to_keys_and_universal_values(
         let mut vs = Vec::new();
         for col in pk_columns {
             let v = if let Ok(val) = row.try_get::<_, String>(col.as_str()) {
-                UniversalValue::Text(val)
+                Value::Text(val)
             } else if let Ok(val) = row.try_get::<_, uuid::Uuid>(col.as_str()) {
-                UniversalValue::Uuid(val)
+                Value::Uuid(val)
             } else if let Ok(val) = row.try_get::<_, i32>(col.as_str()) {
-                UniversalValue::Int32(val)
+                Value::Int32(val)
             } else if let Ok(val) = row.try_get::<_, i64>(col.as_str()) {
-                UniversalValue::Int64(val)
+                Value::Int64(val)
             } else {
                 return Err(anyhow::anyhow!(
                     "Failed to extract composite primary key value from column '{col}' - unsupported data type",
@@ -533,9 +532,9 @@ fn convert_row_to_keys_and_universal_values(
             };
             vs.push(v);
         }
-        UniversalValue::Array {
+        Value::Array {
             elements: vs,
-            element_type: Box::new(UniversalType::Text),
+            element_type: Box::new(Type::Text),
         }
     };
 
@@ -555,9 +554,9 @@ fn convert_row_to_keys_and_universal_values(
     Ok((id, record))
 }
 
-/// Convert all columns in a PostgreSQL row to UniversalValues (including PK columns).
+/// Convert all columns in a PostgreSQL row to Values (including PK columns).
 /// Used for relation tables where FK columns may overlap with PK columns.
-fn convert_all_columns_to_universal_values(row: &Row) -> Result<HashMap<String, UniversalValue>> {
+fn convert_all_columns_to_universal_values(row: &PgRow) -> Result<HashMap<String, Value>> {
     let mut record = HashMap::new();
     for (i, column) in row.columns().iter().enumerate() {
         let value = convert_postgres_value_to_universal(row, i)?;
@@ -566,52 +565,52 @@ fn convert_all_columns_to_universal_values(row: &Row) -> Result<HashMap<String, 
     Ok(record)
 }
 
-/// Convert a PostgreSQL value to an UniversalValue
-fn convert_postgres_value_to_universal(row: &Row, index: usize) -> Result<UniversalValue> {
-    use tokio_postgres::types::Type;
+/// Convert a PostgreSQL value to an Value
+fn convert_postgres_value_to_universal(row: &PgRow, index: usize) -> Result<Value> {
+    use tokio_postgres::types::Type as PgType;
 
     let column = &row.columns()[index];
     let pg_type = column.type_();
 
     match *pg_type {
-        Type::BOOL => match row.try_get::<_, Option<bool>>(index)? {
-            Some(b) => Ok(UniversalValue::Bool(b)),
-            None => Ok(UniversalValue::Null),
+        PgType::BOOL => match row.try_get::<_, Option<bool>>(index)? {
+            Some(b) => Ok(Value::Bool(b)),
+            None => Ok(Value::Null),
         },
-        Type::INT2 => match row.try_get::<_, Option<i16>>(index)? {
-            Some(i) => Ok(UniversalValue::Int16(i)),
-            None => Ok(UniversalValue::Null),
+        PgType::INT2 => match row.try_get::<_, Option<i16>>(index)? {
+            Some(i) => Ok(Value::Int16(i)),
+            None => Ok(Value::Null),
         },
-        Type::INT4 => match row.try_get::<_, Option<i32>>(index)? {
-            Some(i) => Ok(UniversalValue::Int32(i)),
-            None => Ok(UniversalValue::Null),
+        PgType::INT4 => match row.try_get::<_, Option<i32>>(index)? {
+            Some(i) => Ok(Value::Int32(i)),
+            None => Ok(Value::Null),
         },
-        Type::INT8 => match row.try_get::<_, Option<i64>>(index)? {
-            Some(i) => Ok(UniversalValue::Int64(i)),
-            None => Ok(UniversalValue::Null),
+        PgType::INT8 => match row.try_get::<_, Option<i64>>(index)? {
+            Some(i) => Ok(Value::Int64(i)),
+            None => Ok(Value::Null),
         },
-        Type::FLOAT4 => match row.try_get::<_, Option<f32>>(index)? {
-            Some(f) => Ok(UniversalValue::Float32(f)),
-            None => Ok(UniversalValue::Null),
+        PgType::FLOAT4 => match row.try_get::<_, Option<f32>>(index)? {
+            Some(f) => Ok(Value::Float32(f)),
+            None => Ok(Value::Null),
         },
-        Type::FLOAT8 => match row.try_get::<_, Option<f64>>(index)? {
-            Some(f) => Ok(UniversalValue::Float64(f)),
-            None => Ok(UniversalValue::Null),
+        PgType::FLOAT8 => match row.try_get::<_, Option<f64>>(index)? {
+            Some(f) => Ok(Value::Float64(f)),
+            None => Ok(Value::Null),
         },
-        Type::NUMERIC => {
+        PgType::NUMERIC => {
             // PostgreSQL NUMERIC type - convert to Decimal
             match row.try_get::<_, Option<Decimal>>(index) {
                 Ok(Some(decimal)) => {
                     // Get precision and scale from the decimal
                     let scale = decimal.scale() as u8;
                     let precision = 38; // Use max precision as default
-                    Ok(UniversalValue::Decimal {
+                    Ok(Value::Decimal {
                         value: decimal.to_string(),
                         precision,
                         scale,
                     })
                 }
-                Ok(None) => Ok(UniversalValue::Null),
+                Ok(None) => Ok(Value::Null),
                 Err(e) => {
                     warn!(
                         "Failed to get PostgreSQL NUMERIC as rust_decimal::Decimal: {}",
@@ -621,112 +620,107 @@ fn convert_postgres_value_to_universal(row: &Row, index: usize) -> Result<Univer
                 }
             }
         }
-        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME => {
+        PgType::TEXT | PgType::VARCHAR | PgType::BPCHAR | PgType::NAME => {
             match row.try_get::<_, Option<String>>(index)? {
                 Some(s) => {
                     // Auto-detect ISO 8601 duration strings (PTxxxS format) and convert to Duration
                     if let Some(duration) = try_parse_iso8601_duration(&s) {
-                        Ok(UniversalValue::Duration(duration))
+                        Ok(Value::Duration(duration))
                     } else {
-                        Ok(UniversalValue::Text(s))
+                        Ok(Value::Text(s))
                     }
                 }
-                None => Ok(UniversalValue::Null),
+                None => Ok(Value::Null),
             }
         }
-        Type::TIMESTAMP => match row.try_get::<_, Option<NaiveDateTime>>(index)? {
+        PgType::TIMESTAMP => match row.try_get::<_, Option<NaiveDateTime>>(index)? {
             Some(ts) => {
                 let dt = DateTime::<Utc>::from_naive_utc_and_offset(ts, Utc);
-                Ok(UniversalValue::LocalDateTime(dt))
+                Ok(Value::LocalDateTime(dt))
             }
-            None => Ok(UniversalValue::Null),
+            None => Ok(Value::Null),
         },
-        Type::TIMESTAMPTZ => match row.try_get::<_, Option<DateTime<Utc>>>(index)? {
-            Some(dt) => Ok(UniversalValue::ZonedDateTime(dt)),
-            None => Ok(UniversalValue::Null),
+        PgType::TIMESTAMPTZ => match row.try_get::<_, Option<DateTime<Utc>>>(index)? {
+            Some(dt) => Ok(Value::ZonedDateTime(dt)),
+            None => Ok(Value::Null),
         },
-        Type::DATE => match row.try_get::<_, Option<NaiveDate>>(index)? {
+        PgType::DATE => match row.try_get::<_, Option<NaiveDate>>(index)? {
             Some(date) => {
                 // Convert NaiveDate to DateTime<Utc> at midnight
                 let dt = date
                     .and_hms_opt(0, 0, 0)
                     .ok_or_else(|| anyhow::anyhow!("Invalid date"))?;
                 let dt = DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc);
-                Ok(UniversalValue::Date(dt))
+                Ok(Value::Date(dt))
             }
-            None => Ok(UniversalValue::Null),
+            None => Ok(Value::Null),
         },
-        Type::TIME => match row.try_get::<_, Option<NaiveTime>>(index)? {
+        PgType::TIME => match row.try_get::<_, Option<NaiveTime>>(index)? {
             Some(time) => {
                 // Convert NaiveTime to DateTime<Utc> using epoch date as placeholder
                 let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
                 let dt = epoch.and_time(time);
                 let dt = DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc);
-                Ok(UniversalValue::Time(dt))
+                Ok(Value::Time(dt))
             }
-            None => Ok(UniversalValue::Null),
+            None => Ok(Value::Null),
         },
-        Type::JSON | Type::JSONB => match row.try_get::<_, Option<serde_json::Value>>(index)? {
+        PgType::JSON | PgType::JSONB => match row.try_get::<_, Option<serde_json::Value>>(index)? {
             Some(json) => Ok(json_to_universal_value(json)),
-            None => Ok(UniversalValue::Null),
+            None => Ok(Value::Null),
         },
-        Type::UUID => match row.try_get::<_, Option<uuid::Uuid>>(index)? {
-            Some(uuid) => Ok(UniversalValue::Uuid(uuid)),
-            None => Ok(UniversalValue::Null),
+        PgType::UUID => match row.try_get::<_, Option<uuid::Uuid>>(index)? {
+            Some(uuid) => Ok(Value::Uuid(uuid)),
+            None => Ok(Value::Null),
         },
-        Type::BYTEA => match row.try_get::<_, Option<Vec<u8>>>(index)? {
-            Some(bytes) => Ok(UniversalValue::Bytes(bytes)),
-            None => Ok(UniversalValue::Null),
+        PgType::BYTEA => match row.try_get::<_, Option<Vec<u8>>>(index)? {
+            Some(bytes) => Ok(Value::Bytes(bytes)),
+            None => Ok(Value::Null),
         },
-        Type::TEXT_ARRAY => match row.try_get::<_, Option<Vec<String>>>(index)? {
+        PgType::TEXT_ARRAY => match row.try_get::<_, Option<Vec<String>>>(index)? {
             Some(arr) => {
-                let vals: Vec<UniversalValue> = arr.into_iter().map(UniversalValue::Text).collect();
-                Ok(UniversalValue::Array {
+                let vals: Vec<Value> = arr.into_iter().map(Value::Text).collect();
+                Ok(Value::Array {
                     elements: vals,
-                    element_type: Box::new(UniversalType::Text),
+                    element_type: Box::new(Type::Text),
                 })
             }
-            None => Ok(UniversalValue::Null),
+            None => Ok(Value::Null),
         },
-        Type::INT4_ARRAY => match row.try_get::<_, Option<Vec<i32>>>(index)? {
+        PgType::INT4_ARRAY => match row.try_get::<_, Option<Vec<i32>>>(index)? {
             Some(arr) => {
-                let vals: Vec<UniversalValue> =
-                    arr.into_iter().map(UniversalValue::Int32).collect();
-                Ok(UniversalValue::Array {
+                let vals: Vec<Value> = arr.into_iter().map(Value::Int32).collect();
+                Ok(Value::Array {
                     elements: vals,
-                    element_type: Box::new(UniversalType::Int32),
+                    element_type: Box::new(Type::Int32),
                 })
             }
-            None => Ok(UniversalValue::Null),
+            None => Ok(Value::Null),
         },
-        Type::INT8_ARRAY => match row.try_get::<_, Option<Vec<i64>>>(index)? {
+        PgType::INT8_ARRAY => match row.try_get::<_, Option<Vec<i64>>>(index)? {
             Some(arr) => {
-                let vals: Vec<UniversalValue> =
-                    arr.into_iter().map(UniversalValue::Int64).collect();
-                Ok(UniversalValue::Array {
+                let vals: Vec<Value> = arr.into_iter().map(Value::Int64).collect();
+                Ok(Value::Array {
                     elements: vals,
-                    element_type: Box::new(UniversalType::Int64),
+                    element_type: Box::new(Type::Int64),
                 })
             }
-            None => Ok(UniversalValue::Null),
+            None => Ok(Value::Null),
         },
-        Type::POINT => match row.try_get::<_, Option<geo_types::Point<f64>>>(index)? {
+        PgType::POINT => match row.try_get::<_, Option<geo_types::Point<f64>>>(index)? {
             Some(p) => {
                 let geojson = serde_json::json!({
                     "type": "Point",
                     "coordinates": [p.x(), p.y()]
                 });
-                Ok(UniversalValue::geometry_geojson(
-                    geojson,
-                    GeometryType::Point,
-                ))
+                Ok(Value::geometry_geojson(geojson, GeometryType::Point))
             }
-            None => Ok(UniversalValue::Null),
+            None => Ok(Value::Null),
         },
         _ => {
             // For unknown types, try to get as string
             if let Ok(val) = row.try_get::<_, String>(index) {
-                Ok(UniversalValue::Text(val))
+                Ok(Value::Text(val))
             } else {
                 Err(anyhow::anyhow!("Unsupported PostgreSQL type: {pg_type:?}",))
             }
@@ -734,34 +728,34 @@ fn convert_postgres_value_to_universal(row: &Row, index: usize) -> Result<Univer
     }
 }
 
-/// Convert JSON value to UniversalValue
-fn json_to_universal_value(value: serde_json::Value) -> UniversalValue {
+/// Convert JSON value to Value
+fn json_to_universal_value(value: serde_json::Value) -> Value {
     match value {
-        serde_json::Value::Null => UniversalValue::Null,
-        serde_json::Value::Bool(b) => UniversalValue::Bool(b),
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(b),
         serde_json::Value::Number(n) => {
             if let Some(i) = n.as_i64() {
-                UniversalValue::Int64(i)
+                Value::Int64(i)
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Float64(f)
+                Value::Float64(f)
             } else {
-                UniversalValue::Text(n.to_string())
+                Value::Text(n.to_string())
             }
         }
-        serde_json::Value::String(s) => UniversalValue::Text(s),
+        serde_json::Value::String(s) => Value::Text(s),
         serde_json::Value::Array(arr) => {
-            let vals: Vec<UniversalValue> = arr.into_iter().map(json_to_universal_value).collect();
-            UniversalValue::Array {
+            let vals: Vec<Value> = arr.into_iter().map(json_to_universal_value).collect();
+            Value::Array {
                 elements: vals,
-                element_type: Box::new(UniversalType::Json),
+                element_type: Box::new(Type::Json),
             }
         }
         serde_json::Value::Object(map) => {
-            let obj: HashMap<String, UniversalValue> = map
+            let obj: HashMap<String, Value> = map
                 .into_iter()
                 .map(|(k, v)| (k, json_to_universal_value(v)))
                 .collect();
-            UniversalValue::Object(obj)
+            Value::Object(obj)
         }
     }
 }

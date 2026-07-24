@@ -4,12 +4,10 @@ use anyhow::Result;
 use surreal_sink::SurrealSink;
 use surrealdb::engine::any::Any;
 use surrealdb::Surreal;
-use sync_core::{
-    UniversalChange, UniversalRelation, UniversalRelationChange, UniversalRow, ZeroTemporalPolicy,
-};
+use sync_core::{Change, Relation, RelationChange, Row, ZeroTemporalPolicy};
 
-use crate::rows::{write_universal_relations, write_universal_rows};
-use crate::write::{apply_universal_change, apply_universal_relation_change};
+use crate::rows::{write_relations, write_rows};
+use crate::write::{apply_change, apply_relation_change};
 
 /// Wrapper around Surreal<Any> that implements SurrealSink.
 ///
@@ -61,22 +59,19 @@ impl Surreal3Sink {
 
 #[async_trait::async_trait]
 impl SurrealSink for Surreal3Sink {
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> Result<()> {
-        write_universal_rows(&self.client, rows, self.zero_temporal).await
+    async fn write_rows(&self, rows: &[Row]) -> Result<()> {
+        write_rows(&self.client, rows, self.zero_temporal).await
     }
 
-    async fn write_universal_relations(&self, relations: &[UniversalRelation]) -> Result<()> {
-        write_universal_relations(&self.client, relations, self.zero_temporal).await
+    async fn write_relations(&self, relations: &[Relation]) -> Result<()> {
+        write_relations(&self.client, relations, self.zero_temporal).await
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> Result<()> {
-        apply_universal_change(&self.client, change, self.zero_temporal).await
+    async fn apply_change(&self, change: &Change) -> Result<()> {
+        apply_change(&self.client, change, self.zero_temporal).await
     }
 
-    async fn apply_universal_relation_change(
-        &self,
-        change: &UniversalRelationChange,
-    ) -> Result<()> {
-        apply_universal_relation_change(&self.client, change, self.zero_temporal).await
+    async fn apply_relation_change(&self, change: &RelationChange) -> Result<()> {
+        apply_relation_change(&self.client, change, self.zero_temporal).await
     }
 }

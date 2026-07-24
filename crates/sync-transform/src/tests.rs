@@ -5,13 +5,13 @@ use anyhow::{bail, Result};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use sync_core::{UniversalChange, UniversalChangeOp, UniversalRow, UniversalValue};
+use sync_core::{Change, ChangeOp, Row, Value};
 
-fn sample_row(name: &str) -> UniversalRow {
-    UniversalRow::builder("users", 0, UniversalValue::Int64(1))
+fn sample_row(name: &str) -> Row {
+    Row::builder("users", 0, Value::Int64(1))
         .field(
             "name",
-            UniversalValue::VarChar {
+            Value::VarChar {
                 value: name.to_string(),
                 length: 64,
             },
@@ -19,16 +19,16 @@ fn sample_row(name: &str) -> UniversalRow {
         .build()
 }
 
-fn sample_change(name: &str) -> UniversalChange {
+fn sample_change(name: &str) -> Change {
     let mut data = HashMap::new();
     data.insert(
         "name".to_string(),
-        UniversalValue::VarChar {
+        Value::VarChar {
             value: name.to_string(),
             length: 64,
         },
     );
-    UniversalChange::create("users", UniversalValue::Int64(1), data)
+    Change::create("users", Value::Int64(1), data)
 }
 
 /// Mutating transform used to prove make_mut / stage dispatch.
@@ -37,22 +37,16 @@ struct Rename {
 }
 
 impl InPlaceTransform for Rename {
-    fn transform_row(&self, row: &mut UniversalRow) -> Result<()> {
-        row.fields.insert(
-            "name".to_string(),
-            UniversalValue::VarChar {
-                value: self.to.clone(),
-                length: 64,
-            },
-        );
-        Ok(())
-    }
-
-    fn transform_change(&self, change: &mut UniversalChange) -> Result<()> {
-        if let Some(data) = change.data.as_mut() {
-            data.insert(
+    fn transform(
+        &self,
+        _table: &str,
+        _id: &mut Value,
+        fields: Option<&mut HashMap<String, Value>>,
+    ) -> Result<()> {
+        if let Some(fields) = fields {
+            fields.insert(
                 "name".to_string(),
-                UniversalValue::VarChar {
+                Value::VarChar {
                     value: self.to.clone(),
                     length: 64,
                 },
@@ -70,12 +64,22 @@ struct Counting<T> {
 }
 
 impl<T: InPlaceTransform> InPlaceTransform for Counting<T> {
-    fn transform_row(&self, row: &mut UniversalRow) -> Result<()> {
+    fn transform(
+        &self,
+        table: &str,
+        id: &mut Value,
+        fields: Option<&mut HashMap<String, Value>>,
+    ) -> Result<()> {
+        // Count via the concrete path that will run (row vs change) in slice helpers.
+        self.inner.transform(table, id, fields)
+    }
+
+    fn transform_row(&self, row: &mut Row) -> Result<()> {
         self.rows.fetch_add(1, Ordering::SeqCst);
         self.inner.transform_row(row)
     }
 
-    fn transform_change(&self, change: &mut UniversalChange) -> Result<()> {
+    fn transform_change(&self, change: &mut Change) -> Result<()> {
         self.changes.fetch_add(1, Ordering::SeqCst);
         self.inner.transform_change(change)
     }
@@ -85,12 +89,13 @@ impl<T: InPlaceTransform> InPlaceTransform for Counting<T> {
 struct AlwaysFail;
 
 impl InPlaceTransform for AlwaysFail {
-    fn transform_row(&self, _row: &mut UniversalRow) -> Result<()> {
-        bail!("stage failed (rows)")
-    }
-
-    fn transform_change(&self, _change: &mut UniversalChange) -> Result<()> {
-        bail!("stage failed (changes)")
+    fn transform(
+        &self,
+        _table: &str,
+        _id: &mut Value,
+        _fields: Option<&mut HashMap<String, Value>>,
+    ) -> Result<()> {
+        bail!("stage failed")
     }
 }
 
@@ -106,7 +111,7 @@ fn empty_pipeline_is_identity() {
     assert_eq!(out.len(), 1);
     assert_eq!(
         out[0].get_field("name"),
-        Some(&UniversalValue::VarChar {
+        Some(&Value::VarChar {
             value: "alice".to_string(),
             length: 64,
         })
@@ -114,7 +119,7 @@ fn empty_pipeline_is_identity() {
 
     let changes = vec![sample_change("bob")];
     let out = pipeline.apply_changes(changes).unwrap();
-    assert_eq!(out[0].operation, UniversalChangeOp::Create);
+    assert_eq!(out[0].operation, ChangeOp::Create);
 }
 
 /// Empty pipeline short-circuits before any stage dispatch.
@@ -132,7 +137,7 @@ fn empty_pipeline_is_identity_short_circuit() {
     let out = pipeline.apply_rows(rows).unwrap();
     assert_eq!(
         out[0].get_field("name"),
-        Some(&UniversalValue::VarChar {
+        Some(&Value::VarChar {
             value: "x".to_string(),
             length: 64,
         })
@@ -141,8 +146,8 @@ fn empty_pipeline_is_identity_short_circuit() {
     let changes = vec![sample_change("y")];
     let out = pipeline.apply_changes(changes).unwrap();
     assert_eq!(
-        out[0].data.as_ref().unwrap().get("name"),
-        Some(&UniversalValue::VarChar {
+        out[0].fields.as_ref().unwrap().get("name"),
+        Some(&Value::VarChar {
             value: "y".to_string(),
             length: 64,
         })
@@ -171,7 +176,7 @@ fn lone_passthrough_is_not_identity() {
     let out = pipeline.apply_rows(vec![sample_row("alice")]).unwrap();
     assert_eq!(
         out[0].get_field("name"),
-        Some(&UniversalValue::VarChar {
+        Some(&Value::VarChar {
             value: "alice".to_string(),
             length: 64,
         })
@@ -189,7 +194,7 @@ fn passthrough_on_owned_vec_mutates_in_place_without_realloc() {
     assert_eq!(rows.as_ptr(), ptr_before);
     assert_eq!(
         rows[0].get_field("name"),
-        Some(&UniversalValue::VarChar {
+        Some(&Value::VarChar {
             value: "alice".to_string(),
             length: 64,
         })
@@ -236,14 +241,14 @@ fn cowbatch_shared_passthrough_still_clones() {
     // Original holder unchanged; batch item is a distinct clone of the same data.
     assert_eq!(
         held.get_field("name"),
-        Some(&UniversalValue::VarChar {
+        Some(&Value::VarChar {
             value: "alice".to_string(),
             length: 64,
         })
     );
     assert_eq!(
         batch.items[0].get_field("name"),
-        Some(&UniversalValue::VarChar {
+        Some(&Value::VarChar {
             value: "alice".to_string(),
             length: 64,
         })
@@ -274,15 +279,15 @@ fn cowbatch_make_mut_clones_only_when_shared() {
     );
     // Original holder still sees the old value (COW).
     assert_eq!(
-        held.data.as_ref().unwrap().get("name"),
-        Some(&UniversalValue::VarChar {
+        held.fields.as_ref().unwrap().get("name"),
+        Some(&Value::VarChar {
             value: "alice".to_string(),
             length: 64,
         })
     );
     assert_eq!(
-        batch.items[0].data.as_ref().unwrap().get("name"),
-        Some(&UniversalValue::VarChar {
+        batch.items[0].fields.as_ref().unwrap().get("name"),
+        Some(&Value::VarChar {
             value: "carol".to_string(),
             length: 64,
         })
@@ -310,8 +315,8 @@ fn cowbatch_unique_arc_mutating_transform_no_clone() {
         "unique Arc should mutate in place without clone"
     );
     assert_eq!(
-        batch.items[0].data.as_ref().unwrap().get("name"),
-        Some(&UniversalValue::VarChar {
+        batch.items[0].fields.as_ref().unwrap().get("name"),
+        Some(&Value::VarChar {
             value: "dave".to_string(),
             length: 64,
         })
@@ -338,7 +343,7 @@ fn pipeline_applies_inplace_stages_in_order() {
     assert_eq!(counter.rows.load(Ordering::SeqCst), 1);
     assert_eq!(
         out[0].get_field("name"),
-        Some(&UniversalValue::VarChar {
+        Some(&Value::VarChar {
             value: "step2".to_string(),
             length: 64,
         })
@@ -372,8 +377,8 @@ fn pipeline_applies_changes_stages_in_order() {
     assert_eq!(step1.changes.load(Ordering::SeqCst), 1);
     assert_eq!(step2.changes.load(Ordering::SeqCst), 1);
     assert_eq!(
-        out[0].data.as_ref().unwrap().get("name"),
-        Some(&UniversalValue::VarChar {
+        out[0].fields.as_ref().unwrap().get("name"),
+        Some(&Value::VarChar {
             value: "step2".to_string(),
             length: 64,
         })
@@ -385,8 +390,8 @@ fn pipeline_applies_changes_stages_in_order() {
     assert_eq!(step1.changes.load(Ordering::SeqCst), 2);
     assert_eq!(step2.changes.load(Ordering::SeqCst), 2);
     assert_eq!(
-        changes[0].data.as_ref().unwrap().get("name"),
-        Some(&UniversalValue::VarChar {
+        changes[0].fields.as_ref().unwrap().get("name"),
+        Some(&Value::VarChar {
             value: "step2".to_string(),
             length: 64,
         })
@@ -463,7 +468,7 @@ fn pipeline_external_sync_inplace_errors() {
 
 #[test]
 fn pipeline_external_sync_relation_inplace_errors() {
-    use sync_core::{UniversalRelation, UniversalRelationChange, UniversalThingRef};
+    use sync_core::{Relation, RelationChange, ThingRef};
 
     let transport = crate::test_support::ScriptedExternalTransport::new();
     let mut pipeline = Pipeline::new();
@@ -471,16 +476,16 @@ fn pipeline_external_sync_relation_inplace_errors() {
         transport,
     )));
 
-    let rel = UniversalRelation::new(
+    let rel = Relation::new(
         "follows",
-        UniversalValue::Int64(1),
-        UniversalThingRef::new("users", UniversalValue::Int64(1)),
-        UniversalThingRef::new("users", UniversalValue::Int64(2)),
+        Value::Int64(1),
+        ThingRef::new("users", Value::Int64(1)),
+        ThingRef::new("users", Value::Int64(2)),
         HashMap::new(),
     );
 
     let err_changes = pipeline
-        .apply_relation_changes(vec![UniversalRelationChange::create(rel.clone())])
+        .apply_relation_changes(vec![RelationChange::create(rel.clone())])
         .unwrap_err();
     assert!(
         err_changes.to_string().contains("BatchTransformer")
@@ -504,7 +509,7 @@ fn pipeline_external_sync_relation_inplace_errors() {
 async fn batch_transformer_default_relation_methods_fail_closed() {
     use crate::BatchTransformer;
     use async_trait::async_trait;
-    use sync_core::{UniversalRelation, UniversalRelationChange, UniversalThingRef};
+    use sync_core::{Relation, RelationChange, ThingRef};
 
     struct ChangesOnly;
 
@@ -517,31 +522,27 @@ async fn batch_transformer_default_relation_methods_fail_closed() {
         async fn transform_changes(
             &self,
             _batch_id: u64,
-            changes: Vec<UniversalChange>,
-        ) -> Result<Vec<UniversalChange>> {
+            changes: Vec<Change>,
+        ) -> Result<Vec<Change>> {
             Ok(changes)
         }
 
-        async fn transform_rows(
-            &self,
-            _batch_id: u64,
-            rows: Vec<UniversalRow>,
-        ) -> Result<Vec<UniversalRow>> {
+        async fn transform_rows(&self, _batch_id: u64, rows: Vec<Row>) -> Result<Vec<Row>> {
             Ok(rows)
         }
     }
 
     let t = ChangesOnly;
-    let rel = UniversalRelation::new(
+    let rel = Relation::new(
         "follows",
-        UniversalValue::Int64(1),
-        UniversalThingRef::new("users", UniversalValue::Int64(1)),
-        UniversalThingRef::new("users", UniversalValue::Int64(2)),
+        Value::Int64(1),
+        ThingRef::new("users", Value::Int64(1)),
+        ThingRef::new("users", Value::Int64(2)),
         HashMap::new(),
     );
 
     let err = t
-        .transform_relation_changes(1, vec![UniversalRelationChange::create(rel.clone())])
+        .transform_relation_changes(1, vec![RelationChange::create(rel.clone())])
         .await
         .unwrap_err();
     assert!(
@@ -563,15 +564,13 @@ async fn batch_transformer_default_relation_methods_fail_closed() {
             1,
             vec![
                 crate::ApplyEvent::Change(sample_change("a")),
-                crate::ApplyEvent::relation_change(UniversalRelationChange::create(
-                    UniversalRelation::new(
-                        "follows",
-                        UniversalValue::Int64(2),
-                        UniversalThingRef::new("users", UniversalValue::Int64(3)),
-                        UniversalThingRef::new("users", UniversalValue::Int64(4)),
-                        HashMap::new(),
-                    ),
-                )),
+                crate::ApplyEvent::relation_change(RelationChange::create(Relation::new(
+                    "follows",
+                    Value::Int64(2),
+                    ThingRef::new("users", Value::Int64(3)),
+                    ThingRef::new("users", Value::Int64(4)),
+                    HashMap::new(),
+                ))),
             ],
         )
         .await
@@ -595,7 +594,7 @@ fn cowbatch_from_owned_and_row_apply() {
     let items = batch.into_items();
     assert_eq!(
         items[0].get_field("name"),
-        Some(&UniversalValue::VarChar {
+        Some(&Value::VarChar {
             value: "zoe".to_string(),
             length: 64,
         })

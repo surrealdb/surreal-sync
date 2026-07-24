@@ -12,7 +12,7 @@
 //!
 //! ```ignore
 //! use json_types::{JsonValue, JsonValueWithSchema};
-//! use sync_core::{TypedValue, UniversalType};
+//! use sync_core::{TypedValue, Type};
 //!
 //! // Forward: TypedValue → JSON value
 //! let tv = TypedValue::text("hello");
@@ -20,7 +20,7 @@
 //!
 //! // Reverse: JSON value → TypedValue
 //! let json = serde_json::json!(42);
-//! let json_with_schema = JsonValueWithSchema::new(json, &UniversalType::Int32);
+//! let json_with_schema = JsonValueWithSchema::new(json, &Type::Int32);
 //! let tv = json_with_schema.to_typed_value().unwrap();
 //! ```
 
@@ -29,8 +29,7 @@ pub mod reverse;
 
 pub use forward::JsonValue;
 pub use reverse::{
-    convert_id_to_universal_value, convert_id_to_universal_with_database_schema,
-    json_to_generated_value_with_config, json_to_typed_value_with_config,
-    json_to_universal_with_table_schema, json_value_to_universal, JsonConversionConfig,
-    JsonValueWithSchema,
+    convert_id_to_value, convert_id_with_database_schema, json_to_generated_value_with_config,
+    json_to_typed_value_with_config, json_to_universal_with_table_schema, json_value_to_universal,
+    JsonConversionConfig, JsonValueWithSchema,
 };

@@ -92,9 +92,9 @@ const _: () = {
 
     fn check() {
         assert_send_sync::<Pipeline>();
-        assert_send_sync::<CowBatch<sync_core::UniversalRow>>();
-        assert_send_sync::<CowBatch<sync_core::UniversalChange>>();
-        assert_send_sync::<CowBatch<sync_core::UniversalRelation>>();
+        assert_send_sync::<CowBatch<sync_core::Row>>();
+        assert_send_sync::<CowBatch<sync_core::Change>>();
+        assert_send_sync::<CowBatch<sync_core::Relation>>();
         assert_send_sync::<ApplyOpts>();
         assert_send_sync::<ExternalTransform>();
         assert_send_sync::<NdjsonFramer>();

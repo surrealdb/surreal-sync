@@ -2,64 +2,64 @@
 
 use rand::seq::{IndexedRandom, SliceRandom};
 use rand::RngExt;
-use sync_core::{UniversalType, UniversalValue};
+use sync_core::{Type, Value};
 
-/// Convert a string value to the appropriate UniversalValue based on the target type.
-fn string_to_typed_value(s: &str, target_type: &UniversalType) -> UniversalValue {
+/// Convert a string value to the appropriate Value based on the target type.
+fn string_to_typed_value(s: &str, target_type: &Type) -> Value {
     match target_type {
-        UniversalType::Int32 => match s.parse::<i32>() {
-            Ok(i) => UniversalValue::Int32(i),
-            Err(_) => UniversalValue::Text(s.to_string()),
+        Type::Int32 => match s.parse::<i32>() {
+            Ok(i) => Value::Int32(i),
+            Err(_) => Value::Text(s.to_string()),
         },
-        UniversalType::Int16 => match s.parse::<i16>() {
-            Ok(i) => UniversalValue::Int16(i),
-            Err(_) => UniversalValue::Text(s.to_string()),
+        Type::Int16 => match s.parse::<i16>() {
+            Ok(i) => Value::Int16(i),
+            Err(_) => Value::Text(s.to_string()),
         },
-        UniversalType::Int64 => match s.parse::<i64>() {
-            Ok(i) => UniversalValue::Int64(i),
-            Err(_) => UniversalValue::Text(s.to_string()),
+        Type::Int64 => match s.parse::<i64>() {
+            Ok(i) => Value::Int64(i),
+            Err(_) => Value::Text(s.to_string()),
         },
-        UniversalType::Int8 { width: 1 } => {
+        Type::Int8 { width: 1 } => {
             // TinyInt(1) is often used as boolean
             match s.to_lowercase().as_str() {
-                "true" | "1" | "yes" => UniversalValue::Bool(true),
-                "false" | "0" | "no" => UniversalValue::Bool(false),
+                "true" | "1" | "yes" => Value::Bool(true),
+                "false" | "0" | "no" => Value::Bool(false),
                 _ => match s.parse::<i8>() {
-                    Ok(i) => UniversalValue::Int8 { value: i, width: 1 },
-                    Err(_) => UniversalValue::Text(s.to_string()),
+                    Ok(i) => Value::Int8 { value: i, width: 1 },
+                    Err(_) => Value::Text(s.to_string()),
                 },
             }
         }
-        UniversalType::Int8 { width } => match s.parse::<i8>() {
-            Ok(i) => UniversalValue::Int8 {
+        Type::Int8 { width } => match s.parse::<i8>() {
+            Ok(i) => Value::Int8 {
                 value: i,
                 width: *width,
             },
-            Err(_) => UniversalValue::Text(s.to_string()),
+            Err(_) => Value::Text(s.to_string()),
         },
-        UniversalType::Float32 => match s.parse::<f32>() {
-            Ok(f) => UniversalValue::Float32(f),
-            Err(_) => UniversalValue::Text(s.to_string()),
+        Type::Float32 => match s.parse::<f32>() {
+            Ok(f) => Value::Float32(f),
+            Err(_) => Value::Text(s.to_string()),
         },
-        UniversalType::Float64 => match s.parse::<f64>() {
-            Ok(f) => UniversalValue::Float64(f),
-            Err(_) => UniversalValue::Text(s.to_string()),
+        Type::Float64 => match s.parse::<f64>() {
+            Ok(f) => Value::Float64(f),
+            Err(_) => Value::Text(s.to_string()),
         },
-        UniversalType::Decimal { precision, scale } => match s.parse::<f64>() {
-            Ok(_) => UniversalValue::Decimal {
+        Type::Decimal { precision, scale } => match s.parse::<f64>() {
+            Ok(_) => Value::Decimal {
                 value: s.to_string(),
                 precision: *precision,
                 scale: *scale,
             },
-            Err(_) => UniversalValue::Text(s.to_string()),
+            Err(_) => Value::Text(s.to_string()),
         },
-        UniversalType::Bool => match s.to_lowercase().as_str() {
-            "true" | "1" | "yes" => UniversalValue::Bool(true),
-            "false" | "0" | "no" => UniversalValue::Bool(false),
-            _ => UniversalValue::Text(s.to_string()),
+        Type::Bool => match s.to_lowercase().as_str() {
+            "true" | "1" | "yes" => Value::Bool(true),
+            "false" | "0" | "no" => Value::Bool(false),
+            _ => Value::Text(s.to_string()),
         },
         // For text types and all others, keep as string
-        _ => UniversalValue::Text(s.to_string()),
+        _ => Value::Text(s.to_string()),
     }
 }
 
@@ -69,9 +69,9 @@ pub fn generate_sample_array<R: RngExt>(
     pool: &[String],
     min_length: usize,
     max_length: usize,
-) -> UniversalValue {
+) -> Value {
     // Default to string element type
-    generate_sample_array_typed(rng, pool, min_length, max_length, &UniversalType::Text)
+    generate_sample_array_typed(rng, pool, min_length, max_length, &Type::Text)
 }
 
 /// Generate an array by sampling from a pool of values with type-aware conversion.
@@ -80,10 +80,10 @@ pub fn generate_sample_array_typed<R: RngExt>(
     pool: &[String],
     min_length: usize,
     max_length: usize,
-    element_type: &UniversalType,
-) -> UniversalValue {
+    element_type: &Type,
+) -> Value {
     if pool.is_empty() || max_length == 0 {
-        return UniversalValue::Array {
+        return Value::Array {
             elements: vec![],
             element_type: Box::new(element_type.clone()),
         };
@@ -92,14 +92,14 @@ pub fn generate_sample_array_typed<R: RngExt>(
     let length = rng.random_range(min_length..=max_length);
 
     // Randomly select `length` items from the pool (with potential duplicates)
-    let items: Vec<UniversalValue> = (0..length)
+    let items: Vec<Value> = (0..length)
         .map(|_| {
             let item = pool.choose(rng).unwrap();
             string_to_typed_value(item, element_type)
         })
         .collect();
 
-    UniversalValue::Array {
+    Value::Array {
         elements: items,
         element_type: Box::new(element_type.clone()),
     }
@@ -111,11 +111,11 @@ pub fn generate_unique_sample_array<R: RngExt>(
     pool: &[String],
     min_length: usize,
     max_length: usize,
-) -> UniversalValue {
+) -> Value {
     if pool.is_empty() || max_length == 0 {
-        return UniversalValue::Array {
+        return Value::Array {
             elements: vec![],
-            element_type: Box::new(UniversalType::Text),
+            element_type: Box::new(Type::Text),
         };
     }
 
@@ -129,15 +129,11 @@ pub fn generate_unique_sample_array<R: RngExt>(
     let mut shuffled = pool.to_vec();
     shuffled.shuffle(rng);
 
-    let items: Vec<UniversalValue> = shuffled
-        .into_iter()
-        .take(length)
-        .map(UniversalValue::Text)
-        .collect();
+    let items: Vec<Value> = shuffled.into_iter().take(length).map(Value::Text).collect();
 
-    UniversalValue::Array {
+    Value::Array {
         elements: items,
-        element_type: Box::new(UniversalType::Text),
+        element_type: Box::new(Type::Text),
     }
 }
 
@@ -154,7 +150,7 @@ mod tests {
 
         for _ in 0..10 {
             let value = generate_sample_array(&mut rng, &pool, 1, 3);
-            if let UniversalValue::Array { elements, .. } = value {
+            if let Value::Array { elements, .. } = value {
                 assert!(!elements.is_empty());
                 assert!(elements.len() <= 3);
             } else {
@@ -171,7 +167,7 @@ mod tests {
         let value = generate_sample_array(&mut rng, &pool, 0, 3);
         assert!(matches!(
             value,
-            UniversalValue::Array {
+            Value::Array {
                 elements,
                 ..
             } if elements.is_empty()
@@ -190,13 +186,13 @@ mod tests {
         ];
 
         let value = generate_unique_sample_array(&mut rng, &pool, 3, 3);
-        if let UniversalValue::Array { elements, .. } = value {
+        if let Value::Array { elements, .. } = value {
             assert_eq!(elements.len(), 3);
             // Check uniqueness
             let strings: Vec<&String> = elements
                 .iter()
                 .filter_map(|v| {
-                    if let UniversalValue::Text(s) = v {
+                    if let Value::Text(s) = v {
                         Some(s)
                     } else {
                         None

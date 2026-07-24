@@ -14,31 +14,26 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use surreal_sync::mysql_binlog;
-use surreal_sync::{FlattenId, InPlaceTransform, UniversalChange, UniversalRow, UniversalValue};
+use surreal_sync::{FlattenId, InPlaceTransform, Value};
 
 /// Drop columns that must not leave the source VPC (CDC often mirrors more than the target needs).
 struct RedactPii;
 
 impl RedactPii {
     const DROP: &'static [&'static str] = &["password_hash", "ssn", "credit_card"];
-
-    fn scrub(fields: &mut HashMap<String, UniversalValue>) {
-        for key in Self::DROP {
-            fields.remove(*key);
-        }
-    }
 }
 
 impl InPlaceTransform for RedactPii {
-    fn transform_row(&self, row: &mut UniversalRow) -> Result<()> {
-        Self::scrub(&mut row.fields);
-        Ok(())
-    }
-
-    fn transform_change(&self, change: &mut UniversalChange) -> Result<()> {
-        // Create/Update carry `data`; Delete does not — leave id/table alone.
-        if let Some(data) = change.data.as_mut() {
-            Self::scrub(data);
+    fn transform(
+        &self,
+        _table: &str,
+        _id: &mut Value,
+        fields: Option<&mut HashMap<String, Value>>,
+    ) -> Result<()> {
+        if let Some(fields) = fields {
+            for key in Self::DROP {
+                fields.remove(*key);
+            }
         }
         Ok(())
     }
@@ -47,23 +42,17 @@ impl InPlaceTransform for RedactPii {
 /// Rename / reshape fields toward the SurrealDB document shape.
 struct RenameFields;
 
-impl RenameFields {
-    fn rename(fields: &mut HashMap<String, UniversalValue>) {
-        if let Some(name) = fields.remove("name") {
-            fields.insert("full_name".into(), name);
-        }
-    }
-}
-
 impl InPlaceTransform for RenameFields {
-    fn transform_row(&self, row: &mut UniversalRow) -> Result<()> {
-        Self::rename(&mut row.fields);
-        Ok(())
-    }
-
-    fn transform_change(&self, change: &mut UniversalChange) -> Result<()> {
-        if let Some(data) = change.data.as_mut() {
-            Self::rename(data);
+    fn transform(
+        &self,
+        _table: &str,
+        _id: &mut Value,
+        fields: Option<&mut HashMap<String, Value>>,
+    ) -> Result<()> {
+        if let Some(fields) = fields {
+            if let Some(name) = fields.remove("name") {
+                fields.insert("full_name".into(), name);
+            }
         }
         Ok(())
     }
@@ -75,35 +64,30 @@ struct FkToRecordLink {
     table: &'static str,
 }
 
-impl FkToRecordLink {
-    fn linkify(&self, fields: &mut HashMap<String, UniversalValue>) {
-        let Some(id) = fields.remove(self.field) else {
-            return;
+impl InPlaceTransform for FkToRecordLink {
+    fn transform(
+        &self,
+        _table: &str,
+        _id: &mut Value,
+        fields: Option<&mut HashMap<String, Value>>,
+    ) -> Result<()> {
+        let Some(fields) = fields else {
+            return Ok(());
         };
-        if matches!(id, UniversalValue::Null) {
-            fields.insert(self.field.into(), UniversalValue::Null);
-            return;
+        let Some(id) = fields.remove(self.field) else {
+            return Ok(());
+        };
+        if matches!(id, Value::Null) {
+            fields.insert(self.field.into(), Value::Null);
+            return Ok(());
         }
         fields.insert(
             self.field.into(),
-            UniversalValue::Thing {
+            Value::Thing {
                 table: self.table.into(),
                 id: Box::new(id),
             },
         );
-    }
-}
-
-impl InPlaceTransform for FkToRecordLink {
-    fn transform_row(&self, row: &mut UniversalRow) -> Result<()> {
-        self.linkify(&mut row.fields);
-        Ok(())
-    }
-
-    fn transform_change(&self, change: &mut UniversalChange) -> Result<()> {
-        if let Some(data) = change.data.as_mut() {
-            self.linkify(data);
-        }
         Ok(())
     }
 }

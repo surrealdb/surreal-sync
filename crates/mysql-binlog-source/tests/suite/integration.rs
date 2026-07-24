@@ -11,7 +11,7 @@ use surreal_sync_mysql_binlog_source::{
     run_replication_tail_with_checkpoints, BinlogCheckpoint, CatchUpProgress,
     ReplicationTailOptions, SourceOpts,
 };
-use sync_core::{UniversalChange, UniversalValue};
+use sync_core::{Change, Value};
 
 struct MemSink {
     changes: std::sync::Mutex<Vec<String>>,
@@ -19,30 +19,20 @@ struct MemSink {
 
 #[async_trait::async_trait]
 impl surreal_sink::SurrealSink for MemSink {
-    async fn write_universal_rows(&self, rows: &[sync_core::UniversalRow]) -> anyhow::Result<()> {
+    async fn write_rows(&self, rows: &[sync_core::Row]) -> anyhow::Result<()> {
         // Homogeneous Update upserts coalesce here; mirror observations.
         let mut changes = self.changes.lock().expect("lock");
         for row in rows {
-            changes.push(format!(
-                "{:?}:{}",
-                sync_core::UniversalChangeOp::Update,
-                row.table
-            ));
+            changes.push(format!("{:?}:{}", sync_core::ChangeOp::Update, row.table));
         }
         Ok(())
     }
 
-    async fn write_universal_relations(
-        &self,
-        _relations: &[sync_core::UniversalRelation],
-    ) -> anyhow::Result<()> {
+    async fn write_relations(&self, _relations: &[sync_core::Relation]) -> anyhow::Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_change(
-        &self,
-        change: &sync_core::UniversalChange,
-    ) -> anyhow::Result<()> {
+    async fn apply_change(&self, change: &sync_core::Change) -> anyhow::Result<()> {
         self.changes
             .lock()
             .expect("lock")
@@ -50,25 +40,25 @@ impl surreal_sink::SurrealSink for MemSink {
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
+    async fn apply_relation_change(
         &self,
-        _change: &sync_core::UniversalRelationChange,
+        _change: &sync_core::RelationChange,
     ) -> anyhow::Result<()> {
         Ok(())
     }
 }
 
 struct CaptureSink {
-    changes: std::sync::Mutex<Vec<UniversalChange>>,
+    changes: std::sync::Mutex<Vec<Change>>,
 }
 
 #[async_trait::async_trait]
 impl surreal_sink::SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, rows: &[sync_core::UniversalRow]) -> anyhow::Result<()> {
+    async fn write_rows(&self, rows: &[sync_core::Row]) -> anyhow::Result<()> {
         // Homogeneous Update upserts coalesce here; mirror into `changes`.
         let mut changes = self.changes.lock().expect("lock");
         for row in rows {
-            changes.push(UniversalChange::update(
+            changes.push(Change::update(
                 row.table.clone(),
                 row.id.clone(),
                 row.fields.clone(),
@@ -77,21 +67,18 @@ impl surreal_sink::SurrealSink for CaptureSink {
         Ok(())
     }
 
-    async fn write_universal_relations(
-        &self,
-        _relations: &[sync_core::UniversalRelation],
-    ) -> anyhow::Result<()> {
+    async fn write_relations(&self, _relations: &[sync_core::Relation]) -> anyhow::Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> anyhow::Result<()> {
+    async fn apply_change(&self, change: &Change) -> anyhow::Result<()> {
         self.changes.lock().expect("lock").push(change.clone());
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
+    async fn apply_relation_change(
         &self,
-        _change: &sync_core::UniversalRelationChange,
+        _change: &sync_core::RelationChange,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -253,8 +240,8 @@ async fn mysql_partial_json_update_is_applied_as_full_json_change() -> Result<()
         .iter()
         .find(|change| change.table == "docs")
         .expect("expected docs update");
-    let data = update.data.as_ref().expect("update data");
-    let Some(UniversalValue::Json(json)) = data.get("doc") else {
+    let data = update.fields.as_ref().expect("update data");
+    let Some(Value::Json(json)) = data.get("doc") else {
         panic!("expected JSON doc value, got {:?}", data.get("doc"));
     };
     assert_eq!(json["nested"]["count"], serde_json::json!(42));
@@ -492,10 +479,10 @@ async fn ddl_refreshes_schema_before_subsequent_rows() -> Result<()> {
     let changes = sink.changes.lock().expect("lock").clone();
     let status = changes
         .iter()
-        .find_map(|change| change.data.as_ref()?.get("status"))
+        .find_map(|change| change.fields.as_ref()?.get("status"))
         .expect("status field should be present after DDL refresh");
     match status {
-        UniversalValue::Enum { value, .. } => assert_eq!(value, "done"),
+        Value::Enum { value, .. } => assert_eq!(value, "done"),
         other => panic!("expected refreshed ENUM label, got {other:?}"),
     }
 
@@ -1155,9 +1142,9 @@ async fn start_at_head_checkpoint_resumes_from_current_position() -> Result<()> 
         .iter()
         .filter(|c| c.table == "widgets")
         .filter_map(|c| match &c.id {
-            UniversalValue::Int64(v) => Some(*v),
-            UniversalValue::Int32(v) => Some(*v as i64),
-            UniversalValue::Int8 { value, .. } => Some(*value as i64),
+            Value::Int64(v) => Some(*v),
+            Value::Int32(v) => Some(*v as i64),
+            Value::Int8 { value, .. } => Some(*value as i64),
             _ => None,
         })
         .collect();

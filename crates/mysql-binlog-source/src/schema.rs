@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use anyhow::Result;
 use mysql_async::prelude::*;
 use mysql_types::mysql_column_to_universal_type;
-use sync_core::{ColumnDefinition, DatabaseSchema, TableDefinition, UniversalType};
+use sync_core::{ColumnDefinition, DatabaseSchema, TableDefinition, Type};
 
 /// Collect schema information for all tables in the current database.
 pub async fn collect_mysql_database_schema(conn: &mut mysql_async::Conn) -> Result<DatabaseSchema> {
@@ -45,7 +45,7 @@ pub async fn collect_mysql_database_schema(conn: &mut mysql_async::Conn) -> Resu
         pk_columns.entry(table_name).or_default().push(column_name);
     }
 
-    let mut table_columns: HashMap<String, Vec<(String, UniversalType)>> = HashMap::new();
+    let mut table_columns: HashMap<String, Vec<(String, Type)>> = HashMap::new();
     for row in column_rows {
         let table_name: String = row.get(0).ok_or_else(|| anyhow::anyhow!("missing table"))?;
         let column_name: String = row
@@ -64,7 +64,7 @@ pub async fn collect_mysql_database_schema(conn: &mut mysql_async::Conn) -> Resu
             .get(&table_name)
             .is_some_and(|cols| cols.contains(&column_name));
         let universal_type = if is_json {
-            UniversalType::Json
+            Type::Json
         } else {
             mysql_column_to_universal_type(&data_type, &column_type, precision, scale)
         };
@@ -93,8 +93,7 @@ pub async fn collect_mysql_database_schema(conn: &mut mysql_async::Conn) -> Resu
             }
         }
 
-        let pk =
-            primary_key.unwrap_or_else(|| ColumnDefinition::new(pk_col_name, UniversalType::Int64));
+        let pk = primary_key.unwrap_or_else(|| ColumnDefinition::new(pk_col_name, Type::Int64));
         let mut table_def = TableDefinition::new(table_name, pk, other_columns);
         if pk_list.len() > 1 {
             table_def.composite_primary_key = Some(pk_list);

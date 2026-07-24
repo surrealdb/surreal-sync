@@ -1,31 +1,31 @@
-//! Row-level operations for converting and writing UniversalRow to SurrealDB.
+//! Row-level operations for converting and writing Row to SurrealDB.
 
 use crate::write::{write_record, write_relation};
 use anyhow::{bail, Result};
 use std::collections::HashMap;
-use surreal2_types::{RecordWithSurrealValues, Relation, SurrealValue};
-use surrealdb::sql::{Array, Id, Strand, Thing, Value};
+use surreal2_types::{RecordWithSurrealValues, Relation as SurrealRelation, SurrealValue};
+use surrealdb::sql::{Array, Id, Strand, Thing, Value as SqlValue};
 use surrealdb::Surreal;
-use sync_core::{UniversalRelation, UniversalRow, UniversalValue, ZeroTemporalPolicy};
+use sync_core::{Relation, Row, Value, ZeroTemporalPolicy};
 
-/// Convert UniversalValue ID to SurrealDB Id.
+/// Convert Value ID to SurrealDB Id.
 ///
 /// Returns an error for unsupported ID types - never falls back silently.
-/// Composite primary keys arrive as [`UniversalValue::Array`] and become
+/// Composite primary keys arrive as [`Value::Array`] and become
 /// SurrealDB array record IDs (`table:[k1, k2]`).
-pub fn universal_value_to_surreal_id(value: &UniversalValue) -> Result<Id> {
+pub fn value_to_surreal_id(value: &Value) -> Result<Id> {
     match value {
-        UniversalValue::Text(s) => Ok(Id::String(s.clone())),
-        UniversalValue::VarChar { value, .. } => Ok(Id::String(value.clone())),
-        UniversalValue::Char { value, .. } => Ok(Id::String(value.clone())),
-        UniversalValue::Int32(n) => Ok(Id::Number(*n as i64)),
-        UniversalValue::Int64(n) => Ok(Id::Number(*n)),
-        UniversalValue::Uuid(u) => Ok(Id::Uuid(surrealdb::sql::Uuid::from(*u))),
-        UniversalValue::Ulid(u) => {
+        Value::Text(s) => Ok(Id::String(s.clone())),
+        Value::VarChar { value, .. } => Ok(Id::String(value.clone())),
+        Value::Char { value, .. } => Ok(Id::String(value.clone())),
+        Value::Int32(n) => Ok(Id::Number(*n as i64)),
+        Value::Int64(n) => Ok(Id::Number(*n)),
+        Value::Uuid(u) => Ok(Id::Uuid(surrealdb::sql::Uuid::from(*u))),
+        Value::Ulid(u) => {
             // Convert ULID to string since SurrealDB doesn't have native ULID ID type
             Ok(Id::String(u.to_string()))
         }
-        UniversalValue::Array { elements, .. } => {
+        Value::Array { elements, .. } => {
             if elements.is_empty() {
                 bail!("Composite SurrealDB ID Array must not be empty");
             }
@@ -39,28 +39,28 @@ pub fn universal_value_to_surreal_id(value: &UniversalValue) -> Result<Id> {
             Ok(Id::Array(Array::from(vals)))
         }
         other => bail!(
-            "Unsupported UniversalValue type for SurrealDB ID: {other:?}. \
+            "Unsupported Value type for SurrealDB ID: {other:?}. \
              Supported types: Text, VarChar, Char, Int32, Int64, Uuid, Ulid, Array"
         ),
     }
 }
 
-/// Convert one element of a composite (Array) record ID to a SurrealDB [`Value`].
-fn universal_value_to_id_array_element(value: &UniversalValue) -> Result<Value> {
+/// Convert one element of a composite (Array) record ID to a SurrealDB [`SqlValue`].
+fn universal_value_to_id_array_element(value: &Value) -> Result<SqlValue> {
     match value {
-        UniversalValue::Text(s) => Ok(Value::Strand(Strand::from(s.clone()))),
-        UniversalValue::VarChar { value, .. } | UniversalValue::Char { value, .. } => {
-            Ok(Value::Strand(Strand::from(value.clone())))
+        Value::Text(s) => Ok(SqlValue::Strand(Strand::from(s.clone()))),
+        Value::VarChar { value, .. } | Value::Char { value, .. } => {
+            Ok(SqlValue::Strand(Strand::from(value.clone())))
         }
-        UniversalValue::Int8 { value, .. } => Ok(Value::Number((*value as i64).into())),
-        UniversalValue::Int16(n) => Ok(Value::Number((*n as i64).into())),
-        UniversalValue::Int32(n) => Ok(Value::Number((*n as i64).into())),
-        UniversalValue::Int64(n) => Ok(Value::Number((*n).into())),
-        UniversalValue::Bool(b) => Ok(Value::Bool(*b)),
-        UniversalValue::Null => Ok(Value::None),
-        UniversalValue::Uuid(u) => Ok(Value::Uuid(surrealdb::sql::Uuid::from(*u))),
-        UniversalValue::Ulid(u) => Ok(Value::Strand(Strand::from(u.to_string()))),
-        UniversalValue::Array { .. } => {
+        Value::Int8 { value, .. } => Ok(SqlValue::Number((*value as i64).into())),
+        Value::Int16(n) => Ok(SqlValue::Number((*n as i64).into())),
+        Value::Int32(n) => Ok(SqlValue::Number((*n as i64).into())),
+        Value::Int64(n) => Ok(SqlValue::Number((*n).into())),
+        Value::Bool(b) => Ok(SqlValue::Bool(*b)),
+        Value::Null => Ok(SqlValue::None),
+        Value::Uuid(u) => Ok(SqlValue::Uuid(surrealdb::sql::Uuid::from(*u))),
+        Value::Ulid(u) => Ok(SqlValue::Strand(Strand::from(u.to_string()))),
+        Value::Array { .. } => {
             bail!("Nested arrays are not supported in composite SurrealDB IDs")
         }
         other => bail!(
@@ -70,17 +70,17 @@ fn universal_value_to_id_array_element(value: &UniversalValue) -> Result<Value> 
     }
 }
 
-/// Convert UniversalRow to RecordWithSurrealValues.
+/// Convert Row to RecordWithSurrealValues.
 ///
 /// Returns an error if the row's ID type is not supported.
-pub fn universal_row_to_surreal_record(
-    row: &UniversalRow,
+pub fn row_to_surreal_record(
+    row: &Row,
     zero_temporal: ZeroTemporalPolicy,
 ) -> Result<RecordWithSurrealValues> {
-    let id = universal_value_to_surreal_id(&row.id)?;
+    let id = value_to_surreal_id(&row.id)?;
     let thing = Thing::from((row.table.as_str(), id));
 
-    let data: HashMap<String, Value> = row
+    let data: HashMap<String, SqlValue> = row
         .fields
         .iter()
         .map(|(k, v)| {
@@ -93,38 +93,38 @@ pub fn universal_row_to_surreal_record(
     Ok(RecordWithSurrealValues::new(thing, data))
 }
 
-/// Write a batch of UniversalRows to SurrealDB.
+/// Write a batch of Rows to SurrealDB.
 ///
 /// Returns an error if any row has an unsupported ID type.
-pub async fn write_universal_rows(
+pub async fn write_rows(
     surreal: &Surreal<surrealdb::engine::any::Any>,
-    rows: &[UniversalRow],
+    rows: &[Row],
     zero_temporal: ZeroTemporalPolicy,
 ) -> Result<()> {
     for row in rows {
-        let record = universal_row_to_surreal_record(row, zero_temporal)?;
+        let record = row_to_surreal_record(row, zero_temporal)?;
         write_record(surreal, &record).await?;
     }
     Ok(())
 }
 
-/// Convert UniversalRelation to SurrealDB Relation.
+/// Convert Relation to SurrealDB Relation.
 ///
 /// Returns an error if any ID type is not supported.
-pub fn universal_relation_to_surreal_relation(
-    rel: &UniversalRelation,
+pub fn relation_to_surreal_relation(
+    rel: &Relation,
     zero_temporal: ZeroTemporalPolicy,
-) -> Result<Relation> {
+) -> Result<SurrealRelation> {
     // Convert the relation's own ID
-    let id = universal_value_to_surreal_id(&rel.id)?;
+    let id = value_to_surreal_id(&rel.id)?;
     let thing_id = Thing::from((rel.relation_type.as_str(), id));
 
     // Convert input (source) Thing
-    let input_id = universal_value_to_surreal_id(&rel.input.id)?;
+    let input_id = value_to_surreal_id(&rel.input.id)?;
     let input_thing = Thing::from((rel.input.table.as_str(), input_id));
 
     // Convert output (target) Thing
-    let output_id = universal_value_to_surreal_id(&rel.output.id)?;
+    let output_id = value_to_surreal_id(&rel.output.id)?;
     let output_thing = Thing::from((rel.output.table.as_str(), output_id));
 
     // Convert data
@@ -138,7 +138,7 @@ pub fn universal_relation_to_surreal_relation(
         })
         .collect();
 
-    Ok(Relation {
+    Ok(SurrealRelation {
         id: thing_id,
         input: input_thing,
         output: output_thing,
@@ -146,16 +146,16 @@ pub fn universal_relation_to_surreal_relation(
     })
 }
 
-/// Write a batch of UniversalRelations to SurrealDB.
+/// Write a batch of Relations to SurrealDB.
 ///
 /// Returns an error if any relation has an unsupported ID type.
-pub async fn write_universal_relations(
+pub async fn write_relations(
     surreal: &Surreal<surrealdb::engine::any::Any>,
-    relations: &[UniversalRelation],
+    relations: &[Relation],
     zero_temporal: ZeroTemporalPolicy,
 ) -> Result<()> {
     for rel in relations {
-        let surreal_rel = universal_relation_to_surreal_relation(rel, zero_temporal)?;
+        let surreal_rel = relation_to_surreal_relation(rel, zero_temporal)?;
         write_relation(surreal, &surreal_rel).await?;
     }
     Ok(())
@@ -164,113 +164,110 @@ pub async fn write_universal_relations(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::UniversalValue;
+    use sync_core::Value;
 
     #[test]
-    fn test_universal_value_to_surreal_id_text() {
-        let value = UniversalValue::Text("user123".to_string());
-        let id = universal_value_to_surreal_id(&value).unwrap();
+    fn test_value_to_surreal_id_text() {
+        let value = Value::Text("user123".to_string());
+        let id = value_to_surreal_id(&value).unwrap();
         assert!(matches!(id, Id::String(s) if s == "user123"));
     }
 
     #[test]
-    fn test_universal_value_to_surreal_id_int32() {
-        let value = UniversalValue::Int32(42);
-        let id = universal_value_to_surreal_id(&value).unwrap();
+    fn test_value_to_surreal_id_int32() {
+        let value = Value::Int32(42);
+        let id = value_to_surreal_id(&value).unwrap();
         assert!(matches!(id, Id::Number(n) if n == 42));
     }
 
     #[test]
-    fn test_universal_value_to_surreal_id_int64() {
-        let value = UniversalValue::Int64(9999999999);
-        let id = universal_value_to_surreal_id(&value).unwrap();
+    fn test_value_to_surreal_id_int64() {
+        let value = Value::Int64(9999999999);
+        let id = value_to_surreal_id(&value).unwrap();
         assert!(matches!(id, Id::Number(n) if n == 9999999999));
     }
 
     #[test]
-    fn test_universal_value_to_surreal_id_uuid() {
+    fn test_value_to_surreal_id_uuid() {
         let uuid = uuid::Uuid::new_v4();
-        let value = UniversalValue::Uuid(uuid);
-        let id = universal_value_to_surreal_id(&value).unwrap();
+        let value = Value::Uuid(uuid);
+        let id = value_to_surreal_id(&value).unwrap();
         assert!(matches!(id, Id::Uuid(_)));
     }
 
     #[test]
-    fn test_universal_value_to_surreal_id_ulid() {
+    fn test_value_to_surreal_id_ulid() {
         let ulid = ulid::Ulid::new();
         let ulid_str = ulid.to_string();
-        let value = UniversalValue::Ulid(ulid);
-        let id = universal_value_to_surreal_id(&value).unwrap();
+        let value = Value::Ulid(ulid);
+        let id = value_to_surreal_id(&value).unwrap();
         assert!(matches!(id, Id::String(s) if s == ulid_str));
     }
 
     #[test]
-    fn test_universal_value_to_surreal_id_unsupported() {
-        let value = UniversalValue::Float64(1.23);
-        let result = universal_value_to_surreal_id(&value);
+    fn test_value_to_surreal_id_unsupported() {
+        let value = Value::Float64(1.23);
+        let result = value_to_surreal_id(&value);
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(err.to_string().contains("Unsupported UniversalValue type"));
+        assert!(err.to_string().contains("Unsupported Value type"));
     }
 
     #[test]
-    fn test_universal_value_to_surreal_id_bool_unsupported() {
-        let value = UniversalValue::Bool(true);
-        let result = universal_value_to_surreal_id(&value);
+    fn test_value_to_surreal_id_bool_unsupported() {
+        let value = Value::Bool(true);
+        let result = value_to_surreal_id(&value);
         assert!(result.is_err());
     }
 
     #[test]
-    fn test_universal_value_to_surreal_id_array_ints() {
-        let value = UniversalValue::Array {
-            elements: vec![UniversalValue::Int32(4), UniversalValue::Int64(2)],
-            element_type: Box::new(sync_core::UniversalType::Int32),
+    fn test_value_to_surreal_id_array_ints() {
+        let value = Value::Array {
+            elements: vec![Value::Int32(4), Value::Int64(2)],
+            element_type: Box::new(sync_core::Type::Int32),
         };
-        let id = universal_value_to_surreal_id(&value).unwrap();
+        let id = value_to_surreal_id(&value).unwrap();
         match id {
             Id::Array(arr) => {
                 assert_eq!(arr.len(), 2);
-                assert!(matches!(&arr[0], Value::Number(n) if n.to_string() == "4"));
-                assert!(matches!(&arr[1], Value::Number(n) if n.to_string() == "2"));
+                assert!(matches!(&arr[0], SqlValue::Number(n) if n.to_string() == "4"));
+                assert!(matches!(&arr[1], SqlValue::Number(n) if n.to_string() == "2"));
             }
             other => panic!("expected Id::Array, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_universal_value_to_surreal_id_array_mixed() {
+    fn test_value_to_surreal_id_array_mixed() {
         let uuid = uuid::Uuid::new_v4();
-        let value = UniversalValue::Array {
-            elements: vec![
-                UniversalValue::Text("a_b".to_string()),
-                UniversalValue::Uuid(uuid),
-            ],
-            element_type: Box::new(sync_core::UniversalType::Text),
+        let value = Value::Array {
+            elements: vec![Value::Text("a_b".to_string()), Value::Uuid(uuid)],
+            element_type: Box::new(sync_core::Type::Text),
         };
-        let id = universal_value_to_surreal_id(&value).unwrap();
+        let id = value_to_surreal_id(&value).unwrap();
         assert!(matches!(id, Id::Array(arr) if arr.len() == 2));
     }
 
     #[test]
-    fn test_universal_value_to_surreal_id_array_empty_rejected() {
-        let value = UniversalValue::Array {
+    fn test_value_to_surreal_id_array_empty_rejected() {
+        let value = Value::Array {
             elements: vec![],
-            element_type: Box::new(sync_core::UniversalType::Text),
+            element_type: Box::new(sync_core::Type::Text),
         };
-        let err = universal_value_to_surreal_id(&value).unwrap_err();
+        let err = value_to_surreal_id(&value).unwrap_err();
         assert!(err.to_string().contains("must not be empty"));
     }
 
     #[test]
-    fn test_universal_value_to_surreal_id_nested_array_rejected() {
-        let value = UniversalValue::Array {
-            elements: vec![UniversalValue::Array {
-                elements: vec![UniversalValue::Int32(1)],
-                element_type: Box::new(sync_core::UniversalType::Int32),
+    fn test_value_to_surreal_id_nested_array_rejected() {
+        let value = Value::Array {
+            elements: vec![Value::Array {
+                elements: vec![Value::Int32(1)],
+                element_type: Box::new(sync_core::Type::Int32),
             }],
-            element_type: Box::new(sync_core::UniversalType::Text),
+            element_type: Box::new(sync_core::Type::Text),
         };
-        let err = universal_value_to_surreal_id(&value).unwrap_err();
+        let err = value_to_surreal_id(&value).unwrap_err();
         assert!(err.to_string().contains("Nested arrays"));
     }
 }

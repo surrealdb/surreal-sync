@@ -31,7 +31,7 @@ use surreal_sync_interleaved_snapshot::{
     ReconciliationEvent, SnapshotSignal, SnapshotTransforms, TableSpec, WatermarkKind,
     WatermarkSource,
 };
-use sync_core::{UniversalChange, UniversalChangeOp, UniversalRow, UniversalValue};
+use sync_core::{Change, ChangeOp, Row, Value};
 use tokio::sync::Mutex;
 use tokio_postgres::NoTls;
 use tracing::{debug, info};
@@ -306,21 +306,17 @@ impl Wal2JsonWatermarkSource {
     /// but PostgreSQL's wire protocol rejects an `int8` parameter bound against
     /// an `int4`/`int2` column. This narrows the cursor values back to the
     /// column's actual type so the bound parameter type matches.
-    async fn coerce_after(
-        &self,
-        table: &TableSpec,
-        after: &PkTuple,
-    ) -> Result<Vec<UniversalValue>> {
+    async fn coerce_after(&self, table: &TableSpec, after: &PkTuple) -> Result<Vec<Value>> {
         let types = self.column_type_oids(&table.table).await?;
         let mut out = Vec::with_capacity(after.0.len());
         for (col, value) in table.pk_columns.iter().zip(after.0.iter()) {
             let coerced = match (value, types.get(col).copied()) {
-                (UniversalValue::Int64(n), Some(OID_INT4)) => UniversalValue::Int32(*n as i32),
-                (UniversalValue::Int64(n), Some(OID_INT2)) => UniversalValue::Int16(*n as i16),
-                (UniversalValue::Int32(n), Some(OID_INT8)) => UniversalValue::Int64(*n as i64),
-                (UniversalValue::Int32(n), Some(OID_INT2)) => UniversalValue::Int16(*n as i16),
-                (UniversalValue::Int16(n), Some(OID_INT8)) => UniversalValue::Int64(*n as i64),
-                (UniversalValue::Int16(n), Some(OID_INT4)) => UniversalValue::Int32(*n as i32),
+                (Value::Int64(n), Some(OID_INT4)) => Value::Int32(*n as i32),
+                (Value::Int64(n), Some(OID_INT2)) => Value::Int16(*n as i16),
+                (Value::Int32(n), Some(OID_INT8)) => Value::Int64(*n as i64),
+                (Value::Int32(n), Some(OID_INT2)) => Value::Int16(*n as i16),
+                (Value::Int16(n), Some(OID_INT8)) => Value::Int64(*n as i64),
+                (Value::Int16(n), Some(OID_INT4)) => Value::Int32(*n as i32),
                 (other, _) => other.clone(),
             };
             out.push(coerced);
@@ -345,19 +341,19 @@ impl Wal2JsonWatermarkSource {
 /// wal2json reports them as `Int16`/`Int32`. Widening here keeps both
 /// representations of the same key byte-identical when serialized as the
 /// buffer's dedup key.
-fn normalize_pk_value(value: &UniversalValue) -> UniversalValue {
+fn normalize_pk_value(value: &Value) -> Value {
     match value {
-        UniversalValue::Int16(n) => UniversalValue::Int64(*n as i64),
-        UniversalValue::Int32(n) => UniversalValue::Int64(*n as i64),
+        Value::Int16(n) => Value::Int64(*n as i64),
+        Value::Int32(n) => Value::Int64(*n as i64),
         other => other.clone(),
     }
 }
 
 /// Build a [`PkTuple`] from a change's primary key, matching how the framework
 /// derives the buffer key from a snapshot row.
-fn pk_tuple_from_primary_key(pk: &UniversalValue) -> PkTuple {
+fn pk_tuple_from_primary_key(pk: &Value) -> PkTuple {
     match pk {
-        UniversalValue::Array { elements, .. } => {
+        Value::Array { elements, .. } => {
             PkTuple::new(elements.iter().map(normalize_pk_value).collect())
         }
         single => PkTuple::new(vec![normalize_pk_value(single)]),
@@ -366,20 +362,20 @@ fn pk_tuple_from_primary_key(pk: &UniversalValue) -> PkTuple {
 
 /// Convert a decoded WAL action into a stream event payload, or `None` for
 /// transaction markers.
-fn action_to_event(action: &Action) -> Option<(String, PkTuple, UniversalChange)> {
+fn action_to_event(action: &Action) -> Option<(String, PkTuple, Change)> {
     let (row, op) = match action {
-        Action::Insert(row) => (row, UniversalChangeOp::Create),
-        Action::Update(row) => (row, UniversalChangeOp::Update),
-        Action::Delete(row) => (row, UniversalChangeOp::Delete),
+        Action::Insert(row) => (row, ChangeOp::Create),
+        Action::Update(row) => (row, ChangeOp::Update),
+        Action::Delete(row) => (row, ChangeOp::Delete),
         Action::Begin { .. } | Action::Commit { .. } => return None,
     };
     let pk = pk_tuple_from_primary_key(&row.primary_key);
-    let data = if op == UniversalChangeOp::Delete {
+    let data = if op == ChangeOp::Delete {
         None
     } else {
         Some(row.columns.clone())
     };
-    let change = UniversalChange::new(op, row.table.clone(), row.primary_key.clone(), data);
+    let change = Change::new(op, row.table.clone(), row.primary_key.clone(), data);
     Some((row.table.clone(), pk, change))
 }
 
@@ -420,8 +416,8 @@ impl WatermarkSource for Wal2JsonWatermarkSource {
         table: &TableSpec,
         after: Option<&PkTuple>,
         limit: usize,
-    ) -> Result<Vec<UniversalRow>> {
-        let after_values: Option<Vec<UniversalValue>> = match after {
+    ) -> Result<Vec<Row>> {
+        let after_values: Option<Vec<Value>> = match after {
             Some(pk) => Some(self.coerce_after(table, pk).await?),
             None => None,
         };
@@ -725,8 +721,8 @@ mod tests {
 
     #[test]
     fn pk_tuple_widens_small_integers() {
-        let from_stream = pk_tuple_from_primary_key(&UniversalValue::Int32(42));
-        let from_snapshot = PkTuple::new(vec![UniversalValue::Int64(42)]);
+        let from_stream = pk_tuple_from_primary_key(&Value::Int32(42));
+        let from_snapshot = PkTuple::new(vec![Value::Int64(42)]);
         assert_eq!(from_stream.key(), from_snapshot.key());
     }
 }

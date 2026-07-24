@@ -5,11 +5,11 @@
 //!
 //! ## Type System
 //!
-//! This module uses `UniversalType` from sync-core directly for schema representation,
+//! This module uses `Type` from sync-core directly for schema representation,
 //! along with `TableDefinition` and `DatabaseSchema` for schema structures.
 
 use surrealdb::types::{Number, RecordIdKey, Value};
-use sync_core::{DatabaseSchema, TableDefinition, UniversalType};
+use sync_core::{DatabaseSchema, TableDefinition, Type};
 
 /// Convert JSON value to surrealdb::types::Value using schema information for type precision.
 ///
@@ -35,16 +35,16 @@ pub fn json_to_surreal_with_table_schema(
     json_to_surreal_with_universal_type(value, column_type)
 }
 
-/// Convert JSON value to surrealdb::types::Value using UniversalType for type precision.
+/// Convert JSON value to surrealdb::types::Value using Type for type precision.
 ///
 /// This is the core conversion function that handles all type-specific conversions.
 pub fn json_to_surreal_with_universal_type(
     value: serde_json::Value,
-    column_type: Option<&UniversalType>,
+    column_type: Option<&Type>,
 ) -> anyhow::Result<Value> {
     match (value, column_type) {
         // High-precision decimal conversion
-        (serde_json::Value::Number(n), Some(UniversalType::Decimal { .. })) => {
+        (serde_json::Value::Number(n), Some(Type::Decimal { .. })) => {
             let decimal_str = n.to_string();
             // Try to parse as Decimal first
             if let Ok(dec) = rust_decimal::Decimal::from_str_exact(&decimal_str) {
@@ -58,7 +58,7 @@ pub fn json_to_surreal_with_universal_type(
         }
 
         // Timestamp conversion (LocalDateTime - without timezone)
-        (serde_json::Value::String(s), Some(UniversalType::LocalDateTime)) => {
+        (serde_json::Value::String(s), Some(Type::LocalDateTime)) => {
             use chrono::NaiveDateTime;
             // Try common timestamp formats
             if let Ok(ndt) = NaiveDateTime::parse_from_str(&s, "%Y-%m-%d %H:%M:%S") {
@@ -87,7 +87,7 @@ pub fn json_to_surreal_with_universal_type(
         }
 
         // Timestamp with timezone (ZonedDateTime)
-        (serde_json::Value::String(s), Some(UniversalType::ZonedDateTime)) => {
+        (serde_json::Value::String(s), Some(Type::ZonedDateTime)) => {
             if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&s) {
                 Ok(Value::Datetime(surrealdb::types::Datetime::from(
                     dt.with_timezone(&chrono::Utc),
@@ -98,10 +98,10 @@ pub fn json_to_surreal_with_universal_type(
         }
 
         // UUID validation and preservation
-        (serde_json::Value::String(s), Some(UniversalType::Uuid)) => Ok(Value::String(s)),
+        (serde_json::Value::String(s), Some(Type::Uuid)) => Ok(Value::String(s)),
 
         // JSON type - parse if it's a string representation
-        (serde_json::Value::String(s), Some(UniversalType::Json | UniversalType::Jsonb)) => {
+        (serde_json::Value::String(s), Some(Type::Json | Type::Jsonb)) => {
             match serde_json::from_str::<serde_json::Value>(&s) {
                 Ok(parsed_json) => Ok(json_to_surreal_without_schema(parsed_json)),
                 Err(_) => Ok(Value::String(s)),
@@ -109,7 +109,7 @@ pub fn json_to_surreal_with_universal_type(
         }
 
         // Date conversion
-        (serde_json::Value::String(s), Some(UniversalType::Date)) => {
+        (serde_json::Value::String(s), Some(Type::Date)) => {
             if let Ok(date) = chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
                 let dt = date
                     .and_hms_opt(0, 0, 0)
@@ -123,10 +123,10 @@ pub fn json_to_surreal_with_universal_type(
         }
 
         // Time conversion
-        (serde_json::Value::String(s), Some(UniversalType::Time)) => Ok(Value::String(s)),
+        (serde_json::Value::String(s), Some(Type::Time)) => Ok(Value::String(s)),
 
         // Boolean conversion - handle MySQL TINYINT(1) which comes as 0/1 integers
-        (serde_json::Value::Number(n), Some(UniversalType::Bool)) => {
+        (serde_json::Value::Number(n), Some(Type::Bool)) => {
             if let Some(i) = n.as_i64() {
                 Ok(Value::Bool(i != 0))
             } else {
@@ -137,7 +137,7 @@ pub fn json_to_surreal_with_universal_type(
         }
 
         // SET column conversion - handle MySQL SET columns encoded as comma-separated strings
-        (serde_json::Value::String(s), Some(UniversalType::Set { .. })) => {
+        (serde_json::Value::String(s), Some(Type::Set { .. })) => {
             if s.is_empty() {
                 Ok(Value::Array(surrealdb::types::Array::from(
                     Vec::<Value>::new(),
@@ -150,11 +150,11 @@ pub fn json_to_surreal_with_universal_type(
         }
 
         // Handle NULL SET columns
-        (serde_json::Value::Null, Some(UniversalType::Set { .. })) => Ok(Value::Null),
+        (serde_json::Value::Null, Some(Type::Set { .. })) => Ok(Value::Null),
 
         // Array type conversion
-        (serde_json::Value::String(s), Some(UniversalType::Array { element_type }))
-            if matches!(element_type.as_ref(), UniversalType::Text) =>
+        (serde_json::Value::String(s), Some(Type::Array { element_type }))
+            if matches!(element_type.as_ref(), Type::Text) =>
         {
             if s.is_empty() {
                 Ok(Value::Array(surrealdb::types::Array::from(
@@ -168,7 +168,7 @@ pub fn json_to_surreal_with_universal_type(
         }
 
         // Handle NULL Arrays
-        (serde_json::Value::Null, Some(UniversalType::Array { .. })) => Ok(Value::Null),
+        (serde_json::Value::Null, Some(Type::Array { .. })) => Ok(Value::Null),
 
         // For all other cases, use the generic JSON conversion
         (value, _) => Ok(json_to_surreal_without_schema(value)),
@@ -204,17 +204,14 @@ pub fn convert_id_with_database_schema(
     convert_id_with_universal_type(id_str, table_name, id_type)
 }
 
-/// Convert a string ID value to the proper SurrealDB ID type using UniversalType.
+/// Convert a string ID value to the proper SurrealDB ID type using Type.
 fn convert_id_with_universal_type(
     id_str: &str,
     table_name: &str,
-    id_type: &UniversalType,
+    id_type: &Type,
 ) -> anyhow::Result<RecordIdKey> {
     match id_type {
-        UniversalType::Int8 { .. }
-        | UniversalType::Int16
-        | UniversalType::Int32
-        | UniversalType::Int64 => {
+        Type::Int8 { .. } | Type::Int16 | Type::Int32 | Type::Int64 => {
             let id_int: i64 = id_str.parse().map_err(|e| {
                 anyhow::anyhow!(
                     "Failed to parse ID '{id_str}' as integer for table '{table_name}': {e}"
@@ -222,7 +219,7 @@ fn convert_id_with_universal_type(
             })?;
             Ok(RecordIdKey::Number(id_int))
         }
-        UniversalType::Uuid => {
+        Type::Uuid => {
             let uuid = uuid::Uuid::parse_str(id_str).map_err(|e| {
                 anyhow::anyhow!(
                     "Failed to parse ID '{id_str}' as UUID for table '{table_name}': {e}"
@@ -230,7 +227,7 @@ fn convert_id_with_universal_type(
             })?;
             Ok(RecordIdKey::Uuid(surrealdb::types::Uuid::from(uuid)))
         }
-        UniversalType::Text | UniversalType::VarChar { .. } | UniversalType::Char { .. } => {
+        Type::Text | Type::VarChar { .. } | Type::Char { .. } => {
             Ok(RecordIdKey::String(id_str.to_string()))
         }
         other => {
@@ -317,10 +314,10 @@ mod tests {
     fn test_new_schema_aware_decimal_conversion() {
         let schema = TableDefinition::new(
             "products",
-            ColumnDefinition::new("id", UniversalType::Int64),
+            ColumnDefinition::new("id", Type::Int64),
             vec![ColumnDefinition::new(
                 "price",
-                UniversalType::Decimal {
+                Type::Decimal {
                     precision: 10,
                     scale: 2,
                 },
@@ -341,11 +338,8 @@ mod tests {
     fn test_new_schema_aware_timestamp_conversion() {
         let schema = TableDefinition::new(
             "events",
-            ColumnDefinition::new("id", UniversalType::Int64),
-            vec![ColumnDefinition::new(
-                "created_at",
-                UniversalType::LocalDateTime,
-            )],
+            ColumnDefinition::new("id", Type::Int64),
+            vec![ColumnDefinition::new("created_at", Type::LocalDateTime)],
         );
 
         // Test timestamp conversion
@@ -362,7 +356,7 @@ mod tests {
     fn test_new_schema_aware_fallback() {
         let schema = TableDefinition::new(
             "test",
-            ColumnDefinition::new("id", UniversalType::Int64),
+            ColumnDefinition::new("id", Type::Int64),
             vec![], // Empty columns
         );
 
@@ -381,7 +375,7 @@ mod tests {
     fn test_new_convert_id_integer() {
         let schema = DatabaseSchema::new(vec![TableDefinition::new(
             "users",
-            ColumnDefinition::new("id", UniversalType::Int64),
+            ColumnDefinition::new("id", Type::Int64),
             vec![],
         )]);
 
@@ -397,7 +391,7 @@ mod tests {
     fn test_new_convert_id_uuid() {
         let schema = DatabaseSchema::new(vec![TableDefinition::new(
             "products",
-            ColumnDefinition::new("id", UniversalType::Uuid),
+            ColumnDefinition::new("id", Type::Uuid),
             vec![],
         )]);
 
@@ -417,7 +411,7 @@ mod tests {
     fn test_new_convert_id_string() {
         let schema = DatabaseSchema::new(vec![TableDefinition::new(
             "documents",
-            ColumnDefinition::new("id", UniversalType::Text),
+            ColumnDefinition::new("id", Type::Text),
             vec![],
         )]);
 
@@ -447,10 +441,10 @@ mod tests {
     fn test_new_set_column_conversion() {
         let schema = TableDefinition::new(
             "users",
-            ColumnDefinition::new("id", UniversalType::Int64),
+            ColumnDefinition::new("id", Type::Int64),
             vec![ColumnDefinition::new(
                 "roles",
-                UniversalType::Set {
+                Type::Set {
                     values: vec!["admin".to_string(), "user".to_string()],
                 },
             )],

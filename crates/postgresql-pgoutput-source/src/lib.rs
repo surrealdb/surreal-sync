@@ -20,7 +20,7 @@ pub use catch_up::{
     effective_sync_tables, emit_catch_up_progress, max_pgoutput_checkpoint, read_catch_up_progress,
     tables_pending_snapshot, CatchUpProgress, CoverageKind, TableCoverageEntry,
 };
-pub use change::cdc_change_to_universal;
+pub use change::cdc_to_change;
 pub use checkpoint::{get_current_checkpoint, PgoutputCheckpoint, PgoutputReconciliationPos};
 pub use full_sync::{
     capture_head_checkpoint, run_full_sync, run_full_sync_cancellable,

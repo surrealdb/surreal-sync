@@ -7,9 +7,7 @@
 use anyhow::Result;
 use postgresql_types::postgresql_column_to_universal_type;
 use std::collections::HashMap;
-use sync_core::{
-    ColumnDefinition, DatabaseSchema, ForeignKeyDefinition, TableDefinition, UniversalType,
-};
+use sync_core::{ColumnDefinition, DatabaseSchema, ForeignKeyDefinition, TableDefinition, Type};
 use tokio_postgres::Client;
 
 /// (source_columns, referenced_table, referenced_columns) grouped per constraint.
@@ -47,7 +45,7 @@ pub async fn collect_database_schema(client: &Client) -> Result<DatabaseSchema> 
         pk_columns.entry(table_name).or_default().push(column_name);
     }
 
-    let mut table_columns: HashMap<String, Vec<(String, UniversalType)>> = HashMap::new();
+    let mut table_columns: HashMap<String, Vec<(String, Type)>> = HashMap::new();
     let mut enum_labels: HashMap<String, Vec<String>> = HashMap::new();
     let enum_rows = client
         .query(
@@ -85,7 +83,7 @@ pub async fn collect_database_schema(client: &Client) -> Result<DatabaseSchema> 
 
         let universal_type = if effective_type.eq_ignore_ascii_case("USER-DEFINED") {
             if let Some(labels) = enum_labels.get(&udt_name) {
-                UniversalType::Enum {
+                Type::Enum {
                     values: labels.clone(),
                 }
             } else {
@@ -121,8 +119,7 @@ pub async fn collect_database_schema(client: &Client) -> Result<DatabaseSchema> 
             }
         }
 
-        let pk =
-            primary_key.unwrap_or_else(|| ColumnDefinition::new(pk_col_name, UniversalType::Int64));
+        let pk = primary_key.unwrap_or_else(|| ColumnDefinition::new(pk_col_name, Type::Int64));
 
         let mut table_def = TableDefinition::new(table_name, pk, other_columns);
         if pk_list.len() > 1 {

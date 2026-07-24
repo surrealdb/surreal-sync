@@ -8,28 +8,26 @@ use crate::{
 };
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use sync_core::{
-    UniversalChange, UniversalRelation, UniversalRelationChange, UniversalThingRef, UniversalValue,
-};
+use sync_core::{Change, Relation, RelationChange, ThingRef, Value};
 
-fn change(id: i64) -> UniversalChange {
+fn change(id: i64) -> Change {
     let mut data = HashMap::new();
     data.insert(
         "name".to_string(),
-        UniversalValue::VarChar {
+        Value::VarChar {
             value: format!("row-{id}"),
             length: 64,
         },
     );
-    UniversalChange::create("users", UniversalValue::Int64(id), data)
+    Change::create("users", Value::Int64(id), data)
 }
 
-fn relation(id: i64) -> UniversalRelation {
-    UniversalRelation::new(
+fn relation(id: i64) -> Relation {
+    Relation::new(
         "follows",
-        UniversalValue::Int64(id),
-        UniversalThingRef::new("users", UniversalValue::Int64(id)),
-        UniversalThingRef::new("users", UniversalValue::Int64(id + 1)),
+        Value::Int64(id),
+        ThingRef::new("users", Value::Int64(id)),
+        ThingRef::new("users", Value::Int64(id + 1)),
         HashMap::new(),
     )
 }
@@ -192,7 +190,7 @@ async fn mixed_relation_and_change_events_ordered() {
     let mut driver = ScriptedSourceDriver::new(vec![
         PositionedEvent::change(change(1), 10u64),
         PositionedEvent::new(
-            ApplyEvent::relation_change(UniversalRelationChange::create(relation(5))),
+            ApplyEvent::relation_change(RelationChange::create(relation(5))),
             20u64,
         ),
         PositionedEvent::change(change(2), 30u64),
@@ -334,7 +332,7 @@ async fn interval_when_drained_persists_sunk_promptly_when_already_drained() {
 
 #[tokio::test]
 async fn adhoc_snapshot_receives_apply_helpers_and_can_write() {
-    use sync_core::UniversalRow;
+    use sync_core::Row;
 
     struct AdhocWriter {
         remaining: Vec<PositionedEvent<u64>>,
@@ -380,12 +378,12 @@ async fn adhoc_snapshot_receives_apply_helpers_and_can_write() {
             let mut data = HashMap::new();
             data.insert(
                 "name".to_string(),
-                UniversalValue::VarChar {
+                Value::VarChar {
                     value: "adhoc".into(),
                     length: 64,
                 },
             );
-            let row = UniversalRow::new("users", 0, UniversalValue::Int64(99), data);
+            let row = Row::new("users", 0, Value::Int64(99), data);
             apply.write_rows(vec![row]).await?;
             self.wrote_via_adhoc = true;
             Ok(())
@@ -414,7 +412,7 @@ async fn adhoc_snapshot_receives_apply_helpers_and_can_write() {
     assert!(driver.wrote_via_adhoc);
     assert_eq!(sink.applied().len(), 1);
     assert_eq!(sink.rows_written().len(), 1);
-    assert_eq!(sink.rows_written()[0][0].id, UniversalValue::Int64(99));
+    assert_eq!(sink.rows_written()[0][0].id, Value::Int64(99));
 }
 
 #[tokio::test]
@@ -723,11 +721,7 @@ async fn identity_polls_while_slow_sink_in_flight() {
             .iter()
             .map(|c| c.id.clone())
             .collect::<Vec<_>>(),
-        vec![
-            UniversalValue::Int64(1),
-            UniversalValue::Int64(2),
-            UniversalValue::Int64(3)
-        ]
+        vec![Value::Int64(1), Value::Int64(2), Value::Int64(3)]
     );
 }
 
@@ -841,7 +835,7 @@ async fn non_identity_transforms_overlap_sink_ordered_advance_after_sink() {
             .iter()
             .map(|c| c.id.clone())
             .collect::<Vec<_>>(),
-        vec![UniversalValue::Int64(1), UniversalValue::Int64(2)],
+        vec![Value::Int64(1), Value::Int64(2)],
         "sink must stay ordered"
     );
     assert_eq!(
@@ -1152,11 +1146,7 @@ async fn multi_event_sink_not_reapplied_when_transform_completes() {
     let ids: Vec<_> = applied.iter().map(|c| c.id.clone()).collect();
     assert_eq!(
         ids,
-        vec![
-            UniversalValue::Int64(1),
-            UniversalValue::Int64(2),
-            UniversalValue::Int64(3)
-        ],
+        vec![Value::Int64(1), Value::Int64(2), Value::Int64(3)],
         "sink order must stay correct"
     );
     assert_eq!(
@@ -1175,7 +1165,7 @@ async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
     use anyhow::bail;
     use async_trait::async_trait;
     use std::sync::Arc;
-    use sync_core::UniversalChange;
+    use sync_core::Change;
 
     /// Drops every other change (keeps odd ids) — length shrinks.
     struct FilterOddIds;
@@ -1189,12 +1179,12 @@ async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
         async fn transform_changes(
             &self,
             _batch_id: u64,
-            changes: Vec<UniversalChange>,
-        ) -> anyhow::Result<Vec<UniversalChange>> {
+            changes: Vec<Change>,
+        ) -> anyhow::Result<Vec<Change>> {
             Ok(changes
                 .into_iter()
                 .filter(|c| match &c.id {
-                    UniversalValue::Int64(id) => id % 2 == 1,
+                    Value::Int64(id) => id % 2 == 1,
                     _ => true,
                 })
                 .collect())
@@ -1203,8 +1193,8 @@ async fn filter_transform_notes_input_count_for_kafka_and_wal2json() {
         async fn transform_rows(
             &self,
             _batch_id: u64,
-            rows: Vec<sync_core::UniversalRow>,
-        ) -> anyhow::Result<Vec<sync_core::UniversalRow>> {
+            rows: Vec<sync_core::Row>,
+        ) -> anyhow::Result<Vec<sync_core::Row>> {
             Ok(rows)
         }
 
@@ -1401,7 +1391,7 @@ async fn fan_out_transform_notes_input_count_not_output_length() {
     use anyhow::bail;
     use async_trait::async_trait;
     use std::sync::Arc;
-    use sync_core::UniversalChange;
+    use sync_core::Change;
 
     /// Duplicates each change — length grows.
     struct FanOutTwice;
@@ -1415,8 +1405,8 @@ async fn fan_out_transform_notes_input_count_not_output_length() {
         async fn transform_changes(
             &self,
             _batch_id: u64,
-            changes: Vec<UniversalChange>,
-        ) -> anyhow::Result<Vec<UniversalChange>> {
+            changes: Vec<Change>,
+        ) -> anyhow::Result<Vec<Change>> {
             let mut out = Vec::with_capacity(changes.len() * 2);
             for c in changes {
                 out.push(c.clone());
@@ -1428,8 +1418,8 @@ async fn fan_out_transform_notes_input_count_not_output_length() {
         async fn transform_rows(
             &self,
             _batch_id: u64,
-            rows: Vec<sync_core::UniversalRow>,
-        ) -> anyhow::Result<Vec<sync_core::UniversalRow>> {
+            rows: Vec<sync_core::Row>,
+        ) -> anyhow::Result<Vec<sync_core::Row>> {
             Ok(rows)
         }
 
@@ -1651,7 +1641,7 @@ async fn fan_out_transform_notes_input_count_not_output_length() {
 async fn row_chunk_driver_streams_chunks_through_runtime() {
     use crate::{RowChunkDriver, RowChunkSource};
     use async_trait::async_trait;
-    use sync_core::UniversalRow;
+    use sync_core::Row;
 
     struct TwoChunks {
         n: usize,
@@ -1659,18 +1649,18 @@ async fn row_chunk_driver_streams_chunks_through_runtime() {
 
     #[async_trait]
     impl RowChunkSource for TwoChunks {
-        async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<UniversalRow>>> {
+        async fn next_chunk(&mut self) -> anyhow::Result<Option<Vec<Row>>> {
             self.n += 1;
             if self.n > 2 {
                 return Ok(None);
             }
             let id = self.n as i64;
             let mut fields = HashMap::new();
-            fields.insert("v".to_string(), UniversalValue::Int64(id));
-            Ok(Some(vec![UniversalRow::new(
+            fields.insert("v".to_string(), Value::Int64(id));
+            Ok(Some(vec![Row::new(
                 "t",
                 id as u64,
-                UniversalValue::Int64(id),
+                Value::Int64(id),
                 fields,
             )]))
         }

@@ -1,7 +1,7 @@
-//! Static value generator and YAML to UniversalValue conversion.
+//! Static value generator and YAML to Value conversion.
 
 use serde_yaml::Value as YamlValue;
-use sync_core::UniversalValue;
+use sync_core::Value;
 
 /// Convert a YAML value to a serde_json::Value.
 fn yaml_to_json_value(yaml: &YamlValue) -> serde_json::Value {
@@ -41,27 +41,27 @@ fn yaml_to_json_value(yaml: &YamlValue) -> serde_json::Value {
     }
 }
 
-/// Convert a YAML value to a UniversalValue.
-pub fn yaml_to_generated_value(yaml: &YamlValue) -> UniversalValue {
+/// Convert a YAML value to a Value.
+pub fn yaml_to_generated_value(yaml: &YamlValue) -> Value {
     match yaml {
-        YamlValue::Null => UniversalValue::Null,
-        YamlValue::Bool(b) => UniversalValue::Bool(*b),
+        YamlValue::Null => Value::Null,
+        YamlValue::Bool(b) => Value::Bool(*b),
         YamlValue::Number(n) => {
             if let Some(i) = n.as_i64() {
-                UniversalValue::Int64(i)
+                Value::Int64(i)
             } else if let Some(f) = n.as_f64() {
-                UniversalValue::Float64(f)
+                Value::Float64(f)
             } else {
-                UniversalValue::Text(n.to_string())
+                Value::Text(n.to_string())
             }
         }
-        YamlValue::String(s) => UniversalValue::Text(s.clone()),
+        YamlValue::String(s) => Value::Text(s.clone()),
         YamlValue::Sequence(arr) => {
-            let values: Vec<UniversalValue> = arr.iter().map(yaml_to_generated_value).collect();
+            let values: Vec<Value> = arr.iter().map(yaml_to_generated_value).collect();
             // Use Text as default element type for YAML arrays
-            UniversalValue::Array {
+            Value::Array {
                 elements: values,
-                element_type: Box::new(sync_core::UniversalType::Text),
+                element_type: Box::new(sync_core::Type::Text),
             }
         }
         YamlValue::Mapping(map) => {
@@ -75,7 +75,7 @@ pub fn yaml_to_generated_value(yaml: &YamlValue) -> UniversalValue {
                     Some((key, yaml_to_json_value(v)))
                 })
                 .collect();
-            UniversalValue::Json(Box::new(serde_json::Value::Object(values)))
+            Value::Json(Box::new(serde_json::Value::Object(values)))
         }
         YamlValue::Tagged(tagged) => yaml_to_generated_value(&tagged.value),
     }
@@ -88,25 +88,25 @@ mod tests {
     #[test]
     fn test_yaml_null() {
         let yaml = YamlValue::Null;
-        assert_eq!(yaml_to_generated_value(&yaml), UniversalValue::Null);
+        assert_eq!(yaml_to_generated_value(&yaml), Value::Null);
     }
 
     #[test]
     fn test_yaml_bool() {
         let yaml = YamlValue::Bool(true);
-        assert_eq!(yaml_to_generated_value(&yaml), UniversalValue::Bool(true));
+        assert_eq!(yaml_to_generated_value(&yaml), Value::Bool(true));
     }
 
     #[test]
     fn test_yaml_int() {
         let yaml: YamlValue = serde_yaml::from_str("42").unwrap();
-        assert_eq!(yaml_to_generated_value(&yaml), UniversalValue::Int64(42));
+        assert_eq!(yaml_to_generated_value(&yaml), Value::Int64(42));
     }
 
     #[test]
     fn test_yaml_float() {
         let yaml: YamlValue = serde_yaml::from_str("1.234").unwrap();
-        if let UniversalValue::Float64(f) = yaml_to_generated_value(&yaml) {
+        if let Value::Float64(f) = yaml_to_generated_value(&yaml) {
             assert!((f - 1.234).abs() < 0.001);
         } else {
             panic!("Expected Double");
@@ -118,16 +118,16 @@ mod tests {
         let yaml = YamlValue::String("hello".to_string());
         assert_eq!(
             yaml_to_generated_value(&yaml),
-            UniversalValue::Text("hello".to_string())
+            Value::Text("hello".to_string())
         );
     }
 
     #[test]
     fn test_yaml_array() {
         let yaml: YamlValue = serde_yaml::from_str("[1, 2, 3]").unwrap();
-        if let UniversalValue::Array { elements, .. } = yaml_to_generated_value(&yaml) {
+        if let Value::Array { elements, .. } = yaml_to_generated_value(&yaml) {
             assert_eq!(elements.len(), 3);
-            assert_eq!(elements[0], UniversalValue::Int64(1));
+            assert_eq!(elements[0], Value::Int64(1));
         } else {
             panic!("Expected Array");
         }
@@ -136,7 +136,7 @@ mod tests {
     #[test]
     fn test_yaml_object() {
         let yaml: YamlValue = serde_yaml::from_str("{ version: 1, name: test }").unwrap();
-        if let UniversalValue::Json(payload) = yaml_to_generated_value(&yaml) {
+        if let Value::Json(payload) = yaml_to_generated_value(&yaml) {
             if let serde_json::Value::Object(obj) = &*payload {
                 assert_eq!(obj.get("version"), Some(&serde_json::json!(1)));
                 assert_eq!(obj.get("name"), Some(&serde_json::json!("test")));

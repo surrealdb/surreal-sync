@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use surrealdb3::engine::any::Any;
 use surrealdb3::types::Value as SurrealValue;
 use surrealdb3::Surreal;
-use sync_core::{GeneratorTableDefinition, Schema, UniversalRow};
+use sync_core::{GeneratorTableDefinition, Row, Schema};
 use tracing::{debug, info, warn};
 
 /// Streaming verifier that generates expected data and compares with SurrealDB v3.
@@ -238,24 +238,24 @@ impl StreamingVerifier3 {
     /// Query a single row from SurrealDB by its ID.
     async fn query_row(
         &self,
-        expected_row: &UniversalRow,
+        expected_row: &Row,
         table_schema: &GeneratorTableDefinition,
     ) -> Result<Option<RecordResult>, VerifyError> {
         use surrealdb3::types::{RecordId, RecordIdKey};
 
         // Construct proper RecordId based on ID type to match how sync stores records
         let record_id = match &expected_row.id {
-            sync_core::UniversalValue::Uuid(u) => RecordId::new(
+            sync_core::Value::Uuid(u) => RecordId::new(
                 self.table_name.as_str(),
                 RecordIdKey::Uuid(surrealdb3::types::Uuid::from(*u)),
             ),
-            sync_core::UniversalValue::Int64(i) => {
+            sync_core::Value::Int64(i) => {
                 RecordId::new(self.table_name.as_str(), RecordIdKey::Number(*i))
             }
-            sync_core::UniversalValue::Int32(i) => {
+            sync_core::Value::Int32(i) => {
                 RecordId::new(self.table_name.as_str(), RecordIdKey::Number(*i as i64))
             }
-            sync_core::UniversalValue::Text(s) => {
+            sync_core::Value::Text(s) => {
                 RecordId::new(self.table_name.as_str(), RecordIdKey::String(s.clone()))
             }
             other => {
@@ -327,29 +327,26 @@ impl StreamingVerifier3 {
         &self,
         response: &mut surrealdb3::IndexedResults,
         field_name: &str,
-        data_type: &sync_core::UniversalType,
+        data_type: &sync_core::Type,
         record_id: &surrealdb3::types::RecordId,
     ) -> Result<Option<SurrealValue>, VerifyError> {
         use surrealdb3::types::Number;
-        use sync_core::UniversalType;
+        use sync_core::Type;
 
         match data_type {
-            UniversalType::Bool => {
+            Type::Bool => {
                 let val: Option<bool> = response.take((0, field_name))?;
                 Ok(val.map(SurrealValue::Bool))
             }
-            UniversalType::Int8 { .. }
-            | UniversalType::Int16
-            | UniversalType::Int32
-            | UniversalType::Int64 => {
+            Type::Int8 { .. } | Type::Int16 | Type::Int32 | Type::Int64 => {
                 let val: Option<i64> = response.take((0, field_name))?;
                 Ok(val.map(|v| SurrealValue::Number(Number::Int(v))))
             }
-            UniversalType::Float32 | UniversalType::Float64 => {
+            Type::Float32 | Type::Float64 => {
                 let val: Option<f64> = response.take((0, field_name))?;
                 Ok(val.map(|v| SurrealValue::Number(Number::Float(v))))
             }
-            UniversalType::Decimal { .. } => {
+            Type::Decimal { .. } => {
                 match response.take::<Option<Decimal>>((0, field_name)) {
                     Ok(Some(d)) => Ok(Some(SurrealValue::Number(Number::Decimal(d)))),
                     Ok(None) => Ok(None),
@@ -388,14 +385,11 @@ impl StreamingVerifier3 {
                     }
                 }
             }
-            UniversalType::Char { .. }
-            | UniversalType::VarChar { .. }
-            | UniversalType::Text
-            | UniversalType::Enum { .. } => {
+            Type::Char { .. } | Type::VarChar { .. } | Type::Text | Type::Enum { .. } => {
                 let val: Option<String> = response.take((0, field_name))?;
                 Ok(val.map(SurrealValue::String))
             }
-            UniversalType::Uuid => {
+            Type::Uuid => {
                 let result: Result<Option<uuid::Uuid>, _> = response.take((0, field_name));
                 match result {
                     Ok(Some(v)) => Ok(Some(SurrealValue::Uuid(surrealdb3::types::Uuid::from(v)))),
@@ -427,39 +421,37 @@ impl StreamingVerifier3 {
                     }
                 }
             }
-            UniversalType::Ulid => {
+            Type::Ulid => {
                 // ULIDs are stored as strings in SurrealDB
                 let val: Option<String> = response.take((0, field_name))?;
                 Ok(val.map(SurrealValue::String))
             }
-            UniversalType::LocalDateTime
-            | UniversalType::LocalDateTimeNano
-            | UniversalType::ZonedDateTime => {
+            Type::LocalDateTime | Type::LocalDateTimeNano | Type::ZonedDateTime => {
                 let val: Option<chrono::DateTime<chrono::Utc>> = response.take((0, field_name))?;
                 Ok(val.map(|v| SurrealValue::Datetime(surrealdb3::types::Datetime::from(v))))
             }
-            UniversalType::Date => {
+            Type::Date => {
                 let val: Option<String> = response.take((0, field_name))?;
                 Ok(val.map(SurrealValue::String))
             }
-            UniversalType::Time => {
+            Type::Time => {
                 let val: Option<String> = response.take((0, field_name))?;
                 Ok(val.map(SurrealValue::String))
             }
-            UniversalType::Blob | UniversalType::Bytes => {
+            Type::Blob | Type::Bytes => {
                 let val: Option<Vec<u8>> = response.take((0, field_name))?;
                 Ok(val.map(|v| SurrealValue::Bytes(surrealdb3::types::Bytes::from(v))))
             }
-            UniversalType::Json | UniversalType::Jsonb => {
+            Type::Json | Type::Jsonb => {
                 // JSON values are stored as native Objects in SurrealDB
                 // Use serde_json::Value for dynamic JSON extraction
                 let val: Option<serde_json::Value> = response.take((0, field_name))?;
                 Ok(val.map(|v| json_value_to_surreal(&v)))
             }
-            UniversalType::Array { element_type } => {
+            Type::Array { element_type } => {
                 // Extract array based on element type
                 match element_type.as_ref() {
-                    UniversalType::Int32 | UniversalType::Int16 | UniversalType::Int64 => {
+                    Type::Int32 | Type::Int16 | Type::Int64 => {
                         let val: Option<Vec<i64>> = response.take((0, field_name))?;
                         Ok(val.map(|arr| {
                             let items: Vec<SurrealValue> = arr
@@ -469,9 +461,7 @@ impl StreamingVerifier3 {
                             SurrealValue::Array(surrealdb3::types::Array::from(items))
                         }))
                     }
-                    UniversalType::Text
-                    | UniversalType::VarChar { .. }
-                    | UniversalType::Char { .. } => {
+                    Type::Text | Type::VarChar { .. } | Type::Char { .. } => {
                         let val: Option<Vec<String>> = response.take((0, field_name))?;
                         Ok(val.map(|arr| {
                             let items: Vec<SurrealValue> =
@@ -485,30 +475,30 @@ impl StreamingVerifier3 {
                     }
                 }
             }
-            UniversalType::Set { .. } => {
+            Type::Set { .. } => {
                 // Sets - for now just skip complex set handling
                 Ok(None)
             }
-            UniversalType::Geometry { .. } => {
+            Type::Geometry { .. } => {
                 // Geometry - skip for now
                 Ok(None)
             }
-            UniversalType::Duration => {
+            Type::Duration => {
                 // Duration - extract as SurrealDB duration
                 let val: Option<surrealdb3::types::Duration> = response.take((0, field_name))?;
                 Ok(val.map(SurrealValue::Duration))
             }
-            UniversalType::Thing => {
+            Type::Thing => {
                 // Thing - extract as SurrealDB RecordId
                 let val: Option<surrealdb3::types::RecordId> = response.take((0, field_name))?;
                 Ok(val.map(SurrealValue::RecordId))
             }
-            UniversalType::Object => {
+            Type::Object => {
                 // Object - stored as native Object in SurrealDB
                 let val: Option<serde_json::Value> = response.take((0, field_name))?;
                 Ok(val.map(|v| json_value_to_surreal(&v)))
             }
-            UniversalType::TimeTz => {
+            Type::TimeTz => {
                 // TimeTz - stored as string in SurrealDB
                 let val: Option<String> = response.take((0, field_name))?;
                 Ok(val.map(SurrealValue::String))
@@ -519,7 +509,7 @@ impl StreamingVerifier3 {
     /// Compare an expected row with an actual SurrealDB record.
     fn compare_row(
         &self,
-        expected: &UniversalRow,
+        expected: &Row,
         actual: &RecordResult,
         table_schema: &GeneratorTableDefinition,
     ) -> Vec<FieldMismatch> {
@@ -584,13 +574,13 @@ impl StreamingVerifier3 {
     }
 }
 
-/// Format a UniversalValue ID for display.
-fn format_id(value: &sync_core::UniversalValue) -> String {
+/// Format a Value ID for display.
+fn format_id(value: &sync_core::Value) -> String {
     match value {
-        sync_core::UniversalValue::Uuid(u) => u.to_string(),
-        sync_core::UniversalValue::Int64(i) => i.to_string(),
-        sync_core::UniversalValue::Int32(i) => i.to_string(),
-        sync_core::UniversalValue::Text(s) => s.clone(),
+        sync_core::Value::Uuid(u) => u.to_string(),
+        sync_core::Value::Int64(i) => i.to_string(),
+        sync_core::Value::Int32(i) => i.to_string(),
+        sync_core::Value::Text(s) => s.clone(),
         _ => format!("{value:?}"),
     }
 }
@@ -671,12 +661,12 @@ tables:
     fn test_format_id() {
         let uuid = uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
         assert_eq!(
-            format_id(&sync_core::UniversalValue::Uuid(uuid)),
+            format_id(&sync_core::Value::Uuid(uuid)),
             "550e8400-e29b-41d4-a716-446655440000"
         );
-        assert_eq!(format_id(&sync_core::UniversalValue::Int64(12345)), "12345");
+        assert_eq!(format_id(&sync_core::Value::Int64(12345)), "12345");
         assert_eq!(
-            format_id(&sync_core::UniversalValue::Text("test-id".to_string())),
+            format_id(&sync_core::Value::Text("test-id".to_string())),
             "test-id"
         );
     }

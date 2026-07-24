@@ -1,25 +1,25 @@
 //! Numeric value generators.
 
 use rand::RngExt;
-use sync_core::UniversalValue;
+use sync_core::Value;
 
 /// Generate a random integer in the given range (inclusive).
-pub fn generate_int_range<R: RngExt>(rng: &mut R, min: i64, max: i64) -> UniversalValue {
-    UniversalValue::Int64(rng.random_range(min..=max))
+pub fn generate_int_range<R: RngExt>(rng: &mut R, min: i64, max: i64) -> Value {
+    Value::Int64(rng.random_range(min..=max))
 }
 
 /// Generate a random float in the given range (inclusive).
-pub fn generate_float_range<R: RngExt>(rng: &mut R, min: f64, max: f64) -> UniversalValue {
-    UniversalValue::Float64(rng.random_range(min..=max))
+pub fn generate_float_range<R: RngExt>(rng: &mut R, min: f64, max: f64) -> Value {
+    Value::Float64(rng.random_range(min..=max))
 }
 
 /// Generate a random decimal in the given range.
 ///
 /// The decimal is stored as a string with 2 decimal places.
-pub fn generate_decimal_range<R: RngExt>(rng: &mut R, min: f64, max: f64) -> UniversalValue {
+pub fn generate_decimal_range<R: RngExt>(rng: &mut R, min: f64, max: f64) -> Value {
     let value = rng.random_range(min..=max);
     // Format with 2 decimal places by default
-    UniversalValue::Decimal {
+    Value::Decimal {
         value: format!("{value:.2}"),
         precision: 10,
         scale: 2,
@@ -27,13 +27,9 @@ pub fn generate_decimal_range<R: RngExt>(rng: &mut R, min: f64, max: f64) -> Uni
 }
 
 /// Generate a random duration in the given range (in seconds).
-pub fn generate_duration_range<R: RngExt>(
-    rng: &mut R,
-    min_secs: u64,
-    max_secs: u64,
-) -> UniversalValue {
+pub fn generate_duration_range<R: RngExt>(rng: &mut R, min_secs: u64, max_secs: u64) -> Value {
     let secs = rng.random_range(min_secs..=max_secs);
-    UniversalValue::Duration(std::time::Duration::from_secs(secs))
+    Value::Duration(std::time::Duration::from_secs(secs))
 }
 
 #[cfg(test)]
@@ -48,7 +44,7 @@ mod tests {
 
         for _ in 0..100 {
             let value = generate_int_range(&mut rng, 10, 20);
-            if let UniversalValue::Int64(v) = value {
+            if let Value::Int64(v) = value {
                 assert!((10..=20).contains(&v));
             } else {
                 panic!("Expected BigInt value");
@@ -62,7 +58,7 @@ mod tests {
 
         for _ in 0..100 {
             let value = generate_float_range(&mut rng, 0.0, 100.0);
-            if let UniversalValue::Float64(v) = value {
+            if let Value::Float64(v) = value {
                 assert!((0.0..=100.0).contains(&v));
             } else {
                 panic!("Expected Double value");
@@ -75,7 +71,7 @@ mod tests {
         let mut rng = StdRng::seed_from_u64(42);
 
         let value = generate_decimal_range(&mut rng, 0.0, 100.0);
-        if let UniversalValue::Decimal {
+        if let Value::Decimal {
             value,
             precision,
             scale,
@@ -97,7 +93,7 @@ mod tests {
 
         for _ in 0..100 {
             let value = generate_duration_range(&mut rng, 60, 3600);
-            if let UniversalValue::Duration(d) = value {
+            if let Value::Duration(d) = value {
                 assert!(d.as_secs() >= 60 && d.as_secs() <= 3600);
             } else {
                 panic!("Expected Duration value");

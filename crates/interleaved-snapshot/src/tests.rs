@@ -10,10 +10,7 @@ use std::sync::Mutex;
 use anyhow::Result;
 use async_trait::async_trait;
 use surreal_sink::SurrealSink;
-use sync_core::{
-    UniversalChange, UniversalChangeOp, UniversalRelation, UniversalRelationChange, UniversalRow,
-    UniversalValue,
-};
+use sync_core::{Change, ChangeOp, Relation, RelationChange, Row, Value};
 use uuid::Uuid;
 
 use crate::{
@@ -33,37 +30,37 @@ struct MockSink {
 #[derive(Default)]
 struct MockSinkState {
     /// (op, table, id) of every sunk change-stream / buffer event.
-    /// Surviving snapshot rows are emitted as [`UniversalChangeOp::Update`]
+    /// Surviving snapshot rows are emitted as [`ChangeOp::Update`]
     /// through the shared `run_source_runtime` window. Homogeneous Update
-    /// batches coalesce to `write_universal_rows`; those are mirrored here as
+    /// batches coalesce to `write_rows`; those are mirrored here as
     /// Updates so observations match per-event apply.
-    changes: Vec<(UniversalChangeOp, String, UniversalValue)>,
+    changes: Vec<(ChangeOp, String, Value)>,
 }
 
 impl MockSink {
-    fn changes(&self) -> Vec<(UniversalChangeOp, String, UniversalValue)> {
+    fn changes(&self) -> Vec<(ChangeOp, String, Value)> {
         self.state.lock().unwrap().changes.clone()
     }
 }
 
 #[async_trait]
 impl SurrealSink for MockSink {
-    async fn write_universal_rows(&self, rows: &[UniversalRow]) -> Result<()> {
+    async fn write_rows(&self, rows: &[Row]) -> Result<()> {
         // Homogeneous Update upserts coalesce here; mirror into `changes`.
         let mut state = self.state.lock().unwrap();
         for row in rows {
             state
                 .changes
-                .push((UniversalChangeOp::Update, row.table.clone(), row.id.clone()));
+                .push((ChangeOp::Update, row.table.clone(), row.id.clone()));
         }
         Ok(())
     }
 
-    async fn write_universal_relations(&self, _relations: &[UniversalRelation]) -> Result<()> {
+    async fn write_relations(&self, _relations: &[Relation]) -> Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> Result<()> {
+    async fn apply_change(&self, change: &Change) -> Result<()> {
         let mut state = self.state.lock().unwrap();
         state
             .changes
@@ -71,10 +68,7 @@ impl SurrealSink for MockSink {
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
-        &self,
-        _change: &UniversalRelationChange,
-    ) -> Result<()> {
+    async fn apply_relation_change(&self, _change: &RelationChange) -> Result<()> {
         Ok(())
     }
 }
@@ -88,7 +82,7 @@ impl SurrealSink for MockSink {
 struct DataEvent {
     table: String,
     pk: PkTuple,
-    change: UniversalChange,
+    change: Change,
 }
 
 struct MockState {
@@ -146,21 +140,17 @@ impl MockSource {
         ReconciliationEvent {
             position: state.position,
             table: "surreal_sync_signal".to_string(),
-            pk: PkTuple::new(vec![UniversalValue::Uuid(id)]),
-            change: UniversalChange::create(
-                "surreal_sync_signal",
-                UniversalValue::Uuid(id),
-                HashMap::new(),
-            ),
+            pk: PkTuple::new(vec![Value::Uuid(id)]),
+            change: Change::create("surreal_sync_signal", Value::Uuid(id), HashMap::new()),
         }
     }
 }
 
-fn user_row(i: i64) -> UniversalRow {
+fn user_row(i: i64) -> Row {
     let mut fields = HashMap::new();
-    fields.insert("id".to_string(), UniversalValue::Int64(i));
-    fields.insert("val".to_string(), UniversalValue::Text(format!("v{i}")));
-    UniversalRow::new("users", i as u64, UniversalValue::Int64(i), fields)
+    fields.insert("id".to_string(), Value::Int64(i));
+    fields.insert("val".to_string(), Value::Text(format!("v{i}")));
+    Row::new("users", i as u64, Value::Int64(i), fields)
 }
 
 #[async_trait]
@@ -176,7 +166,7 @@ impl WatermarkSource for MockSource {
         _table: &TableSpec,
         after: Option<&PkTuple>,
         limit: usize,
-    ) -> Result<Vec<UniversalRow>> {
+    ) -> Result<Vec<Row>> {
         let start = after
             .and_then(|pk| pk.0.first().and_then(|v| v.as_i64()))
             .unwrap_or(0);
@@ -268,34 +258,31 @@ impl WatermarkSource for MockSource {
 
 fn update_event(i: i64) -> DataEvent {
     let mut fields = HashMap::new();
-    fields.insert("id".to_string(), UniversalValue::Int64(i));
-    fields.insert(
-        "val".to_string(),
-        UniversalValue::Text(format!("v{i}-updated")),
-    );
+    fields.insert("id".to_string(), Value::Int64(i));
+    fields.insert("val".to_string(), Value::Text(format!("v{i}-updated")));
     DataEvent {
         table: "users".to_string(),
-        pk: PkTuple::new(vec![UniversalValue::Int64(i)]),
-        change: UniversalChange::update("users", UniversalValue::Int64(i), fields),
+        pk: PkTuple::new(vec![Value::Int64(i)]),
+        change: Change::update("users", Value::Int64(i), fields),
     }
 }
 
 fn delete_event(i: i64) -> DataEvent {
     DataEvent {
         table: "users".to_string(),
-        pk: PkTuple::new(vec![UniversalValue::Int64(i)]),
-        change: UniversalChange::delete("users", UniversalValue::Int64(i)),
+        pk: PkTuple::new(vec![Value::Int64(i)]),
+        change: Change::delete("users", Value::Int64(i)),
     }
 }
 
 fn create_event(i: i64) -> DataEvent {
     let mut fields = HashMap::new();
-    fields.insert("id".to_string(), UniversalValue::Int64(i));
-    fields.insert("val".to_string(), UniversalValue::Text(format!("v{i}")));
+    fields.insert("id".to_string(), Value::Int64(i));
+    fields.insert("val".to_string(), Value::Text(format!("v{i}")));
     DataEvent {
         table: "users".to_string(),
-        pk: PkTuple::new(vec![UniversalValue::Int64(i)]),
-        change: UniversalChange::create("users", UniversalValue::Int64(i), fields),
+        pk: PkTuple::new(vec![Value::Int64(i)]),
+        change: Change::create("users", Value::Int64(i), fields),
     }
 }
 
@@ -315,23 +302,23 @@ async fn window_dedup_lets_log_event_win() {
         .await
         .unwrap();
 
-    // Surviving buffer row 1 is sunk as Update (coalesced write_universal_rows);
+    // Surviving buffer row 1 is sunk as Update (coalesced write_rows);
     // CDC events for 2/3/4 are applied as-is. Watermark rows are never applied.
     let changes = sink.changes();
     assert_eq!(changes.len(), 4, "unexpected changes: {changes:?}");
     assert!(changes.iter().all(|(_, table, _)| table == "users"));
     assert!(changes
         .iter()
-        .any(|(op, _, id)| *op == UniversalChangeOp::Update && id.as_i64() == Some(1)));
+        .any(|(op, _, id)| *op == ChangeOp::Update && id.as_i64() == Some(1)));
     assert!(changes
         .iter()
-        .any(|(op, _, id)| *op == UniversalChangeOp::Update && id.as_i64() == Some(2)));
+        .any(|(op, _, id)| *op == ChangeOp::Update && id.as_i64() == Some(2)));
     assert!(changes
         .iter()
-        .any(|(op, _, id)| *op == UniversalChangeOp::Delete && id.as_i64() == Some(3)));
+        .any(|(op, _, id)| *op == ChangeOp::Delete && id.as_i64() == Some(3)));
     assert!(changes
         .iter()
-        .any(|(op, _, id)| *op == UniversalChangeOp::Create && id.as_i64() == Some(4)));
+        .any(|(op, _, id)| *op == ChangeOp::Create && id.as_i64() == Some(4)));
 
     // The chunk held exactly the three read rows at its peak.
     assert_eq!(result.peak_buffered_rows, 3);
@@ -358,16 +345,16 @@ async fn post_high_delete_wins_over_buffer_flush() {
     assert!(
         changes
             .iter()
-            .any(|(op, _, id)| *op == UniversalChangeOp::Update && id.as_i64() == Some(1)),
+            .any(|(op, _, id)| *op == ChangeOp::Update && id.as_i64() == Some(1)),
         "unexpected changes: {changes:?}"
     );
     let delete_pos = changes
         .iter()
-        .position(|(op, _, id)| *op == UniversalChangeOp::Delete && id.as_i64() == Some(2))
+        .position(|(op, _, id)| *op == ChangeOp::Delete && id.as_i64() == Some(2))
         .expect("Delete(2) missing");
     let upsert_2_pos = changes
         .iter()
-        .position(|(op, _, id)| *op == UniversalChangeOp::Update && id.as_i64() == Some(2))
+        .position(|(op, _, id)| *op == ChangeOp::Update && id.as_i64() == Some(2))
         .expect("Update(2) missing");
     assert!(
         upsert_2_pos < delete_pos,
@@ -391,11 +378,7 @@ async fn unchanged_keys_are_emitted_from_buffer() {
     let mut ids: Vec<i64> = sink
         .changes()
         .into_iter()
-        .filter_map(|(op, _, id)| {
-            (op == UniversalChangeOp::Update)
-                .then(|| id.as_i64())
-                .flatten()
-        })
+        .filter_map(|(op, _, id)| (op == ChangeOp::Update).then(|| id.as_i64()).flatten())
         .collect();
     ids.sort_unstable();
     assert_eq!(ids, vec![1, 2, 3, 4, 5]);
@@ -418,7 +401,7 @@ async fn peak_for_table_size(total_rows: i64) -> (usize, usize) {
     let written = sink
         .changes()
         .iter()
-        .filter(|(op, _, _)| *op == UniversalChangeOp::Update)
+        .filter(|(op, _, _)| *op == ChangeOp::Update)
         .count();
     (result.peak_buffered_rows, written)
 }

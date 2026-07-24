@@ -2,9 +2,7 @@
 
 use crate::error::Neo4jPopulatorError;
 use neo4rs::{query, Graph, Query};
-use sync_core::{
-    GeneratorTableDefinition, TypedValue, UniversalRow, UniversalType, UniversalValue,
-};
+use sync_core::{GeneratorTableDefinition, Row, Type, TypedValue, Value};
 use tracing::debug;
 
 /// Default batch size for INSERT operations.
@@ -16,7 +14,7 @@ pub const DEFAULT_BATCH_SIZE: usize = 100;
 pub async fn insert_batch(
     graph: &Graph,
     table_schema: &GeneratorTableDefinition,
-    rows: &[UniversalRow],
+    rows: &[Row],
 ) -> Result<u64, Neo4jPopulatorError> {
     if rows.is_empty() {
         return Ok(0);
@@ -39,7 +37,7 @@ pub async fn insert_batch(
 /// Build a CREATE query for a single node.
 fn build_create_node_query(
     label: &str,
-    row: &UniversalRow,
+    row: &Row,
     table_schema: &GeneratorTableDefinition,
 ) -> Result<Query, Neo4jPopulatorError> {
     // Build property map for the node
@@ -48,14 +46,14 @@ fn build_create_node_query(
     // Add the id field - always as string since Neo4j full sync expects string IDs
     // The Neo4j full sync uses the 'id' property to create SurrealDB record IDs
     let id_string = match &row.id {
-        UniversalValue::Int8 { value, .. } => value.to_string(),
-        UniversalValue::Int16(i) => i.to_string(),
-        UniversalValue::Int32(i) => i.to_string(),
-        UniversalValue::Int64(i) => i.to_string(),
-        UniversalValue::Text(s) => s.clone(),
-        UniversalValue::Char { value, .. } => value.clone(),
-        UniversalValue::VarChar { value, .. } => value.clone(),
-        UniversalValue::Uuid(u) => u.to_string(),
+        Value::Int8 { value, .. } => value.to_string(),
+        Value::Int16(i) => i.to_string(),
+        Value::Int32(i) => i.to_string(),
+        Value::Int64(i) => i.to_string(),
+        Value::Text(s) => s.clone(),
+        Value::Char { value, .. } => value.clone(),
+        Value::VarChar { value, .. } => value.clone(),
+        Value::Uuid(u) => u.to_string(),
         other => panic!(
             "Unsupported ID type for Neo4j node: {other:?}. \
              Supported types: Int8, Int16, Int32, Int64, Text, Char, VarChar, Uuid"
@@ -88,95 +86,95 @@ fn build_create_node_query(
 /// Convert a TypedValue to a Neo4j literal string for use in Cypher queries.
 fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
     match &typed.value {
-        UniversalValue::Null => "null".to_string(),
-        UniversalValue::Bool(b) => b.to_string(),
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => b.to_string(),
 
         // Integer types - strict 1:1 matching
-        UniversalValue::Int8 { value, .. } => value.to_string(),
-        UniversalValue::Int16(i) => i.to_string(),
-        UniversalValue::Int32(i) => i.to_string(),
-        UniversalValue::Int64(i) => i.to_string(),
+        Value::Int8 { value, .. } => value.to_string(),
+        Value::Int16(i) => i.to_string(),
+        Value::Int32(i) => i.to_string(),
+        Value::Int64(i) => i.to_string(),
 
         // Float types - strict 1:1 matching
-        UniversalValue::Float32(f) => {
+        Value::Float32(f) => {
             if f.is_nan() {
                 "null".to_string()
             } else {
                 f.to_string()
             }
         }
-        UniversalValue::Float64(f) => {
+        Value::Float64(f) => {
             if f.is_nan() {
                 "null".to_string() // Neo4j doesn't support NaN
             } else {
                 f.to_string()
             }
         }
-        UniversalValue::Decimal { value, .. } => {
+        Value::Decimal { value, .. } => {
             // Store decimal as numeric string in Neo4j
             value.to_string()
         }
 
         // String types - strict 1:1 matching
-        UniversalValue::Text(s) => escape_neo4j_string(s),
-        UniversalValue::Char { value, .. } => escape_neo4j_string(value),
-        UniversalValue::VarChar { value, .. } => escape_neo4j_string(value),
+        Value::Text(s) => escape_neo4j_string(s),
+        Value::Char { value, .. } => escape_neo4j_string(value),
+        Value::VarChar { value, .. } => escape_neo4j_string(value),
 
-        UniversalValue::Uuid(u) => escape_neo4j_string(&u.to_string()),
+        Value::Uuid(u) => escape_neo4j_string(&u.to_string()),
 
         // ULID - encode as string
-        UniversalValue::Ulid(u) => escape_neo4j_string(&u.to_string()),
+        Value::Ulid(u) => escape_neo4j_string(&u.to_string()),
 
         // DateTime types - strict 1:1 matching
-        UniversalValue::LocalDateTime(dt) => {
+        Value::LocalDateTime(dt) => {
             format!("datetime('{}')", dt.format("%Y-%m-%dT%H:%M:%S%.fZ"))
         }
-        UniversalValue::LocalDateTimeNano(dt) => {
+        Value::LocalDateTimeNano(dt) => {
             format!("datetime('{}')", dt.format("%Y-%m-%dT%H:%M:%S%.fZ"))
         }
-        UniversalValue::ZonedDateTime(dt) => {
+        Value::ZonedDateTime(dt) => {
             format!("datetime('{}')", dt.format("%Y-%m-%dT%H:%M:%S%.fZ"))
         }
-        UniversalValue::Date(dt) => {
+        Value::Date(dt) => {
             format!("date('{}')", dt.format("%Y-%m-%d"))
         }
-        UniversalValue::Time(dt) => {
+        Value::Time(dt) => {
             format!("time('{}')", dt.format("%H:%M:%S"))
         }
 
         // Binary types - strict 1:1 matching
-        UniversalValue::Bytes(b) => {
+        Value::Bytes(b) => {
             // Neo4j doesn't have native bytes, store as hex string
             let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
             escape_neo4j_string(&hex)
         }
-        UniversalValue::Blob(b) => {
+        Value::Blob(b) => {
             let hex: String = b.iter().map(|byte| format!("{byte:02x}")).collect();
             escape_neo4j_string(&hex)
         }
 
         // JSON types - strict 1:1 matching
-        UniversalValue::Json(json_val) => {
+        Value::Json(json_val) => {
             let json_str = serde_json::to_string(&json_val).unwrap_or_else(|_| "{}".to_string());
             escape_neo4j_string(&json_str)
         }
-        UniversalValue::Jsonb(json_val) => {
+        Value::Jsonb(json_val) => {
             let json_str = serde_json::to_string(&json_val).unwrap_or_else(|_| "{}".to_string());
             escape_neo4j_string(&json_str)
         }
 
         // Enum type - strict 1:1 matching
-        UniversalValue::Enum { value, .. } => escape_neo4j_string(value),
+        Value::Enum { value, .. } => escape_neo4j_string(value),
 
         // Set type - strict 1:1 matching
-        UniversalValue::Set { elements, .. } => {
+        Value::Set { elements, .. } => {
             let element_strs: Vec<String> =
                 elements.iter().map(|s| escape_neo4j_string(s)).collect();
             format!("[{}]", element_strs.join(", "))
         }
 
         // Geometry type - store as GeoJSON string
-        UniversalValue::Geometry { data, .. } => {
+        Value::Geometry { data, .. } => {
             use sync_core::GeometryData;
             let GeometryData(json) = data;
             let json_str = serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string());
@@ -184,7 +182,7 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
         }
 
         // Array type - recursive handling
-        UniversalValue::Array { elements, .. } => {
+        Value::Array { elements, .. } => {
             // Neo4j lists
             let element_strs: Vec<String> = elements
                 .iter()
@@ -197,7 +195,7 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
         }
 
         // Duration type - Neo4j duration
-        UniversalValue::Duration(d) => {
+        Value::Duration(d) => {
             let secs = d.as_secs();
             let nanos = d.subsec_nanos();
             if nanos == 0 {
@@ -208,12 +206,12 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
         }
 
         // Thing - record reference as string in "table:id" format
-        UniversalValue::Thing { table, id } => {
+        Value::Thing { table, id } => {
             let id_str = match id.as_ref() {
-                UniversalValue::Text(s) => s.clone(),
-                UniversalValue::Int32(i) => i.to_string(),
-                UniversalValue::Int64(i) => i.to_string(),
-                UniversalValue::Uuid(u) => u.to_string(),
+                Value::Text(s) => s.clone(),
+                Value::Int32(i) => i.to_string(),
+                Value::Int64(i) => i.to_string(),
+                Value::Uuid(u) => u.to_string(),
                 other => panic!(
                     "Unsupported Thing ID type for Neo4j: {other:?}. \
                      Supported types: Text, Int32, Int64, Uuid"
@@ -223,7 +221,7 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
         }
 
         // Object - serialize as JSON string
-        UniversalValue::Object(map) => {
+        Value::Object(map) => {
             let obj: serde_json::Map<String, serde_json::Value> = map
                 .iter()
                 .map(|(k, v)| (k.clone(), universal_to_json(v)))
@@ -234,26 +232,26 @@ fn typed_to_neo4j_literal(typed: &TypedValue) -> String {
         }
 
         // TimeTz - stored as string to preserve timezone format
-        UniversalValue::TimeTz(s) => escape_neo4j_string(s),
+        Value::TimeTz(s) => escape_neo4j_string(s),
 
-        UniversalValue::ZeroTemporal {
+        Value::ZeroTemporal {
             intended_type,
             source,
         } => {
             let s = source
                 .as_deref()
-                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+                .unwrap_or_else(|| Value::canonical_zero_literal(intended_type));
             escape_neo4j_string(s)
         }
     }
 }
 
-/// Convert a UniversalValue to a Neo4j literal (for array elements).
-fn generated_to_neo4j_literal(value: &UniversalValue, parent_type: &UniversalType) -> String {
+/// Convert a Value to a Neo4j literal (for array elements).
+fn generated_to_neo4j_literal(value: &Value, parent_type: &Type) -> String {
     // Get element type if this is an array
     let element_type = match parent_type {
-        UniversalType::Array { element_type } => element_type.as_ref().clone(),
-        _ => UniversalType::Text, // Fallback
+        Type::Array { element_type } => element_type.as_ref().clone(),
+        _ => Type::Text, // Fallback
     };
 
     let typed = TypedValue::try_with_type(element_type, value.clone())
@@ -261,46 +259,46 @@ fn generated_to_neo4j_literal(value: &UniversalValue, parent_type: &UniversalTyp
     typed_to_neo4j_literal(&typed)
 }
 
-/// Convert a UniversalValue to a serde_json::Value for Object serialization.
-fn universal_to_json(value: &UniversalValue) -> serde_json::Value {
+/// Convert a Value to a serde_json::Value for Object serialization.
+fn universal_to_json(value: &Value) -> serde_json::Value {
     match value {
-        UniversalValue::Null => serde_json::Value::Null,
-        UniversalValue::Bool(b) => serde_json::json!(*b),
-        UniversalValue::Int8 { value, .. } => serde_json::json!(*value),
-        UniversalValue::Int16(i) => serde_json::json!(*i),
-        UniversalValue::Int32(i) => serde_json::json!(*i),
-        UniversalValue::Int64(i) => serde_json::json!(*i),
-        UniversalValue::Float32(f) => serde_json::json!(*f),
-        UniversalValue::Float64(f) => serde_json::json!(*f),
-        UniversalValue::Text(s) => serde_json::json!(s),
-        UniversalValue::Char { value, .. } => serde_json::json!(value),
-        UniversalValue::VarChar { value, .. } => serde_json::json!(value),
-        UniversalValue::Uuid(u) => serde_json::json!(u.to_string()),
-        UniversalValue::Ulid(u) => serde_json::json!(u.to_string()),
-        UniversalValue::LocalDateTime(dt)
-        | UniversalValue::LocalDateTimeNano(dt)
-        | UniversalValue::ZonedDateTime(dt) => serde_json::json!(dt.to_rfc3339()),
-        UniversalValue::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
-        UniversalValue::Time(dt) => serde_json::json!(dt.format("%H:%M:%S").to_string()),
-        UniversalValue::Bytes(b) | UniversalValue::Blob(b) => {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::json!(*b),
+        Value::Int8 { value, .. } => serde_json::json!(*value),
+        Value::Int16(i) => serde_json::json!(*i),
+        Value::Int32(i) => serde_json::json!(*i),
+        Value::Int64(i) => serde_json::json!(*i),
+        Value::Float32(f) => serde_json::json!(*f),
+        Value::Float64(f) => serde_json::json!(*f),
+        Value::Text(s) => serde_json::json!(s),
+        Value::Char { value, .. } => serde_json::json!(value),
+        Value::VarChar { value, .. } => serde_json::json!(value),
+        Value::Uuid(u) => serde_json::json!(u.to_string()),
+        Value::Ulid(u) => serde_json::json!(u.to_string()),
+        Value::LocalDateTime(dt) | Value::LocalDateTimeNano(dt) | Value::ZonedDateTime(dt) => {
+            serde_json::json!(dt.to_rfc3339())
+        }
+        Value::Date(dt) => serde_json::json!(dt.format("%Y-%m-%d").to_string()),
+        Value::Time(dt) => serde_json::json!(dt.format("%H:%M:%S").to_string()),
+        Value::Bytes(b) | Value::Blob(b) => {
             serde_json::json!(b
                 .iter()
                 .map(|byte| format!("{byte:02x}"))
                 .collect::<String>())
         }
-        UniversalValue::Json(j) | UniversalValue::Jsonb(j) => (**j).clone(),
-        UniversalValue::Decimal { value, .. } => serde_json::json!(value),
-        UniversalValue::Enum { value, .. } => serde_json::json!(value),
-        UniversalValue::Set { elements, .. } => serde_json::json!(elements),
-        UniversalValue::Array { elements, .. } => {
+        Value::Json(j) | Value::Jsonb(j) => (**j).clone(),
+        Value::Decimal { value, .. } => serde_json::json!(value),
+        Value::Enum { value, .. } => serde_json::json!(value),
+        Value::Set { elements, .. } => serde_json::json!(elements),
+        Value::Array { elements, .. } => {
             serde_json::Value::Array(elements.iter().map(universal_to_json).collect())
         }
-        UniversalValue::Geometry { data, .. } => {
+        Value::Geometry { data, .. } => {
             use sync_core::GeometryData;
             let GeometryData(json) = data;
             json.clone()
         }
-        UniversalValue::Duration(d) => {
+        Value::Duration(d) => {
             let secs = d.as_secs();
             let nanos = d.subsec_nanos();
             if nanos == 0 {
@@ -309,17 +307,17 @@ fn universal_to_json(value: &UniversalValue) -> serde_json::Value {
                 serde_json::json!(format!("PT{secs}.{nanos:09}S"))
             }
         }
-        UniversalValue::Thing { table, id } => {
+        Value::Thing { table, id } => {
             let id_str = match id.as_ref() {
-                UniversalValue::Text(s) => s.clone(),
-                UniversalValue::Int32(i) => i.to_string(),
-                UniversalValue::Int64(i) => i.to_string(),
-                UniversalValue::Uuid(u) => u.to_string(),
+                Value::Text(s) => s.clone(),
+                Value::Int32(i) => i.to_string(),
+                Value::Int64(i) => i.to_string(),
+                Value::Uuid(u) => u.to_string(),
                 _ => "unknown".to_string(),
             };
             serde_json::json!(format!("{table}:{id_str}"))
         }
-        UniversalValue::Object(map) => {
+        Value::Object(map) => {
             let obj: serde_json::Map<String, serde_json::Value> = map
                 .iter()
                 .map(|(k, v)| (k.clone(), universal_to_json(v)))
@@ -327,14 +325,14 @@ fn universal_to_json(value: &UniversalValue) -> serde_json::Value {
             serde_json::Value::Object(obj)
         }
         // TimeTz - stored as string to preserve timezone format
-        UniversalValue::TimeTz(s) => serde_json::json!(s),
-        UniversalValue::ZeroTemporal {
+        Value::TimeTz(s) => serde_json::json!(s),
+        Value::ZeroTemporal {
             intended_type,
             source,
         } => {
             let s = source
                 .as_deref()
-                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+                .unwrap_or_else(|| Value::canonical_zero_literal(intended_type));
             serde_json::json!(s)
         }
     }
@@ -396,7 +394,7 @@ mod tests {
         let bool_val = TypedValue::bool(true);
         assert_eq!(typed_to_neo4j_literal(&bool_val), "true");
 
-        let null_val = TypedValue::null(UniversalType::Text);
+        let null_val = TypedValue::null(Type::Text);
         assert_eq!(typed_to_neo4j_literal(&null_val), "null");
     }
 }

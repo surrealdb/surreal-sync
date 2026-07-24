@@ -4,19 +4,19 @@ use anyhow::Result;
 use surreal_sync_postgresql_pgoutput_source::{
     run_replication_tail_with_checkpoints, ReplicationTailOptions,
 };
-use sync_core::{UniversalChange, UniversalValue};
+use sync_core::{Change, Value};
 
 struct CaptureSink {
-    changes: std::sync::Mutex<Vec<UniversalChange>>,
+    changes: std::sync::Mutex<Vec<Change>>,
 }
 
 #[async_trait::async_trait]
 impl surreal_sink::SurrealSink for CaptureSink {
-    async fn write_universal_rows(&self, rows: &[sync_core::UniversalRow]) -> anyhow::Result<()> {
+    async fn write_rows(&self, rows: &[sync_core::Row]) -> anyhow::Result<()> {
         // Homogeneous Update upserts coalesce here; mirror into `changes`.
         let mut changes = self.changes.lock().expect("lock");
         for row in rows {
-            changes.push(UniversalChange::update(
+            changes.push(Change::update(
                 row.table.clone(),
                 row.id.clone(),
                 row.fields.clone(),
@@ -25,21 +25,18 @@ impl surreal_sink::SurrealSink for CaptureSink {
         Ok(())
     }
 
-    async fn write_universal_relations(
-        &self,
-        _relations: &[sync_core::UniversalRelation],
-    ) -> anyhow::Result<()> {
+    async fn write_relations(&self, _relations: &[sync_core::Relation]) -> anyhow::Result<()> {
         Ok(())
     }
 
-    async fn apply_universal_change(&self, change: &UniversalChange) -> anyhow::Result<()> {
+    async fn apply_change(&self, change: &Change) -> anyhow::Result<()> {
         self.changes.lock().expect("lock").push(change.clone());
         Ok(())
     }
 
-    async fn apply_universal_relation_change(
+    async fn apply_relation_change(
         &self,
-        _change: &sync_core::UniversalRelationChange,
+        _change: &sync_core::RelationChange,
     ) -> anyhow::Result<()> {
         Ok(())
     }
@@ -94,10 +91,10 @@ async fn ddl_refreshes_schema_before_subsequent_rows() -> Result<()> {
     let changes = sink.changes.lock().expect("lock").clone();
     let status = changes
         .iter()
-        .find_map(|change| change.data.as_ref()?.get("status"))
+        .find_map(|change| change.fields.as_ref()?.get("status"))
         .expect("status field should be present after DDL refresh");
     match status {
-        UniversalValue::Enum { value, .. } => assert_eq!(value, "done"),
+        Value::Enum { value, .. } => assert_eq!(value, "done"),
         other => panic!("expected refreshed ENUM label, got {other:?}"),
     }
 

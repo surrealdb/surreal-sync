@@ -16,7 +16,7 @@
 //! │  DataGenerator  │     │  proto_gen.rs   │
 //! │                 │     │                 │
 //! │ - generates     │     │ - generates     │
-//! │   UniversalRow   │     │   .proto files  │
+//! │   Row   │     │   .proto files  │
 //! └────────┬────────┘     └────────┬────────┘
 //!          │                       │
 //!          │                       ▼

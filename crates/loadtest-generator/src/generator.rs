@@ -4,7 +4,7 @@ use crate::generators::generate_value_typed;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
 use std::collections::HashMap;
-use sync_core::{Schema, UniversalRow, UniversalValue};
+use sync_core::{Row, Schema, Value};
 
 /// Error type for generator operations.
 #[derive(Debug, thiserror::Error)]
@@ -74,7 +74,7 @@ impl DataGenerator {
     }
 
     /// Generate the next internal row for the given table.
-    pub fn next_internal_row(&mut self, table: &str) -> Result<UniversalRow, GeneratorError> {
+    pub fn next_internal_row(&mut self, table: &str) -> Result<Row, GeneratorError> {
         // Verify table exists
         let table_schema = self
             .schema
@@ -94,7 +94,7 @@ impl DataGenerator {
         );
 
         // Generate all fields with type-aware generation
-        let fields: HashMap<String, UniversalValue> = table_schema
+        let fields: HashMap<String, Value> = table_schema
             .fields
             .iter()
             .map(|field| {
@@ -111,7 +111,7 @@ impl DataGenerator {
 
         self.index += 1;
 
-        Ok(UniversalRow::new(table_name, index, id, fields))
+        Ok(Row::new(table_name, index, id, fields))
     }
 
     /// Generate multiple internal rows for the given table.
@@ -121,13 +121,13 @@ impl DataGenerator {
         &mut self,
         table: &str,
         count: u64,
-    ) -> Result<UniversalRowIterator<'_>, GeneratorError> {
+    ) -> Result<RowIterator<'_>, GeneratorError> {
         // Verify the table exists
         if self.schema.get_table(table).is_none() {
             return Err(GeneratorError::TableNotFound(table.to_string()));
         }
 
-        Ok(UniversalRowIterator {
+        Ok(RowIterator {
             generator: self,
             table: table.to_string(),
             remaining: count,
@@ -141,14 +141,14 @@ impl DataGenerator {
 }
 
 /// Iterator that lazily generates internal rows.
-pub struct UniversalRowIterator<'a> {
+pub struct RowIterator<'a> {
     generator: &'a mut DataGenerator,
     table: String,
     remaining: u64,
 }
 
-impl Iterator for UniversalRowIterator<'_> {
-    type Item = UniversalRow;
+impl Iterator for RowIterator<'_> {
+    type Item = Row;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.remaining == 0 {
@@ -167,7 +167,7 @@ impl Iterator for UniversalRowIterator<'_> {
     }
 }
 
-impl ExactSizeIterator for UniversalRowIterator<'_> {}
+impl ExactSizeIterator for RowIterator<'_> {}
 
 #[cfg(test)]
 mod tests {
@@ -219,9 +219,9 @@ tables:
 
         assert_eq!(row.table, "users");
         assert_eq!(row.index, 0);
-        assert!(matches!(row.id, UniversalValue::Uuid(_)));
+        assert!(matches!(row.id, Value::Uuid(_)));
         // Email is VarChar(255), so it should be a VarChar value
-        if let Some(UniversalValue::VarChar { value, .. }) = row.get_field("email") {
+        if let Some(Value::VarChar { value, .. }) = row.get_field("email") {
             assert_eq!(value, "user_0@example.com");
         } else {
             panic!(
@@ -231,7 +231,7 @@ tables:
         }
 
         // Age should be in range - field type is Int so should be Int value
-        if let Some(UniversalValue::Int32(age)) = row.get_field("age") {
+        if let Some(Value::Int32(age)) = row.get_field("age") {
             assert!(*age >= 18 && *age <= 80);
         } else {
             panic!("Expected Int for age, got {:?}", row.get_field("age"));
@@ -270,7 +270,7 @@ tables:
 
         // Verify emails contain correct indices
         for (i, row) in rows.iter().enumerate() {
-            if let Some(UniversalValue::VarChar { value: email, .. }) = row.get_field("email") {
+            if let Some(Value::VarChar { value: email, .. }) = row.get_field("email") {
                 assert!(email.contains(&format!("user_{i}")));
             }
         }
@@ -295,7 +295,7 @@ tables:
         assert_eq!(row1.index, 5);
 
         // Email should use index 5
-        if let Some(UniversalValue::VarChar { value: email, .. }) = row1.get_field("email") {
+        if let Some(Value::VarChar { value: email, .. }) = row1.get_field("email") {
             assert!(email.contains("user_5"));
         } else {
             panic!(

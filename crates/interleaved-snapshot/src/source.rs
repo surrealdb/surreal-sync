@@ -1,7 +1,7 @@
 //! The backend trait each source implements to drive a watermark snapshot.
 
 use anyhow::Result;
-use sync_core::UniversalRow;
+use sync_core::Row;
 use uuid::Uuid;
 
 use crate::types::{
@@ -42,7 +42,7 @@ pub trait WatermarkSource: Send {
         table: &TableSpec,
         after: Option<&PkTuple>,
         limit: usize,
-    ) -> Result<Vec<UniversalRow>>;
+    ) -> Result<Vec<Row>>;
 
     /// Write a watermark row (keyed by `id`) into the source's signal table.
     async fn write_watermark(&self, kind: WatermarkKind, id: Uuid) -> Result<()>;

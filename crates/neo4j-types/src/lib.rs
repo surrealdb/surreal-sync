@@ -1,12 +1,12 @@
 //! Neo4j/Bolt type conversions for sync-core types.
 //!
 //! This crate provides bidirectional type conversions between sync-core's
-//! `TypedValue`/`UniversalValue` and Neo4j's Bolt types.
+//! `TypedValue`/`Value` and Neo4j's Bolt types.
 //!
 //! # Modules
 //!
-//! - [`forward`] - TypedValue/UniversalValue → Neo4j Cypher literals
-//! - [`reverse`] - Neo4j BoltType → TypedValue/UniversalValue
+//! - [`forward`] - TypedValue/Value → Neo4j Cypher literals
+//! - [`reverse`] - Neo4j BoltType → TypedValue/Value
 //! - [`error`] - Error types for conversion failures
 //!
 //! # Key Design Principles
@@ -28,7 +28,7 @@
 //!
 //! // Convert BoltType to TypedValue
 //! let bolt_value = neo4rs::BoltType::String("hello".to_string());
-//! let tv = convert_bolt_to_typed_value(bolt_value, &UniversalType::Text, "UTC")?;
+//! let tv = convert_bolt_to_typed_value(bolt_value, &Type::Text, "UTC")?;
 //! ```
 
 pub mod error;

@@ -118,7 +118,7 @@ pub use surreal_sync_csv_source as csv;
 pub use surreal_sync_jsonl_source as jsonl;
 
 // Transform + core types for embedders (one dependency: surreal-sync)
-pub use sync_core::{UniversalChange, UniversalChangeOp, UniversalRow, UniversalValue};
+pub use sync_core::{Change, ChangeOp, Row, Value};
 pub use sync_transform::{ApplyOpts, FlattenId, InPlaceTransform, Pipeline};
 
 #[derive(Parser, Clone)]

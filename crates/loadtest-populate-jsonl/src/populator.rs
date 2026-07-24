@@ -7,7 +7,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use sync_core::{GeneratorTableDefinition, Schema, TypedValue, UniversalRow};
+use sync_core::{GeneratorTableDefinition, Row, Schema, TypedValue};
 use tracing::{debug, info};
 
 /// Default buffer size for JSONL writing.
@@ -270,9 +270,9 @@ impl JsonlPopulator {
     }
 }
 
-/// Convert an UniversalRow to a JSON object.
+/// Convert an Row to a JSON object.
 fn internal_row_to_json(
-    row: &UniversalRow,
+    row: &Row,
     table_schema: &GeneratorTableDefinition,
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut obj = serde_json::Map::new();
@@ -303,7 +303,7 @@ fn internal_row_to_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sync_core::UniversalValue;
+    use sync_core::Value;
     use tempfile::TempDir;
 
     fn test_schema() -> Schema {
@@ -353,22 +353,20 @@ tables:
         let schema = test_schema();
         let table_schema = schema.get_table("users").unwrap();
 
-        let row = UniversalRow::new(
+        let row = Row::new(
             "users".to_string(),
             0,
-            UniversalValue::Uuid(
-                uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
-            ),
+            Value::Uuid(uuid::Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap()),
             [
                 (
                     "email".to_string(),
                     // Use VarChar to match schema (strict 1:1 type-value matching)
-                    UniversalValue::VarChar {
+                    Value::VarChar {
                         value: "test@example.com".to_string(),
                         length: 255,
                     },
                 ),
-                ("age".to_string(), UniversalValue::Int32(25)),
+                ("age".to_string(), Value::Int32(25)),
             ]
             .into_iter()
             .collect(),

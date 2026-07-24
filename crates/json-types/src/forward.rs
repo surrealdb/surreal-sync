@@ -4,7 +4,7 @@
 
 use base64::Engine;
 use serde_json::json;
-use sync_core::{GeometryType, TypedValue, UniversalValue};
+use sync_core::{GeometryType, TypedValue, Value};
 
 /// Wrapper for JSON values.
 #[derive(Debug, Clone)]
@@ -28,65 +28,65 @@ impl From<TypedValue> for JsonValue {
     }
 }
 
-impl From<UniversalValue> for JsonValue {
-    fn from(value: UniversalValue) -> Self {
+impl From<Value> for JsonValue {
+    fn from(value: Value) -> Self {
         match value {
             // Null
-            UniversalValue::Null => JsonValue(serde_json::Value::Null),
+            Value::Null => JsonValue(serde_json::Value::Null),
 
             // Boolean
-            UniversalValue::Bool(b) => JsonValue(json!(b)),
+            Value::Bool(b) => JsonValue(json!(b)),
 
             // Integer types
-            UniversalValue::Int8 { value, .. } => JsonValue(json!(value)),
-            UniversalValue::Int16(i) => JsonValue(json!(i)),
-            UniversalValue::Int32(i) => JsonValue(json!(i)),
-            UniversalValue::Int64(i) => JsonValue(json!(i)),
+            Value::Int8 { value, .. } => JsonValue(json!(value)),
+            Value::Int16(i) => JsonValue(json!(i)),
+            Value::Int32(i) => JsonValue(json!(i)),
+            Value::Int64(i) => JsonValue(json!(i)),
 
             // Floating point
-            UniversalValue::Float32(f) => JsonValue(json!(f)),
-            UniversalValue::Float64(f) => JsonValue(json!(f)),
+            Value::Float32(f) => JsonValue(json!(f)),
+            Value::Float64(f) => JsonValue(json!(f)),
 
             // Decimal - store as string to preserve precision
-            UniversalValue::Decimal { value, .. } => JsonValue(json!(value)),
+            Value::Decimal { value, .. } => JsonValue(json!(value)),
 
             // String types
-            UniversalValue::Char { value, .. } => JsonValue(json!(value)),
-            UniversalValue::VarChar { value, .. } => JsonValue(json!(value)),
-            UniversalValue::Text(s) => JsonValue(json!(s)),
+            Value::Char { value, .. } => JsonValue(json!(value)),
+            Value::VarChar { value, .. } => JsonValue(json!(value)),
+            Value::Text(s) => JsonValue(json!(s)),
 
             // Binary types - base64 encode
-            UniversalValue::Blob(b) => {
+            Value::Blob(b) => {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(b);
                 JsonValue(json!(encoded))
             }
-            UniversalValue::Bytes(b) => {
+            Value::Bytes(b) => {
                 let encoded = base64::engine::general_purpose::STANDARD.encode(b);
                 JsonValue(json!(encoded))
             }
 
             // Date/time types - ISO 8601 format
-            UniversalValue::Date(dt) => JsonValue(json!(dt.format("%Y-%m-%d").to_string())),
+            Value::Date(dt) => JsonValue(json!(dt.format("%Y-%m-%d").to_string())),
             // Note: Using "%H:%M:%S%.f" to preserve fractional seconds from PostgreSQL TIME type.
-            UniversalValue::Time(dt) => JsonValue(json!(dt.format("%H:%M:%S%.f").to_string())),
-            UniversalValue::LocalDateTime(dt) => JsonValue(json!(dt.to_rfc3339())),
-            UniversalValue::LocalDateTimeNano(dt) => JsonValue(json!(dt.to_rfc3339())),
-            UniversalValue::ZonedDateTime(dt) => JsonValue(json!(dt.to_rfc3339())),
+            Value::Time(dt) => JsonValue(json!(dt.format("%H:%M:%S%.f").to_string())),
+            Value::LocalDateTime(dt) => JsonValue(json!(dt.to_rfc3339())),
+            Value::LocalDateTimeNano(dt) => JsonValue(json!(dt.to_rfc3339())),
+            Value::ZonedDateTime(dt) => JsonValue(json!(dt.to_rfc3339())),
             // TIMETZ - stored as string to preserve timezone format
-            UniversalValue::TimeTz(s) => JsonValue(json!(s)),
+            Value::TimeTz(s) => JsonValue(json!(s)),
 
             // UUID
-            UniversalValue::Uuid(u) => JsonValue(json!(u.to_string())),
+            Value::Uuid(u) => JsonValue(json!(u.to_string())),
 
             // ULID
-            UniversalValue::Ulid(u) => JsonValue(json!(u.to_string())),
+            Value::Ulid(u) => JsonValue(json!(u.to_string())),
 
             // JSON types - already serde_json::Value
-            UniversalValue::Json(payload) => JsonValue((*payload).clone()),
-            UniversalValue::Jsonb(payload) => JsonValue((*payload).clone()),
+            Value::Json(payload) => JsonValue((*payload).clone()),
+            Value::Jsonb(payload) => JsonValue((*payload).clone()),
 
             // Array types - recursively convert elements
-            UniversalValue::Array { elements, .. } => {
+            Value::Array { elements, .. } => {
                 let json_arr: Vec<serde_json::Value> = elements
                     .into_iter()
                     .map(|v| JsonValue::from(v).into_inner())
@@ -95,16 +95,16 @@ impl From<UniversalValue> for JsonValue {
             }
 
             // Set - stored as array of strings
-            UniversalValue::Set { elements, .. } => {
+            Value::Set { elements, .. } => {
                 let json_arr: Vec<serde_json::Value> = elements.iter().map(|s| json!(s)).collect();
                 JsonValue(json!(json_arr))
             }
 
             // Enum - stored as string
-            UniversalValue::Enum { value, .. } => JsonValue(json!(value)),
+            Value::Enum { value, .. } => JsonValue(json!(value)),
 
             // Geometry types - GeoJSON format
-            UniversalValue::Geometry {
+            Value::Geometry {
                 data,
                 geometry_type,
             } => {
@@ -128,7 +128,7 @@ impl From<UniversalValue> for JsonValue {
             }
 
             // Duration - ISO 8601 format
-            UniversalValue::Duration(d) => {
+            Value::Duration(d) => {
                 let secs = d.as_secs();
                 let nanos = d.subsec_nanos();
                 if nanos == 0 {
@@ -139,12 +139,12 @@ impl From<UniversalValue> for JsonValue {
             }
 
             // Thing - record reference as "table:id" format
-            UniversalValue::Thing { table, id } => {
+            Value::Thing { table, id } => {
                 let id_str = match id.as_ref() {
-                    UniversalValue::Text(s) => s.clone(),
-                    UniversalValue::Int32(i) => i.to_string(),
-                    UniversalValue::Int64(i) => i.to_string(),
-                    UniversalValue::Uuid(u) => u.to_string(),
+                    Value::Text(s) => s.clone(),
+                    Value::Int32(i) => i.to_string(),
+                    Value::Int64(i) => i.to_string(),
+                    Value::Uuid(u) => u.to_string(),
                     other => panic!(
                         "Unsupported Thing ID type: {other:?}. \
                          Supported types: Text, Int32, Int64, Uuid"
@@ -154,7 +154,7 @@ impl From<UniversalValue> for JsonValue {
             }
 
             // Object - nested document
-            UniversalValue::Object(map) => {
+            Value::Object(map) => {
                 let obj: serde_json::Map<String, serde_json::Value> = map
                     .into_iter()
                     .map(|(k, v)| (k, JsonValue::from(v).into_inner()))
@@ -163,64 +163,63 @@ impl From<UniversalValue> for JsonValue {
             }
 
             // Zero temporal - preserve as MySQL-style literal string
-            UniversalValue::ZeroTemporal {
+            Value::ZeroTemporal {
                 intended_type,
                 source,
             } => {
-                let s = source.unwrap_or_else(|| {
-                    UniversalValue::canonical_zero_literal(&intended_type).to_string()
-                });
+                let s = source
+                    .unwrap_or_else(|| Value::canonical_zero_literal(&intended_type).to_string());
                 JsonValue(json!(s))
             }
         }
     }
 }
 
-/// Convert a UniversalValue to a JSON value (without type context).
+/// Convert a Value to a JSON value (without type context).
 #[allow(dead_code)]
-fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
+fn generated_value_to_json(value: &Value) -> serde_json::Value {
     match value {
-        UniversalValue::Null => serde_json::Value::Null,
-        UniversalValue::Bool(b) => json!(*b),
-        UniversalValue::Int8 { value, .. } => json!(*value),
-        UniversalValue::Int16(i) => json!(*i),
-        UniversalValue::Int32(i) => json!(*i),
-        UniversalValue::Int64(i) => json!(*i),
-        UniversalValue::Float32(f) => json!(*f),
-        UniversalValue::Float64(f) => json!(*f),
-        UniversalValue::Char { value, .. } => json!(value),
-        UniversalValue::VarChar { value, .. } => json!(value),
-        UniversalValue::Text(s) => json!(s),
-        UniversalValue::Blob(b) | UniversalValue::Bytes(b) => {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => json!(*b),
+        Value::Int8 { value, .. } => json!(*value),
+        Value::Int16(i) => json!(*i),
+        Value::Int32(i) => json!(*i),
+        Value::Int64(i) => json!(*i),
+        Value::Float32(f) => json!(*f),
+        Value::Float64(f) => json!(*f),
+        Value::Char { value, .. } => json!(value),
+        Value::VarChar { value, .. } => json!(value),
+        Value::Text(s) => json!(s),
+        Value::Blob(b) | Value::Bytes(b) => {
             let encoded = base64::engine::general_purpose::STANDARD.encode(b);
             json!(encoded)
         }
-        UniversalValue::Uuid(u) => json!(u.to_string()),
-        UniversalValue::Ulid(u) => json!(u.to_string()),
-        UniversalValue::Date(dt) => json!(dt.format("%Y-%m-%d").to_string()),
-        UniversalValue::Time(dt) => json!(dt.format("%H:%M:%S%.f").to_string()),
-        UniversalValue::LocalDateTime(dt)
-        | UniversalValue::LocalDateTimeNano(dt)
-        | UniversalValue::ZonedDateTime(dt) => json!(dt.to_rfc3339()),
-        UniversalValue::TimeTz(s) => json!(s),
-        UniversalValue::Decimal { value, .. } => json!(value),
-        UniversalValue::Array { elements, .. } => {
+        Value::Uuid(u) => json!(u.to_string()),
+        Value::Ulid(u) => json!(u.to_string()),
+        Value::Date(dt) => json!(dt.format("%Y-%m-%d").to_string()),
+        Value::Time(dt) => json!(dt.format("%H:%M:%S%.f").to_string()),
+        Value::LocalDateTime(dt) | Value::LocalDateTimeNano(dt) | Value::ZonedDateTime(dt) => {
+            json!(dt.to_rfc3339())
+        }
+        Value::TimeTz(s) => json!(s),
+        Value::Decimal { value, .. } => json!(value),
+        Value::Array { elements, .. } => {
             json!(elements
                 .iter()
                 .map(generated_value_to_json)
                 .collect::<Vec<_>>())
         }
-        UniversalValue::Set { elements, .. } => {
+        Value::Set { elements, .. } => {
             json!(elements)
         }
-        UniversalValue::Enum { value, .. } => json!(value),
-        UniversalValue::Json(payload) | UniversalValue::Jsonb(payload) => (**payload).clone(),
-        UniversalValue::Geometry { data, .. } => {
+        Value::Enum { value, .. } => json!(value),
+        Value::Json(payload) | Value::Jsonb(payload) => (**payload).clone(),
+        Value::Geometry { data, .. } => {
             use sync_core::values::GeometryData;
             let GeometryData(value) = data;
             value.clone()
         }
-        UniversalValue::Duration(d) => {
+        Value::Duration(d) => {
             let secs = d.as_secs();
             let nanos = d.subsec_nanos();
             if nanos == 0 {
@@ -229,12 +228,12 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
                 json!(format!("PT{secs}.{nanos:09}S"))
             }
         }
-        UniversalValue::Thing { table, id } => {
+        Value::Thing { table, id } => {
             let id_str = match id.as_ref() {
-                UniversalValue::Text(s) => s.clone(),
-                UniversalValue::Int32(i) => i.to_string(),
-                UniversalValue::Int64(i) => i.to_string(),
-                UniversalValue::Uuid(u) => u.to_string(),
+                Value::Text(s) => s.clone(),
+                Value::Int32(i) => i.to_string(),
+                Value::Int64(i) => i.to_string(),
+                Value::Uuid(u) => u.to_string(),
                 other => panic!(
                     "Unsupported Thing ID type: {other:?}. \
                      Supported types: Text, Int32, Int64, Uuid"
@@ -242,20 +241,20 @@ fn generated_value_to_json(value: &UniversalValue) -> serde_json::Value {
             };
             json!(format!("{table}:{id_str}"))
         }
-        UniversalValue::Object(map) => {
+        Value::Object(map) => {
             let obj: serde_json::Map<String, serde_json::Value> = map
                 .iter()
                 .map(|(k, v)| (k.clone(), generated_value_to_json(v)))
                 .collect();
             serde_json::Value::Object(obj)
         }
-        UniversalValue::ZeroTemporal {
+        Value::ZeroTemporal {
             intended_type,
             source,
         } => {
             let s = source
                 .as_deref()
-                .unwrap_or_else(|| UniversalValue::canonical_zero_literal(intended_type));
+                .unwrap_or_else(|| Value::canonical_zero_literal(intended_type));
             json!(s)
         }
     }
@@ -286,11 +285,11 @@ where
 mod tests {
     use super::*;
     use chrono::{TimeZone, Utc};
-    use sync_core::UniversalType;
+    use sync_core::Type;
 
     #[test]
     fn test_null_conversion() {
-        let tv = TypedValue::null(UniversalType::Text);
+        let tv = TypedValue::null(Type::Text);
         let json_val: JsonValue = tv.into();
         assert!(json_val.0.is_null());
     }
@@ -434,12 +433,8 @@ mod tests {
     #[test]
     fn test_array_int_conversion() {
         let tv = TypedValue::array(
-            vec![
-                UniversalValue::Int32(1),
-                UniversalValue::Int32(2),
-                UniversalValue::Int32(3),
-            ],
-            UniversalType::Int32,
+            vec![Value::Int32(1), Value::Int32(2), Value::Int32(3)],
+            Type::Int32,
         );
         let json_val: JsonValue = tv.into();
         assert_eq!(json_val.0, json!([1, 2, 3]));
@@ -448,11 +443,8 @@ mod tests {
     #[test]
     fn test_array_text_conversion() {
         let tv = TypedValue::array(
-            vec![
-                UniversalValue::Text("a".to_string()),
-                UniversalValue::Text("b".to_string()),
-            ],
-            UniversalType::Text,
+            vec![Value::Text("a".to_string()), Value::Text("b".to_string())],
+            Type::Text,
         );
         let json_val: JsonValue = tv.into();
         assert_eq!(json_val.0, json!(["a", "b"]));

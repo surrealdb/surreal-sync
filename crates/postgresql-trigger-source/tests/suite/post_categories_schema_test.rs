@@ -1,10 +1,10 @@
 //! Targeted test for post_categories array handling
 //!
 //! This test verifies the complete flow for array type handling:
-//! 1. Schema collection correctly identifies TEXT[] as UniversalType::Array
+//! 1. Schema collection correctly identifies TEXT[] as Type::Array
 //! 2. JSON conversion correctly handles arrays with schema information
 
-use sync_core::{ColumnDefinition, TableDefinition, UniversalType, UniversalValue};
+use sync_core::{ColumnDefinition, TableDefinition, Type, Value};
 
 /// Test that schema collection correctly identifies array types
 #[tokio::test]
@@ -57,9 +57,9 @@ async fn test_schema_collection_identifies_array_types() {
     println!("tags column type: {tags_type:?}");
 
     match tags_type {
-        Some(UniversalType::Array { element_type }) => {
+        Some(Type::Array { element_type }) => {
             assert!(
-                matches!(**element_type, UniversalType::Text),
+                matches!(**element_type, Type::Text),
                 "Expected Array<Text>, got Array<{element_type:?}>"
             );
         }
@@ -71,9 +71,9 @@ async fn test_schema_collection_identifies_array_types() {
     println!("numbers column type: {numbers_type:?}");
 
     match numbers_type {
-        Some(UniversalType::Array { element_type }) => {
+        Some(Type::Array { element_type }) => {
             assert!(
-                matches!(**element_type, UniversalType::Int32),
+                matches!(**element_type, Type::Int32),
                 "Expected Array<Int32>, got Array<{element_type:?}>"
             );
         }
@@ -93,11 +93,11 @@ fn test_json_array_conversion_with_schema() {
     use json_types::json_to_universal_with_table_schema;
 
     // Create a table schema with Array<Text> column
-    let pk = ColumnDefinition::new("id", UniversalType::Text);
+    let pk = ColumnDefinition::new("id", Type::Text);
     let columns = vec![ColumnDefinition::new(
         "post_categories",
-        UniversalType::Array {
-            element_type: Box::new(UniversalType::Text),
+        Type::Array {
+            element_type: Box::new(Type::Text),
         },
     )];
     let table_schema = TableDefinition::new("all_types_posts", pk, columns);
@@ -111,10 +111,10 @@ fn test_json_array_conversion_with_schema() {
     println!("Conversion result: {result:?}");
 
     match result {
-        UniversalValue::Array { elements, .. } => {
+        Value::Array { elements, .. } => {
             assert_eq!(elements.len(), 2);
-            assert!(matches!(&elements[0], UniversalValue::Text(s) if s == "technology"));
-            assert!(matches!(&elements[1], UniversalValue::Text(s) if s == "tutorial"));
+            assert!(matches!(&elements[0], Value::Text(s) if s == "technology"));
+            assert!(matches!(&elements[1], Value::Text(s) if s == "tutorial"));
         }
         other => panic!("Expected Array, got {other:?}"),
     }
@@ -198,7 +198,7 @@ async fn test_complete_array_flow() {
     println!("Schema column type for post_categories: {col_type:?}");
 
     assert!(
-        matches!(col_type, Some(UniversalType::Array { element_type }) if matches!(**element_type, UniversalType::Text)),
+        matches!(col_type, Some(Type::Array { element_type }) if matches!(**element_type, Type::Text)),
         "Expected Array<Text> in schema, got {col_type:?}"
     );
 
@@ -211,13 +211,13 @@ async fn test_complete_array_flow() {
     )
     .expect("Failed to convert with schema");
 
-    println!("Final UniversalValue: {result:?}");
+    println!("Final Value: {result:?}");
 
     match result {
-        UniversalValue::Array { elements, .. } => {
+        Value::Array { elements, .. } => {
             assert_eq!(elements.len(), 2, "Expected 2 elements");
-            assert!(matches!(&elements[0], UniversalValue::Text(s) if s == "technology"));
-            assert!(matches!(&elements[1], UniversalValue::Text(s) if s == "tutorial"));
+            assert!(matches!(&elements[0], Value::Text(s) if s == "technology"));
+            assert!(matches!(&elements[1], Value::Text(s) if s == "tutorial"));
         }
         other => panic!("Expected Array, got {other:?}"),
     }
