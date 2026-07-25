@@ -43,7 +43,9 @@ fn surreal_config_from_args(args: &Args) -> SurrealConfig {
         .to_config(args.to_namespace.clone(), args.to_database.clone())
 }
 
-fn table_schema_from_args(args: &Args) -> anyhow::Result<Option<surreal_sync_core::TableDefinition>> {
+fn table_schema_from_args(
+    args: &Args,
+) -> anyhow::Result<Option<surreal_sync_core::TableDefinition>> {
     let Some(schema_path) = &args.schema_file else {
         return Ok(None);
     };
