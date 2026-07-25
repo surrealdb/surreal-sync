@@ -29,6 +29,8 @@ members = [
     "crates/kafka",
     "examples/from-mysql-binlog",
     "examples/from-snowflake",
+    "examples/from-jsonl",
+    "examples/from-kafka",
 ]
 resolver = "2"
 

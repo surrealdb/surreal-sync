@@ -1,20 +1,17 @@
-//! Kafka streaming sync handler.
+//! Kafka CLI glue (Surreal version auto-detect).
 //!
-//! Source crate: crates/kafka/ (from_kafka)
-//! CLI command:
-//! - Streaming: `from kafka --brokers ... --topic ... --to-namespace ... --to-database ...`
+//! Embedders should use `surreal_sync_kafka::run` with one sink type. This
+//! module is CLI-only and auto-detects SurrealDB v2 vs v3.
 
-use anyhow::Context;
-use surreal_sync_core::Schema;
+use std::sync::Arc;
+use surreal_sync_runtime::SinkConnect;
 
-use super::transforms::load_transforms_from_args;
-use super::{
-    get_sdk_version, make_surreal2_sink, make_surreal3_sink, parse_duration_to_secs, SdkVersion,
-};
-use crate::KafkaArgs;
+pub use surreal_sync_kafka::from_kafka::cli::Args;
 
-/// Run Kafka streaming sync, dispatching to appropriate SDK version.
-pub async fn run(args: KafkaArgs) -> anyhow::Result<()> {
+use crate::from::{get_sdk_version, SdkVersion};
+
+/// Stock CLI path: auto-detect Surreal major version.
+pub async fn run_args(args: Args) -> anyhow::Result<()> {
     let sdk_version = get_sdk_version(
         &args.surreal.surreal_endpoint,
         args.surreal.surreal_sdk_version.as_deref(),
@@ -22,125 +19,19 @@ pub async fn run(args: KafkaArgs) -> anyhow::Result<()> {
     .await?;
 
     match sdk_version {
-        SdkVersion::V2 => run_v2(args).await,
-        SdkVersion::V3 => run_v3(args).await,
+        SdkVersion::V2 => {
+            let config = args
+                .surreal
+                .to_config(args.to_namespace.clone(), args.to_database.clone());
+            let sink = Arc::new(surreal_sync_surreal::v2::Surreal2Sink::connect(&config).await?);
+            surreal_sync_kafka::from_kafka::cli::run_args_with_sink(args, sink).await
+        }
+        SdkVersion::V3 => {
+            let config = args
+                .surreal
+                .to_config(args.to_namespace.clone(), args.to_database.clone());
+            let sink = Arc::new(surreal_sync_surreal::v3::Surreal3Sink::connect(&config).await?);
+            surreal_sync_kafka::from_kafka::cli::run_args_with_sink(args, sink).await
+        }
     }
-}
-
-async fn run_v2(args: KafkaArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting Kafka consumer sync (SDK v2)");
-    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
-    tracing::info!("Timeout: {}", args.timeout);
-
-    if args.surreal.dry_run {
-        tracing::info!("Running in dry-run mode - no data will be written");
-    }
-
-    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
-
-    // Parse timeout duration
-    let timeout_secs = parse_duration_to_secs(&args.timeout)
-        .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
-    let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_secs);
-    tracing::info!("Will consume until deadline: {}", deadline);
-
-    // Connect to SurrealDB using v2 SDK
-    let surreal_opts = surreal_sync_surreal::v2::SurrealOpts {
-        surreal_endpoint: args.surreal.surreal_endpoint,
-        surreal_username: args.surreal.surreal_username,
-        surreal_password: args.surreal.surreal_password,
-    };
-    let surreal = surreal_sync_surreal::v2::surreal_connect(
-        &surreal_opts,
-        &args.to_namespace,
-        &args.to_database,
-    )
-    .await?;
-    let sink = std::sync::Arc::new(make_surreal2_sink(surreal, args.surreal.zero_temporal));
-
-    let table_schema = if let Some(schema_path) = args.schema_file {
-        let schema = Schema::from_file(&schema_path)
-            .with_context(|| format!("Failed to load sync schema from {schema_path:?}"))?;
-        let table_name = args
-            .config
-            .table_name
-            .as_ref()
-            .unwrap_or(&args.config.topic);
-        schema
-            .get_table(table_name)
-            .map(|t| t.to_table_definition())
-    } else {
-        None
-    };
-
-    surreal_sync_kafka::from_kafka::run_incremental_sync_with_transforms(
-        sink,
-        args.config,
-        deadline,
-        table_schema,
-        &pipeline,
-        &apply_opts,
-    )
-    .await?;
-
-    Ok(())
-}
-
-async fn run_v3(args: KafkaArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting Kafka consumer sync (SDK v3)");
-    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
-    tracing::info!("Timeout: {}", args.timeout);
-
-    if args.surreal.dry_run {
-        tracing::info!("Running in dry-run mode - no data will be written");
-    }
-
-    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
-
-    // Parse timeout duration
-    let timeout_secs = parse_duration_to_secs(&args.timeout)
-        .with_context(|| format!("Invalid timeout format: {}", args.timeout))?;
-    let deadline = chrono::Utc::now() + chrono::Duration::seconds(timeout_secs);
-    tracing::info!("Will consume until deadline: {}", deadline);
-
-    // Connect to SurrealDB using v3 SDK
-    let surreal_opts = surreal_sync_surreal::v3::SurrealOpts {
-        surreal_endpoint: args.surreal.surreal_endpoint,
-        surreal_username: args.surreal.surreal_username,
-        surreal_password: args.surreal.surreal_password,
-    };
-    let surreal = surreal_sync_surreal::v3::surreal_connect(
-        &surreal_opts,
-        &args.to_namespace,
-        &args.to_database,
-    )
-    .await?;
-    let sink = std::sync::Arc::new(make_surreal3_sink(surreal, args.surreal.zero_temporal));
-
-    let table_schema = if let Some(schema_path) = args.schema_file {
-        let schema = Schema::from_file(&schema_path)
-            .with_context(|| format!("Failed to load sync schema from {schema_path:?}"))?;
-        let table_name = args
-            .config
-            .table_name
-            .as_ref()
-            .unwrap_or(&args.config.topic);
-        schema
-            .get_table(table_name)
-            .map(|t| t.to_table_definition())
-    } else {
-        None
-    };
-
-    surreal_sync_kafka::from_kafka::run_incremental_sync_with_transforms(
-        sink,
-        args.config,
-        deadline,
-        table_schema,
-        &pipeline,
-        &apply_opts,
-    )
-    .await?;
-
-    Ok(())
 }

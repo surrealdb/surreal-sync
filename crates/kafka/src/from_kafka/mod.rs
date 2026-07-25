@@ -4,13 +4,17 @@
 //! - Kafka consumer with protobuf decoding
 //! - Incremental sync to SurrealDB
 //!
-//! # Features
+//! # Embed surface
 //!
-//! - Runtime Protobuf Support: Parse `.proto` files at runtime and decode messages without code generation
-//! - Field Introspection: List fields and extract values from decoded messages dynamically
-//! - Consumer Groups: Spawn multiple consumers in the same consumer group
-//! - Batch Processing: Process messages in batches with atomic commits
-//! - SurrealDB Sync: Incremental sync from Kafka to SurrealDB
+//! Public embed API is only [`run`], [`FlattenId`], [`InPlaceTransform`], and
+//! [`Value`]:
+//!
+//! ```ignore
+//! use surreal_sync_kafka::from_kafka::{run, FlattenId, InPlaceTransform, Value};
+//! use surreal_sync_surreal::Surreal3Sink;
+//!
+//! run::<Surreal3Sink>([Box::new(FlattenId::default()) as Box<dyn InPlaceTransform>]).await?;
+//! ```
 //!
 //! Types come from [`crate::types`]; this module adds decoding and consumer logic.
 
@@ -24,6 +28,7 @@ pub mod client;
 ///
 /// Created by the client given the consumer config and .proto schema.
 pub mod consumer;
+pub(crate) mod embed;
 pub mod error;
 pub mod proto;
 pub mod sync;
@@ -43,3 +48,12 @@ pub use consumer::{Consumer, ConsumerConfig, SaslMechanism, SecurityProtocol};
 pub use error::{Error, Result};
 pub use proto::decoder::ProtoDecoder;
 pub use proto::parser::ProtoParser;
+
+/// Public embed surface: `run`, `FlattenId`, `InPlaceTransform`, `Value` only.
+pub use embed::{run, FlattenId, InPlaceTransform, Value};
+
+/// Stock CLI argv helpers (`Args`, `run_args_with_sink`). Not part of the embed API.
+#[doc(hidden)]
+pub mod cli {
+    pub use super::embed::{run_args_with_sink, Args};
+}

@@ -7410,6 +7410,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "surreal-sync-example-from-jsonl"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "surreal-sync-json",
+ "surreal-sync-surreal",
+ "tokio",
+]
+
+[[package]]
+name = "surreal-sync-example-from-kafka"
+version = "0.6.0"
+dependencies = [
+ "anyhow",
+ "surreal-sync-kafka",
+ "surreal-sync-surreal",
+ "tokio",
+]
+
+[[package]]
 name = "surreal-sync-example-from-mysql-binlog"
 version = "0.6.0"
 dependencies = [
@@ -7452,6 +7472,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chrono",
+ "clap",
  "serde",
  "serde_json",
  "surreal-sync-core",
