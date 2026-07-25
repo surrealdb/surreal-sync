@@ -4,7 +4,7 @@ version = "0.6.0"
 publish = false
 edition = "2021"
 description = "MongoDB sync utilities for surreal-sync"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 # MongoDB client

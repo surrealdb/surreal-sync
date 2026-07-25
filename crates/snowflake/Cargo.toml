@@ -3,6 +3,7 @@ name = "surreal-sync-snowflake"
 version = "0.6.0"
 edition = "2021"
 description = "Snowflake type conversions and from_snowflake origin for surreal-sync"
+license = "Apache-2.0"
 publish = true
 repository = "https://github.com/surrealdb/surreal-sync"
 homepage = "https://github.com/surrealdb/surreal-sync"

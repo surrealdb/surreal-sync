@@ -3,6 +3,7 @@ name = "surreal-sync-kafka"
 version = "0.6.0"
 edition = "2021"
 description = "Kafka type conversions, from_kafka origin, and producer for surreal-sync"
+license = "Apache-2.0"
 publish = true
 repository = "https://github.com/surrealdb/surreal-sync"
 homepage = "https://github.com/surrealdb/surreal-sync"
