@@ -4,7 +4,7 @@ version = "0.6.0"
 edition = "2021"
 publish = false
 description = "Streaming verifier for load testing surreal-sync (SurrealDB v3)"
-license = "MIT"
+license = "Apache-2.0"
 
 [dependencies]
 surreal-sync-core = { path = "../sync-core" }

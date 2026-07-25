@@ -4,6 +4,7 @@ version = "0.6.0"
 publish = true
 edition = "2021"
 description = "SurrealDB sinks and helpers for surreal-sync (v2 and/or v3)"
+license = "Apache-2.0"
 repository = "https://github.com/surrealdb/surreal-sync"
 homepage = "https://github.com/surrealdb/surreal-sync"
 documentation = "https://docs.rs/surreal-sync-surreal"

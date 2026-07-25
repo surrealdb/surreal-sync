@@ -4,7 +4,7 @@ version = "0.6.0"
 edition = "2021"
 publish = false
 description = "Container-based distributed load testing for surreal-sync (library)"
-license = "MIT"
+license = "Apache-2.0"
 
 # NOTE: Binary removed - all functionality integrated into main surreal-sync binary
 # The loadtest-distributed crate is now a library only. See src/main.rs in main crate.

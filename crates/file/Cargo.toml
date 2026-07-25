@@ -4,6 +4,7 @@ version = "0.6.0"
 publish = true
 edition = "2021"
 description = "File source abstraction for surreal-sync (local, S3, HTTP)"
+license = "Apache-2.0"
 authors = ["surreal-sync contributors"]
 repository = "https://github.com/surrealdb/surreal-sync"
 homepage = "https://github.com/surrealdb/surreal-sync"

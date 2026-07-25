@@ -4,6 +4,7 @@ version = "0.6.0"
 publish = true
 edition = "2021"
 description = "Shared runtime: apply pipeline, init, SurrealDB config, and transform loading for surreal-sync"
+license = "Apache-2.0"
 authors = ["surreal-sync contributors"]
 repository = "https://github.com/surrealdb/surreal-sync"
 homepage = "https://github.com/surrealdb/surreal-sync"
