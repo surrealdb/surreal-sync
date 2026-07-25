@@ -25,7 +25,7 @@ fi
 
 # Kafka / snowflake / runtime / mysql must not pull surrealdb
 # in the normal+build graph (embed examples live in separate packages).
-for pkg in surreal-sync-kafka surreal-sync-snowflake surreal-sync-runtime surreal-sync-mysql; do
+for pkg in surreal-sync-kafka surreal-sync-snowflake surreal-sync-json surreal-sync-runtime surreal-sync-mysql; do
   out=$(cargo tree -p "$pkg" -e normal,build -i surrealdb 2>&1 || true)
   if echo "$out" | rg -q '^surrealdb v'; then
     echo "FAIL: $pkg unexpectedly depends on surrealdb:"
@@ -36,7 +36,7 @@ for pkg in surreal-sync-kafka surreal-sync-snowflake surreal-sync-runtime surrea
 done
 
 # snowflake / mysql must not pull kafka or neo4j clients
-for pkg in surreal-sync-snowflake surreal-sync-mysql; do
+for pkg in surreal-sync-snowflake surreal-sync-mysql surreal-sync-json; do
   for deny in rdkafka neo4rs; do
     out=$(cargo tree -p "$pkg" -e normal,build -i "$deny" 2>&1 || true)
     if echo "$out" | rg -q "^${deny} "; then
@@ -80,7 +80,8 @@ for feats in "v2" "v3"; do
 done
 
 # Documented embed graphs (examples/from-* packages mirror a real embedder).
-for pkg in surreal-sync-example-from-snowflake surreal-sync-example-from-mysql-binlog; do
+# Non-kafka examples must not pull rdkafka/neo4rs.
+for pkg in surreal-sync-example-from-snowflake surreal-sync-example-from-mysql-binlog surreal-sync-example-from-jsonl; do
   for deny in rdkafka neo4rs; do
     out=$(cargo tree -p "$pkg" -e normal,build -i "$deny" 2>&1 || true)
     if echo "$out" | rg -q "^${deny} "; then
@@ -109,6 +110,33 @@ for pkg in surreal-sync-example-from-snowflake surreal-sync-example-from-mysql-b
   echo "OK: $pkg has no kafka/neo4j and exactly one surrealdb v3 major"
 done
 
+# Kafka example may pull rdkafka; still Surreal3Sink-only and no neo4j.
+pkg=surreal-sync-example-from-kafka
+out=$(cargo tree -p "$pkg" -e normal,build -i neo4rs 2>&1 || true)
+if echo "$out" | rg -q '^neo4rs '; then
+  echo "FAIL: $pkg unexpectedly depends on neo4rs:"
+  echo "$out"
+  exit 1
+fi
+tree=$(cargo tree -p "$pkg" -e normal,build -i surrealdb 2>&1 || true)
+if ! echo "$tree" | rg -q '^surrealdb v'; then
+  echo "FAIL: $pkg should link surrealdb (Surreal3Sink)"
+  echo "$tree"
+  exit 1
+fi
+majors=$(echo "$tree" | rg -o 'surrealdb v[0-9]+' | sort -u | wc -l | tr -d ' ')
+if [[ "$majors" != "1" ]]; then
+  echo "FAIL: $pkg should depend on exactly one surrealdb major, got $majors"
+  echo "$tree"
+  exit 1
+fi
+if echo "$tree" | rg -q 'surrealdb v2'; then
+  echo "FAIL: $pkg should use SurrealDB v3 only"
+  echo "$tree"
+  exit 1
+fi
+echo "OK: $pkg has no neo4j and exactly one surrealdb v3 major"
+
 # mysql-binlog CDC checkpoints live in surreal-sync-runtime (checkpoint_fs),
 # not a separate checkpoint-fs package
 if ! cargo tree -p surreal-sync-example-from-mysql-binlog -e normal,build \
@@ -129,11 +157,11 @@ fi
 echo "OK: mysql-binlog example uses surreal-sync-runtime checkpoints"
 
 # Embed example sources monomorphize Surreal3Sink only
-if ! rg -n 'run::<Surreal3Sink>' examples/from-snowflake examples/from-mysql-binlog; then
+if ! rg -n 'run::<Surreal3Sink>' examples/from-snowflake examples/from-mysql-binlog examples/from-jsonl examples/from-kafka; then
   echo "FAIL: examples should monomorphize Surreal3Sink"
   exit 1
 fi
-if rg -n 'run::<Surreal2Sink>|Surreal2Sink' examples/from-snowflake examples/from-mysql-binlog; then
+if rg -n 'run::<Surreal2Sink>|Surreal2Sink' examples/from-snowflake examples/from-mysql-binlog examples/from-jsonl examples/from-kafka; then
   echo "FAIL: embed examples must not reference Surreal2Sink"
   exit 1
 fi

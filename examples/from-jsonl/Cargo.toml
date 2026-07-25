@@ -1,0 +1,16 @@
+[package]
+name = "surreal-sync-example-from-jsonl"
+version = "0.6.0"
+edition = "2021"
+publish = false
+description = "Embedder example: JSONL import with in-process transforms"
+
+[[bin]]
+name = "surreal-sync-example-from-jsonl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+tokio = { version = "1.49", features = ["full"] }
+surreal-sync-json = { path = "../../crates/json", features = ["from_jsonl"] }
+surreal-sync-surreal = { path = "../../crates/surreal" }

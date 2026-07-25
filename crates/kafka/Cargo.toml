@@ -2,8 +2,9 @@
 name = "surreal-sync-kafka"
 version = "0.6.0"
 edition = "2021"
-description = "Kafka type conversions, from_kafka origin, and producer for surreal-sync"
+description = "Sync Kafka topics into SurrealDB"
 license = "Apache-2.0"
+readme = "README.md"
 publish = true
 repository = "https://github.com/surrealdb/surreal-sync"
 homepage = "https://github.com/surrealdb/surreal-sync"
@@ -56,7 +57,7 @@ base64 = { version = "0.22", optional = true }
 tracing = { version = "0.1", optional = true }
 
 # from_kafka
-surreal-sync-runtime = { path = "../runtime", version = "0.6.0", optional = true }
+surreal-sync-runtime = { path = "../runtime", version = "0.6.0", features = ["cli"], optional = true }
 protobuf-parse = { version = "3.5", optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 log = { version = "0.4", optional = true }

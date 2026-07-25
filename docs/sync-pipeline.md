@@ -1,4 +1,4 @@
-<!-- For embedding: depend on surreal-sync-mysql / surreal-sync-snowflake / … plus surreal-sync-surreal (v2 or v3). Do not depend on the surreal-sync CLI package. -->
+<!-- For embedding: depend on a source crate plus surreal-sync-surreal (v2 or v3). Do not depend on the surreal-sync CLI package. -->
 
 # How sync works
 
@@ -487,14 +487,14 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 
 ### Advanced: embedding (from-* crates)
 
-Depend on a source crate such as `surreal-sync-mysql` or `surreal-sync-snowflake`, plus `surreal-sync-surreal` (feature `v2` or `v3`). For ongoing sync (CDC), also configure checkpoints. Do not depend on the `surreal-sync` CLI package as a library.
-See the **Examples** below (`examples/from-mysql-binlog`, `examples/from-snowflake`).
+Depend on a source crate such as `surreal-sync-mysql`, `surreal-sync-snowflake`, `surreal-sync-json`, or `surreal-sync-kafka`, plus `surreal-sync-surreal` (feature `v2` or `v3`). For ongoing sync (CDC), also configure checkpoints. Do not depend on the `surreal-sync` CLI package as a library.
+See the **Examples** below (`examples/from-mysql-binlog`, `examples/from-snowflake`, `examples/from-jsonl`, `examples/from-kafka`).
 
 **When to use in-process vs `command` workers**
 
 | Approach | Use when |
 |----------|----------|
-| `InPlaceTransform` via `run::<Surreal3Sink>([…])` (mysql-binlog / snowflake) | Mutate-only / same-length stages in Rust (redact, rename, flatten IDs, FK → record links) |
+| `InPlaceTransform` via `run::<Surreal3Sink>([…])` (mysql-binlog / snowflake / jsonl / kafka) | Mutate-only / same-length stages in Rust (redact, rename, flatten IDs, FK → record links) |
 | TOML `type = "command"` | External language workers, heavy enrichment, or filter/fan-out that needs a custom `BatchTransformer` |
 
 Filter-out or fan-out of events is out of scope for `InPlaceTransform` — use a
@@ -540,6 +540,30 @@ cargo run -p surreal-sync-example-from-snowflake -- \
 
 Snowflake is a one-shot full import — there are no `--checkpoint-dir` /
 `--checkpoints-surreal-table` flags.
+
+JSONL — [`examples/from-jsonl`](../examples/from-jsonl) (`surreal-sync-example-from-jsonl`):
+
+```bash
+cargo run -p surreal-sync-example-from-jsonl -- \
+  --path ./data \
+  --to-namespace prod --to-database app
+```
+
+JSONL is a one-shot import — there are no checkpoint flags.
+
+Kafka — [`examples/from-kafka`](../examples/from-kafka) (`surreal-sync-example-from-kafka`):
+
+```bash
+cargo run -p surreal-sync-example-from-kafka -- \
+  --proto-path ./schema.proto \
+  --brokers localhost:9092 \
+  --topic events \
+  --group-id surreal-sync \
+  --message-type Event \
+  --to-namespace prod --to-database app
+```
+
+Kafka sync runs until `--timeout` (default `1h`) or `--max-messages`. Progress uses Kafka consumer-group offsets — there are no Surreal checkpoint flags.
 
 `run` sets up logging/TLS for you. Call `surreal_sync_runtime::init()` only if you call the lower-level `run_sync` APIs yourself.
 

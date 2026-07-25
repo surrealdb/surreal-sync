@@ -197,7 +197,7 @@ enum FromSource {
 
     /// Sync from Kafka topics (incremental-only)
     #[command(name = "kafka")]
-    Kafka(KafkaArgs),
+    Kafka(from::kafka::Args),
 
     /// Import from CSV files
     #[command(name = "csv")]
@@ -205,7 +205,7 @@ enum FromSource {
 
     /// Import from JSONL files
     #[command(name = "jsonl")]
-    Jsonl(JsonlArgs),
+    Jsonl(from::jsonl::Args),
 
     /// Ingest from Snowflake (full one-shot snapshot via the SQL REST API v2)
     #[command(name = "snowflake")]
@@ -1211,42 +1211,6 @@ struct PostgreSQLLogicalSnapshotArgs {
 }
 
 // =============================================================================
-// Kafka Args (single command - incremental-only)
-// =============================================================================
-
-#[derive(Args)]
-struct KafkaArgs {
-    /// Kafka source configuration
-    #[command(flatten)]
-    config: surreal_sync_kafka::from_kafka::Config,
-
-    /// Target SurrealDB namespace
-    #[arg(long)]
-    to_namespace: String,
-
-    /// Target SurrealDB database
-    #[arg(long)]
-    to_database: String,
-
-    /// Schema file for type-aware conversion
-    #[arg(long, value_name = "PATH")]
-    schema_file: Option<PathBuf>,
-
-    /// Timeout for consuming messages (e.g. "1h", "30m", "300s")
-    /// After this time, the consumer will stop and exit.
-    #[arg(long, default_value = "1h")]
-    timeout: String,
-
-    /// TOML file describing the transform pipeline (`[[transforms]]`).
-    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
-    #[arg(long, value_name = "PATH")]
-    transforms_config: Option<PathBuf>,
-
-    #[command(flatten)]
-    surreal: SurrealOpts,
-}
-
-// =============================================================================
 // CSV Args (single command - import-only)
 // =============================================================================
 
@@ -1318,46 +1282,6 @@ struct CsvArgs {
 // =============================================================================
 // JSONL Args (single command - import-only)
 // =============================================================================
-
-#[derive(Args)]
-struct JsonlArgs {
-    /// Path to JSONL files directory or single file
-    #[arg(long)]
-    path: String,
-
-    /// Target SurrealDB namespace
-    #[arg(long)]
-    to_namespace: String,
-
-    /// Target SurrealDB database
-    #[arg(long)]
-    to_database: String,
-
-    /// ID field name (default: "id")
-    #[arg(long, default_value = "id")]
-    id_field: String,
-
-    /// Columns forming the SurrealDB record ID (comma-separated). When two or
-    /// more are set, the ID is a Surreal array key. Takes precedence over `--id-field`.
-    #[arg(long, value_delimiter = ',')]
-    id_columns: Vec<String>,
-
-    /// Conversion rules (format: 'type="page_id",page_id page:page_id')
-    #[arg(long = "rule", value_name = "RULE")]
-    conversion_rules: Vec<String>,
-
-    /// Schema file for type-aware conversion
-    #[arg(long, value_name = "PATH")]
-    schema_file: Option<PathBuf>,
-
-    /// TOML file describing the transform pipeline (`[[transforms]]`).
-    /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
-    #[arg(long, value_name = "PATH")]
-    transforms_config: Option<PathBuf>,
-
-    #[command(flatten)]
-    surreal: SurrealOpts,
-}
 
 // =============================================================================
 // Loadtest Commands
@@ -1515,9 +1439,9 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
                 from::postgresql_wal2json::run_snapshot_signal(args).await?
             }
         },
-        FromSource::Kafka(args) => from::kafka::run(args).await?,
+        FromSource::Kafka(args) => from::kafka::run_args(args).await?,
         FromSource::Csv(args) => from::csv::run(args).await?,
-        FromSource::Jsonl(args) => from::jsonl::run(args).await?,
+        FromSource::Jsonl(args) => from::jsonl::run_args(args).await?,
         FromSource::Snowflake(args) => snowflake::run_args(args).await?,
     }
     Ok(())

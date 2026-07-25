@@ -2,8 +2,9 @@
 name = "surreal-sync-mysql"
 version = "0.6.0"
 edition = "2021"
-description = "MySQL type conversions, shared helpers, binlog protocol, and CDC origins for surreal-sync"
+description = "Sync MySQL or MariaDB into SurrealDB, including ongoing changes from the binlog"
 license = "Apache-2.0"
+readme = "README.md"
 publish = true
 repository = "https://github.com/surrealdb/surreal-sync"
 homepage = "https://github.com/surrealdb/surreal-sync"

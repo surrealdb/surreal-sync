@@ -1,17 +1,16 @@
-//! JSONL file import handler.
+//! JSONL CLI glue (Surreal version auto-detect).
 //!
-//! Source crate: crates/json/ (from_jsonl)
-//! CLI command:
-//! - Import: `from jsonl --path ... --to-namespace ... --to-database ...`
+//! Embedders should use `surreal_sync_json::run` with one sink type. This
+//! module is CLI-only and auto-detects SurrealDB v2 vs v3.
 
-use super::transforms::load_transforms_from_args;
-use super::{
-    get_sdk_version, load_schema_if_provided, make_surreal2_sink, make_surreal3_sink, SdkVersion,
-};
-use crate::JsonlArgs;
+use surreal_sync_runtime::SinkConnect;
 
-/// Run JSONL import, dispatching to appropriate SDK version.
-pub async fn run(args: JsonlArgs) -> anyhow::Result<()> {
+pub use surreal_sync_json::from_jsonl::cli::Args;
+
+use crate::from::{get_sdk_version, SdkVersion};
+
+/// Stock CLI path: auto-detect Surreal major version.
+pub async fn run_args(args: Args) -> anyhow::Result<()> {
     let sdk_version = get_sdk_version(
         &args.surreal.surreal_endpoint,
         args.surreal.surreal_sdk_version.as_deref(),
@@ -19,99 +18,19 @@ pub async fn run(args: JsonlArgs) -> anyhow::Result<()> {
     .await?;
 
     match sdk_version {
-        SdkVersion::V2 => run_v2(args).await,
-        SdkVersion::V3 => run_v3(args).await,
+        SdkVersion::V2 => {
+            let config = args
+                .surreal
+                .to_config(args.to_namespace.clone(), args.to_database.clone());
+            let sink = surreal_sync_surreal::v2::Surreal2Sink::connect(&config).await?;
+            surreal_sync_json::from_jsonl::cli::run_args_with_sink(args, &sink).await
+        }
+        SdkVersion::V3 => {
+            let config = args
+                .surreal
+                .to_config(args.to_namespace.clone(), args.to_database.clone());
+            let sink = surreal_sync_surreal::v3::Surreal3Sink::connect(&config).await?;
+            surreal_sync_json::from_jsonl::cli::run_args_with_sink(args, &sink).await
+        }
     }
-}
-
-async fn run_v2(args: JsonlArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting JSONL import (SDK v2)");
-    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
-
-    if args.surreal.dry_run {
-        tracing::info!("Running in dry-run mode - no data will be written");
-    }
-
-    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
-
-    // Load and convert schema to DatabaseSchema for type-aware JSONL conversion
-    let schema = load_schema_if_provided(&args.schema_file)?.map(|s| s.to_database_schema());
-
-    // Connect to SurrealDB using v2 SDK
-    let surreal_opts = surreal_sync_surreal::v2::SurrealOpts {
-        surreal_endpoint: args.surreal.surreal_endpoint,
-        surreal_username: args.surreal.surreal_username,
-        surreal_password: args.surreal.surreal_password,
-    };
-    let surreal = surreal_sync_surreal::v2::surreal_connect(
-        &surreal_opts,
-        &args.to_namespace,
-        &args.to_database,
-    )
-    .await?;
-    let sink = make_surreal2_sink(surreal, args.surreal.zero_temporal);
-
-    // Create config with file source
-    let config = surreal_sync::jsonl::Config {
-        sources: vec![],
-        files: vec![args.path.into()],
-        s3_uris: vec![],
-        http_uris: vec![],
-        id_field: args.id_field,
-        id_columns: args.id_columns,
-        conversion_rules: args.conversion_rules,
-        batch_size: args.surreal.batch_size,
-        dry_run: args.surreal.dry_run,
-        schema,
-    };
-    surreal_sync::jsonl::sync_with_transforms(&sink, config, &pipeline, &apply_opts).await?;
-
-    tracing::info!("JSONL import completed successfully");
-    Ok(())
-}
-
-async fn run_v3(args: JsonlArgs) -> anyhow::Result<()> {
-    tracing::info!("Starting JSONL import (SDK v3)");
-    tracing::info!("Target: {}/{}", args.to_namespace, args.to_database);
-
-    if args.surreal.dry_run {
-        tracing::info!("Running in dry-run mode - no data will be written");
-    }
-
-    let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
-
-    // Load and convert schema to DatabaseSchema for type-aware JSONL conversion
-    let schema = load_schema_if_provided(&args.schema_file)?.map(|s| s.to_database_schema());
-
-    // Connect to SurrealDB using v3 SDK
-    let surreal_opts = surreal_sync_surreal::v3::SurrealOpts {
-        surreal_endpoint: args.surreal.surreal_endpoint,
-        surreal_username: args.surreal.surreal_username,
-        surreal_password: args.surreal.surreal_password,
-    };
-    let surreal = surreal_sync_surreal::v3::surreal_connect(
-        &surreal_opts,
-        &args.to_namespace,
-        &args.to_database,
-    )
-    .await?;
-    let sink = make_surreal3_sink(surreal, args.surreal.zero_temporal);
-
-    // Create config with file source
-    let config = surreal_sync::jsonl::Config {
-        sources: vec![],
-        files: vec![args.path.into()],
-        s3_uris: vec![],
-        http_uris: vec![],
-        id_field: args.id_field,
-        id_columns: args.id_columns,
-        conversion_rules: args.conversion_rules,
-        batch_size: args.surreal.batch_size,
-        dry_run: args.surreal.dry_run,
-        schema,
-    };
-    surreal_sync::jsonl::sync_with_transforms(&sink, config, &pipeline, &apply_opts).await?;
-
-    tracing::info!("JSONL import completed successfully");
-    Ok(())
 }
