@@ -7,6 +7,18 @@ on:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      only_target:
+        description: 'Build only this target (empty = all)'
+        required: false
+        type: choice
+        options:
+          - ''
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-apple-darwin
+        default: ''
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,6 +27,7 @@ jobs:
   build:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.only_target == '' || inputs.only_target == matrix.target }}
     continue-on-error: ${{ matrix.continue-on-error || false }}
     permissions:
       contents: read
@@ -32,7 +45,6 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             binary_name: surreal-sync
-            continue-on-error: true
           # - target: aarch64-unknown-linux-musl
           #   os: ubuntu-latest
           #   binary_name: surreal-sync
@@ -79,11 +91,24 @@ jobs:
           FEATURES=""
           case "${{ matrix.target }}" in
             *-musl)
-              FEATURES="--features vendored-openssl"
+              FEATURES="--features static-musl"
               export CC=musl-gcc
               ;;
           esac
           cargo build --release --target ${{ matrix.target }} $FEATURES
+
+      - name: Verify static linking (musl)
+        if: contains(matrix.target, 'musl')
+        run: |
+          BIN="target/${{ matrix.target }}/release/${{ matrix.binary_name }}"
+          file "$BIN"
+          if readelf -d "$BIN" | grep -q 'NEEDED'; then
+            echo "Error: musl binary has dynamic library dependencies:"
+            readelf -d "$BIN" | grep 'NEEDED' || true
+            ldd "$BIN" || true
+            exit 1
+          fi
+          echo "OK: no dynamic NEEDED entries (fully static)"
 
       - name: Create archive
         shell: bash
