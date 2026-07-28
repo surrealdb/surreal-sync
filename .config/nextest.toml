@@ -56,3 +56,30 @@ archive.include = [
 # Emit a JUnit report so CI can surface per-test results / upload it as an artifact.
 [profile.ci.junit]
 path = "junit.xml"
+
+# --- Per-test overrides -----------------------------------------------------
+#
+# Keep these last: an [[...overrides]] array-of-tables header captures every
+# bare key that follows it, so inserting one above `archive.include` would
+# silently reparent that key and drop the CLI binary from the nextest archive.
+#
+# The Snowflake e2e test ingests a real sample table (default
+# SNOWFLAKE_SAMPLE_DATA / TPCH_SF10 / CUSTOMER = 1.5M rows) from a live account,
+# so it behaves nothing like the container-backed tests:
+#   * it runs far longer than the 60s/90s slow-timeout budgets above, which would
+#     otherwise terminate it mid-sync;
+#   * retrying it is actively harmful -- there is no container flakiness to smooth
+#     over, and each attempt re-reads millions of rows and re-bills warehouse
+#     credits.
+# It self-skips instantly when SNOWFLAKE_* is unset, so this costs contributors
+# without an account nothing.
+
+[[profile.default.overrides]]
+filter = 'binary(snowflake)'
+slow-timeout = { period = "120s", terminate-after = 30 }
+retries = 0
+
+[[profile.ci.overrides]]
+filter = 'binary(snowflake)'
+slow-timeout = { period = "120s", terminate-after = 30 }
+retries = 0

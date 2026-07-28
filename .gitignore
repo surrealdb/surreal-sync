@@ -37,3 +37,9 @@ Temporary Items
 .surreal-sync-checkpoints-test-*/
 .test-*/
 .reference/
+
+# Byte-cache from the Python CI helpers in scripts/ and loadtest/scripts/
+__pycache__/
+
+# Benchmark output (scripts/snowflake-benchmark.py)
+/bench-out/
