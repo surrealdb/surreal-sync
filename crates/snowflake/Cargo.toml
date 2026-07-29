@@ -18,10 +18,12 @@ from_snowflake = [
     "dep:surreal-sync-runtime",
     "dep:clap",
     "dep:async-trait",
+    "dep:pkcs8",
     "dep:reqwest",
     "dep:snowflake-jwt",
     "dep:tokio",
     "dep:tracing",
+    "dep:zeroize",
 ]
 
 [dependencies]
@@ -40,6 +42,14 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 snowflake-jwt = { version = "0.3", optional = true }
 tokio = { version = "1.49", features = ["time"], optional = true }
 tracing = { version = "0.1", optional = true }
+# Decrypts passphrase-protected PKCS#8 keys before handing the plaintext PEM to
+# snowflake-jwt (which only reads unencrypted PKCS#8). Version must stay in step
+# with the `pkcs8` that `rsa` pulls in via snowflake-jwt so the two unify.
+# `3des` covers PBES2+3DES-CBC, which Snowflake's own docs used to generate
+# (`openssl pkcs8 -topk8 -v2 des3`). Legacy PBES1/SHA-1 is deliberately not
+# enabled -- those keys get a "re-wrap with -v2 aes-256-cbc" error instead.
+pkcs8 = { version = "0.10", features = ["encryption", "pem", "3des", "std"], optional = true }
+zeroize = { version = "1", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time"] }

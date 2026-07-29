@@ -38,7 +38,7 @@ on:
       surrealdb_image:
         description: SurrealDB Docker image
         type: string
-        default: surrealdb/surrealdb:v3.1.5
+        default: surrealdb/surrealdb:v3.2.3
       mode:
         description: 'both = dry-run then write (needed for verification)'
         type: choice
@@ -76,7 +76,7 @@ jobs:
       BENCH_TABLES: ${{ inputs.tables || 'CUSTOMER' }}
       BENCH_BATCH_SIZE: ${{ inputs.batch_size || '5000' }}
       BENCH_MODE: ${{ inputs.mode || 'both' }}
-      SURREALDB_IMAGE: ${{ inputs.surrealdb_image || 'surrealdb/surrealdb:v3.1.5' }}
+      SURREALDB_IMAGE: ${{ inputs.surrealdb_image || 'surrealdb/surrealdb:v3.2.3' }}
       BENCH_OUT_DIR: ${{ github.workspace }}/bench-out
 
     steps:

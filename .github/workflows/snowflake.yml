@@ -37,7 +37,8 @@ on:
       - 'docs/snowflake.md'
       - '.github/workflows/snowflake.yml'
   # Nightly, to catch Snowflake REST API drift independently of our own changes.
-  # Two rows on an X-SMALL warehouse: the credit cost is a rounding error.
+  # Not free: this reads 1.5M rows per SurrealDB leg. See the Cost section in
+  # docs/snowflake.md for the levers if that proves too expensive.
   schedule:
     - cron: '0 3 * * *'
   workflow_dispatch:
@@ -67,7 +68,7 @@ jobs:
       matrix:
         surrealdb_image:
           - surrealdb/surrealdb:v2.6.5
-          - surrealdb/surrealdb:v3.1.5
+          - surrealdb/surrealdb:v3.2.3
 
     steps:
     # First, so a fork PR finishes in seconds instead of building the workspace.

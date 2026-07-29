@@ -35,9 +35,9 @@ pub struct SourceOpts {
     pub account: String,
     /// Login name of the user whose key-pair is registered with Snowflake.
     pub user: String,
-    /// Unencrypted PKCS#8 private key PEM contents.
+    /// PKCS#8 private key PEM contents, plaintext or PBES2-encrypted.
     pub private_key_pem: String,
-    /// Passphrase for an encrypted key. Currently unsupported (errors if set).
+    /// Passphrase for a PBES2-encrypted key. Ignored when the key is plaintext.
     pub private_key_passphrase: Option<String>,
     /// Virtual warehouse used to run the SELECTs.
     pub warehouse: String,

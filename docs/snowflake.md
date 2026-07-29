@@ -17,24 +17,39 @@ Before using the Snowflake source, ensure you have:
 1. **SurrealDB** running locally or accessible via network
 2. **surreal-sync** available in your PATH
 3. **A Snowflake account** reachable at `<account>.snowflakecomputing.com`
-4. **Key-pair auth configured** — an RSA key-pair registered for a Snowflake user, with the private key available as an unencrypted PKCS#8 PEM file
+4. **Key-pair auth configured** — an RSA key-pair registered for a Snowflake user, with the private key available as a PKCS#8 PEM file. The key may be plaintext or passphrase-encrypted
 
 ### Setting up key-pair authentication
 
-Generate an unencrypted PKCS#8 private key and its public key:
+Generate a PKCS#8 private key and its public key — either plaintext:
 
 ```bash
 openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out rsa_key.p8 -nocrypt
 openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
 ```
 
-Register the public key on the Snowflake user (strip the PEM header/footer and newlines):
+…or passphrase-encrypted, if you would rather not keep a plaintext key on disk:
+
+```bash
+openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -v2 aes-256-cbc -out rsa_key.p8
+openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
+```
+
+Either way, register the public key on the Snowflake user (strip the PEM header/footer and newlines):
 
 ```sql
 ALTER USER sync_user SET RSA_PUBLIC_KEY='MIIBIjANBgkq...';
 ```
 
-> Encrypted private keys are not currently supported — `--private-key-passphrase` is accepted but the key must be unencrypted PKCS#8.
+For an encrypted key, supply the passphrase with `--private-key-passphrase` (or `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE`). surreal-sync decrypts it in memory at startup — a wrong passphrase or an unusable key fails immediately with a specific message rather than on the first query.
+
+**Supported encryption:** PKCS#8 **PBES2** with AES-CBC, AES-GCM, or 3DES-CBC. That covers `-v2 aes-256-cbc` above and the `-v2 des3` form older Snowflake documentation used. **Not supported:** legacy PBES1/SHA-1, and OpenSSL's pre-PKCS#8 "traditional" encrypted PEM (`Proc-Type:`/`DEK-Info:` headers). Both are rejected with instructions to re-wrap:
+
+```bash
+openssl pkcs8 -topk8 -in old_key.pem -out rsa_key.p8 -v2 aes-256-cbc
+```
+
+> The key must be **PKCS#8** in every case. A PKCS#1 key (`-----BEGIN RSA PRIVATE KEY-----`) is rejected — Snowflake does not accept those for key-pair auth either. Convert with `openssl pkcs8 -topk8 -in old_key.pem -out rsa_key.p8` (add `-nocrypt` for a plaintext result).
 
 ## Command Structure
 
@@ -60,7 +75,7 @@ surreal-sync from snowflake \
 |------|---------|-------------|
 | `--account <ACCOUNT>` | `SNOWFLAKE_ACCOUNT` | Account identifier as used in `<account>.snowflakecomputing.com` (e.g. `myorg-myaccount`) |
 | `--user <USER>` | `SNOWFLAKE_USER` | Snowflake user whose key-pair is registered for JWT auth |
-| `--private-key-path <PATH>` | `SNOWFLAKE_PRIVATE_KEY_PATH` | Path to the unencrypted PKCS#8 private key PEM file |
+| `--private-key-path <PATH>` | `SNOWFLAKE_PRIVATE_KEY_PATH` | Path to the PKCS#8 private key PEM file (plaintext, or encrypted with `--private-key-passphrase`) |
 | `--warehouse <WAREHOUSE>` | `SNOWFLAKE_WAREHOUSE` | Virtual warehouse used to run the queries |
 | `--database <DATABASE>` | `SNOWFLAKE_DATABASE` | Database to read from |
 | `--to-namespace <NAMESPACE>` | — | Target SurrealDB namespace |
@@ -74,7 +89,7 @@ surreal-sync from snowflake \
 |------|---------|---------|-------------|
 | `--schema <SCHEMA>` | `SNOWFLAKE_SCHEMA` | `PUBLIC` | Schema within the database |
 | `--role <ROLE>` | `SNOWFLAKE_ROLE` | (session default) | Role to assume for the session |
-| `--private-key-passphrase <PASS>` | `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` | (none) | Passphrase for an encrypted private key (currently unsupported) |
+| `--private-key-passphrase <PASS>` | `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` | (none) | Passphrase for a PBES2-encrypted PKCS#8 private key. Ignored (with a warning) if the key is not encrypted |
 | `--tables <A,B,...>` | — | (all tables in the schema) | Comma-separated list of tables to ingest |
 | `--id-columns <A,B,...>` | — | (sequential per-table index) | Columns forming the SurrealDB record ID; two or more → Array ID |
 | `--transforms-config <PATH>` | — | (identity) | TOML file describing the transform pipeline (`[[transforms]]`) |
@@ -216,7 +231,7 @@ Create an **Environment** named `snowflake` (Settings → Environments) and rest
 |--------|-------|
 | `SNOWFLAKE_ACCOUNT` | Account identifier as used in `<account>.snowflakecomputing.com`, e.g. `myorg-myaccount` |
 | `SNOWFLAKE_USER` | Login name of the CI service user, e.g. `SURREAL_SYNC_CI` |
-| `SNOWFLAKE_PRIVATE_KEY` | The **entire** unencrypted PKCS#8 PEM, including the `-----BEGIN PRIVATE KEY-----` and `-----END PRIVATE KEY-----` lines |
+| `SNOWFLAKE_PRIVATE_KEY` | The **entire** PKCS#8 PEM, including the `-----BEGIN`/`-----END` lines. CI uses a plaintext key; an encrypted one would also need `SNOWFLAKE_PRIVATE_KEY_PASSPHRASE` wired into the workflows |
 
 **Variables** (same page, Variables tab). These are not sensitive, and keeping them readable in logs makes failures much easier to diagnose:
 
@@ -234,7 +249,7 @@ Secrets are never exposed to pull requests from forks. `snowflake.yml` detects t
 
 ### Snowflake account setup
 
-Generate an unencrypted key-pair (encrypted keys are not supported — see [Limitations](#current-limitations)):
+Generate a key-pair for CI. A plaintext key keeps the workflows simple; see [key-pair authentication](#setting-up-key-pair-authentication) if you would rather encrypt it:
 
 ```bash
 openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -out rsa_key.p8 -nocrypt
@@ -278,7 +293,7 @@ CREATE RESOURCE MONITOR IF NOT EXISTS SURREAL_SYNC_CI_RM
 ALTER WAREHOUSE SURREAL_SYNC_CI_WH SET RESOURCE_MONITOR = SURREAL_SYNC_CI_RM;
 ```
 
-Because surreal-sync cannot read encrypted private keys, the secret necessarily holds an unencrypted one. The least-privilege `SERVICE` user and the resource monitor are the mitigations. Rotate with `ALTER USER SURREAL_SYNC_CI SET RSA_PUBLIC_KEY_2 = '...'` for a zero-downtime handover.
+The CI secret holds a plaintext key, so the least-privilege `SERVICE` user and the resource monitor are the mitigations. (surreal-sync can read passphrase-encrypted keys, but storing the passphrase as a second GitHub secret alongside the key buys little — both are readable by the same jobs.) Rotate with `ALTER USER SURREAL_SYNC_CI SET RSA_PUBLIC_KEY_2 = '...'` for a zero-downtime handover.
 
 ### Cost
 
@@ -310,7 +325,7 @@ The driver is [`scripts/snowflake-benchmark.py`](../scripts/snowflake-benchmark.
 
 ```bash
 cargo build --release --bin surreal-sync
-docker run -d --name sdb -p 8000:8000 surrealdb/surrealdb:v3.1.5 \
+docker run -d --name sdb -p 8000:8000 surrealdb/surrealdb:v3.2.3 \
   start --user root --pass root rocksdb:/data
 
 # TPCH_SF1 rather than the TPCH_SF100 default: 150,000 rows instead of 15,000,000.
@@ -332,6 +347,6 @@ Beyond the timing, `TPCH_SF1` is the only thing in CI that exercises multi-parti
 
 - **Full snapshot only.** There is no incremental or CDC mode for Snowflake; each run reads the selected tables in full.
 - **Key-pair (JWT) auth only.** Username/password and OAuth are not supported.
-- **Unencrypted private keys only.** `--private-key-passphrase` is accepted but encrypted keys are not currently supported.
+- **PKCS#8 keys only.** Plaintext or PBES2-encrypted (AES-CBC/AES-GCM/3DES-CBC) are both supported; legacy PBES1/SHA-1 and PKCS#1 keys are not.
 
 If your use case requires additional capabilities, please file a feature request at: https://github.com/surrealdb/surreal-sync/issues
