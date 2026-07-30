@@ -82,7 +82,7 @@ For secured Kafka clusters, set `--security-protocol` to `SASL_PLAINTEXT` or `SA
 | `--sasl-password <PASS>` | `KAFKA_SASL_PASSWORD` | SASL password |
 | `--sasl-mechanism <MECH>` | — | `SCRAM-SHA-256`, `SCRAM-SHA-512`, or `PLAIN` |
 
-Kerberos (GSSAPI) is intentionally not supported.
+Kerberos (GSSAPI) is not supported. If you need it, please open a feature request.
 
 ### TLS / mTLS
 
