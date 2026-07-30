@@ -20,7 +20,7 @@ serde_yaml = "0.9"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 
 # ULID support
-ulid = { version = "1.1", features = ["serde"] }
+ulid = { version = "3.0", features = ["serde"] }
 
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
