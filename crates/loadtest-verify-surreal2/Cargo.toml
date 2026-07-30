@@ -1,6 +1,6 @@
 [package]
 name = "loadtest-verify-surreal2"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 publish = false
 description = "Streaming verifier for load testing surreal-sync (SurrealDB v2)"

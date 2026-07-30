@@ -1,6 +1,6 @@
 [package]
 name = "surreal-sync-neo4j-source"
-version = "0.6.0"
+version = "0.6.1"
 publish = false
 edition = "2021"
 description = "Neo4j sync utilities for surreal-sync"

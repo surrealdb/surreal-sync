@@ -3892,7 +3892,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "loadtest-distributed"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3915,7 +3915,7 @@ dependencies = [
 
 [[package]]
 name = "loadtest-generator"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "rand 0.10.2",
@@ -3930,14 +3930,14 @@ dependencies = [
 
 [[package]]
 name = "loadtest-populate"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "clap",
 ]
 
 [[package]]
 name = "loadtest-populate-csv"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "csv",
@@ -3956,7 +3956,7 @@ dependencies = [
 
 [[package]]
 name = "loadtest-populate-jsonl"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "clap",
  "loadtest-distributed",
@@ -3975,7 +3975,7 @@ dependencies = [
 
 [[package]]
 name = "loadtest-populate-kafka"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4000,7 +4000,7 @@ dependencies = [
 
 [[package]]
 name = "loadtest-populate-mongodb"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "bson",
@@ -4021,7 +4021,7 @@ dependencies = [
 
 [[package]]
 name = "loadtest-populate-mysql"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "clap",
@@ -4039,7 +4039,7 @@ dependencies = [
 
 [[package]]
 name = "loadtest-populate-neo4j"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4061,7 +4061,7 @@ dependencies = [
 
 [[package]]
 name = "loadtest-populate-postgresql"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4085,7 +4085,7 @@ dependencies = [
 
 [[package]]
 name = "loadtest-verify-surreal2"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4107,7 +4107,7 @@ dependencies = [
 
 [[package]]
 name = "loadtest-verify-surreal3"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4479,7 +4479,7 @@ dependencies = [
 
 [[package]]
 name = "mongodb-types"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bson",
  "chrono",
@@ -4658,7 +4658,7 @@ checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
 
 [[package]]
 name = "neo4j-types"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "chrono",
  "chrono-tz",
@@ -7354,7 +7354,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
 name = "surreal-sync"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7421,7 +7421,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-core"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7438,7 +7438,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-csv"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7468,7 +7468,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-example-from-jsonl"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "surreal-sync-json",
@@ -7478,7 +7478,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-example-from-kafka"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "surreal-sync-kafka",
@@ -7488,7 +7488,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-example-from-mysql-binlog"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "surreal-sync-mysql",
@@ -7498,7 +7498,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-example-from-snowflake"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "surreal-sync-snowflake",
@@ -7508,7 +7508,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-file"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -7523,7 +7523,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-json"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7549,7 +7549,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-kafka"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7578,7 +7578,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-mongodb-changestream-source"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7603,7 +7603,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-mysql"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7648,7 +7648,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-neo4j-source"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7675,7 +7675,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-postgresql"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7708,7 +7708,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-runtime"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7729,7 +7729,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-snowflake"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7749,7 +7749,7 @@ dependencies = [
 
 [[package]]
 name = "surreal-sync-surreal"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8052,7 +8052,7 @@ dependencies = [
 
 [[package]]
 name = "surrealdb-multi-sdk-demo"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "libc",

@@ -1,6 +1,6 @@
 [package]
 name = "surreal-sync-mongodb-changestream-source"
-version = "0.6.0"
+version = "0.6.1"
 publish = false
 edition = "2021"
 description = "MongoDB sync utilities for surreal-sync"

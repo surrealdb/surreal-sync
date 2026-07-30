@@ -1,6 +1,6 @@
 [package]
 name = "surreal-sync-json"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "Sync JSON Lines (JSONL) files into SurrealDB"
 license = "Apache-2.0"
@@ -25,7 +25,7 @@ from_jsonl = [
 
 [dependencies]
 # types (always available; light consumers of surreal-sync-json)
-surreal-sync-core = { path = "../sync-core", version = "0.6.0" }
+surreal-sync-core = { path = "../sync-core", version = "0.6.1" }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -35,8 +35,8 @@ base64 = "0.22"
 anyhow = "1.0"
 
 # from_jsonl (optional; heavy origin deps)
-surreal-sync-file = { path = "../file", version = "0.6.0", optional = true }
-surreal-sync-runtime = { path = "../runtime", version = "0.6.0", features = ["cli"], optional = true }
+surreal-sync-file = { path = "../file", version = "0.6.1", optional = true }
+surreal-sync-runtime = { path = "../runtime", version = "0.6.1", features = ["cli"], optional = true }
 clap = { version = "4.5", features = ["derive", "env"], optional = true }
 tracing = { version = "0.1", optional = true }
 tokio = { version = "1.49", features = ["full"], optional = true }
@@ -49,11 +49,11 @@ serde = { version = "1.0", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
 surrealdb3 = { version = "3.1.5", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
-surreal-sync-surreal = { path = "../surreal", version = "0.6.0", features = ["v2", "v3", "reqwest"], default-features = false }
+surreal-sync-surreal = { path = "../surreal", version = "0.6.1", features = ["v2", "v3", "reqwest"], default-features = false }
 serde_json = "1.0"
 async-trait = "0.1"
-surreal-sync-core = { path = "../sync-core", version = "0.6.0" }
-surreal-sync-runtime = { path = "../runtime", version = "0.6.0" }
+surreal-sync-core = { path = "../sync-core", version = "0.6.1" }
+surreal-sync-runtime = { path = "../runtime", version = "0.6.1" }
 tempfile = "3.27"
 
 [lib]

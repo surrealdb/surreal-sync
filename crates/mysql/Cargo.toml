@@ -1,6 +1,6 @@
 [package]
 name = "surreal-sync-mysql"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "Sync MySQL or MariaDB into SurrealDB, including ongoing changes from the binlog"
 license = "Apache-2.0"
@@ -53,8 +53,8 @@ from_trigger = [
 ]
 
 [dependencies]
-surreal-sync-core = { path = "../sync-core", version = "0.6.0" }
-surreal-sync-json = { path = "../json", version = "0.6.0" }
+surreal-sync-core = { path = "../sync-core", version = "0.6.1" }
+surreal-sync-json = { path = "../json", version = "0.6.1" }
 mysql_async = { version = "0.36", default-features = false, features = ["derive", "rustls-tls", "tls12", "aws-lc-rs", "minimal"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
@@ -87,7 +87,7 @@ clap = { version = "4.5", features = ["derive", "env"], optional = true }
 futures = { version = "0.3", optional = true }
 log = { version = "0.4", optional = true }
 rand = { version = "0.10", optional = true }
-surreal-sync-runtime = { path = "../runtime", version = "0.6.0", features = ["cli"], optional = true }
+surreal-sync-runtime = { path = "../runtime", version = "0.6.1", features = ["cli"], optional = true }
 tokio-stream = { version = "0.1", optional = true }
 tokio-util = { version = "0.7", optional = true }
 
@@ -104,9 +104,9 @@ libc = "0.2.183"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3.27"
 async-trait = "0.1"
-surreal-sync-surreal = { path = "../surreal", version = "0.6.0", features = ["v2", "v3"] }
+surreal-sync-surreal = { path = "../surreal", version = "0.6.1", features = ["v2", "v3"] }
 surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
-surreal-sync-runtime = { path = "../runtime", version = "0.6.0" }
+surreal-sync-runtime = { path = "../runtime", version = "0.6.1" }
 
 [lib]
 name = "surreal_sync_mysql"

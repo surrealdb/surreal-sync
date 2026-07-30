@@ -1,6 +1,6 @@
 [package]
 name = "loadtest-populate-jsonl"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 publish = false
 description = "JSONL file populator for load testing surreal-sync"

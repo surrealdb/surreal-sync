@@ -1,6 +1,6 @@
 [package]
 name = "surreal-sync-surreal"
-version = "0.6.0"
+version = "0.6.1"
 publish = true
 edition = "2021"
 description = "SurrealDB sink for surreal-sync (SurrealDB 2 or 3)"
@@ -64,7 +64,7 @@ semver = { version = "1.0", optional = true }
 tracing = { version = "0.1", optional = true }
 
 # Shared by v2 / v3 sink features
-surreal-sync-core = { path = "../sync-core", version = "0.6.0", optional = true }
+surreal-sync-core = { path = "../sync-core", version = "0.6.1", optional = true }
 log = { version = "0.4", optional = true }
 tokio = { version = "1", features = ["time"], optional = true }
 chrono = { version = "0.4", features = ["serde"], optional = true }

@@ -1,6 +1,6 @@
 [package]
 name = "surreal-sync-runtime"
-version = "0.6.0"
+version = "0.6.1"
 publish = true
 edition = "2021"
 description = "Shared runtime: apply pipeline, init, SurrealDB config, and transform loading for surreal-sync"
@@ -39,7 +39,7 @@ chrono = { version = "0.4", features = ["serde"], optional = true }
 clap = { version = "4.5", features = ["derive", "env"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-surreal-sync-core = { path = "../sync-core", version = "0.6.0" }
+surreal-sync-core = { path = "../sync-core", version = "0.6.1" }
 tokio = { version = "1.49", features = ["macros", "rt", "sync", "time", "process", "io-util", "fs"] }
 toml = "1.1"
 tracing = "0.1"
