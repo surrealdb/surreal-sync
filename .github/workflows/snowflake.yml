@@ -88,7 +88,7 @@ jobs:
 
     - name: Checkout repository
       if: steps.creds.outputs.available == 'true'
-      uses: actions/checkout@v4
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Install system build dependencies
       if: steps.creds.outputs.available == 'true'
@@ -100,13 +100,13 @@ jobs:
 
     - name: Install Rust toolchain (from rust-toolchain.toml) + cache
       if: steps.creds.outputs.available == 'true'
-      uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
+      uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
       with:
         cache: true
 
     - name: Install cargo-nextest
       if: steps.creds.outputs.available == 'true'
-      uses: taiki-e/install-action@v2.84.1
+      uses: taiki-e/install-action@c44f6b046f1c29ae5918b1e0bfdbb2f1813836fd # v2.84.1
       with:
         tool: nextest
 
@@ -157,7 +157,7 @@ jobs:
 
     - name: Upload test results on failure
       if: failure()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: snowflake-test-results-${{ strategy.job-index }}
         path: |

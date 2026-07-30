@@ -81,7 +81,7 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Verify Snowflake credentials are available
       env:
@@ -100,7 +100,7 @@ jobs:
           protobuf-compiler postgresql-client
 
     - name: Install Rust toolchain (from rust-toolchain.toml) + cache
-      uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
+      uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
       with:
         cache: true
 
@@ -196,7 +196,7 @@ jobs:
 
     - name: Upload metrics
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: snowflake-benchmark-metrics
         path: ${{ env.BENCH_OUT_DIR }}/metrics.json
@@ -212,7 +212,7 @@ jobs:
 
     - name: Upload full output on failure
       if: failure()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: snowflake-benchmark-logs
         path: ${{ env.BENCH_OUT_DIR }}/
