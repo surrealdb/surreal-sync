@@ -1,6 +1,6 @@
 [package]
 name = "surreal-sync-example-from-jsonl"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 publish = false
 description = "Embedder example: JSONL import with in-process transforms"

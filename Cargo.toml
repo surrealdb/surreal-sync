@@ -36,7 +36,7 @@ resolver = "2"
 
 [package]
 name = "surreal-sync"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "Command-line tool for syncing data from various sources into SurrealDB"
 authors = ["surreal-sync contributors"]

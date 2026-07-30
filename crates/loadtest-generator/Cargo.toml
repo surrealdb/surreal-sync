@@ -1,6 +1,6 @@
 [package]
 name = "loadtest-generator"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 publish = false
 description = "Data generator for surreal-sync load testing framework"

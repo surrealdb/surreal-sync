@@ -1,6 +1,6 @@
 [package]
 name = "loadtest-distributed"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 publish = false
 description = "Container-based distributed load testing for surreal-sync (library)"

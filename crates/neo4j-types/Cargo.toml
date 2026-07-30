@@ -1,6 +1,6 @@
 [package]
 name = "neo4j-types"
-version = "0.6.0"
+version = "0.6.1"
 publish = false
 edition = "2021"
 description = "Neo4j/Bolt type conversions for sync-core types"
