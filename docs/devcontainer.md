@@ -55,6 +55,22 @@ feature), which is all the tests need.
 The devcontainer no longer runs long-lived database services — the tests start
 their own, exactly as they do natively.
 
+## Sources needing external credentials
+
+Two sources cannot run against a throwaway container and so skip themselves
+unless credentials are present:
+
+- **Snowflake** — needs a real account (`SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`,
+  `SNOWFLAKE_PRIVATE_KEY_PATH`, `SNOWFLAKE_WAREHOUSE`). The test is read-only
+  against the sample-data share and defaults to 1.5M rows, so set
+  `SNOWFLAKE_SCHEMA=TPCH_SF1` for a fast local run. See
+  [Continuous Integration](snowflake.md#continuous-integration).
+- **Neo4j Enterprise** — needs `NEO4J_ENTERPRISE_URI`, `NEO4J_ENTERPRISE_USER`,
+  and `NEO4J_ENTERPRISE_PASS`.
+
+`make test` skips both silently, so a clean local run does not mean these paths
+were exercised.
+
 ## Troubleshooting
 
 - "Cannot connect to the Docker daemon": ensure Docker Desktop / the daemon is
