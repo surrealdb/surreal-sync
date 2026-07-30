@@ -82,6 +82,8 @@ For secured Kafka clusters, set `--security-protocol` to `SASL_PLAINTEXT` or `SA
 | `--sasl-password <PASS>` | `KAFKA_SASL_PASSWORD` | SASL password |
 | `--sasl-mechanism <MECH>` | — | `SCRAM-SHA-256`, `SCRAM-SHA-512`, or `PLAIN` |
 
+Kerberos (GSSAPI) is not supported. If you need it, please open a feature request.
+
 ### TLS / mTLS
 
 When `--security-protocol` is `SSL` or `SASL_SSL`, you can configure TLS trust and optional mutual TLS (mTLS) client authentication. These flags map to librdkafka `ssl.*` settings and are ignored for `PLAINTEXT` and `SASL_PLAINTEXT`.

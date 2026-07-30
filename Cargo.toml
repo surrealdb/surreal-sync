@@ -45,6 +45,8 @@ publish = false
 [features]
 default = []
 vendored-openssl = ["dep:openssl"]
+# Fully static musl builds: vendored OpenSSL + Kafka static-native (SASL PLAIN/SCRAM, zlib).
+static-musl = ["vendored-openssl", "surreal-sync-kafka/static-native"]
 
 [dependencies]
 # CLI framework

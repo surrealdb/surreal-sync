@@ -43,6 +43,12 @@ producer = [
     "dep:tempfile",
     "dep:tracing-subscriber",
 ]
+# Static/vendored native deps for musl (and similar) builds: OpenSSL, zlib, Cyrus SASL PLAIN+SCRAM.
+static-native = [
+    "rdkafka/ssl-vendored",
+    "rdkafka/libz-static",
+    "dep:sasl2-sys",
+]
 
 [dependencies]
 # types
@@ -69,6 +75,9 @@ clap = { version = "4.5", features = ["derive", "env"], optional = true }
 rdkafka = { version = "0.39", features = ["tokio", "sasl"], optional = true }
 tokio = { version = "1.49", features = ["full"], optional = true }
 tempfile = { version = "3.27", optional = true }
+# Feature-unified with rdkafka-sys's sasl2-sys when static-native is enabled.
+# plain/scram imply vendored and enable the plugins Kafka SASL auth needs.
+sasl2-sys = { version = "0.1.22", features = ["plain", "scram"], optional = true }
 
 # producer
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
