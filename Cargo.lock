@@ -3867,7 +3867,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "surreal-sync-core",
- "sysinfo 0.33.1",
+ "sysinfo 0.37.2",
  "tokio",
  "tracing",
  "tracing-subscriber",
