@@ -98,7 +98,7 @@ impl MongodbIncrementalSource {
         initial_resume_token: Vec<u8>,
     ) -> Result<Self> {
         // Validate the resume token by trying to deserialize it
-        bson::from_slice::<ResumeToken>(&initial_resume_token).map_err(|e| {
+        bson::deserialize_from_slice::<ResumeToken>(&initial_resume_token).map_err(|e| {
             anyhow::anyhow!(
                 "Invalid resume token provided to MongoDB source constructor: {e}. \
                 The token may be corrupted or from an incompatible MongoDB version.",
@@ -134,7 +134,7 @@ impl MongodbIncrementalSource {
         // Get the resume token from the stream
         // The driver provides a resume_token() method that gives us the current position
         if let Some(token) = change_stream.resume_token() {
-            let bytes = bson::to_vec(&token)?;
+            let bytes = bson::serialize_to_vec(&token)?;
             return Ok(bytes);
         }
 
@@ -201,7 +201,7 @@ impl MongodbIncrementalSource {
         if let Some(checkpoint) = checkpoint {
             // Deserialize the token bytes back to a ResumeToken
             // ResumeToken implements Deserialize, so we can deserialize it directly from BSON
-            let resume_token = bson::from_slice::<ResumeToken>(&checkpoint.resume_token)
+            let resume_token = bson::deserialize_from_slice::<ResumeToken>(&checkpoint.resume_token)
                 .map_err(|e| {
                     // We fail fast here to prevent silent data loss. If we cannot deserialize
                     // the resume token, starting from "current position" would skip all changes
@@ -257,7 +257,7 @@ impl MongodbIncrementalSource {
         seen_token: Arc<Mutex<Vec<u8>>>,
     ) -> Result<Change> {
         // Track the fetch-time resume token separately from the sink-safe bookmark.
-        if let Ok(token_bytes) = bson::to_vec(&event.id) {
+        if let Ok(token_bytes) = bson::serialize_to_vec(&event.id) {
             *seen_token.lock().await = token_bytes;
         }
 

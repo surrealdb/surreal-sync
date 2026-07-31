@@ -1274,6 +1274,7 @@ dependencies = [
  "indexmap 2.14.0",
  "js-sys",
  "rand 0.9.5",
+ "serde",
  "serde_bytes",
  "simdutf8",
  "thiserror 2.0.19",
@@ -4429,6 +4430,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8426a875ded61430d4a811dbfda7633b6b8af0225c547fc6c28b8b0aa7d79a13"
 dependencies = [
  "bson 2.15.0",
+ "bson 3.1.0",
  "mongocrypt-sys",
  "once_cell",
  "serde",
@@ -4449,6 +4451,7 @@ dependencies = [
  "base64 0.22.1",
  "bitflags",
  "bson 2.15.0",
+ "bson 3.1.0",
  "derive-where",
  "derive_more",
  "futures-core",

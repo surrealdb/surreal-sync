@@ -96,8 +96,10 @@ pub fn mongodb_value_to_bson(value: &MongoDBValue) -> Result<Bson, Box<dyn std::
         }
         MongoDBValue::RegularExpression { pattern, flags } => {
             Ok(Bson::RegularExpression(mongodb::bson::Regex {
-                pattern: pattern.clone(),
-                options: flags.clone(),
+                pattern: mongodb::bson::raw::CString::try_from(pattern.as_str())
+                    .map_err(|e| format!("invalid regex pattern: {e}"))?,
+                options: mongodb::bson::raw::CString::try_from(flags.as_str())
+                    .map_err(|e| format!("invalid regex options: {e}"))?,
             }))
         }
         MongoDBValue::Decimal128(dec) => {
@@ -176,7 +178,7 @@ pub async fn create_mongodb_collection_from_test_table(
 
         // Set validation schema if specified
         if let Some(ref validation) = schema.mongodb.validation_schema {
-            if let Ok(doc) = mongodb::bson::to_document(validation) {
+            if let Ok(doc) = mongodb::bson::serialize_to_document(validation) {
                 options.validator = Some(doc);
             }
         }
