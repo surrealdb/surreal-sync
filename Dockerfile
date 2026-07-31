@@ -1,5 +1,5 @@
-# Build stage
-FROM rust:1.88-bookworm AS builder
+# Build stage — keep in sync with rust-toolchain.toml
+FROM rust:1.96-bookworm AS builder
 
 WORKDIR /app
 
@@ -14,8 +14,9 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy workspace files
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY crates ./crates
+COPY examples ./examples
 COPY src ./src
 
 # Build the binary in release mode and strip debug symbols
