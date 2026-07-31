@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y \
 # Copy workspace files
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY examples ./examples
 COPY src ./src
 
 # Build the binary in release mode and strip debug symbols
