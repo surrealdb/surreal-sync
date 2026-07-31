@@ -1245,7 +1245,6 @@ dependencies = [
  "ahash 0.8.12",
  "base64 0.22.1",
  "bitvec",
- "chrono",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
  "hex",
@@ -1256,6 +1255,29 @@ dependencies = [
  "serde",
  "serde_bytes",
  "serde_json",
+ "time",
+ "uuid",
+]
+
+[[package]]
+name = "bson"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b3f109694c4f45353972af96bf97d8a057f82e2d6e496457f4d135b9867a518c"
+dependencies = [
+ "ahash 0.8.12",
+ "base64 0.22.1",
+ "bitvec",
+ "chrono",
+ "getrandom 0.3.4",
+ "hex",
+ "indexmap 2.14.0",
+ "js-sys",
+ "rand 0.9.5",
+ "serde",
+ "serde_bytes",
+ "simdutf8",
+ "thiserror 2.0.19",
  "time",
  "uuid",
 ]
@@ -4003,7 +4025,7 @@ name = "loadtest-populate-mongodb"
 version = "0.6.1"
 dependencies = [
  "async-trait",
- "bson",
+ "bson 3.1.0",
  "chrono",
  "clap",
  "loadtest-distributed",
@@ -4407,7 +4429,8 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8426a875ded61430d4a811dbfda7633b6b8af0225c547fc6c28b8b0aa7d79a13"
 dependencies = [
- "bson",
+ "bson 2.15.0",
+ "bson 3.1.0",
  "mongocrypt-sys",
  "once_cell",
  "serde",
@@ -4427,7 +4450,8 @@ checksum = "b814038f367d212f55de0a630cb35102a9b8ca23785a86955d62c0087c93846d"
 dependencies = [
  "base64 0.22.1",
  "bitflags",
- "bson",
+ "bson 2.15.0",
+ "bson 3.1.0",
  "derive-where",
  "derive_more",
  "futures-core",
@@ -4481,7 +4505,7 @@ dependencies = [
 name = "mongodb-types"
 version = "0.6.1"
 dependencies = [
- "bson",
+ "bson 3.1.0",
  "chrono",
  "serde",
  "serde_json",
@@ -7362,7 +7386,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-s3",
  "base64 0.22.1",
- "bson",
+ "bson 3.1.0",
  "chrono",
  "chrono-tz",
  "clap",
@@ -7585,7 +7609,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
- "bson",
+ "bson 3.1.0",
  "chrono",
  "futures",
  "log",
