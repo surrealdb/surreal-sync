@@ -743,7 +743,7 @@ mod tests {
 
     #[test]
     fn test_create_thing_ulid() {
-        let u = ulid::Ulid::new();
+        let u = ulid::Ulid::generate();
         let id = Value::Ulid(u);
         let record_id = create_thing("users", &id).unwrap();
         assert_eq!(record_id.table.as_str(), "users");

@@ -754,7 +754,7 @@ mod tests {
 
     #[test]
     fn test_create_thing_ulid() {
-        let u = ulid::Ulid::new();
+        let u = ulid::Ulid::generate();
         let id = Value::Ulid(u);
         let thing = create_thing("users", &id).unwrap();
         assert_eq!(thing.tb, "users");

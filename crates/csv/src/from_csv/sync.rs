@@ -189,11 +189,11 @@ impl CsvStreamDriver {
 
         let id_cols = self.effective_id_columns();
         let id_value = if id_cols.is_empty() {
-            Value::Ulid(ulid::Ulid::new())
+            Value::Ulid(ulid::Ulid::generate())
         } else if id_cols.len() == 1 {
             data.get(&id_cols[0])
                 .map(|tv| tv.value.clone())
-                .unwrap_or_else(|| Value::Ulid(ulid::Ulid::new()))
+                .unwrap_or_else(|| Value::Ulid(ulid::Ulid::generate()))
         } else {
             let mut parts = Vec::with_capacity(id_cols.len());
             for col in &id_cols {
