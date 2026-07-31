@@ -1,6 +1,6 @@
 [package]
 name = "loadtest-distributed"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 publish = false
 description = "Container-based distributed load testing for surreal-sync (library)"
@@ -25,7 +25,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 
 # System info for environment verification
-sysinfo = "0.33"
+sysinfo = "0.37"
 num_cpus = "1.16"
 nix = { version = "0.31", features = ["fs"] }
 hostname = "0.4"

@@ -1,6 +1,6 @@
 [package]
 name = "surreal-sync-example-from-snowflake"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 publish = false
 description = "Embedder example: Snowflake ingestion with in-process transforms"

@@ -36,7 +36,7 @@ resolver = "2"
 
 [package]
 name = "surreal-sync"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "Command-line tool for syncing data from various sources into SurrealDB"
 authors = ["surreal-sync contributors"]
@@ -45,6 +45,8 @@ publish = false
 [features]
 default = []
 vendored-openssl = ["dep:openssl"]
+# Fully static musl builds: vendored OpenSSL + Kafka static-native (SASL PLAIN/SCRAM, zlib).
+static-musl = ["vendored-openssl", "surreal-sync-kafka/static-native"]
 
 [dependencies]
 # CLI framework
@@ -72,8 +74,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 surrealdb2 = { version = "2.6.5", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
 # SurrealDB SDK v3 (aliased for coexistence with v2)
 surrealdb3 = { version = "3.1.5", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
-mongodb = "3.2.4"
-bson = { version = "2.15.0", features = ["chrono-0_4"] }
+mongodb = { version = "3.3", features = ["bson-3"] }
+bson = { version = "3.1.0", features = ["chrono-0_4", "serde"] }
 chrono = "0.4.41"
 chrono-tz = "0.10"
 void = "1.0.2"

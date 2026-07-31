@@ -1,6 +1,6 @@
 [package]
 name = "surreal-sync-snowflake"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "Sync Snowflake tables into SurrealDB"
 license = "Apache-2.0"
@@ -18,35 +18,45 @@ from_snowflake = [
     "dep:surreal-sync-runtime",
     "dep:clap",
     "dep:async-trait",
+    "dep:pkcs8",
     "dep:reqwest",
     "dep:snowflake-jwt",
     "dep:tokio",
     "dep:tracing",
+    "dep:zeroize",
 ]
 
 [dependencies]
 # Always needed for `types`
-surreal-sync-core = { path = "../sync-core", version = "0.6.0" }
+surreal-sync-core = { path = "../sync-core", version = "0.6.1" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1.0"
 
 # `from_snowflake` (optional)
-surreal-sync-runtime = { path = "../runtime", version = "0.6.0", features = ["cli"], optional = true }
+surreal-sync-runtime = { path = "../runtime", version = "0.6.1", features = ["cli"], optional = true }
 clap = { version = "4.5", features = ["derive", "env"], optional = true }
 async-trait = { version = "0.1", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 snowflake-jwt = { version = "0.3", optional = true }
 tokio = { version = "1.49", features = ["time"], optional = true }
 tracing = { version = "0.1", optional = true }
+# Decrypts passphrase-protected PKCS#8 keys before handing the plaintext PEM to
+# snowflake-jwt (which only reads unencrypted PKCS#8). Version must stay in step
+# with the `pkcs8` that `rsa` pulls in via snowflake-jwt so the two unify.
+# `3des` covers PBES2+3DES-CBC, which Snowflake's own docs used to generate
+# (`openssl pkcs8 -topk8 -v2 des3`). Legacy PBES1/SHA-1 is deliberately not
+# enabled -- those keys get a "re-wrap with -v2 aes-256-cbc" error instead.
+pkcs8 = { version = "0.10", features = ["encryption", "pem", "3des", "std"], optional = true }
+zeroize = { version = "1", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time"] }
 async-trait = "0.1"
 serde_json = "1.0"
-surreal-sync-runtime = { path = "../runtime", version = "0.6.0" }
-surreal-sync-core = { path = "../sync-core", version = "0.6.0" }
+surreal-sync-runtime = { path = "../runtime", version = "0.6.1" }
+surreal-sync-core = { path = "../sync-core", version = "0.6.1" }
 
 [lib]
 name = "surreal_sync_snowflake"

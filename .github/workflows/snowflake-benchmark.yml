@@ -1,0 +1,228 @@
+name: Snowflake Benchmark
+
+# Stress test / throughput benchmark for the Snowflake source.
+#
+# Ingests TPC-H from the SNOWFLAKE_SAMPLE_DATA shared database, which exists on
+# every Snowflake account and needs no seeding. Scale is a schema name; CUSTOMER
+# is 150,000 rows per scale factor:
+#
+#   TPCH_SF1    CUSTOMER    150,000  ORDERS   1,500,000  LINEITEM   6,001,215
+#   TPCH_SF10   CUSTOMER  1,500,000  ORDERS  15,000,000  LINEITEM  59,986,052
+#   TPCH_SF100  CUSTOMER 15,000,000  ORDERS 150,000,000  LINEITEM 600,037,902
+#
+# Default is TPCH_SF100 / CUSTOMER = 15,000,000 rows.
+#
+# Beyond a wall-clock number this is the only thing in CI that exercises
+# multi-partition result paging, JWT re-minting across a long sync, HTTP 202
+# statement polling, and Decimal/DATE conversion at volume.
+#
+# Every run consumes Snowflake credits, so it is manual-dispatch plus release
+# tags -- never on push or pull_request. See docs/snowflake.md for setup.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scale:
+        description: TPC-H scale factor (schema in SNOWFLAKE_SAMPLE_DATA)
+        type: choice
+        options: [TPCH_SF100, TPCH_SF10, TPCH_SF1]
+        default: TPCH_SF100
+      tables:
+        description: Comma-separated TPC-H tables to ingest
+        type: string
+        default: CUSTOMER
+      batch_size:
+        description: Rows per apply chunk
+        type: string
+        default: '5000'
+      surrealdb_image:
+        description: SurrealDB Docker image
+        type: string
+        default: surrealdb/surrealdb:v3.2.3
+      mode:
+        description: 'both = dry-run then write (needed for verification)'
+        type: choice
+        options: [both, write, dry-run]
+        default: both
+      runner:
+        description: Runner size
+        type: choice
+        options: [ubuntu-latest-8-cores, ubuntu-latest-16-cores, ubuntu-latest-4-cores]
+        default: ubuntu-latest-8-cores
+  push:
+    tags: ['v*.*.*']
+
+concurrency:
+  # Global, not per-ref: never two benchmarks on one warehouse, and never cancel
+  # a run partway through (that would leave the warehouse spinning).
+  group: snowflake-benchmark
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+  actions: read   # gh run download, for the previous run's baseline
+
+jobs:
+  benchmark:
+    runs-on: ${{ inputs.runner || 'ubuntu-latest-8-cores' }}
+    environment: snowflake
+    timeout-minutes: 180
+
+    env:
+      BENCH_SCALE: ${{ inputs.scale || 'TPCH_SF100' }}
+      BENCH_TABLES: ${{ inputs.tables || 'CUSTOMER' }}
+      BENCH_BATCH_SIZE: ${{ inputs.batch_size || '5000' }}
+      BENCH_MODE: ${{ inputs.mode || 'both' }}
+      SURREALDB_IMAGE: ${{ inputs.surrealdb_image || 'surrealdb/surrealdb:v3.2.3' }}
+      BENCH_OUT_DIR: ${{ github.workspace }}/bench-out
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Verify Snowflake credentials are available
+      env:
+        SF_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      run: |
+        if [ -z "$SF_ACCOUNT" ]; then
+          echo "::error::SNOWFLAKE_ACCOUNT is not available. The benchmark cannot run without credentials from the 'snowflake' environment."
+          exit 1
+        fi
+
+    - name: Install system build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential cmake libssl-dev libsasl2-dev pkg-config \
+          protobuf-compiler postgresql-client
+
+    - name: Install Rust toolchain (from rust-toolchain.toml) + cache
+      uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+      with:
+        cache: true
+
+    # --release, not --profile ci: the ci profile inherits dev, which would make
+    # every number here meaningless.
+    - name: Build surreal-sync (release)
+      run: cargo build --release --bin surreal-sync
+
+    - name: Start SurrealDB
+      run: |
+        docker volume create sdb-bench
+        docker run -d --name sdb-bench -p 8000:8000 -v sdb-bench:/data \
+          "$SURREALDB_IMAGE" start --user root --pass root rocksdb:/data
+        # Poll from the host: the SurrealDB image ships no curl.
+        for _ in $(seq 1 60); do
+          if curl -sf http://localhost:8000/version; then
+            echo && echo "SurrealDB ready" && exit 0
+          fi
+          sleep 2
+        done
+        echo "::error::SurrealDB did not become ready"
+        docker logs sdb-bench
+        exit 1
+
+    - name: Materialize Snowflake private key
+      env:
+        SF_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      run: |
+        umask 077
+        printf '%s\n' "$SF_KEY" > "$RUNNER_TEMP/snowflake_key.p8"
+        if ! grep -q 'BEGIN PRIVATE KEY' "$RUNNER_TEMP/snowflake_key.p8"; then
+          echo "::error::SNOWFLAKE_PRIVATE_KEY is not an unencrypted PKCS#8 PEM."
+          exit 1
+        fi
+
+    - name: Run benchmark
+      run: python3 scripts/snowflake-benchmark.py
+      env:
+        SURREAL_SYNC_BIN: ${{ github.workspace }}/target/release/surreal-sync
+        SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+        SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+        SNOWFLAKE_PRIVATE_KEY_PATH: ${{ runner.temp }}/snowflake_key.p8
+        SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+        SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+        SURREAL_ENDPOINT: http://localhost:8000
+        RUST_BACKTRACE: '1'
+
+    # Same baseline mechanism loadtest.yml uses: pull metrics from the previous
+    # successful run of this workflow so the summary can show a delta.
+    - name: Download baseline metrics (if any)
+      if: always()
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        run_id=$(gh run list --workflow snowflake-benchmark.yml \
+          --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+        if [ -n "$run_id" ] && [ "$run_id" != "null" ]; then
+          echo "Using baseline from run $run_id"
+          gh run download "$run_id" --name snowflake-benchmark-metrics --dir baseline || true
+        else
+          echo "No previous successful run to use as a baseline"
+        fi
+
+    - name: Write summary
+      if: always()
+      run: |
+        if [ ! -f "$BENCH_OUT_DIR/metrics.json" ]; then
+          echo "### Snowflake Benchmark: no metrics produced" >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+        fi
+        {
+          echo "### Snowflake Benchmark — \`$BENCH_SCALE\`"
+          echo
+          echo "Tables: \`$BENCH_TABLES\` · batch size \`$BENCH_BATCH_SIZE\` · mode \`$BENCH_MODE\` · \`$SURREALDB_IMAGE\`"
+          echo
+        } >> "$GITHUB_STEP_SUMMARY"
+        # Throughput regressions are reported, not enforced: n=1 on a shared
+        # runner is too noisy to gate on. Correctness is enforced in the script.
+        THRESHOLD=15 python3 loadtest/scripts/compare_metrics.py \
+          "$BENCH_OUT_DIR/metrics.json" \
+          $([ -f baseline/metrics.json ] && echo baseline/metrics.json) \
+          >> "$GITHUB_STEP_SUMMARY" || true
+        {
+          echo
+          echo "<details><summary>Per-table verification</summary>"
+          echo
+          echo '```json'
+          python3 -c "import json;print(json.dumps(json.load(open('$BENCH_OUT_DIR/metrics.json'))['snowflake'],indent=2))"
+          echo '```'
+          echo "</details>"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload metrics
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: snowflake-benchmark-metrics
+        path: ${{ env.BENCH_OUT_DIR }}/metrics.json
+        retention-days: 90
+        if-no-files-found: warn
+
+    - name: Collect SurrealDB logs on failure
+      if: failure()
+      run: |
+        # The dir may not exist if we failed before the benchmark script ran.
+        mkdir -p "$BENCH_OUT_DIR"
+        docker logs sdb-bench > "$BENCH_OUT_DIR/surrealdb.log" 2>&1 || true
+
+    - name: Upload full output on failure
+      if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: snowflake-benchmark-logs
+        path: ${{ env.BENCH_OUT_DIR }}/
+        retention-days: 7
+        if-no-files-found: ignore
+
+    - name: Tear down
+      if: always()
+      run: |
+        shred -u "$RUNNER_TEMP/snowflake_key.p8" 2>/dev/null \
+          || rm -f "$RUNNER_TEMP/snowflake_key.p8" || true
+        docker rm -f sdb-bench 2>/dev/null || true
+        docker volume rm sdb-bench 2>/dev/null || true

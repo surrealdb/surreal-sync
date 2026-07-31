@@ -28,7 +28,8 @@ pub struct Args {
     #[arg(long, value_name = "PATH", env = "SNOWFLAKE_PRIVATE_KEY_PATH")]
     pub private_key_path: PathBuf,
 
-    /// Passphrase for an encrypted private key (currently unsupported)
+    /// Passphrase for a PBES2-encrypted PKCS#8 private key (ignored if the key is
+    /// not encrypted)
     #[arg(long, env = "SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")]
     pub private_key_passphrase: Option<String>,
 

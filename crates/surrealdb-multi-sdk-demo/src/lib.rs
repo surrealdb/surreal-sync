@@ -4,7 +4,7 @@
 //!
 //! This crate uses Cargo's package aliasing feature to import both SDK versions:
 //! - `surrealdb2` = SurrealDB SDK 2.6.5
-//! - `surrealdb3` = SurrealDB SDK 3.1.5
+//! - `surrealdb3` = SurrealDB SDK 3.2.3
 //!
 //! ## Key Findings
 //!
@@ -192,7 +192,7 @@ mod tests {
     use surreal_sync_surreal::version::testing::SurrealDbContainer;
 
     const V2_IMAGE: &str = "surrealdb/surrealdb:v2.6.5";
-    const V3_IMAGE: &str = "surrealdb/surrealdb:v3.1.5";
+    const V3_IMAGE: &str = "surrealdb/surrealdb:v3.2.3";
 
     static CONTAINER_NAMES: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 

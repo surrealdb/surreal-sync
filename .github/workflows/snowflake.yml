@@ -1,0 +1,167 @@
+name: Snowflake Integration
+
+# Live end-to-end coverage for the Snowflake source.
+#
+# Snowflake has no emulator and no Docker image, so unlike every other source
+# this cannot run against a throwaway container -- it needs a real account. The
+# credentials live in the `snowflake` environment (see docs/snowflake.md for the
+# secrets, variables, and account setup).
+#
+# The test is read-only against the SNOWFLAKE_SAMPLE_DATA share, defaulting to
+# TPCH_SF10 / CUSTOMER = 1,500,000 rows. That is a genuine multi-partition sync
+# rather than a smoke test, so the job is slow by design; .config/nextest.toml
+# widens the slow-timeout for binary(snowflake) and disables retries so a slow
+# run is not re-billed twice.
+#
+# tests/snowflake/ skips itself when SNOWFLAKE_* is unset, which would make a
+# misnamed secret look like a passing test forever. SNOWFLAKE_REQUIRED=1 turns
+# that skip into a failure.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/snowflake/**'
+      - 'src/snowflake/**'
+      - 'tests/snowflake/**'
+      - 'examples/from-snowflake/**'
+      - 'docs/snowflake.md'
+      - '.github/workflows/snowflake.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/snowflake/**'
+      - 'src/snowflake/**'
+      - 'tests/snowflake/**'
+      - 'examples/from-snowflake/**'
+      - 'docs/snowflake.md'
+      - '.github/workflows/snowflake.yml'
+  # Nightly, to catch Snowflake REST API drift independently of our own changes.
+  # Not free: this reads 1.5M rows per SurrealDB leg. See the Cost section in
+  # docs/snowflake.md for the levers if that proves too expensive.
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: snowflake-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    environment: snowflake
+    # Generous: 1.5M rows through the REST API plus a workspace build. Must stay
+    # above the nextest binary(snowflake) terminate-after budget (60 min) so a
+    # stuck sync is reported by nextest rather than killed by the job timeout.
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      # One leg at a time so the two runs don't contend on the same warehouse.
+      max-parallel: 1
+      matrix:
+        surrealdb_image:
+          - surrealdb/surrealdb:v2.6.5
+          - surrealdb/surrealdb:v3.2.3
+
+    steps:
+    # First, so a fork PR finishes in seconds instead of building the workspace.
+    # Fork PRs never receive secrets; report that as a green notice rather than a
+    # red failure, so this workflow is safe to mark as a required check.
+    - name: Check for Snowflake credentials
+      id: creds
+      env:
+        SF_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+      run: |
+        if [ -z "$SF_ACCOUNT" ]; then
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          echo "::notice title=Snowflake tests skipped::SNOWFLAKE_ACCOUNT is not available to this run (expected for pull requests from forks). The live Snowflake test did not run."
+        else
+          echo "available=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    - name: Checkout repository
+      if: steps.creds.outputs.available == 'true'
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Install system build dependencies
+      if: steps.creds.outputs.available == 'true'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential cmake libssl-dev libsasl2-dev pkg-config \
+          protobuf-compiler postgresql-client
+
+    - name: Install Rust toolchain (from rust-toolchain.toml) + cache
+      if: steps.creds.outputs.available == 'true'
+      uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
+      with:
+        cache: true
+
+    - name: Install cargo-nextest
+      if: steps.creds.outputs.available == 'true'
+      uses: taiki-e/install-action@c44f6b046f1c29ae5918b1e0bfdbb2f1813836fd # v2.84.1
+      with:
+        tool: nextest
+
+    # Interpolate the secret through env, not into the script body: an inline
+    # ${{ }} in a run: block is a shell-injection surface.
+    - name: Materialize Snowflake private key
+      if: steps.creds.outputs.available == 'true'
+      env:
+        SF_KEY: ${{ secrets.SNOWFLAKE_PRIVATE_KEY }}
+      run: |
+        umask 077
+        printf '%s\n' "$SF_KEY" > "$RUNNER_TEMP/snowflake_key.p8"
+        # Fail early and clearly rather than deep inside the JWT code.
+        if ! grep -q 'BEGIN PRIVATE KEY' "$RUNNER_TEMP/snowflake_key.p8"; then
+          echo "::error::SNOWFLAKE_PRIVATE_KEY is not an unencrypted PKCS#8 PEM (expected a '-----BEGIN PRIVATE KEY-----' header). Encrypted keys are not supported."
+          exit 1
+        fi
+
+    - name: Run Snowflake integration tests
+      if: steps.creds.outputs.available == 'true'
+      run: cargo nextest run --profile ci --all-features -E 'binary(snowflake)'
+      env:
+        SNOWFLAKE_REQUIRED: '1'
+        SNOWFLAKE_ACCOUNT: ${{ secrets.SNOWFLAKE_ACCOUNT }}
+        SNOWFLAKE_USER: ${{ secrets.SNOWFLAKE_USER }}
+        SNOWFLAKE_PRIVATE_KEY_PATH: ${{ runner.temp }}/snowflake_key.p8
+        SNOWFLAKE_WAREHOUSE: ${{ vars.SNOWFLAKE_WAREHOUSE }}
+        SNOWFLAKE_ROLE: ${{ vars.SNOWFLAKE_ROLE }}
+        # Optional overrides. Unset repository variables expand to "", which the
+        # test treats as absent so its own defaults (SNOWFLAKE_SAMPLE_DATA /
+        # TPCH_SF10 / CUSTOMER) apply.
+        SNOWFLAKE_DATABASE: ${{ vars.SNOWFLAKE_DATABASE }}
+        SNOWFLAKE_SCHEMA: ${{ vars.SNOWFLAKE_SCHEMA }}
+        SNOWFLAKE_TEST_TABLE: ${{ vars.SNOWFLAKE_TEST_TABLE }}
+        SURREALDB_IMAGE: ${{ matrix.surrealdb_image }}
+        RUST_BACKTRACE: '1'
+
+    - name: Remove private key
+      if: always()
+      run: |
+        shred -u "$RUNNER_TEMP/snowflake_key.p8" 2>/dev/null \
+          || rm -f "$RUNNER_TEMP/snowflake_key.p8" \
+          || true
+
+    - name: Clean up leftover test containers
+      if: always()
+      run: docker rm -f $(docker ps -aq) 2>/dev/null || true
+
+    - name: Upload test results on failure
+      if: failure()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: snowflake-test-results-${{ strategy.job-index }}
+        path: |
+          target/nextest/ci/junit.xml
+          logs/test/
+        retention-days: 7
+        if-no-files-found: ignore

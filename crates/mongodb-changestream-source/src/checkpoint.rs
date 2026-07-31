@@ -74,7 +74,7 @@ pub async fn get_resume_token(client: &MongoClient, database: &str) -> Result<Ve
 
     // Get the resume token from the stream
     if let Some(token) = change_stream.resume_token() {
-        let bytes = bson::to_vec(&token)?;
+        let bytes = bson::serialize_to_vec(&token)?;
         return Ok(bytes);
     }
 

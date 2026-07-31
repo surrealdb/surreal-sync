@@ -1,6 +1,6 @@
 [package]
 name = "surreal-sync-core"
-version = "0.6.0"
+version = "0.6.1"
 publish = true
 edition = "2021"
 description = "Core types, SurrealSink, transform/sink-connect traits, and checkpoint API for surreal-sync"

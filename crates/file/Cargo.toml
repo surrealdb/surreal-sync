@@ -1,6 +1,6 @@
 [package]
 name = "surreal-sync-file"
-version = "0.6.0"
+version = "0.6.1"
 publish = true
 edition = "2021"
 description = "File source abstraction for surreal-sync (local, S3, HTTP)"
