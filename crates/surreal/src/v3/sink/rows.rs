@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_value_to_surreal_id_ulid() {
-        let ulid = ulid::Ulid::new();
+        let ulid = ulid::Ulid::generate();
         let ulid_str = ulid.to_string();
         let value = Value::Ulid(ulid);
         let id = value_to_surreal_id(&value).unwrap();
