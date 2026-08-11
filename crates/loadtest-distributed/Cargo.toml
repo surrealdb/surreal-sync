@@ -25,7 +25,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 
 # System info for environment verification
-sysinfo = "0.37"
+sysinfo = "0.39"
 num_cpus = "1.16"
 nix = { version = "0.31", features = ["fs"] }
 hostname = "0.4"
