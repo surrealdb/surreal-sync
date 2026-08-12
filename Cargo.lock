@@ -1028,6 +1028,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b25655df2c3cdd83c5e5b293b88acd880332b2ddadd7c30ac43144fdc0033da9"
+
+[[package]]
 name = "base64-simd"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4122,7 +4128,7 @@ name = "loadtest-verify-surreal2"
 version = "0.6.1"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.0",
  "chrono",
  "clap",
  "loadtest-generator",
@@ -4144,7 +4150,7 @@ name = "loadtest-verify-surreal3"
 version = "0.6.1"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.0",
  "chrono",
  "clap",
  "loadtest-generator",
@@ -7447,7 +7453,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-sdk-s3",
- "base64 0.22.1",
+ "base64 0.23.0",
  "bson 3.1.0",
  "chrono",
  "chrono-tz",
@@ -7530,7 +7536,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.0",
  "chrono",
  "csv",
  "futures",
@@ -7614,7 +7620,7 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.0",
  "chrono",
  "clap",
  "serde",
@@ -7640,7 +7646,7 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.0",
  "bytes",
  "chrono",
  "clap",
@@ -7670,7 +7676,7 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.0",
  "bson 3.1.0",
  "chrono",
  "futures",
@@ -7695,7 +7701,7 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.0",
  "byteorder",
  "bytes",
  "chrono",
@@ -7740,7 +7746,7 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.0",
  "chrono",
  "chrono-tz",
  "futures",
@@ -7767,7 +7773,7 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.0",
  "chrono",
  "geo-types",
  "hex",
@@ -7841,7 +7847,7 @@ version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.0",
  "chrono",
  "geo-types",
  "log",

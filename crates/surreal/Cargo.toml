@@ -75,7 +75,7 @@ serde_json = { version = "1.0", optional = true }
 thiserror = { version = "2.0", optional = true }
 rust_decimal = { version = "^1.23", optional = true }
 geo-types = { version = "0.7", optional = true }
-base64 = { version = "0.22", optional = true }
+base64 = { version = "0.23", optional = true }
 
 # Package-aliased SurrealDB majors so `v2` + `v3` can coexist.
 surrealdb2 = { version = "2.6.5", package = "surrealdb", features = ["protocol-ws", "kv-mem"], optional = true }

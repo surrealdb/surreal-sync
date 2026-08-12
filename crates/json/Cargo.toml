@@ -31,7 +31,7 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-base64 = "0.22"
+base64 = "0.23"
 anyhow = "1.0"
 
 # from_jsonl (optional; heavy origin deps)
