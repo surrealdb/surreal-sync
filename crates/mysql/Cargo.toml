@@ -55,7 +55,7 @@ from_trigger = [
 [dependencies]
 surreal-sync-core = { path = "../sync-core", version = "0.6.1" }
 surreal-sync-json = { path = "../json", version = "0.6.1" }
-mysql_async = { version = "0.36", default-features = false, features = ["derive", "rustls-tls", "tls12", "aws-lc-rs", "minimal"] }
+mysql_async = { version = "0.37", default-features = false, features = ["derive", "rustls-tls", "tls12", "aws-lc-rs", "minimal"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.0", features = ["v4", "serde"] }
 serde = { version = "1.0", features = ["derive"] }
@@ -95,7 +95,7 @@ tokio-util = { version = "0.7", optional = true }
 tokio = { version = "1.49", features = ["full"] }
 rust_decimal = "1.39"
 hex = "0.4"
-mysql_async = { version = "0.36", default-features = false, features = ["derive", "rustls-tls", "tls12", "aws-lc-rs", "minimal"] }
+mysql_async = { version = "0.37", default-features = false, features = ["derive", "rustls-tls", "tls12", "aws-lc-rs", "minimal"] }
 anyhow = "1.0.100"
 insta = { version = "1.48", features = ["json"] }
 serde = { version = "1.0.228", features = ["derive"] }
