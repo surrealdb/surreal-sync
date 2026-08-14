@@ -118,6 +118,7 @@ async fn test_postgresql_loadtest_small_scale() -> Result<(), Box<dyn std::error
     let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: BATCH_SIZE,
         dry_run: false,
+        schemafull: false,
     };
 
     // Create version-appropriate sink and run sync

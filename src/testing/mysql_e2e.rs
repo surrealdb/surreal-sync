@@ -53,6 +53,7 @@ pub async fn run_full_sync_e2e(
     let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: 1000,
         dry_run: false,
+        schemafull: false,
     };
 
     match &conn {
@@ -130,6 +131,7 @@ pub async fn run_incremental_e2e(
     let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: 1000,
         dry_run: false,
+        schemafull: false,
     };
 
     let checkpoint_store =

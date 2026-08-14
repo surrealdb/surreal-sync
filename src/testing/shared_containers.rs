@@ -325,5 +325,62 @@ pub async fn shared_neo4j() -> &'static surreal_sync_neo4j_source::testing::cont
     .await
 }
 
+/// Returns a shared SQL Server container (CDC + Agent), starting it on first call.
+///
+/// Running the container accepts Microsoft's EULA
+/// (https://go.microsoft.com/fwlink/?linkid=2143497). Developer edition is for
+/// test only.
+pub async fn shared_mssql() -> &'static surreal_sync_mssql::from_mssql::testing::MssqlContainer {
+    static MS: OnceCell<surreal_sync_mssql::from_mssql::testing::MssqlContainer> =
+        OnceCell::const_new();
+    MS.get_or_init(|| async {
+        let name = format!("shared-mssql-{}", std::process::id());
+        register_container(&name);
+        let mut c = surreal_sync_mssql::from_mssql::testing::MssqlContainer::new(&name);
+        c.start().expect("SQL Server start failed");
+        c.wait_until_ready(180)
+            .await
+            .expect("SQL Server not ready in 180s");
+        c.setup_testdb()
+            .await
+            .expect("SQL Server testdb/CDC setup failed");
+        c
+    })
+    .await
+}
+
+/// Create a fresh SQL Server database with CDC and snapshot isolation, and return its ADO.NET string.
+pub async fn create_mssql_test_db(
+    container: &surreal_sync_mssql::from_mssql::testing::MssqlContainer,
+    test_id: u64,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let db_name = format!("test_{test_id}");
+    let master = container.connection_string_for("master");
+    let client = surreal_sync_mssql::from_mssql::testing::connect(&master).await?;
+    client
+        .simple_query(&format!(
+            "IF DB_ID(N'{db_name}') IS NULL CREATE DATABASE [{db_name}]; \
+             ALTER DATABASE [{db_name}] SET ALLOW_SNAPSHOT_ISOLATION ON;"
+        ))
+        .await?;
+    let conn = container.connection_string_for(&db_name);
+    let db = surreal_sync_mssql::from_mssql::testing::connect(&conn).await?;
+    let mut last_err = None;
+    for _ in 0..40 {
+        match db.simple_query("EXEC sys.sp_cdc_enable_db;").await {
+            Ok(()) => return Ok(conn),
+            Err(e) => {
+                last_err = Some(e);
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+    }
+    Err(format!(
+        "sp_cdc_enable_db failed for `{db_name}`: {}",
+        last_err.map(|e| e.to_string()).unwrap_or_default()
+    )
+    .into())
+}
+
 // Kafka container shared accessor is defined inline in the kafka test binary
 // because the surreal_sync_kafka::producer crate has linking constraints.

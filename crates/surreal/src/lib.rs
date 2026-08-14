@@ -39,3 +39,6 @@ pub use v3::{Surreal3Sink, Surreal3Store};
 
 #[cfg(feature = "v3")]
 pub use v3::client::Surreal3Client;
+
+#[cfg(any(feature = "v2", feature = "v3"))]
+pub mod ddl;

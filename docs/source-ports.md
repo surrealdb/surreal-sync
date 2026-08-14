@@ -40,6 +40,7 @@ spawn coverage is in `surreal-sync-runtime` pipeline config tests).
 | csv | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | File read polls into window (no per-batch runtime restart); **one runtime per file** (no cross-file read/transform/write overlap) |
 | jsonl | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline; **one runtime per file** (same as CSV) |
 | snowflake | RowChunkDriver full (per table) | Yes (shared loader) | N/A | Ingestion-only SQL REST snapshot; `--id-columns` → Array IDs (breaking vs former colon Text; restore with `flatten_id`); streams one result partition at a time into `batch_size` apply chunks; no durable source cursor / checkpoint resume |
+| mssql | WatermarkSource + SourceDriver CDC tail | Yes (shared loader + CLI e2e) | Yes | Native SQL Server CDC LSN; `--schemafull` opt-in; temporal tables auto (one Surreal table + `is_current`) |
 
 ## Porting checklist
 

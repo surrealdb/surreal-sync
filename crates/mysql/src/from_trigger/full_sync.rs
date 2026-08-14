@@ -127,6 +127,18 @@ pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
     let schema_info = collect_schema_info(&mut conn, &database_name).await?;
     info!("Collected MySQL schema information");
 
+    if sync_opts.schemafull {
+        let db_schema = super::schema::collect_mysql_database_schema(&mut conn).await?;
+        surreal_sync_core::maybe_emit_schemafull(
+            surreal,
+            &db_schema,
+            &surreal_sync_core::SchemafullExtras::default(),
+            true,
+            sync_opts.dry_run,
+        )
+        .await?;
+    }
+
     // Get list of tables to migrate (excluding system tables)
     let tables = get_user_tables(&mut conn, &database_name).await?;
 

@@ -10,11 +10,12 @@
 //! |--------|-------|
 //! | Snowflake | `surreal-sync-snowflake` (`from_snowflake`) |
 //! | MySQL/MariaDB binlog | `surreal-sync-mysql` (`from_binlog`) |
+//! | SQL Server CDC | `surreal-sync-mssql` (`from_mssql`) |
 //! | SurrealDB sink | `surreal-sync-surreal` with feature `v2` or `v3` |
 //! | Checkpoint (CDC) | included in `surreal-sync-surreal`; or `surreal-sync-runtime::checkpoint_fs` |
 //!
 //! See `docs/sync-pipeline.md` (“Advanced: embedding”) and
-//! `examples/from-mysql-binlog` / `examples/from-snowflake`.
+//! `examples/from-mysql-binlog` / `examples/from-snowflake` / `examples/from-mssql`.
 //!
 //! # What this crate exposes
 //!

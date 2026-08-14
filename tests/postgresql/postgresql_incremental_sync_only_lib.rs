@@ -61,6 +61,7 @@ async fn test_postgresql_incremental_sync_lib() -> Result<(), Box<dyn std::error
     let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: 1000,
         dry_run: false,
+        schemafull: false,
     };
 
     // Create sync manager with filesystem checkpoint store

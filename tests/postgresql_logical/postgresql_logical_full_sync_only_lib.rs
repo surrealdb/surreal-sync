@@ -67,6 +67,7 @@ async fn test_postgresql_logical_full_sync_lib() -> Result<(), Box<dyn std::erro
     let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: 1000,
         dry_run: false,
+        schemafull: false,
     };
 
     // Run full sync with appropriate sink based on detected version

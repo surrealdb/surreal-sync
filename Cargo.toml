@@ -27,10 +27,12 @@ members = [
     "crates/json",
     "crates/csv",
     "crates/kafka",
+    "crates/mssql",
     "examples/from-mysql-binlog",
     "examples/from-snowflake",
     "examples/from-jsonl",
     "examples/from-kafka",
+    "examples/from-mssql",
 ]
 resolver = "2"
 
@@ -112,6 +114,7 @@ surreal-sync-postgresql = { path = "crates/postgresql", features = ["from_wal2js
 surreal-sync-csv = { path = "crates/csv", features = ["from_csv"] }
 surreal-sync-json = { path = "crates/json", features = ["from_jsonl"] }
 surreal-sync-mysql = { path = "crates/mysql", features = ["from_binlog", "from_trigger"] }
+surreal-sync-mssql = { path = "crates/mssql", features = ["from_mssql"] }
 surreal-sync-snowflake = { path = "crates/snowflake", features = ["from_snowflake"] }
 
 # Load testing populators

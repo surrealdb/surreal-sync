@@ -4,7 +4,8 @@
 //! and builds `Relation` instances from join-table rows.
 
 use std::collections::HashMap;
-use surreal_sync_core::{ForeignKeyDefinition, Relation, TableDefinition, ThingRef, Value};
+
+use crate::{ForeignKeyDefinition, Relation, TableDefinition, ThingRef, Value};
 
 /// Transform FK column values in a field map to record links.
 ///
@@ -107,7 +108,7 @@ fn inject_missing_fk_from_composite_id(
 /// Flatten a composite (Array) ID into a string ID.
 /// Simple IDs are returned as-is. Array IDs are joined with `:` separators.
 fn flatten_composite_id(id: Value) -> Value {
-    surreal_sync_core::flatten_composite_id(id, ":")
+    crate::flatten_composite_id(id, ":")
 }
 
 /// Extract and remove the FK value from the fields map.
@@ -124,7 +125,7 @@ fn extract_fk_value(fields: &mut HashMap<String, Value>, fk: &ForeignKeyDefiniti
             .collect();
         Value::Array {
             elements: vals,
-            element_type: Box::new(surreal_sync_core::Type::Text),
+            element_type: Box::new(crate::Type::Text),
         }
     }
 }
@@ -132,7 +133,7 @@ fn extract_fk_value(fields: &mut HashMap<String, Value>, fk: &ForeignKeyDefiniti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use surreal_sync_core::{ColumnDefinition, Type};
+    use crate::{ColumnDefinition, Type};
 
     fn make_table_with_fks(fks: Vec<ForeignKeyDefinition>) -> TableDefinition {
         let mut td = TableDefinition::new(

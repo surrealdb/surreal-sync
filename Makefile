@@ -1,4 +1,4 @@
-.PHONY: test check fmt clippy build build-debug compile-embedder-examples embed-dependency-tree-gates clean clean-logs help install-tools install-hooks system-deps prebuild-test-images prepull-binlog-images print-test-images services-info
+.PHONY: test check fmt clippy build build-debug compile-embedder-examples embed-dependency-tree-gates clean clean-logs help install-tools install-hooks system-deps prebuild-test-images prepull-binlog-images prepull-mssql-image print-test-images services-info
 
 include scripts/test-images.mk
 
@@ -122,7 +122,7 @@ embed-dependency-tree-gates:
 
 # Pre-pull binlog images and pre-build the custom PostgreSQL (wal2json) test image
 # so parallel test processes find them in Docker's layer cache instead of racing.
-prebuild-test-images: prepull-binlog-images
+prebuild-test-images: prepull-binlog-images prepull-mssql-image
 	@echo "🐳 Pre-building PostgreSQL wal2json test image..."
 	docker build -t postgres-wal2json-test \
 		-f crates/postgresql/Dockerfile.postgres16.wal2json \

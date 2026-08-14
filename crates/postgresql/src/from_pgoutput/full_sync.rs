@@ -116,6 +116,15 @@ pub async fn run_full_sync_cancellable_with_transforms<S: SurrealSink, CS: Check
         collect_postgresql_database_schema(&client).await?
     };
 
+    surreal_sync_core::maybe_emit_schemafull(
+        surreal,
+        &db_schema,
+        &surreal_sync_core::SchemafullExtras::default(),
+        sync_opts.schemafull,
+        sync_opts.dry_run,
+    )
+    .await?;
+
     let tables = {
         let client = sql.lock().await;
         resolve_user_tables(&client, &schema, from_opts).await?

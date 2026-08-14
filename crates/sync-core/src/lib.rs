@@ -45,6 +45,8 @@
 //! ```
 
 pub mod checkpoint;
+pub mod ddl;
+pub mod fk_transform;
 pub mod foreign_keys;
 pub mod id_columns;
 pub mod relation_change;
@@ -67,7 +69,14 @@ pub use checkpoint::{
 pub use transform::{InPlaceTransform, Passthrough};
 
 // Foreign key types
+pub use fk_transform::{build_relation_from_change, build_relation_from_row, transform_fk_values};
 pub use foreign_keys::{classify_table, ForeignKeyDefinition, TableKind};
+
+// SCHEMAFULL SurrealQL helpers
+pub use ddl::{
+    emit_schemafull, ident, maybe_emit_schemafull, schemafull_statements, PeriodBound,
+    SchemaFieldExtra, SchemaIndex, SchemafullExtras, SurrealDdl,
+};
 
 // ID / primary-key column helpers
 pub use id_columns::{

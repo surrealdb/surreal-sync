@@ -66,4 +66,6 @@ impl Default for SourceOpts {
 pub struct SyncOpts {
     pub batch_size: usize,
     pub dry_run: bool,
+    /// Emit `DEFINE TABLE` / `FIELD` / `INDEX` before copying rows (opt-in).
+    pub schemafull: bool,
 }

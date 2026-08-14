@@ -31,6 +31,7 @@ pub use interleaved_snapshot::{
     run_interleaved_snapshot_full_sync_with_transforms,
     run_interleaved_snapshot_full_sync_with_transforms_and_overrides, MySqlWatermarkSource,
 };
+pub use schema::collect_mysql_database_schema;
 pub use source::{ChangeStream, IncrementalSource, MySQLChangeStream, MySQLIncrementalSource};
 
 pub use crate::ssl::{SslMode, SslOptions};
@@ -59,4 +60,6 @@ pub struct SyncOpts {
     pub batch_size: usize,
     /// Dry run mode - don't actually write data
     pub dry_run: bool,
+    /// Emit `DEFINE TABLE` / `FIELD` / `INDEX` before copying rows (opt-in).
+    pub schemafull: bool,
 }

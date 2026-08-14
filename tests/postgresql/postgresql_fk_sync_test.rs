@@ -94,6 +94,7 @@ async fn test_postgresql_fk_full_sync() -> Result<(), Box<dyn std::error::Error>
     let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: 1000,
         dry_run: false,
+        schemafull: false,
     };
     let pipeline = surreal_sync_runtime::Pipeline::new();
     let apply_opts = surreal_sync_runtime::ApplyOpts::identity();
@@ -280,6 +281,7 @@ async fn test_postgresql_fk_config_override() -> Result<(), Box<dyn std::error::
     let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: 1000,
         dry_run: false,
+        schemafull: false,
     };
     let pipeline = surreal_sync_runtime::Pipeline::new();
     let apply_opts = surreal_sync_runtime::ApplyOpts::identity();

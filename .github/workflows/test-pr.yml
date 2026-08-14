@@ -135,6 +135,9 @@ jobs:
     - name: Pre-pull MySQL/MariaDB binlog test images
       run: make prepull-binlog-images
 
+    - name: Pre-pull SQL Server test image
+      run: make prepull-mssql-image
+
     - name: Export binlog test image tags
       run: make print-test-images >> $GITHUB_ENV
 

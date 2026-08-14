@@ -116,6 +116,7 @@ async fn test_mysql_loadtest_small_scale() -> Result<(), Box<dyn std::error::Err
     let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: BATCH_SIZE,
         dry_run: false,
+        schemafull: false,
     };
 
     // Create version-aware sink and run sync

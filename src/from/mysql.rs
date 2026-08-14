@@ -75,6 +75,7 @@ async fn run_full_v2(args: MySQLFullArgs) -> anyhow::Result<()> {
     let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
+        schemafull: args.schemafull,
     };
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
@@ -176,6 +177,7 @@ async fn run_full_v3(args: MySQLFullArgs) -> anyhow::Result<()> {
     let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
+        schemafull: args.schemafull,
     };
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
@@ -375,6 +377,7 @@ async fn resolve_mysql_database(
 /// Run a MySQL interleaved snapshot full sync, emitting the handoff
 /// position as a checkpoint (when checkpoint storage is configured) so a later
 /// `incremental` run can resume from the consistent end position.
+#[allow(clippy::too_many_arguments)]
 async fn mysql_snapshot_full<S, St>(
     sink: &S,
     connection_string: String,
@@ -383,6 +386,8 @@ async fn mysql_snapshot_full<S, St>(
     ssl: surreal_sync_mysql::from_trigger::SslMode,
     manager: Option<&SyncManager<St>>,
     transforms: &SnapshotTransforms,
+    schemafull: bool,
+    dry_run: bool,
 ) -> anyhow::Result<()>
 where
     S: SurrealSink,
@@ -391,6 +396,20 @@ where
     let pool =
         surreal_sync_mysql::from_trigger::new_mysql_pool_with_ssl(&connection_string, &ssl).await?;
     let database = resolve_mysql_database(&pool, &database).await?;
+    if schemafull {
+        let mut conn = pool.get_conn().await?;
+        mysql_async::prelude::Queryable::query_drop(&mut conn, format!("USE {database}")).await?;
+        let db_schema =
+            surreal_sync_mysql::from_trigger::collect_mysql_database_schema(&mut conn).await?;
+        surreal_sync_core::maybe_emit_schemafull(
+            sink,
+            &db_schema,
+            &surreal_sync_core::SchemafullExtras::default(),
+            true,
+            dry_run,
+        )
+        .await?;
+    }
     let config = InterleavedSnapshotConfig { chunk_size };
     let mut checkpointer = NoopCheckpointer;
     let final_seq =
@@ -456,6 +475,8 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.tls.ssl_mode(),
                 Some(&manager),
                 &transforms,
+                args.schemafull,
+                args.surreal.dry_run,
             )
             .await
         }
@@ -478,6 +499,8 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.tls.ssl_mode(),
                 Some(&manager),
                 &transforms,
+                args.schemafull,
+                args.surreal.dry_run,
             )
             .await
         }
@@ -490,6 +513,8 @@ async fn run_full_interleaved_snapshot_v2(args: MySQLFullArgs) -> anyhow::Result
                 args.tls.ssl_mode(),
                 None,
                 &transforms,
+                args.schemafull,
+                args.surreal.dry_run,
             )
             .await
         }
@@ -535,6 +560,8 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.tls.ssl_mode(),
                 Some(&manager),
                 &transforms,
+                args.schemafull,
+                args.surreal.dry_run,
             )
             .await
         }
@@ -551,6 +578,8 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.tls.ssl_mode(),
                 Some(&manager),
                 &transforms,
+                args.schemafull,
+                args.surreal.dry_run,
             )
             .await
         }
@@ -563,6 +592,8 @@ async fn run_full_interleaved_snapshot_v3(args: MySQLFullArgs) -> anyhow::Result
                 args.tls.ssl_mode(),
                 None,
                 &transforms,
+                args.schemafull,
+                args.surreal.dry_run,
             )
             .await
         }

@@ -11,7 +11,7 @@
 
 mod autoconf;
 mod client;
-pub mod fk_transform;
+pub use surreal_sync_core::fk_transform;
 mod full_sync;
 pub mod schema;
 pub mod testing;

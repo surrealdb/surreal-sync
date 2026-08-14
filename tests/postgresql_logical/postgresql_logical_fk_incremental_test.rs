@@ -84,6 +84,7 @@ async fn test_wal2json_fk_incremental_only() -> Result<(), Box<dyn std::error::E
     let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: 1000,
         dry_run: false,
+        schemafull: false,
     };
 
     let checkpoint_store =
