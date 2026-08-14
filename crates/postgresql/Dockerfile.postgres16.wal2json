@@ -8,7 +8,7 @@
 #   docker build -t postgres-16-wal2json:dev -f ./crates/postgresql/Dockerfile.postgres16.wal2json ./crates/postgresql
 #
 # To run a Postgres container with wal2json enabled, run:
-#   docker run --name postgres1 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=testdb -it --rm postgres-16-wal2json:dev postgres -c wal_level=logical -c max_wal_senders=10 -c max_replication_slots=10 -c track_commit_timestamp=on
+#   docker run --name postgres1 -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=testdb -it --rm postgres-16-wal2json:dev postgres -c wal_level=logical -c max_wal_senders=10 -c max_replication_slots=10 -c track_commit_timestamp=on -c output_plugin_libraries=wal2json
 #
 # To connect to the database, use:
 #   docker run --network=container:postgres1 -it --rm -e POSTGRES_PASSWORD=postgres postgres:16 psql --user postgres -h localhost

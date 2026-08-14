@@ -60,6 +60,8 @@ pub fn generate_postgresql_logical_docker_service(config: &DatabaseConfig) -> Va
         "-c",
         "max_replication_slots=10",
         "-c",
+        "output_plugin_libraries=wal2json",
+        "-c",
         "synchronous_commit=off",
     ];
     service.insert(
@@ -172,6 +174,8 @@ spec:
         - "-c"
         - "max_replication_slots=10"
         - "-c"
+        - "output_plugin_libraries=wal2json"
+        - "-c"
         - "synchronous_commit=off"
         ports:
         - containerPort: 5432
@@ -265,6 +269,7 @@ mod tests {
         assert!(yaml.contains("wal_level=logical"));
         assert!(yaml.contains("max_wal_senders=10"));
         assert!(yaml.contains("max_replication_slots=10"));
+        assert!(yaml.contains("output_plugin_libraries=wal2json"));
     }
 
     #[test]
@@ -279,5 +284,6 @@ mod tests {
         assert!(statefulset.contains("wal_level=logical"));
         assert!(statefulset.contains("max_wal_senders=10"));
         assert!(statefulset.contains("max_replication_slots=10"));
+        assert!(statefulset.contains("output_plugin_libraries=wal2json"));
     }
 }
