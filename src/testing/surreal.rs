@@ -108,6 +108,38 @@ pub async fn assert_synced_auto(
     }
 }
 
+/// Assert synced data, treating listed tables as temporal current versions.
+pub async fn assert_synced_mixed_temporal_auto(
+    conn: &SurrealConnection,
+    dataset: &TestDataSet,
+    test_prefix: &str,
+    source: SourceDatabase,
+    temporal_tables: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    match conn {
+        SurrealConnection::V2(client) => {
+            surreal2::assert_synced_mixed_temporal(
+                client,
+                dataset,
+                test_prefix,
+                source,
+                temporal_tables,
+            )
+            .await
+        }
+        SurrealConnection::V3(client) => {
+            surreal3::assert_synced_mixed_temporal_v3(
+                client,
+                dataset,
+                test_prefix,
+                source,
+                temporal_tables,
+            )
+            .await
+        }
+    }
+}
+
 /// Get the v2 client from a SurrealConnection
 /// Returns None if the connection is v3
 pub fn as_v2(

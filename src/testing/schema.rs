@@ -10,6 +10,7 @@ use serde_json::Value as JsonValue;
 pub struct TestSchema {
     pub postgresql: PostgreSQLSchema,
     pub mysql: MySQLSchema,
+    pub mssql: MssqlSchema,
     pub mongodb: MongoDBSchema,
     pub neo4j: Neo4jSchema,
 }
@@ -33,6 +34,15 @@ pub struct MySQLSchema {
     pub engine: String,
     pub charset: String,
     pub collation: String,
+}
+
+/// SQL Server table schema definition
+#[derive(Debug, Clone)]
+pub struct MssqlSchema {
+    pub columns: Vec<ColumnDef>,
+    pub primary_key: Option<String>,
+    pub indexes: Vec<IndexDef>,
+    pub constraints: Vec<ConstraintDef>,
 }
 
 /// MongoDB collection schema definition
@@ -140,6 +150,25 @@ impl ColumnDef {
 
         ddl
     }
+
+    /// Generate SQL Server column definition
+    pub fn to_mssql_ddl(&self) -> String {
+        let mut ddl = format!("[{}] {}", self.name, self.data_type);
+
+        if !self.nullable {
+            ddl.push_str(" NOT NULL");
+        }
+
+        if self.unique {
+            ddl.push_str(" UNIQUE");
+        }
+
+        if let Some(ref default) = self.default {
+            ddl.push_str(&format!(" DEFAULT {default}"));
+        }
+
+        ddl
+    }
 }
 
 /// Index definition for SQL databases
@@ -184,6 +213,63 @@ pub enum ConstraintType {
         on_delete: Option<String>,
         on_update: Option<String>,
     },
+}
+
+impl ConstraintDef {
+    pub fn foreign_key(
+        name: impl Into<String>,
+        columns: Vec<String>,
+        ref_table: impl Into<String>,
+        ref_columns: Vec<String>,
+    ) -> Self {
+        ConstraintDef {
+            name: name.into(),
+            constraint_type: ConstraintType::ForeignKey {
+                columns,
+                ref_table: ref_table.into(),
+                ref_columns,
+                on_delete: None,
+                on_update: None,
+            },
+        }
+    }
+
+    fn to_mssql_ddl(&self) -> String {
+        match &self.constraint_type {
+            ConstraintType::Check(expr) => {
+                format!("CONSTRAINT [{}] CHECK ({expr})", self.name)
+            }
+            ConstraintType::ForeignKey {
+                columns,
+                ref_table,
+                ref_columns,
+                on_delete,
+                on_update,
+            } => {
+                let cols = columns
+                    .iter()
+                    .map(|c| format!("[{c}]"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let refs = ref_columns
+                    .iter()
+                    .map(|c| format!("[{c}]"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let mut ddl = format!(
+                    "CONSTRAINT [{}] FOREIGN KEY ({cols}) REFERENCES {ref_table} ({refs})",
+                    self.name
+                );
+                if let Some(action) = on_delete {
+                    ddl.push_str(&format!(" ON DELETE {action}"));
+                }
+                if let Some(action) = on_update {
+                    ddl.push_str(&format!(" ON UPDATE {action}"));
+                }
+                ddl
+            }
+        }
+    }
 }
 
 /// MongoDB index definition
@@ -408,6 +494,81 @@ impl Default for MySQLSchema {
             engine: "InnoDB".to_string(),
             charset: "utf8mb4".to_string(),
             collation: "utf8mb4_general_ci".to_string(),
+        }
+    }
+}
+
+impl MssqlSchema {
+    /// Generate CREATE TABLE for SQL Server (`dbo.[name]`).
+    ///
+    /// When `temporal` is true, hidden `PERIOD FOR SYSTEM_TIME` columns are
+    /// appended and `SYSTEM_VERSIONING` is turned on.
+    pub fn to_create_table_ddl(&self, table_name: &str, temporal: bool) -> String {
+        let quoted = format!("[dbo].[{table_name}]");
+        let mut ddl = format!("CREATE TABLE {quoted} (\n");
+
+        let mut column_defs: Vec<String> = self
+            .columns
+            .iter()
+            .map(|col| format!("    {}", col.to_mssql_ddl()))
+            .collect();
+
+        if temporal {
+            column_defs.push(
+                "    [ValidFrom] DATETIME2 GENERATED ALWAYS AS ROW START HIDDEN NOT NULL"
+                    .to_string(),
+            );
+            column_defs.push(
+                "    [ValidTo] DATETIME2 GENERATED ALWAYS AS ROW END HIDDEN NOT NULL".to_string(),
+            );
+        }
+
+        ddl.push_str(&column_defs.join(",\n"));
+
+        if let Some(ref pk) = self.primary_key {
+            let pk_cols = pk
+                .split(',')
+                .map(|c| format!("[{}]", c.trim()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            ddl.push_str(&format!(",\n    PRIMARY KEY ({pk_cols})"));
+        }
+
+        for constraint in &self.constraints {
+            ddl.push_str(&format!(",\n    {}", constraint.to_mssql_ddl()));
+        }
+
+        if temporal {
+            ddl.push_str(",\n    PERIOD FOR SYSTEM_TIME ([ValidFrom], [ValidTo])");
+        }
+
+        ddl.push('\n');
+        ddl.push(')');
+        if temporal {
+            ddl.push_str(&format!(
+                " WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = [dbo].[{table_name}_history]))"
+            ));
+        }
+        ddl
+    }
+
+    pub fn to_create_index_ddl(&self, table_name: &str, index: &IndexDef) -> String {
+        let cols = index
+            .columns
+            .iter()
+            .map(|c| format!("[{c}]"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if index.unique {
+            format!(
+                "CREATE UNIQUE INDEX [{name}] ON [dbo].[{table_name}] ({cols})",
+                name = index.name
+            )
+        } else {
+            format!(
+                "CREATE INDEX [{name}] ON [dbo].[{table_name}] ({cols})",
+                name = index.name
+            )
         }
     }
 }

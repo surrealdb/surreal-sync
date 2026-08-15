@@ -315,7 +315,13 @@ impl RowChunkSource for KeysetChunkSource {
                 rows
             }
             TableSyncKind::Temporal => {
-                let rows = temporal::rows_from_maps(&self.meta, maps, 0);
+                let rows = temporal::rows_from_maps(
+                    &self.meta,
+                    maps,
+                    0,
+                    self.table_def.as_ref(),
+                    &self.temporal,
+                );
                 if let Some(last) = rows.last() {
                     self.after = Some(temporal::chunk_after_from_row(&self.meta, last));
                 }

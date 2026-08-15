@@ -55,6 +55,9 @@ fn value_to_surreal_id(value: &Value) -> Result<RecordIdKey> {
         Value::Int32(i) => Ok(RecordIdKey::Number(*i as i64)),
         Value::Int64(i) => Ok(RecordIdKey::Number(*i)),
         Value::Text(s) => Ok(RecordIdKey::String(s.clone())),
+        Value::VarChar { value, .. } | Value::Char { value, .. } => {
+            Ok(RecordIdKey::String(value.clone()))
+        }
         Value::Uuid(u) => Ok(RecordIdKey::Uuid(surrealdb3::types::Uuid::from(*u))),
         other => anyhow::bail!("Cannot convert {other:?} to SurrealDB ID"),
     }

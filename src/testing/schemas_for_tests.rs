@@ -4,8 +4,9 @@
 //! to enable empty table creation for checkpoint generation.
 
 use crate::testing::schema::{
-    ColumnDef, IndexDef, MongoDBSchema, MongoIndexDef, MySQLSchema, Neo4jConstraintDef,
-    Neo4jIndexDef, Neo4jIndexType, Neo4jSchema, PostgreSQLSchema, PropertyDef, TestSchema,
+    ColumnDef, ConstraintDef, IndexDef, MongoDBSchema, MongoIndexDef, MssqlSchema, MySQLSchema,
+    Neo4jConstraintDef, Neo4jIndexDef, Neo4jIndexType, Neo4jSchema, PostgreSQLSchema, PropertyDef,
+    TestSchema,
 };
 
 /// Create schema for the all_types_users test table
@@ -53,6 +54,31 @@ pub fn create_all_types_users_schema() -> TestSchema {
             engine: "InnoDB".to_string(),
             charset: "utf8mb4".to_string(),
             collation: "utf8mb4_general_ci".to_string(),
+        },
+        mssql: MssqlSchema {
+            columns: vec![
+                ColumnDef::new("user_id", "NVARCHAR(255)").not_null(),
+                ColumnDef::new("name", "NVARCHAR(255)").not_null(),
+                ColumnDef::new("email", "NVARCHAR(255)"),
+                ColumnDef::new("age", "INT"),
+                ColumnDef::new("active", "BIT").default("1"),
+                ColumnDef::new("account_balance", "DECIMAL(19, 5)"),
+                ColumnDef::new("score", "FLOAT"),
+                ColumnDef::new("created_at", "DATETIMEOFFSET").default("SYSDATETIMEOFFSET()"),
+                ColumnDef::new("reference_id", "NVARCHAR(255)"),
+                ColumnDef::new("loyalty_tier", "TINYINT"),
+                ColumnDef::new("wallet_money", "MONEY"),
+                ColumnDef::new("local_created", "DATETIME2"),
+                ColumnDef::new("legacy_guid", "UNIQUEIDENTIFIER"),
+                ColumnDef::new("avatar_blob", "VARBINARY(64)"),
+                ColumnDef::new("profile_xml", "XML"),
+            ],
+            primary_key: Some("user_id".to_string()),
+            indexes: vec![
+                IndexDef::new("idx_users_email", vec!["email".to_string()]).unique(),
+                IndexDef::new("idx_users_active", vec!["active".to_string()]),
+            ],
+            constraints: vec![],
         },
         mongodb: MongoDBSchema {
             collection_name: "all_types_users".to_string(),
@@ -144,6 +170,29 @@ pub fn create_all_types_posts_schema() -> TestSchema {
             engine: "InnoDB".to_string(),
             charset: "utf8mb4".to_string(),
             collation: "utf8mb4_general_ci".to_string(),
+        },
+        mssql: MssqlSchema {
+            columns: vec![
+                ColumnDef::new("post_id", "NVARCHAR(255)").not_null(),
+                ColumnDef::new("title", "NVARCHAR(255)").not_null(),
+                ColumnDef::new("content", "NVARCHAR(MAX)"),
+                ColumnDef::new("author_id", "NVARCHAR(255)").not_null(),
+                ColumnDef::new("published", "BIT").default("0"),
+                ColumnDef::new("view_count", "BIGINT").default("0"),
+                ColumnDef::new("created_at", "DATETIMEOFFSET").default("SYSDATETIMEOFFSET()"),
+                ColumnDef::new("updated_at", "DATETIMEOFFSET"),
+            ],
+            primary_key: Some("post_id".to_string()),
+            indexes: vec![
+                IndexDef::new("idx_posts_author", vec!["author_id".to_string()]),
+                IndexDef::new("idx_posts_published", vec!["published".to_string()]),
+            ],
+            constraints: vec![ConstraintDef::foreign_key(
+                "FK_posts_author",
+                vec!["author_id".to_string()],
+                "[dbo].[all_types_users]",
+                vec!["user_id".to_string()],
+            )],
         },
         mongodb: MongoDBSchema {
             collection_name: "all_types_posts".to_string(),

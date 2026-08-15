@@ -6,5 +6,5 @@
 
 mod container;
 
-pub use super::client::{connect, MssqlClient};
+pub use super::client::{connect, MssqlClient, SqlArg};
 pub use container::MssqlContainer;

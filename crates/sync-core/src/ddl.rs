@@ -179,7 +179,15 @@ pub fn schemafull_statements(schema: &DatabaseSchema, extras: &SchemafullExtras)
     let mut stmts = Vec::new();
 
     for table in &schema.tables {
-        let kind = classify_table(table, &extras.relation_tables);
+        let kind = match classify_table(table, &extras.relation_tables) {
+            TableKind::Relation { in_fk, out_fk }
+                if extras.scalar_fk_targets.contains(&in_fk.referenced_table)
+                    || extras.scalar_fk_targets.contains(&out_fk.referenced_table) =>
+            {
+                TableKind::Entity
+            }
+            other => other,
+        };
         match kind {
             TableKind::Entity => {
                 stmts.push(format!("DEFINE TABLE {} SCHEMAFULL;", ident(&table.name)));
@@ -492,6 +500,21 @@ mod tests {
         assert!(!stmts
             .iter()
             .any(|s| s.contains("UNIQUE") && s.contains("Id")));
+    }
+
+    #[test]
+    fn relation_demoted_when_endpoint_is_temporal() {
+        let schema = join_schema();
+        let extras = SchemafullExtras {
+            scalar_fk_targets: HashSet::from(["books".to_string()]),
+            relation_tables: vec!["book_tags".to_string()],
+            ..SchemafullExtras::default()
+        };
+        let stmts = schemafull_statements(&schema, &extras);
+        assert!(stmts.contains(&"DEFINE TABLE book_tags SCHEMAFULL;".to_string()));
+        assert!(!stmts.iter().any(|s| s.contains("TYPE RELATION")));
+        assert!(stmts.contains(&"DEFINE FIELD book_id ON book_tags TYPE int;".to_string()));
+        assert!(stmts.contains(&"DEFINE FIELD tag_id ON book_tags TYPE record<tags>;".to_string()));
     }
 
     #[test]

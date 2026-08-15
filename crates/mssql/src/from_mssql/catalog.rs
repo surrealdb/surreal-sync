@@ -410,10 +410,11 @@ async fn load_raw(client: &MssqlClient) -> Result<RawCatalog> {
              INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id \
              INNER JOIN sys.tables parent_t ON parent_t.object_id = fk.parent_object_id \
              INNER JOIN sys.tables ref_t ON ref_t.object_id = fk.referenced_object_id \
-             ORDER BY fk.object_id, fkc.constraint_column_id",
+             ORDER BY fk.parent_object_id, fkc.parent_column_id, fk.object_id, fkc.constraint_column_id",
             &[],
         )
         .await?;
+    let mut fk_order: Vec<(i32, String)> = Vec::new();
     let mut fk_acc: HashMap<(i32, String), ForeignKeyDefinition> = HashMap::new();
     for row in fk_rows {
         let parent_id: i32 = row.try_get(0)?.unwrap_or(0);
@@ -422,20 +423,25 @@ async fn load_raw(client: &MssqlClient) -> Result<RawCatalog> {
         let ref_table: &str = row.try_get(6)?.unwrap_or("");
         let parent_col: &str = row.try_get(4)?.unwrap_or("");
         let ref_col: &str = row.try_get(7)?.unwrap_or("");
-        let entry = fk_acc
-            .entry((parent_id, cname.to_string()))
-            .or_insert(ForeignKeyDefinition {
+        let key = (parent_id, cname.to_string());
+        if let std::collections::hash_map::Entry::Vacant(e) = fk_acc.entry(key.clone()) {
+            fk_order.push(key.clone());
+            e.insert(ForeignKeyDefinition {
                 constraint_name: cname.to_string(),
                 columns: Vec::new(),
                 referenced_table: QualifiedName::new(ref_schema, ref_table).dotted(),
                 referenced_columns: Vec::new(),
             });
+        }
+        let entry = fk_acc.get_mut(&key).expect("FK just inserted");
         entry.columns.push(parent_col.to_string());
         entry.referenced_columns.push(ref_col.to_string());
     }
     let mut fks: HashMap<i32, Vec<ForeignKeyDefinition>> = HashMap::new();
-    for ((parent_id, _), fk) in fk_acc {
-        fks.entry(parent_id).or_default().push(fk);
+    for key in fk_order {
+        if let Some(fk) = fk_acc.remove(&key) {
+            fks.entry(key.0).or_default().push(fk);
+        }
     }
 
     let period_rows = client

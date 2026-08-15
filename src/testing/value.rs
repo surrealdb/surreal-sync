@@ -6,6 +6,7 @@
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use std::collections::HashMap;
 use std::fmt;
+use uuid::Uuid;
 
 /// SurrealDB value types - what we expect in SurrealDB after sync
 #[derive(Debug, Clone, PartialEq)]
@@ -175,6 +176,33 @@ pub enum MySQLValue {
     Bit(Vec<bool>),
     Json(serde_json::Value),
     Geometry(String),
+}
+
+/// SQL Server value types — native representations for types surreal-sync copies.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MssqlValue {
+    Null,
+    Bit(bool),
+    TinyInt(u8),
+    SmallInt(i16),
+    Int(i32),
+    BigInt(i64),
+    Real(f32),
+    Float(f64),
+    Decimal {
+        value: String,
+        precision: Option<u32>,
+        scale: Option<u32>,
+    },
+    Money(String),
+    NChar(String),
+    NVarchar(String),
+    NText(String),
+    Xml(String),
+    VarBinary(Vec<u8>),
+    UniqueIdentifier(Uuid),
+    DateTime2(NaiveDateTime),
+    DateTimeOffset(DateTime<Utc>),
 }
 
 /// Neo4j value types - native Neo4j/Cypher representations

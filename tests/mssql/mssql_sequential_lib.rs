@@ -1,11 +1,15 @@
 //! Sequential SNAPSHOT-isolation dump, and the disabled-isolation error.
 
 use surreal_sync::testing::checkpoint::cleanup_checkpoint_dir;
-use surreal_sync::testing::surreal::{cleanup_auto, connect_auto};
-use surreal_sync::testing::{generate_test_id, TestConfig};
+use surreal_sync::testing::mssql::{
+    assert_synced_mssql, cleanup_unified_dataset_tables, create_tables_and_indices, insert_rows,
+    unified_table_args,
+};
+use surreal_sync::testing::surreal::{cleanup_surrealdb_auto, connect_auto};
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 use surreal_sync_mssql::from_mssql::cli::{SnapshotModeArg, SyncStrategy};
 
-use crate::common::{exec_sql, ordinary_schema_sql, query_debug, run_mssql_sync, sync_args};
+use crate::common::{exec_sql, mssql_client, run_mssql_sync, sync_args};
 
 #[tokio::test]
 async fn test_mssql_sequential_snapshot_lib() -> Result<(), Box<dyn std::error::Error>> {
@@ -18,33 +22,35 @@ async fn test_mssql_sequential_snapshot_lib() -> Result<(), Box<dyn std::error::
     let test_id = generate_test_id();
     let conn_str =
         surreal_sync::testing::shared_containers::create_mssql_test_db(container, test_id).await?;
-    exec_sql(&conn_str, ordinary_schema_sql()).await?;
+    let client = mssql_client(&conn_str).await?;
+
+    let dataset = create_unified_full_dataset();
+    cleanup_unified_dataset_tables(&client).await?;
+    create_tables_and_indices(&client, &dataset, &[]).await?;
+    insert_rows(&client, &dataset).await?;
 
     let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
     let config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let surreal = connect_auto(&config).await?;
-    cleanup_auto(&surreal, &["users", "posts", "authored"]).await?;
+    cleanup_surrealdb_auto(&surreal, &dataset).await?;
 
     let checkpoint_dir = format!(".test-mssql-sequential-{test_id}");
     cleanup_checkpoint_dir(&checkpoint_dir)?;
 
     let args = sync_args(
         conn_str,
-        vec!["dbo.users".into(), "dbo.posts".into()],
+        unified_table_args(),
         &config,
         SnapshotModeArg::Only,
         SyncStrategy::SequentialSnapshot,
         Some(checkpoint_dir.clone()),
         false,
         None,
-        vec![],
+        vec!["authored_by".into()],
     );
     run_mssql_sync(args).await?;
 
-    let users = query_debug(&surreal, "SELECT * FROM users").await?;
-    assert!(users.contains("alice"), "{users}");
-    let posts = query_debug(&surreal, "SELECT * FROM posts").await?;
-    assert!(posts.contains("hello"), "{posts}");
+    assert_synced_mssql(&surreal, &dataset, "MSSQL sequential snapshot").await?;
 
     cleanup_checkpoint_dir(&checkpoint_dir)?;
     Ok(())

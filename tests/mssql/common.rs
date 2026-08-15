@@ -54,6 +54,12 @@ pub async fn exec_sql(conn: &str, sql: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn mssql_client(
+    conn: &str,
+) -> Result<surreal_sync_mssql::from_mssql::testing::MssqlClient, Box<dyn std::error::Error>> {
+    Ok(surreal_sync_mssql::from_mssql::testing::connect(conn).await?)
+}
+
 pub async fn run_mssql_sync(args: SyncArgs) -> anyhow::Result<()> {
     let (pipeline, apply_opts) =
         surreal_sync_runtime::load_transforms_from_args(args.transforms_config.as_deref())?;
@@ -92,51 +98,4 @@ pub async fn query_debug(
             Ok(format!("{r:?}"))
         }
     }
-}
-
-pub fn ordinary_schema_sql() -> &'static str {
-    r#"
-CREATE TABLE dbo.users (
-  id INT NOT NULL PRIMARY KEY,
-  name NVARCHAR(64) NOT NULL
-);
-CREATE UNIQUE INDEX UX_users_name ON dbo.users(name);
-CREATE TABLE dbo.posts (
-  id INT NOT NULL PRIMARY KEY,
-  user_id INT NOT NULL,
-  title NVARCHAR(128) NOT NULL,
-  CONSTRAINT FK_posts_users FOREIGN KEY (user_id) REFERENCES dbo.users(id)
-);
-CREATE TABLE dbo.authored (
-  user_id INT NOT NULL,
-  post_id INT NOT NULL,
-  PRIMARY KEY (user_id, post_id),
-  CONSTRAINT FK_authored_users FOREIGN KEY (user_id) REFERENCES dbo.users(id),
-  CONSTRAINT FK_authored_posts FOREIGN KEY (post_id) REFERENCES dbo.posts(id)
-);
-INSERT INTO dbo.users (id, name) VALUES (1, N'alice'), (2, N'bob');
-INSERT INTO dbo.posts (id, user_id, title) VALUES (10, 1, N'hello'), (11, 2, N'world');
-INSERT INTO dbo.authored (user_id, post_id) VALUES (1, 10), (2, 11);
-"#
-}
-
-pub fn temporal_schema_sql() -> &'static str {
-    r#"
-CREATE TABLE dbo.Article (
-  Id INT NOT NULL PRIMARY KEY,
-  Title NVARCHAR(128) NOT NULL,
-  ValidFrom DATETIME2 GENERATED ALWAYS AS ROW START HIDDEN NOT NULL,
-  ValidTo DATETIME2 GENERATED ALWAYS AS ROW END HIDDEN NOT NULL,
-  PERIOD FOR SYSTEM_TIME (ValidFrom, ValidTo)
-) WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = dbo.ArticleHistory));
-CREATE TABLE dbo.Comment (
-  Id INT NOT NULL PRIMARY KEY,
-  ArticleId INT NOT NULL,
-  Body NVARCHAR(256) NOT NULL,
-  CONSTRAINT FK_comment_article FOREIGN KEY (ArticleId) REFERENCES dbo.Article(Id)
-);
-INSERT INTO dbo.Article (Id, Title) VALUES (1, N'first');
-UPDATE dbo.Article SET Title = N'second' WHERE Id = 1;
-INSERT INTO dbo.Comment (Id, ArticleId, Body) VALUES (1, 1, N'note');
-"#
 }

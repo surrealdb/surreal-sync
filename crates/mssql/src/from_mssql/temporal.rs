@@ -3,15 +3,17 @@
 use anyhow::Result;
 use chrono::Datelike;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use surreal_sync_core::{
-    build_composite_record_id, Change, ChangeOp, Row, SchemaFieldExtra, SchemaIndex, Value,
+    build_composite_record_id, Change, ChangeOp, Row, SchemaFieldExtra, SchemaIndex,
+    TableDefinition, Value,
 };
 
 use crate::from_mssql::catalog::{MssqlColumnMeta, MssqlTableMeta};
 use crate::from_mssql::cdc::{CdcChange, CdcOperation};
 use crate::from_mssql::client::{MssqlClient, SqlArg};
 use crate::from_mssql::naming::bracket;
+use crate::from_mssql::regular;
 use crate::types::tiberius_to_value;
 
 /// Hash remaining field values (sorted keys) for the version id.
@@ -97,10 +99,15 @@ fn remaining_for_hash(
 }
 
 /// Assign version ids and `is_current` for a snapshot chunk (duplicate ordinals are local).
+///
+/// FKs to ordinary tables become Things after the version id is computed so the
+/// content hash stays on source scalars. FKs to temporal tables stay scalars.
 pub fn rows_from_maps(
     meta: &MssqlTableMeta,
     maps: Vec<HashMap<String, Value>>,
     start_index: u64,
+    table_def: Option<&TableDefinition>,
+    temporal_targets: &HashSet<String>,
 ) -> Vec<Row> {
     let start = meta.period_start.as_deref().unwrap_or("ValidFrom");
     let end = meta.period_end.as_deref().unwrap_or("ValidTo");
@@ -130,6 +137,9 @@ pub fn rows_from_maps(
         let ordinal = seen.entry(key).or_insert(-1);
         *ordinal += 1;
         let id = version_id(pk, &from, &to, &remaining, *ordinal);
+        if let Some(td) = table_def {
+            regular::transform_fks(&mut fields, td, temporal_targets);
+        }
         rows.push(Row::new(
             meta.target.clone(),
             start_index + i as u64,
@@ -305,6 +315,8 @@ fn version_change(
     mut fields: HashMap<String, Value>,
     is_current: bool,
     op: ChangeOp,
+    table_def: Option<&TableDefinition>,
+    temporal_targets: &HashSet<String>,
 ) -> Change {
     let start = meta.period_start.as_deref().unwrap_or("ValidFrom");
     let end = meta.period_end.as_deref().unwrap_or("ValidTo");
@@ -319,20 +331,42 @@ fn version_change(
         &remaining,
         0,
     );
+    if let Some(td) = table_def {
+        regular::transform_fks(&mut fields, td, temporal_targets);
+    }
     Change::new(op, &meta.target, id, Some(fields))
 }
 
 /// CDC apply: INSERT/UPDATE write a new current version; before-image/DELETE clear `is_current`.
-pub fn apply_change(meta: &MssqlTableMeta, change: &CdcChange) -> Result<TemporalCdc> {
+pub fn apply_change(
+    meta: &MssqlTableMeta,
+    change: &CdcChange,
+    table_def: Option<&TableDefinition>,
+    temporal_targets: &HashSet<String>,
+) -> Result<TemporalCdc> {
     match change.operation {
         CdcOperation::Insert | CdcOperation::UpdateAfter => {
-            let new_version = version_change(meta, change.fields.clone(), true, ChangeOp::Create);
+            let new_version = version_change(
+                meta,
+                change.fields.clone(),
+                true,
+                ChangeOp::Create,
+                table_def,
+                temporal_targets,
+            );
             Ok(TemporalCdc {
                 new_version: Some(new_version),
             })
         }
         CdcOperation::Delete | CdcOperation::UpdateBefore => {
-            let prior = version_change(meta, change.fields.clone(), false, ChangeOp::Update);
+            let prior = version_change(
+                meta,
+                change.fields.clone(),
+                false,
+                ChangeOp::Update,
+                table_def,
+                temporal_targets,
+            );
             Ok(TemporalCdc {
                 new_version: Some(prior),
             })

@@ -235,7 +235,7 @@ impl MssqlWatermarkSource {
                             op,
                             &meta.target,
                             r.relation.id.clone(),
-                            Some(r.relation.data.clone()),
+                            Some(regular::relation_fields(&r.relation)),
                         ),
                     };
                     Ok(Some(ReconciliationEvent {
@@ -247,7 +247,12 @@ impl MssqlWatermarkSource {
                 }
             },
             TableSyncKind::Temporal => {
-                let action = temporal::apply_change(meta, change)?;
+                let action = temporal::apply_change(
+                    meta,
+                    change,
+                    self.table_def(&meta.target),
+                    &self.temporal,
+                )?;
                 let Some(c) = action.new_version else {
                     return Ok(None);
                 };
@@ -337,19 +342,24 @@ impl WatermarkSource for MssqlWatermarkSource {
         match meta.kind {
             TableSyncKind::Regular => {
                 let maps = regular::read_chunk(&self.client, meta, after_vals, limit).await?;
-                let (rows, _) = regular::snapshot_items(
+                Ok(regular::snapshot_rows(
                     meta,
                     maps,
                     0,
                     self.table_def(&meta.target),
                     &self.relation_tables,
                     &self.temporal,
-                );
-                Ok(rows)
+                ))
             }
             TableSyncKind::Temporal => {
                 let maps = temporal::read_chunk(&self.client, meta, after_vals, limit).await?;
-                Ok(temporal::rows_from_maps(meta, maps, 0))
+                Ok(temporal::rows_from_maps(
+                    meta,
+                    maps,
+                    0,
+                    self.table_def(&meta.target),
+                    &self.temporal,
+                ))
             }
         }
     }

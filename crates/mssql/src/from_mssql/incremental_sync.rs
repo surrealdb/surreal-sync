@@ -257,7 +257,8 @@ where
                     }
                 }
                 TableSyncKind::Temporal => {
-                    let action = temporal::apply_change(&meta, &change)?;
+                    let td = self.db_schema.get_table(&meta.target);
+                    let action = temporal::apply_change(&meta, &change, td, &temporal)?;
                     if let Some(c) = action.new_version {
                         events.push(PositionedEvent::change(c, pos));
                     }

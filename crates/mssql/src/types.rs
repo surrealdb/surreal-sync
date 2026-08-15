@@ -163,13 +163,22 @@ pub fn tiberius_to_value(
             Some(v) => Ok(Value::Float64(v)),
         },
         Type::Decimal { precision, scale } => {
-            match row
-                .try_get::<tiberius::numeric::Numeric, _>(col_idx)
-                .with_context(ctx)?
-            {
+            // DECIMAL/NUMERIC arrive as Tiberius Numeric. MONEY/SMALLMONEY are
+            // exposed as f64 by the driver.
+            if let Ok(opt) = row.try_get::<tiberius::numeric::Numeric, _>(col_idx) {
+                return Ok(match opt {
+                    None => Value::Null,
+                    Some(n) => Value::Decimal {
+                        value: n.to_string(),
+                        precision: *precision,
+                        scale: *scale,
+                    },
+                });
+            }
+            match row.try_get::<f64, _>(col_idx).with_context(ctx)? {
                 None => Ok(Value::Null),
-                Some(n) => Ok(Value::Decimal {
-                    value: n.to_string(),
+                Some(f) => Ok(Value::Decimal {
+                    value: format!("{f:.prec$}", prec = *scale as usize),
                     precision: *precision,
                     scale: *scale,
                 }),
@@ -190,8 +199,10 @@ pub fn tiberius_to_value(
             }),
         },
         Type::Text => {
-            if let Ok(Some(xml)) = row.try_get::<&tiberius::xml::XmlData, _>(col_idx) {
-                return Ok(Value::Text(xml.to_string()));
+            match row.try_get::<&tiberius::xml::XmlData, _>(col_idx) {
+                Ok(Some(xml)) => return Ok(Value::Text(xml.to_string())),
+                Ok(None) => return Ok(Value::Null),
+                Err(_) => {}
             }
             match row.try_get::<&str, _>(col_idx).with_context(ctx)? {
                 None => Ok(Value::Null),

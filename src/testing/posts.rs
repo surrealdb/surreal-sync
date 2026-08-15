@@ -5,6 +5,7 @@
 use crate::testing::{
     field::Field,
     mongodb::MongoDBField,
+    mssql::MssqlField,
     mysql::MySQLField,
     neo4j::bolt,
     neo4j::Neo4jField,
@@ -52,7 +53,8 @@ pub fn create_posts_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "id".to_string(),
                     property_value: bolt::string("post_001"),
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("post_id", "post_001")),
                 Field::simple(
                     "author_id",
                     SurrealDBValue::Thing {
@@ -83,7 +85,8 @@ pub fn create_posts_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "author_id".to_string(),
                     property_value: bolt::string("user_001"),
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("author_id", "user_001")),
                 Field::simple(
                     "title",
                     SurrealDBValue::String("Database Testing".to_string()),
@@ -111,7 +114,8 @@ pub fn create_posts_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "title".to_string(),
                     property_value: bolt::string("Database Testing"),
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("title", "Database Testing")),
                 Field::simple(
                     "content",
                     SurrealDBValue::String(
@@ -149,7 +153,11 @@ pub fn create_posts_table() -> TestTable {
                     property_value: bolt::string(
                         "This post tests complex data types across databases",
                     ),
-                }),
+                })
+                .with_mssql(MssqlField::ntext(
+                    "content",
+                    "This post tests complex data types across databases",
+                )),
                 Field::simple("view_count", SurrealDBValue::Int64(150))
                     .with_postgresql(PostgreSQLField {
                         column_name: "view_count".to_string(),
@@ -174,7 +182,8 @@ pub fn create_posts_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "view_count".to_string(),
                         property_value: bolt::int(150),
-                    }),
+                    })
+                    .with_mssql(MssqlField::bigint("view_count", 150)),
                 Field::simple("published", SurrealDBValue::Bool(true))
                     .with_postgresql(PostgreSQLField {
                         column_name: "published".to_string(),
@@ -199,7 +208,8 @@ pub fn create_posts_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "published".to_string(),
                         property_value: bolt::bool(true),
-                    }),
+                    })
+                    .with_mssql(MssqlField::bit("published", true)),
                 // MongoDB RegularExpression field (database-specific)
                 // MongoDB regex is converted to SurrealDB/Rust regex format: (?flags)pattern
                 Field::simple(
@@ -284,7 +294,8 @@ pub fn create_posts_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "created_at".to_string(),
                         property_value: bolt::datetime(Utc::now()),
-                    }),
+                    })
+                    .with_mssql(MssqlField::datetimeoffset("created_at", Utc::now())),
                 Field::simple("updated_at", SurrealDBValue::DateTime(Utc::now()))
                     .with_postgresql(PostgreSQLField {
                         column_name: "updated_at".to_string(),
@@ -309,7 +320,8 @@ pub fn create_posts_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "updated_at".to_string(),
                         property_value: bolt::datetime(Utc::now()),
-                    }),
+                    })
+                    .with_mssql(MssqlField::datetimeoffset("updated_at", Utc::now())),
             ]),
             // Second post
             TestDoc::new(vec![
@@ -343,7 +355,8 @@ pub fn create_posts_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "id".to_string(),
                     property_value: bolt::string("post_002"),
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("post_id", "post_002")),
                 Field::simple(
                     "author_id",
                     SurrealDBValue::Thing {
@@ -374,7 +387,8 @@ pub fn create_posts_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "author_id".to_string(),
                     property_value: bolt::string("user_002"),
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("author_id", "user_002")),
                 Field::simple(
                     "title",
                     SurrealDBValue::String("Advanced Sync Patterns".to_string()),
@@ -402,7 +416,8 @@ pub fn create_posts_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "title".to_string(),
                     property_value: bolt::string("Advanced Sync Patterns"),
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("title", "Advanced Sync Patterns")),
                 Field::simple(
                     "content",
                     SurrealDBValue::String("Exploring incremental sync strategies".to_string()),
@@ -436,7 +451,11 @@ pub fn create_posts_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "content".to_string(),
                     property_value: bolt::string("Exploring incremental sync strategies"),
-                }),
+                })
+                .with_mssql(MssqlField::ntext(
+                    "content",
+                    "Exploring incremental sync strategies",
+                )),
                 Field::simple("view_count", SurrealDBValue::Int64(89))
                     .with_postgresql(PostgreSQLField {
                         column_name: "view_count".to_string(),
@@ -461,7 +480,8 @@ pub fn create_posts_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "view_count".to_string(),
                         property_value: bolt::int(89),
-                    }),
+                    })
+                    .with_mssql(MssqlField::bigint("view_count", 89)),
                 Field::simple("published", SurrealDBValue::Bool(false))
                     .with_postgresql(PostgreSQLField {
                         column_name: "published".to_string(),
@@ -486,7 +506,8 @@ pub fn create_posts_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "published".to_string(),
                         property_value: bolt::bool(false),
-                    }),
+                    })
+                    .with_mssql(MssqlField::bit("published", false)),
                 // MongoDB RegularExpression field (database-specific)
                 // MongoDB regex is converted to SurrealDB/Rust regex format: (?)pattern for empty flags
                 Field::simple(
@@ -563,7 +584,8 @@ pub fn create_posts_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "created_at".to_string(),
                         property_value: bolt::datetime(Utc::now()),
-                    }),
+                    })
+                    .with_mssql(MssqlField::datetimeoffset("created_at", Utc::now())),
                 Field::simple("updated_at", SurrealDBValue::DateTime(Utc::now()))
                     .with_postgresql(PostgreSQLField {
                         column_name: "updated_at".to_string(),
@@ -588,7 +610,8 @@ pub fn create_posts_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "updated_at".to_string(),
                         property_value: bolt::datetime(Utc::now()),
-                    }),
+                    })
+                    .with_mssql(MssqlField::datetimeoffset("updated_at", Utc::now())),
             ]),
         ],
     )

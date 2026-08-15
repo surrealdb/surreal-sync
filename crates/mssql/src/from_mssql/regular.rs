@@ -4,7 +4,8 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use surreal_sync_core::{
     build_composite_record_id, build_relation_from_change, build_relation_from_row, classify_table,
-    Change, ChangeOp, Relation, RelationChange, Row, TableDefinition, TableKind, Value,
+    flatten_composite_id, Change, ChangeOp, ForeignKeyDefinition, Relation, RelationChange, Row,
+    TableDefinition, TableKind, Value,
 };
 
 use crate::from_mssql::catalog::{MssqlColumnMeta, MssqlTableMeta};
@@ -92,10 +93,10 @@ pub fn entity_row(
     temporal_targets: &HashSet<String>,
 ) -> Row {
     let mut fields = fields;
+    let id = record_id(pk_parts(&fields, pk_columns));
     if let Some(td) = table_def {
         transform_fks(&mut fields, td, temporal_targets);
     }
-    let id = record_id(pk_parts(&fields, pk_columns));
     Row::new(target, index, id, fields)
 }
 
@@ -185,11 +186,11 @@ pub fn apply_change(
     temporal_targets: &HashSet<String>,
 ) -> Result<RegularCdc> {
     let mut fields = change.fields.clone();
+    let id = record_id(pk_parts(&fields, &meta.pk_columns));
     if let Some(td) = table_def {
         transform_fks(&mut fields, td, temporal_targets);
         match classify(td, relation_tables, temporal_targets) {
             TableKind::Relation { in_fk, out_fk } => {
-                let id = record_id(pk_parts(&fields, &meta.pk_columns));
                 let op = match change.operation {
                     CdcOperation::Delete => ChangeOp::Delete,
                     CdcOperation::Insert => ChangeOp::Create,
@@ -202,7 +203,6 @@ pub fn apply_change(
             TableKind::Entity => {}
         }
     }
-    let id = record_id(pk_parts(&fields, &meta.pk_columns));
     let op = match change.operation {
         CdcOperation::Delete => ChangeOp::Delete,
         CdcOperation::Insert => ChangeOp::Create,
@@ -221,6 +221,97 @@ pub fn apply_change(
 pub enum RegularCdc {
     Row(Change),
     Relation(RelationChange),
+}
+
+/// Flatten snapshot items so interleaved `read_chunk` can sink join tables as rows.
+pub fn snapshot_rows(
+    meta: &MssqlTableMeta,
+    maps: Vec<HashMap<String, Value>>,
+    start_index: u64,
+    table_def: Option<&TableDefinition>,
+    relation_tables: &[String],
+    temporal_targets: &HashSet<String>,
+) -> Vec<Row> {
+    if let Some(td) = table_def {
+        if let TableKind::Relation { in_fk, out_fk } =
+            classify(td, relation_tables, temporal_targets)
+        {
+            return maps
+                .into_iter()
+                .enumerate()
+                .map(|(i, fields)| {
+                    relation_row_keeping_pk(
+                        &meta.target,
+                        start_index + i as u64,
+                        fields,
+                        &meta.pk_columns,
+                        &in_fk,
+                        &out_fk,
+                    )
+                })
+                .collect();
+        }
+    }
+    let (rows, _) = snapshot_items(
+        meta,
+        maps,
+        start_index,
+        table_def,
+        relation_tables,
+        temporal_targets,
+    );
+    rows
+}
+
+/// Join-table row for interleaved snapshot: keep source PK columns for keyset
+/// cursors and add `in` / `out` Things for graph queries.
+fn relation_row_keeping_pk(
+    target: &str,
+    index: u64,
+    mut fields: HashMap<String, Value>,
+    pk_columns: &[String],
+    in_fk: &ForeignKeyDefinition,
+    out_fk: &ForeignKeyDefinition,
+) -> Row {
+    let id = flatten_composite_id(record_id(pk_parts(&fields, pk_columns)), ":");
+    add_endpoint_thing(&mut fields, in_fk, "in");
+    add_endpoint_thing(&mut fields, out_fk, "out");
+    Row::new(target, index, id, fields)
+}
+
+fn add_endpoint_thing(fields: &mut HashMap<String, Value>, fk: &ForeignKeyDefinition, name: &str) {
+    if let Some(col) = fk.columns.first() {
+        if let Some(value) = fields.get(col).cloned() {
+            let thing = match value {
+                Value::Null => Value::Null,
+                other => Value::Thing {
+                    table: fk.referenced_table.clone(),
+                    id: Box::new(other),
+                },
+            };
+            fields.insert(name.to_string(), thing);
+        }
+    }
+}
+
+/// Relation properties plus `in` / `out` record links.
+pub fn relation_fields(rel: &Relation) -> HashMap<String, Value> {
+    let mut fields = rel.data.clone();
+    fields.insert(
+        "in".into(),
+        Value::Thing {
+            table: rel.input.table.clone(),
+            id: Box::new(rel.input.id.clone()),
+        },
+    );
+    fields.insert(
+        "out".into(),
+        Value::Thing {
+            table: rel.output.table.clone(),
+            id: Box::new(rel.output.id.clone()),
+        },
+    );
+    fields
 }
 
 /// Snapshot items from field maps (entity rows or relations).

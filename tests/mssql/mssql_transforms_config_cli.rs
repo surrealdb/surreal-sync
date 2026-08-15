@@ -4,10 +4,13 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use surreal_sync::testing::cli::{assert_cli_success, execute_surreal_sync};
-use surreal_sync::testing::surreal::{cleanup_auto, connect_auto, SurrealConnection};
-use surreal_sync::testing::{generate_test_id, TestConfig};
+use surreal_sync::testing::mssql::{
+    cleanup_unified_dataset_tables, create_tables_and_indices, inject_test_table_mssql,
+};
+use surreal_sync::testing::surreal::{cleanup_surrealdb_auto, connect_auto, SurrealConnection};
+use surreal_sync::testing::{create_unified_full_dataset, generate_test_id, TestConfig};
 
-use crate::common::exec_sql;
+use crate::common::mssql_client;
 
 fn fixture_worker_path() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -57,16 +60,15 @@ async fn test_mssql_stream_cli_transforms_config_mutate() -> Result<(), Box<dyn 
 
     let conn_str =
         surreal_sync::testing::shared_containers::create_mssql_test_db(container, test_id).await?;
-    exec_sql(
-        &conn_str,
-        "CREATE TABLE dbo.people (id INT NOT NULL PRIMARY KEY, name NVARCHAR(64) NOT NULL);",
-    )
-    .await?;
+    let client = mssql_client(&conn_str).await?;
+    let dataset = create_unified_full_dataset();
+    cleanup_unified_dataset_tables(&client).await?;
+    create_tables_and_indices(&client, &dataset, &[]).await?;
 
     let surrealdb = surreal_sync::testing::shared_containers::shared_surrealdb();
     let config = TestConfig::with_surreal_endpoint(test_id, &surrealdb.ws_endpoint());
     let conn = connect_auto(&config).await?;
-    cleanup_auto(&conn, &["people"]).await?;
+    cleanup_surrealdb_auto(&conn, &dataset).await?;
 
     let snapshot_args = [
         "from",
@@ -77,7 +79,7 @@ async fn test_mssql_stream_cli_transforms_config_mutate() -> Result<(), Box<dyn 
         "--connection-string",
         &conn_str,
         "--tables",
-        "dbo.people",
+        "dbo.all_types_users",
         "--surreal-endpoint",
         &config.surreal_endpoint,
         "--to-namespace",
@@ -96,11 +98,12 @@ async fn test_mssql_stream_cli_transforms_config_mutate() -> Result<(), Box<dyn 
     let output = execute_surreal_sync(&snapshot_args)?;
     assert_cli_success(&output, "mssql snapshot phase CLI");
 
-    exec_sql(
-        &conn_str,
-        "INSERT INTO dbo.people (id, name) VALUES (1, N'alice'), (2, N'bob');",
-    )
-    .await?;
+    let users = dataset
+        .tables
+        .iter()
+        .find(|t| t.name == "all_types_users")
+        .expect("unified users table");
+    inject_test_table_mssql(&client, users).await?;
 
     let transforms_toml = format!(
         r#"
@@ -132,7 +135,7 @@ stdio.framer = "ndjson"
         "--connection-string",
         &conn_str,
         "--tables",
-        "dbo.people",
+        "dbo.all_types_users",
         "--surreal-endpoint",
         &config.surreal_endpoint,
         "--to-namespace",
@@ -171,12 +174,12 @@ stdio.framer = "ndjson"
 
     let names: Vec<Option<String>> = match &conn {
         SurrealConnection::V2(db) => {
-            let mut resp = db.query("SELECT name FROM people").await?;
+            let mut resp = db.query("SELECT name FROM all_types_users").await?;
             let rows: Vec<PeopleRowV2> = resp.take(0)?;
             rows.into_iter().map(|r| r.name).collect()
         }
         SurrealConnection::V3(db) => {
-            let mut resp = db.query("SELECT name FROM people").await?;
+            let mut resp = db.query("SELECT name FROM all_types_users").await?;
             let rows: Vec<PeopleRowV3> = resp.take(0)?;
             rows.into_iter().map(|r| r.name).collect()
         }
@@ -184,7 +187,7 @@ stdio.framer = "ndjson"
     assert_eq!(
         names.len(),
         2,
-        "expected two people docs after transform stream, got {names:?}"
+        "expected two unified users after transform stream, got {names:?}"
     );
     for name in &names {
         assert_eq!(
