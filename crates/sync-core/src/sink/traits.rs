@@ -56,4 +56,13 @@ pub trait SurrealSink: Send + Sync {
     /// - Create/Update: RELATE the edge
     /// - Delete: DELETE the relation
     async fn apply_relation_change(&self, change: &RelationChange) -> Result<()>;
+
+    /// Run a SurrealQL statement (for example `DEFINE TABLE` / `DEFINE FIELD` /
+    /// `DEFINE INDEX` when `--schemafull` is set).
+    ///
+    /// Capture sinks and dry-run doubles may no-op.
+    async fn query(&self, sql: &str) -> Result<()> {
+        let _ = sql;
+        Ok(())
+    }
 }

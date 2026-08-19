@@ -83,3 +83,13 @@ retries = 0
 filter = 'binary(snowflake)'
 slow-timeout = { period = "120s", terminate-after = 30 }
 retries = 0
+
+# SQL Server e2e (tests/mssql/) uses a ~2GB official image with Agent + CDC.
+# High threads-required serializes these tests so two containers do not overlap.
+[[profile.default.overrides]]
+filter = 'test(mssql)'
+threads-required = 8
+
+[[profile.ci.overrides]]
+filter = 'test(mssql)'
+threads-required = 8

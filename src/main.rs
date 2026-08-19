@@ -87,6 +87,7 @@ use std::path::PathBuf;
 use surreal_sync_runtime::SurrealCliOpts as SurrealOpts;
 
 // Shared with binary mysql-binlog CLI glue (also used by other `from *` clap args).
+use mssql::Commands as MssqlCommands;
 pub(crate) use mysql_binlog::{
     Commands as MySQLBinlogCommands, SnapshotModeArg as BinlogSnapshotModeArg, SyncStrategy,
     TlsArgs as MySQLTlsArgs, DEFAULT_CHUNK_SIZE,
@@ -115,6 +116,7 @@ mod from;
 mod loadtest;
 
 // Stock CLI auto-detect glue (both Surreal SDKs linked). Prefer from-* for embeds.
+mod mssql;
 mod mysql_binlog;
 mod snowflake;
 
@@ -206,6 +208,13 @@ enum FromSource {
     /// Import from JSONL files
     #[command(name = "jsonl")]
     Jsonl(from::jsonl::Args),
+
+    /// Sync from SQL Server using native CDC
+    #[command(name = "mssql")]
+    Mssql {
+        #[command(subcommand)]
+        command: MssqlCommands,
+    },
 
     /// Ingest from Snowflake (full one-shot snapshot via the SQL REST API v2)
     #[command(name = "snowflake")]
@@ -572,6 +581,10 @@ struct PostgreSQLTriggerFullArgs {
     #[arg(long, value_name = "PATH")]
     transforms_config: Option<PathBuf>,
 
+    /// Create SCHEMAFULL tables and copy translatable indexes (default is schemaless)
+    #[arg(long, default_value_t = false)]
+    schemafull: bool,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -749,6 +762,10 @@ struct MySQLFullArgs {
     /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
     #[arg(long, value_name = "PATH")]
     transforms_config: Option<PathBuf>,
+
+    /// Create SCHEMAFULL tables and copy translatable indexes (default is schemaless)
+    #[arg(long, default_value_t = false)]
+    schemafull: bool,
 
     #[command(flatten)]
     tls: MySQLTlsArgs,
@@ -988,6 +1005,10 @@ struct PostgreSQLPgoutputSyncArgs {
     #[arg(long, value_name = "PATH")]
     transforms_config: Option<PathBuf>,
 
+    /// Create SCHEMAFULL tables and copy translatable indexes (default is schemaless)
+    #[arg(long, default_value_t = false)]
+    schemafull: bool,
+
     #[command(flatten)]
     surreal: SurrealOpts,
 }
@@ -1075,6 +1096,10 @@ struct PostgreSQLLogicalFullArgs {
     /// Omit for identity (docs pass through unchanged; no transform stage dispatch).
     #[arg(long, value_name = "PATH")]
     transforms_config: Option<PathBuf>,
+
+    /// Create SCHEMAFULL tables and copy translatable indexes (default is schemaless)
+    #[arg(long, default_value_t = false)]
+    schemafull: bool,
 
     #[command(flatten)]
     surreal: SurrealOpts,
@@ -1442,6 +1467,7 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
         FromSource::Kafka(args) => from::kafka::run_args(args).await?,
         FromSource::Csv(args) => from::csv::run(args).await?,
         FromSource::Jsonl(args) => from::jsonl::run_args(args).await?,
+        FromSource::Mssql { command } => mssql::run_command(command).await?,
         FromSource::Snowflake(args) => snowflake::run_args(args).await?,
     }
     Ok(())

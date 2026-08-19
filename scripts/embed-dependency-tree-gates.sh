@@ -25,7 +25,7 @@ fi
 
 # Kafka / snowflake / runtime / mysql must not pull surrealdb
 # in the normal+build graph (embed examples live in separate packages).
-for pkg in surreal-sync-kafka surreal-sync-snowflake surreal-sync-json surreal-sync-runtime surreal-sync-mysql; do
+for pkg in surreal-sync-kafka surreal-sync-snowflake surreal-sync-json surreal-sync-runtime surreal-sync-mysql surreal-sync-mssql; do
   out=$(cargo tree -p "$pkg" -e normal,build -i surrealdb 2>&1 || true)
   if echo "$out" | rg -q '^surrealdb v'; then
     echo "FAIL: $pkg unexpectedly depends on surrealdb:"
@@ -36,7 +36,7 @@ for pkg in surreal-sync-kafka surreal-sync-snowflake surreal-sync-json surreal-s
 done
 
 # snowflake / mysql must not pull kafka or neo4j clients
-for pkg in surreal-sync-snowflake surreal-sync-mysql surreal-sync-json; do
+for pkg in surreal-sync-snowflake surreal-sync-mysql surreal-sync-json surreal-sync-mssql; do
   for deny in rdkafka neo4rs; do
     out=$(cargo tree -p "$pkg" -e normal,build -i "$deny" 2>&1 || true)
     if echo "$out" | rg -q "^${deny} "; then
@@ -81,7 +81,7 @@ done
 
 # Documented embed graphs (examples/from-* packages mirror a real embedder).
 # Non-kafka examples must not pull rdkafka/neo4rs.
-for pkg in surreal-sync-example-from-snowflake surreal-sync-example-from-mysql-binlog surreal-sync-example-from-jsonl; do
+for pkg in surreal-sync-example-from-snowflake surreal-sync-example-from-mysql-binlog surreal-sync-example-from-jsonl surreal-sync-example-from-mssql; do
   for deny in rdkafka neo4rs; do
     out=$(cargo tree -p "$pkg" -e normal,build -i "$deny" 2>&1 || true)
     if echo "$out" | rg -q "^${deny} "; then
@@ -157,11 +157,11 @@ fi
 echo "OK: mysql-binlog example uses surreal-sync-runtime checkpoints"
 
 # Embed example sources monomorphize Surreal3Sink only
-if ! rg -n 'run::<Surreal3Sink>' examples/from-snowflake examples/from-mysql-binlog examples/from-jsonl examples/from-kafka; then
+if ! rg -n 'run::<Surreal3Sink>' examples/from-snowflake examples/from-mysql-binlog examples/from-jsonl examples/from-kafka examples/from-mssql; then
   echo "FAIL: examples should monomorphize Surreal3Sink"
   exit 1
 fi
-if rg -n 'run::<Surreal2Sink>|Surreal2Sink' examples/from-snowflake examples/from-mysql-binlog examples/from-jsonl examples/from-kafka; then
+if rg -n 'run::<Surreal2Sink>|Surreal2Sink' examples/from-snowflake examples/from-mysql-binlog examples/from-jsonl examples/from-kafka examples/from-mssql; then
   echo "FAIL: embed examples must not reference Surreal2Sink"
   exit 1
 fi

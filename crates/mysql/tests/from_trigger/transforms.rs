@@ -238,6 +238,7 @@ async fn composite_pk_entity_writes_surreal_array_record_ids() -> Result<()> {
     let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: 100,
         dry_run: false,
+        schemafull: false,
     };
 
     surreal_sync_mysql::from_trigger::run_full_sync::<_, surreal_sync_core::NullStore>(
@@ -344,6 +345,7 @@ async fn flatten_id_toml_writes_surreal_text_record_ids() -> Result<()> {
     let sync_opts = surreal_sync_mysql::from_trigger::SyncOpts {
         batch_size: 100,
         dry_run: false,
+        schemafull: false,
     };
 
     let cfg = surreal_sync_runtime::parse_transforms_toml(

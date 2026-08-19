@@ -242,6 +242,7 @@ pub async fn compare_sync_results_in_surrealdb(
     expected_table: &TestTable,
     test_description: &str,
     source: SourceDatabase,
+    temporal_current: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // First, just validate the count to ensure basic sync worked
     tracing::info!(
@@ -250,7 +251,11 @@ pub async fn compare_sync_results_in_surrealdb(
         table_name
     );
 
-    let count_query = format!("SELECT count() FROM {table_name} GROUP ALL");
+    let count_query = if temporal_current {
+        format!("SELECT count() FROM {table_name} WHERE is_current GROUP ALL")
+    } else {
+        format!("SELECT count() FROM {table_name} GROUP ALL")
+    };
     let mut count_response = surreal.query(count_query).await?;
     let count_result: Option<i64> = count_response.take((0, "count"))?;
     let actual_count = count_result.unwrap_or(0) as usize;
@@ -292,12 +297,49 @@ pub async fn compare_sync_results_in_surrealdb(
         // Get the ID field to query for the specific record
         if let Some(id_field) = expected_doc.get_field("id") {
             if let SurrealDBValue::Thing { table: tb, id } = &id_field.value {
-                let id_value = match id.as_ref() {
-                    SurrealDBValue::String(s) => surrealdb2::sql::Id::String(s.clone()),
-                    SurrealDBValue::Int64(i) => surrealdb2::sql::Id::Number(*i),
-                    _ => return Err("Unsupported ID type in Thing".into()),
+                let record_id = if temporal_current {
+                    let _ = (tb, id);
+                    let (pk_col, pk_val) = crate::testing::mssql::doc_business_pk(expected_doc)
+                        .ok_or_else(|| {
+                            format!(
+                                "{test_description}: temporal document {} is missing an MSSQL PK mapping",
+                                doc_idx + 1
+                            )
+                        })?;
+                    let lookup = format!(
+                        "SELECT id FROM type::table($tb) WHERE is_current AND {pk_col} = $pk"
+                    );
+                    let mut lookup_response = surreal
+                        .query(lookup)
+                        .bind(("tb", table_name.to_string()))
+                        .bind(("pk", pk_val.clone()))
+                        .await?;
+                    let found: Vec<surrealdb2::sql::Thing> =
+                        lookup_response.take((0, "id")).map_err(|e| {
+                            format!(
+                                "{test_description}: failed to look up current version for {pk_col}={pk_val}: {e}"
+                            )
+                        })?;
+                    assert_eq!(
+                        found.len(),
+                        1,
+                        "{}: expected exactly one current version for {}={}, found {} ({:?})",
+                        test_description,
+                        pk_col,
+                        pk_val,
+                        found.len(),
+                        found
+                    );
+                    found.into_iter().next().unwrap()
+                } else {
+                    let id_value = match id.as_ref() {
+                        SurrealDBValue::String(s) => surrealdb2::sql::Id::String(s.clone()),
+                        SurrealDBValue::Int64(i) => surrealdb2::sql::Id::Number(*i),
+                        _ => return Err("Unsupported ID type in Thing".into()),
+                    };
+                    let _ = tb;
+                    surrealdb2::sql::Thing::from((tb.clone(), id_value))
                 };
-                let record_id = surrealdb2::sql::Thing::from((tb.clone(), id_value));
 
                 // For each field in the expected document, query it specifically
                 for (field_name, expected_value) in &expected_surrealdb_data {
@@ -730,8 +772,25 @@ pub async fn compare_sync_results_in_surrealdb(
                                 .query(&query)
                                 .bind(("record_id", record_id.clone()))
                                 .await?;
-                            // Retrieve and validate bytes content
-                            let actual: Vec<u8> = response.take((0, "bytes_field"))?;
+                            let actual_bytes: Option<surrealdb2::sql::Bytes> =
+                                response.take((0, "bytes_field")).map_err(|e| {
+                                    format!(
+                                        "{}: Failed to take bytes field '{}' for document {}: {}",
+                                        test_description,
+                                        field_name,
+                                        doc_idx + 1,
+                                        e
+                                    )
+                                })?;
+                            let actual: Vec<u8> =
+                                actual_bytes.map(|b| b.to_vec()).unwrap_or_else(|| {
+                                    panic!(
+                                        "{}: Document {}, Field '{}' bytes missing",
+                                        test_description,
+                                        doc_idx + 1,
+                                        field_name
+                                    )
+                                });
                             assert_eq!(
                                 actual, *expected_bytes,
                                 "{}: Document {}, Field '{}' bytes mismatch - expected {:?}, found {:?}",
@@ -739,20 +798,48 @@ pub async fn compare_sync_results_in_surrealdb(
                             );
                         }
                         SurrealDBValue::Uuid(expected_uuid) => {
-                            let actual: Option<String> =
-                                field_response.take((0, field_name.as_str())).map_err(|e| {
-                                    format!(
-                                        "{}: Failed to take UUID field '{}' for document {}: {}",
-                                        test_description,
-                                        field_name,
-                                        doc_idx + 1,
-                                        e
-                                    )
-                                })?;
-                            if let Some(actual_str) = actual {
+                            let uuid_query = format!("SELECT {field_name} FROM $record_id");
+                            let mut uuid_response = surreal
+                                .query(&uuid_query)
+                                .bind(("record_id", record_id.clone()))
+                                .await?;
+                            let as_uuid: Result<Option<uuid::Uuid>, _> =
+                                uuid_response.take((0, field_name.as_str()));
+                            if let Ok(Some(actual_uuid)) = as_uuid {
                                 assert_eq!(
-                                    actual_str,
-                                    *expected_uuid,
+                                    actual_uuid.to_string().to_ascii_lowercase(),
+                                    expected_uuid.to_ascii_lowercase(),
+                                    "{}: Document {}, Field '{}' UUID mismatch",
+                                    test_description,
+                                    doc_idx + 1,
+                                    field_name
+                                );
+                            } else {
+                                let mut str_response = surreal
+                                    .query(&uuid_query)
+                                    .bind(("record_id", record_id.clone()))
+                                    .await?;
+                                let actual: Option<String> =
+                                    str_response.take((0, field_name.as_str())).map_err(|e| {
+                                        format!(
+                                            "{}: Failed to take UUID field '{}' for document {}: {}",
+                                            test_description,
+                                            field_name,
+                                            doc_idx + 1,
+                                            e
+                                        )
+                                    })?;
+                                let actual_str = actual.unwrap_or_else(|| {
+                                    panic!(
+                                        "{}: Document {}, Field '{}' UUID missing",
+                                        test_description,
+                                        doc_idx + 1,
+                                        field_name
+                                    )
+                                });
+                                assert_eq!(
+                                    actual_str.to_ascii_lowercase(),
+                                    expected_uuid.to_ascii_lowercase(),
                                     "{}: Document {}, Field '{}' UUID mismatch",
                                     test_description,
                                     doc_idx + 1,
@@ -774,6 +861,38 @@ pub async fn compare_sync_results_in_surrealdb(
                         }
                     }
                 }
+                if temporal_current {
+                    let extra_query =
+                        "SELECT is_current, ValidFrom, ValidTo FROM $record_id".to_string();
+                    let mut extra = surreal
+                        .query(extra_query)
+                        .bind(("record_id", record_id.clone()))
+                        .await?;
+                    let is_current: Option<bool> = extra.take((0, "is_current"))?;
+                    assert_eq!(
+                        is_current,
+                        Some(true),
+                        "{}: Document {}, is_current must be true on the current version",
+                        test_description,
+                        doc_idx + 1
+                    );
+                    let valid_from: Option<chrono::DateTime<chrono::Utc>> =
+                        extra.take((0, "ValidFrom"))?;
+                    let valid_to: Option<chrono::DateTime<chrono::Utc>> =
+                        extra.take((0, "ValidTo"))?;
+                    assert!(
+                        valid_from.is_some(),
+                        "{}: Document {}, period start ValidFrom missing",
+                        test_description,
+                        doc_idx + 1
+                    );
+                    assert!(
+                        valid_to.is_some(),
+                        "{}: Document {}, period end ValidTo missing",
+                        test_description,
+                        doc_idx + 1
+                    );
+                }
             }
         }
     }
@@ -789,6 +908,7 @@ pub async fn validate_synced_table_in_surrealdb(
     expected_table: &TestTable,
     test_description: &str,
     source: SourceDatabase,
+    temporal_current: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Use the existing field-by-field validation approach
     compare_sync_results_in_surrealdb(
@@ -797,6 +917,7 @@ pub async fn validate_synced_table_in_surrealdb(
         expected_table,
         test_description,
         source,
+        temporal_current,
     )
     .await
 }
@@ -820,6 +941,7 @@ pub async fn assert_synced(
             table,
             &format!("{} - {}", test_prefix, table.name),
             source,
+            false,
         )
         .await?;
     }
@@ -832,9 +954,40 @@ pub async fn assert_synced(
                 relation,
                 &format!("{} - {}", test_prefix, relation.name),
                 source,
+                false,
             )
             .await?;
         }
+    }
+
+    Ok(())
+}
+
+/// Like [`assert_synced`], but tables listed in `temporal_tables` are matched
+/// as current system-versioned rows (version record ids, `is_current`, periods).
+pub async fn assert_synced_mixed_temporal(
+    surreal: &Surreal<Any>,
+    dataset: &crate::testing::table::TestDataSet,
+    test_prefix: &str,
+    source: SourceDatabase,
+    temporal_tables: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Asserting SurrealDB tables (temporal current versions where marked)...");
+
+    for table in &dataset.tables {
+        let temporal = temporal_tables.iter().any(|n| *n == table.name);
+        tracing::info!(
+            "Validating table '{}' (temporal_current={temporal})",
+            table.name
+        );
+        validate_synced_table_in_surrealdb(
+            surreal,
+            table,
+            &format!("{} - {}", test_prefix, table.name),
+            source,
+            temporal,
+        )
+        .await?;
     }
 
     Ok(())

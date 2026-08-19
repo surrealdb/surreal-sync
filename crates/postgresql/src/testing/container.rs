@@ -117,6 +117,10 @@ impl PostgresContainer {
                 "max_replication_slots=10",
                 "-c",
                 "track_commit_timestamp=on",
+                // PostgreSQL 16.15+ refuses unlisted logical decoding plugins
+                // unless they appear in output_plugin_libraries.
+                "-c",
+                "output_plugin_libraries=wal2json",
             ])
             .output()
             .context("Failed to start Docker container")?;

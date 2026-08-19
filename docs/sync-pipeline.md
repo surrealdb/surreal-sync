@@ -95,6 +95,7 @@ For every incremental batch on sources with a real post-sink durability hook, su
 | Source family | What `advance_watermark` after sink means |
 |---------------|--------------------------------|
 | MySQL/MariaDB binlog, PostgreSQL pgoutput | Store / binlog client commit + sink-safe CatchUpProgress |
+| SQL Server CDC | Last-sunk change-table LSN (`commit_reconciled` / tail `advance_watermark`) |
 | PostgreSQL wal2json | Slot `advance` only after emitted events are sunk (peeks may continue under window capacity via non-consuming peek + prefix skip) |
 | Kafka | Consumer-group `commit_batch` of **all** messages in the sunk batch (not only the last position) |
 | CSV / JSONL | No source cursor (file import) |
@@ -223,6 +224,7 @@ Every sync/import path below loads the same TOML via the shared CLI helper and r
 | `from csv` | Long-lived SourceDriver streams file reads into the window |
 | `from jsonl` | Long-lived SourceDriver streams line reads into the window |
 | `from snowflake` | Full snapshot via `RowChunkDriver` (ingestion-only; no source cursor) |
+| `from mssql sync` | Watermark snapshot + SQL Server CDC stream |
 
 ### CLI quick start
 
@@ -481,20 +483,22 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 - [MySQL/MariaDB Binlog Source](mysql-binlog.md) — snapshot, stream, checkpoints, resume
 - [PostgreSQL pgoutput](postgresql-pgoutput-source.md), [wal2json](postgresql-wal2json-source.md), [trigger](postgresql.md)
 - [MySQL trigger](mysql.md) / [MariaDB trigger](mariadb.md), [MongoDB](mongodb.md), [Neo4j](neo4j.md), [Kafka](kafka.md), [CSV](csv.md), [JSONL](jsonl.md)
+- [Snowflake](snowflake.md) — one-shot SQL REST snapshot
+- [SQL Server](mssql.md) — watermark snapshot + native CDC
 - [Source ports](source-ports.md) — implementer checklist for wiring sources through `surreal-sync-runtime`
 - [Design overview](design.md) — full vs incremental sync model
 - [GitHub issue #118](https://github.com/surrealdb/surreal-sync/issues/118) — transform pipeline tracking
 
 ### Advanced: embedding (from-* crates)
 
-Depend on a source crate such as `surreal-sync-mysql`, `surreal-sync-snowflake`, `surreal-sync-json`, or `surreal-sync-kafka`, plus `surreal-sync-surreal` (feature `v2` or `v3`). For ongoing sync (CDC), also configure checkpoints. Do not depend on the `surreal-sync` CLI package as a library.
-See the **Examples** below (`examples/from-mysql-binlog`, `examples/from-snowflake`, `examples/from-jsonl`, `examples/from-kafka`).
+Depend on a source crate such as `surreal-sync-mysql`, `surreal-sync-mssql`, `surreal-sync-snowflake`, `surreal-sync-json`, or `surreal-sync-kafka`, plus `surreal-sync-surreal` (feature `v2` or `v3`). For ongoing sync (CDC), also configure checkpoints. Do not depend on the `surreal-sync` CLI package as a library.
+See the **Examples** below (`examples/from-mysql-binlog`, `examples/from-mssql`, `examples/from-snowflake`, `examples/from-jsonl`, `examples/from-kafka`).
 
 **When to use in-process vs `command` workers**
 
 | Approach | Use when |
 |----------|----------|
-| `InPlaceTransform` via `run::<Surreal3Sink>([…])` (mysql-binlog / snowflake / jsonl / kafka) | Mutate-only / same-length stages in Rust (redact, rename, flatten IDs, FK → record links) |
+| `InPlaceTransform` via `run::<Surreal3Sink>([…])` (mysql-binlog / mssql / snowflake / jsonl / kafka) | Mutate-only / same-length stages in Rust (redact, rename, flatten IDs, FK → record links) |
 | TOML `type = "command"` | External language workers, heavy enrichment, or filter/fan-out that needs a custom `BatchTransformer` |
 
 Filter-out or fan-out of events is out of scope for `InPlaceTransform` — use a
@@ -523,7 +527,19 @@ cargo run -p surreal-sync-example-from-mysql-binlog -- sync \
   --checkpoints-surreal-table sync_checkpoints
 ```
 
-`run::<Surreal3Sink>([…])` connects SurrealDB and, when you pass `--checkpoints-surreal-table` or `--checkpoint-dir`, picks where to store resume state. You do not wire that up yourself. Those checkpoint flags are for **MySQL binlog CDC** only.
+`run::<Surreal3Sink>([…])` connects SurrealDB and, when you pass `--checkpoints-surreal-table` or `--checkpoint-dir`, picks where to store resume state. You do not wire that up yourself. Those checkpoint flags apply to **CDC sources** (MySQL/MariaDB binlog, SQL Server, PostgreSQL WAL, and similar).
+
+SQL Server — [`examples/from-mssql`](../examples/from-mssql) (`surreal-sync-example-from-mssql`):
+
+```bash
+cargo run -p surreal-sync-example-from-mssql -- sync \
+  --connection-string 'Server=tcp:localhost,1433;User=sa;Password=...;Database=App;TrustServerCertificate=true;Encrypt=true' \
+  --tables dbo.Article \
+  --to-namespace prod --to-database app \
+  --checkpoints-surreal-table sync_checkpoints
+```
+
+The resume checkpoint is a SQL Server CDC LSN (same idea as a MySQL binlog position).
 
 Snowflake — [`examples/from-snowflake`](../examples/from-snowflake) (`surreal-sync-example-from-snowflake`):
 

@@ -11,6 +11,7 @@ pub mod field;
 pub mod full;
 pub mod mongodb;
 pub mod mongodb_container;
+pub mod mssql;
 pub mod mysql;
 pub mod mysql_binlog_container;
 pub mod mysql_binlog_e2e;

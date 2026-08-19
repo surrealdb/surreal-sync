@@ -54,6 +54,9 @@ fn value_to_surreal_id(value: &Value) -> Result<surrealdb2::sql::Id> {
         Value::Int32(i) => Ok(surrealdb2::sql::Id::Number(*i as i64)),
         Value::Int64(i) => Ok(surrealdb2::sql::Id::Number(*i)),
         Value::Text(s) => Ok(surrealdb2::sql::Id::String(s.clone())),
+        Value::VarChar { value, .. } | Value::Char { value, .. } => {
+            Ok(surrealdb2::sql::Id::String(value.clone()))
+        }
         Value::Uuid(u) => Ok(surrealdb2::sql::Id::Uuid(surrealdb2::sql::Uuid::from(*u))),
         other => anyhow::bail!("Cannot convert {other:?} to SurrealDB ID"),
     }

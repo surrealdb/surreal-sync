@@ -145,6 +145,7 @@ async fn full_sync_streams_no_pk_table_via_offset_chunks() -> Result<()> {
     let sync_opts = SyncOpts {
         batch_size: 2,
         dry_run: false,
+        schemafull: false,
     };
     let pipeline = Pipeline::new();
     let apply_opts = ApplyOpts::identity();

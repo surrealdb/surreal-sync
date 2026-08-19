@@ -2,6 +2,7 @@
 //!
 //! Defines relationships between tables for graph database testing
 
+use crate::testing::mssql::MssqlField;
 use crate::testing::neo4j::Neo4jField;
 use crate::testing::postgresql::PostgreSQLField;
 use crate::testing::value::PostgreSQLValue;
@@ -9,8 +10,9 @@ use crate::testing::{
     field::Field,
     neo4j::bolt,
     schema::{
-        ColumnDef, IndexDef, MongoDBSchema, MongoIndexDef, MySQLSchema, Neo4jConstraintDef,
-        Neo4jIndexDef, Neo4jIndexType, Neo4jSchema, PostgreSQLSchema, PropertyDef, TestSchema,
+        ColumnDef, ConstraintDef, IndexDef, MongoDBSchema, MongoIndexDef, MssqlSchema, MySQLSchema,
+        Neo4jConstraintDef, Neo4jIndexDef, Neo4jIndexType, Neo4jSchema, PostgreSQLSchema,
+        PropertyDef, TestSchema,
     },
     table::{TestDoc, TestTable},
     value::SurrealDBValue,
@@ -39,7 +41,8 @@ pub fn create_user_post_relation() -> TestTable {
                     data_type: "TEXT".to_string(),
                     precision: None,
                     scale: None,
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("user_id", "user_001")),
                 Field::simple(
                     "out",
                     SurrealDBValue::Thing {
@@ -53,7 +56,8 @@ pub fn create_user_post_relation() -> TestTable {
                     data_type: "TEXT".to_string(),
                     precision: None,
                     scale: None,
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("post_id", "post_001")),
                 Field::simple("relationship_created", SurrealDBValue::DateTime(ts))
                     .with_postgresql(PostgreSQLField {
                         column_name: "relationship_created".to_string(),
@@ -65,7 +69,8 @@ pub fn create_user_post_relation() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "relationship_created".to_string(),
                         property_value: bolt::datetime(ts),
-                    }),
+                    })
+                    .with_mssql(MssqlField::datetimeoffset("relationship_created", ts)),
             ]),
             TestDoc::new(vec![
                 Field::simple(
@@ -81,7 +86,8 @@ pub fn create_user_post_relation() -> TestTable {
                     data_type: "TEXT".to_string(),
                     precision: None,
                     scale: None,
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("user_id", "user_002")),
                 Field::simple(
                     "out",
                     SurrealDBValue::Thing {
@@ -95,7 +101,8 @@ pub fn create_user_post_relation() -> TestTable {
                     data_type: "TEXT".to_string(),
                     precision: None,
                     scale: None,
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("post_id", "post_002")),
                 Field::simple("relationship_created", SurrealDBValue::DateTime(ts))
                     .with_postgresql(PostgreSQLField {
                         column_name: "relationship_created".to_string(),
@@ -107,7 +114,8 @@ pub fn create_user_post_relation() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "relationship_created".to_string(),
                         property_value: bolt::datetime(ts),
-                    }),
+                    })
+                    .with_mssql(MssqlField::datetimeoffset("relationship_created", ts)),
             ]),
         ],
     )
@@ -144,6 +152,32 @@ pub fn authored_by_schema() -> TestSchema {
             engine: "InnoDB".to_string(),
             charset: "utf8mb4".to_string(),
             collation: "utf8mb4_unicode_ci".to_string(),
+        },
+        mssql: MssqlSchema {
+            columns: vec![
+                ColumnDef::new("user_id", "NVARCHAR(255)").not_null(),
+                ColumnDef::new("post_id", "NVARCHAR(255)").not_null(),
+                ColumnDef::new("relationship_created", "DATETIMEOFFSET"),
+            ],
+            primary_key: Some("user_id, post_id".to_string()),
+            indexes: vec![IndexDef::new(
+                "idx_authored_by_user_id",
+                vec!["user_id".to_string()],
+            )],
+            constraints: vec![
+                ConstraintDef::foreign_key(
+                    "FK_authored_users",
+                    vec!["user_id".to_string()],
+                    "[dbo].[all_types_users]",
+                    vec!["user_id".to_string()],
+                ),
+                ConstraintDef::foreign_key(
+                    "FK_authored_posts",
+                    vec!["post_id".to_string()],
+                    "[dbo].[all_types_posts]",
+                    vec!["post_id".to_string()],
+                ),
+            ],
         },
         mongodb: MongoDBSchema {
             collection_name: "authored_by".to_string(),

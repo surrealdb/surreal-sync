@@ -4,8 +4,8 @@
 //! to source-specific implementations across different database systems.
 
 use crate::testing::{
-    mongodb::MongoDBField, mysql::MySQLField, neo4j::Neo4jField, postgresql::PostgreSQLField,
-    value::SurrealDBValue,
+    mongodb::MongoDBField, mssql::MssqlField, mysql::MySQLField, neo4j::Neo4jField,
+    postgresql::PostgreSQLField, value::SurrealDBValue,
 };
 // Note: Neo4jField now uses neo4rs::BoltType directly instead of Neo4jValue
 
@@ -18,6 +18,7 @@ pub struct Field {
     pub mongodb: Option<MongoDBField>,
     pub postgresql: Option<PostgreSQLField>,
     pub mysql: Option<MySQLField>,
+    pub mssql: Option<MssqlField>,
     pub neo4j: Option<Neo4jField>,
 }
 
@@ -30,6 +31,7 @@ impl Field {
             mongodb: None,
             postgresql: None,
             mysql: None,
+            mssql: None,
             neo4j: None,
         }
     }
@@ -49,6 +51,12 @@ impl Field {
     /// Create a field with specific MySQL representation
     pub fn with_mysql(mut self, mysql_field: MySQLField) -> Self {
         self.mysql = Some(mysql_field);
+        self
+    }
+
+    /// Create a field with specific SQL Server representation
+    pub fn with_mssql(mut self, mssql_field: MssqlField) -> Self {
+        self.mssql = Some(mssql_field);
         self
     }
 

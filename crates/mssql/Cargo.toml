@@ -1,0 +1,74 @@
+[package]
+name = "surreal-sync-mssql"
+version = "0.6.1"
+edition = "2021"
+description = "Sync SQL Server tables into SurrealDB using CDC and watermark snapshots"
+license = "Apache-2.0"
+readme = "README.md"
+publish = true
+repository = "https://github.com/surrealdb/surreal-sync"
+homepage = "https://github.com/surrealdb/surreal-sync"
+documentation = "https://docs.rs/surreal-sync-mssql"
+
+[features]
+default = ["types"]
+types = []
+from_mssql = [
+    "types",
+    "dep:surreal-sync-runtime",
+    "dep:clap",
+    "dep:async-trait",
+    "dep:tokio",
+    "dep:tokio-util",
+    "dep:tracing",
+    "dep:tiberius",
+    "dep:rustls",
+    "dep:sha2",
+    "dep:hex",
+    "dep:thiserror",
+]
+
+[dependencies]
+surreal-sync-core = { path = "../sync-core", version = "0.6.1" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1.0"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+
+surreal-sync-runtime = { path = "../runtime", version = "0.6.1", features = ["cli"], optional = true }
+clap = { version = "4.5", features = ["derive", "env"], optional = true }
+async-trait = { version = "0.1", optional = true }
+tokio = { version = "1.49", features = ["net", "io-util", "time", "rt", "macros", "sync", "signal"], optional = true }
+tokio-util = { version = "0.7", features = ["compat"], optional = true }
+tracing = { version = "0.1", optional = true }
+tiberius = { version = "0.12", default-features = false, features = ["rustls", "chrono", "tds73"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "std", "tls12"], optional = true }
+sha2 = { version = "0.10", optional = true }
+hex = { version = "0.4", optional = true }
+thiserror = { version = "2.0", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.49", features = ["full"] }
+async-trait = "0.1"
+serde_json = "1.0"
+surreal-sync-runtime = { path = "../runtime", version = "0.6.1" }
+surreal-sync-core = { path = "../sync-core", version = "0.6.1" }
+tiberius = { version = "0.12", default-features = false, features = ["rustls", "chrono", "tds73"] }
+sha2 = "0.10"
+hex = "0.4"
+thiserror = "2.0"
+
+[lib]
+name = "surreal_sync_mssql"
+path = "src/lib.rs"
+
+[[test]]
+name = "transforms"
+path = "tests/transforms.rs"
+required-features = ["from_mssql"]
+
+[[test]]
+name = "types"
+path = "tests/types.rs"
+required-features = ["from_mssql"]

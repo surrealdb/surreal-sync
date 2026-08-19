@@ -74,6 +74,11 @@ impl SurrealSink for Surreal2Sink {
     async fn apply_relation_change(&self, change: &RelationChange) -> Result<()> {
         apply_relation_change(&self.client, change, self.zero_temporal).await
     }
+
+    async fn query(&self, sql: &str) -> Result<()> {
+        self.client.query(sql).await?;
+        Ok(())
+    }
 }
 
 #[async_trait::async_trait]

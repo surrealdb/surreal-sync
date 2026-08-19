@@ -6,7 +6,7 @@
 use crate::testing::{
     field::Field,
     schema::TestSchema,
-    value::{MongoDBValue, MySQLValue, PostgreSQLValue, SurrealDBValue},
+    value::{MongoDBValue, MssqlValue, MySQLValue, PostgreSQLValue, SurrealDBValue},
 };
 use std::collections::HashMap;
 
@@ -17,6 +17,7 @@ pub enum SourceDatabase {
     MySQL,
     PostgreSQL,
     Neo4j,
+    Mssql,
     CSV,
     JSONL,
     Kafka,
@@ -76,6 +77,18 @@ impl TestDoc {
         doc
     }
 
+    /// Get SQL Server representation of this document
+    /// Only includes fields that have explicit MSSQL definitions
+    pub fn to_mssql_doc(&self) -> HashMap<String, MssqlValue> {
+        let mut doc = HashMap::new();
+        for field in &self.fields {
+            if let Some(mssql) = &field.mssql {
+                doc.insert(mssql.column_name.clone(), mssql.column_value.clone());
+            }
+        }
+        doc
+    }
+
     /// Get Neo4j representation of this document
     /// Only includes fields that have explicit Neo4j definitions
     pub fn to_neo4j_doc(&self) -> HashMap<String, neo4rs::BoltType> {
@@ -111,6 +124,7 @@ impl TestDoc {
                 SourceDatabase::MySQL => field.mysql.is_some(),
                 SourceDatabase::PostgreSQL => field.postgresql.is_some(),
                 SourceDatabase::Neo4j => field.neo4j.is_some(),
+                SourceDatabase::Mssql => field.mssql.is_some(),
                 // For sources without field-level definitions (CSV, JSONL, Kafka),
                 // only include fields that have definitions for multiple databases
                 // (i.e., not single-database-specific fields). This filters out
@@ -122,6 +136,7 @@ impl TestDoc {
                         field.mysql.is_some(),
                         field.postgresql.is_some(),
                         field.neo4j.is_some(),
+                        field.mssql.is_some(),
                     ]
                     .iter()
                     .filter(|&&b| b)
@@ -220,6 +235,14 @@ impl TestTable {
         self.documents
             .iter()
             .map(|doc| doc.to_mysql_doc())
+            .collect()
+    }
+
+    /// Get all documents as SQL Server representation
+    pub fn to_mssql_docs(&self) -> Vec<HashMap<String, MssqlValue>> {
+        self.documents
+            .iter()
+            .map(|doc| doc.to_mssql_doc())
             .collect()
     }
 

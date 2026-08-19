@@ -250,6 +250,9 @@ impl From<Value> for SurrealValue {
                 // Convert the ID to a SurrealDB ID type
                 let surreal_id = match id.as_ref() {
                     Value::Text(s) => RecordIdKey::String(s.clone()),
+                    Value::VarChar { value, .. } | Value::Char { value, .. } => {
+                        RecordIdKey::String(value.clone())
+                    }
                     Value::Int32(i) => RecordIdKey::Number(*i as i64),
                     Value::Int64(i) => RecordIdKey::Number(*i),
                     Value::Uuid(u) => RecordIdKey::Uuid(surrealdb3::types::Uuid::from(*u)),
@@ -344,13 +347,16 @@ fn try_parse_iso8601_duration(s: &str) -> Option<std::time::Duration> {
 pub fn create_thing(table: &str, id: &Value) -> anyhow::Result<RecordId> {
     let id_part = match id {
         Value::Text(s) => RecordIdKey::String(s.clone()),
+        Value::VarChar { value, .. } | Value::Char { value, .. } => {
+            RecordIdKey::String(value.clone())
+        }
         Value::Int32(i) => RecordIdKey::Number(*i as i64),
         Value::Int64(i) => RecordIdKey::Number(*i),
         Value::Uuid(u) => RecordIdKey::Uuid(surrealdb3::types::Uuid::from(*u)),
         Value::Ulid(u) => RecordIdKey::String(u.to_string()),
         other => anyhow::bail!(
             "Unsupported Value type for SurrealDB ID: {other:?}. \
-             Supported types: Text, Int32, Int64, Uuid, Ulid"
+             Supported types: Text, VarChar, Char, Int32, Int64, Uuid, Ulid"
         ),
     };
     Ok(RecordId::new(table, id_part))
@@ -724,6 +730,36 @@ mod tests {
         let id = Value::Text("user123".to_string());
         let record_id = create_thing("users", &id).unwrap();
         assert_eq!(record_id.table.as_str(), "users");
+    }
+
+    #[test]
+    fn test_create_thing_varchar() {
+        let id = Value::VarChar {
+            value: "user_001".to_string(),
+            length: 255,
+        };
+        let record_id = create_thing("users", &id).unwrap();
+        assert_eq!(record_id.table.as_str(), "users");
+        assert_eq!(record_id.key, RecordIdKey::String("user_001".to_string()));
+    }
+
+    #[test]
+    fn test_thing_varchar_id_is_string() {
+        let value = Value::Thing {
+            table: "users".to_string(),
+            id: Box::new(Value::VarChar {
+                value: "user_001".to_string(),
+                length: 255,
+            }),
+        };
+        let surreal_val = SurrealValue::from(value);
+        match surreal_val.0 {
+            DbValue::RecordId(record_id) => {
+                assert_eq!(record_id.table.as_str(), "users");
+                assert_eq!(record_id.key, RecordIdKey::String("user_001".to_string()));
+            }
+            other => panic!("expected RecordId, got {other:?}"),
+        }
     }
 
     #[test]

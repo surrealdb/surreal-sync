@@ -48,6 +48,7 @@ struct ResolvedTriggerFullArgs {
     strategy: SyncStrategy,
     chunk_size: usize,
     transforms_config: Option<PathBuf>,
+    schemafull: bool,
     surreal: SurrealOpts,
 }
 
@@ -87,6 +88,7 @@ fn resolve_full_args(args: PostgreSQLTriggerFullArgs) -> anyhow::Result<Resolved
             strategy: args.strategy,
             chunk_size: args.chunk_size,
             transforms_config: args.transforms_config,
+            schemafull: args.schemafull,
             surreal: SurrealOpts {
                 surreal_endpoint: sink.endpoint,
                 surreal_username: sink.username,
@@ -115,6 +117,7 @@ fn resolve_full_args(args: PostgreSQLTriggerFullArgs) -> anyhow::Result<Resolved
             strategy: args.strategy,
             chunk_size: args.chunk_size,
             transforms_config: args.transforms_config,
+            schemafull: args.schemafull,
             surreal: args.surreal,
         })
     }
@@ -238,6 +241,7 @@ async fn run_full_v2(args: ResolvedTriggerFullArgs) -> anyhow::Result<()> {
     let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
+        schemafull: args.schemafull,
     };
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
@@ -325,6 +329,7 @@ async fn run_full_v3(args: ResolvedTriggerFullArgs) -> anyhow::Result<()> {
     let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: args.surreal.batch_size,
         dry_run: args.surreal.dry_run,
+        schemafull: args.schemafull,
     };
     let (pipeline, apply_opts) = load_transforms_from_args(args.transforms_config.as_deref())?;
 
@@ -404,11 +409,30 @@ async fn pg_trigger_snapshot_full<S, St>(
     chunk_size: usize,
     manager: Option<&SyncManager<St>>,
     transforms: &SnapshotTransforms,
+    schemafull: bool,
+    dry_run: bool,
 ) -> anyhow::Result<()>
 where
     S: SurrealSink,
     St: CheckpointStore,
 {
+    if schemafull {
+        let client =
+            surreal_sync_postgresql::new_postgresql_client(&source_opts.source_uri).await?;
+        let guard = client.lock().await;
+        let db_schema = surreal_sync_postgresql::collect_database_schema_with_fks(&guard).await?;
+        surreal_sync_core::maybe_emit_schemafull(
+            sink,
+            &db_schema,
+            &surreal_sync_core::SchemafullExtras {
+                relation_tables: source_opts.relation_tables.clone(),
+                ..Default::default()
+            },
+            true,
+            dry_run,
+        )
+        .await?;
+    }
     let config = InterleavedSnapshotConfig { chunk_size };
     let mut checkpointer = NoopCheckpointer;
     let final_seq =
@@ -474,6 +498,8 @@ async fn run_full_interleaved_snapshot_v2(args: ResolvedTriggerFullArgs) -> anyh
                 args.chunk_size,
                 Some(&manager),
                 &transforms,
+                args.schemafull,
+                args.surreal.dry_run,
             )
             .await
         }
@@ -494,6 +520,8 @@ async fn run_full_interleaved_snapshot_v2(args: ResolvedTriggerFullArgs) -> anyh
                 args.chunk_size,
                 Some(&manager),
                 &transforms,
+                args.schemafull,
+                args.surreal.dry_run,
             )
             .await
         }
@@ -504,6 +532,8 @@ async fn run_full_interleaved_snapshot_v2(args: ResolvedTriggerFullArgs) -> anyh
                 args.chunk_size,
                 None,
                 &transforms,
+                args.schemafull,
+                args.surreal.dry_run,
             )
             .await
         }
@@ -550,6 +580,8 @@ async fn run_full_interleaved_snapshot_v3(args: ResolvedTriggerFullArgs) -> anyh
                 args.chunk_size,
                 Some(&manager),
                 &transforms,
+                args.schemafull,
+                args.surreal.dry_run,
             )
             .await
         }
@@ -564,6 +596,8 @@ async fn run_full_interleaved_snapshot_v3(args: ResolvedTriggerFullArgs) -> anyh
                 args.chunk_size,
                 Some(&manager),
                 &transforms,
+                args.schemafull,
+                args.surreal.dry_run,
             )
             .await
         }
@@ -574,6 +608,8 @@ async fn run_full_interleaved_snapshot_v3(args: ResolvedTriggerFullArgs) -> anyh
                 args.chunk_size,
                 None,
                 &transforms,
+                args.schemafull,
+                args.surreal.dry_run,
             )
             .await
         }

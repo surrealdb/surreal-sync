@@ -78,6 +78,7 @@ pub async fn run_postgresql_pgoutput_full_sync_e2e(
     let sync_opts = SyncOpts {
         batch_size: 1000,
         dry_run: false,
+        schemafull: false,
     };
 
     match &conn {
@@ -137,6 +138,7 @@ pub async fn run_postgresql_pgoutput_incremental_e2e(
     let sync_opts = SyncOpts {
         batch_size: 1000,
         dry_run: false,
+        schemafull: false,
     };
 
     let checkpoint_store =

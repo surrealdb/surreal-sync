@@ -24,6 +24,8 @@ pub struct SyncOpts {
     pub batch_size: usize,
     /// Dry run mode - don't actually write data
     pub dry_run: bool,
+    /// Emit `DEFINE TABLE` / `FIELD` / `INDEX` before copying rows (opt-in).
+    pub schemafull: bool,
 }
 
 /// Convert all rows of a table with FK enrichment (no sink writes).

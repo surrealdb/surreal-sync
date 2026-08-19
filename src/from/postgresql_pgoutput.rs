@@ -70,10 +70,11 @@ fn wal_source_opts(args: &PostgreSQLPgoutputSyncArgs) -> SourceOpts {
     }
 }
 
-fn wal_sync_opts(batch_size: usize, dry_run: bool) -> SyncOpts {
+fn wal_sync_opts(batch_size: usize, dry_run: bool, schemafull: bool) -> SyncOpts {
     SyncOpts {
         batch_size,
         dry_run,
+        schemafull,
     }
 }
 
@@ -185,6 +186,22 @@ where
 {
     match strategy {
         SyncStrategy::InterleavedSnapshot => {
+            if sync_opts.schemafull {
+                let client =
+                    surreal_sync_postgresql::new_postgresql_client(&source_opts.connection_string)
+                        .await?;
+                let guard = client.lock().await;
+                let db_schema =
+                    surreal_sync_postgresql::collect_database_schema_with_fks(&guard).await?;
+                surreal_sync_core::maybe_emit_schemafull(
+                    sink,
+                    &db_schema,
+                    &surreal_sync_core::SchemafullExtras::default(),
+                    true,
+                    sync_opts.dry_run,
+                )
+                .await?;
+            }
             let outcome = run_interleaved_snapshot_full_sync_with_transforms(
                 sink,
                 source_opts,
@@ -363,7 +380,11 @@ where
     let stream_options = wal_stream_options(&args)?.with_cancel(cancel.clone());
 
     let source_opts = wal_source_opts(&args);
-    let sync_opts = wal_sync_opts(args.surreal.batch_size, args.surreal.dry_run);
+    let sync_opts = wal_sync_opts(
+        args.surreal.batch_size,
+        args.surreal.dry_run,
+        args.schemafull,
+    );
 
     match snapshot_mode {
         BinlogSnapshotModeArg::Only => {

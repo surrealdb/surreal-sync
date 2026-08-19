@@ -5,6 +5,7 @@
 use crate::testing::{
     field::Field,
     mongodb::MongoDBField,
+    mssql::MssqlField,
     mysql::MySQLField,
     neo4j::bolt,
     neo4j::Neo4jField,
@@ -12,8 +13,9 @@ use crate::testing::{
     table::{TestDoc, TestTable},
     value::{MongoDBValue, MySQLValue, PostgreSQLValue, SurrealDBValue},
 };
-use chrono::Utc;
+use chrono::{NaiveDate, NaiveTime, Utc};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 /// Create the users table with type coverage
 pub fn create_users_table() -> TestTable {
@@ -54,7 +56,8 @@ pub fn create_users_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "id".to_string(),
                     property_value: bolt::string("user_001"),
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("user_id", "user_001")),
                 // High-precision decimal with different precision per database
                 Field::simple(
                     "account_balance",
@@ -95,7 +98,8 @@ pub fn create_users_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "account_balance".to_string(),
                     property_value: bolt::float(12345.67890),
-                }),
+                })
+                .with_mssql(MssqlField::decimal("account_balance", "12345.67890", 19, 5)),
                 // Complex Object field with database-specific representations
                 Field::simple(
                     "metadata",
@@ -259,7 +263,11 @@ pub fn create_users_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "reference_id".to_string(),
                     property_value: bolt::string("507f1f77bcf86cd799439011"),
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar(
+                    "reference_id",
+                    "507f1f77bcf86cd799439011",
+                )),
                 // Common fields with explicit definitions for all databases
                 Field::simple("name", SurrealDBValue::String("Alice Smith".to_string()))
                     .with_postgresql(PostgreSQLField {
@@ -285,7 +293,8 @@ pub fn create_users_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "name".to_string(),
                         property_value: bolt::string("Alice Smith"),
-                    }),
+                    })
+                    .with_mssql(MssqlField::nvarchar("name", "Alice Smith")),
                 Field::simple(
                     "email",
                     SurrealDBValue::String("alice@example.com".to_string()),
@@ -313,7 +322,8 @@ pub fn create_users_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "email".to_string(),
                     property_value: bolt::string("alice@example.com"),
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("email", "alice@example.com")),
                 Field::simple("age", SurrealDBValue::Int32(30))
                     .with_postgresql(PostgreSQLField {
                         column_name: "age".to_string(),
@@ -338,7 +348,8 @@ pub fn create_users_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "age".to_string(),
                         property_value: bolt::int(30),
-                    }),
+                    })
+                    .with_mssql(MssqlField::int("age", 30)),
                 Field::simple("active", SurrealDBValue::Bool(true))
                     .with_postgresql(PostgreSQLField {
                         column_name: "active".to_string(),
@@ -363,7 +374,8 @@ pub fn create_users_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "active".to_string(),
                         property_value: bolt::bool(true),
-                    }),
+                    })
+                    .with_mssql(MssqlField::bit("active", true)),
                 Field::simple("created_at", SurrealDBValue::DateTime(Utc::now()))
                     .with_postgresql(PostgreSQLField {
                         column_name: "created_at".to_string(),
@@ -388,7 +400,8 @@ pub fn create_users_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "created_at".to_string(),
                         property_value: bolt::datetime(Utc::now()),
-                    }),
+                    })
+                    .with_mssql(MssqlField::datetimeoffset("created_at", Utc::now())),
                 Field::simple("score", SurrealDBValue::Float64(95.7))
                     .with_postgresql(PostgreSQLField {
                         column_name: "score".to_string(),
@@ -413,7 +426,50 @@ pub fn create_users_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "score".to_string(),
                         property_value: bolt::float(95.7),
-                    }),
+                    })
+                    .with_mssql(MssqlField::float("score", 95.7)),
+                Field::simple("loyalty_tier", SurrealDBValue::Int32(3))
+                    .with_mssql(MssqlField::tinyint("loyalty_tier", 3)),
+                Field::simple(
+                    "wallet_money",
+                    SurrealDBValue::Decimal {
+                        value: "12.3400".to_string(),
+                        precision: Some(19),
+                        scale: Some(4),
+                    },
+                )
+                .with_mssql(MssqlField::money("wallet_money", "12.3400")),
+                Field::simple(
+                    "local_created",
+                    SurrealDBValue::DateTime(
+                        NaiveDate::from_ymd_opt(2024, 1, 15)
+                            .unwrap()
+                            .and_time(NaiveTime::from_hms_opt(10, 30, 0).unwrap())
+                            .and_utc(),
+                    ),
+                )
+                .with_mssql(MssqlField::datetime2(
+                    "local_created",
+                    NaiveDate::from_ymd_opt(2024, 1, 15)
+                        .unwrap()
+                        .and_hms_opt(10, 30, 0)
+                        .unwrap(),
+                )),
+                Field::simple(
+                    "legacy_guid",
+                    SurrealDBValue::Uuid("550e8400-e29b-41d4-a716-446655440000".to_string()),
+                )
+                .with_mssql(MssqlField::uniqueidentifier(
+                    "legacy_guid",
+                    Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap(),
+                )),
+                Field::simple("avatar_blob", SurrealDBValue::Bytes(vec![0x01, 0x02, 0x03, 0x04]))
+                    .with_mssql(MssqlField::varbinary("avatar_blob", vec![0x01, 0x02, 0x03, 0x04])),
+                Field::simple(
+                    "profile_xml",
+                    SurrealDBValue::String("<root>alice</root>".to_string()),
+                )
+                .with_mssql(MssqlField::xml("profile_xml", "<root>alice</root>")),
             ]),
             // Second user with different values
             TestDoc::new(vec![
@@ -447,7 +503,8 @@ pub fn create_users_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "id".to_string(),
                     property_value: bolt::string("user_002"),
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("user_id", "user_002")),
                 Field::simple(
                     "account_balance",
                     SurrealDBValue::Decimal {
@@ -487,7 +544,8 @@ pub fn create_users_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "account_balance".to_string(),
                     property_value: bolt::float(98765.43210),
-                }),
+                })
+                .with_mssql(MssqlField::decimal("account_balance", "98765.43210", 19, 5)),
                 Field::simple(
                     "metadata",
                     SurrealDBValue::Object(HashMap::from([
@@ -631,7 +689,11 @@ pub fn create_users_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "reference_id".to_string(),
                     property_value: bolt::string("507f191e810c19729de860ea"),
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar(
+                    "reference_id",
+                    "507f191e810c19729de860ea",
+                )),
                 // Common fields with complete database definitions
                 Field::simple("name", SurrealDBValue::String("Bob Johnson".to_string()))
                     .with_postgresql(PostgreSQLField {
@@ -657,7 +719,8 @@ pub fn create_users_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "name".to_string(),
                         property_value: bolt::string("Bob Johnson"),
-                    }),
+                    })
+                    .with_mssql(MssqlField::nvarchar("name", "Bob Johnson")),
                 Field::simple(
                     "email",
                     SurrealDBValue::String("bob@example.com".to_string()),
@@ -685,7 +748,8 @@ pub fn create_users_table() -> TestTable {
                 .with_neo4j(Neo4jField {
                     property_name: "email".to_string(),
                     property_value: bolt::string("bob@example.com"),
-                }),
+                })
+                .with_mssql(MssqlField::nvarchar("email", "bob@example.com")),
                 Field::simple("age", SurrealDBValue::Int32(25))
                     .with_postgresql(PostgreSQLField {
                         column_name: "age".to_string(),
@@ -710,7 +774,8 @@ pub fn create_users_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "age".to_string(),
                         property_value: bolt::int(25),
-                    }),
+                    })
+                    .with_mssql(MssqlField::int("age", 25)),
                 Field::simple("active", SurrealDBValue::Bool(false))
                     .with_postgresql(PostgreSQLField {
                         column_name: "active".to_string(),
@@ -735,7 +800,8 @@ pub fn create_users_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "active".to_string(),
                         property_value: bolt::bool(false),
-                    }),
+                    })
+                    .with_mssql(MssqlField::bit("active", false)),
                 Field::simple("created_at", SurrealDBValue::DateTime(Utc::now()))
                     .with_postgresql(PostgreSQLField {
                         column_name: "created_at".to_string(),
@@ -760,7 +826,8 @@ pub fn create_users_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "created_at".to_string(),
                         property_value: bolt::datetime(Utc::now()),
-                    }),
+                    })
+                    .with_mssql(MssqlField::datetimeoffset("created_at", Utc::now())),
                 Field::simple("score", SurrealDBValue::Float64(87.3))
                     .with_postgresql(PostgreSQLField {
                         column_name: "score".to_string(),
@@ -785,7 +852,50 @@ pub fn create_users_table() -> TestTable {
                     .with_neo4j(Neo4jField {
                         property_name: "score".to_string(),
                         property_value: bolt::float(87.3),
-                    }),
+                    })
+                    .with_mssql(MssqlField::float("score", 87.3)),
+                Field::simple("loyalty_tier", SurrealDBValue::Int32(1))
+                    .with_mssql(MssqlField::tinyint("loyalty_tier", 1)),
+                Field::simple(
+                    "wallet_money",
+                    SurrealDBValue::Decimal {
+                        value: "99.9900".to_string(),
+                        precision: Some(19),
+                        scale: Some(4),
+                    },
+                )
+                .with_mssql(MssqlField::money("wallet_money", "99.9900")),
+                Field::simple(
+                    "local_created",
+                    SurrealDBValue::DateTime(
+                        NaiveDate::from_ymd_opt(2024, 6, 1)
+                            .unwrap()
+                            .and_time(NaiveTime::from_hms_opt(8, 0, 0).unwrap())
+                            .and_utc(),
+                    ),
+                )
+                .with_mssql(MssqlField::datetime2(
+                    "local_created",
+                    NaiveDate::from_ymd_opt(2024, 6, 1)
+                        .unwrap()
+                        .and_hms_opt(8, 0, 0)
+                        .unwrap(),
+                )),
+                Field::simple(
+                    "legacy_guid",
+                    SurrealDBValue::Uuid("6ba7b810-9dad-11d1-80b4-00c04fd430c8".to_string()),
+                )
+                .with_mssql(MssqlField::uniqueidentifier(
+                    "legacy_guid",
+                    Uuid::parse_str("6ba7b810-9dad-11d1-80b4-00c04fd430c8").unwrap(),
+                )),
+                Field::simple("avatar_blob", SurrealDBValue::Bytes(vec![0xaa, 0xbb, 0xcc]))
+                    .with_mssql(MssqlField::varbinary("avatar_blob", vec![0xaa, 0xbb, 0xcc])),
+                Field::simple(
+                    "profile_xml",
+                    SurrealDBValue::String("<root>bob</root>".to_string()),
+                )
+                .with_mssql(MssqlField::xml("profile_xml", "<root>bob</root>")),
             ]),
         ],
     )

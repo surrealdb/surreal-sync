@@ -101,6 +101,18 @@ pub async fn run_full_sync_with_transforms<S: SurrealSink, CS: CheckpointStore>(
 
     let db_schema = crate::schema::collect_database_schema_with_fks(pg_client.pg_client()).await?;
 
+    surreal_sync_core::maybe_emit_schemafull(
+        surreal,
+        &db_schema,
+        &surreal_sync_core::SchemafullExtras {
+            relation_tables: from_opts.relation_tables.clone(),
+            ..Default::default()
+        },
+        sync_opts.schemafull,
+        sync_opts.dry_run,
+    )
+    .await?;
+
     let mut total_migrated = 0;
 
     for table_name in &tables {

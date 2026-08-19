@@ -39,6 +39,7 @@ PACKAGES=(
   surreal-sync-example-from-snowflake
   surreal-sync-example-from-jsonl
   surreal-sync-example-from-kafka
+  surreal-sync-example-from-mssql
 )
 
 for pkg in "${PACKAGES[@]}"; do

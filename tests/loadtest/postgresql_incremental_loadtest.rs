@@ -114,6 +114,7 @@ async fn test_postgresql_incremental_loadtest_small_scale() -> Result<(), Box<dy
     let sync_opts = surreal_sync_postgresql::SyncOpts {
         batch_size: BATCH_SIZE,
         dry_run: false,
+        schemafull: false,
     };
 
     // Create sync manager with filesystem checkpoint store

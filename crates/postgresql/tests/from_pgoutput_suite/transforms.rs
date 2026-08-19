@@ -299,6 +299,7 @@ async fn external_mutate_worker_transforms_full_sync_rows() -> Result<()> {
     let sync_opts = SyncOpts {
         batch_size: 100,
         dry_run: false,
+        schemafull: false,
     };
 
     run_full_sync_cancellable_with_transforms(

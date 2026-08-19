@@ -49,6 +49,7 @@ See source-specific guides for more details:
 - **[JSONL](docs/jsonl.md)**: Bulk import from JSON Lines files
 - **[Kafka](docs/kafka.md)**: Kafka consumer that subscribes to a topic, importing Kafka message payloads into SurrealDB with optional deduplication
 - **[Snowflake](docs/snowflake.md)**: Full one-shot snapshot ingestion via the SQL REST API v2 using key-pair (JWT) auth
+- **[SQL Server](docs/mssql.md)**: Snapshot and CDC using native SQL Server change data capture
 - **[How sync works](docs/sync-pipeline.md)**: End-to-end pipeline (source → apply/transforms → sink → watermark), including optional `--transforms-config`
 
 ## Development
