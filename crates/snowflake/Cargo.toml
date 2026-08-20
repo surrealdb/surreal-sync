@@ -48,7 +48,7 @@ tracing = { version = "0.1", optional = true }
 # `3des` covers PBES2+3DES-CBC, which Snowflake's own docs used to generate
 # (`openssl pkcs8 -topk8 -v2 des3`). Legacy PBES1/SHA-1 is deliberately not
 # enabled -- those keys get a "re-wrap with -v2 aes-256-cbc" error instead.
-pkcs8 = { version = "0.10", features = ["encryption", "pem", "3des", "std"], optional = true }
+pkcs8 = { version = "0.11", features = ["encryption", "pem", "3des", "std"], optional = true }
 zeroize = { version = "1", optional = true }
 
 [dev-dependencies]
