@@ -38,7 +38,7 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 
 # Table formatting for aggregation output
-comfy-table = "7"
+comfy-table = "8"
 
 # UUID for container ID generation
 uuid = { version = "1", features = ["v4"] }
