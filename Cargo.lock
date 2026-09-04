@@ -4203,7 +4203,7 @@ dependencies = [
  "serde_json",
  "surreal-sync-core",
  "surreal-sync-surreal",
- "surrealdb 3.2.3",
+ "surrealdb 3.2.0",
  "thiserror 2.0.19",
  "tokio",
  "tokio-test",
@@ -7596,7 +7596,7 @@ dependencies = [
  "surreal-sync-snowflake",
  "surreal-sync-surreal",
  "surrealdb 2.6.5",
- "surrealdb 3.2.3",
+ "surrealdb 3.2.0",
  "tempfile",
  "tokio",
  "tokio-postgres",
@@ -7644,8 +7644,7 @@ dependencies = [
  "surreal-sync-file",
  "surreal-sync-runtime",
  "surreal-sync-surreal",
- "surrealdb 2.6.5",
- "surrealdb 3.2.3",
+ "surrealdb 3.2.0",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -7737,8 +7736,7 @@ dependencies = [
  "surreal-sync-file",
  "surreal-sync-runtime",
  "surreal-sync-surreal",
- "surrealdb 2.6.5",
- "surrealdb 3.2.3",
+ "surrealdb 3.2.0",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -7796,7 +7794,7 @@ dependencies = [
  "surreal-sync-core",
  "surreal-sync-runtime",
  "surreal-sync-surreal",
- "surrealdb 2.6.5",
+ "surrealdb 3.2.0",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -7858,7 +7856,7 @@ dependencies = [
  "surreal-sync-json",
  "surreal-sync-runtime",
  "surreal-sync-surreal",
- "surrealdb 2.6.5",
+ "surrealdb 3.2.0",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -7890,7 +7888,7 @@ dependencies = [
  "serde_json",
  "surreal-sync-core",
  "surreal-sync-runtime",
- "surrealdb 2.6.5",
+ "surrealdb 3.2.0",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -7919,7 +7917,7 @@ dependencies = [
  "surreal-sync-json",
  "surreal-sync-runtime",
  "surreal-sync-surreal",
- "surrealdb 2.6.5",
+ "surrealdb 3.2.0",
  "tempfile",
  "thiserror 2.0.19",
  "tokio",
@@ -7989,7 +7987,7 @@ dependencies = [
  "serde_json",
  "surreal-sync-core",
  "surrealdb 2.6.5",
- "surrealdb 3.2.3",
+ "surrealdb 3.2.0",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -8041,9 +8039,9 @@ dependencies = [
 
 [[package]]
 name = "surrealdb"
-version = "3.2.3"
+version = "3.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d1d636f9a9104f4446943111e0703e6d6668bfaba6c4415a31d0450dc46630b"
+checksum = "74c21f360e9c3705555e5894271e4db622cf055d0faad4169f1ef52d08958705"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -8286,7 +8284,7 @@ dependencies = [
  "serde_json",
  "surreal-sync-surreal",
  "surrealdb 2.6.5",
- "surrealdb 3.2.3",
+ "surrealdb 3.2.0",
  "tokio",
  "tracing",
  "tracing-subscriber",

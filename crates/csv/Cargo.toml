@@ -48,7 +48,7 @@ tempfile = "3.27"
 anyhow = "1.0.100"
 surreal-sync-runtime = { path = "../runtime" }
 surreal-sync-surreal = { path = "../surreal", features = ["v2", "v3", "reqwest"], default-features = false }
-surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
+surrealdb = { version = "3.2.0", features = ["protocol-ws", "kv-mem"] }
 surrealdb3 = { version = "3.1.5", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
 axum = "0.8"
 tower = "0.5"

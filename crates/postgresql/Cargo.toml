@@ -52,7 +52,7 @@ hex = { version = "0.4", optional = true }
 pg_walstream = { version = "0.7", default-features = false, features = ["rustls-tls"], optional = true }
 surreal-sync-json = { path = "../json", default-features = false, features = ["types"], optional = true }
 surreal-sync-surreal = { path = "../surreal", default-features = false, features = ["v2"], optional = true }
-surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"], optional = true }
+surrealdb = { version = "3.2.0", features = ["protocol-ws", "kv-mem"], optional = true }
 tokio-util = { version = "0.7", optional = true }
 toml = { version = "1.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
@@ -64,7 +64,7 @@ libc = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 surreal-sync-json = { path = "../json", default-features = false, features = ["types"] }
 surreal-sync-surreal = { path = "../surreal", default-features = false, features = ["v2"] }
-surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
+surrealdb = { version = "3.2.0", features = ["protocol-ws", "kv-mem"] }
 tempfile = "3.27"
 tokio = { version = "1.49", features = ["full"] }
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"] }
