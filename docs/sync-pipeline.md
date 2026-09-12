@@ -100,6 +100,7 @@ For every incremental batch on sources with a real post-sink durability hook, su
 | Kafka | Consumer-group `commit_batch` of **all** messages in the sunk batch (not only the last position) |
 | CSV / JSONL | No source cursor (file import) |
 | Snowflake | No source cursor (one-shot ingestion; streams result partitions) |
+| BigQuery | No source cursor (one-shot ingestion; streams result pages) |
 | MySQL/PostgreSQL trigger, MongoDB change stream, Neo4j | After SurrealDB write succeeds, `advance_watermark(position)` marks an **in-memory sink-safe cursor**. Fetch/read-ahead may be ahead of that cursor; `checkpoint()` / resume-token handles report the sunk watermark, not the read head. There is still **no mid-run durable store write** on these ports — process restart resumes from the last **persisted** sync checkpoint (phase markers / `--from`), so long incremental runs may reprocess after a crash (at-least-once). |
 
 | Hop | What “ack” means |
@@ -150,7 +151,7 @@ Sources that discover a multi-column primary key (or that you configure with mul
 table:[k1, k2]     # e.g. users:[42, "us-east"]
 ```
 
-A single-column key stays a scalar ID (`users:42`). SQL CDC / trigger sources take composite keys from the source schema; file sources, Kafka, and Snowflake take them from `--id-columns` (see below).
+A single-column key stays a scalar ID (`users:42`). SQL CDC / trigger sources take composite keys from the source schema; file sources, Kafka, Snowflake, and BigQuery take them from `--id-columns` (see below).
 
 ### Flatten to Text (`flatten_id`)
 
@@ -172,12 +173,13 @@ A `type = "command"` worker may rewrite the `id` field on the NDJSON wire (same 
 
 Join tables classified as **relations** (FK heuristic / overrides in surreal-sync-core) always flatten composite edge IDs with `:` — SurrealDB relation edge IDs must be a simple type, not an Array. **Entity** tables keep Array IDs unless you flatten them with `flatten_id` (or a custom worker).
 
-### `--id-columns` (CSV, JSONL, Kafka, Snowflake)
+### `--id-columns` (CSV, JSONL, Kafka, Snowflake, BigQuery)
 
 | Source | Flag | Behavior |
 |--------|------|----------|
 | `from csv` / `from jsonl` / `from kafka` | `--id-columns a,b` | Multi-column → Array record ID (takes precedence over `--id-field`) |
 | `from snowflake` | `--id-columns a,b` | Same; omit for a sequential per-table index |
+| `from bigquery` | `--id-columns a,b` | Same; omit for a sequential per-table index |
 
 Library / embedders can also apply per-table overrides via surreal-sync-core (`parse_id_column_overrides` / `apply_id_column_overrides`) using `table=col1,col2` entries. That helper is not exposed as a SQL-source CLI flag today — SQL sources use discovered primary keys.
 
@@ -225,6 +227,7 @@ Every sync/import path below loads the same TOML via the shared CLI helper and r
 | `from jsonl` | Long-lived SourceDriver streams line reads into the window |
 | `from snowflake` | Full snapshot via `RowChunkDriver` (ingestion-only; no source cursor) |
 | `from mssql sync` | Watermark snapshot + SQL Server CDC stream |
+| `from bigquery` | Full snapshot via `RowChunkDriver` (ingestion-only; no source cursor) |
 
 ### CLI quick start
 
@@ -491,14 +494,14 @@ Operations (checkpoints, resume, ad-hoc `snapshot` where the source supports it)
 
 ### Advanced: embedding (from-* crates)
 
-Depend on a source crate such as `surreal-sync-mysql`, `surreal-sync-mssql`, `surreal-sync-snowflake`, `surreal-sync-json`, or `surreal-sync-kafka`, plus `surreal-sync-surreal` (feature `v2` or `v3`). For ongoing sync (CDC), also configure checkpoints. Do not depend on the `surreal-sync` CLI package as a library.
-See the **Examples** below (`examples/from-mysql-binlog`, `examples/from-mssql`, `examples/from-snowflake`, `examples/from-jsonl`, `examples/from-kafka`).
+Depend on a source crate such as `surreal-sync-mysql`, `surreal-sync-mssql`, `surreal-sync-snowflake`, `surreal-sync-bigquery`, `surreal-sync-json`, or `surreal-sync-kafka`, plus `surreal-sync-surreal` (feature `v2` or `v3`). For ongoing sync (CDC), also configure checkpoints. Do not depend on the `surreal-sync` CLI package as a library.
+See the **Examples** below (`examples/from-mysql-binlog`, `examples/from-mssql`, `examples/from-snowflake`, `examples/from-bigquery`, `examples/from-jsonl`, `examples/from-kafka`).
 
 **When to use in-process vs `command` workers**
 
 | Approach | Use when |
 |----------|----------|
-| `InPlaceTransform` via `run::<Surreal3Sink>([…])` (mysql-binlog / mssql / snowflake / jsonl / kafka) | Mutate-only / same-length stages in Rust (redact, rename, flatten IDs, FK → record links) |
+| `InPlaceTransform` via `run::<Surreal3Sink>([…])` (mysql-binlog / mssql / snowflake / bigquery / jsonl / kafka) | Mutate-only / same-length stages in Rust (redact, rename, flatten IDs, FK → record links) |
 | TOML `type = "command"` | External language workers, heavy enrichment, or filter/fan-out that needs a custom `BatchTransformer` |
 
 Filter-out or fan-out of events is out of scope for `InPlaceTransform` — use a
