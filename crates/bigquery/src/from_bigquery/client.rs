@@ -429,6 +429,10 @@ impl BigQueryClient {
     }
 
     async fn send_post(&self, url: &str, body: &JsonValue) -> Result<QueryResponse> {
+        if !url.starts_with("https://") {
+            bail!("refusing to send BigQuery request over non-HTTPS URL");
+        }
+
         let request = self
             .authorize(self.http.post(url))
             .await?
