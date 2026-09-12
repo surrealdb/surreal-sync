@@ -116,6 +116,7 @@ mod from;
 mod loadtest;
 
 // Stock CLI auto-detect glue (both Surreal SDKs linked). Prefer from-* for embeds.
+mod bigquery;
 mod mssql;
 mod mysql_binlog;
 mod snowflake;
@@ -219,6 +220,10 @@ enum FromSource {
     /// Ingest from Snowflake (full one-shot snapshot via the SQL REST API v2)
     #[command(name = "snowflake")]
     Snowflake(snowflake::Args),
+
+    /// Ingest from Google BigQuery (full one-shot snapshot via the REST API v2)
+    #[command(name = "bigquery")]
+    BigQuery(bigquery::Args),
 }
 
 // =============================================================================
@@ -1469,6 +1474,7 @@ async fn handle_from_command(source: FromSource) -> anyhow::Result<()> {
         FromSource::Jsonl(args) => from::jsonl::run_args(args).await?,
         FromSource::Mssql { command } => mssql::run_command(command).await?,
         FromSource::Snowflake(args) => snowflake::run_args(args).await?,
+        FromSource::BigQuery(args) => bigquery::run_args(args).await?,
     }
     Ok(())
 }
