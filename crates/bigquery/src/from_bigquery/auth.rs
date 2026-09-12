@@ -62,7 +62,21 @@ impl ServiceAccountKey {
                  `gcloud iam service-accounts keys create key.json --iam-account=…`)"
             ),
         }
-        serde_json::from_value(probe).context("credentials file is not a service-account key")
+        let key: Self = serde_json::from_value(probe)
+            .context("credentials file is not a service-account key")?;
+
+        // The assertion JWT is itself a credential, so the token endpoint has to be
+        // encrypted. `token_uri` comes out of a file on disk, so this is worth
+        // checking rather than assuming.
+        if !key.token_uri.starts_with("https://") {
+            bail!(
+                "refusing to exchange a service-account assertion over a cleartext \
+                 token endpoint ({}); the key file's `token_uri` must be https://",
+                key.token_uri
+            );
+        }
+
+        Ok(key)
     }
 }
 
@@ -283,6 +297,19 @@ mod tests {
         let err = ServiceAccountKey::from_json(&json).unwrap_err().to_string();
         assert!(err.contains("authorized_user"), "got: {err}");
         assert!(err.contains("service-account key"), "got: {err}");
+    }
+
+    #[test]
+    fn rejects_a_cleartext_token_endpoint() {
+        let json = json!({
+            "type": "service_account",
+            "client_email": "a@b.iam.gserviceaccount.com",
+            "private_key": "pem",
+            "token_uri": "http://oauth2.googleapis.com/token"
+        })
+        .to_string();
+        let err = ServiceAccountKey::from_json(&json).unwrap_err().to_string();
+        assert!(err.contains("cleartext"), "got: {err}");
     }
 
     #[test]

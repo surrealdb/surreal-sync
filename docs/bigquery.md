@@ -184,6 +184,12 @@ surreal-sync from bigquery \
 
 Against the real API, omitting credentials is an error rather than an anonymous request.
 
+The plaintext endpoint is only allowed because nothing sensitive travels to it:
+an anonymous client sends no `Authorization` header at all. Combining credentials
+with an `http://` endpoint is refused, so the emulator escape hatch cannot be used
+to leak a real access token onto a cleartext connection. The `token_uri` in a
+service-account key file must be `https://` for the same reason.
+
 ## Embedding in Your Own Rust Binary
 
 The BigQuery source is also available as a library entrypoint, so you can run the

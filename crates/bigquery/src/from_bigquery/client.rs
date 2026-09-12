@@ -243,6 +243,10 @@ impl BigQueryClient {
             }
         };
 
+        if !matches!(credentials, Credentials::Anonymous) {
+            ensure_secure_url(&opts.api_endpoint)?;
+        }
+
         let http = reqwest::Client::builder()
             .build()
             .context("failed to build HTTP client")?;
@@ -418,10 +422,23 @@ impl BigQueryClient {
         Ok(names)
     }
 
+    /// Whether this request may travel over a cleartext connection.
+    ///
+    /// An emulator is reached over plain HTTP, which is safe precisely because
+    /// nothing sensitive is sent to it: an anonymous client carries no
+    /// `Authorization` header and no credential of any kind. As soon as there is a
+    /// token to attach, the transport has to be encrypted.
+    fn cleartext_is_allowed(&self) -> bool {
+        self.token.is_anonymous()
+    }
+
+    /// Attach credentials to a request whose transport has already been checked by
+    /// the caller.
     async fn authorize(&self, builder: reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder> {
         let builder = builder
             .header(reqwest::header::ACCEPT, "application/json")
             .header(reqwest::header::USER_AGENT, "surreal-sync");
+
         match self.token.access_token().await? {
             Some(token) => Ok(builder.header("Authorization", format!("Bearer {token}"))),
             None => Ok(builder),
@@ -429,8 +446,10 @@ impl BigQueryClient {
     }
 
     async fn send_post(&self, url: &str, body: &JsonValue) -> Result<QueryResponse> {
-        if !url.starts_with("https://") {
-            bail!("refusing to send BigQuery request over non-HTTPS URL");
+        // Guarded here, next to the request itself, so the rule holds no matter how
+        // the URL was built.
+        if !self.cleartext_is_allowed() && !url.starts_with("https://") {
+            return Err(cleartext_refusal(url));
         }
 
         let request = self
@@ -447,6 +466,10 @@ impl BigQueryClient {
     }
 
     async fn send_get(&self, url: &str) -> Result<String> {
+        if !self.cleartext_is_allowed() && !url.starts_with("https://") {
+            return Err(cleartext_refusal(url));
+        }
+
         let response = self
             .authorize(self.http.get(url))
             .await?
@@ -541,6 +564,28 @@ impl BigQueryClient {
     }
 }
 
+/// Reject a URL that would carry credentials in cleartext.
+///
+/// Used by [`BigQueryClient::new`] so the CLI preflight reports the mistake before
+/// it dials SurrealDB. The per-request paths repeat the scheme test inline rather
+/// than calling this, so the guard sits in the same function as the request it
+/// protects.
+fn ensure_secure_url(url: &str) -> Result<()> {
+    if !url.starts_with("https://") {
+        return Err(cleartext_refusal(url));
+    }
+    Ok(())
+}
+
+/// The single wording for every refusal, so the three call sites stay consistent.
+fn cleartext_refusal(url: &str) -> anyhow::Error {
+    anyhow!(
+        "refusing to send BigQuery credentials over a cleartext connection ({url}). \
+         Use an https:// --api-endpoint, or omit credentials entirely when \
+         targeting a local emulator."
+    )
+}
+
 /// Surface per-job errors, which BigQuery reports in a 200 response body.
 fn check_job_errors(response: &QueryResponse) -> Result<()> {
     let Some(errors) = response.errors.as_ref().filter(|e| !e.is_empty()) else {
@@ -594,6 +639,53 @@ mod tests {
             Err(e) => e.to_string(),
         };
         assert!(err.contains("--credentials-path"), "got: {err}");
+    }
+
+    fn service_account_json() -> String {
+        json!({
+            "type": "service_account",
+            "client_email": "sync@demo.iam.gserviceaccount.com",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----\n",
+            "token_uri": "https://oauth2.googleapis.com/token"
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn credentials_are_refused_over_a_cleartext_endpoint() {
+        // The emulator escape hatch must not become a way to leak a real token:
+        // http:// plus credentials is rejected outright.
+        let mut o = opts();
+        o.credentials_json = Some(service_account_json());
+        let err = match BigQueryClient::new(&o) {
+            Ok(_) => panic!("credentials over http should be refused"),
+            Err(e) => e.to_string(),
+        };
+        assert!(err.contains("cleartext"), "got: {err}");
+    }
+
+    #[test]
+    fn credentials_are_allowed_over_a_custom_https_endpoint() {
+        let mut o = opts();
+        o.credentials_json = Some(service_account_json());
+        o.api_endpoint = "https://bigquery.example.internal".into();
+        assert!(BigQueryClient::new(&o).is_ok());
+    }
+
+    #[test]
+    fn anonymous_clients_may_use_a_cleartext_emulator_endpoint() {
+        // Nothing sensitive is on the wire without credentials, so plain HTTP is
+        // fine here. This is what keeps the emulator usable.
+        let client = BigQueryClient::new(&opts()).expect("emulator client");
+        assert!(client.cleartext_is_allowed());
+    }
+
+    #[test]
+    fn ensure_secure_url_only_accepts_https() {
+        assert!(ensure_secure_url("https://bigquery.googleapis.com").is_ok());
+        assert!(ensure_secure_url("http://bigquery.googleapis.com").is_err());
+        assert!(ensure_secure_url("http://127.0.0.1:9050").is_err());
+        assert!(ensure_secure_url("bigquery.googleapis.com").is_err());
     }
 
     #[test]
