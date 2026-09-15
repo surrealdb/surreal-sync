@@ -11,7 +11,8 @@ Operator-facing sync pipeline docs (including optional transforms) stay in [sync
 - [x] `load_transforms_from_args` in `src/from/transforms.rs`
 - [x] Every `from *` sync/import command with a sync path takes `--transforms-config`
       and calls the shared loader (mysql-binlog, postgresql-pgoutput, postgresql /
-      wal2json, postgresql-trigger, mysql trigger, mongodb, neo4j, kafka, csv, jsonl)
+      wal2json, postgresql-trigger, mysql trigger, mongodb, neo4j, kafka, csv, jsonl,
+      snowflake, bigquery)
 
 **Omit flag vs empty / passthrough file** — both yield an identity pipeline,
 but `ApplyOpts` differ (buffering cadence):
@@ -41,6 +42,7 @@ spawn coverage is in `surreal-sync-runtime` pipeline config tests).
 | jsonl | Long-lived SourceDriver stream | Yes (shared loader + CLI e2e) | N/A | `conversion_rules` before Pipeline; **one runtime per file** (same as CSV) |
 | snowflake | RowChunkDriver full (per table) | Yes (shared loader) | N/A | Ingestion-only SQL REST snapshot; `--id-columns` → Array IDs (breaking vs former colon Text; restore with `flatten_id`); streams one result partition at a time into `batch_size` apply chunks; no durable source cursor / checkpoint resume |
 | mssql | WatermarkSource + SourceDriver CDC tail | Yes (shared loader + CLI e2e) | Yes | Native SQL Server CDC LSN; `--schemafull` opt-in; temporal tables auto (one Surreal table + `is_current`) |
+| bigquery | RowChunkDriver full (per table) | Yes (shared loader + CLI e2e) | N/A | Ingestion-only REST v2 snapshot; same `--id-columns` semantics as snowflake; streams one result page at a time (`--page-size`) into `batch_size` apply chunks; identifiers are case-sensitive (never folded); no durable source cursor / checkpoint resume |
 
 ## Porting checklist
 

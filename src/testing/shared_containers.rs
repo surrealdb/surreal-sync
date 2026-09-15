@@ -7,6 +7,7 @@
 use std::sync::{Mutex, OnceLock};
 use tokio::sync::OnceCell;
 
+use crate::testing::bigquery_container::BigQueryEmulatorContainer;
 use crate::testing::mysql_binlog_container::MySQLBinlogContainer;
 use crate::testing::postgresql_pgoutput_container::PostgresPgoutputContainer;
 use surreal_sync_postgresql::testing::container::PostgresContainer;
@@ -344,6 +345,31 @@ pub async fn shared_mssql() -> &'static surreal_sync_mssql::from_mssql::testing:
         c.setup_testdb()
             .await
             .expect("SQL Server testdb/CDC setup failed");
+        c
+    })
+    .await
+}
+
+/// Project the shared BigQuery emulator serves.
+pub const BIGQUERY_TEST_PROJECT: &str = "surreal-sync-test";
+
+/// Dataset the shared BigQuery emulator creates at boot.
+pub const BIGQUERY_TEST_DATASET: &str = "testds";
+
+/// Returns a shared BigQuery emulator container, starting it on first call.
+///
+/// One emulator per nextest process; tests isolate from each other by creating
+/// uniquely-named tables inside it and writing to a unique SurrealDB namespace.
+pub async fn shared_bigquery() -> &'static BigQueryEmulatorContainer {
+    static BQ: OnceCell<BigQueryEmulatorContainer> = OnceCell::const_new();
+    BQ.get_or_init(|| async {
+        let name = format!("shared-bigquery-{}", std::process::id());
+        register_container(&name);
+        let mut c =
+            BigQueryEmulatorContainer::new(&name, BIGQUERY_TEST_PROJECT, BIGQUERY_TEST_DATASET);
+        c.start().expect("BigQuery emulator start failed");
+        c.wait_until_ready(60)
+            .expect("BigQuery emulator not ready in 60s");
         c
     })
     .await

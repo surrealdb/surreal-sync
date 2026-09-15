@@ -37,6 +37,7 @@ cd "$ROOT_DIR"
 PACKAGES=(
   surreal-sync-example-from-mysql-binlog
   surreal-sync-example-from-snowflake
+  surreal-sync-example-from-bigquery
   surreal-sync-example-from-jsonl
   surreal-sync-example-from-kafka
   surreal-sync-example-from-mssql
