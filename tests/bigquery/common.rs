@@ -33,7 +33,7 @@ impl BigQueryTestEnv {
         let source_opts = SourceOpts {
             project_id: BIGQUERY_TEST_PROJECT.to_string(),
             dataset: BIGQUERY_TEST_DATASET.to_string(),
-            billing_project_id: None,
+            job_project_id: None,
             credentials_json: None,
             location: None,
             api_endpoint: emulator.api_endpoint(),

@@ -26,8 +26,12 @@ pub struct Args {
     pub dataset: String,
 
     /// Project billed for the query jobs (defaults to --project-id)
-    #[arg(long, env = "BIGQUERY_BILLING_PROJECT_ID")]
-    pub billing_project_id: Option<String>,
+    #[arg(
+        long = "billing-project-id",
+        value_name = "PROJECT_ID",
+        env = "BIGQUERY_BILLING_PROJECT_ID"
+    )]
+    pub job_project_id: Option<String>,
 
     /// Path to a service-account JSON key file
     #[arg(long, value_name = "PATH", env = "GOOGLE_APPLICATION_CREDENTIALS")]

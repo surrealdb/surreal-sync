@@ -49,7 +49,7 @@ fn build_opts(args: &Args) -> anyhow::Result<(SourceOpts, SyncOpts)> {
     let source_opts = SourceOpts {
         project_id: args.project_id.clone(),
         dataset: args.dataset.clone(),
-        billing_project_id: args.billing_project_id.clone(),
+        job_project_id: args.job_project_id.clone(),
         credentials_json,
         location: args.location.clone(),
         api_endpoint: args.api_endpoint.clone(),

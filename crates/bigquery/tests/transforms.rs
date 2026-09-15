@@ -117,7 +117,7 @@ fn sample_opts() -> (SourceOpts, SyncOpts) {
     let source = SourceOpts {
         project_id: "demo".into(),
         dataset: "app".into(),
-        billing_project_id: None,
+        job_project_id: None,
         credentials_json: None,
         location: None,
         api_endpoint: "http://127.0.0.1:9050".into(),

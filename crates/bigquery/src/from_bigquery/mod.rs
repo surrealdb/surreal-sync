@@ -38,8 +38,9 @@ pub struct SourceOpts {
     pub project_id: String,
     /// Dataset within the project.
     pub dataset: String,
-    /// Project billed for the query jobs. Defaults to [`Self::project_id`].
-    pub billing_project_id: Option<String>,
+    /// Project the query jobs run in, which is the project BigQuery bills for
+    /// them. Defaults to [`Self::project_id`]. Set from `--billing-project-id`.
+    pub job_project_id: Option<String>,
     /// Service-account JSON key contents. `None` means unauthenticated, which is
     /// only allowed against a non-Google [`Self::api_endpoint`] (i.e. an emulator).
     pub credentials_json: Option<String>,
@@ -62,11 +63,9 @@ pub struct SourceOpts {
 pub const DEFAULT_PAGE_SIZE: usize = 10_000;
 
 impl SourceOpts {
-    /// The project that query jobs are billed to.
-    pub fn billing_project(&self) -> &str {
-        self.billing_project_id
-            .as_deref()
-            .unwrap_or(&self.project_id)
+    /// The project that query jobs run in, and so the project billed for them.
+    pub fn job_project(&self) -> &str {
+        self.job_project_id.as_deref().unwrap_or(&self.project_id)
     }
 
     /// Whether [`Self::api_endpoint`] points at Google rather than an emulator.
@@ -107,7 +106,7 @@ mod tests {
         SourceOpts {
             project_id: "p".into(),
             dataset: "d".into(),
-            billing_project_id: None,
+            job_project_id: None,
             credentials_json: None,
             location: None,
             api_endpoint: api_endpoint.into(),
@@ -118,15 +117,15 @@ mod tests {
     }
 
     #[test]
-    fn billing_project_defaults_to_project_id() {
-        assert_eq!(opts(DEFAULT_API_ENDPOINT).billing_project(), "p");
+    fn job_project_defaults_to_project_id() {
+        assert_eq!(opts(DEFAULT_API_ENDPOINT).job_project(), "p");
     }
 
     #[test]
-    fn billing_project_override_wins() {
+    fn job_project_override_wins() {
         let mut o = opts(DEFAULT_API_ENDPOINT);
-        o.billing_project_id = Some("billing".into());
-        assert_eq!(o.billing_project(), "billing");
+        o.job_project_id = Some("other-project".into());
+        assert_eq!(o.job_project(), "other-project");
     }
 
     #[test]

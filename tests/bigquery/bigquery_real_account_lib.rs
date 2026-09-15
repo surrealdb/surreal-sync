@@ -37,7 +37,7 @@ fn real_account_opts() -> Option<(SourceOpts, String)> {
         SourceOpts {
             project_id,
             dataset,
-            billing_project_id: std::env::var("BIGQUERY_BILLING_PROJECT_ID").ok(),
+            job_project_id: std::env::var("BIGQUERY_BILLING_PROJECT_ID").ok(),
             credentials_json: Some(credentials_json),
             location: std::env::var("BIGQUERY_LOCATION").ok(),
             api_endpoint: DEFAULT_API_ENDPOINT.to_string(),
