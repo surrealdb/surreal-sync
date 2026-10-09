@@ -112,10 +112,7 @@ pub async fn use_database(conn: &mut mysql_async::Conn, database: &str) -> Resul
 }
 
 pub async fn show_master_status(conn: &mut mysql_async::Conn) -> Result<(String, u64)> {
-    // MySQL 8.2 added SHOW BINARY LOG STATUS and 8.4 removed SHOW MASTER STATUS.
-    // Try the new syntax first; on a parse error (ER_PARSE_ERROR, 1064) fall back
-    // to the old one for MySQL < 8.2 and MariaDB. Other errors (e.g. missing
-    // REPLICATION CLIENT) are returned as-is.
+    // MySQL 8.4 removed SHOW MASTER STATUS for SHOW BINARY LOG STATUS
     let row: Option<Row> = match conn.query_first("SHOW BINARY LOG STATUS").await {
         Ok(r) => r,
         Err(mysql_async::Error::Server(ref e)) if e.code == 1064 => {
@@ -123,9 +120,7 @@ pub async fn show_master_status(conn: &mut mysql_async::Conn) -> Result<(String,
         }
         Err(e) => return Err(e.into()),
     };
-    let row = row.ok_or_else(|| {
-        anyhow::anyhow!("binlog status query returned no rows (is binary logging enabled?)")
-    })?;
+    let row = row.ok_or_else(|| anyhow::anyhow!("SHOW MASTER STATUS returned no rows"))?;
     let file: String = row.get(0).ok_or_else(|| anyhow::anyhow!("missing File"))?;
     let pos: u64 = row
         .get(1)
