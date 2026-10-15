@@ -47,7 +47,7 @@ tokio = { version = "1.49", features = ["full"] }
 tokio-test = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-surrealdb = { version = "2.6.5", features = ["protocol-ws", "kv-mem"] }
+surrealdb = { version = "3.2.0", features = ["protocol-ws", "kv-mem"] }
 surrealdb3 = { version = "3.1.5", package = "surrealdb", features = ["protocol-ws", "kv-mem"] }
 surreal-sync-surreal = { path = "../surreal", version = "0.6.1", features = ["v2", "v3", "reqwest"], default-features = false }
 serde_json = "1.0"
