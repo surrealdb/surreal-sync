@@ -126,7 +126,7 @@ jobs:
         run: docker save surreal-sync:latest | gzip > surreal-sync-image.tar.gz
 
       - name: Upload Docker image
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docker-image
           path: surreal-sync-image.tar.gz
@@ -178,7 +178,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload metrics
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: metrics-${{ matrix.source }}-${{ steps.sanitize.outputs.image_name }}
           path: loadtest/output/metrics.json
@@ -186,7 +186,7 @@ jobs:
 
       - name: Upload container logs
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: container-logs-${{ matrix.source }}-${{ steps.sanitize.outputs.image_name }}
           path: |
@@ -196,7 +196,7 @@ jobs:
 
       - name: Upload full output on failure
         if: steps.loadtest.outcome == 'failure'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: full-output-${{ matrix.source }}-${{ steps.sanitize.outputs.image_name }}
           path: loadtest/output/
@@ -279,7 +279,7 @@ jobs:
 
       - name: Upload new baseline
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: baseline-metrics
           path: new-baseline/
