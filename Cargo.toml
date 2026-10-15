@@ -24,12 +24,14 @@ members = [
     "crates/loadtest-distributed",
     "crates/surrealdb-multi-sdk-demo",
     "crates/snowflake",
+    "crates/bigquery",
     "crates/json",
     "crates/csv",
     "crates/kafka",
     "crates/mssql",
     "examples/from-mysql-binlog",
     "examples/from-snowflake",
+    "examples/from-bigquery",
     "examples/from-jsonl",
     "examples/from-kafka",
     "examples/from-mssql",
@@ -116,6 +118,7 @@ surreal-sync-json = { path = "crates/json", features = ["from_jsonl"] }
 surreal-sync-mysql = { path = "crates/mysql", features = ["from_binlog", "from_trigger"] }
 surreal-sync-mssql = { path = "crates/mssql", features = ["from_mssql"] }
 surreal-sync-snowflake = { path = "crates/snowflake", features = ["from_snowflake"] }
+surreal-sync-bigquery = { path = "crates/bigquery", features = ["from_bigquery"] }
 
 # Load testing populators
 loadtest-populate-mysql = { path = "crates/loadtest-populate-mysql" }

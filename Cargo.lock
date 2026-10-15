@@ -7583,6 +7583,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "surreal-sync-bigquery",
  "surreal-sync-core",
  "surreal-sync-csv",
  "surreal-sync-json",
@@ -7608,6 +7609,25 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "void",
+]
+
+[[package]]
+name = "surreal-sync-bigquery"
+version = "0.6.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.23.1",
+ "chrono",
+ "clap",
+ "jsonwebtoken 9.3.1",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "surreal-sync-core",
+ "surreal-sync-runtime",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -7655,6 +7675,16 @@ dependencies = [
  "tracing-subscriber",
  "ulid 3.0.0",
  "uuid",
+]
+
+[[package]]
+name = "surreal-sync-example-from-bigquery"
+version = "0.6.1"
+dependencies = [
+ "anyhow",
+ "surreal-sync-bigquery",
+ "surreal-sync-surreal",
+ "tokio",
 ]
 
 [[package]]

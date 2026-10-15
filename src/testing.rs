@@ -5,6 +5,7 @@
 //! after synchronization to SurrealDB.
 //!
 
+pub mod bigquery_container;
 pub mod checkpoint;
 pub mod cli;
 pub mod field;

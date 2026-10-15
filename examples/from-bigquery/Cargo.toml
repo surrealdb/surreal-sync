@@ -1,0 +1,16 @@
+[package]
+name = "surreal-sync-example-from-bigquery"
+version = "0.6.1"
+edition = "2021"
+publish = false
+description = "Embedder example: BigQuery ingestion with in-process transforms"
+
+[[bin]]
+name = "surreal-sync-example-from-bigquery"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+tokio = { version = "1.49", features = ["full"] }
+surreal-sync-bigquery = { path = "../../crates/bigquery", features = ["from_bigquery"] }
+surreal-sync-surreal = { path = "../../crates/surreal" }

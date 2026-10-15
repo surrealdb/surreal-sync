@@ -1,0 +1,59 @@
+[package]
+name = "surreal-sync-bigquery"
+version = "0.6.1"
+edition = "2021"
+description = "Sync Google BigQuery tables into SurrealDB"
+license = "Apache-2.0"
+readme = "README.md"
+publish = true
+repository = "https://github.com/surrealdb/surreal-sync"
+homepage = "https://github.com/surrealdb/surreal-sync"
+documentation = "https://docs.rs/surreal-sync-bigquery"
+
+[features]
+default = ["types"]
+types = []
+from_bigquery = [
+    "types",
+    "dep:surreal-sync-runtime",
+    "dep:clap",
+    "dep:async-trait",
+    "dep:reqwest",
+    "dep:jsonwebtoken",
+    "dep:tokio",
+    "dep:tracing",
+]
+
+[dependencies]
+# Always needed for `types`
+surreal-sync-core = { path = "../sync-core", version = "0.6.1" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.23"
+anyhow = "1.0"
+
+# `from_bigquery` (optional)
+surreal-sync-runtime = { path = "../runtime", version = "0.6.1", features = ["cli"], optional = true }
+clap = { version = "4.5", features = ["derive", "env"], optional = true }
+async-trait = { version = "0.1", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+jsonwebtoken = { version = "9", optional = true }
+tokio = { version = "1.49", features = ["time", "sync"], optional = true }
+tracing = { version = "0.1", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "time"] }
+async-trait = "0.1"
+serde_json = "1.0"
+surreal-sync-runtime = { path = "../runtime", version = "0.6.1" }
+surreal-sync-core = { path = "../sync-core", version = "0.6.1" }
+
+[lib]
+name = "surreal_sync_bigquery"
+path = "src/lib.rs"
+
+[[test]]
+name = "transforms"
+path = "tests/transforms.rs"
+required-features = ["from_bigquery"]
