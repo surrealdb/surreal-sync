@@ -119,7 +119,7 @@ pub fn decode_cell(
             Ok(CellValue::String(v.to_string()))
         }
         MYSQL_TYPE_STRING | MYSQL_TYPE_VARCHAR | MYSQL_TYPE_VAR_STRING => {
-            decode_string(payload, &column.metadata, column.column_type)
+            decode_string(payload, &column.metadata)
         }
         MYSQL_TYPE_BLOB
         | MYSQL_TYPE_TINY_BLOB
@@ -188,25 +188,13 @@ fn resolve_string_type(column_type: u8, metadata: &ColumnMetadata) -> u8 {
     column_type
 }
 
-fn decode_string(
-    payload: &mut &[u8],
-    metadata: &ColumnMetadata,
-    column_type: u8,
-) -> Result<CellValue, Error> {
+fn decode_string(payload: &mut &[u8], metadata: &ColumnMetadata) -> Result<CellValue, Error> {
     let max_len = match metadata {
         ColumnMetadata::String { max_length } | ColumnMetadata::EnumSet { max_length } => {
             *max_length
         }
         _ => 256,
     };
-    // Fixed-width BINARY/VARBINARY fields may omit the length prefix.
-    if matches!(column_type, MYSQL_TYPE_VARCHAR | MYSQL_TYPE_VAR_STRING)
-        && max_len > 0
-        && payload.len() == max_len as usize
-    {
-        let bytes = read_bytes(payload, max_len as usize)?;
-        return Ok(CellValue::Bytes(bytes));
-    }
     let len = if max_len < 256 {
         read_u8(payload)? as usize
     } else {
