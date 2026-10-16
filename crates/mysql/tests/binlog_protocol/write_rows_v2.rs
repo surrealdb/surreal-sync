@@ -86,3 +86,42 @@ fn table_map_parses_signedness_optional_metadata() {
     assert!(!tm.columns[0].unsigned);
     assert!(tm.columns[1].unsigned);
 }
+
+#[test]
+fn write_rows_varchar_max_len_equals_remaining_bytes() {
+    let columns = vec![
+        ColumnDef::new(MYSQL_TYPE_LONG, ColumnMetadata::None),
+        ColumnDef::new(
+            MYSQL_TYPE_VARCHAR,
+            ColumnMetadata::String { max_length: 200 },
+        ),
+        ColumnDef::new(
+            MYSQL_TYPE_VARCHAR,
+            ColumnMetadata::String { max_length: 1020 },
+        ),
+    ];
+    let mut body = hex::decode(concat!(
+        "010000000000", // table_id
+        "0000",         // flags
+        "0200",         // var_header_len = 2 (no extra row info)
+        "03",           // width = 3 columns
+        "07",           // columns present (all 3)
+        "00",           // null bitmap (no nulls)
+        "2a000000",     // INT 42
+        "03616263",     // VARCHAR(200) "abc"; 200 bytes remain at its start
+        "c200",         // VARCHAR(1020) length 194 (LE u16)
+    ))
+    .expect("valid hex");
+    body.extend_from_slice(&[b'x'; 194]);
+
+    let event = RowsEvent::parse_write(&body, &columns, Flavor::MySql, true, true, 10)
+        .expect("parse write rows v2");
+    assert_eq!(event.rows.len(), 1);
+
+    let RowChange::Insert(cells) = &event.rows[0] else {
+        panic!("expected insert row");
+    };
+    assert_eq!(cells[0], CellValue::Int(42));
+    assert_eq!(cells[1], CellValue::String("abc".into()));
+    assert_eq!(cells[2], CellValue::String("x".repeat(194)));
+}
