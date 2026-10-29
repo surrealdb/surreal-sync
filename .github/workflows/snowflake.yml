@@ -106,7 +106,7 @@ jobs:
 
     - name: Install cargo-nextest
       if: steps.creds.outputs.available == 'true'
-      uses: taiki-e/install-action@67729d5c413db75907f0ad1e39bb04b9c868ff60 # v2.85.7
+      uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
       with:
         tool: nextest
 
